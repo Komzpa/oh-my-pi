@@ -21,10 +21,13 @@ import {
 	isFsError,
 	logger,
 	pathIsWithin,
+	popLoopPhase,
+	pushLoopPhase,
 	stringifyJson,
 	toError,
 } from "@oh-my-pi/pi-utils";
 import { isTaskToolDetails, type StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { moveFileAcrossDevices } from "../utils/atomic-file";
 import { hasAnnotationDraftsSync } from "../extensibility/custom-commands/bundled/annotate/draft-store";
@@ -1886,66 +1889,71 @@ export class SessionManager {
 	}
 
 	#appendToCurrentSessionFile(entry: SessionEntry): void {
-		// Atomic replacement / move window: do not open a fresh append writer that
-		// a Windows EPERM replace could detach from the current JSONL path.
-		// - moveTo: write a full body to the live relocation path (source pre-
-		//   rename, destination post-rename) so completed entries are durable
-		//   without recreating a vacated source.
-		// - in-place atomic fence: supersede the pending publish with a
-		//   synchronous full-body rewrite; bumping `#diskEpoch` abandons the
-		//   in-flight atomic via its `commitGuard`.
-		if (this.#sessionFileRelocating) {
-			this.#rewriteSynchronously();
-			return;
-		}
-		if (this.#atomicRewriteFenceEpoch !== null && this.#atomicRewriteFenceEpoch === this.#diskEpoch) {
-			this.#atomicRewriteDirty = true;
-			this.#rewriteSynchronously();
-			return;
-		}
-		// Cold/divergent: not on disk yet, in-memory entries diverged from the
-		// file, or another live process owns it → rewrite the whole file
-		// synchronously (to a sibling in the last case) and keep going.
-		if (!this.#fileIsCurrent || this.#rewriteRequired || this.#sessionOwnedElsewhere()) {
-			this.#rewriteSynchronously();
-			return;
-		}
-
-		// Hot path: write the entry directly on the writer, outside the async disk
-		// chain. Prefer appendSync so write failures latch `#diskFailure` before
-		// this call returns (not via a discarded rejected Promise after a later
-		// microtask). Callers stay non-throwing here — the core turn loop invokes
-		// appendMessage/appendCustomEntry without try/catch. A later entry retries
-		// all in-memory state through a full rewrite. File writers apply each line
-		// to the OS page cache before return.
-		// A mid-close writer leaves `#writer` undefined, so `#appendWriter` simply
-		// opens a fresh append handle and the entry still lands.
+		pushLoopPhase(`session.append:${entry.type}`);
 		try {
-			const writer = this.#appendWriter();
-			const line = this.#lineFor(entry);
-			if (writer.appendSync && !this.#storage.defersSyncPublish) {
-				writer.appendSync(line);
-				this.#recordDurableAppend(line);
-			} else {
-				// A backend that only queues the publish (indexed) has no synchronous
-				// durability, so the durable size may advance only once it confirms
-				// the line: a lost publish must not leave the record describing bytes
-				// the store never accepted, or the next recovery rewrite hands the
-				// backend CAS an impossible `expectedSize`.
-				if (writer.appendSync) writer.appendSync(line);
-				const confirmed = writer.appendSync ? writer.flush() : writer.append(line);
-				void confirmed
-					.then(() => this.#recordDurableAppend(line))
-					.catch(err => {
-						this.#fileIsCurrent = false;
-						this.#rewriteRequired = true;
-						this.#noteDiskFailure(err);
-					});
+			// Atomic replacement / move window: do not open a fresh append writer that
+			// a Windows EPERM replace could detach from the current JSONL path.
+			// - moveTo: write a full body to the live relocation path (source pre-
+			//   rename, destination post-rename) so completed entries are durable
+			//   without recreating a vacated source.
+			// - in-place atomic fence: supersede the pending publish with a
+			//   synchronous full-body rewrite; bumping `#diskEpoch` abandons the
+			//   in-flight atomic via its `commitGuard`.
+			if (this.#sessionFileRelocating) {
+				this.#rewriteSynchronously();
+				return;
 			}
-		} catch (err) {
-			this.#fileIsCurrent = false;
-			this.#rewriteRequired = true;
-			this.#noteDiskFailure(err);
+			if (this.#atomicRewriteFenceEpoch !== null && this.#atomicRewriteFenceEpoch === this.#diskEpoch) {
+				this.#atomicRewriteDirty = true;
+				this.#rewriteSynchronously();
+				return;
+			}
+			// Cold/divergent: not on disk yet, in-memory entries diverged from the
+			// file, or another live process owns it → rewrite the whole file
+			// synchronously (to a sibling in the last case) and keep going.
+			if (!this.#fileIsCurrent || this.#rewriteRequired || this.#sessionOwnedElsewhere()) {
+				this.#rewriteSynchronously();
+				return;
+			}
+
+			// Hot path: write the entry directly on the writer, outside the async disk
+			// chain. Prefer appendSync so write failures latch `#diskFailure` before
+			// this call returns (not via a discarded rejected Promise after a later
+			// microtask). Callers stay non-throwing here — the core turn loop invokes
+			// appendMessage/appendCustomEntry without try/catch. A later entry retries
+			// all in-memory state through a full rewrite. File writers apply each line
+			// to the OS page cache before return.
+			// A mid-close writer leaves `#writer` undefined, so `#appendWriter` simply
+			// opens a fresh append handle and the entry still lands.
+			try {
+				const writer = this.#appendWriter();
+				const line = this.#lineFor(entry);
+				if (writer.appendSync && !this.#storage.defersSyncPublish) {
+					writer.appendSync(line);
+					this.#recordDurableAppend(line);
+				} else {
+					// A backend that only queues the publish (indexed) has no synchronous
+					// durability, so the durable size may advance only once it confirms
+					// the line: a lost publish must not leave the record describing bytes
+					// the store never accepted, or the next recovery rewrite hands the
+					// backend CAS an impossible `expectedSize`.
+					if (writer.appendSync) writer.appendSync(line);
+					const confirmed = writer.appendSync ? writer.flush() : writer.append(line);
+					void confirmed
+						.then(() => this.#recordDurableAppend(line))
+						.catch(err => {
+							this.#fileIsCurrent = false;
+							this.#rewriteRequired = true;
+							this.#noteDiskFailure(err);
+						});
+				}
+			} catch (err) {
+				this.#fileIsCurrent = false;
+				this.#rewriteRequired = true;
+				this.#noteDiskFailure(err);
+			}
+		} finally {
+			popLoopPhase();
 		}
 	}
 
@@ -2887,14 +2895,19 @@ export class SessionManager {
 		if (!this.#persist || !this.#sessionFile) return;
 		if (this.#atomicEntryBatch) throw new Error("Cannot synchronously flush during an atomic session batch.");
 		if (this.#diskFailure) throw this.#diskFailure;
-		if (this.#fileIsCurrent && !this.#rewriteRequired) {
-			this.#writer?.flushSync?.();
-			const writerError = this.#writer?.getError();
-			if (writerError) throw writerError;
-			return;
+		pushLoopPhase("session.flushSync");
+		try {
+			if (this.#fileIsCurrent && !this.#rewriteRequired) {
+				this.#writer?.flushSync?.();
+				const writerError = this.#writer?.getError();
+				if (writerError) throw writerError;
+				return;
+			}
+			this.#rewriteSynchronously();
+			if (this.#diskFailure) throw this.#diskFailure;
+		} finally {
+			popLoopPhase();
 		}
-		this.#rewriteSynchronously();
-		if (this.#diskFailure) throw this.#diskFailure;
 	}
 
 	/**
@@ -3658,6 +3671,9 @@ export class SessionManager {
 		agent?: string;
 		modelRole?: string;
 		resolvedModel?: string;
+		perCallModel?: boolean;
+		perCallModelIdentity?: string;
+		perCallThinkingLevel?: ConfiguredThinkingLevel | null;
 		retryFallback?: RetryFallbackRole;
 		readOnly?: boolean;
 		outputSchema?: unknown;
@@ -4699,6 +4715,9 @@ export interface PersistedSessionInit {
 	agent?: string;
 	modelRole?: string;
 	resolvedModel?: string;
+	perCallModel?: boolean;
+	perCallModelIdentity?: string;
+	perCallThinkingLevel?: ConfiguredThinkingLevel | null;
 	retryFallback?: RetryFallbackRole;
 	readOnly?: boolean;
 	outputSchema?: unknown;
@@ -4727,6 +4746,9 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			agent: entry.agent,
 			modelRole: entry.modelRole,
 			resolvedModel: entry.resolvedModel,
+			...(entry.perCallModel ? { perCallModel: true } : undefined),
+			perCallModelIdentity: entry.perCallModelIdentity,
+			perCallThinkingLevel: entry.perCallThinkingLevel,
 			retryFallback: entry.retryFallback,
 			readOnly: entry.readOnly,
 			outputSchema: entry.outputSchema,

@@ -21,7 +21,8 @@ import * as postmortem from "@oh-my-pi/pi-utils/postmortem";
 import type { TspFrame, TspNode, TspText } from "@oh-my-pi/pi-wire";
 import { DEFAULT_MAX_INLINE_IMAGES, ImageBudget } from "./components/image";
 import { TuiDebugServer } from "./debug-server";
-import { isKeyRelease, matchesKey } from "./keys";
+import { frameTelemetry } from "./frame-telemetry";
+import { extractPrintableText, isKeyRelease, matchesKey } from "./keys";
 import { KITTY_PLACEHOLDER } from "./kitty-graphics";
 import { LoopWatchdog } from "./loop-watchdog";
 import { assumedTspHello, NativeBackend, type NativeHost } from "./native/backend";
@@ -52,6 +53,7 @@ import {
 } from "./terminal-capabilities";
 import { onTerminalBackgroundFallbackChange } from "./theme/theme";
 import { compositeLineAt } from "./render/composite";
+import { stripExtensionLinkMarkers } from "./render/extension-links";
 import { tmuxMultiplexer } from "./multiplexers/tmux";
 import {
 	Ellipsis,
@@ -211,7 +213,9 @@ export interface TUIStartOptions {
 	 * switches to raw input and replays the kernel-buffered keystrokes.
 	 *
 	 * A terminal expected to speak TSP needs raw input from the start, so it
-	 * gets it; its keystrokes are held instead (TSP events and the cell-size
+	 * gets it. Plain typing (printable text, Backspace) still edits the focused
+	 * component live, as the kernel echo shows it elsewhere; the first other key
+	 * and every key after it are held instead (TSP events and the cell-size
 	 * reply still apply) until {@link TUI.releaseHeldInput} replays them.
 	 */
 	deferInput?: boolean;
@@ -1026,7 +1030,8 @@ export class TUI extends Container {
 	#inputDeferred = false;
 	/**
 	 * Keystrokes held since a TSP `deferInput` start, replayed by
-	 * releaseHeldInput(); undefined when not holding.
+	 * releaseHeldInput(); undefined when not holding, empty while plain typing
+	 * still goes through live.
 	 */
 	#heldInput: string[] | undefined;
 	/**
@@ -1039,6 +1044,8 @@ export class TUI extends Container {
 	// it only logs `ui.loop-blocked` (with the current loop phase) when a frame
 	// budget is genuinely starved. Armed in start(), disarmed in stop().
 	#watchdog: LoopWatchdog;
+	#telemetryFrameRendered = false;
+	#telemetryFrameSettled = false;
 
 	// Transient alternate-screen state for a fullscreen overlay. While active, the
 	// engine paints only the modal on the alt buffer and leaves every
@@ -1125,7 +1132,9 @@ export class TUI extends Container {
 		this.#renderScheduler = options?.renderScheduler ?? DEFAULT_RENDER_SCHEDULER;
 		if (options?.onPaint) this.#paintListeners.add(options.onPaint);
 		this.#showHardwareCursor = showHardwareCursor === undefined ? this.#showHardwareCursor : showHardwareCursor;
-		this.#watchdog = new LoopWatchdog();
+		this.#watchdog = new LoopWatchdog({
+			onBlocked: event => frameTelemetry.logLoopBlock(event.blockedMs, event.cpuMs, event.phase),
+		});
 	}
 	static #initialResizeScrollbackMode(): ResizeScrollbackMode {
 		const mode = Bun.env.PI_TUI_RESIZE_SCROLLBACK;
@@ -2366,22 +2375,27 @@ export class TUI extends Container {
 
 	/** Paint the full semantic tail on the borrowed resize buffer. */
 	#renderResizeAltFrame(width: number, height: number): void {
-		const provider = this.#frameProvider;
-		let rendered: readonly string[];
-		do {
-			this.#imageBudget.beginPass(false, true);
-			rendered =
-				provider?.renderResizeFrame?.({ columns: width, rows: height }) ??
-				(provider ? provider.renderFrame({ columns: width, rows: height }).viewport : this.render(width));
-		} while (this.#imageBudget.endPass());
-		const viewport = rendered.length > height ? rendered.slice(rendered.length - height) : Array.from(rendered);
-		// The borrowed resize buffer is transient, not a streamable session paint.
-		this.#emitAltFrame(
-			this.#prepareLinesArray(viewport, width, this.#altPreparedRows, height, []),
-			width,
-			height,
-			false,
-		);
+		frameTelemetry.pushPhase("render:resize-alt");
+		try {
+			const provider = this.#frameProvider;
+			let rendered: readonly string[];
+			do {
+				this.#imageBudget.beginPass(false, true);
+				rendered =
+					provider?.renderResizeFrame?.({ columns: width, rows: height }) ??
+					(provider ? provider.renderFrame({ columns: width, rows: height }).viewport : this.render(width));
+			} while (this.#imageBudget.endPass());
+			const viewport = rendered.length > height ? rendered.slice(rendered.length - height) : Array.from(rendered);
+			// The borrowed resize buffer is transient, not a streamable session paint.
+			this.#emitAltFrame(
+				this.#prepareLinesArray(viewport, width, this.#altPreparedRows, height, []),
+				width,
+				height,
+				false,
+			);
+		} finally {
+			frameTelemetry.popPhase();
+		}
 	}
 
 	/**
@@ -2765,6 +2779,7 @@ export class TUI extends Container {
 	}
 
 	requestRender(force = false, options?: RenderRequestOptions): void {
+		frameTelemetry.recordRenderRequest();
 		if (force) {
 			this.#prepareForcedRender(options?.clearScrollback === true);
 			this.#renderRequested = true;
@@ -2796,10 +2811,7 @@ export class TUI extends Container {
 		if (this.#stopped) return;
 		this.#prepareForcedRender(options?.clearScrollback === true);
 		this.#renderRequested = false;
-		const start = this.#renderScheduler.now();
-		this.#lastRenderAt = start;
-		this.#doRender();
-		this.#lastFrameCostMs = this.#renderScheduler.now() - start;
+		this.#renderWithTelemetry();
 	}
 
 	/**
@@ -2815,6 +2827,7 @@ export class TUI extends Container {
 
 	/** Ordinary (non-forced) render scheduling. */
 	#requestOrdinaryRender(): void {
+		frameTelemetry.recordRenderRequest();
 		if (this.#renderRequested) return;
 		this.#renderRequested = true;
 		this.#renderScheduler.scheduleImmediate(() => this.#scheduleRender());
@@ -2904,10 +2917,37 @@ export class TUI extends Container {
 	 */
 	#executeRender(): void {
 		if (this.#deferRenderForOutputBacklog()) return;
+		this.#renderWithTelemetry();
+	}
+
+	#renderWithTelemetry(): void {
 		const start = this.#renderScheduler.now();
+		const target = this.#telemetryRenderTarget();
 		this.#lastRenderAt = start;
-		this.#doRender();
-		this.#lastFrameCostMs = this.#renderScheduler.now() - start;
+		this.#telemetryFrameRendered = false;
+		this.#telemetryFrameSettled = false;
+		frameTelemetry.beginRender(target);
+		try {
+			this.#doRender();
+		} finally {
+			this.#lastFrameCostMs = this.#renderScheduler.now() - start;
+			frameTelemetry.endRender(target, this.#telemetryFrameRendered, this.#telemetryFrameSettled);
+		}
+	}
+
+	#telemetryRenderTarget(): string {
+		if (this.#nativeLive) return "native";
+		if (this.#resizeAltActive) return "resize-alt";
+		if (this.#resizeProbe) return "resize-probe";
+		if (this.#resizeInPlaceActive && !this.#altActive) return "resize-wait";
+		const topOverlay = this.#getTopmostVisibleOverlay();
+		if (this.#altActive || topOverlay?.options?.fullscreen === true) return "alt";
+		return this.#frameProvider !== undefined ? "provider" : "children";
+	}
+
+	#markTelemetryFrameRendered(): void {
+		this.#telemetryFrameRendered = true;
+		this.#telemetryFrameSettled = true;
 	}
 	/**
 	 * True when the frame was deferred because the terminal's output backlog
@@ -2975,83 +3015,93 @@ export class TUI extends Container {
 		}
 		if (data.length === 0) return;
 
-		if (this.#heldInput !== undefined && this.#focusedComponent === this.#heldFocus) {
+		if (
+			this.#heldInput !== undefined &&
+			this.#focusedComponent === this.#heldFocus &&
+			!this.#typesThroughHold(data)
+		) {
 			this.#holdInput(data);
 			return;
 		}
-
-		// If focused component is an overlay, verify it's still visible (visibility can change due to
-		// terminal resize or visible() callback). Runs before the capture preflight below, which must
-		// target the effective focus owner, not a hidden overlay.
-		const focusedOverlay = this.overlayStack.find(o => o.component === this.#focusedComponent);
-		if (focusedOverlay && !this.#isOverlayVisible(focusedOverlay)) {
-			// Focused overlay is no longer visible, redirect to topmost visible overlay
-			const topVisible = this.#getTopmostVisibleOverlay();
-			if (topVisible) {
-				this.setFocus(topVisible.component);
-			} else {
-				// No visible overlays, restore to preFocus
-				this.setFocus(focusedOverlay.preFocus);
+		const inputLabel = this.#telemetryInputLabel(data);
+		const finishInput = frameTelemetry.beginInput(inputLabel);
+		frameTelemetry.pushPhase(`input:${inputLabel}`);
+		try {
+			// Reconcile focus before capture preflight, so a hidden overlay cannot own input.
+			const focusedOverlay = this.overlayStack.find(o => o.component === this.#focusedComponent);
+			if (focusedOverlay && !this.#isOverlayVisible(focusedOverlay)) {
+				const topVisible = this.#getTopmostVisibleOverlay();
+				if (topVisible) {
+					this.setFocus(topVisible.component);
+				} else {
+					this.setFocus(focusedOverlay.preFocus);
+				}
 			}
-		}
 
-		// Ctrl+C/Esc use app-level double-press windows. Give those gestures one
-		// frame to drain queued input before an ordinary repaint; delaying every
-		// key would make idle navigation pay a full frame of latency.
-		if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
-			this.#inputRenderGraceUntilMs = this.#renderScheduler.now() + TUI.#INPUT_RENDER_GRACE_MS;
-		}
+			// Ctrl+C/Esc use app-level double-press windows. Give those gestures one
+			// frame to drain queued input before an ordinary repaint; delaying every
+			// key would make idle navigation pay a full frame of latency.
+			if (matchesKey(data, "ctrl+c") || matchesKey(data, "escape")) {
+				this.#inputRenderGraceUntilMs = this.#renderScheduler.now() + TUI.#INPUT_RENDER_GRACE_MS;
+			}
 
-		// The effective input owner can reserve its gesture before TUI-wide listeners
-		// and debug shortcuts see the key, then handle the raw event exactly once.
-		const focusedForCapture = this.#inputTarget();
-		if (
-			focusedForCapture?.handleInput &&
-			(!isKeyRelease(data) || focusedForCapture.wantsKeyRelease) &&
-			focusedForCapture.capturesInput?.(data)
-		) {
-			focusedForCapture.handleInput(data);
-			this.requestRender();
-			return;
-		}
+			// The effective input owner can reserve its gesture before TUI-wide listeners
+			// and debug shortcuts see the key, then handle the raw event exactly once.
+			const focusedForCapture = this.#inputTarget();
+			if (
+				focusedForCapture?.handleInput &&
+				(!isKeyRelease(data) || focusedForCapture.wantsKeyRelease) &&
+				focusedForCapture.capturesInput?.(data)
+			) {
+				focusedForCapture.handleInput(data);
+				this.requestRender();
+				return;
+			}
 
-		if (this.#inputListeners.size > 0) {
-			let current = data;
-			for (const listener of this.#inputListeners) {
-				const result = listener(current);
-				if (result?.consume) {
+			if (this.#inputListeners.size > 0) {
+				let current = data;
+				for (const listener of this.#inputListeners) {
+					const result = listener(current);
+					if (result?.consume) return;
+					if (result?.data !== undefined) current = result.data;
+				}
+				if (current.length === 0) {
 					return;
 				}
-				if (result?.data !== undefined) {
-					current = result.data;
-				}
+				data = current;
 			}
-			if (current.length === 0) {
+
+			// Consume terminal cell size responses without blocking unrelated input.
+			if (this.#consumeCellSizeResponse(data)) {
 				return;
 			}
-			data = current;
-		}
 
-		// Consume terminal cell size responses without blocking unrelated input.
-		if (this.#consumeCellSizeResponse(data)) {
-			return;
-		}
-
-		// Global debug key handler (Shift+Ctrl+D)
-		if (matchesKey(data, "shift+ctrl+d") && this.onDebug) {
-			this.onDebug();
-			return;
-		}
-
-		const target = this.#inputTarget();
-		if (target?.handleInput) {
-			// Filter out key release events unless component opts in
-			if (isKeyRelease(data) && !target.wantsKeyRelease) {
+			// Global debug key handler (Shift+Ctrl+D)
+			if (matchesKey(data, "shift+ctrl+d") && this.onDebug) {
+				this.onDebug();
 				return;
 			}
-			target.handleInput(data);
-			this.requestRender();
+
+			const target = this.#inputTarget();
+			if (target?.handleInput) {
+				if (isKeyRelease(data) && !target.wantsKeyRelease) return;
+				target.handleInput(data);
+				this.requestRender();
+			}
+		} finally {
+			finishInput();
+			frameTelemetry.popPhase();
 		}
+	}
+
+	#telemetryInputLabel(data: string): string {
+		if (matchesKey(data, "ctrl+c")) return "key:ctrl-c";
+		if (matchesKey(data, "escape")) return "key:escape";
+		if (matchesKey(data, "shift+ctrl+d")) return "key:debug";
+		if (isKeyRelease(data)) return "key-release";
+		if (data.startsWith("\x1b[<")) return "mouse";
+		if (data.startsWith("\x1b[")) return "terminal-sequence";
+		return data.length === 1 ? "key" : `input:${data.length}b`;
 	}
 
 	/**
@@ -3063,6 +3113,18 @@ export class TUI extends Container {
 		if (focused?.handleInput) return focused;
 		const holder = this.#getKeyHolderOverlay();
 		return holder?.component === focused ? holder.preFocus : null;
+	}
+
+	/**
+	 * Whether a keystroke typed during a TSP startup hold edits the focused
+	 * component now: plain typing (printable text, Backspace) and key releases,
+	 * while nothing is queued ahead of them. The draft then grows as it is typed,
+	 * like a cooked tty's echo; a shortcut waits for the handlers that act on it,
+	 * and whatever follows it waits behind it to keep typing order.
+	 */
+	#typesThroughHold(data: string): boolean {
+		if (this.#heldInput!.length > 0) return false;
+		return extractPrintableText(data) !== undefined || matchesKey(data, "backspace") || isKeyRelease(data);
 	}
 
 	/**
@@ -3439,25 +3501,30 @@ export class TUI extends Container {
 	}
 
 	#renderProviderFrame(width: number, height: number): void {
-		const provider = this.#frameProvider;
-		if (!provider || width <= 0 || height <= 0) return;
-		this.#debugNextWindowTop = 0;
-		let plan: TerminalFramePlan;
-		let viewport: string[];
-		do {
-			this.#imageBudget.beginPass();
-			plan = provider.renderFrame({ columns: width, rows: height });
-			viewport = Array.from(plan.viewport);
-			if (viewport.length > height) {
-				const message = `Frame provider returned ${viewport.length} rows for a ${height}-row viewport`;
-				if (Bun.env.NODE_ENV === "test" || Bun.env.NODE_ENV === "development") throw new Error(message);
-				logger.error("TUI layout contract violated", { rows: viewport.length, height });
-				viewport = viewport.slice(0, height);
-			}
-			viewport = this.#compositeVisibleOverlays(viewport, width, height);
-		} while (this.#imageBudget.endPass());
-		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
-		this.#emitPlanFrame(width, height, viewport, plan.history, provider);
+		frameTelemetry.pushPhase("render:provider-frame");
+		try {
+			const provider = this.#frameProvider;
+			if (!provider || width <= 0 || height <= 0) return;
+			this.#debugNextWindowTop = 0;
+			let plan: TerminalFramePlan;
+			let viewport: string[];
+			do {
+				this.#imageBudget.beginPass();
+				plan = provider.renderFrame({ columns: width, rows: height });
+				viewport = Array.from(plan.viewport);
+				if (viewport.length > height) {
+					const message = `Frame provider returned ${viewport.length} rows for a ${height}-row viewport`;
+					if (Bun.env.NODE_ENV === "test" || Bun.env.NODE_ENV === "development") throw new Error(message);
+					logger.error("TUI layout contract violated", { rows: viewport.length, height });
+					viewport = viewport.slice(0, height);
+				}
+				viewport = this.#compositeVisibleOverlays(viewport, width, height);
+			} while (this.#imageBudget.endPass());
+			if (this.#maybeDeferGhosttyInitialImagePaint()) return;
+			this.#emitPlanFrame(width, height, viewport, plan.history, provider);
+		} finally {
+			frameTelemetry.popPhase();
+		}
 	}
 	/**
 	 * Re-offer finalized history once after a settled resize.
@@ -3802,6 +3869,7 @@ export class TUI extends Container {
 		}
 		this.terminal.write(buffer);
 		this.#notifyFrameWrite(buffer);
+		this.#markTelemetryFrameRendered();
 		this.#debugPaint = {
 			lines: prepared.lines,
 			windowTop: this.#debugNextWindowTop,
@@ -3857,7 +3925,9 @@ export class TUI extends Container {
 	#doRender(): void {
 		if (this.#stopped) return;
 		if (this.#nativeLive) {
-			this.#native!.render();
+			const result = this.#native!.render();
+			this.#telemetryFrameRendered = result === "sent";
+			this.#telemetryFrameSettled = result !== "held";
 			return;
 		}
 		// Awaiting the TSP hello: its resolution (or the hold timeout) repaints.
@@ -4002,16 +4072,21 @@ export class TUI extends Container {
 	 * mutable viewport. Nothing is ever appended to terminal history.
 	 */
 	#renderChildrenFrame(width: number, height: number): void {
-		let viewport: string[];
-		do {
-			this.#imageBudget.beginPass();
-			const composed = this.render(width);
-			this.#debugNextWindowTop = Math.max(0, composed.length - height);
-			viewport = composed.length > height ? composed.slice(composed.length - height) : Array.from(composed);
-			viewport = this.#compositeVisibleOverlays(viewport, width, height);
-		} while (this.#imageBudget.endPass());
-		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
-		this.#emitPlanFrame(width, height, viewport, undefined, undefined);
+		frameTelemetry.pushPhase("render:children-frame");
+		try {
+			let viewport: string[];
+			do {
+				this.#imageBudget.beginPass();
+				const composed = this.render(width);
+				this.#debugNextWindowTop = Math.max(0, composed.length - height);
+				viewport = composed.length > height ? composed.slice(composed.length - height) : Array.from(composed);
+				viewport = this.#compositeVisibleOverlays(viewport, width, height);
+			} while (this.#imageBudget.endPass());
+			if (this.#maybeDeferGhosttyInitialImagePaint()) return;
+			this.#emitPlanFrame(width, height, viewport, undefined, undefined);
+		} finally {
+			frameTelemetry.popPhase();
+		}
 	}
 
 	/**
@@ -4103,45 +4178,48 @@ export class TUI extends Container {
 			LINE_FIT_MAX_SOURCE_CODE_UNITS,
 			Math.max(LINE_FIT_MIN_SOURCE_CODE_UNITS, safeWidth * LINE_FIT_SOURCE_WIDTH_MULTIPLIER),
 		);
+		// Extension link markers exist only for hit-testing; the terminal must never get an openable
+		// hyperlink. Strip before fitting (so a cut cannot split one) and before classifying.
+		const output = stripExtensionLinkMarkers(raw);
 
 		let source: string;
 		let classification: LineClassification;
-		if (raw.length <= maxSourceLength) {
+		if (output.length <= maxSourceLength) {
 			// The overwhelmingly common path classifies image markers, OSC 8,
 			// ANSI validity, OSC 66, non-ASCII, and exact ASCII width together.
-			classification = this.#classifyLine(raw, safeWidth);
+			classification = this.#classifyLine(output, safeWidth);
 			if (classification.isImage) {
 				return {
 					raw,
 					width,
 					widthEpoch,
 					imageProtocol,
-					line: raw,
-					terminalContent: raw,
+					line: output,
+					terminalContent: output,
 					asciiWidth: undefined,
 					isImage: true,
 					hasOsc8: false,
 				};
 			}
-			source = raw;
+			source = output;
 		} else {
 			// Fitting a giant source can discard everything after the visible
 			// prefix. Preserve image rows verbatim first, but do not scan the
 			// entire source for width/OSC metadata that will immediately vanish.
-			if (TERMINAL.isImageLine(raw)) {
+			if (TERMINAL.isImageLine(output)) {
 				return {
 					raw,
 					width,
 					widthEpoch,
 					imageProtocol,
-					line: raw,
-					terminalContent: raw,
+					line: output,
+					terminalContent: output,
 					asciiWidth: undefined,
 					isImage: true,
 					hasOsc8: false,
 				};
 			}
-			source = this.#lineFitSource(raw, safeWidth, maxSourceLength);
+			source = this.#lineFitSource(output, safeWidth, maxSourceLength);
 			// Preserve the former lineRewriteSequence classification: fitting can
 			// move a marker from outside the raw scan window into the prepared
 			// line's window, at which point terminal image dispatch owns it.
@@ -4494,25 +4572,30 @@ export class TUI extends Container {
 	 * The normal transcript is never composited into the alternate buffer.
 	 */
 	#renderAltFrame(width: number, height: number): void {
-		// oxlint-disable-next-line unicorn/no-new-array -- alt-frame length preallocation
-		const base: string[] = new Array(Math.max(0, height)).fill("");
-		let lines: string[];
-		do {
-			this.#imageBudget.beginPass(false, true);
-			lines = this.#compositeOverlaysIntoWindow(base, width, height);
-		} while (this.#imageBudget.endPass());
-		const markers: { row: number; col: number }[] = [];
-		const prepared = this.#prepareLinesArray(lines, width, this.#altPreparedRows, height, markers);
-		const topOverlay = this.#getTopmostVisibleOverlay();
-		const focused = this.#focusedComponent;
-		const acceptsTerminalCursor =
-			topOverlay !== undefined &&
-			focused !== null &&
-			isFocusable(focused) &&
-			focused.focused &&
-			typeof focused.setUseTerminalCursor === "function" &&
-			isOverlayFocusTarget(topOverlay.component, focused);
-		this.#emitAltFrame(prepared, width, height, true, acceptsTerminalCursor ? (markers[0] ?? null) : null);
+		frameTelemetry.pushPhase("render:alt-frame");
+		try {
+			// oxlint-disable-next-line unicorn/no-new-array -- alt-frame length preallocation
+			const base: string[] = new Array(Math.max(0, height)).fill("");
+			let lines: string[];
+			do {
+				this.#imageBudget.beginPass(false, true);
+				lines = this.#compositeOverlaysIntoWindow(base, width, height);
+			} while (this.#imageBudget.endPass());
+			const markers: { row: number; col: number }[] = [];
+			const prepared = this.#prepareLinesArray(lines, width, this.#altPreparedRows, height, markers);
+			const topOverlay = this.#getTopmostVisibleOverlay();
+			const focused = this.#focusedComponent;
+			const acceptsTerminalCursor =
+				topOverlay !== undefined &&
+				focused !== null &&
+				isFocusable(focused) &&
+				focused.focused &&
+				typeof focused.setUseTerminalCursor === "function" &&
+				isOverlayFocusTarget(topOverlay.component, focused);
+			this.#emitAltFrame(prepared, width, height, true, acceptsTerminalCursor ? (markers[0] ?? null) : null);
+		} finally {
+			frameTelemetry.popPhase();
+		}
 	}
 
 	/**
@@ -4595,6 +4678,7 @@ export class TUI extends Container {
 		const placeCursor = target !== null && (rowsBuffer !== "" || cursorChanged);
 		const hideCursor = target === null && previousCursor?.visible === true;
 		if (rowsBuffer === "" && !placeCursor && !hideCursor) {
+			this.#telemetryFrameSettled = true;
 			if (prelude !== "") this.terminal.write(prelude);
 			return;
 		}
@@ -4607,6 +4691,7 @@ export class TUI extends Container {
 		}
 		const frame = `${this.#paintBeginSequence}${prelude}${full ? "\x1b[H" : ""}${rowsBuffer}${cursorBuffer}${this.#paintEndSequence}`;
 		this.terminal.write(frame);
+		this.#markTelemetryFrameRendered();
 		this.#notifyFrameWrite(frame);
 		this.#debugPaint = {
 			lines: prepared.lines,

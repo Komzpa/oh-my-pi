@@ -15,6 +15,8 @@ export default class Stats extends Command {
 		host: Flags.string({ description: "Host to bind", default: "127.0.0.1" }),
 		json: Flags.boolean({ char: "j", description: "Output stats as JSON", default: false }),
 		summary: Flags.boolean({ char: "s", description: "Print summary to console", default: false }),
+		"frame-drops": Flags.boolean({ description: "Print recent TUI frame drops grouped by phase", default: false }),
+		minutes: Flags.integer({ description: "Minutes of frame-drop logs to scan", default: 30 }),
 	};
 
 	async run(): Promise<void> {
@@ -25,6 +27,8 @@ export default class Stats extends Command {
 			host: flags.host ?? "127.0.0.1",
 			json: flags.json,
 			summary: flags.summary,
+			frameDrops: flags["frame-drops"],
+			minutes: flags.minutes,
 		};
 
 		await theme.initTheme();

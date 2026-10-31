@@ -48,7 +48,7 @@ import { encodeTspJson, encodeTspMessage, type TspHello, TspReader, splitTspMess
 import type { DescribeContext, NativeChild, NativeNode, NativeSurface, NativeUiEvent } from "./node";
 import { NARROW_SHEET_COLS } from "./overlay";
 import { nativeComponentId, Reconciler } from "./reconcile";
-import { setNativeRendering } from "./state";
+import { setNativeButtons, setNativeRendering } from "./state";
 
 /** A visible TUI overlay, bottom to top. */
 export interface NativeOverlay {
@@ -198,9 +198,11 @@ function sameSet(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
 /**
  * Kinds newer than some Tern builds that answer `TERM_PROGRAM=tern`: used only
  * once the real `hello` lists them, so the optimistic start never emits a node
- * an older terminal cannot draw (`media`: files Tern loads by path).
+ * an older terminal cannot draw (`media`: files Tern loads by path; `json`:
+ * raw JSON values Tern draws as its own tree; `button`: omp's buttons, which
+ * older builds get as role-styled rows).
  */
-const UNASSUMED_KINDS: Partial<Record<TspKind, true>> = { media: true };
+const UNASSUMED_KINDS: Partial<Record<TspKind, true>> = { media: true, json: true, button: true };
 
 /**
  * The reply a v1 terminal is assumed to give before its real `hello` arrives
@@ -379,6 +381,7 @@ export class NativeBackend {
 		this.#close(this.#inline, keep);
 		this.#inline.doc?.close();
 		setNativeRendering(false);
+		setNativeButtons(false);
 		this.#useNerdSymbols(false);
 		this.#clearStallTimer();
 		// Replies no longer reach the backend: forget the queries outright.
@@ -446,8 +449,8 @@ export class NativeBackend {
 	}
 
 	/** Reconcile and send a frame, unless the target surface is out of credits. */
-	render(): void {
-		if (!this.#live) return;
+	render(): "held" | "unchanged" | "sent" {
+		if (!this.#live) return "held";
 		const overlays = this.#host.overlays();
 		let fullscreen = -1;
 		for (let i = overlays.length - 1; i >= 0; i--) {
@@ -492,7 +495,7 @@ export class NativeBackend {
 		if (!this.#hasCredit(surface)) {
 			surface.dirty = true;
 			this.#armStallTimer(surface);
-			return;
+			return "held";
 		}
 		surface.dirty = false;
 		const ops = surface.reconciler.reconcile({ main, dock, layer }, this.#cx);
@@ -505,9 +508,10 @@ export class NativeBackend {
 		if (this.#stats) {
 			logger.debug("TSP frame", { sf: surface.id, ops: ops.length, rows: surface.reconciler.fallbackCount });
 		}
-		if (ops.length === 0) return;
+		if (ops.length === 0) return "unchanged";
 		this.#uploadBlobs(ops);
 		this.#sendFrame(surface, ops);
+		return "sent";
 	}
 
 	/**
@@ -538,6 +542,8 @@ export class NativeBackend {
 		this.#limit = hello.apc !== undefined && hello.apc > 0 ? hello.apc : TSP_DEFAULT_APC_LIMIT;
 		this.#credits = hello.credits !== undefined && hello.credits > 0 ? hello.credits : TSP_DEFAULT_CREDITS;
 		this.#cx = new NativeContext(hello, hello.cols ?? this.#cx.cols);
+		// A changed vocabulary re-describes every component (`confirm`).
+		setNativeButtons(this.#cx.supports("button"));
 		this.#sawResize = false;
 	}
 

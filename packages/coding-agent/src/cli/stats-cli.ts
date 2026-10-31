@@ -6,8 +6,11 @@
 
 import { formatKeyHint } from "@oh-my-pi/pi-tui/key-hint-format";
 import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
+import { readRecentFrameDrops } from "@oh-my-pi/pi-tui/frame-telemetry";
+import { formatDuration, formatNumber, postmortem } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { openStandaloneJudge } from "../judgment/standalone";
+import { openTernPage } from "../tools/browser/tern/user-page";
 import { openPath } from "../utils/open";
 
 /**
@@ -61,6 +64,8 @@ export interface StatsCommandArgs {
 	host: string;
 	json: boolean;
 	summary: boolean;
+	frameDrops: boolean;
+	minutes: number;
 }
 
 // =============================================================================
@@ -68,6 +73,11 @@ export interface StatsCommandArgs {
 // =============================================================================
 
 export async function runStatsCommand(cmd: StatsCommandArgs): Promise<void> {
+	if (cmd.frameDrops) {
+		await printFrameDropSummary(cmd.minutes);
+		return;
+	}
+
 	// Lazy import to avoid loading stats module when not needed
 	const {
 		closeDb,
@@ -76,6 +86,7 @@ export async function runStatsCommand(cmd: StatsCommandArgs): Promise<void> {
 		getTotalMessageCount,
 		printStatsSummary,
 		refreshRollups,
+		setStatsCloseHandler,
 		startServer,
 		syncAllSessions,
 	} = await import("@oh-my-pi/omp-stats");
@@ -100,6 +111,9 @@ export async function runStatsCommand(cmd: StatsCommandArgs): Promise<void> {
 	// The dashboard starts immediately and ingests sessions in the background,
 	// streaming progress to the page. The judge (settings, auth, registry)
 	// resolves on the first Frustration estimate/run and lives until exit.
+	// In a Tern pane the page takes this block's place until the user closes
+	// it (its Close, Esc, Ctrl+C, or Tern's Close block), which stops the
+	// dashboard; elsewhere the system browser shows it.
 	const cwd = process.cwd();
 	const { hostname, port } = await startServer(cmd.port, cmd.host, {
 		judge: async () => (await openStandaloneJudge(cwd, "stats_frustration")).judge,
@@ -107,18 +121,56 @@ export async function runStatsCommand(cmd: StatsCommandArgs): Promise<void> {
 	const url = formatStatsDashboardUrl(hostname, port);
 	console.log(chalk.green(`Dashboard available at: ${url}`));
 
-	// Open browser
-	openPath(url);
+	// Close is on before the page first loads, and off again for the system
+	// browser, where closing would leave a dead tab.
+	setStatsCloseHandler(() => void postmortem.quit(0));
+	const page = await openTernPage(url, "over");
+	if (page) {
+		console.log("Showing it in place of this block: close it to stop\n");
+	} else {
+		setStatsCloseHandler(undefined);
+		openPath(url);
+		console.log(`Press ${formatKeyHint("ctrl+c")} to stop\n`);
+	}
 
-	console.log(`Press ${formatKeyHint("ctrl+c")} to stop\n`);
-
-	// Keep process running
-	process.on("SIGINT", () => {
-		console.log("\nShutting down...");
+	// Ctrl+C and the other signals exit through omp's cleanup, which takes the
+	// page away with the dashboard.
+	postmortem.register("stats-dashboard", async () => {
+		await page?.close();
 		closeDb();
-		process.exit(0);
 	});
-
+	if (page) {
+		await page.closed();
+		await postmortem.quit(0);
+	}
 	// Keep the process alive
 	await new Promise(() => {});
+}
+
+async function printFrameDropSummary(minutes: number): Promise<void> {
+	const summaries = await readRecentFrameDrops(minutes);
+	console.log(chalk.bold(`\n=== TUI Frame Drops: last ${minutes} min ===\n`));
+	if (summaries.length === 0) {
+		console.log("No ui.frame-drop entries found.\n");
+		return;
+	}
+	for (const summary of summaries) {
+		console.log(
+			chalk.bold(
+				`${summary.phase}: ${formatNumber(summary.count)} drops, worst ${formatDuration(summary.worstMs)}, p95 ${formatDuration(summary.p95Ms)}`,
+			),
+		);
+		for (const drop of summary.drops) {
+			const detail = [
+				drop.kind,
+				drop.renderTarget ? `render=${drop.renderTarget}` : "",
+				drop.handling ? `handling=${drop.handling}` : "",
+				drop.msSinceLastInput !== undefined ? `since-key=${formatDuration(drop.msSinceLastInput)}` : "",
+			]
+				.filter(Boolean)
+				.join(", ");
+			console.log(`  ${drop.timestamp} ${formatDuration(drop.durationMs)} ${detail}`);
+		}
+	}
+	console.log("");
 }

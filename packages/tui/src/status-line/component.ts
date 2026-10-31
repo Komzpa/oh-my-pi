@@ -757,6 +757,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#collabStatus: CollabStatus | null = null;
 	#streamStatus: { viewers: number } | null = null;
 	#recording = false;
+	#fpsText = "";
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
@@ -820,8 +821,6 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#codexResetSnapshots = new Map<string, CodexResetUsageSnapshot>();
 	#onCodexResetFireworks: ((event: CodexResetFireworksEvent) => void) | undefined;
 	#onResetExpiryNotice: ((notice: string) => void) | undefined;
-	/** Conversations already warned about expiring saved resets: later refreshes stay quiet. */
-	#resetExpiryNoticedSessions = new Set<string>();
 	// Context-usage memo. The status line redraws on every agent event, so the
 	// hot path must not recompute context tokens unless an input changed.
 	// `getContextUsage()` anchors on the last assistant's real prompt-token
@@ -987,6 +986,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	setAutoCompactEnabled(enabled: boolean): void {
 		if (this.#autoCompactEnabled === enabled) return;
 		this.#autoCompactEnabled = enabled;
+		this.#invalidateStatusLineRenderCache();
+	}
+
+	setFpsText(text: string): void {
+		if (this.#fpsText === text) return;
+		this.#fpsText = text;
 		this.#invalidateStatusLineRenderCache();
 	}
 
@@ -1237,7 +1242,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		this.#onCodexResetFireworks = handler;
 	}
 
-	/** Set the callback that presents the first pool-wide saved-reset expiry warning, or clear it with `undefined`. */
+	/** Set the callback that presents pool-wide saved-reset expiry warnings, or clear it with `undefined`. */
 	setResetExpiryNoticeHandler(handler: ((notice: string) => void) | undefined): void {
 		this.#onResetExpiryNotice = handler;
 	}
@@ -2120,7 +2125,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	}
 
 	#noticeResetExpiry(session: TSession, reports: unknown): void {
-		// A focused subagent's view is not a conversation the user started; warn in their own.
+		// A focused subagent's view is not a conversation the user started; leave the warning for their own.
 		if (
 			this.#focusedAgentId !== undefined ||
 			!this.#onResetExpiryNotice ||
@@ -2129,8 +2134,6 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		) {
 			return;
 		}
-		const sessionId = session.sessionManager.getSessionId();
-		if (this.#resetExpiryNoticedSessions.has(sessionId)) return;
 		// fetchUsageReports supplies normalized rows; keep only entries shaped like reports.
 		const usageReports = reports.filter(
 			(report): report is UsageReport =>
@@ -2140,10 +2143,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 				"limits" in report &&
 				Array.isArray(report.limits),
 		);
-		const notice = this.host.resetExpiryNotice(usageReports, Date.now());
-		if (!notice) return;
-		this.#resetExpiryNoticedSessions.add(sessionId);
-		this.#onResetExpiryNotice(notice);
+		const notice = this.host.resetExpiryNotice(session, usageReports, Date.now());
+		if (notice) this.#onResetExpiryNotice(notice);
 	}
 
 	#observeLateUsageRefresh(session: TSession, reportsPromise: Promise<unknown>, sequence: number): void {
@@ -2620,6 +2621,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			collab: this.#collabStatus,
 			stream: this.#streamStatus,
 			recording: this.#recording,
+			fpsText: this.#fpsText,
 			usageStats,
 			contextPercent,
 			contextTokens,
@@ -2670,12 +2672,20 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			};
 		}
 
-		const leftSegments = useCustomSegments
+		const baseLeftSegments = useCustomSegments
 			? (this.#settings.leftSegments ?? presetDef.leftSegments)
 			: presetDef.leftSegments;
-		const rightSegments = useCustomSegments
+		const baseRightSegments = useCustomSegments
 			? (this.#settings.rightSegments ?? presetDef.rightSegments)
 			: presetDef.rightSegments;
+		const leftSegments =
+			this.#settings.showFpsMeter === false
+				? baseLeftSegments.filter(segment => segment !== "fps")
+				: baseLeftSegments;
+		const rightSegments =
+			this.#settings.showFpsMeter === false
+				? baseRightSegments.filter(segment => segment !== "fps")
+				: baseRightSegments;
 
 		return {
 			...this.#settings,
