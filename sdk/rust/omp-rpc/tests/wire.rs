@@ -200,3 +200,16 @@ fn result_unwrap_and_nullable() {
 	assert!(CancelSubagentCommand::decode(None).is_err());
 	assert!(<SteerCommand as Command>::decode(None).is_ok());
 }
+
+#[test]
+fn cost_cap_and_fallback_attribution_round_trip() {
+	let cap: LitCostCap = serde_json::from_value(json!("cost_cap")).unwrap();
+	assert_eq!(serde_json::to_value(cap).unwrap(), json!("cost_cap"));
+	assert!(serde_json::from_value::<LitCostCap>(json!("other")).is_err());
+	for source in ["primary", "advisor"] {
+		let raw = json!({"type": "retry_fallback_applied", "from": "a", "to": "b", "role": "primary", "source": source, "reason": "transport"});
+		let decoded = notification(raw.clone()).unwrap();
+		assert_eq!(serde_json::to_value(decoded).unwrap(), raw);
+	}
+	assert!(serde_json::from_value::<RetryFallbackAppliedEventSource>(json!("other")).is_err());
+}
