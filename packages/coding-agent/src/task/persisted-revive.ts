@@ -21,6 +21,7 @@ import type { PreparedExtension } from "../extensibility/extensions/types";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
+import { findLastPersistedSubagentElapsedNoteAt, SubagentElapsedSignal } from "./subagent-elapsed-signal";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionHandle } from "../session/agent-session-handle";
 import type { ArtifactManagerApi } from "../session/artifacts";
@@ -413,6 +414,13 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 	const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
 
 	let session: AgentSession;
+	// oxlint-disable-next-line prefer-const -- read by transformProviderContext before assignment
+	let elapsedSignal: SubagentElapsedSignal | undefined;
+	const attemptStartedAt = init.attemptStartedAt ?? Date.now();
+	const elapsedMessages = reopened
+		.getBranch()
+		.flatMap(entry => (entry.type === "message" && entry.message.role === "developer" ? [entry.message] : []));
+	const lastNoteAt = findLastPersistedSubagentElapsedNoteAt(elapsedMessages, attemptStartedAt);
 	try {
 		({ session } = await createAgentSession({
 			cwd: restoredSeance?.cwd ?? spec.root.sessionManager.getCwd(),
@@ -481,6 +489,10 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			// Old files predate persisted spawns: deny re-spawning rather than let
 			// createAgentSession default to wildcard ("*").
 			spawns: init.spawns ?? "",
+			transformProviderContext: context => {
+				const note = elapsedSignal?.appendIfDue();
+				return note ? { ...context, messages: [...context.messages, note] } : context;
+			},
 			hasUI: false,
 			enableLsp: restrictToolNames ? false : spec.enableLsp,
 			...(restrictToolNames
@@ -519,6 +531,16 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			throw error;
 		}
 	}
+	elapsedSignal = new SubagentElapsedSignal({
+		attemptStartedAt,
+		lastNoteAt,
+		appendMessage: message => {
+			// Cold revival may not have an agent yet; the session entry still persists.
+			session.agent?.appendMessage?.(message);
+			reopened.appendMessage(message);
+		},
+	});
+	elapsedSignal.start();
 	mcpFollower?.bind(session);
 	// Clamp the active set to the persisted list: createAgentSession's
 	// `alwaysInclude` can re-add non-defaultInactive extension/custom tools

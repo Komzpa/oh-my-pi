@@ -175,6 +175,7 @@ import {
 	cfgCompactionThresholdPercent,
 	cfgCompactionThresholdTokens,
 } from "../session/context-settings";
+import { SubagentElapsedSignal } from "./subagent-elapsed-signal";
 
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
@@ -4367,6 +4368,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 	const cleanupGraceMs = options.cleanupGraceMs ?? TASK_ABORT_CLEANUP_GRACE_MS;
 	const structured = options.structured !== false;
 	const startTime = Date.now();
+	const assignmentStartedAt = options.invokedAt ?? startTime;
 	// Set by the session's onFirstChatDispatch hook the first time the agent
 	// loop dispatches a chat request to the provider — the launch-complete boundary.
 	let firstChatDispatchAt: number | undefined;
@@ -4539,6 +4541,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 	let reviveSession: AgentReviver | null = null;
 	let pendingSessionManager: Promise<SessionManager> | undefined;
 	let openedSessionManager: SessionManager | undefined;
+	let elapsedSignal: SubagentElapsedSignal | undefined;
 	let untrackedSession: AgentSession | undefined;
 	let pendingSessionDisposal: Promise<void> | undefined;
 	const wakeOptions: IrcWakeTurnMonitorOptions = {
@@ -4925,6 +4928,10 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					customTools: options.customTools,
 					localProtocolOptions: options.localProtocolOptions,
 					telemetry: subagentTelemetry,
+					transformProviderContext: context => {
+						const note = elapsedSignal?.appendIfDue();
+						return note ? { ...context, messages: [...context.messages, note] } : context;
+					},
 					// Seance isolation overrides every inherited field above in one place.
 					...(preparedSession ? seanceIsolationOptions(effectiveCwd) : {}),
 				},
@@ -5125,11 +5132,26 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				outputSchema,
 				outputSchemaMode: options.outputSchemaMode,
 				restrictToolNames: restrictToolNames || undefined,
+				assignmentStartedAt,
+				attemptStartedAt: startTime,
 				// Isolated runs are never revivable (worktree merged + cleaned):
 				// stamp the contract so cold revival leaves them transcript-only
 				// even when the workspace was retained for recovery.
 				isolated: worktree !== undefined || undefined,
 			});
+			elapsedSignal = new SubagentElapsedSignal({
+				attemptStartedAt: startTime,
+				appendMessage: message => {
+					if (
+						typeof session.agent.appendMessage !== "function" ||
+						typeof session.sessionManager.appendMessage !== "function"
+					)
+						return;
+					session.agent.appendMessage(message);
+					session.sessionManager.appendMessage(message);
+				},
+			});
+			elapsedSignal.start();
 
 			abortSignal.addEventListener(
 				"abort",

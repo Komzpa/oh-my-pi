@@ -719,6 +719,8 @@ export interface CreateAgentSessionOptions {
 	providerPromptCacheKeySource?: "explicit" | "fork";
 	/** Absolute wall-clock deadline in Unix epoch milliseconds. */
 	deadline?: number;
+	/** Additional provider-context transform applied after SDK request shaping. */
+	transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 	/** Cost gate of the parent session tree; without one the session starts its own from `session.warnCost` / `session.maxCost`. */
 	costGate?: CostGateApi;
 
@@ -4706,11 +4708,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				// Keep per-request volatility out of the system prompt: the date/cwd
 				// reminder rides on the first user turn so open-weight providers keep
 				// their tool-schema prefix cache (#7404).
-				return dateCwdReminder.transform(
+				transformed = dateCwdReminder.transform(
 					transformed,
 					formatLocalCalendarDate(),
 					normalizePromptPath(sessionManager.getCwd()),
 				);
+				return options.transformProviderContext
+					? await options.transformProviderContext(transformed, transformModel)
+					: transformed;
 			};
 		};
 		const transformProviderContext = createTransformProviderContext(
@@ -5729,11 +5734,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						transformed = await dropUnreadableContextImages(transformed, transformModel);
 						transformed = await blobBroker.decorateContext(transformed, transformModel);
 						transformed = clampProviderContextImageBytes(transformed, transformModel);
-						return captureDateCwdReminder.transform(
+						transformed = captureDateCwdReminder.transform(
 							transformed,
 							formatLocalCalendarDate(),
 							normalizePromptPath(sessionManager.getCwd()),
 						);
+						return options.transformProviderContext
+							? await options.transformProviderContext(transformed, transformModel)
+							: transformed;
 					},
 					temperature: agent.temperature,
 					topP: agent.topP,

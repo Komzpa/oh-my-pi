@@ -225,6 +225,7 @@ import {
 	kStreamingPartialJson,
 } from "../utils/block-symbols";
 import { deterministicUuid } from "../utils/deterministic-id";
+import { isLegacySubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { connectProxiedSocket, getProxyForUrl, wrapFetchForProxy } from "../utils/proxy";
 import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
@@ -1182,6 +1183,9 @@ function streamCursorWithWireMode(
 	wireMode: CursorWireMode,
 	timing?: CursorStreamTiming,
 ): AssistantMessageEventStream {
+	if (context.messages.some(isLegacySubagentElapsedNote)) {
+		context = { ...context, messages: context.messages.filter(message => !isLegacySubagentElapsedNote(message)) };
+	}
 	// A relayed run outlives its first response: `context`, `options`, `stream`
 	// and `output` (and the response timings) belong to the request currently
 	// receiving it, and move to the request that resumes it (`CursorParkedRun`).
@@ -7152,6 +7156,12 @@ async function buildGrpcRequestForWireMode(
 	wireMode: CursorWireMode,
 ): Promise<CursorTransportRequest> {
 	const blobStore = state.blobStore;
+	// The subagent elapsed note is advisory scaffolding with no wire slot: left
+	// in place it would become the active userMessageAction instead of the
+	// resumeAction a trailing tool result needs.
+	if (context.messages.some(isLegacySubagentElapsedNote)) {
+		context = { ...context, messages: context.messages.filter(message => !isLegacySubagentElapsedNote(message)) };
+	}
 
 	const systemPromptIds = buildCursorSystemPromptJsons(context.systemPrompt).map(json =>
 		storeCursorBlob(blobStore, new TextEncoder().encode(json)),
