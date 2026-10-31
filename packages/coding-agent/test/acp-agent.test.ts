@@ -7,6 +7,7 @@ import { Database } from "bun:sqlite";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { cfgEnabledModels, cfgModelPresets, cfgModelRoles } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
@@ -27,6 +28,7 @@ import type {
 	UsageFallbackConfirmation,
 } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SILENT_ABORT_MARKER, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
+import type { ClientBridge } from "@oh-my-pi/pi-coding-agent/session/client-bridge";
 import { closeSessionIndex } from "@oh-my-pi/pi-coding-agent/session/session-index";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
@@ -38,6 +40,7 @@ import type {
 	CreateElicitationRequest,
 	CreateElicitationResponse,
 	PromptRequest,
+	RequestPermissionRequest,
 	SessionNotification,
 	Validator,
 } from "@oh-my-pi/pi-utils/acp";
@@ -135,6 +138,7 @@ class FakeAgentSession {
 	systemPrompt = "system";
 	disposed = false;
 	fastMode = false;
+	clientBridge: ClientBridge | undefined;
 	forcedToolChoice: string | undefined;
 	get settings(): Settings {
 		return Settings.instance;
@@ -342,10 +346,23 @@ class FakeAgentSession {
 		return undefined;
 	}
 
-	async switchSession(sessionPath: string): Promise<boolean> {
-		await this.sessionManager.setSessionFile(sessionPath);
+	readonly #sessionChangeCallbacks = new Set<() => void>();
+
+	registerSessionChangeCallback(callback: () => void): () => void {
+		this.#sessionChangeCallbacks.add(callback);
+		return () => this.#sessionChangeCallbacks.delete(callback);
+	}
+
+	#adoptDurableSession(): void {
+		const previous = this.sessionId;
 		this.sessionId = this.sessionManager.getSessionId();
 		this.agent.sessionId = this.sessionId;
+		if (this.sessionId !== previous) for (const callback of this.#sessionChangeCallbacks) callback();
+	}
+
+	async switchSession(sessionPath: string): Promise<boolean> {
+		await this.sessionManager.setSessionFile(sessionPath);
+		this.#adoptDurableSession();
 		return true;
 	}
 
@@ -358,8 +375,7 @@ class FakeAgentSession {
 
 	async newSession(): Promise<boolean> {
 		await this.sessionManager.newSession();
-		this.sessionId = this.sessionManager.getSessionId();
-		this.agent.sessionId = this.sessionId;
+		this.#adoptDurableSession();
 		return true;
 	}
 
@@ -381,7 +397,9 @@ class FakeAgentSession {
 
 	setActiveToolsByName(_toolNames: string[]): void {}
 
-	setClientBridge(_bridge: unknown): void {}
+	setClientBridge(bridge: ClientBridge): void {
+		this.clientBridge = bridge;
+	}
 
 	setMcpServerInstructionsSource(_source: unknown): void {}
 
@@ -534,6 +552,7 @@ async function createHarness(
 		clientCapabilities?: ClientCapabilities;
 		/** Runs before a notification is recorded, so a test can delay one delivery. */
 		sessionUpdateHook?: (notification: SessionNotification) => Promise<void> | void;
+		permissionHandler?: (request: RequestPermissionRequest) => void;
 		/** Gives each session the factory creates a real extension runner with no extensions. */
 		extensionRunners?: boolean;
 		/** Exposed to each created session's `modelRegistry` for MCP credential round-trips. */
@@ -562,6 +581,10 @@ async function createHarness(
 			// microtask before the push and perturb ordering-sensitive tests.
 			if (options.sessionUpdateHook) await options.sessionUpdateHook(notification);
 			updates.push(notification);
+		},
+		requestPermissionWithCancel: (request: RequestPermissionRequest) => {
+			options.permissionHandler?.(request);
+			return { promise: Promise.resolve({ outcome: { outcome: "cancelled" } }), cancel: () => {} };
 		},
 		unstable_createElicitation: options.elicitationHandler
 			? async (req: CreateElicitationRequest) => options.elicitationHandler!(req)
@@ -621,6 +644,48 @@ async function advanceBootstrapGuard(): Promise<void> {
 }
 
 describe("ACP agent", () => {
+	it("keeps the ACP handle after the durable session changes", async () => {
+		const elicitations: CreateElicitationRequest[] = [];
+		const permissions: RequestPermissionRequest[] = [];
+		const harness = await createHarness({
+			extensionRunners: true,
+			elicitationHandler: async request => {
+				elicitations.push(request);
+				return { action: "accept", content: { value: "Yes" } };
+			},
+			permissionHandler: request => permissions.push(request),
+		});
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		// This harness reset delegates to the real SessionManager, as extension
+		// ctx.newSession does, and rolls the durable identifier in place.
+		await session.newSession();
+		expect(session.sessionId).not.toBe(created.sessionId);
+
+		const response = await harness.agent.prompt({
+			sessionId: created.sessionId,
+			prompt: [{ type: "text", text: "ping" }],
+		});
+		expect(response.stopReason).toBe("end_turn");
+		expect(session.promptCalls).toContain("ping");
+		expect(harness.updates.some(update => update.update.sessionUpdate === "agent_message_chunk")).toBe(true);
+		expect(harness.updates.every(update => update.sessionId === created.sessionId)).toBe(true);
+
+		expect(await session.extensionRunner?.getUIContext().select("Continue?", ["Yes", "No"])).toBe("Yes");
+		expect(elicitations).toHaveLength(1);
+		expect(elicitations[0]).toMatchObject({ sessionId: created.sessionId });
+		await session.clientBridge?.requestPermission?.({ toolCallId: "call", toolName: "test", title: "Run tool" }, []);
+		expect(permissions).toHaveLength(1);
+		expect(permissions[0]?.sessionId).toBe(created.sessionId);
+
+		// After the handle closes (as across an agent restart), loading it reopens the conversation that continued under it.
+		const continued = session.sessionId;
+		await harness.agent.closeSession({ sessionId: created.sessionId });
+		await harness.agent.loadSession({ sessionId: created.sessionId, cwd: harness.cwdA, mcpServers: [] });
+		expect(harness.sessions.at(-1)?.sessionId).toBe(continued);
+		await harness.agent.dispose();
+	});
+
 	it("supports multiple live ACP sessions with model and lifecycle handlers", async () => {
 		const harness = await createHarness();
 		const first = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
@@ -943,6 +1008,42 @@ describe("ACP agent", () => {
 
 		harness.abortController.abort();
 		await Bun.sleep(0);
+	});
+
+	it("announces preset model-list changes from extension actions and keeps clear synchronous", async () => {
+		const initialize = vi.spyOn(ExtensionRunner.prototype, "initialize");
+		const harness = await createHarness({ extensionRunners: true });
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		const registry = { ...session.modelRegistry, hasConfiguredAuth: () => true, hasConcreteAuth: () => true };
+		Object.defineProperty(session, "modelRegistry", { value: registry, configurable: true });
+		Object.defineProperty(session, "scopedModels", { value: [], configurable: true });
+		vi.spyOn(session, "getAvailableModels").mockImplementation(() =>
+			cfgEnabledModels.get(session.settings).length ? [TEST_MODELS[0]!] : TEST_MODELS,
+		);
+		cfgModelRoles.override(session.settings, { default: "anthropic/claude-sonnet-4-20250514" });
+		cfgModelPresets.override(session.settings, {
+			limited: {
+				modelRoles: { default: "anthropic/claude-sonnet-4-20250514" },
+				settings: { enabledModels: ["anthropic/claude-sonnet-4-20250514"] },
+			},
+		});
+		const actions = initialize.mock.calls.at(-1)![0];
+		const before = harness.updates.length;
+		await actions.applySessionModelPreset!("limited");
+		await Bun.sleep(0);
+		const cleared = actions.clearSessionModelPreset!();
+		expect(cleared).toBe("limited");
+		await Bun.sleep(0);
+		const updates = harness.updates.slice(before).filter(n => n.update.sessionUpdate === "config_option_update");
+		expect(updates).toHaveLength(2);
+		const sizes = updates.map(n => {
+			if (n.update.sessionUpdate !== "config_option_update") throw new Error("Expected config update");
+			const option = n.update.configOptions.find(o => o.id === "model");
+			return option?.type === "select" ? option.options.length : -1;
+		});
+		expect(sizes).toEqual([1, 2]);
+		await harness.agent.dispose();
 	});
 
 	it("pushes config_option_update when thinking level changes internally", async () => {
@@ -4091,37 +4192,6 @@ describe("ACP agent", () => {
 			});
 
 			expect(result).toBeUndefined();
-		});
-
-		it("reads the sessionId getter on every elicitation so mid-flight session changes are reflected", async () => {
-			// `record.session.sessionId` mutates when an extension command calls
-			// `ctx.switchSession` / `ctx.newSession`. Snapshotting it once at
-			// factory time would route later elicitations to the pre-switch id.
-			const { connection, calls } = createElicitConnection(async () => ({
-				action: "accept",
-				content: { value: "ok" },
-			}));
-			let currentSessionId = "session-before-switch";
-			const ctx = createAcpExtensionUiContext(connection, () => currentSessionId, FORM_CAPABILITIES);
-
-			await ctx.select("Pick", ["a"]);
-			currentSessionId = "session-after-switch";
-			await ctx.confirm("Continue?", "post-switch");
-			await ctx.input("Name?");
-
-			expect(calls).toHaveLength(3);
-			// Each call must be a session-scoped form elicitation. Spelled as three
-			// separate narrows because `mode === "form"` alone leaves both
-			// `ElicitationRequestScope` and `ElicitationSessionScope` in the union —
-			// only `"sessionId" in call` picks the session-scoped variant — and
-			// loop-style narrows don't propagate to the assertions below.
-			const [first, second, third] = calls;
-			if (first?.mode !== "form" || !("sessionId" in first)) throw new Error("first call missing sessionId");
-			if (second?.mode !== "form" || !("sessionId" in second)) throw new Error("second call missing sessionId");
-			if (third?.mode !== "form" || !("sessionId" in third)) throw new Error("third call missing sessionId");
-			expect(first.sessionId).toBe("session-before-switch");
-			expect(second.sessionId).toBe("session-after-switch");
-			expect(third.sessionId).toBe("session-after-switch");
 		});
 	});
 });

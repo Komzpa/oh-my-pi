@@ -14,6 +14,7 @@ import {
 	type ExtensionWidgetContent,
 	type MessageRenderer,
 	type AssistantThinkingRenderer,
+	type AssistantTextRenderer,
 } from "@oh-my-pi/pi-tui/chat/extension-types";
 export {
 	type ExtensionUiComponent,
@@ -23,6 +24,8 @@ export {
 	type MessageRenderer,
 	type AssistantThinkingRenderContext,
 	type AssistantThinkingRenderer,
+	type AssistantTextRenderContext,
+	type AssistantTextRenderer,
 } from "@oh-my-pi/pi-tui/chat/extension-types";
 import type { type as ArkType } from "@oh-my-pi/omptype";
 import type * as TypeBox from "@oh-my-pi/omptype/typebox";
@@ -38,6 +41,7 @@ import type {
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ContextUsage } from "@oh-my-pi/pi-tui/status-line/types";
 import type { LoopConditionConfig } from "@oh-my-pi/pi-tui/status-line/loop";
+import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type {
 	Api,
@@ -75,9 +79,11 @@ import type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer
 import type { CodeReviewAnnotation, TextReviewAnnotation } from "@oh-my-pi/pi-tui/overlays/annotation-types";
 export type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
 import type { ModelRegistry } from "../../config/model-registry";
+import type { ModelPresetSwitchResult } from "../../config/model-presets";
 import type { EditToolDetails } from "@oh-my-pi/pi-tui/tools/edit";
 import type { PythonResult } from "../../eval/py/executor";
 import type { BashResult } from "../../exec/bash-executor";
+import type { LiveTranscript } from "../../live/controller";
 import type { ExecOptions, ExecResult } from "../../exec/exec";
 import type * as PiCodingAgent from "../../index";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
@@ -350,6 +356,23 @@ export interface ExtensionUIContext {
 
 	/** Listen to raw terminal input (interactive mode only). Returns an unsubscribe function. */
 	onTerminalInput(handler: TerminalInputHandler): () => void;
+
+	/**
+	 * Draw the assistant reply sent at `timestamp` (`message.timestamp`) again, re-running the
+	 * assistant text renderers, e.g. after a click changed what they return. Interactive mode only,
+	 * and only while `extensionRenderers.assistantText` is on; a no-op elsewhere.
+	 */
+	rerenderMessage(timestamp: number): void;
+
+	/**
+	 * True while a link whose scheme an extension registered can be picked to raise `link_activate`:
+	 * interactive mode in a plain terminal with `extensionRenderers.assistantText` on, and either the
+	 * link-hint key (`app.links.hint`, Alt+O by default) bound or `tui.mouse` on. Changing the setting,
+	 * or `tui.mouse` while the hint key is unbound, redraws the transcript and re-runs the assistant
+	 * text renderers, so a renderer can read this on each call, e.g. to show content inline instead of
+	 * behind a link nobody can pick. False everywhere else.
+	 */
+	getLinkClicksAvailable(): boolean;
 
 	/** Set status text in the footer/status bar. Pass undefined to clear. */
 	setStatus(key: string, text: string | undefined): void;
@@ -677,6 +700,50 @@ export type ExtensionAnnotationsFactory = (
 	sendUserMessage: (text: string, options?: SendUserMessageOptions) => void,
 ) => ExtensionAnnotationsAPI;
 
+/** Options for {@link ExtensionContext.startLive}. */
+export interface ExtensionLiveStartOptions {
+	/**
+	 * SDP offer from the extension's own WebRTC peer, e.g. a browser `RTCPeerConnection` with one
+	 * sendrecv Opus audio track and an `oai-events` data channel. That peer carries all audio;
+	 * the host opens no microphone or speaker.
+	 */
+	sdpOffer: string;
+	/** Realtime voice; defaults to the `live.voice` setting. */
+	voice?: string;
+	/**
+	 * Handlebars template replacing the bundled live instructions, rendered with
+	 * `{ username, firstName }` like the bundled prompt.
+	 */
+	instructions?: string;
+	/**
+	 * Phase changes (`connecting`, `listening`, `working`, `muted`, `error`). `muted` is a request:
+	 * the host has no track to mute, so silence the peer's microphone track until the next phase.
+	 */
+	onPhase?(phase: LivePhase): void;
+	/** Streaming and final transcripts of both sides of the conversation. */
+	onTranscript?(transcript: LiveTranscript): void;
+	/**
+	 * Called exactly once when the session ends, with the failure that ended it if any. A start
+	 * that fails to connect calls it too, before `startLive` rejects.
+	 */
+	onEnd?(error?: Error): void;
+}
+
+/** A live voice session started by {@link ExtensionContext.startLive}. */
+export interface ExtensionLiveSession {
+	/** SDP answer to apply to the extension's peer. */
+	sdpAnswer: string;
+	/** Voice in use. */
+	voice: string;
+	/**
+	 * Ends the session; resolves once it has stopped. Safe to call repeatedly. The host has no media
+	 * peer, so it never sees the extension's peer go away: call this when that peer disconnects
+	 * (`connectionstatechange` to `failed` or `closed`, or the relay socket closing). Until then the
+	 * call stays open and the TUI keeps its live visualizer up.
+	 */
+	stop(): Promise<void>;
+}
+
 export interface ExtensionContext {
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
@@ -762,6 +829,13 @@ export interface ExtensionContext {
 	 * Optional for compatibility with hosts that do not provide side turns.
 	 */
 	runEphemeralTurn?(options: EphemeralTurnOptions): Promise<EphemeralTurnResult>;
+	/**
+	 * Start a Codex live voice session bound to this session, like `/live`, but with audio on the
+	 * extension's own WebRTC peer (for example a browser on another device). Delegated work runs as
+	 * normal turns of this session. Rejects while another live session is active.
+	 * Optional: present only in hosts that run live sessions (currently interactive mode).
+	 */
+	startLive?(options: ExtensionLiveStartOptions): Promise<ExtensionLiveSession>;
 	/** Structured memory runtime for status/search/save across the configured backend. */
 	memory?: MemoryRuntimeContext;
 	/** `/annotate` as an API: build or collect annotation feedback on text and diffs. */
@@ -1247,6 +1321,24 @@ export interface McpNotificationEvent {
 }
 
 // ============================================================================
+// Link Activation Events
+// ============================================================================
+
+/**
+ * The user picked a link whose scheme this extension registered with `pi.registerLinkScheme()`,
+ * by its hint tag or a click. Interactive mode only; delivered to the owning extension only, and
+ * run without the event-handler timeout, like a command. The URL is untrusted: the model can write
+ * such a link with any URL behind any label, so validate it like user input.
+ */
+export interface LinkActivateEvent {
+	type: "link_activate";
+	/** The link's full URL as drawn, e.g. `cc-stretch:open/1792/0/2`. Untrusted. */
+	url: string;
+	/** The registered scheme the URL uses, lowercase and without `:`. */
+	scheme: string;
+}
+
+// ============================================================================
 // User Bash Events
 // ============================================================================
 
@@ -1576,6 +1668,7 @@ export type ExtensionEvent =
 	| GoalUpdatedEvent
 	| CredentialDisabledEvent
 	| McpNotificationEvent
+	| LinkActivateEvent
 	| UserBashEvent
 	| UserPythonEvent
 	| InputEvent
@@ -1796,6 +1889,7 @@ export interface ExtensionAPI {
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "user_python", handler: ExtensionHandler<UserPythonEvent, UserPythonEventResult>): void;
 	on(event: "mcp_notification", handler: ExtensionHandler<McpNotificationEvent>): void;
+	on(event: "link_activate", handler: ExtensionHandler<LinkActivateEvent>): void;
 
 	// =========================================================================
 	// Tool Registration
@@ -1911,6 +2005,26 @@ export interface ExtensionAPI {
 	registerAssistantThinkingRenderer(renderer: AssistantThinkingRenderer): void;
 
 	/**
+	 * Register a display-only transform for assistant text blocks: it returns the markdown to draw.
+	 * Called with the full text so far each time a streaming update is drawn (replies skip the
+	 * smooth-streaming reveal while renderers are active) and once more when the text is final.
+	 * The session, exports and model context keep the original text. Interactive mode only, and
+	 * only while the `extensionRenderers.assistantText` setting is on.
+	 */
+	registerAssistantTextRenderer(renderer: AssistantTextRenderer): void;
+
+	/**
+	 * Claim a link scheme (e.g. `"cc-stretch"` for `cc-stretch:…` links). In a plain terminal,
+	 * Markdown links using it draw without the ` (url)` suffix and are never handed to the terminal
+	 * or browser to open; picking one (its `app.links.hint` tag, or a click with `tui.mouse` on)
+	 * raises `link_activate` for this extension. Tern's native view draws them as its own links and
+	 * does not route their clicks back. Interactive mode only, and only while the
+	 * `extensionRenderers.assistantText` setting is on. Throws for an invalid scheme (fewer than two
+	 * characters, or not URL scheme syntax) or a reserved one (`http`, `https`, `file`, `mailto`, …).
+	 */
+	registerLinkScheme(scheme: string): void;
+
+	/**
 	 * Register a composer shape for the interactive editor.
 	 *
 	 * Registration happens during extension load. Built-in ids cannot be
@@ -1986,6 +2100,23 @@ export interface ExtensionAPI {
 		family: Family,
 		tier: ExtensionServiceTier<Family> | undefined,
 	): void;
+
+	/**
+	 * Apply the saved model preset `name` to this session only: its roles, default thinking level and
+	 * `settings` become runtime overrides (nothing is written to config), subagents spawned afterwards
+	 * inherit them, and the active model switches to the preset's `default` role. Applying another
+	 * preset replaces the first. Check `result.kind === "switched"` for success.
+	 */
+	applySessionModelPreset(name: string): Promise<ModelPresetSwitchResult>;
+
+	/**
+	 * Remove the session preset, restoring exactly the overrides it displaced. The active model is
+	 * left unchanged. Returns the cleared preset's name, or undefined when none was active.
+	 */
+	clearSessionModelPreset(): string | undefined;
+
+	/** Name of the preset currently applied to this session, if any. */
+	getSessionModelPreset(): string | undefined;
 
 	/** Get the current session name. */
 	getSessionName(): string | undefined;
@@ -2208,6 +2339,12 @@ export type GetServiceTiersHandler = () => ServiceTierByFamily;
 
 export type SetServiceTierHandler = (family: ServiceTierFamily, tier: ServiceTier | undefined) => void;
 
+export type ApplySessionModelPresetHandler = (name: string) => Promise<ModelPresetSwitchResult>;
+
+export type ClearSessionModelPresetHandler = () => string | undefined;
+
+export type GetSessionModelPresetHandler = () => string | undefined;
+
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
@@ -2234,6 +2371,9 @@ export interface ExtensionActions {
 	setThinkingLevel: SetThinkingLevelHandler;
 	getServiceTiers?: GetServiceTiersHandler;
 	setServiceTier?: SetServiceTierHandler;
+	applySessionModelPreset?: ApplySessionModelPresetHandler;
+	clearSessionModelPreset?: ClearSessionModelPresetHandler;
+	getSessionModelPreset?: GetSessionModelPresetHandler;
 	getSessionName: () => string | undefined;
 	setSessionName: (name: string) => Promise<void>;
 }
@@ -2257,6 +2397,7 @@ export interface ExtensionContextActions {
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
 	runEphemeralTurn?: (options: EphemeralTurnOptions) => Promise<EphemeralTurnResult>;
+	startLive?: (options: ExtensionLiveStartOptions) => Promise<ExtensionLiveSession>;
 }
 
 /** Actions for ExtensionCommandContext (ctx.* in command handlers). */
@@ -2278,6 +2419,9 @@ export interface ExtensionCommandContextActions {
 export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {
 	getServiceTiers: GetServiceTiersHandler;
 	setServiceTier: SetServiceTierHandler;
+	applySessionModelPreset: ApplySessionModelPresetHandler;
+	clearSessionModelPreset: ClearSessionModelPresetHandler;
+	getSessionModelPreset: GetSessionModelPresetHandler;
 }
 
 /** Loaded extension with all registered items. */
@@ -2289,6 +2433,9 @@ export interface Extension {
 	tools: Map<string, RegisteredTool<any, any>>;
 	toolRegistrationListeners?: Set<ToolRegistrationListener>;
 	assistantThinkingRenderers: AssistantThinkingRenderer[];
+	assistantTextRenderers: AssistantTextRenderer[];
+	/** Link schemes claimed with `registerLinkScheme`, lowercase. */
+	linkSchemes: string[];
 	fileWriteFallbackHandlers: FileWriteFallbackHandler[];
 	fileDeleteFallbackHandlers: FileDeleteFallbackHandler[];
 	messageRenderers: Map<string, MessageRenderer>;

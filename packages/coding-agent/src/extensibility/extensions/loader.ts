@@ -21,16 +21,17 @@ import { hasFsCode, isEacces, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { type ExtensionModule, extensionModuleCapability } from "../../capability/extension-module";
 import { type Hook, hookCapability } from "../../capability/hook";
 import { isServiceTierFamily, isServiceTierForFamily } from "../../config/service-tier";
+import type { ModelPresetSwitchResult } from "../../config/model-presets";
 import { loadCapability } from "../../discovery";
 import { getExtensionNameFromPath } from "../../discovery/helpers";
 import type { ExecOptions } from "../../exec/exec";
 import { execCommand } from "../../exec/exec";
-// Runtime self-reference: dereference this namespace only inside loader functions to keep the index.ts cycle safe.
-import * as PiCodingAgent from "../../index";
+import { getCodingAgentApi } from "../host-api";
 import type { SendUserMessageOptions } from "../../session/agent-session";
 import type { CustomMessagePayload } from "../../session/messages";
 import type { FileDeleteFallbackHandler, FileWriteFallbackHandler } from "../../tools/file-write-fallback";
 import { isFilesystemSourcePath } from "../../tools/path-utils";
+import { InternalUrlRouter } from "../../internal-urls/router";
 import { EventBus } from "../../utils/event-bus";
 import * as TypeBox from "../legacy-typebox";
 import { resolveExtensionDirectory } from "./directory-resolution";
@@ -40,6 +41,7 @@ import { getAllPluginExtensionPaths } from "../plugins/loader";
 import { resolvePath, withHostGuard } from "../utils";
 import type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
 import type {
+	AssistantTextRenderer,
 	AssistantThinkingRenderer,
 	Extension,
 	ExtensionAPI,
@@ -60,6 +62,25 @@ installLegacyPiSpecifierShim();
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 type LoadedExtensionModule = ExtensionFactory | { default?: ExtensionFactory };
+
+/** RFC 3986 scheme syntax, lowercased, two characters at least so `c` cannot capture `C:/` paths. */
+const LINK_SCHEME_PATTERN = /^[a-z][a-z0-9+.-]+$/;
+
+/** Standard schemes an extension may not claim: web, file and mail links. omp's internal URLs are refused too. */
+const STANDARD_LINK_SCHEMES: Readonly<Record<string, true>> = {
+	about: true,
+	blob: true,
+	data: true,
+	file: true,
+	ftp: true,
+	http: true,
+	https: true,
+	javascript: true,
+	mailto: true,
+	ssh: true,
+	ws: true,
+	wss: true,
+};
 
 function getExtensionFactory(module: LoadedExtensionModule): ExtensionFactory | null {
 	const candidate = typeof module === "function" ? module : module.default;
@@ -162,6 +183,18 @@ export class ExtensionRuntime implements IExtensionRuntime {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
 
+	applySessionModelPreset(): Promise<never> {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
+	clearSessionModelPreset(): string | undefined {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
+	getSessionModelPreset(): string | undefined {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
 	getSessionName(): string | undefined {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
@@ -188,8 +221,11 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		sourceId: string;
 	}> = [];
 
+	get pi() {
+		return getCodingAgentApi();
+	}
+
 	constructor(
-		public readonly pi: typeof PiCodingAgent,
 		private readonly extension: Extension,
 		private readonly runtime: IExtensionRuntime,
 		private readonly cwd: string,
@@ -274,6 +310,29 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		this.extension.assistantThinkingRenderers.push(renderer);
 	}
 
+	registerAssistantTextRenderer(renderer: AssistantTextRenderer): void {
+		if (typeof renderer !== "function") {
+			throw new TypeError(
+				`registerAssistantTextRenderer expects a function, got ${typeof renderer} (extension ${this.extension.path})`,
+			);
+		}
+		this.extension.assistantTextRenderers.push(renderer);
+	}
+
+	registerLinkScheme(scheme: string): void {
+		const normalized = scheme.toLowerCase();
+		if (!LINK_SCHEME_PATTERN.test(normalized)) {
+			throw new Error(
+				`registerLinkScheme: "${scheme}" is not a URL scheme of two or more characters (letters, digits, "+", "-", ".")`,
+			);
+		}
+		// `=== true`: inherited keys such as `constructor` are not reserved.
+		if (STANDARD_LINK_SCHEMES[normalized] === true || InternalUrlRouter.instance().isBuiltin(normalized)) {
+			throw new Error(`registerLinkScheme: "${scheme}" is reserved for standard or omp-internal links`);
+		}
+		if (!this.extension.linkSchemes.includes(normalized)) this.extension.linkSchemes.push(normalized);
+	}
+
 	registerComposerShape(definition: ComposerShapeDefinition): void {
 		const id = definition.style.id;
 		if (id.length === 0 || id !== id.trim()) {
@@ -351,6 +410,18 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		this.runtime.setServiceTier(family, tier);
 	}
 
+	applySessionModelPreset(name: string): Promise<ModelPresetSwitchResult> {
+		return this.runtime.applySessionModelPreset(name);
+	}
+
+	clearSessionModelPreset(): string | undefined {
+		return this.runtime.clearSessionModelPreset();
+	}
+
+	getSessionModelPreset(): string | undefined {
+		return this.runtime.getSessionModelPreset();
+	}
+
 	getSessionName(): string | undefined {
 		return this.runtime.getSessionName();
 	}
@@ -380,6 +451,8 @@ function createExtension(extensionPath: string, resolvedPath: string): Extension
 		tools: new Map(),
 		toolRegistrationListeners: new Set(),
 		assistantThinkingRenderers: [],
+		assistantTextRenderers: [],
+		linkSchemes: [],
 		fileWriteFallbackHandlers: [],
 		fileDeleteFallbackHandlers: [],
 		messageRenderers: new Map(),
@@ -449,7 +522,7 @@ async function bindExtension(
 	}
 	try {
 		const extension = createExtension(extensionPath, imported.resolvedPath);
-		const api = new ConcreteExtensionAPI(PiCodingAgent, extension, runtime, cwd, eventBus);
+		const api = new ConcreteExtensionAPI(extension, runtime, cwd, eventBus);
 		await withHostGuard(() => runExtensionFactory(factory, api, runtime));
 
 		return { extension, error: null };
@@ -470,7 +543,7 @@ export async function loadExtensionFromFactory(
 	name = "<inline>",
 ): Promise<Extension> {
 	const extension = createExtension(name, name);
-	const api = new ConcreteExtensionAPI(PiCodingAgent, extension, runtime, cwd, eventBus);
+	const api = new ConcreteExtensionAPI(extension, runtime, cwd, eventBus);
 	await runExtensionFactory(factory, api, runtime);
 	return extension;
 }
