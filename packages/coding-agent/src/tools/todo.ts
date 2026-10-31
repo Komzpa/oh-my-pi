@@ -201,6 +201,7 @@ async function declaredRequirementTargets(
 		const parsed = parseRequirementIdentity(task.deployment);
 		if ("error" in parsed) return { error: parsed.error };
 		if (parsed.identity.kind !== "deploy") return { error: "deployment declaration is not a deploy: identity" };
+		if (parsed.identity.scope !== undefined) return [parsed.identity];
 		const { value: _value, ...target } = parsed.identity;
 		return [target];
 	}
@@ -1225,7 +1226,7 @@ function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 	switch (entry.op) {
 		case "init":
-			return initPhases(entry, errors);
+			return preserveTodoMetadata(phases, initPhases(entry, errors), true);
 		case "start": {
 			const hit = resolveTaskOrError(phases, entry.task, errors);
 			if (!hit) return phases;
@@ -1410,6 +1411,36 @@ import {
 	type TodoToolParams as TodoToolParamsType,
 	type TodoToolSchema,
 } from "./todo-classify-schema";
+
+/** Keep row-owned bindings and pending user checks when labels survive a plan replacement. */
+export function preserveTodoMetadata(
+	current: TodoPhase[],
+	parsed: TodoPhase[],
+	preservePendingCheck = false,
+): TodoPhase[] {
+	const prior = new Map<string, TodoItem[]>();
+	for (const task of current.flatMap(phase => phase.tasks))
+		prior.set(task.content, [...(prior.get(task.content) ?? []), task]);
+	return parsed.map(phase => ({
+		...phase,
+		tasks: phase.tasks.map(task => {
+			const matches = prior.get(task.content);
+			if (matches?.length !== 1) return task;
+			const previous = matches[0]!;
+			const preserveStatus = preservePendingCheck && previous.awaitingUser !== undefined;
+			const metadata = Object.fromEntries(
+				Object.entries(previous).filter(([key]) => !["content", "status", "blocker"].includes(key)),
+			) as Partial<TodoItem>;
+			return {
+				...task,
+				...metadata,
+				content: task.content,
+				status: preserveStatus ? previous.status : task.status,
+				...(preserveStatus && previous.blocker !== undefined ? { blocker: previous.blocker } : {}),
+			};
+		}),
+	}));
+}
 
 /** Parse a Markdown checklist back into todo phases. */
 export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: string[] } {

@@ -6,6 +6,7 @@ import {
 	applyOpsToPhases,
 	getLatestTodoPhasesFromEntries,
 	markdownToPhases,
+	preserveTodoMetadata,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 	USER_TODO_EDIT_CUSTOM_TYPE,
@@ -112,23 +113,6 @@ function commitTodos(runtime: SlashCommandRuntime, phases: TodoPhase[]): void {
 	runtime.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 }
 
-function preserveTodoMetadata(current: TodoPhase[], parsed: TodoPhase[]): TodoPhase[] {
-	const prior = new Map<string, TodoPhase["tasks"][number][]>();
-	for (const task of current.flatMap(phase => phase.tasks))
-		prior.set(task.content, [...(prior.get(task.content) ?? []), task]);
-	return parsed.map(phase => ({
-		...phase,
-		tasks: phase.tasks.map(task => {
-			const matches = prior.get(task.content);
-			if (matches?.length !== 1) return task;
-			const metadata = Object.fromEntries(
-				Object.entries(matches[0]!).filter(([key]) => !["content", "status", "blocker"].includes(key)),
-			);
-			return { ...task, ...metadata, content: task.content, status: task.status };
-		}),
-	}));
-}
-
 async function completionRefusal(
 	runtime: SlashCommandRuntime,
 	current: TodoPhase[],
@@ -196,8 +180,13 @@ async function removalRefusal(
 	const unfinished = removed.find(row => existing.get(row)?.status !== "completed");
 	if (unfinished)
 		return `Cannot remove unfinished requirement-linked TODO row ${JSON.stringify(unfinished)}. Complete and audit it first, or relink its requirement to a replacement row.`;
-	if (removed.length === 0) return undefined;
-	return await completionRefusal(runtime, current, { items: removed });
+	const newlyCompleted = next
+		.flatMap(phase => phase.tasks)
+		.filter(task => task.status === "completed" && existing.get(task.content)?.status !== "completed")
+		.map(task => task.content);
+	const audited = [...new Set([...removed, ...newlyCompleted])];
+	if (audited.length === 0) return undefined;
+	return await completionRefusal(runtime, current, { items: audited });
 }
 
 const TODO_HELP_TEXT = [

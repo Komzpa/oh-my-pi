@@ -2080,7 +2080,7 @@ export class InputController {
 
 	/** Send editor text as a follow-up message (queued behind current stream). */
 	async handleFollowUp(): Promise<void> {
-		return bindRequirementInput(this.ctx.editor.getText(), () => this.#handleFollowUp())();
+		return bindRequirementInput(this.ctx.editor.getExpandedText(), () => this.#handleFollowUp())();
 	}
 
 	async #handleFollowUp(): Promise<void> {

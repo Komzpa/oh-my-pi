@@ -41,6 +41,7 @@ import type { TaskImage } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
+import { bindRequirementRowArtifact, getLatestTodoPhasesFromEntries } from "../tools/todo";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess, type SubagentToolResult } from "./executor";
@@ -280,16 +281,20 @@ function resolveSchema(
 	structured: boolean,
 ): StructuredSubagentSchemaResolution {
 	const mode = request.schemaMode ?? request.session.outputSchemaMode ?? "permissive";
+	const noWrapper = { schema: undefined, source: "none" as const, mode, outputSchemaOverridesAgent: true };
 	if (!structured) {
 		return { schema: undefined, source: "none", mode, outputSchemaOverridesAgent: false };
 	}
 	if (Object.hasOwn(request, "outputSchema")) {
+		if (request.outputSchema === false) return noWrapper;
 		return { schema: request.outputSchema, source: "caller", mode, outputSchemaOverridesAgent: true };
 	}
 	if (agent.output !== undefined) {
+		if (agent.output === false) return noWrapper;
 		return { schema: agent.output, source: "agent", mode, outputSchemaOverridesAgent: false };
 	}
 	if (request.session.outputSchema !== undefined) {
+		if (request.session.outputSchema === false) return noWrapper;
 		return { schema: request.session.outputSchema, source: "session", mode, outputSchemaOverridesAgent: false };
 	}
 	return { schema: undefined, source: "none", mode, outputSchemaOverridesAgent: false };
@@ -781,7 +786,9 @@ function buildExecutorOptions(
 		solutionSpace: request.solutionSpace?.trim() || undefined,
 		structured: policy.structured,
 		...(policy.schema.source === "none"
-			? {}
+			? policy.schema.outputSchemaOverridesAgent
+				? { outputSchema: undefined, outputSchemaOverridesAgent: true }
+				: {}
 			: {
 					outputSchemaSource: policy.schema.source,
 					outputSchema: policy.schema.schema,
@@ -1038,7 +1045,30 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		let result: SingleResult;
 		try {
 			if (!isolationContext) {
+				const manager = request.session.sessionManager;
+				if (manager) {
+					const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+					for (const phase of phases) {
+						for (const task of phase.tasks) {
+							if (!("schedule" in task)) continue;
+							const schedule = task.schedule;
+							if (!schedule || typeof schedule !== "object" || !("owner" in schedule) || schedule.owner !== id)
+								continue;
+							await bindRequirementRowArtifact(
+								{
+									cwd: baseOptions.cwd,
+									sessionManager: manager,
+									executionCheckout: { owner: id, cwd: baseOptions.cwd },
+								},
+								task.content,
+								phases,
+								{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+							);
+						}
+					}
+				}
 				result = await runSubprocess(baseOptions);
+				result.checkoutCwd = baseOptions.cwd;
 				onSubprocessResult?.(result);
 			} else {
 				result = await runIsolatedSubprocess({

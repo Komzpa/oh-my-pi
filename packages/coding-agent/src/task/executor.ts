@@ -139,7 +139,7 @@ import { yieldSectionShapes } from "./yield-assembly";
 import { assertPerCallModelApproved, PerCallModelError, type PerCallModelGrants } from "./model-approval";
 import { assembleYieldResult } from "@oh-my-pi/pi-tui/tools/task-yield-assembly";
 import taskImageUnavailableTemplate from "../prompts/tools/task-image-unavailable.md" with { type: "text" };
-import { loadImageAttachmentInput, loadImageInput } from "../utils/image-loading";
+import { loadImageAttachmentInput } from "../utils/image-loading";
 import {
 	cfgTaskPrewalk,
 	cfgTaskAgentPrewalk,
@@ -2519,10 +2519,14 @@ export async function resolveTaskImagesForFirstPrompt(
 							continue;
 						}
 					}
-					const validated = await loadImageInput({
-						path: candidate,
-						cwd: process.cwd(),
-						detectedMimeType: image.mimeType,
+					const validated = await loadImageAttachmentInput({
+						image: {
+							type: "image",
+							data: sourceBytes.toString("base64"),
+							mimeType: image.mimeType ?? "image/png",
+						},
+						label,
+						uri: candidate,
 						autoResize: false,
 						maxBytes: MAX_IMAGE_INPUT_BYTES,
 					});

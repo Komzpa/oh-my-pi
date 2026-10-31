@@ -446,6 +446,8 @@ export interface PromptOptions {
 	throwOnDrop?: boolean;
 	/** Image attachments. */
 	images?: ImageContent[];
+	/** Original user text before input-extension transformations, used for requirement provenance. */
+	rawRequirementText?: string;
 	/** Queue behavior while streaming. `"aside"` is non-interrupting — it does not steer/follow-up
 	 *  an in-flight tool batch, injecting at the next step boundary instead (see
 	 *  AgentSession.sendUserMessage's `deliverAs: "aside"`). */
@@ -491,6 +493,8 @@ export interface DroppedPrompt {
 	text: string;
 	/** Image attachments submitted with the prompt. */
 	images?: ImageContent[];
+	/** Original user text before input-extension transformations. */
+	rawRequirementText?: string;
 	/** Why the session refused it (e.g. the cost cap), for hosts to show beside the restored text; absent for an abort. */
 	reason?: string;
 }

@@ -85,7 +85,7 @@ describe("PR 41 session requirement capture", () => {
 		await session.dispose();
 		session = undefined;
 	});
-	it("captures a queued follow-up once at message end", async () => {
+	it.each(["delivered", "take", "pop", "remove"])("captures queued follow-up lifecycle: %s", async removal => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected bundled test model");
 		const manager = SessionManager.inMemory(tempDir.path());
@@ -123,17 +123,27 @@ describe("PR 41 session requirement capture", () => {
 		session = new AgentSession({ agent, sessionManager: manager, settings, modelRegistry });
 
 		const firstPrompt = session.prompt("Initial request");
-		await entered.promise;
-		await session.followUp("Queued follow-up", undefined, { attribution: "user" });
-		release.resolve();
-		await firstPrompt;
-		await session.waitForIdle();
-
-		expect(
-			getLatestRequirements(manager.getBranch()).filter(item => item.rawText === "Queued follow-up"),
-		).toHaveLength(1);
-		await session.dispose();
-		session = undefined;
+		let finalCount = 0;
+		try {
+			await entered.promise;
+			await session.followUp("Queued follow-up", undefined, { attribution: "user" });
+			if (removal === "take") expect(session.takeQueuedMessage("Queued follow-up", "followUp")).toBeDefined();
+			if (removal === "pop") expect(session.popLastQueuedMessage()).toBeDefined();
+			if (removal === "remove") expect(session.removeQueuedMessage("Queued follow-up", "followUp")).toBe(true);
+			const captured = getLatestRequirements(manager.getBranch()).find(item => item.rawText === "Queued follow-up");
+			expect(captured?.classification).toBe(removal === "delivered" ? "candidate" : "not-a-requirement");
+			expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("candidate");
+		} finally {
+			release.resolve();
+			await firstPrompt;
+			await session.waitForIdle();
+			finalCount = getLatestRequirements(manager.getBranch()).filter(
+				item => item.rawText === "Queued follow-up",
+			).length;
+			await session.dispose();
+			session = undefined;
+		}
+		expect(finalCount).toBe(1);
 	});
 	it.each([ASYNC_RESULT_MESSAGE_TYPE, "unrelated-result"])(
 		"consumes persisted auditor receipts only for async-result messages (%s)",

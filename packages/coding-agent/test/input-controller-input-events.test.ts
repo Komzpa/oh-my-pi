@@ -878,6 +878,15 @@ describe("interactive native input ingress", () => {
 		expect(downstream).not.toHaveBeenCalled();
 		expect(h.prompt).not.toHaveBeenCalled();
 	});
+	it("captures expanded Ctrl+Enter text rather than the collapsed editor marker", async () => {
+		const h = await createHarness(() => {});
+		h.editor.setText("[Paste #1, +100 lines]");
+		vi.spyOn(h.editor, "getExpandedText").mockReturnValue("Full original pasted requirement");
+		await h.pressSubmit(FOLLOW_UP);
+		expect(h.prompt.mock.calls[0]?.[0]).toBe("Full original pasted requirement");
+		expect(h.originalInputs).toEqual(["Full original pasted requirement"]);
+	});
+
 	for (const key of [ENTER, FOLLOW_UP]) {
 		it(`preserves original requirement text across transformed ${key === ENTER ? "Enter" : "follow-up"} input`, async () => {
 			const h = await createHarness(pi => {

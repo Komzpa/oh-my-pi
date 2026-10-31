@@ -100,6 +100,9 @@ describe("PR41 text/ACP TODO completion gate", () => {
 			expect(
 				getLatestTodoPhasesFromEntries(manager.getBranch()).flatMap(phase => phase.tasks.map(task => task.content)),
 			).not.toContain("Unrelated task");
+			await fs.writeFile(path.join(cwd, "TODO.md"), `# Work\n- [x] ${row}\n`, "utf8");
+			expect(await invoke("import")).toEqual({ consumed: true, failed: true });
+			expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]?.tasks[0]?.status).toBe("pending");
 		} finally {
 			await fs.rm(cwd, { recursive: true, force: true });
 		}

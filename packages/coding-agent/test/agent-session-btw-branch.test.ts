@@ -13,6 +13,8 @@ import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/ex
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { getLatestRequirements } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as imageVisionFallback from "@oh-my-pi/pi-coding-agent/utils/image-vision-fallback";
 import { Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -79,17 +81,32 @@ describe("AgentSession.branchFromBtw", () => {
 		extensionRunner?: ExtensionRunner;
 		handler?: MockHandler;
 		model?: Model<Api>;
+		todoEnabled?: boolean;
 	}) {
 		const model = options?.model ?? getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({ handler: options?.handler ?? (() => ({ content: ["unused"] })) });
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
-			streamFn: mock.stream,
-		});
 		const sessionManager =
 			options?.persisted === false ? SessionManager.inMemory() : SessionManager.create(tempDir, tempDir);
-		const settings = Settings.isolated({ "compaction.enabled": false });
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"todo.enabled": options?.todoEnabled ?? false,
+		});
+		const todo = options?.todoEnabled
+			? new TodoTool({
+					cwd: sessionManager.getCwd(),
+					hasUI: false,
+					getSessionFile: () => sessionManager.getSessionFile() ?? null,
+					getSessionSpawns: () => "*",
+					settings,
+					getTodoPhases: () => session?.getTodoPhases() ?? [],
+					setTodoPhases: phases => session?.setTodoPhases(phases),
+				})
+			: undefined;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: todo ? [todo] : [] },
+			streamFn: mock.stream,
+		});
 		authStorage = await AuthStorage.create(":memory:");
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 		authStorage.keys.setRuntime("anthropic", "test-key");
@@ -102,6 +119,25 @@ describe("AgentSession.branchFromBtw", () => {
 		});
 		return session;
 	}
+
+	it("captures the exact promoted /btw ask once as a requirement candidate", async () => {
+		const activeSession = await createSession({ todoEnabled: true });
+		activeSession.sessionManager.appendMessage({ role: "user", content: "seed", timestamp: Date.now() - 2 });
+		activeSession.sessionManager.appendMessage({ ...createBtwAssistant(), timestamp: Date.now() - 1 });
+		activeSession.agent.replaceMessages(activeSession.sessionManager.buildSessionContext().messages);
+		await activeSession.sessionManager.flush();
+		const rawQuestion = "  preserve the promoted /btw wording\n";
+		await activeSession.branchFromBtw(
+			rawQuestion,
+			createBtwAssistant(),
+			requiredLeafId(activeSession),
+			activeSession.sessionManager.getSessionId(),
+		);
+		expect(getLatestRequirements(activeSession.sessionManager.getBranch())).toMatchObject([
+			{ id: "R1", classification: "candidate", rawText: rawQuestion },
+		]);
+		expect(getLatestRequirements(activeSession.sessionManager.getBranch())).toHaveLength(1);
+	});
 
 	it("creates a persisted branch with the /btw user input and complete assistant message", async () => {
 		const activeSession = await createSession();
@@ -222,6 +258,7 @@ describe("AgentSession.branchFromBtw", () => {
 		const emit = vi.fn(async () => ({ cancel: true }));
 		const extensionRunner = {
 			hasHandlers: vi.fn((eventType: string) => eventType === "session_before_branch"),
+			hasLoadedHandlers: () => false,
 			emit,
 		} as unknown as ExtensionRunner;
 		const activeSession = await createSession({ extensionRunner });
@@ -250,6 +287,7 @@ describe("AgentSession.branchFromBtw", () => {
 		const hookRelease = Promise.withResolvers<void>();
 		const extensionRunner = {
 			hasHandlers: vi.fn((eventType: string) => eventType === "session_before_branch"),
+			hasLoadedHandlers: () => false,
 			emit: vi.fn(async () => {
 				hookStarted.resolve();
 				await hookRelease.promise;
@@ -294,6 +332,7 @@ describe("AgentSession.branchFromBtw", () => {
 	it("syncs promoted /btw messages into live context even when hooks skip conversation restore", async () => {
 		const extensionRunner = {
 			hasHandlers: vi.fn((eventType: string) => eventType === "session_before_branch"),
+			hasLoadedHandlers: () => false,
 			emit: vi.fn(async () => ({ skipConversationRestore: true })),
 		} as unknown as ExtensionRunner;
 		const activeSession = await createSession({ extensionRunner });
@@ -417,6 +456,7 @@ describe("AgentSession.branchFromBtw", () => {
 		const hookRelease = Promise.withResolvers<void>();
 		const extensionRunner = {
 			hasHandlers: vi.fn((eventType: string) => eventType === "session_before_branch"),
+			hasLoadedHandlers: () => false,
 			emit: vi.fn(async () => {
 				await hookRelease.promise;
 				return undefined;
