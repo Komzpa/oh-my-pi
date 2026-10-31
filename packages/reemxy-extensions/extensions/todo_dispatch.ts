@@ -3731,6 +3731,18 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (pauseGate?.paused || !isMain(ctx) || !pi.getActiveTools().includes("task")) return;
     const input = (event.input ?? {}) as { command?: unknown; path?: unknown };
     if (!isWorkerWork(event.toolName, event.input)) return;
+    // An unrelated blocked/completed plan must not let the chief implement a new
+    // request without first adding its row (01a1921c, "single file under 30 lines").
+    const jobsBeforePlanning = ctx.getAsyncJobSnapshot();
+    const runningBeforePlanning = (jobsBeforePlanning?.running ?? []).filter((job) => job.type === "task" && job.status === "running").length;
+    const hasWorkRow = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx))
+      .some((phase) => phase.tasks.some((task) => task.status === "pending" || task.status === "in_progress"));
+    if (jobsBeforePlanning && !hasWorkRow && runningBeforePlanning < workerCapacity(ctx)) {
+      return {
+        block: true,
+        reason: `Add and schedule the new work, then dispatch it via task before ${event.toolName}.\nBlocked: ${event.toolName} is work for a worker, including small single-file edits. No pending or in-progress row covers this work. Read-only inspection and delivery remain available. ${ORDER}`,
+      };
+    }
     const decision = currentDecision(ctx);
     if (!decision.key || !decision.forecast || decision.goalPaused || !decision.staffingSnapshotComplete) return;
     // Refusal must name work that can actually be delegated, not an empty task list.

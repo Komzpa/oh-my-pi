@@ -2132,6 +2132,44 @@ test("the main session is chief of staff: worker tools are refused while worker 
   }
 });
 
+test("chief cannot bypass dispatch by leaving a small edit out of the plan", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "todo-dispatch-unplanned-chief-"));
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  let header = { id: "unplanned-chief" };
+  // Incident 01a1921c: only an unrelated blocked audit remained when the lead
+  // decided a <30-line VerdictIcon edit did not need a worker or a new row.
+  const branch = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Old work", tasks: [{ content: "Create branch", status: "blocked", blockReason: "audit freshness bug" }] }] } } }];
+  await todoDispatch({
+    on: (event, handler) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "edit", "read", "bash"],
+    pi: extensionSdk,
+    appendEntry: () => undefined,
+    sendMessage: () => undefined,
+    registerSoftToolRequirementProvider: () => undefined,
+  } as unknown as ExtensionAPI);
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => header, ...branchMock(() => branch) },
+    getAsyncJobSnapshot: () => ({ ...emptyJobs, nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  const call = (toolName, input) => handlers.get("tool_call")!({ toolName, toolCallId: toolName, input }, ctx);
+  try {
+    expect(await call("edit", { path: "src/ui-kit/atoms/VerdictIcon.tsx" })).toMatchObject({ block: true });
+    expect(await call("read", { path: "src/ui-kit/atoms/VerdictIcon.tsx" })).toBeUndefined();
+    expect(await call("bash", { command: "git status --short" })).toBeUndefined();
+    header = { id: "worker", parentSession: "unplanned-chief" };
+    expect(await call("edit", { path: "src/ui-kit/atoms/VerdictIcon.tsx" })).toBeUndefined();
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("a worker started but never linked to a row does not silence dispatch for the rest of a goal run", async () => {
   // Live 2026-09-24 23:26: dispatchable 3, running 1, parked 20, and no task requirement at all,
   // because the gate waited for agent_end (a goal run rarely ends) while an unlinked worker ran.
