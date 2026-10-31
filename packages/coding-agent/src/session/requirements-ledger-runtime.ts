@@ -207,6 +207,7 @@ export interface RequirementCandidateNotice {
 export interface RequirementCandidateCommit {
 	committed: boolean;
 	notice?: RequirementCandidateNotice;
+	candidateIds?: string[];
 }
 
 export interface RequirementsLedgerRuntimeHost {
@@ -296,7 +297,33 @@ export class RequirementsLedgerRuntime {
 			};
 		}
 		this.syncPublicationGate();
-		return { committed: true, ...(notice ? { notice } : {}) };
+		return { committed: true, candidateIds: added.map(requirement => requirement.id), ...(notice ? { notice } : {}) };
+	}
+
+	/** A removed queue entry is an owner withdrawal, not an unfinished obligation. */
+	withdrawQueuedCandidates(sessionId: string, ids: readonly string[]): void {
+		if (this.#sessionId() !== sessionId || ids.length === 0) return;
+		const requirements = getLatestRequirements(
+			matchingRequirementBranch(
+				this.#host.sessionManager,
+				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			),
+		);
+		const withdrawn = requirements.map(requirement =>
+			ids.includes(requirement.id) &&
+			(requirement.classification === "candidate" || requirement.classification === "linked")
+				? {
+						...requirement,
+						classification: "not-a-requirement" as const,
+						rows: [],
+						reason: "User withdrew the queued message before delivery",
+					}
+				: requirement,
+		);
+		if (withdrawn.some((requirement, index) => requirement !== requirements[index])) {
+			appendRequirementsSnapshot(this.#appender(), withdrawn);
+			this.syncPublicationGate();
+		}
 	}
 
 	async announceCandidateNotice(notice: RequirementCandidateNotice | undefined): Promise<void> {

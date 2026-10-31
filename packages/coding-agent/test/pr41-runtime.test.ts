@@ -18,6 +18,10 @@ import {
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
 
+import { useFastGitStatusCoordinator } from "./helpers/fast-status-coordinator";
+
+useFastGitStatusCoordinator();
+
 function fixture(customAuditor = false) {
 	const cwd = mkdtempSync(join(tmpdir(), "omp-pr41-runtime-"));
 	const manager = SessionManager.inMemory();

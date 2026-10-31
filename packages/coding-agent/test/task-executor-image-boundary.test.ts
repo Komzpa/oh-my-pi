@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -54,5 +54,30 @@ describe("task executor image boundary", () => {
 		expect(rejected.promptImages).toBeUndefined();
 		expect(rejected.suffix).toContain("unavailable");
 		expect(rejected.suffix).toContain("exceeds");
+	});
+	it("forwards the authenticated read even when the reference changes before normalization", async () => {
+		fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-image-read-once-"));
+		const file = path.join(fixtureRoot, "image.png");
+		const bytes = Buffer.from(PNG, "base64");
+		await fs.writeFile(file, bytes);
+		const read = fs.readFile;
+		let reads = 0;
+		const probe = spyOn(fs, "readFile").mockImplementation((async (...args: Parameters<typeof fs.readFile>) => {
+			const result = await read(...args);
+			if (args[0] === file) {
+				reads++;
+				await fs.writeFile(file, "changed after authenticated read");
+			}
+			return result;
+		}) as typeof fs.readFile);
+		try {
+			const result = await resolveTaskImagesForFirstPrompt([
+				{ type: "image", mimeType: "image/png", sourcePath: file, sha256: sha256(bytes) },
+			]);
+			expect(result.promptImages?.[0]?.data).toBe(PNG);
+			expect(reads).toBe(1);
+		} finally {
+			probe.mockRestore();
+		}
 	});
 });

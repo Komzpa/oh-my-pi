@@ -3,6 +3,7 @@ import {
 	applyOpsToPhases,
 	getLatestTodoPhasesFromEntries,
 	markdownToPhases,
+	preserveTodoMetadata,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 	USER_TODO_EDIT_CUSTOM_TYPE,
@@ -142,25 +143,6 @@ function buildSystemReminder(action: string, phases: TodoPhase[], removed = fals
 	}
 	lines.push("Current todo list:", "", md, "</system-reminder>");
 	return lines.join("\n");
-}
-
-/** Markdown intentionally edits labels and status only; keep non-Markdown bindings for unchanged rows. */
-function preserveTodoMetadata(current: TodoPhase[], parsed: TodoPhase[]): TodoPhase[] {
-	const prior = new Map<string, TodoItem[]>();
-	for (const task of current.flatMap(phase => phase.tasks)) {
-		prior.set(task.content, [...(prior.get(task.content) ?? []), task]);
-	}
-	return parsed.map(phase => ({
-		...phase,
-		tasks: phase.tasks.map(task => {
-			const matches = prior.get(task.content);
-			if (matches?.length !== 1) return task;
-			const metadata = Object.fromEntries(
-				Object.entries(matches[0]!).filter(([key]) => !["content", "status", "blocker"].includes(key)),
-			) as Partial<TodoItem>;
-			return { ...task, ...metadata, content: task.content, status: task.status };
-		}),
-	}));
 }
 
 export class TodoCommandController {
@@ -516,6 +498,12 @@ export class TodoCommandController {
 			);
 			return false;
 		}
+		const newlyCompleted = next
+			.flatMap(phase => phase.tasks)
+			.filter(task => task.status === "completed" && phasesByRow.get(task.content)?.status !== "completed")
+			.map(task => task.content);
+		if (newlyCompleted.length > 0 && !(await this.#assertDoneAllowed(current, { items: newlyCompleted })))
+			return false;
 		if (removedLinkedRows.length > 0 && !(await this.#assertDoneAllowed(current, { items: removedLinkedRows })))
 			return false;
 		if (JSON.stringify(this.#currentPhases()) !== beforeSnapshot) {

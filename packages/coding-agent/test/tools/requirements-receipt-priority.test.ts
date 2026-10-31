@@ -62,6 +62,20 @@ describe("receipt priority #924: requested parent selection", () => {
 		expect(parseRequirementReceipt(table.replace("TODO\\|R", "TODO|R"), ["R42"])).toBeNull();
 	});
 
+	it("rejects malformed requested failing clauses after a passing sibling", () => {
+		const header = "| id | raw words | status | evidence | artifact |\n| --- | --- | --- | --- | --- |\n";
+		const clauses = `| R42a | ${raw} | pass | first checked | ${artifact} |\n| R42b | ${raw} | fail | failed | unescaped pipe | ${artifact} |`;
+		const sources = new Map([["R42", raw]]);
+		expect(parseRequirementReceipt(header + clauses, ["R42"], sources)).toBeNull();
+		expect(
+			parseRequirementReceipt(
+				header + clauses.replace("failed | unescaped", "failed \\| unescaped"),
+				["R42"],
+				sources,
+			)?.[0]?.status,
+		).toBe("fail");
+	});
+
 	it("does not silently ignore same-parent suffix IDs or malformed IDs", () => {
 		let identityFailure: string | undefined;
 		expect(
