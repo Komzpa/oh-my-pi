@@ -222,6 +222,11 @@ export interface ToolSession {
 	advertiseHeadlessAsk?: boolean;
 	/** The user approves `cfg://` writes for this session (top-level TUI session only). */
 	settingsApproval?: boolean;
+	/**
+	 * Replies render in omp's own transcript (the top-level interactive session, terminal or Tern);
+	 * false for print, RPC, ACP, and subagent sessions. See `CreateAgentSessionOptions.tuiTranscript`.
+	 */
+	tuiTranscript?: boolean;
 	/** Whether this session has begun disposal. */
 	isDisposed?: () => boolean;
 	/**
@@ -368,6 +373,13 @@ export interface ToolSession {
 	getAgentId?: () => string | null;
 	/** Parent cache identity for sibling sharing; the child stores it independently of its initial model, and each request consumes it only when its own model opts in. */
 	getPromptCacheKey?: () => string | undefined;
+	/**
+	 * Which agent owns this tool session. `bash`/`eval` tool environments strip
+	 * the desktop-session bindings (`WAYLAND_DISPLAY`, `DISPLAY`,
+	 * `DBUS_SESSION_BUS_ADDRESS`, user `XDG_RUNTIME_DIR`) when this is `"sub"`;
+	 * the main interactive session keeps its environment unchanged.
+	 */
+	agentKind?: "main" | "sub";
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
 	getToolByName?: (name: string) => AgentTool | undefined;
 	/** Look up an enabled tool through the eval bridge's normal permission pipeline. */

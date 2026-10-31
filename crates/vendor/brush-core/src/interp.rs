@@ -1,5 +1,6 @@
 use std::{
 	collections::VecDeque,
+	ffi::{OsStr, OsString},
 	io::Write,
 	path::{Path, PathBuf},
 	sync::{Arc, atomic::AtomicBool},
@@ -37,11 +38,11 @@ struct PipelineExecutionContext<'a, SE: extensions::ShellExtensions> {
 /// Information about an expanded external command launch.
 pub struct ExternalCommandInfo<'a> {
 	/// Shell command name before path resolution.
-	pub command_name:    &'a str,
+	pub command_name:    &'a OsStr,
 	/// Resolved executable path used for the process launch.
-	pub executable_path: &'a str,
+	pub executable_path: &'a std::path::Path,
 	/// Expanded process arguments, excluding `argv[0]`.
-	pub args:            Vec<&'a str>,
+	pub args:            Vec<&'a OsStr>,
 }
 
 /// Marker strings written around a launched command's output.
@@ -83,6 +84,21 @@ pub trait SpawnObserver: Send + Sync {
 	fn on_spawn(&self, pid: i32, pgid: Option<i32>);
 }
 
+/// Optional hook that places each external command in an embedding-owned
+/// process boundary before it is spawned.
+pub trait ExternalCommandWrapper: Send + Sync {
+	/// Returns a replacement executable and argv, or the original command when
+	/// no wrapper is needed. Errors prevent an unrestricted launch.
+	/// `env` is the complete effective child environment, including unset state.
+	fn wrap_external_command(
+		&self,
+		executable: &OsStr,
+		argv0: &OsStr,
+		args: &[OsString],
+		env: &[(OsString, OsString)],
+	) -> std::io::Result<Option<(OsString, Vec<OsString>)>>;
+}
+
 /// Parameters for execution.
 #[derive(Clone, Default)]
 pub struct ExecutionParameters {
@@ -112,6 +128,8 @@ pub struct ExecutionParameters {
 	/// Optional flag a command raises when it reports an error yet goes on,
 	/// so its exit status does not show the failure.
 	reported_error:           Option<Arc<AtomicBool>>,
+	/// Optional per-external-command process boundary.
+	external_command_wrapper: Option<Arc<dyn ExternalCommandWrapper>>,
 	/// Whether redirections to a FIFO are left for the external command's
 	/// child to make (see [`DeferredRedirect`]). Set for a background external
 	/// command, whose parent spawns it before going on.
@@ -127,8 +145,8 @@ pub struct ExecutionParameters {
 /// the parent has spawned it. Opening a FIFO waits for its other end, which
 /// may be the next command (`/bin/cat < f & echo hi > f`), so the parent must
 /// not wait for it, as bash does not: bash opens it in the forked child. The
-/// child runs these through `/bin/sh -c 'exec "$@" …'` and becomes the
-/// command, so `$!`, `wait`, `kill` and `jobs` see its real pid.
+/// child opens these in order through `/bin/sh`, taking paths from native
+/// positional arguments, then execs the command so `$!` and `wait` see its pid.
 ///
 /// Once one redirection is deferred, each later one that sets or reads a
 /// descriptor a deferred one sets or reads is deferred too, so the child makes
@@ -138,7 +156,7 @@ pub struct ExecutionParameters {
 pub(crate) enum DeferredRedirect {
 	/// `fd OP path`; `options` reopen it in the parent if the redirections
 	/// must be made there after all.
-	Open { fd: ShellFd, op: &'static str, path: String, options: pi_vfs::OpenOptions },
+	Open { fd: ShellFd, op: &'static str, path: std::path::PathBuf, options: pi_vfs::OpenOptions },
 	/// `fd>&from`.
 	Duplicate { fd: ShellFd, from: ShellFd },
 	/// `fd>&-`.
@@ -287,6 +305,16 @@ impl ExecutionParameters {
 	/// if any.
 	pub fn reported_error(&self) -> Option<&Arc<AtomicBool>> {
 		self.reported_error.as_ref()
+	}
+
+	/// Assigns a wrapper that must be applied before external commands spawn.
+	pub fn set_external_command_wrapper(&mut self, wrapper: Arc<dyn ExternalCommandWrapper>) {
+		self.external_command_wrapper = Some(wrapper);
+	}
+
+	/// Returns the active external-command wrapper, if any.
+	pub fn external_command_wrapper(&self) -> Option<&Arc<dyn ExternalCommandWrapper>> {
+		self.external_command_wrapper.as_ref()
 	}
 
 	/// Returns the standard input file; usable with `write!` et al.
@@ -565,6 +593,9 @@ async fn spawn_async_ao_list_as_job<'a, SE: extensions::ShellExtensions>(
 		// The parent spawns this command before going on, so it must not wait for
 		// a FIFO's other end; see `DeferredRedirect`.
 		let mut direct_params = async_params.clone();
+		// A direct job retains the caller's hook and output owner. Pipeline stages
+		// and output redirects still disable marking before the external spawn.
+		direct_params.command_output_disabled = params.command_output_disabled;
 		direct_params.defer_fifo_redirects = true;
 		match try_spawn_pipeline_as_job(&pipeline, ao_list.to_string(), shell, &direct_params).await? {
 			Some(job) => job,
@@ -655,11 +686,14 @@ async fn classify_background_process_pipeline<SE: extensions::ShellExtensions>(
 	let [command_name] = expanded.as_slice() else {
 		return Ok(BackgroundProcessPipeline::Internal);
 	};
+	let Some(command_name) = command_name.to_str() else {
+		return Ok(BackgroundProcessPipeline::Direct);
+	};
 
 	if shell.aliases().contains_key(command_name) {
 		return Ok(BackgroundProcessPipeline::Internal);
 	}
-	if let Some(registration) = shell.builtins().get(command_name.as_str())
+	if let Some(registration) = shell.builtins().get(command_name)
 		&& !registration.disabled
 	{
 		return if registration.transparent_background_wrapper {
@@ -669,7 +703,7 @@ async fn classify_background_process_pipeline<SE: extensions::ShellExtensions>(
 			Ok(BackgroundProcessPipeline::Internal)
 		};
 	}
-	if shell.funcs().get(command_name.as_str()).is_some() {
+	if shell.funcs().get(command_name).is_some() {
 		return Ok(BackgroundProcessPipeline::Internal);
 	}
 
@@ -1454,7 +1488,7 @@ impl Execute for ast::CaseClauseCommand {
 				.await;
 		}
 
-		let expanded_value = expansion::basic_expand_word(shell, params, &self.value).await?;
+		let expanded_value = expansion::basic_expand_native_word(shell, params, &self.value).await?;
 		let mut result: ExecutionResult = ExecutionResult::success();
 		let mut force_execute_next_case = false;
 
@@ -1470,7 +1504,7 @@ impl Execute for ast::CaseClauseCommand {
 						.set_extended_globbing(shell.options().extended_globbing)
 						.set_case_insensitive(shell.options().case_insensitive_conditionals);
 
-					if expanded_pattern.exactly_matches(expanded_value.as_str())? {
+					if expanded_pattern.exactly_matches_os(&expanded_value)? {
 						matches = true;
 						break;
 					}
@@ -1772,7 +1806,7 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 						.open_files
 						.set_fd(installed_fd_num, substitution_file);
 
-					args.push(CommandArg::String(std::format!("/dev/fd/{installed_fd_num}")));
+					args.push(CommandArg::String(std::format!("/dev/fd/{installed_fd_num}").into()));
 				},
 				CommandPrefixOrSuffixItem::AssignmentWord(assignment, word) => {
 					if args.is_empty() {
@@ -1807,14 +1841,14 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 
 					if args.is_empty() {
 						if let Some(cmd_name) = next_args.first() {
-							if let Some(alias_value) = context.shell.aliases().get(cmd_name.as_str()) {
+							if let Some(alias_value) = cmd_name.to_str().and_then(|name| context.shell.aliases().get(name)) {
 								//
 								// TODO(#57): This is a total hack; aliases are supposed to be
 								// handled much earlier in the process.
 								//
 								let mut alias_pieces: Vec<_> = alias_value
 									.split_ascii_whitespace()
-									.map(|i| i.to_owned())
+									.map(OsString::from)
 									.collect();
 
 								next_args.remove(0);
@@ -1823,14 +1857,10 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 								next_args = alias_pieces;
 							}
 
-							let first_arg = next_args[0].as_str();
 
 							// Check if we're going to be invoking a special declaration builtin.
 							// That will change how we parse and process args.
-							if context
-								.shell
-								.builtins()
-								.get(first_arg)
+							if next_args[0].to_str().and_then(|name| context.shell.builtins().get(name))
 								.is_some_and(|r| !r.disabled && r.declaration_builtin)
 							{
 								command_takes_assignments = true;
@@ -1919,7 +1949,7 @@ impl<SE: extensions::ShellExtensions> ExecuteInPipeline<SE> for ast::SimpleComma
 async fn execute_command(
 	mut context: PipelineExecutionContext<'_, impl extensions::ShellExtensions>,
 	params: ExecutionParameters,
-	cmd_name: String,
+	cmd_name: OsString,
 	assignments: Vec<&ast::Assignment>,
 	args: Vec<CommandArg>,
 ) -> Result<ExecutionSpawnResult, error::Error> {
@@ -1971,13 +2001,14 @@ async fn expand_assignment(
 	shell: &mut Shell<impl extensions::ShellExtensions>,
 	params: &ExecutionParameters,
 	assignment: &ast::Assignment,
-) -> Result<ast::Assignment, error::Error> {
+) -> Result<commands::ExpandedAssignment, error::Error> {
 	let value = expand_assignment_value(shell, params, &assignment.value).await?;
-	Ok(ast::Assignment {
-		name: basic_expand_assignment_name(shell, params, &assignment.name).await?,
+	let (name, index) = basic_expand_assignment_name(shell, params, &assignment.name).await?;
+	Ok(commands::ExpandedAssignment {
+		name,
+		index,
 		value,
 		append: assignment.append,
-		loc: assignment.loc.clone(),
 	})
 }
 
@@ -1985,16 +2016,16 @@ async fn basic_expand_assignment_name(
 	shell: &mut Shell<impl extensions::ShellExtensions>,
 	params: &ExecutionParameters,
 	name: &ast::AssignmentName,
-) -> Result<ast::AssignmentName, error::Error> {
+) -> Result<(String, Option<OsString>), error::Error> {
 	match name {
 		ast::AssignmentName::VariableName(name) => {
 			let expanded = expansion::basic_expand_word(shell, params, name).await?;
-			Ok(ast::AssignmentName::VariableName(expanded))
+			Ok((expanded, None))
 		},
 		ast::AssignmentName::ArrayElementName(name, index) => {
 			let expanded_name = expansion::basic_expand_word(shell, params, name).await?;
-			let expanded_index = expansion::basic_expand_word(shell, params, index).await?;
-			Ok(ast::AssignmentName::ArrayElementName(expanded_name, expanded_index))
+			let expanded_index = expansion::basic_expand_assignment_word(shell, params, index).await?;
+			Ok((expanded_name, Some(expanded_index)))
 		},
 	}
 }
@@ -2003,34 +2034,30 @@ async fn expand_assignment_value(
 	shell: &mut Shell<impl extensions::ShellExtensions>,
 	params: &ExecutionParameters,
 	value: &ast::AssignmentValue,
-) -> Result<ast::AssignmentValue, error::Error> {
+) -> Result<ShellValueLiteral, error::Error> {
 	let expanded = match value {
 		ast::AssignmentValue::Scalar(s) => {
 			let expanded_word = expansion::basic_expand_assignment_word(shell, params, s).await?;
-			ast::AssignmentValue::Scalar(ast::Word::from(expanded_word))
+			ShellValueLiteral::Scalar(expanded_word)
 		},
 		ast::AssignmentValue::Array(arr) => {
 			let mut expanded_values = vec![];
 			for (key, value) in arr {
 				if let Some(k) = key {
-					let expanded_key = expansion::basic_expand_assignment_word(shell, params, k)
-						.await?
-						.into();
-					let expanded_value = expansion::basic_expand_assignment_word(shell, params, value)
-						.await?
-						.into();
+					let expanded_key = expansion::basic_expand_assignment_word(shell, params, k).await?;
+					let expanded_value = expansion::basic_expand_assignment_word(shell, params, value).await?;
 					expanded_values.push((Some(expanded_key), expanded_value));
 				} else {
 					// Array elements are treated as regular words, not assignments
 					let split_expanded_value =
 						expansion::full_expand_and_split_word(shell, params, value).await?;
 					for expanded_value in split_expanded_value {
-						expanded_values.push((None, expanded_value.into()));
+						expanded_values.push((None, expanded_value));
 					}
 				}
 			}
 
-			ast::AssignmentValue::Array(expanded_values)
+			ShellValueLiteral::Array(ArrayLiteral(expanded_values))
 		},
 	};
 
@@ -2055,7 +2082,7 @@ async fn apply_assignment(
 			name
 		},
 		ast::AssignmentName::ArrayElementName(name, index) => {
-			let expanded = expansion::basic_expand_word(shell, params, index).await?;
+			let expanded = expansion::basic_expand_assignment_word(shell, params, index).await?;
 			array_index = Some(expanded);
 			name
 		},
@@ -2116,9 +2143,9 @@ async fn apply_assignment(
 
 		if will_be_indexed_array {
 			array_index = Some(
-				arithmetic::expand_and_eval(shell, params, idx.as_str(), false)
+				arithmetic::expand_and_eval(shell, params, idx.to_str().ok_or_else(|| error::Error::from(error::ErrorKind::InternalError("array index is not valid UTF-8".into())))?, false)
 					.await?
-					.to_string(),
+					.to_string().into(),
 			);
 		}
 	}
@@ -2195,7 +2222,14 @@ pub(crate) async fn setup_redirect(
 	params: &'_ mut ExecutionParameters,
 	redirect: &ast::IoRedirect,
 ) -> Result<(), error::Error> {
-	params.disable_command_output_marking();
+	// Redirecting only stdin cannot consume markers written to stdout. Keep
+	// every other redirect conservative, including fd duplication and ordering.
+	if !matches!(
+		redirect,
+		ast::IoRedirect::File(None | Some(0), ast::IoFileRedirectKind::Read, ast::IoFileRedirectTarget::Filename(_))
+	) {
+		params.disable_command_output_marking();
+	}
 	match redirect {
 		ast::IoRedirect::OutputAndError(f, append) => {
 			let mut expanded_fields = expansion::full_expand_and_split_word(shell, params, f).await?;
@@ -2220,7 +2254,7 @@ pub(crate) async fn setup_redirect(
 					}
 
 					let expanded_file_path: PathBuf =
-						shell.absolute_path(Path::new(expanded_fields.remove(0).as_str()));
+						shell.absolute_path(Path::new(&expanded_fields.remove(0)));
 
 					let default_fd_if_unspecified = get_default_fd_for_redirect_kind(kind);
 					match kind {
@@ -2357,7 +2391,7 @@ pub(crate) async fn setup_redirect(
 						return Err(error::ErrorKind::InvalidRedirection.into());
 					}
 
-					let mut expanded = expanded_fields.remove(0);
+					let mut expanded = expanded_fields.remove(0).into_string().map_err(|_| error::Error::from(error::ErrorKind::InvalidRedirection))?;
 
 					let dash = if expanded.ends_with('-') {
 						expanded.pop();
@@ -2414,7 +2448,7 @@ pub(crate) async fn setup_redirect(
 						// Special case for compatibility: redirect stdout and stderr to the file
 						// given by `expanded`.
 						setup_redirect_output_and_error_to(
-							shell, params, &expanded, false, /* append? */
+							shell, params, OsStr::new(&expanded), false, /* append? */
 						)
 						.await?;
 					} else {
@@ -2467,10 +2501,10 @@ pub(crate) async fn setup_redirect(
 			let io_here_doc = if io_here.requires_expansion {
 				expansion::basic_expand_heredoc_word(shell, params, &io_here.doc).await?
 			} else {
-				io_here.doc.flatten()
+				io_here.doc.flatten().into()
 			};
 
-			let f = setup_open_file_with_contents(io_here_doc.as_str())?;
+			let f = setup_open_file_with_contents(io_here_doc.as_encoded_bytes())?;
 			if params.touches_deferred(fd_num) {
 				materialize_deferred_redirects(shell, params).await?;
 			}
@@ -2482,10 +2516,10 @@ pub(crate) async fn setup_redirect(
 			// If not specified, default to stdin (fd 0).
 			let fd_num = fd_num.unwrap_or(0);
 
-			let mut expanded_word = expansion::basic_expand_word(shell, params, word).await?;
-			expanded_word.push('\n');
+			let mut expanded_word = expansion::basic_expand_assignment_word(shell, params, word).await?;
+			expanded_word.push("\n");
 
-			let f = setup_open_file_with_contents(expanded_word.as_str())?;
+			let f = setup_open_file_with_contents(expanded_word.as_encoded_bytes())?;
 			if params.touches_deferred(fd_num) {
 				materialize_deferred_redirects(shell, params).await?;
 			}
@@ -2509,7 +2543,7 @@ pub(crate) async fn setup_redirect(
 async fn setup_redirect_output_and_error_to(
 	shell: &Shell<impl extensions::ShellExtensions>,
 	params: &mut ExecutionParameters,
-	file_path: &str,
+	file_path: &OsStr,
 	append: bool,
 ) -> Result<(), error::Error> {
 	let abs_file_path: PathBuf = shell.absolute_path(Path::new(file_path));
@@ -2598,10 +2632,7 @@ fn child_open(
 	if fd > MAX_DEFERRED_FD {
 		return None;
 	}
-	let open = || {
-		path.to_str()
-			.map(|path| DeferredRedirect::Open { fd, op, path: path.to_owned(), options: options.clone() })
-	};
+	let open = || Some(DeferredRedirect::Open { fd, op, path: path.to_owned(), options: options.clone() });
 	if !follows {
 		return if may_wait && is_native_fifo(shell, path) { open() } else { None };
 	}
@@ -2649,7 +2680,7 @@ pub(crate) async fn materialize_deferred_redirects(
 		match redirect {
 			DeferredRedirect::Open { fd, path, options, .. } => {
 				let file = shell.open_file(&options, &path, params).await.map_err(|err| {
-					error::ErrorKind::RedirectionFailure(path.clone(), err.to_string())
+					error::ErrorKind::RedirectionFailure(crate::escape::force_quote_native(path.as_os_str(), crate::escape::QuoteMode::SingleQuote), err.to_string())
 				})?;
 				params.open_files.set_fd(fd, file);
 			},
@@ -2668,27 +2699,29 @@ pub(crate) async fn materialize_deferred_redirects(
 	Ok(())
 }
 
-/// The `/bin/sh -c` script that makes `redirects` and then becomes the
-/// command given as its positional parameters: `exec "$@" 0<'/tmp/f' 2>&1`.
-/// Each path is a single-quoted literal (a `'` in it written `'\''`), so the
-/// script sets no variable that the command's environment could see.
-pub(crate) fn deferred_redirect_script(redirects: &[DeferredRedirect]) -> String {
+/// Builds the child trampoline and native path operands. Opens consume one
+/// positional parameter each, in order, before the final exec of the payload.
+/// No filename is interpolated into shell source or stored in the environment.
+pub(crate) fn deferred_redirect_script(redirects: &[DeferredRedirect]) -> (String, Vec<std::ffi::OsString>) {
 	use std::fmt::Write as _;
-	let mut script = String::from("exec \"$@\"");
+	let mut script = String::new();
+	let mut paths = Vec::new();
 	for redirect in redirects {
 		match redirect {
 			DeferredRedirect::Open { fd, op, path, .. } => {
-				let _ = write!(script, " {fd}{op}'{}'", path.replace('\'', "'\\''"));
+				let _ = write!(script, "exec {fd}{op}\"$1\"; shift; ");
+				paths.push(path.as_os_str().to_owned());
 			},
 			DeferredRedirect::Duplicate { fd, from } => {
-				let _ = write!(script, " {fd}>&{from}");
+				let _ = write!(script, "exec {fd}>&{from}; ");
 			},
 			DeferredRedirect::Close { fd } => {
-				let _ = write!(script, " {fd}>&-");
+				let _ = write!(script, "exec {fd}>&-; ");
 			},
 		}
 	}
-	script
+	script.push_str("exec \"$@\"");
+	(script, paths)
 }
 
 const fn get_default_fd_for_redirect_kind(kind: &ast::IoFileRedirectKind) -> ShellFd {
@@ -2778,9 +2811,8 @@ fn setup_process_substitution(
 // pipe or drops the reader (`BrokenPipe`), so no `JoinHandle` is retained.
 // Targets without OS thread support keep upstream's synchronous write path
 // so heredocs continue to work there instead of failing at thread spawn.
-fn setup_open_file_with_contents(contents: &str) -> Result<OpenFile, error::Error> {
+fn setup_open_file_with_contents(bytes: &[u8]) -> Result<OpenFile, error::Error> {
 	let (reader, mut writer) = std::io::pipe()?;
-	let bytes = contents.as_bytes();
 
 	// Linux fast path: grow the pipe so the entire body fits inline.
 	// Falls through to the generic writer when (a) `bytes.len()`

@@ -157,7 +157,7 @@ impl CommandCommand {
 		let mut cmd = commands::SimpleCommand::new(
 			commands::ShellForCommand::ParentShell(context.shell),
 			context.params,
-			context.command_name,
+			context.command_name.into(),
 			command_and_args,
 		);
 		cmd.use_functions = false;

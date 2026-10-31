@@ -215,7 +215,7 @@ pub struct CreateOptions<SE: extensions::ShellExtensions = extensions::DefaultSh
 	/// The name of the shell.
 	pub shell_name: Option<String>,
 	/// Base positional arguments for the shell (not including the shell name).
-	pub shell_args: Option<Vec<String>>,
+	pub shell_args: Option<Vec<std::ffi::OsString>>,
 	/// Optionally provides a display string describing the version and variant
 	/// of the shell.
 	pub shell_product_display_str: Option<String>,

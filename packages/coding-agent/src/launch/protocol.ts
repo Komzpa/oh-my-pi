@@ -59,6 +59,7 @@ export type DaemonOperation =
 			/** Stop only this generation (`DaemonSnapshot.id`); another one is left running. Legacy brokers ignore it. */
 			id?: string;
 	  }
+	| { op: "release"; timeoutMs: number }
 	| { op: "restart"; name: string }
 	| { op: "mode"; name: string; mode: "persist" | "session" | "detached" }
 	| { op: "describe"; name: string }
@@ -86,6 +87,7 @@ export type DaemonRpcResult =
 	| { op: "wait"; daemon: DaemonSnapshot; matched?: string; timedOut: boolean }
 	| { op: "send"; daemon: DaemonSnapshot }
 	| { op: "stop"; daemon: DaemonSnapshot }
+	| { op: "release" }
 	| { op: "restart"; daemon: DaemonSnapshot }
 	| { op: "mode"; daemon: DaemonSnapshot }
 	| { op: "describe"; daemon: DaemonSnapshot; spec: DaemonSpec }
@@ -369,6 +371,8 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs"),
 				id: optionalString(source.id, "operation.id"),
 			};
+		case "release":
+			return { op, timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs") };
 		case "restart":
 		case "describe":
 			return { op, name: stringValue(source.name, "operation.name") };
@@ -439,5 +443,7 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 			return { op: "cancel", cancelled: booleanValue(source.cancelled, "result.cancelled") };
 		case "shutdown":
 			return { op: "shutdown" };
+		case "release":
+			return { op: "release" };
 	}
 }

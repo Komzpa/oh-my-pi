@@ -81,7 +81,7 @@ impl builtins::Command for HistoryCommand {
 				|| context.shell.history_file_path(),
 				|file| Some(context.shell.absolute_path(Path::new(file))),
 			),
-			time_format:       context.shell.history_time_format(),
+			time_format:       context.shell.history_time_format()?,
 			filesystem:        context.shell.filesystem().clone(),
 		};
 
@@ -264,8 +264,7 @@ fn expand_history_arg(history: &history::History, arg: &str) -> Result<String, (
 			},
 			'#' => {
 				i += 1;
-				let current_line = expanded.clone();
-				expanded.push_str(&current_line);
+				expanded.extend_from_within(..);
 				continue;
 			},
 			':' => latest_history_event(history)?,

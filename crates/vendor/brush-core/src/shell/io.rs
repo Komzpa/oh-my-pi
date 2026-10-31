@@ -51,10 +51,8 @@ impl<SE: extensions::ShellExtensions> crate::Shell<SE> {
 		// but if BASH_XTRACEFD is set and refers to a valid file descriptor, use that
 		// instead.
 		let trace_file = if let Some((_, xtracefd_var)) = self.env.get("BASH_XTRACEFD")
-			&& let Ok(fd) = xtracefd_var
-				.value()
-				.to_cow_str(self)
-				.parse::<super::ShellFd>()
+			&& let Ok(value) = xtracefd_var.value().to_cow_str(self)
+			&& let Ok(fd) = value.parse::<super::ShellFd>()
 			&& let Some(file) = self.open_files.try_fd(fd)
 		{
 			Some(file.clone())

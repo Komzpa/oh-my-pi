@@ -14,7 +14,7 @@
 //! disabled for writes, ambient `GIT_DIR`-family vars stripped, bounded output
 //! capture, and deadline + SIGTERM→SIGKILL termination via tokio.
 
-use std::{ffi::OsStr, path::Path, process::Stdio, time::Duration};
+use std::{ffi::OsStr, path::Path, process::Stdio, sync::Arc, time::Duration};
 
 use tokio::io::AsyncReadExt;
 use tokio_util::sync::CancellationToken;
@@ -77,6 +77,10 @@ pub(crate) struct RunOptions {
 	pub stdin:     Option<Vec<u8>>,
 	/// Cooperative cancellation: the child is terminated when triggered.
 	pub cancel:    Option<CancellationToken>,
+	/// Verified process boundary reused across invocations. When unset, the
+	/// process-wide shared boundary is used, so repeated status/diff/log
+	/// calls verify the slice once instead of per call.
+	pub scope:     Option<Arc<crate::process_limit::ToolProcessLimit>>,
 }
 
 /// Build the hardened argv prefix.
@@ -188,8 +192,23 @@ fn is_utf8_locale(value: &str) -> bool {
 /// Non-zero exits are returned in [`CliOutput`], not raised.
 pub(crate) async fn run(cwd: &Path, args: &[String], options: &RunOptions) -> Result<CliOutput> {
 	let argv = hardened_args(args, options.read_only);
-	let mut cmd = tokio::process::Command::new("git");
-	cmd.args(&argv)
+	let scope = options
+		.scope
+		.clone()
+		.unwrap_or_else(crate::process_limit::shared);
+	let probe = vec![std::ffi::OsString::from("git")];
+	// First-use enforcement runs manager subprocesses; keep them off the
+	// async worker. Reuse of the verified boundary makes this a no-op after
+	// the first call, and the shared owner is never dropped per call, so no
+	// per-invocation slice create/verify/stop cycle remains.
+	let payload_env = crate::process_limit::ScopeEnvironment::inherited();
+	let command =
+		tokio::task::spawn_blocking(move || scope.wrap_scope_command(&probe, &payload_env))
+			.await
+			.map_err(|err| Error::backend("git scope", err))??;
+	let mut cmd = tokio::process::Command::new(&command[0]);
+	cmd.args(&command[1..])
+		.args(&argv)
 		.current_dir(cwd)
 		.stdin(if options.stdin.is_some() {
 			Stdio::piped()
@@ -346,8 +365,13 @@ fn run_sync_impl(
 	write: Option<&SyncWrite<'_>>,
 ) -> Result<CliOutput> {
 	let argv = hardened_args(args, write.is_none());
-	let mut cmd = std::process::Command::new("git");
-	cmd.args(&argv)
+	let command = crate::process_limit::shared().wrap_scope_command(
+		&[std::ffi::OsString::from("git")],
+		&crate::process_limit::ScopeEnvironment::inherited(),
+	)?;
+	let mut cmd = std::process::Command::new(&command[0]);
+	cmd.args(&command[1..])
+		.args(&argv)
 		.current_dir(cwd)
 		.stdin(if write.is_some() {
 			Stdio::piped()
@@ -414,8 +438,8 @@ fn wait_sync(
 	};
 	// The child has exited (or been killed), so the pipes reach EOF and the
 	// readers terminate; join can only block briefly on the final drain.
-	let stdout = stdout.map_or_else(String::new, |h| h.join().unwrap_or_default());
-	let stderr = stderr.map_or_else(String::new, |h| h.join().unwrap_or_default());
+	let stdout = stdout.map_or_default(|h| h.join().unwrap_or_default());
+	let stderr = stderr.map_or_default(|h| h.join().unwrap_or_default());
 	let Some(status) = status else {
 		return Err(Error::CliTimeout { command: format!("git {}", argv.join(" ")) });
 	};
@@ -462,7 +486,7 @@ fn read_capped_sync(mut stream: impl std::io::Read, limit: usize) -> String {
 			truncated = true;
 		}
 	}
-	let mut text = String::from_utf8_lossy(&retained).into_owned();
+	let mut text = String::from_utf8_lossy_owned(retained);
 	if truncated {
 		text.push_str(TRUNCATION_MARKER);
 	}
@@ -505,7 +529,7 @@ async fn read_capped(mut stream: impl tokio::io::AsyncRead + Unpin) -> Result<St
 			truncated = true;
 		}
 	}
-	let mut text = String::from_utf8_lossy(&retained).into_owned();
+	let mut text = String::from_utf8_lossy_owned(retained);
 	if truncated {
 		text.push_str(TRUNCATION_MARKER);
 	}

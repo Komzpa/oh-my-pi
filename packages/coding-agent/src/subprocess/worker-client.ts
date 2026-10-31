@@ -242,7 +242,7 @@ export function inferenceWorkerEnv(overlay?: Record<string, string>): Record<str
  * worker never blocks process exit. `exitLabel` prefixes the worker-error
  * message surfaced for an unexpected (non-intentional) exit.
  */
-export function createWorkerSubprocess<Outbound>(options: {
+interface CreateWorkerSubprocessOptions {
 	spawnCommand: WorkerSpawnCommand;
 	env: Record<string, string>;
 	exitLabel: string;
@@ -252,7 +252,40 @@ export function createWorkerSubprocess<Outbound>(options: {
 	reportCleanExit?: boolean;
 	/** Whether an idle worker should stop keeping the parent event loop alive. */
 	unref?: boolean;
-}): SpawnedSubprocess<Outbound> {
+}
+
+interface WorkerResourceScope {
+	wrapCommandAsync(command: string[], env?: Record<string, string>): Promise<string[]>;
+	close(): void;
+}
+
+export function createWorkerSubprocess<Outbound>(options: CreateWorkerSubprocessOptions): SpawnedSubprocess<Outbound> {
+	return spawnWorkerSubprocess(options, options.spawnCommand.cmd);
+}
+
+/**
+ * Spawn a worker inside a resource scope without blocking the event loop on
+ * first-use scope setup. Scope ownership transfers to the spawned worker on
+ * success; setup and spawn failures close it before rejecting.
+ */
+export async function createScopedWorkerSubprocess<Outbound>(
+	options: CreateWorkerSubprocessOptions & { resourceScope: WorkerResourceScope },
+): Promise<SpawnedSubprocess<Outbound>> {
+	let cmd: string[];
+	try {
+		cmd = await options.resourceScope.wrapCommandAsync(options.spawnCommand.cmd, options.env);
+	} catch (error) {
+		options.resourceScope.close();
+		throw error;
+	}
+	return spawnWorkerSubprocess(options, cmd, options.resourceScope);
+}
+
+function spawnWorkerSubprocess<Outbound>(
+	options: CreateWorkerSubprocessOptions,
+	cmd: string[],
+	resourceScope?: WorkerResourceScope,
+): SpawnedSubprocess<Outbound> {
 	const inbound = new Set<(message: Outbound) => void>();
 	const errors = new Set<(error: Error) => void>();
 	const intentionalExit = { value: false };
@@ -268,39 +301,47 @@ export function createWorkerSubprocess<Outbound>(options: {
 		stderrDrainStarted = true;
 		void drainStderrCapture(stderrCapture, options.exitLabel, stderrTail).finally(() => stderrDrained.resolve());
 	};
-	const proc = Bun.spawn({
-		cmd: options.spawnCommand.cmd,
-		cwd: options.spawnCommand.cwd,
-		detached: options.detached,
-		env: options.env,
-		stdin: "ignore",
-		stdout: "ignore",
-		stderr: stderrCapture.target,
-		serialization: "advanced",
-		windowsHide: true,
-		ipc(message) {
-			for (const handler of inbound) handler(message as Outbound);
-		},
-		onExit(_proc, exitCode, signalCode) {
-			unregisterFault();
-			startStderrDrain();
-			if (exitCode === 0 && !options.reportCleanExit) return;
-			// Swallow only the expected SIGKILL from `terminate()`; every other
-			// signal exit (SIGSEGV from a native fault, OOM SIGKILL, operator
-			// `kill -9`) is a real worker death that must fault in-flight
-			// requests so callers don't await forever.
-			if (exitCode === null && intentionalExit.value) return;
-			const reason = exitCode !== null ? `code ${exitCode}` : `signal ${signalCode ?? "unknown"}`;
-			// The stderr target is drained only after exit so idle unref'd
-			// workers do not keep the parent alive; wait for that drain before
-			// surfacing the error so the tail is complete.
-			void stderrDrained.promise.finally(() => {
-				const suffix = stderrTail.suffix();
-				const err = new Error(`${options.exitLabel} exited with ${reason}${suffix}`);
-				for (const handler of errors) handler(err);
-			});
-		},
-	});
+	let proc: Subprocess<"ignore", "ignore", number | "ignore">;
+	try {
+		proc = Bun.spawn({
+			cmd,
+			cwd: options.spawnCommand.cwd,
+			detached: options.detached,
+			env: options.env,
+			stdin: "ignore",
+			stdout: "ignore",
+			stderr: stderrCapture.target,
+			serialization: "advanced",
+			windowsHide: true,
+			ipc(message) {
+				for (const handler of inbound) handler(message as Outbound);
+			},
+			onExit(_proc, exitCode, signalCode) {
+				resourceScope?.close();
+				unregisterFault();
+				startStderrDrain();
+				if (exitCode === 0 && !options.reportCleanExit) return;
+				// Swallow only the expected SIGKILL from `terminate()`; every other
+				// signal exit (SIGSEGV from a native fault, OOM SIGKILL, operator
+				// `kill -9`) is a real worker death that must fault in-flight
+				// requests so callers don't await forever.
+				if (exitCode === null && intentionalExit.value) return;
+				const reason = exitCode !== null ? `code ${exitCode}` : `signal ${signalCode ?? "unknown"}`;
+				// The stderr target is drained only after exit so idle unref'd
+				// workers do not keep the parent alive; wait for that drain before
+				// surfacing the error so the tail is complete.
+				void stderrDrained.promise.finally(() => {
+					const suffix = stderrTail.suffix();
+					const err = new Error(`${options.exitLabel} exited with ${reason}${suffix}`);
+					for (const handler of errors) handler(err);
+				});
+			},
+		});
+	} catch (error) {
+		resourceScope?.close();
+		cleanupStderrCapture(stderrCapture);
+		throw error;
+	}
 	// Bun raises a malformed advanced-serialization frame as a process-global
 	// uncaughtException with no channel attribution (oven-sh/bun#37287). Register
 	// a fault handler so that failure rejects this worker's in-flight requests and

@@ -26,12 +26,12 @@ pub(crate) fn inherit_env_vars(
 ) -> Result<(), error::Error> {
 	for (k, v) in sys::env::get_host_env_vars() {
 		// See if it's a function exported by an ancestor process.
-		if let Some(func_name) = k.strip_prefix("BASH_FUNC_")
+		if let Some(func_name) = k.to_str().and_then(|key| key.strip_prefix("BASH_FUNC_"))
 			&& let Some(func_name) = func_name.strip_suffix("%%")
 		{
 			// Intentionally best-effort; don't fail out of the shell if we can't
 			// parse an incoming function.
-			if shell.define_func_from_str(func_name, v.as_str()).is_ok()
+			if v.to_str().is_some_and(|source| shell.define_func_from_str(func_name, source).is_ok())
 				&& let Some(func) = shell.func_mut(func_name)
 			{
 				func.export();
@@ -45,7 +45,7 @@ pub(crate) fn inherit_env_vars(
 			continue;
 		}
 
-		let mut var = ShellVariable::new(ShellValue::String(v));
+		let mut var = ShellVariable::new(ShellValue::String(v.into()));
 		var.export();
 		shell.env_mut().set_global(k, var)?;
 	}
@@ -68,7 +68,7 @@ pub(crate) fn init_well_known_vars(
 			.env_mut()
 			.set_global("BASH", ShellVariable::new(shell_name.clone()))?;
 		// Initialize $_ to the shell name ($0).
-		shell.update_last_arg_variable(Some(shell_name));
+		shell.update_last_arg_variable(Some(shell_name.into()));
 	}
 
 	// BASHOPTS
@@ -82,7 +82,7 @@ pub(crate) fn init_well_known_vars(
 	// BASHPID
 	#[cfg(not(target_family = "wasm"))]
 	{
-		let mut bashpid_var = ShellVariable::new(ShellValue::String(std::process::id().to_string()));
+		let mut bashpid_var = ShellVariable::new(ShellValue::String(std::process::id().to_string().into()));
 		bashpid_var.treat_as_integer();
 		shell.env_mut().set_global("BASHPID", bashpid_var)?;
 	}
@@ -96,7 +96,7 @@ pub(crate) fn init_well_known_vars(
 					shell
 						.aliases()
 						.iter()
-						.map(|(k, v)| (Some(k.to_owned()), v.to_owned()))
+						.map(|(k, v)| (Some(k.into()), v.into()))
 						.collect::<Vec<_>>(),
 				);
 
@@ -267,7 +267,7 @@ pub(crate) fn init_well_known_vars(
 
 	// EUID
 	if let Ok(euid) = sys::users::get_effective_uid() {
-		let mut euid_var = ShellVariable::new(ShellValue::String(format!("{euid}")));
+		let mut euid_var = ShellVariable::new(ShellValue::String(format!("{euid}").into()));
 		euid_var.treat_as_integer().set_readonly();
 		shell.env_mut().set_global("EUID", euid_var)?;
 	}
@@ -314,7 +314,7 @@ pub(crate) fn init_well_known_vars(
 		let histfile = home_dir.join(".brush_history");
 		shell.env_mut().set_global(
 			"HISTFILE",
-			ShellVariable::new(ShellValue::String(histfile.to_string_lossy().to_string())),
+			ShellVariable::new(ShellValue::String(histfile.into_os_string())),
 		)?;
 	}
 
@@ -468,7 +468,7 @@ pub(crate) fn init_well_known_vars(
 	shell.env_mut().set_global("SHELLOPTS", shellopts_var)?;
 
 	// SHLVL
-	let input_shlvl = shell.env_str("SHLVL").unwrap_or_else(|| "0".into());
+	let input_shlvl = shell.env_str("SHLVL")?.unwrap_or_else(|| "0".into());
 	let updated_shlvl = input_shlvl.as_ref().parse::<u32>().unwrap_or(0) + 1;
 	let mut shlvl_var = ShellVariable::new(updated_shlvl.to_string());
 	shlvl_var.export();
@@ -516,7 +516,7 @@ pub(crate) fn init_well_known_vars(
 
 	// UID
 	if let Ok(uid) = sys::users::get_current_uid() {
-		let mut uid_var = ShellVariable::new(ShellValue::String(format!("{uid}")));
+		let mut uid_var = ShellVariable::new(ShellValue::String(format!("{uid}").into()));
 		uid_var.treat_as_integer().set_readonly();
 		shell.env_mut().set_global("UID", uid_var)?;
 	}

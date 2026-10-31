@@ -21,6 +21,7 @@ import * as path from "node:path";
 import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins/manager";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import * as backgroundPriority from "@oh-my-pi/pi-utils/background-priority";
 import type { Subprocess } from "bun";
 
 function textStream(text: string): ReadableStream<Uint8Array> {
@@ -137,6 +138,9 @@ describe("PluginManager.install with git sources", () => {
 	let pluginsPkgJson: string;
 
 	beforeEach(async () => {
+		// Observe the package-manager payload before production priority wrapping.
+		vi.spyOn(backgroundPriority, "spawnBackground").mockImplementation(((cmd: string[], options?: object) =>
+			Bun.spawn(cmd, options)) as typeof Bun.spawn);
 		tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-plugin-git-"));
 		pluginsDir = path.join(tmpRoot, "plugins");
 		pluginsNodeModules = path.join(pluginsDir, "node_modules");
@@ -470,6 +474,45 @@ describe("PluginManager.install with git sources", () => {
 		expect(result.name).toBe("atref-plugin");
 		expect(result.version).toBe("1.0.0");
 	});
+
+	for (const [input, expected] of [
+		["git:github.com/foo/bar", "https://github.com/foo/bar"],
+		["git:git@github.com:foo/bar@v1", "git@github.com:foo/bar#v1"],
+	]) {
+		test(`installs pi-style GitHub source ${input}`, async () => {
+			await Bun.write(pluginsPkgJson, JSON.stringify({ name: "omp-plugins", private: true, dependencies: {} }));
+
+			vi.spyOn(Bun, "spawn").mockImplementation(((cmd: string[]) => {
+				expect(cmd[0]).toBe(process.execPath);
+				expect(cmd[1]).toBe("install");
+				expect(cmd[2]).toBe(expected);
+
+				const prepare = (async () => {
+					await Bun.write(
+						pluginsPkgJson,
+						JSON.stringify({ name: "omp-plugins", private: true, dependencies: { "gh-plugin": expected } }),
+					);
+					const installedDir = path.join(pluginsNodeModules, "gh-plugin");
+					await fs.mkdir(installedDir, { recursive: true });
+					await Bun.write(
+						path.join(installedDir, "package.json"),
+						JSON.stringify({ name: "gh-plugin", version: "1.0.0" }),
+					);
+				})();
+
+				return {
+					pid: 1,
+					stdout: emptyStream(),
+					stderr: emptyStream(),
+					exited: prepare.then(() => 0),
+				} as Subprocess;
+			}) as typeof Bun.spawn);
+
+			const installed = await new PluginManager(tmpRoot).install(input);
+			expect(installed.name).toBe("gh-plugin");
+			expect(installed.version).toBe("1.0.0");
+		});
+	}
 
 	test("forwards GitHub URLs verbatim, including inline credentials", async () => {
 		await Bun.write(

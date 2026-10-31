@@ -821,10 +821,9 @@ pub(crate) fn validate_ls_colors(ls_colors: &str) -> Result<(), LsColorsParseErr
 				}
 			},
 			_ => {
-				if idx + 1 >= bytes.len() {
+				let Some(&label) = bytes[idx..].first_chunk::<2>() else {
 					return Err(LsColorsParseError::InvalidSyntax);
-				}
-				let label = [bytes[idx], bytes[idx + 1]];
+				};
 				idx += 2;
 				if idx >= bytes.len() || bytes[idx] != b'=' {
 					return Err(LsColorsParseError::InvalidSyntax);
@@ -1405,8 +1404,8 @@ fn extract_time(options: &clap::ArgMatches) -> MetadataTimeField {
 /// Some env variables can be passed
 /// For now, we are only verifying if empty or not and known for `TERM`
 fn is_color_compatible_term(host: &Host) -> bool {
-	let term = host.var("TERM").map(OsString::from);
-	let colorterm = host.var("COLORTERM").map(OsString::from);
+	let term = host.var_os("TERM").map(OsString::from);
+	let colorterm = host.var_os("COLORTERM").map(OsString::from);
 
 	// Search function in the TERM struct to manage the wildcards
 	let term_matches = |term: &OsStr| -> bool {
@@ -1706,7 +1705,7 @@ fn parse_width(width_match: Option<&String>, host: &Host, runtime: &LsRuntime) -
 
 	let ret = match width_match {
 		Some(x) => parse_width_from_args(x)?,
-		None => match host.var("COLUMNS").map(OsString::from) {
+		None => match host.var_os("COLUMNS").map(OsString::from) {
 			Some(columns) => parse_width_from_env(columns),
 			None => calculate_term_size(),
 		},
@@ -1793,10 +1792,10 @@ impl Config {
 			SizeFormat::Bytes
 		};
 
-		let env_var_blocksize = host.var("BLOCKSIZE").map(OsString::from);
-		let env_var_block_size = host.var("BLOCK_SIZE").map(OsString::from);
-		let env_var_ls_block_size = host.var("LS_BLOCK_SIZE").map(OsString::from);
-		let env_var_posixly_correct = host.var("POSIXLY_CORRECT").map(OsString::from);
+		let env_var_blocksize = host.var_os("BLOCKSIZE").map(OsString::from);
+		let env_var_block_size = host.var_os("BLOCK_SIZE").map(OsString::from);
+		let env_var_ls_block_size = host.var_os("LS_BLOCK_SIZE").map(OsString::from);
+		let env_var_posixly_correct = host.var_os("POSIXLY_CORRECT").map(OsString::from);
 		let mut is_env_var_blocksize = false;
 
 		let raw_block_size = if let Some(opt_block_size) = opt_block_size {
@@ -2485,7 +2484,7 @@ use std::{
 	borrow::Cow,
 	cell::LazyCell,
 	ffi::{OsStr, OsString},
-	fmt::Write as FmtWrite,
+	fmt::{NumBuffer, Write as FmtWrite},
 	io::Write,
 	iter,
 	sync::LazyLock,
@@ -2678,7 +2677,7 @@ fn push_basic_escape(buf: &mut String, byte: u8) {
 		b'\x1b' => buf.push_str("\\e"),
 		b'"' => buf.push('"'),
 		b'\'' => buf.push('\''),
-		b if (0x20..=0x7e).contains(&b) => buf.push(b as char),
+		b @ 0x20..=0x7e => buf.push(b as char),
 		_ => {
 			let _ = write!(buf, "\\{byte:03o}");
 		},
@@ -3090,7 +3089,7 @@ fn display_date(
 	};
 
 	let Ok(timestamp) = jiff::Timestamp::try_from(time) else {
-		out.extend(system_time_to_sec(time).0.to_string().as_bytes());
+		out.extend(system_time_to_sec(time).0.format_into(&mut NumBuffer::new()).as_bytes());
 		return Ok(());
 	};
 	let zoned = Zoned::new(timestamp, config.time_zone.clone());
@@ -4789,8 +4788,7 @@ impl<'a> PathData<'a> {
 			PathDataDisplayName::Custom(
 				dir_entry
 					.as_ref()
-					.map(|entry| entry.file_name())
-					.unwrap_or_default()
+					.map_or_default(|entry| entry.file_name())
 					.into(),
 			)
 		};
@@ -5115,7 +5113,7 @@ pub fn list(locs: Vec<&Path>, config: &Config, out: StreamWriter) -> std::io::Re
 			// combinatorial explosion; we decrease it logarithmically here.
 			let (cap, len) = (state.stack.capacity(), state.stack.len());
 			if cap > (len + 4) * 2 {
-				state.stack.shrink_to(len + (cap - len) / 2);
+				state.stack.shrink_to(len.midpoint(cap));
 			}
 		}
 

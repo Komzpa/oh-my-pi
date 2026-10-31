@@ -27,6 +27,50 @@ This document covers execution/process/terminal primitives in `@oh-my-pi/pi-nati
 
 ## Shell subsystem (`shell`)
 
+### Per-tool-call process limits
+
+On Linux with cgroup v2 and a working systemd user manager, each shell tool
+call places external commands and their descendants in its own transient slice
+with kernel-enforced `TasksMax=16384` (threads count; override with
+`OMP_TOOL_TASKS_MAX`, an integer from 64 to 4194304; an invalid value rejects
+external commands). The task limit is read back
+from the cgroup before user code runs. A successful persistent-shell call
+retains its scope while external background work remains live; later runs prune
+empty scopes, and cancellation, timeout, cap-hit, or session teardown stops the
+owned scope. Missing or unverifiable Linux enforcement rejects external
+commands. Git subprocesses and commit hooks, PTY commands, and retained Python/JavaScript eval kernels use the same
+native boundary owner. Scope execution preserves terminal handles, IPC,
+environment, working directory, and inherited resource limits. Linux refuses
+an unbounded JavaScript Worker fallback when subprocess startup fails.
+
+Local bash commands carry `OMP_SESSION_ID`. The native boundary binds its first
+launch to `omp-tool-<h12>.slice`, using a child named
+`omp-tool-<h12>-call-<pid>-<id>.slice`, where `h12` is the first 12 hex characters
+of SHA-256 of the full session id; systemd's slice hierarchy gives the
+session a single parent without changing the per-call `TasksMax` limit.
+`sessionSliceName(sessionId)` in the natives package is the canonical naming
+helper. Unowned host operations retain their existing per-call boundary.
+
+Local tool PATH puts a `systemd-run` shim first. It adds the session slice only
+when the manager options omit `--slice` (both `--slice=value` and `--slice value`
+are preserved). An operand's `--slice` is not a manager option. Deliberate
+long-lived work uses `--slice=omp-keep.slice`; no PID-based keep mechanism is
+provided. Slice shutdown, startup orphan reaping, launcher migration, and kept
+process visibility are owned by the session lifecycle, not this native wrapper.
+
+The shared Linux scope argv starts user work through `nice -n19 ionice -c2 -n7`:
+children and their ordinary descendants run at niceness 19 and best-effort IO
+priority 7, while omp's own CPU and IO priority are unchanged. Helpers are
+resolved against the host PATH before the command's environment is applied.
+These per-process priorities are distinct from cgroup CPU/IO weights, which do
+not set niceness or IO scheduling class. Non-scoped launch paths are separate
+owners and do not acquire priority changes from this boundary.
+
+This is resource containment, not an adversarial sandbox. Explicit operations
+against service managers, remote hosts, or existing daemons remain outside the
+child-process boundary; ordinary `systemctl --user` administration still works.
+Other platforms retain normal shell behavior without these resource guarantees.
+
 ### API model
 
 Shell execution modes:
@@ -50,8 +94,8 @@ Rust creates `brush_core::Shell` with:
 - process builtins registered unconditionally from `pi_builtins::process_builtins()` — `nohup`, `pgrep`, `pkill`, `pidwait`, `ps`, `sleep`, `timeout`, and `top` (`nohup` is withheld when `PI_DISABLE_NOHUP_BUILTIN` is set; `kill` comes from the default bash-mode set, where `pi-builtins`' richer implementation replaces brush's original),
 - in-process utility builtins registered from `pi_builtins::utility_builtins()` (see the next section),
 - an opt-in `git` builtin (`crates/pi-shell/src/git.rs`), registered when either layer below is on; anything a layer does not take runs the git binary with the original arguments:
-  - `PI_SMART_GIT` serves supported `git worktree add` invocations through `pi-vcs`: copy-on-write clone, worktree registration, and reconciliation to the target commit, with an in-process checkout fallback when cloning is unavailable;
-  - `PI_GIT_GUARD` (set by the coding agent from `bash.gitGuard`; `crates/pi-shell/src/git/guard.rs`) refuses, with exit status 1, git commands that discard or move work in a shared checkout: `stash` other than `list`/`show`/`create`, `reset --hard`, `reset` to a commit other than HEAD's, `switch` and `checkout` of a branch or commit, and `checkout` of paths and working-tree `restore` unless the repository is mid-merge/rebase/cherry-pick/revert (unmerged index entries or the operation's state files; a finished rebase's leftover `REBASE_HEAD` does not count), and even then not forced or whole-tree forms. It judges the expanded argv in the directory git actually runs in (`cd` and `-C` applied); `--git-dir`/`--work-tree`/`GIT_DIR`-style redirection forfeits the conflict exemption,
+   - `PI_SMART_GIT` serves supported `git worktree add` invocations through `pi-vcs`: copy-on-write clone, worktree registration, and reconciliation to the target commit, with an in-process checkout fallback when cloning is unavailable;
+   - `PI_GIT_GUARD` (set by the coding agent from `bash.gitGuard`; `crates/pi-shell/src/git/guard.rs`) judges git commands that discard or move work by the checkout they run in. In a repository's main checkout, which other sessions may share, it refuses with exit status 1: `stash` other than `list`/`show`/`create`, `reset --hard`, `reset` to a commit other than HEAD's, `switch` and `checkout` of a branch or commit, and `checkout` of paths and working-tree `restore` unless the repository is mid-merge/rebase/cherry-pick/revert (unmerged index entries or the operation's state files; a finished rebase's leftover `REBASE_HEAD` does not count), and even then not forced or whole-tree forms. A linked worktree of a non-bare repository, and a submodule inside one, run everything: a command that discards uncommitted tracked changes first records them as a `git stash create` commit on the `refs/omp/discarded` reflog and says so on stderr (refused instead when it recurses into submodules, through `--recurse-submodules` or `submodule.recurse`, since that record does not hold their changes), and `stash pop`/`apply`/`drop`/`branch`/`clear` refuse a stash-list entry whose `WIP on <branch>:`/`On <branch>:` subject names another branch, a detached HEAD, or no branch. It judges the expanded argv in the directory git actually runs in (`cd` and `-C` applied); `--git-dir`/`--work-tree`/`GIT_DIR`-style redirection is refused, since the repository it changes is not the one found from the directory,
 - skip-list for shell-sensitive vars (`PS1`, `PWD`, `SHLVL`, bash function exports, etc.),
 - a non-exported `env="$env"` fallback so PowerShell-style `$env:NAME` survives brush parameter expansion unless the user shadows `env`.
 
@@ -78,9 +122,10 @@ Beyond the bash builtins, session creation registers the in-process command-line
 
 Three search-related builtins are worth calling out:
 
-- `grep` is implemented on the ripgrep libraries (`grep-regex`/`grep-searcher`), with recursive directory walks served by `pi-walker`.
+- `grep` is implemented on the ripgrep libraries (`grep-regex`/`grep-searcher`), with directory walks and ordered parallel search served by `pi-walker` (`rg`/`grep` output stays in path order).
 - `rg` is a sibling builtin with ripgrep defaults (recursive search, ignore/hidden filtering, binary suppression) — a separate module and argument model, not an alias of `grep`.
-- `fd` is backed by `pi-walker`, `globset`, and `regex`.
+- `fd` is backed by `pi-walker`'s ordered `walk::tree` traversal, `globset`, and `regex`.
+- `ast-grep` (also `sg`) runs ast-grep 0.50's `run` command (`-p`/`-r`/`-U`, `--json`, context, `--heading`, `--files-with-matches`, `--stdin`) on the `pi-ast` search engine with ast-grep's piped (uncolored) output; `scan`, `test`, `new`, `lsp`, `outline`, `--config`, `--interactive`, `--kind`, `--debug-query`, and `--inspect` exit 2 as unsupported.
 
 Each builtin runs inside the shell process (no `fork`/`exec`) against the `pi-builtins` `Host` view of the shell (`src/host.rs`): stdio routes through the command's (possibly piped/redirected) file descriptors, path operands resolve against the shell working directory, the shell's exported environment is visible, and abort/timeout cancellation is honored. Because these builtins shadow system binaries, registration is gated in `crates/pi-shell/src/shell.rs`:
 
@@ -120,8 +165,8 @@ One-shot shell (`executeShell`) always creates and drops a fresh session per cal
 - `CancelToken` is constructed from `timeoutMs` and optional `AbortSignal`, then converted into the shared `pi_shell::cancel::CancelToken`.
 - On cancellation/timeout, shell cancellation token is triggered, descendant cleanup runs, then the task gets a 2-second graceful window (5 seconds on Windows) before forced abort.
 - Structured result flags are used:
-  - timeout -> `exitCode` omitted, `timedOut: true`.
-  - abort signal / `Shell.abort()` -> `exitCode` omitted, `cancelled: true`.
+   - timeout -> `exitCode` omitted, `timedOut: true`.
+   - abort signal / `Shell.abort()` -> `exitCode` omitted, `cancelled: true`.
 
 `Shell.abort()` behavior:
 
@@ -173,9 +218,9 @@ Concurrency guard:
 - PTY opened via `portable_pty::native_pty_system().openpty(...)`.
 - On Windows, `openpty()` is run on a helper thread with a 5s startup timeout; timeout rejects with `PTY creation timed out (5s). ConPTY may be unavailable on this system.`
 - `start()` runs the command through the configured shell:
-  - `cmd.exe`/`cmd` gets `/c`,
-  - `powershell`/`pwsh` gets `-Command`,
-  - other shells get `-lc`.
+   - `cmd.exe`/`cmd` gets `/c`,
+   - `powershell`/`pwsh` gets `-Command`,
+   - other shells get `-lc`.
 - `startArgv()` passes each argument directly to `portable_pty::CommandBuilder`.
 - PTY commands inherit the process environment after stripping Git repository-location overrides; explicit PTY `env` values can add them back.
 - Default size is `120x40`; dimensions are clamped (`cols 20..400`, `rows 5..200`) on start and resize.

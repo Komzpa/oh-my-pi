@@ -8,6 +8,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getProjectDir, readJsonl } from "@oh-my-pi/pi-utils";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import type { Subprocess } from "bun";
 import { hostHasInheritableConsole } from "../../eval/py/spawn-options";
 import type {
@@ -83,6 +84,7 @@ export interface ResolveStdioSpawnOptions {
 	env: Record<string, string | undefined>;
 	hostHasInheritableConsole?: boolean;
 	platform?: NodeJS.Platform;
+	signal?: AbortSignal;
 }
 
 const DEFAULT_WINDOWS_PATHEXT = [".COM", ".EXE", ".BAT", ".CMD"];
@@ -133,6 +135,7 @@ async function resolveWindowsCommandPath(
 	command: string,
 	cwd: string,
 	env: Record<string, string | undefined>,
+	signal?: AbortSignal,
 ): Promise<string | null> {
 	const extensions = getWindowsPathExt(env);
 	const hasExt = hasExecutableExtension(command, extensions);
@@ -140,6 +143,7 @@ async function resolveWindowsCommandPath(
 
 	if (hasPathSegment(command)) {
 		for (const candidate of candidates) {
+			signal?.throwIfAborted();
 			const resolved = path.isAbsolute(candidate) ? candidate : path.resolve(cwd, candidate);
 			if (await fileExists(resolved)) return resolved;
 		}
@@ -158,6 +162,7 @@ async function resolveWindowsCommandPath(
 	}
 	for (const dir of searchDirs) {
 		for (const candidate of candidates) {
+			signal?.throwIfAborted();
 			const resolved = path.join(dir, candidate);
 			if (await fileExists(resolved)) return resolved;
 		}
@@ -342,7 +347,7 @@ export async function resolveStdioSpawnCommand(
 	if (options.platform !== "win32") return { cmd: [config.command, ...args], detached: options.platform !== "darwin" };
 
 	const windowsHide = options.hostHasInheritableConsole === undefined ? true : !options.hostHasInheritableConsole;
-	const resolved = await resolveWindowsCommandPath(config.command, options.cwd, options.env);
+	const resolved = await resolveWindowsCommandPath(config.command, options.cwd, options.env, options.signal);
 	const resolvedCommand = resolved ?? config.command;
 	const npmShimCommand = await resolveWindowsNpmShimCommand(resolvedCommand, args, options.cwd, windowsHide);
 	if (npmShimCommand) return npmShimCommand;
@@ -560,6 +565,8 @@ export class StdioTransport implements MCPTransport {
 	>();
 	#connected = false;
 	#readLoop: Promise<void> | null = null;
+	#stderr = "";
+	#stderrLoop: Promise<void> | null = null;
 	/**
 	 * Set from `resolveStdioSpawnCommand()`'s `detached` flag in `connect()`.
 	 * Gates process-group signaling in `close()` — only a transport that
@@ -582,7 +589,8 @@ export class StdioTransport implements MCPTransport {
 	/**
 	 * Start the subprocess and begin reading.
 	 */
-	async connect(): Promise<void> {
+	async connect(signal?: AbortSignal): Promise<void> {
+		signal?.throwIfAborted();
 		if (this.#connected) return;
 
 		const env = {
@@ -595,7 +603,10 @@ export class StdioTransport implements MCPTransport {
 			env,
 			platform: process.platform,
 			hostHasInheritableConsole: hostHasInheritableConsole(),
+			signal,
 		});
+		// Resolution may outlast the connection deadline, especially on Windows PATHs.
+		signal?.throwIfAborted();
 
 		// Platform-derived session and console-window handling come from
 		// `resolveStdioSpawnCommand`: Linux/other POSIX detach into their own
@@ -607,7 +618,7 @@ export class StdioTransport implements MCPTransport {
 		// triggers macOS Apple Events TCC prompts uses the same shape; the
 		// one-object `{ cmd }` overload timed out before prompting for `mcpbridge`
 		// even with `detached: false` (#5085).
-		this.#process = Bun.spawn(spawnCommand.cmd, {
+		this.#process = spawnBackground(spawnCommand.cmd, {
 			cwd,
 			env,
 			stdin: "pipe",
@@ -621,11 +632,9 @@ export class StdioTransport implements MCPTransport {
 
 		this.#connected = true;
 
-		// Start reading stdout
+		this.#stderr = "";
+		this.#stderrLoop = this.#startStderrLoop();
 		this.#readLoop = this.#startReadLoop();
-
-		// Log stderr for debugging
-		this.#startStderrLoop();
 	}
 
 	async #startReadLoop(): Promise<void> {
@@ -650,15 +659,20 @@ export class StdioTransport implements MCPTransport {
 			}
 		} finally {
 			if (this.#connected && closeError === undefined) {
-				const exitCode = this.#process?.exitCode;
+				const proc = this.#process;
+				if (proc && (await waitForProcessExit(proc.exited, 100))) {
+					await Promise.race([this.#stderrLoop, Bun.sleep(100)]);
+				}
+				const exitCode = proc?.exitCode;
 				closeError = new MCPTransportError({
 					transport: "stdio",
 					stage: "receive",
 					failure: "eof",
-					message:
+					message: `${
 						exitCode === null || exitCode === undefined
 							? "MCP subprocess closed stdout before responding"
-							: `MCP subprocess exited with code ${exitCode} before responding`,
+							: `MCP subprocess exited with code ${exitCode} before responding`
+					}${this.#stderr.trim() ? `: ${this.#stderr.trim()}` : ""}`,
 					retryable: false,
 					code: exitCode ?? undefined,
 				});
@@ -677,11 +691,9 @@ export class StdioTransport implements MCPTransport {
 			while (this.#connected) {
 				const { done, value } = await reader.read();
 				if (done) break;
-				// Log stderr but don't treat as error - servers use it for logging
-				const text = decoder.decode(value, { stream: true });
-				if (text.trim()) {
-					// Could expose via onStderr callback if needed
-					// For now, silent - MCP spec says clients MAY capture/ignore
+				// Keep a bounded diagnostic while continuing to drain server logs.
+				if (this.#stderr.length < 4096) {
+					this.#stderr += decoder.decode(value, { stream: true }).slice(0, 4096 - this.#stderr.length);
 				}
 			}
 		} catch {
@@ -880,7 +892,13 @@ export class StdioTransport implements MCPTransport {
 		const failFromSend = (error: unknown) => {
 			if (settled) return;
 			const normalized = normalizeMCPTransportError(error, { transport: "stdio", stage: "send" });
-			settle(sent ? nonRetryableMCPTransportError(normalized) : normalized);
+			const failure = sent ? nonRetryableMCPTransportError(normalized) : normalized;
+			if (method === "initialize" && this.#readLoop) {
+				// An exec failure can close stdin before stdout delivers the launcher's diagnostic.
+				void Promise.race([this.#readLoop, Bun.sleep(250)]).then(() => settle(failure));
+			} else {
+				settle(failure);
+			}
 		};
 		try {
 			// Never `await` write/flush. Bun's FileSink returns a pending Promise
@@ -990,10 +1008,13 @@ export class StdioTransport implements MCPTransport {
 /**
  * Create and connect a stdio transport.
  */
-export async function createStdioTransport(config: MCPStdioServerConfig): Promise<StdioTransport> {
+export async function createStdioTransport(
+	config: MCPStdioServerConfig,
+	signal?: AbortSignal,
+): Promise<StdioTransport> {
 	const transport = new StdioTransport(config);
 	try {
-		await transport.connect();
+		await transport.connect(signal);
 		return transport;
 	} catch (error) {
 		throw normalizeMCPTransportError(error, { transport: "stdio", stage: "connect" });

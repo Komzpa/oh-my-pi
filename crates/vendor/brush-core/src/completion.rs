@@ -322,6 +322,7 @@ impl Spec {
 			)
 			.await?;
 			for word in words {
+				let word = word.into_string().map_err(|_| error::Error::from(error::ErrorKind::InternalError("completion is not valid UTF-8".into())))?;
 				if word.starts_with(context.token_to_complete) {
 					candidates.push(word);
 				}
@@ -345,7 +346,7 @@ impl Spec {
 				.into_paths();
 
 			for expansion in expansions {
-				candidates.push(expansion);
+				candidates.push(expansion.to_string_lossy().into_owned());
 			}
 		}
 		if let Some(function_name) = &self.function_name {
@@ -480,7 +481,7 @@ impl Spec {
 				},
 				CompleteAction::ArrayVar => {
 					for (name, var) in shell.env().iter() {
-						if var.value().is_array() && name.starts_with(token) {
+						if var.value().is_array() && let Some(name) = name.to_str() && name.starts_with(token) {
 							candidates.push(name.to_owned());
 						}
 					}
@@ -539,7 +540,7 @@ impl Spec {
 				},
 				CompleteAction::Export => {
 					for (key, value) in shell.env().iter() {
-						if value.is_exported() && key.starts_with(token) {
+						if value.is_exported() && let Some(key) = key.to_str() && key.starts_with(token) {
 							candidates.push(key.to_owned());
 						}
 					}
@@ -646,7 +647,7 @@ impl Spec {
 				},
 				CompleteAction::Variable => {
 					for (key, _) in shell.env().iter() {
-						if key.starts_with(token) {
+						if let Some(key) = key.to_str() && key.starts_with(token) {
 							candidates.push(key.to_owned());
 						}
 					}
@@ -707,6 +708,7 @@ impl Spec {
 		let output =
 			commands::invoke_command_in_subshell_and_get_output(&mut shell, &params, command_line)
 				.await?;
+		let output = String::from_utf8(output)?;
 
 		// Split results.
 		let mut candidates = Vec::new();
@@ -800,12 +802,12 @@ impl Spec {
 				match reply.value() {
 					variables::ShellValue::IndexedArray(values) => {
 						return Ok(Answer::Candidates(
-							values.values().map(|v| v.to_owned()).collect(),
+							values.values().map(|v| v.to_str().map(str::to_owned).ok_or_else(|| error::Error::from(error::ErrorKind::InternalError("completion is not valid UTF-8".into())))).collect::<Result<Vec<_>, _>>()?,
 							ProcessingOptions::default(),
 						));
 					},
 					variables::ShellValue::String(s) => {
-						let candidates = vec![s.to_owned()];
+						let candidates = vec![s.to_str().ok_or_else(|| error::Error::from(error::ErrorKind::InternalError("completion is not valid UTF-8".into())))?.to_owned()];
 						return Ok(Answer::Candidates(candidates, ProcessingOptions::default()));
 					},
 					_ => (),
@@ -1026,7 +1028,7 @@ impl Config {
 		const MAX_RESTARTS: u32 = 10;
 
 		// Make a best-effort attempt to tokenize.
-		let tokens = Self::tokenize_input_for_completion(shell, input);
+		let tokens = Self::tokenize_input_for_completion(shell, input)?;
 
 		let cursor = position;
 		let mut preceding_token = None;
@@ -1128,16 +1130,16 @@ impl Config {
 	fn tokenize_input_for_completion<'a>(
 		shell: &Shell<impl extensions::ShellExtensions>,
 		input: &'a str,
-	) -> Vec<CompletionToken<'a>> {
+	) -> Result<Vec<CompletionToken<'a>>, error::Error> {
 		const FALLBACK: &str = " \t\n\"\'@><=;|&(:";
 
 		let delimiter_str = shell
-			.env_str("COMP_WORDBREAKS")
+			.env_str("COMP_WORDBREAKS")?
 			.unwrap_or_else(|| FALLBACK.into());
 
 		let delimiters: Vec<_> = delimiter_str.chars().collect();
 
-		simple_tokenize_by_delimiters(input, delimiters.as_slice())
+		Ok(simple_tokenize_by_delimiters(input, delimiters.as_slice()))
 	}
 
 	async fn get_completions_for_token(
@@ -1238,10 +1240,7 @@ async fn get_file_completions(
 		if must_be_dir && !shell.filesystem().is_dir(shell.absolute_path(Path::new(&path))).await {
 			continue;
 		}
-		completions.push(match sys::fs::normalize_path_separators(&path) {
-			std::borrow::Cow::Borrowed(_) => path,
-			std::borrow::Cow::Owned(normalized) => normalized,
-		});
+		completions.push(sys::fs::normalize_path_separators(&path.to_string_lossy()).into_owned());
 	}
 
 	match expanded_token.as_str() {
@@ -1316,8 +1315,9 @@ fn try_get_variable_completions(
 	let mut candidates: Vec<String> = shell
 		.env()
 		.iter()
-		.filter(|(key, _)| key.starts_with(var_prefix))
-		.map(|(key, _)| {
+		.filter_map(|(key, _)| key.to_str())
+		.filter(|key| key.starts_with(var_prefix))
+		.map(|key| {
 			if use_braces {
 				format!("${{{key}}}")
 			} else {

@@ -6,6 +6,35 @@ use itertools::Itertools;
 
 use crate::{error, int_utils};
 
+/// Quotes native values as executable shell syntax, preserving undecodable bytes.
+pub fn force_quote_native(value: &std::ffi::OsStr, mode: QuoteMode) -> String {
+	if let Some(text) = value.to_str() { return force_quote(text, mode); }
+	use std::fmt::Write;
+	let mut result = String::from("$'");
+	for byte in value.as_encoded_bytes() { let _ = write!(result, "\\x{byte:02x}"); }
+	result.push('\'');
+	result
+}
+
+/// Quotes only when needed, including native byte values.
+pub fn quote_native_if_needed(value: &std::ffi::OsStr, mode: QuoteMode) -> Cow<'_, str> {
+	match value.to_str() {
+		Some(text) => quote_if_needed(text, mode),
+		None => force_quote_native(value, mode).into(),
+	}
+}
+
+/// Applies a character mapping without changing invalid native byte sequences.
+pub fn map_native_chars(value: &std::ffi::OsStr, mut map: impl FnMut(char) -> String) -> std::ffi::OsString {
+	let mut bytes = Vec::with_capacity(value.len());
+	for unit in EscapeScalars(value.as_encoded_bytes()) {
+		match unit { EscapeScalar::Char(c) => bytes.extend(map(c).as_bytes()), EscapeScalar::Byte(b) => bytes.push(b) }
+	}
+	// SAFETY: only complete Unicode scalars are replaced with valid Unicode strings.
+	unsafe { std::ffi::OsString::from_encoded_bytes_unchecked(bytes) }
+}
+
+
 /// Escape expansion mode.
 #[derive(Clone, Copy)]
 pub enum EscapeExpansionMode {
@@ -13,6 +42,42 @@ pub enum EscapeExpansionMode {
 	EchoBuiltin,
 	/// ANSI-C quotes.
 	AnsiCQuotes,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EscapeScalar {
+	Char(char),
+	Byte(u8),
+}
+
+impl EscapeScalar {
+	fn character(self) -> Option<char> {
+		match self { Self::Char(c) => Some(c), Self::Byte(_) => None }
+	}
+
+	fn bytes(self) -> Vec<u8> {
+		match self { Self::Char(c) => c.to_string().into_bytes(), Self::Byte(b) => vec![b] }
+	}
+}
+
+#[derive(Clone)]
+struct EscapeScalars<'a>(&'a [u8]);
+
+impl Iterator for EscapeScalars<'_> {
+	type Item = EscapeScalar;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		let first = *self.0.first()?;
+		let width = match first { 0x00..=0x7f => 1, 0xc2..=0xdf => 2, 0xe0..=0xef => 3, 0xf0..=0xf4 => 4, _ => 0 };
+		if width > 0 && self.0.len() >= width {
+			if let Ok(s) = std::str::from_utf8(&self.0[..width]) {
+				self.0 = &self.0[width..];
+				return Some(EscapeScalar::Char(s.chars().next().expect("non-empty UTF-8 scalar")));
+			}
+		}
+		self.0 = &self.0[1..];
+		Some(EscapeScalar::Byte(first))
+	}
 }
 
 /// Expands backslash escapes in the provided string.
@@ -26,18 +91,31 @@ pub fn expand_backslash_escapes(
 	s: &str,
 	mode: EscapeExpansionMode,
 ) -> Result<(Vec<u8>, bool), error::Error> {
+	expand_backslash_escapes_bytes(s.as_bytes(), mode)
+}
+
+/// Expands escapes while preserving bytes that are not UTF-8.
+#[expect(clippy::too_many_lines)]
+pub fn expand_backslash_escapes_bytes(
+	s: &[u8],
+	mode: EscapeExpansionMode,
+) -> Result<(Vec<u8>, bool), error::Error> {
 	let mut result: Vec<u8> = Vec::with_capacity(s.len());
-	let mut it = s.chars();
+	let mut it = EscapeScalars(s);
 	while let Some(c) = it.next() {
-		if c != '\\' {
-			// Not a backslash, add and move on.
-			result.append(c.to_string().into_bytes().as_mut());
+		if c != EscapeScalar::Char('\\') {
+			result.extend(c.bytes());
 			continue;
 		}
 
 		let Some(escape_cmd) = it.next() else {
 			// Trailing backslash.
 			result.push(b'\\');
+			continue;
+		};
+		let Some(escape_cmd) = escape_cmd.character() else {
+			result.push(b'\\');
+			result.extend(escape_cmd.bytes());
 			continue;
 		};
 
@@ -56,22 +134,17 @@ pub fn expand_backslash_escapes(
 							// backslash, then we consume both; if not, we still will use the
 							// backslash character as the one to apply the control transformation
 							// to.
-							if char_value == '\\' {
+							if char_value == EscapeScalar::Char('\\') {
 								let orig_it = it.clone();
-								if !matches!(it.next(), Some('\\')) {
+								if !matches!(it.next(), Some(EscapeScalar::Char('\\'))) {
 									// Didn't find another backslash; restore iterator.
 									it = orig_it;
 								}
 							}
 
-							let mut bytes: Vec<u8> = if char_value.is_ascii_lowercase() {
-								char_value
-									.to_ascii_uppercase()
-									.to_string()
-									.bytes()
-									.collect()
-							} else {
-								char_value.to_string().bytes().collect()
+							let mut bytes = match char_value {
+								EscapeScalar::Char(c) if c.is_ascii_lowercase() => vec![c.to_ascii_uppercase() as u8],
+								other => other.bytes(),
 							};
 
 							if !bytes.is_empty() {
@@ -106,13 +179,14 @@ pub fn expand_backslash_escapes(
 				let mut taken_so_far = 0;
 				let mut octal_chars: String = it
 					.take_while_ref(|c| {
-						if taken_so_far < 3 && matches!(*c, '0'..='7') {
+						if taken_so_far < 3 && matches!(c.character(), Some('0'..='7')) {
 							taken_so_far += 1;
 							true
 						} else {
 							false
 						}
 					})
+					.map(|c| c.character().expect("octal scalar"))
 					.collect();
 
 				if octal_chars.is_empty() {
@@ -139,16 +213,16 @@ pub fn expand_backslash_escapes(
 
 					if matches!(mode, EscapeExpansionMode::AnsiCQuotes)
 						&& !start_brace_consumed
-						&& next_c == '{'
+						&& next_c == EscapeScalar::Char('{')
 					{
 						start_brace_consumed = true;
-					} else if start_brace_consumed && next_c == '}' {
+					} else if start_brace_consumed && next_c == EscapeScalar::Char('}') {
 						break;
 					} else if ((start_brace_consumed && !invalid_prefix)
 						|| (!start_brace_consumed && hexits_consumed < 2))
-						&& next_c.is_ascii_hexdigit()
+						&& next_c.character().is_some_and(|c| c.is_ascii_hexdigit())
 					{
-						hex_chars.push(next_c);
+						hex_chars.push(next_c.character().expect("hex scalar"));
 						hexits_consumed += 1;
 					} else if start_brace_consumed && hexits_consumed == 0 {
 						invalid_prefix = true;
@@ -177,13 +251,14 @@ pub fn expand_backslash_escapes(
 				let mut taken_so_far = 0;
 				let hex_chars: String = it
 					.take_while_ref(|next_c| {
-						if taken_so_far < 4 && next_c.is_ascii_hexdigit() {
+						if taken_so_far < 4 && next_c.character().is_some_and(|c| c.is_ascii_hexdigit()) {
 							taken_so_far += 1;
 							true
 						} else {
 							false
 						}
 					})
+					.map(|c| c.character().expect("hex scalar"))
 					.collect();
 
 				if hex_chars.is_empty() {
@@ -204,13 +279,14 @@ pub fn expand_backslash_escapes(
 				let mut taken_so_far = 0;
 				let hex_chars: String = it
 					.take_while_ref(|next_c| {
-						if taken_so_far < 8 && next_c.is_ascii_hexdigit() {
+						if taken_so_far < 8 && next_c.character().is_some_and(|c| c.is_ascii_hexdigit()) {
 							taken_so_far += 1;
 							true
 						} else {
 							false
 						}
 					})
+					.map(|c| c.character().expect("hex scalar"))
 					.collect();
 
 				if hex_chars.is_empty() {
@@ -234,14 +310,14 @@ pub fn expand_backslash_escapes(
 				// Consume up to 2 more valid octal chars
 				let mut taken_so_far = 1;
 				for next_c in it.take_while_ref(|next_c| {
-					if taken_so_far < 3 && matches!(next_c, '0'..='7') {
+					if taken_so_far < 3 && matches!(next_c.character(), Some('0'..='7')) {
 						taken_so_far += 1;
 						true
 					} else {
 						false
 					}
 				}) {
-					octal_chars.push(next_c);
+					octal_chars.push(next_c.character().expect("octal scalar"));
 				}
 
 				let value = int_utils::parse::<u8>(octal_chars.as_str(), 8)?;
@@ -461,6 +537,15 @@ const fn needs_ansi_c_quoting(c: char) -> bool {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn native_escape_input_preserves_bytes_and_ansi_control_behavior() {
+		let expand = |s| expand_backslash_escapes_bytes(s, EscapeExpansionMode::AnsiCQuotes).unwrap().0;
+		assert_eq!(expand(b"a\xff\\tb"), b"a\xff\tb");
+		assert_eq!(expand(b"\\c\xffz"), b"\x1fz");
+		assert_eq!(expand(b"a\\x{\xff}z"), b"a");
+		assert_eq!(expand("é\\n".as_bytes()), "é\n".as_bytes());
+	}
 
 	#[test]
 	fn test_backslash_escape() {

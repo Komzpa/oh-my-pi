@@ -26,7 +26,7 @@ impl Utility for Printenv {
 	fn run(self, host: &mut Host) -> i32 {
 		let variables = self
 			.matches
-			.get_many::<String>(ARG_VARIABLES)
+			.get_many::<std::ffi::OsString>(ARG_VARIABLES)
 			.into_iter()
 			.flatten()
 			.collect::<Vec<_>>();
@@ -41,7 +41,7 @@ impl Utility for Printenv {
 				.collect::<Vec<_>>();
 			environment.sort_unstable_by(|left, right| left.0.cmp(&right.0));
 			for (name, value) in environment {
-				if let Err(error) = write!(host.stdout, "{name}={value}{separator}") {
+				if let Err(error) = host.stdout.write_all(name.as_encoded_bytes()).and_then(|()| host.stdout.write_all(b"=")).and_then(|()| host.stdout.write_all(value.as_encoded_bytes())).and_then(|()| write!(host.stdout, "{separator}")) {
 					host.error(error, 1);
 					return 1;
 				}
@@ -57,12 +57,13 @@ impl Utility for Printenv {
 		for env_var in variables {
 			// We silently ignore a=b as a variable, but still report failure in
 			// the exit status.
-			if env_var.contains('=') {
+			if env_var.as_encoded_bytes().contains(&b'=') {
 				error_found = true;
 				continue;
 			}
-			if let Some(value) = host.var(env_var).map(str::to_owned) {
-				if let Err(error) = write!(host.stdout, "{value}{separator}") {
+			let value = host.env().find(|(name, _)| *name == env_var.as_os_str()).map(|(_, value)| value.to_owned());
+			if let Some(value) = value {
+				if let Err(error) = host.stdout.write_all(value.as_encoded_bytes()).and_then(|()| write!(host.stdout, "{separator}")) {
 					host.error(error, 1);
 					return 1;
 				}
@@ -98,6 +99,7 @@ fn app() -> Command {
 		)
 		.arg(
 			Arg::new(ARG_VARIABLES)
+				.value_parser(clap::value_parser!(std::ffi::OsString))
 				.action(ArgAction::Append)
 				.num_args(1..),
 		)

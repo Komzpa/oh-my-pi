@@ -39,7 +39,7 @@ impl Utility for Readlink {
 	fn run(self, host: &mut Host) -> i32 {
 		let mut no_trailing_delimiter = self.matches.get_flag(OPT_NO_NEWLINE);
 		let use_zero = self.matches.get_flag(OPT_ZERO);
-		let verbose = self.matches.get_flag(OPT_VERBOSE) || host.var("POSIXLY_CORRECT").is_some();
+		let verbose = self.matches.get_flag(OPT_VERBOSE) || host.var_os("POSIXLY_CORRECT").is_some();
 
 		// GNU readlink -f/-e/-m follows symlinks first and then applies `..`
 		// (physical resolution). Logical mode would collapse `..` first.
@@ -63,8 +63,7 @@ impl Utility for Readlink {
 		let files: Vec<PathBuf> = self
 			.matches
 			.get_many::<OsString>(ARG_FILES)
-			.map(|values| values.map(PathBuf::from).collect())
-			.unwrap_or_default();
+			.map_or_default(|values| values.map(PathBuf::from).collect());
 
 		if files.is_empty() {
 			host.error("missing operand", 1);

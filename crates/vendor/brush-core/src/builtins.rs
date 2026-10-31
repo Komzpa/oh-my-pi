@@ -1,6 +1,6 @@
 //! Facilities for implementing and managing builtins
 
-use std::io::Write;
+use std::{ffi::{OsStr, OsString}, io::Write};
 
 use clap::builder::styling;
 pub use futures::future::BoxFuture;
@@ -42,7 +42,7 @@ pub trait Command: clap::Parser {
 	/// * `args` - The arguments to the command.
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = OsString>,
 	{
 		if !Self::takes_plus_options() {
 			Self::try_parse_from(args)
@@ -51,9 +51,9 @@ pub trait Command: clap::Parser {
 			// establish a pattern of renaming them.
 			let mut updated_args = vec![];
 			for arg in args {
-				if let Some(plus_options) = arg.strip_prefix("+") {
+				if let Some(plus_options) = arg.to_str().and_then(|s| s.strip_prefix('+')) {
 					for c in plus_options.chars() {
-						updated_args.push(format!("--+{c}"));
+						updated_args.push(OsString::from(format!("--+{c}")));
 					}
 				} else {
 					updated_args.push(arg);
@@ -168,6 +168,10 @@ pub struct Registration<SE: extensions::ShellExtensions> {
 	/// Can async background job spawning skip this builtin and launch its first
 	/// word argument directly?
 	pub transparent_background_wrapper: bool,
+
+	/// The builtin performs all descriptor I/O asynchronously; it runs as a
+	/// task, never on a blocking worker.
+	pub async_io: bool,
 }
 
 impl<SE: extensions::ShellExtensions> Registration<SE> {
@@ -183,6 +187,13 @@ impl<SE: extensions::ShellExtensions> Registration<SE> {
 	#[must_use]
 	pub const fn transparent_background_wrapper(self) -> Self {
 		Self { transparent_background_wrapper: true, ..self }
+	}
+
+	/// Marks this builtin as performing all descriptor I/O asynchronously, so
+	/// it runs as a task instead of on a blocking worker.
+	#[must_use]
+	pub const fn async_io(self) -> Self {
+		Self { async_io: true, ..self }
 	}
 }
 
@@ -479,8 +490,8 @@ where
 /// This function is used to parse arguments in builtins such as
 /// `crate::echo::EchoCommand`
 pub fn try_parse_known<T: clap::Parser>(
-	args: impl IntoIterator<Item = String>,
-) -> Result<(T, Option<impl Iterator<Item = String>>), clap::Error> {
+	args: impl IntoIterator<Item = OsString>,
+) -> Result<(T, Option<impl Iterator<Item = OsString>>), clap::Error> {
 	let mut args = args.into_iter();
 	let mut hyphen = None;
 	let args_before_hyphen = args.by_ref().take_while(|a| {
@@ -506,7 +517,7 @@ pub trait SimpleCommand {
 	) -> Result<String, error::Error>;
 
 	/// Executes the built-in command.
-	fn execute<SE: extensions::ShellExtensions, I: Iterator<Item = S>, S: AsRef<str>>(
+	fn execute<SE: extensions::ShellExtensions, I: Iterator<Item = S>, S: AsRef<OsStr>>(
 		context: commands::ExecutionContext<'_, SE>,
 		args: I,
 	) -> Result<results::ExecutionResult, error::Error>;
@@ -523,6 +534,7 @@ pub fn simple_builtin<B: SimpleCommand + Send + Sync, SE: extensions::ShellExten
 		special_builtin:     false,
 		declaration_builtin: false,
 		transparent_background_wrapper: false,
+		async_io:            false,
 	}
 }
 
@@ -536,6 +548,7 @@ pub fn builtin<B: Command + Send + Sync, SE: extensions::ShellExtensions>() -> R
 		special_builtin:     false,
 		declaration_builtin: false,
 		transparent_background_wrapper: false,
+		async_io:            false,
 	}
 }
 
@@ -551,6 +564,7 @@ pub fn decl_builtin<B: DeclarationCommand + Send + Sync, SE: extensions::ShellEx
 		special_builtin:     false,
 		declaration_builtin: true,
 		transparent_background_wrapper: false,
+		async_io:            false,
 	}
 }
 
@@ -572,6 +586,7 @@ pub fn raw_arg_builtin<
 		special_builtin:     false,
 		declaration_builtin: true,
 		transparent_background_wrapper: false,
+		async_io:            false,
 	}
 }
 
@@ -598,10 +613,7 @@ async fn exec_simple_builtin_impl<
 	context: commands::ExecutionContext<'_, SE>,
 	args: Vec<CommandArg>,
 ) -> Result<results::ExecutionResult, error::Error> {
-	let plain_args = args.into_iter().map(|arg| match arg {
-		CommandArg::String(s) => s,
-		CommandArg::Assignment(a) => a.to_string(),
-	});
+	let plain_args = args.into_iter().map(CommandArg::into_os_string);
 
 	T::execute(context, plain_args)
 }
@@ -617,10 +629,7 @@ async fn exec_builtin_impl<T: Command + Send + Sync, SE: extensions::ShellExtens
 	context: commands::ExecutionContext<'_, SE>,
 	args: Vec<CommandArg>,
 ) -> Result<results::ExecutionResult, error::Error> {
-	let plain_args = args.into_iter().map(|arg| match arg {
-		CommandArg::String(s) => s,
-		CommandArg::Assignment(a) => a.to_string(),
-	});
+	let plain_args = args.into_iter().map(CommandArg::into_os_string);
 
 	let result = T::new(plain_args);
 	let command = match result {
@@ -657,7 +666,7 @@ async fn exec_declaration_builtin_impl<
 	for (i, arg) in args.into_iter().enumerate() {
 		match arg {
 			CommandArg::String(s)
-				if i == 0 || (s.len() > 1 && (s.starts_with('-') || s.starts_with('+'))) =>
+				if i == 0 || s.to_str().is_some_and(|s| s.len() > 1 && (s.starts_with('-') || s.starts_with('+'))) =>
 			{
 				options.push(s);
 			},

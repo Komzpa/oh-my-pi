@@ -169,7 +169,7 @@ fn assign_wait_variable(
 ) -> Result<(), brush_core::Error> {
 	shell.env_mut().update_or_add(
 		name,
-		ShellValueLiteral::Scalar(value),
+		ShellValueLiteral::Scalar(value.into()),
 		|_| Ok(()),
 		EnvironmentLookup::Anywhere,
 		EnvironmentScope::Global,

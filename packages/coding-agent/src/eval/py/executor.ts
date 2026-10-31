@@ -124,6 +124,8 @@ export interface PythonExecutorOptions {
 	 * cell finishes.
 	 */
 	onStatus?: (event: JsStatusEvent) => void;
+	/** Shows the user `out://` replies of the cell's bridged tool calls; absent, those calls are refused. */
+	onReply?: (text: string) => void;
 	/** @internal Bridge session id, set by `executePython` before delegating. */
 	bridgeSessionId?: string;
 	/** @internal Bridge endpoint info, set by `executePython` before delegating. */
@@ -264,7 +266,9 @@ async function startKernel(cwd: string, options: PythonExecutorOptions): Promise
 	requireRemainingTimeoutMs(options.deadlineMs);
 	return await PythonKernel.start({
 		cwd,
+		sessionId: options.toolSession?.getSessionId?.() ?? undefined,
 		env: buildManagedKernelEnv(options),
+		maskDesktopSession: options.toolSession?.agentKind === "sub",
 		signal: options.signal,
 		deadlineMs: options.deadlineMs,
 		interpreter: options.interpreter,

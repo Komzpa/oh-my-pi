@@ -222,7 +222,7 @@ struct Options {
 	/// `-R`, `-r`, `--recursive`
 	recursive:              bool,
 	/// `-S`, `--suffix`
-	backup_suffix:          String,
+	backup_suffix:          OsString,
 	/// `-t`, `--target-directory`
 	target_dir:             Option<PathBuf>,
 	/// `--update[=UPDATE]`
@@ -557,7 +557,7 @@ fn uu_app() -> Command {
 		)
 		.arg(backup_control::arguments::backup())
 		.arg(backup_control::arguments::backup_no_args())
-		.arg(backup_control::arguments::suffix())
+		.arg(backup_control::arguments::suffix().value_parser(clap::value_parser!(OsString)))
 		.arg(update_control::arguments::update())
 		.arg(update_control::arguments::update_no_args())
 		.arg(
@@ -762,8 +762,7 @@ fn cp_main(matches: &ArgMatches, host: &mut Host) -> CopyResult<()> {
 
 	let paths: Vec<PathBuf> = matches
 		.get_many::<OsString>(options::PATHS)
-		.map(|values| values.map(PathBuf::from).collect())
-		.unwrap_or_default();
+		.map_or_default(|values| values.map(PathBuf::from).collect());
 
 	let (sources, target) = parse_path_args(paths, &options)?;
 	if let Some(dir) = &options.target_dir {
@@ -1196,7 +1195,7 @@ impl MoveCopier {
 				reflink_mode: ReflinkMode::Auto,
 				attributes: Attributes::MOVE,
 				recursive: true,
-				backup_suffix: String::new(),
+				backup_suffix: OsString::new(),
 				target_dir: None,
 				update: UpdateMode::All,
 				debug: false,
@@ -1480,7 +1479,7 @@ fn construct_dest_path(
 		TargetType::Directory => {
 			if options.parents {
 				join_path(target, &parents_relative(source))
-			} else if source == Path::new(".") && target_is_dir {
+			} else if source == "." && target_is_dir {
 				// Copying `.` into an existing directory copies its contents.
 				target.to_path_buf()
 			} else {
@@ -1600,7 +1599,7 @@ impl OverwriteMode {
 				let prompt = interactive_prompt(host, path, clobber);
 				let _ = write!(host.stderr, "{}: {prompt} ", Cp::NAME);
 				let _ = host.stderr.flush();
-				if read_yes(host) { Ok(()) } else { Err(CpError::Skipped(true)) }
+				read_yes(host).ok_or(CpError::Skipped(true))
 			},
 			Self::Clobber(_) => Ok(()),
 		}
@@ -2191,7 +2190,7 @@ fn print_verbose_output(
 fn dest_in_working_directory(host: &Host, dest: &Path) -> bool {
 	match parent_path(dest) {
 		None => true,
-		Some(parent) if parent.as_os_str().is_empty() || parent == Path::new(".") => true,
+		Some(parent) if parent.is_empty() || parent == "." => true,
 		Some(parent) => host
 			.fs()
 			.same_file(host.resolve(parent), host.resolve("."))
@@ -2389,7 +2388,7 @@ fn copy_file(
 			&& !filesystem.try_exists(&dest_fs).unwrap_or(false)
 			&& !options.remove_destination()
 			&& !is_symlink_loop(&filesystem, &dest_fs)
-			&& host.var("POSIXLY_CORRECT").is_none()
+			&& host.var_os("POSIXLY_CORRECT").is_none()
 		{
 			return Err(CpError::Error(format!(
 				"not writing through dangling symlink {}",
@@ -3176,7 +3175,7 @@ fn copy_directory(
 	// a -> d/a
 	// a/b -> d/a/b
 	let target: PathBuf = match parent_path(root) {
-		Some(parent) if options.parents && !parent.as_os_str().is_empty() => {
+		Some(parent) if options.parents && !parent.is_empty() => {
 			make_parent_dirs(host, state, root, &join_path(target, &parents_relative(root)), options)?;
 			join_path(target, &parents_relative(parent))
 		},
@@ -3195,7 +3194,7 @@ fn copy_directory(
 			)));
 		},
 		Ok(_) if !options.no_target_dir => {
-			if root == Path::new(".") || root.as_os_str().as_encoded_bytes().ends_with(b"/.") {
+			if root == "." || root.as_os_str().as_encoded_bytes().ends_with(b"/.") {
 				child_path(&target, std::ffi::OsStr::new("."))
 			} else {
 				match file_name(root) {
@@ -3488,7 +3487,7 @@ mod linux {
 
 		match result {
 			-1 => Ok((false, size, blocks)), // No data found or end of file
-			_ if result >= 0 => Ok((true, size, blocks)), // Data found
+			0.. => Ok((true, size, blocks)), // Data found
 			_ => Err(error),
 		}
 	}

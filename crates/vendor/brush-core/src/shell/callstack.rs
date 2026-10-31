@@ -98,7 +98,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 		&mut self,
 		name: &str,
 		function: &functions::Registration,
-		args: impl IntoIterator<Item = String>,
+		args: impl IntoIterator<Item = std::ffi::OsString>,
 		_params: &ExecutionParameters,
 	) -> Result<(), error::Error> {
 		if let Some(max_call_depth) = self.options.max_function_call_depth
@@ -143,7 +143,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 
 	/// Returns the *current* positional arguments for the shell ($1 and beyond).
 	/// Influenced by the current call stack.
-	pub fn current_shell_args(&self) -> &[String] {
+	pub fn current_shell_args(&self) -> &[std::ffi::OsString] {
 		for frame in self.call_stack.iter() {
 			match frame.frame_type {
 				// Function calls always shadow positional parameters.
@@ -163,7 +163,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 
 	/// Returns a mutable reference to *current* positional parameters for the
 	/// shell ($1 and beyond).
-	pub fn current_shell_args_mut(&mut self) -> &mut Vec<String> {
+	pub fn current_shell_args_mut(&mut self) -> &mut Vec<std::ffi::OsString> {
 		for frame in self.call_stack.iter_mut() {
 			match frame.frame_type {
 				// Function calls always shadow positional parameters.

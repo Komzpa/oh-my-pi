@@ -30,7 +30,7 @@ impl builtins::SimpleCommand for TrueCommand {
 		}
 	}
 
-	fn execute<SE: brush_core::ShellExtensions, I: Iterator<Item = S>, S: AsRef<str>>(
+	fn execute<SE: brush_core::ShellExtensions, I: Iterator<Item = S>, S: AsRef<std::ffi::OsStr>>(
 		_context: brush_core::ExecutionContext<'_, SE>,
 		_args: I,
 	) -> Result<ExecutionResult, brush_core::Error> {

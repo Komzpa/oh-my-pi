@@ -56,13 +56,13 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 	/// resolved against the shell's working directory.
 	pub fn history_file_path(&self) -> Option<PathBuf> {
 		self
-			.env_str("HISTFILE")
-			.map(|s| self.absolute_path(Path::new(s.as_ref())))
+			.env_os("HISTFILE")
+			.map(|s| self.absolute_path(Path::new(s.as_ref() as &std::ffi::OsStr)))
 	}
 
 	/// Returns the path to the history file used by the shell, if one is set.
-	pub fn history_time_format(&self) -> Option<String> {
-		self.env_str("HISTTIMEFORMAT").map(|s| s.into_owned())
+	pub fn history_time_format(&self) -> Result<Option<String>, error::Error> {
+		Ok(self.env_str("HISTTIMEFORMAT")?.map(|s| s.into_owned()))
 	}
 
 	/// Saves history back to any backing storage.

@@ -77,6 +77,7 @@ function fakeSharedBroker(
 	const unknown = (name: string) => new DaemonBrokerRejectedError(`Unknown daemon ${name}`);
 	const client = {
 		projectDir,
+		runtimeDir: daemonRuntimeDir(projectDir),
 		onCompletion: () => () => {},
 		close() {},
 		async request(operation: DaemonOperation): Promise<DaemonRpcResult> {

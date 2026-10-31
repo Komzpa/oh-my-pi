@@ -2,6 +2,9 @@ import * as path from "node:path";
 import { getLogsDir, isCompiledBinary, logger, untilAborted, withTimeout, workerHostEntry } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import type { Browser, CDPSession } from "puppeteer-core";
+import { ToolResourceScope } from "@oh-my-pi/pi-natives";
+import { toolSessionEnvironment } from "../../exec/session-slice";
+import { workerEnvFromParent } from "../../subprocess/worker-client";
 import { ToolAbortError } from "../tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { findFreeCdpPort, findReusableCdp, gracefulKillTreeOnce, resolveSpawnArgs, waitForCdp } from "./attach";
@@ -17,10 +20,11 @@ import {
 	type UserAgentOverride,
 } from "./launch";
 import { reapOrphanSharedTargets } from "./orphan-registry";
+import { backgroundBrowserCommand } from "./priority";
 import { ensureRelayDaemon, isLoopbackRelayUrl, restartRelayDaemon } from "./relay/daemon";
 import type { RelayKind } from "./relay/kind";
 import { UPDATE_RELAY_EXTENSION, waitForRelayExtension } from "./relay/probe";
-import { ensureSharedBrowser } from "./shared-daemon";
+import { browserSpawnCommand, ensureSharedBrowser } from "./shared-daemon";
 import type { TernKind } from "./tern/kind";
 import { TernSocketClient } from "./tern/wire";
 
@@ -62,7 +66,7 @@ export interface PuppeteerBrowserHandle extends BrowserHandleCommon {
 	/** OMP-owned temp Chromium profile directory removed on dispose (process-local headless launches). */
 	userDataDir?: string;
 	/** Broker daemon backing this handle; dispose disconnects instead of closing, kill routes to the broker. */
-	sharedDaemon?: { name: string; projectDir: string };
+	sharedDaemon?: { name: string; projectDir: string; runtimeDir?: string };
 	subprocess?: Subprocess;
 	stealth: { browserSession: CDPSession | null; override: UserAgentOverride | null };
 }
@@ -115,13 +119,14 @@ export function browserKey(kind: BrowserKind): string {
 
 export interface AcquireBrowserOptions {
 	cwd: string;
+	sessionId?: string;
 	viewport?: { width: number; height: number; deviceScaleFactor?: number };
 	signal?: AbortSignal;
 }
 
 export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOptions): Promise<BrowserHandle> {
 	if (kind.kind === "spawned") kind = { ...kind, args: resolveSpawnArgs(kind.path, kind.args, opts.cwd) };
-	const key = browserKey(kind);
+	const key = `${browserKey(kind)}:${opts.sessionId ?? ""}`;
 	for (;;) {
 		const existing = browsers.get(key);
 		if (existing) {
@@ -169,6 +174,7 @@ export async function acquireBrowser(kind: BrowserKind, opts: AcquireBrowserOpti
 			clearEntry();
 			throw error;
 		}
+		handle.key = key;
 		// The launch may resolve AFTER the caller has already aborted (the outer
 		// `untilAborted` rejects immediately on abort but does not cancel the
 		// inner promise, and `launchHeadlessBrowser` does not accept a signal).
@@ -225,7 +231,7 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 		// per-process launches are what produced launch storms and orphaned
 		// process trees. The process-local launch survives only for hosts that
 		// cannot spawn the broker (bun test, SDK embedding without a CLI entry).
-		if (isCompiledBinary() || workerHostEntry() !== null) {
+		if (opts.sessionId || isCompiledBinary() || workerHostEntry() !== null) {
 			return await openSharedHeadlessHandle(kind, opts);
 		}
 		const { browser, userDataDir } = await launchHeadlessBrowser({
@@ -342,13 +348,19 @@ async function openBrowserHandle(kind: BrowserKind, opts: AcquireBrowserOptions)
 	} else {
 		const port = await findFreeCdpPort();
 		const launchArgs = [...appArgs, `--remote-debugging-port=${port}`];
-		const child = Bun.spawn([exe, ...launchArgs], {
+		const env = await toolSessionEnvironment(opts.sessionId, workerEnvFromParent());
+		const scope = opts.sessionId ? new ToolResourceScope() : undefined;
+		const launch = browserSpawnCommand({ executablePath: exe, args: launchArgs });
+		const command = backgroundBrowserCommand(launch.application, launch.args);
+		const child = Bun.spawn(scope ? await scope.wrapCommandAsync(command, env) : command, {
 			cwd: opts.cwd,
+			env,
 			stdout: "ignore",
 			stderr: "ignore",
 			stdin: "ignore",
 		});
 		child.unref();
+		if (scope) void child.exited.finally(() => scope.close());
 		subprocess = child;
 		pid = child.pid;
 		cdpUrl = `http://127.0.0.1:${port}`;
@@ -491,6 +503,7 @@ async function openSharedHeadlessHandle(
 	try {
 		const shared = await ensureSharedBrowser({
 			projectDir: opts.cwd,
+			sessionId: opts.sessionId,
 			headless: kind.headless,
 			viewport: vp,
 			signal: opts.signal,
@@ -516,12 +529,16 @@ async function openSharedHeadlessHandle(
 		// left behind by omp processes that died without teardown — bounds
 		// accumulation without a background timer. Best-effort and detached so a
 		// slow reap never delays the open (issue #10022).
-		void reapOrphanSharedTargets(browser, { projectDir: shared.projectDir, daemonName: shared.daemonName });
+		void reapOrphanSharedTargets(browser, {
+			projectDir: shared.projectDir,
+			daemonName: shared.daemonName,
+			runtimeDir: shared.runtimeDir,
+		});
 		return {
 			key: browserKey(kind),
 			kind,
 			browser,
-			sharedDaemon: { name: shared.daemonName, projectDir: shared.projectDir },
+			sharedDaemon: { name: shared.daemonName, projectDir: shared.projectDir, runtimeDir: shared.runtimeDir },
 			refCount: 0,
 			stealth: { browserSession: null, override: null },
 		};

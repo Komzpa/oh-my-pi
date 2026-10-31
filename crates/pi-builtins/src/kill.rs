@@ -39,8 +39,9 @@ impl builtins::Command for KillCommand {
 
 	fn new<I>(args: I) -> std::result::Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = std::ffi::OsString>,
 	{
+		let args = args.into_iter().map(|arg| arg.into_string().map_err(|_| clap::Error::raw(clap::error::ErrorKind::InvalidUtf8, "kill argument is not valid UTF-8"))).collect::<Result<Vec<_>, _>>()?;
 		Self::try_parse_from(rewrite_attached_short_options(args))
 	}
 
@@ -547,7 +548,7 @@ mod tests {
 
 	fn parsed(args: &[&str]) -> KillCommand {
 		use brush_core::builtins::Command as _;
-		KillCommand::new(args.iter().map(ToString::to_string)).unwrap()
+		KillCommand::new(args.iter().map(std::ffi::OsString::from)).unwrap()
 	}
 
 	/// `kill -s9`/`-sKILL` used to land in the positional args and die with

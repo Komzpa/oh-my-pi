@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{ffi::OsString, path::Path};
 
 use crate::{
 	ExecutionParameters, error, expansion, extensions,
@@ -13,14 +13,21 @@ const VERSION_PATCH: &str = env!("CARGO_PKG_VERSION_PATCH");
 pub(crate) async fn expand_prompt(
 	shell: &mut Shell<impl extensions::ShellExtensions>,
 	params: &ExecutionParameters,
-	spec: String,
-) -> Result<String, error::Error> {
-	// Parse the prompt spec into its pieces.
-	let prompt_pieces = parse_prompt(spec)?;
-
-	// Now, render each piece.
-	let mut formatted_prompt = String::new();
-	for piece in prompt_pieces {
+	spec: OsString,
+) -> Result<OsString, error::Error> {
+	let mut prompt_pieces = Vec::new();
+	let mut text = String::new();
+	for (unit, character) in expansion::scalar_units(&spec)? {
+		if let Some(character) = character { text.push(character); }
+		else {
+			for piece in parse_prompt(std::mem::take(&mut text))? { prompt_pieces.push((Some(piece), OsString::new())); }
+			prompt_pieces.push((None, unit));
+		}
+	}
+	for piece in parse_prompt(text)? { prompt_pieces.push((Some(piece), OsString::new())); }
+	let mut formatted_prompt = OsString::new();
+	for (piece, native) in prompt_pieces {
+		let Some(piece) = piece else { formatted_prompt.push(native); continue; };
 		let needs_escaping = matches!(
 			piece,
 			brush_parser::prompt::PromptPiece::EscapedSequence(_)
@@ -30,17 +37,17 @@ pub(crate) async fn expand_prompt(
 		let formatted_piece = format_prompt_piece(shell, piece)?;
 
 		if shell.options().expand_prompt_strings && needs_escaping {
-			formatted_prompt.push('\\');
+			formatted_prompt.push("\\");
 		}
 
-		formatted_prompt.push_str(&formatted_piece);
+		formatted_prompt.push(&formatted_piece);
 	}
 
 	if shell.options().expand_prompt_strings {
 		// Now expand any remaining escape sequences, but without tilde-expansion.
 		let options = expansion::ExpanderOptions { tilde_expand: false, ..Default::default() };
 		formatted_prompt =
-			expansion::basic_expand_word_with_options(shell, params, &formatted_prompt, &options)
+			expansion::basic_expand_native_word_with_options(shell, params, &formatted_prompt, &options)
 				.await?;
 	}
 
@@ -57,8 +64,17 @@ fn parse_prompt(
 fn format_prompt_piece(
 	shell: &Shell<impl extensions::ShellExtensions>,
 	piece: brush_parser::prompt::PromptPiece,
-) -> Result<String, error::Error> {
+) -> Result<OsString, error::Error> {
 	let formatted = match piece {
+		brush_parser::prompt::PromptPiece::CurrentWorkingDirectory { tilde_replaced, basename } => {
+			return Ok(format_current_working_directory(shell, tilde_replaced, basename));
+		},
+		brush_parser::prompt::PromptPiece::ShellBaseName => {
+			return Ok(shell.current_shell_name().and_then(|name| Path::new(name.as_ref()).file_name().map(ToOwned::to_owned)).unwrap_or_default());
+		},
+		brush_parser::prompt::PromptPiece::TerminalDeviceBaseName => {
+			return Ok(sys::terminal::try_get_terminal_device_path().and_then(|p| p.file_name().map(ToOwned::to_owned)).unwrap_or_default());
+		},
 		brush_parser::prompt::PromptPiece::EscapedSequence(s) => s,
 		brush_parser::prompt::PromptPiece::Literal(l) => l,
 		brush_parser::prompt::PromptPiece::AsciiCharacter(c) => {
@@ -74,9 +90,6 @@ fn format_prompt_piece(
 			format_current_history_number(shell)
 		},
 		brush_parser::prompt::PromptPiece::CurrentUser => users::get_current_username()?,
-		brush_parser::prompt::PromptPiece::CurrentWorkingDirectory { tilde_replaced, basename } => {
-			format_current_working_directory(shell, tilde_replaced, basename)
-		},
 		brush_parser::prompt::PromptPiece::Date(format) => {
 			format_date(&chrono::Local::now(), &format)
 		},
@@ -106,22 +119,12 @@ fn format_prompt_piece(
 				.to_string_lossy()
 				.to_string();
 			if only_up_to_first_dot && let Some((first, _)) = hn.split_once('.') {
-				return Ok(first.to_owned());
+				return Ok(first.into());
 			}
 			hn
 		},
 		brush_parser::prompt::PromptPiece::Newline => "\n".to_owned(),
 		brush_parser::prompt::PromptPiece::NumberOfManagedJobs => shell.jobs().jobs.len().to_string(),
-		brush_parser::prompt::PromptPiece::ShellBaseName => {
-			if let Some(shell_name) = shell.current_shell_name() {
-				Path::new(shell_name.as_ref())
-					.file_name()
-					.map(|name| name.to_string_lossy().to_string())
-					.unwrap_or_default()
-			} else {
-				String::new()
-			}
-		},
 		brush_parser::prompt::PromptPiece::ShellRelease => {
 			std::format!("{VERSION_MAJOR}.{VERSION_MINOR}.{VERSION_PATCH}")
 		},
@@ -136,39 +139,29 @@ fn format_prompt_piece(
 				String::new()
 			}
 		},
-		brush_parser::prompt::PromptPiece::TerminalDeviceBaseName => {
-			sys::terminal::try_get_terminal_device_path()
-				.and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
-				.unwrap_or_default()
-		},
 		brush_parser::prompt::PromptPiece::Time(time_fmt) => {
 			format_time(&chrono::Local::now(), &time_fmt)
 		},
 	};
 
-	Ok(formatted)
+	Ok(formatted.into())
 }
 
 fn format_current_working_directory(
 	shell: &Shell<impl extensions::ShellExtensions>,
 	tilde_replaced: bool,
 	basename: bool,
-) -> String {
-	let mut working_dir_str = shell.working_dir().to_string_lossy().to_string();
-
-	if tilde_replaced {
-		working_dir_str = shell.tilde_shorten(working_dir_str);
-	}
-
-	if basename && let Some(filename) = Path::new(&working_dir_str).file_name() {
-		working_dir_str = filename.to_string_lossy().to_string();
-	}
-
-	if cfg!(windows) {
-		working_dir_str = working_dir_str.replace('\\', "/");
-	}
-
-	working_dir_str
+) -> OsString {
+	let cwd = shell.working_dir();
+	let mut result = if tilde_replaced && let Some(home) = shell.home_dir() && let Ok(rest) = cwd.strip_prefix(home) {
+		let mut value = OsString::from("~");
+		if !rest.as_os_str().is_empty() { value.push("/"); value.push(rest); }
+		value
+	} else { cwd.as_os_str().to_owned() };
+	if basename && let Some(filename) = Path::new(&result).file_name() { result = filename.to_owned(); }
+	#[cfg(windows)]
+	{ result = crate::escape::map_native_chars(&result, |c| if c == '\\' { "/".into() } else { c.to_string() }); }
+	result
 }
 
 fn format_current_history_number(shell: &Shell<impl extensions::ShellExtensions>) -> String {

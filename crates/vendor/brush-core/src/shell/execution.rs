@@ -46,7 +46,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 	/// * `path` - The path to the file to source.
 	/// * `args` - The arguments to pass to the script as positional parameters.
 	/// * `params` - Execution parameters.
-	pub async fn source_script<S: Into<String>, P: AsRef<Path>, I: Iterator<Item = S>>(
+	pub async fn source_script<S: Into<std::ffi::OsString>, P: AsRef<Path>, I: Iterator<Item = S>>(
 		&mut self,
 		path: P,
 		args: I,
@@ -72,7 +72,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 	/// * `params` - Execution parameters.
 	/// * `call_type` - The type of script call being made.
 	async fn parse_and_execute_script_file<
-		S: Into<String>,
+		S: Into<std::ffi::OsString>,
 		P: AsRef<Path>,
 		I: Iterator<Item = S>,
 	>(
@@ -141,7 +141,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 	/// * `args` - The arguments to pass to the script as positional parameters.
 	/// * `params` - Execution parameters.
 	/// * `call_type` - The type of script call being made.
-	async fn source_file<F: Read, S: Into<String>, I: Iterator<Item = S>>(
+	async fn source_file<F: Read, S: Into<std::ffi::OsString>, I: Iterator<Item = S>>(
 		&mut self,
 		file: F,
 		source_info: &crate::SourceInfo,
@@ -229,7 +229,7 @@ impl<SE: crate::extensions::ShellExtensions> crate::Shell<SE> {
 	///
 	/// * `script_path` - The path to the script file to execute.
 	/// * `args` - The arguments to pass to the script as positional parameters.
-	pub async fn run_script<S: Into<String>, P: AsRef<Path>, I: Iterator<Item = S>>(
+	pub async fn run_script<S: Into<std::ffi::OsString>, P: AsRef<Path>, I: Iterator<Item = S>>(
 		&mut self,
 		script_path: P,
 		args: I,

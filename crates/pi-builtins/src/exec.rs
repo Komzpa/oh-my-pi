@@ -66,7 +66,7 @@ impl builtins::Command for ExecCommand {
 		let mut cmd = commands::compose_std_command(
 			&context,
 			&self.args[0],
-			argv0.as_ref(),
+			std::ffi::OsStr::new(argv0.as_ref()),
 			&self.args[1..],
 			self.empty_environment,
 		)
@@ -101,14 +101,15 @@ impl ExecCommand {
 		context: brush_core::ExecutionContext<'_, SE>,
 	) -> Result<ExecutionResult, brush_core::Error> {
 		let argv0 = self.argv0();
-		let cmd = commands::compose_std_command(
+		let mut cmd = commands::compose_std_command(
 			&context,
 			&self.args[0],
-			argv0.as_ref(),
+			std::ffi::OsStr::new(argv0.as_ref()),
 			&self.args[1..],
 			self.empty_environment,
 		)
 		.await?;
+		pi_iso::process::background_child(&mut cmd);
 
 		let mut cmd = tokio::process::Command::from(cmd);
 		cmd.kill_on_drop(true);

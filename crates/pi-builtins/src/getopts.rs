@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::Write};
+use std::{collections::HashMap, ffi::{OsStr, OsString}, io::Write};
 
 use brush_core::{ExecutionResult, builtins, env, variables};
 use clap::Parser;
@@ -14,7 +14,7 @@ pub(crate) struct GetOptsCommand {
 
 	/// Arguments to parse
 	#[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-	args: Vec<String>,
+	args: Vec<OsString>,
 }
 
 // We track cross-call state in special variables. They are hidden from
@@ -31,7 +31,7 @@ struct GetOptsResult {
 	variable_value: String,
 	/// The value for OPTARG, if any (option's argument or, on error, the
 	/// offending char).
-	optarg:         Option<String>,
+	optarg:         Option<OsString>,
 	/// The new value for OPTIND after this call.
 	optind:         usize,
 	/// Exit code: success (0) if an option was found, general error (1) when
@@ -90,7 +90,7 @@ impl builtins::Command for GetOptsCommand {
 	/// resolved
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = std::ffi::OsString>,
 	{
 		let (mut this, rest_args) = brush_core::builtins::try_parse_known::<Self>(args)?;
 		if let Some(args) = rest_args {
@@ -119,7 +119,7 @@ impl builtins::Command for GetOptsCommand {
 		// If unset or non-numeric, assume OPTIND is 1.
 		let next_index_signed = context
 			.shell
-			.env_str("OPTIND")
+			.env_str("OPTIND")?
 			.and_then(|s| brush_core::int_utils::parse::<i32>(s.as_ref(), 10).ok())
 			.unwrap_or(1);
 
@@ -128,7 +128,7 @@ impl builtins::Command for GetOptsCommand {
 		// the internal char index so we don't resume mid-arg.
 		let last_optind = context
 			.shell
-			.env_str(VAR_GETOPTS_LAST_OPTIND)
+			.env_str(VAR_GETOPTS_LAST_OPTIND)?
 			.and_then(|s| s.parse::<i32>().ok());
 		if last_optind != Some(next_index_signed) {
 			context.shell.env_mut().unset(VAR_GETOPTS_NEXT_CHAR_INDEX)?;
@@ -163,7 +163,7 @@ impl builtins::Command for GetOptsCommand {
 fn parse_next_option<SE: brush_core::ShellExtensions>(
 	context: &mut brush_core::ExecutionContext<'_, SE>,
 	spec: &OptionSpec,
-	args_to_parse: &[String],
+	args_to_parse: &[OsString],
 	mut next_index: usize,
 ) -> Result<GetOptsResult, brush_core::Error> {
 	// See if there are any args left to parse.
@@ -177,15 +177,15 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 		});
 	}
 
-	let arg = args_to_parse[next_index - 1].as_str();
-
-	// See if this is an option.
-	if !arg.starts_with('-') || arg == "--" || arg == "-" {
+	let arg = args_to_parse[next_index - 1].as_os_str();
+	let bytes = arg.as_encoded_bytes();
+	// Only option syntax must be text; operands and option values remain native.
+	if !bytes.starts_with(b"-") || bytes == b"--" || bytes == b"-" {
 		// Not an option. If it was "--", skip past it.
 		return Ok(GetOptsResult {
 			variable_value: String::from("?"),
 			optarg:         None,
-			optind:         if arg == "--" {
+			optind:         if bytes == b"--" {
 				next_index + 1
 			} else {
 				next_index
@@ -197,15 +197,16 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 	// Figure out how far into this option we are.
 	let mut next_char_index = context
 		.shell
-		.env_str(VAR_GETOPTS_NEXT_CHAR_INDEX)
+		.env_str(VAR_GETOPTS_NEXT_CHAR_INDEX)?
 		.map_or(DEFAULT_NEXT_CHAR_INDEX, |s| s.parse().unwrap_or(DEFAULT_NEXT_CHAR_INDEX));
 
 	// Find the char. If the index is stale (exceeds this arg's length),
 	// reset to the default index, mirroring bash behavior.
-	let mut c = arg.chars().nth(next_char_index);
+	let valid = std::str::from_utf8(bytes).unwrap_or_else(|err| std::str::from_utf8(&bytes[..err.valid_up_to()]).expect("validated UTF-8 prefix"));
+	let mut c = valid.chars().nth(next_char_index);
 	if c.is_none() {
 		next_char_index = DEFAULT_NEXT_CHAR_INDEX;
-		c = arg.chars().nth(next_char_index);
+		c = valid.chars().nth(next_char_index);
 	}
 	let Some(c) = c else {
 		// Arg is too short even at default index.
@@ -217,8 +218,8 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 		});
 	};
 
-	let arg_char_count = arg.chars().count();
-	let mut is_last_char_in_option = next_char_index == arg_char_count - 1;
+	let option_end = valid.char_indices().nth(next_char_index).map(|(offset, c)| offset + c.len_utf8()).expect("option character exists");
+	let mut is_last_char_in_option = option_end == bytes.len();
 
 	let mut variable_value;
 	let optarg;
@@ -234,7 +235,7 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 				c,
 				arg,
 				args_to_parse,
-				next_char_index,
+				option_end,
 				is_last_char_in_option,
 				next_index,
 			)?;
@@ -255,7 +256,7 @@ fn parse_next_option<SE: brush_core::ShellExtensions>(
 		// and request that OPTIND not be updated.
 		context.shell.env_mut().update_or_add(
 			VAR_GETOPTS_NEXT_CHAR_INDEX,
-			variables::ShellValueLiteral::Scalar((next_char_index + 1).to_string()),
+			variables::ShellValueLiteral::Scalar((next_char_index + 1).to_string().into()),
 			|v| {
 				v.hide_from_enumeration();
 				Ok(())
@@ -276,21 +277,21 @@ fn resolve_option_argument<SE: brush_core::ShellExtensions>(
 	context: &brush_core::ExecutionContext<'_, SE>,
 	spec: &OptionSpec,
 	c: char,
-	arg: &str,
-	args_to_parse: &[String],
-	next_char_index: usize,
+	arg: &OsStr,
+	args_to_parse: &[OsString],
+	option_end: usize,
 	is_last_char_in_option: bool,
 	mut next_index: usize,
-) -> Result<(String, Option<String>, bool, usize), brush_core::Error> {
+) -> Result<(String, Option<OsString>, bool, usize), brush_core::Error> {
 	// If this is the last character in the token, the argument value comes from
 	// the next token. Otherwise, the remainder of the current token is the value.
 	if is_last_char_in_option {
 		if next_index >= args_to_parse.len() {
 			// Missing required argument.
 			let (variable_value, optarg) = if spec.silent_errors {
-				(String::from(":"), Some(String::from(c)))
+				(String::from(":"), Some(OsString::from(c.to_string())))
 			} else {
-				if is_opterr_enabled(context) {
+				if is_opterr_enabled(context)? {
 					writeln!(context.stderr(), "getopts: option requires an argument -- {c}")?;
 				}
 				(String::from("?"), None)
@@ -301,7 +302,8 @@ fn resolve_option_argument<SE: brush_core::ShellExtensions>(
 			Ok((String::from(c), Some(args_to_parse[next_index - 1].clone()), true, next_index))
 		}
 	} else {
-		let optarg: String = arg.chars().skip(next_char_index + 1).collect();
+		// The boundary follows a valid Unicode character in the native encoding.
+		let optarg = unsafe { OsStr::from_encoded_bytes_unchecked(&arg.as_encoded_bytes()[option_end..]) }.to_owned();
 		Ok((String::from(c), Some(optarg), true, next_index))
 	}
 }
@@ -311,13 +313,13 @@ fn report_unknown_option<SE: brush_core::ShellExtensions>(
 	context: &brush_core::ExecutionContext<'_, SE>,
 	spec: &OptionSpec,
 	c: char,
-) -> Result<(String, Option<String>), brush_core::Error> {
-	if !spec.silent_errors && is_opterr_enabled(context) {
+) -> Result<(String, Option<OsString>), brush_core::Error> {
+	if !spec.silent_errors && is_opterr_enabled(context)? {
 		writeln!(context.stderr(), "getopts: illegal option -- {c}")?;
 	}
 
 	let optarg = if spec.silent_errors {
-		Some(String::from(c))
+		Some(OsString::from(c.to_string()))
 	} else {
 		None
 	};
@@ -335,7 +337,7 @@ fn update_variables<SE: brush_core::ShellExtensions>(
 	// Update variable value.
 	context.shell.env_mut().update_or_add(
 		variable_name,
-		variables::ShellValueLiteral::Scalar(result.variable_value),
+		variables::ShellValueLiteral::Scalar(result.variable_value.into()),
 		|_| Ok(()),
 		brush_core::env::EnvironmentLookup::Anywhere,
 		brush_core::env::EnvironmentScope::Global,
@@ -345,7 +347,7 @@ fn update_variables<SE: brush_core::ShellExtensions>(
 	if let Some(optarg) = result.optarg {
 		context.shell.env_mut().update_or_add(
 			"OPTARG",
-			variables::ShellValueLiteral::Scalar(optarg),
+			variables::ShellValueLiteral::Scalar(optarg.into()),
 			|_| Ok(()),
 			brush_core::env::EnvironmentLookup::Anywhere,
 			brush_core::env::EnvironmentScope::Global,
@@ -358,14 +360,14 @@ fn update_variables<SE: brush_core::ShellExtensions>(
 	let optind_str = result.optind.to_string();
 	context.shell.env_mut().update_or_add(
 		"OPTIND",
-		variables::ShellValueLiteral::Scalar(optind_str.clone()),
+		variables::ShellValueLiteral::Scalar(optind_str.clone().into()),
 		|_| Ok(()),
 		brush_core::env::EnvironmentLookup::Anywhere,
 		brush_core::env::EnvironmentScope::Global,
 	)?;
 	context.shell.env_mut().update_or_add(
 		VAR_GETOPTS_LAST_OPTIND,
-		variables::ShellValueLiteral::Scalar(optind_str),
+		variables::ShellValueLiteral::Scalar(optind_str.into()),
 		|v| {
 			v.hide_from_enumeration();
 			Ok(())
@@ -381,9 +383,6 @@ fn update_variables<SE: brush_core::ShellExtensions>(
 /// messages). OPTERR defaults to 1; any nonzero value means errors are enabled.
 fn is_opterr_enabled<SE: brush_core::ShellExtensions>(
 	context: &brush_core::ExecutionContext<'_, SE>,
-) -> bool {
-	context
-		.shell
-		.env_str("OPTERR")
-		.is_none_or(|s| s.parse::<i64>().unwrap_or(1) != 0)
+) -> Result<bool, brush_core::Error> {
+	Ok(context.shell.env_str("OPTERR")?.is_none_or(|s| s.parse::<i64>().unwrap_or(1) != 0))
 }

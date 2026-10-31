@@ -78,7 +78,7 @@ mod imp {
 		fs,
 		os::unix::ffi::OsStrExt,
 		path::{Path, PathBuf},
-		process::{Command, Stdio},
+		process::Stdio,
 		sync::{
 			LazyLock,
 			atomic::{AtomicBool, Ordering},
@@ -107,7 +107,7 @@ mod imp {
 		if kernel_overlay_supported() || FUSE_OVERLAYFS.load(Ordering::Relaxed) {
 			return ProbeResult::available();
 		}
-		let fuse_runs = Command::new("fuse-overlayfs")
+		let fuse_runs = crate::process::background_command("fuse-overlayfs")
 			.arg("--version")
 			.stdin(Stdio::null())
 			.stdout(Stdio::null())
@@ -198,16 +198,15 @@ mod imp {
 
 	fn kernel_mount(merged: &Path, opts: &str) -> IsoResult<()> {
 		let target = to_cstring(merged.as_os_str().as_bytes(), "merged")?;
-		let source = CString::new("overlay").expect("static source");
-		let fstype = CString::new("overlay").expect("static fstype");
 		let opts_c = to_cstring(opts.as_bytes(), "overlay options")?;
 
-		// SAFETY: all pointers are valid CString-backed and outlive the call.
+		// SAFETY: all pointers are NUL-terminated (CString-backed or `c"…"`
+		// literals) and outlive the call.
 		let rc = unsafe {
 			libc::mount(
-				source.as_ptr(),
+				c"overlay".as_ptr(),
 				target.as_ptr(),
-				fstype.as_ptr(),
+				c"overlay".as_ptr(),
 				0,
 				opts_c.as_ptr().cast::<libc::c_void>(),
 			)
@@ -255,7 +254,7 @@ mod imp {
 			upper.display(),
 			work.display()
 		);
-		let output = Command::new("fuse-overlayfs")
+		let output = crate::process::background_command("fuse-overlayfs")
 			.args(["-o", &opts])
 			.arg(merged)
 			.stdin(Stdio::null())
@@ -283,7 +282,7 @@ mod imp {
 
 	fn fuse_umount(merged: &Path) -> IsoResult<()> {
 		for binary in ["fusermount3", "fusermount"] {
-			let result = Command::new(binary)
+			let result = crate::process::background_command(binary)
 				.arg("-u")
 				.arg(merged)
 				.stdin(Stdio::null())

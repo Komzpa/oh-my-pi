@@ -1,6 +1,6 @@
 //! Prompt handling for shell instances.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, ffi::OsStr};
 
 use crate::{Shell, error, extensions, prompt};
 
@@ -48,7 +48,7 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 		//
 
 		// Retrieve the spec.
-		let prompt_spec = self.parameter_or_default(var_name, default);
+		let prompt_spec = self.parameter_or_default(var_name, default)?;
 		if prompt_spec.is_empty() {
 			return Ok(String::new());
 		}
@@ -67,13 +67,13 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 
 		// Strip out special characters that readline would typically drop:
 		// \001 and \002 (start and end of non-printing sequences).
-		let mut expanded = result?;
+		let mut expanded = result?.to_string_lossy().into_owned();
 		expanded.retain(|c| c != '\x01' && c != '\x02');
 
 		Ok(expanded)
 	}
 
-	fn parameter_or_default<'a>(&'a self, name: &str, default: &'a str) -> Cow<'a, str> {
-		self.env_str(name).unwrap_or_else(|| default.into())
+	fn parameter_or_default<'a>(&'a self, name: &str, default: &'a str) -> Result<Cow<'a, OsStr>, error::Error> {
+		Ok(self.env_os(name).unwrap_or_else(|| OsStr::new(default).into()))
 	}
 }

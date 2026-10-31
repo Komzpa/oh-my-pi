@@ -130,17 +130,17 @@ impl<SE: extensions::ShellExtensions> Shell<SE> {
 					"BASH_ENV"
 				};
 
-				if let Some(config_path) = self.env_str(env_var_name) {
+				if let Some(config_path) = self.env_os(env_var_name) {
 					let config_path = config_path.into_owned();
 					let options = expansion::ExpanderOptions {
 						brace_expand:    false,
 						pathname_expand: false,
 						..Default::default()
 					};
-					let expanded_path = expansion::basic_expand_word_with_options(
+					let expanded_path = expansion::basic_expand_native_word_with_options(
 						self,
 						&params,
-						config_path.as_str(),
+						&config_path,
 						&options,
 					)
 					.await?;

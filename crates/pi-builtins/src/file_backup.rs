@@ -23,10 +23,12 @@ use crate::host::Host;
 /// Resolves a `--backup` CONTROL word (unique prefixes allowed); the error is
 /// the GNU diagnostic naming `origin`.
 #[cfg(any(feature = "util.cp", feature = "util.mv"))]
-fn match_backup_method(method: &str, origin: &str) -> Result<BackupMode, String> {
+fn match_backup_method(method: impl AsRef<OsStr>, origin: &str) -> Result<BackupMode, String> {
+	let native = method.as_ref();
+	let method = native.to_str();
 	let matches = backup_control::BACKUP_CONTROL_VALUES
 		.iter()
-		.filter(|value| value.starts_with(method))
+		.filter(|value| method.is_some_and(|method| value.starts_with(method)))
 		.collect::<Vec<_>>();
 	if matches.len() == 1 {
 		match *matches[0] {
@@ -41,7 +43,7 @@ fn match_backup_method(method: &str, origin: &str) -> Result<BackupMode, String>
 		Err(format!(
 			"{kind} argument {} for '{origin}'\nValid arguments are:\n  - 'none', 'off'\n  - \
 			 'simple', 'never'\n  - 'existing', 'nil'\n  - 'numbered', 't'",
-			method.quote()
+			native.quote()
 		))
 	}
 }
@@ -56,7 +58,7 @@ pub(crate) fn determine_backup_mode(matches: &ArgMatches, host: &Host) -> Result
 	if matches.contains_id(backup_control::arguments::OPT_BACKUP) {
 		if let Some(method) = cli_method {
 			match_backup_method(method, "backup type")
-		} else if let Some(method) = host.var("VERSION_CONTROL") {
+		} else if let Some(method) = host.var_os("VERSION_CONTROL") {
 			match_backup_method(method, "$VERSION_CONTROL")
 		} else {
 			Ok(BackupMode::Existing)
@@ -64,7 +66,7 @@ pub(crate) fn determine_backup_mode(matches: &ArgMatches, host: &Host) -> Result
 	} else if matches.get_flag(backup_control::arguments::OPT_BACKUP_NO_ARG)
 		|| matches.contains_id(backup_control::arguments::OPT_SUFFIX)
 	{
-		host.var("VERSION_CONTROL").map_or(Ok(BackupMode::Existing), |method| {
+		host.var_os("VERSION_CONTROL").map_or(Ok(BackupMode::Existing), |method| {
 			match_backup_method(method, "$VERSION_CONTROL")
 		})
 	} else {
@@ -75,16 +77,16 @@ pub(crate) fn determine_backup_mode(matches: &ArgMatches, host: &Host) -> Result
 /// The backup suffix from `-S`, else the shell's `SIMPLE_BACKUP_SUFFIX`, else
 /// `~`; a suffix containing `/` falls back to `~`.
 #[cfg(any(feature = "util.cp", feature = "util.mv"))]
-pub(crate) fn determine_backup_suffix(matches: &ArgMatches, host: &Host) -> String {
+pub(crate) fn determine_backup_suffix(matches: &ArgMatches, host: &Host) -> std::ffi::OsString {
 	let suffix = matches
-		.get_one::<String>(backup_control::arguments::OPT_SUFFIX)
-		.map(String::as_str)
-		.or_else(|| host.var("SIMPLE_BACKUP_SUFFIX"))
-		.unwrap_or(backup_control::DEFAULT_BACKUP_SUFFIX);
-	if suffix.contains('/') {
-		backup_control::DEFAULT_BACKUP_SUFFIX.to_string()
+		.get_one::<std::ffi::OsString>(backup_control::arguments::OPT_SUFFIX)
+		.map(std::ffi::OsString::as_os_str)
+		.or_else(|| host.var_os("SIMPLE_BACKUP_SUFFIX"))
+		.unwrap_or_else(|| OsStr::new(backup_control::DEFAULT_BACKUP_SUFFIX));
+	if suffix.as_encoded_bytes().contains(&b'/') {
+		backup_control::DEFAULT_BACKUP_SUFFIX.into()
 	} else {
-		suffix.to_string()
+		suffix.to_owned()
 	}
 }
 
@@ -125,7 +127,7 @@ pub(crate) fn backup_path(
 /// `operand`.
 pub(crate) fn backup_display(operand: &Path, backup: &Path) -> PathBuf {
 	match (parent_path(operand), file_name(backup)) {
-		(Some(parent), Some(name)) if !parent.as_os_str().is_empty() => child_path(parent, &name),
+		(Some(parent), Some(name)) if !parent.is_empty() => child_path(parent, &name),
 		(_, Some(name)) => PathBuf::from(name.into_owned()),
 		_ => backup.to_path_buf(),
 	}

@@ -2,11 +2,65 @@
 
 ## [Unreleased]
 
+## [18.14.2] - 2026-10-31
+
+### Added
+
+- Added `listWorkspace({ pruneExcludedDirs: false })` to stop pruning standard dependency/build directory names; hidden directories such as `.git` also require `hidden: true` ([#17539](https://github.com/can1357/oh-my-pi/issues/17539))
+
+## [18.14.1] - 2026-10-31
+
+### Added
+
+- Added `FileLock.isHeld(path)`, which reports whether a lock is held without acquiring it ([#17428](https://github.com/can1357/oh-my-pi/pull/17428) by [@andrebrait](https://github.com/andrebrait))
+
+### Fixed
+
+- Fixed native search on Windows (the bash tool's `fd`, grep, glob) failing with "The filename, directory name, or volume label syntax is incorrect" or "path not found" for paths with `.`/`..` components or `/` separators, including `fd` run without a search path
+- Fixed glob and find on Windows reporting a symlinked file's own size and mtime instead of its target's, which dropped linked files from listings that skip empty files
+- Fixed the bash tool's built-in `rsync` on Windows ignoring per-directory merge files whose name includes a directory part, such as `--filter=':- ../rules'`
+
+## [18.14.0] - 2026-10-29
+
+### Breaking Changes
+
+- Removed the `invalidateFsScanCache` API and the associated filesystem scan cache environment variables (`FS_SCAN_CACHE_TTL_MS`, `FS_SCAN_EMPTY_RECHECK_MS`, `FS_SCAN_CACHE_MAX_ENTRIES`, and `FS_SCAN_CACHE_MAX_BYTES`); filesystem listing caches are now managed automatically.
+
+### Added
+
+- Added a built-in `rsync` implementation to the bash tool, compatible with rsync 3.5.1 and protocol versions 29–33 across Linux, macOS, and Windows. It supports local copies, SSH remote shells via `-e`, and `rsync://` daemons without requiring an installed binary; daemon serving is not supported, and `PI_DISABLE_UUTILS_DESTRUCTIVE` continues to use the system `rsync`.
+- Added built-in `ast-grep` (also available as `sg`) support to the bash tool for structural code search and rewriting, including pattern matching, rewrites, context, headings, and JSON output.
+
+### Changed
+
+- Improved native filesystem search performance, including faster globbing and more efficient grep, fuzzy finding, workspace listing, and structural search/edit operations, while preserving deterministic result ordering and streaming behavior.
+- Native search and the bash tool's built-in `rg`, `grep`, `fd`, `find`, and `ast-grep` now stop filesystem work promptly when cancelled or timed out, including searches over JavaScript-provided filesystems and searches interrupted while reading large files.
+- The bash tool's built-in `rg` and recursive `grep` now search files in parallel while retaining path-ordered output; `grep` can also stop promptly after reaching `maxCount`.
+- Enabled safe reuse of unchanged directory listings when `cache: true`, with timestamp validation to prevent stale results.
+
+### Fixed
+
+- Fixed cancelled native directory searches leaving filesystem-provider requests running during startup.
+- Fixed built-in bash commands such as `cat`, `grep`, `head`, `wc`, `read`, and `mapfile` hanging at the end of FIFO input on macOS; `read -t` now returns at EOF.
+- Fixed ANSI text wrapping for styled underlines, background colours, and colon-form RGB colours.
+- Fixed clicking in native audio playback when the queue runs dry mid-waveform by smoothly fading output to silence and back.
+
 ## [18.13.3] - 2026-10-28
 
 ### Changed
 
 - Updated Bun engine requirement to ≥1.4.4
+### Changed
+
+- Strengthened shell sibling-cancellation regression coverage with both live child identities and a release handshake, proving the other run survives cancellation before it exits normally.
+
+### Fixed
+
+- Preserve command-output hooks, native metadata and exit markers for direct async external commands with stdin-only FIFO redirects, without marking pipelines or redirected output.
+- Avoid delivering duplicate termination signals to shell process groups and their members, allowing TERM traps to flush output and finish cleanup.
+- Isolated the BSD `date -j` no-op regression from host numeric reference files and covered existing-file precedence without changing date selection.
+- Preserve native shell argument and exported-value bytes through expansion and external launches instead of replacing non-UTF-8 bytes.
+- Preserve native values through shell predicates, case/glob/regex matching, IFS/read, parameter transforms and executable shell serialization; preserve native `which` output, backup suffixes and TZif filenames.
 
 ## [18.13.2] - 2026-10-27
 
@@ -120,6 +174,9 @@
 
 ### Fixed
 
+- Fixed Linux per-tool process boundaries rejecting every external command on hosts with coreutils <9.5 (Ubuntu 24.04, Debian 12): the enforcement probe no longer requires `env --argv0`.
+- Fixed scoped command arguments containing `$` being rewritten to `$$` on systemd <254, where scope launches never expand arguments (`sh -c 'echo $HOME'` ran `echo $$HOME`).
+- Fixed Bazel native addon builds failing to resolve the vendored brush-core dependency in pi-vcs.
 - Fixed the output minimizer altering what `ssh` commands print in the bash tool: remote lines were cut to 120 characters and blank lines dropped; ssh's own login and connection notices are still stripped ([#16314](https://github.com/can1357/oh-my-pi/pull/16314) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed X11 background shortcuts and typing reporting `Cancelled` when you stopped them right after the last key went down: the key releases now always go out and the call succeeds ([#16235](https://github.com/can1357/oh-my-pi/pull/16235) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `wrapTextWithAnsi` leaving rows half-empty in Chinese and Japanese text: CJK runs now break between characters to fill each row, closing punctuation such as `，。！」` never starts a row, and opening brackets never end one ([#16219](https://github.com/can1357/oh-my-pi/issues/16219))
@@ -490,6 +547,16 @@
 ### Fixed
 
 - Fixed Ctrl+V on Windows sometimes pasting text with a few characters replaced by unrelated glyphs (for example `https://` turning into `՞ttp缀難//`); clipboard reads and writes no longer run at the same time ([#14144](https://github.com/can1357/oh-my-pi/pull/14144) by [@H4vC](https://github.com/H4vC))
+### Fixed
+
+- Let desktop-masked Linux workers launch scoped tools through the systemd user manager without exposing its runtime directory or bus address to tool payloads.
+- Parent Linux tool-call boundaries under a stable session slice when the payload carries `OMP_SESSION_ID`, and export `sessionSliceName` for the session lifecycle owner.
+- Run Linux scoped tool children (external shell commands, PTYs, git hooks, and Python/JavaScript eval kernels) at CPU niceness 19 and best-effort IO priority 7 without lowering omp's own priority.
+- Detached repositories borrow a single transitive object store for healthy `--reference` chains; genuinely cyclic chains are materialized locally without inheriting an alternates pointer.
+
+### Added
+
+- Added `unsetEnv` to native shell session and one-shot options to remove inherited environment variables after session imports and snapshot sourcing.
 
 ## [18.4.10] - 2026-10-02
 

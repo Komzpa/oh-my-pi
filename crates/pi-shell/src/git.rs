@@ -5,8 +5,9 @@
 //!
 //! - `PI_SMART_GIT`: `git worktree add` creates linked worktrees through
 //!   [`pi_vcs`], described below.
-//! - `PI_GIT_GUARD`: commands that discard or move work in a shared checkout
-//!   are refused before git runs; see [`guard`].
+//! - `PI_GIT_GUARD`: commands that discard or move work are refused in a
+//!   checkout other sessions may share, and run after saving what they discard
+//!   in a worktree of one's own; see [`guard`].
 //!
 //! `git worktree add` checks out every file of the target commit. pi-vcs
 //! instead copy-on-write clones the source checkout (APFS `clonefile`, Linux
@@ -93,7 +94,7 @@ pub fn git_builtin<SE: ShellExtensions>(layers: GitLayers) -> Option<Registratio
 struct GitCommand<const SMART_WORKTREE: bool, const GUARD: bool> {
 	/// Arguments forwarded to git.
 	#[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
-	args: Vec<String>,
+	args: Vec<std::ffi::OsString>,
 }
 
 impl<const SMART_WORKTREE: bool, const GUARD: bool> builtins::Command
@@ -104,7 +105,7 @@ impl<const SMART_WORKTREE: bool, const GUARD: bool> builtins::Command
 	/// Bypasses clap: every argument belongs to git.
 	fn new<I>(args: I) -> Result<Self, clap::Error>
 	where
-		I: IntoIterator<Item = String>,
+		I: IntoIterator<Item = std::ffi::OsString>,
 	{
 		Ok(Self { args: args.into_iter().skip(1).collect() })
 	}
@@ -115,12 +116,32 @@ impl<const SMART_WORKTREE: bool, const GUARD: bool> builtins::Command
 	) -> impl Future<Output = Result<ExecutionResult, Error>> + Send {
 		let args = self.args.clone();
 		async move {
-			if GUARD && let Some(refusal) = guard::Review::of(context.shell, &args).refusal().await? {
-				let _ = context.stderr().write_all(refusal.as_bytes());
-				return Ok(ExecutionResult::new(guard::REFUSED_EXIT));
+			let text_args = args
+				.iter()
+				.map(|arg| arg.to_str().map(str::to_owned))
+				.collect::<Option<Vec<_>>>();
+			if GUARD && text_args.is_none() {
+				return Err(
+					ErrorKind::InternalError("git guard argument is not valid UTF-8".into()).into(),
+				);
+			}
+			if GUARD {
+				match guard::Review::of(context.shell, text_args.as_ref().expect("guard checked arguments"))
+					.decide()
+					.await?
+				{
+					guard::Decision::Run => {},
+					guard::Decision::RunNoted(note) => {
+						let _ = context.stderr().write_all(note.as_bytes());
+					},
+					guard::Decision::Refuse(refusal) => {
+						let _ = context.stderr().write_all(refusal.as_bytes());
+						return Ok(ExecutionResult::new(guard::REFUSED_EXIT));
+					},
+				}
 			}
 			if SMART_WORKTREE
-				&& let Some(request) = AddRequest::parse(&args)
+				&& let Some(request) = text_args.as_ref().and_then(|args| AddRequest::parse(args))
 				&& !git_env_redirected(context.shell)
 			{
 				let cwd = context.shell.working_dir().to_owned();
@@ -576,7 +597,7 @@ impl Created {
 			self.head,
 			"1".to_owned(),
 		];
-		run_git(shell, params, args).await
+		run_git(shell, params, args.into_iter().map(std::ffi::OsString::from)).await
 	}
 }
 
@@ -588,25 +609,21 @@ impl Created {
 async fn run_git<SE: ShellExtensions>(
 	shell: &mut Shell<SE>,
 	params: ExecutionParameters,
-	args: impl IntoIterator<Item = String>,
+	args: impl IntoIterator<Item = std::ffi::OsString>,
 ) -> Result<ExecutionResult, Error> {
 	let Some(git) = shell.find_first_executable_in_path_using_cache("git").await else {
 		return Err(ErrorKind::CommandNotFound("git".to_owned()).into());
 	};
 	let cancel = params.cancel_token();
-	let argv = std::iter::once("git".to_owned())
+	let argv = std::iter::once(std::ffi::OsString::from("git"))
 		.chain(args)
 		.map(CommandArg::from)
 		.collect();
 	// A path-qualified name dispatches straight to the binary.
-	let mut command = SimpleCommand::new(
-		ShellForCommand::ParentShell(shell),
-		params,
-		git.to_string_lossy().into_owned(),
-		argv,
-	);
+	let mut command =
+		SimpleCommand::new(ShellForCommand::ParentShell(shell), params, git.into_os_string(), argv);
 	command.use_functions = false;
-	command.argv0 = Some("git".to_owned());
+	command.argv0 = Some("git".into());
 	Ok(command
 		.execute()
 		.await?
@@ -619,10 +636,12 @@ async fn run_git<SE: ShellExtensions>(
 /// injects config; the in-process path reads neither.
 fn git_env_redirected<SE: ShellExtensions>(shell: &Shell<SE>) -> bool {
 	shell.env().iter_exported().any(|(name, _)| {
-		is_git_repo_location_var(name)
-			|| name
-				.get(..10)
-				.is_some_and(|prefix| prefix.eq_ignore_ascii_case("GIT_CONFIG"))
+		name.to_str().is_some_and(|name| {
+			is_git_repo_location_var(name)
+				|| name
+					.get(..10)
+					.is_some_and(|prefix| prefix.eq_ignore_ascii_case("GIT_CONFIG"))
+		})
 	})
 }
 

@@ -183,7 +183,7 @@ fn get_var_value<'a>(
 	if let Some(value) = value
 		&& value.is_set()
 	{
-		return Ok(value.to_cow_str(shell).to_string().into());
+		return Ok(value.to_cow_str(shell).map_err(|e| EvalError::FailedToExpandExpression(e.to_string()))?.to_string().into());
 	}
 
 	if shell.options().treat_unset_variables_as_error {
@@ -203,12 +203,13 @@ fn deref_lvalue(
 		ast::ArithmeticTarget::ArrayElement(name, index_expr) => {
 			let index_str = eval_expr_impl(index_expr, shell, depth)?.to_string();
 
-			shell
-				.env()
-				.get(name)
-				.map_or_else(|| Ok(None), |(_, v)| v.value().get_at(index_str.as_str(), shell))
-				.map_err(|_err| EvalError::FailedToAccessArray)?
-				.unwrap_or(Cow::Borrowed(""))
+			let value = shell.env().get(name)
+				.map_or_else(|| Ok(None), |(_, v)| v.value().get_at(std::ffi::OsStr::new(&index_str), shell))
+				.map_err(|_| EvalError::FailedToAccessArray)?;
+			match value {
+				Some(value) => Cow::Owned(value.to_str().ok_or(EvalError::FailedToAccessArray)?.to_owned()),
+				None => Cow::Borrowed(""),
+			}
 		},
 	};
 
@@ -371,7 +372,7 @@ fn assign(
 				.env_mut()
 				.update_or_add(
 					name.as_str(),
-					variables::ShellValueLiteral::Scalar(value.to_string()),
+					variables::ShellValueLiteral::Scalar(value.to_string().into()),
 					|_| Ok(()),
 					env::EnvironmentLookup::Anywhere,
 					env::EnvironmentScope::Global,

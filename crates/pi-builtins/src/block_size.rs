@@ -110,7 +110,7 @@ impl BlockSize {
 
 	/// The default unit: 512 bytes under `POSIXLY_CORRECT`, else 1024.
 	pub fn default_for(host: &Host) -> Self {
-		Self::of(if host.var("POSIXLY_CORRECT").is_some() { 512 } else { 1024 })
+		Self::of(if host.var_os("POSIXLY_CORRECT").is_some() { 512 } else { 1024 })
 	}
 
 	/// Parses a `--block-size` spec.
@@ -161,10 +161,11 @@ impl BlockSize {
 	pub fn from_env(host: &Host, utility_var: &str) -> Self {
 		let Some(spec) = [utility_var, "BLOCK_SIZE", "BLOCKSIZE"]
 			.into_iter()
-			.find_map(|key| host.var(key))
+			.find_map(|key| host.var_os(key))
 		else {
 			return Self::default_for(host);
 		};
+		let Some(spec) = spec.to_str() else { return Self::default_for(host); };
 		match Self::parse(spec) {
 			Ok(size) => size,
 			Err(BlockSizeError::InvalidSuffix) => (1..spec.len())
@@ -243,7 +244,7 @@ impl BlockSize {
 				if symbols.decimal_point == b'.' {
 					text
 				} else {
-					text.replace('.', char::from(symbols.decimal_point).encode_utf8(&mut [0; 4]))
+					text.replace('.', char::from(symbols.decimal_point).encode_utf8(&mut [0; char::MAX_LEN_UTF8]))
 				}
 			},
 			None => n.div_ceil(self.bytes).to_string(),
@@ -266,7 +267,7 @@ fn group_digits(text: &str, separator: u8) -> String {
 	let separator = char::from(separator);
 	let mut out = String::with_capacity(text.len() + digits / 3);
 	for (i, digit) in text[..digits].chars().enumerate() {
-		if i != 0 && (digits - i) % 3 == 0 {
+		if i != 0 && (digits - i).is_multiple_of(3) {
 			out.push(separator);
 		}
 		out.push(digit);

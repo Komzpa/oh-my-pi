@@ -10,6 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getSafeProjectCwd, logger, postmortem } from "@oh-my-pi/pi-utils";
 import { quotePosixArgument } from "./shell-quote";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 import fnEnvHelper from "./shell-snapshot-fn-env.sh" with { type: "text" };
 
 interface SnapshotFailure {
@@ -352,7 +353,7 @@ async function createSnapshot(
 				spawnEnv[key] = value;
 			}
 		}
-		const child = Bun.spawn([shell, "-c", script], {
+		const child = spawnBackground([shell, "-c", script], {
 			cwd: getSafeProjectCwd(),
 			env: spawnEnv,
 			stdin: "ignore",

@@ -66,7 +66,7 @@ mod imp {
 	use std::{
 		fs, io,
 		path::Path,
-		process::{Command, Output},
+		process::Output,
 		sync::atomic::{AtomicBool, Ordering},
 	};
 
@@ -221,11 +221,8 @@ mod imp {
 			},
 			Ok(output) => {
 				let stderr = String::from_utf8_lossy(&output.stderr);
-				if stderr_is_unavailable(&stderr) {
-					Ok(())
-				} else {
-					Err(IsoError::other(format!("zfs get origin {clone}: {}", stderr.trim())))
-				}
+				stderr_is_unavailable(&stderr)
+					.ok_or_else(|| IsoError::other(format!("zfs get origin {clone}: {}", stderr.trim())))
 			},
 			Err(err) if err.kind() == io::ErrorKind::NotFound => {
 				Err(IsoError::unavailable("zfs CLI is unavailable"))
@@ -278,7 +275,9 @@ mod imp {
 	}
 
 	fn run_zfs_status<const N: usize>(args: [&str; N]) -> io::Result<Output> {
-		Command::new("zfs").args(args).output()
+		crate::process::background_command("zfs")
+			.args(args)
+			.output()
 	}
 
 	fn command_available<const N: usize>(args: [&str; N]) -> bool {
