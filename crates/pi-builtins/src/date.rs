@@ -945,7 +945,7 @@ fn escape_invalid_bytes(bytes: &[u8]) -> String {
 			}
 		})
 		.collect::<Vec<u8>>();
-	String::from_utf8_lossy(&escaped).into_owned()
+	String::from_utf8_lossy_owned(escaped)
 }
 
 /// Strip parenthesized comments from a date string.
@@ -1032,8 +1032,8 @@ fn parse_military_timezone_with_offset(s: &str) -> Option<(i32, DayDelta)> {
 	};
 
 	let day_delta = match additional_hours - tz_offset {
-		h if h < 0 => DayDelta::Previous,
-		h if h >= 24 => DayDelta::Next,
+		..0 => DayDelta::Previous,
+		24.. => DayDelta::Next,
 		_ => DayDelta::Same,
 	};
 
@@ -1404,8 +1404,7 @@ fn date_main(host: &mut Host, matches: &ArgMatches) -> Result<(), DateError> {
 	// form) the date value to parse.
 	let mut operands: Vec<&String> = matches
 		.get_many::<String>(OPT_FORMAT)
-		.map(Iterator::collect)
-		.unwrap_or_default();
+		.map_or_default(Iterator::collect);
 
 	// BSD: with `-j`, `-f` is the strptime(3) input format for the date
 	// operand rather than GNU's `--file=DATEFILE`.
@@ -2450,7 +2449,12 @@ mod tests {
 
 		let file = dir.path().join("0");
 		std::fs::write(&file, b"reference").unwrap();
-		filetime::set_file_mtime(&file, filetime::FileTime::from_unix_time(1_700_000_000, 0)).unwrap();
+		std::fs::File::options()
+			.write(true)
+			.open(&file)
+			.unwrap()
+			.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000))
+			.unwrap();
 		let (code, capture) = run_util::<Date>(&["-u", "-j", "-r", "0", "+%s"], "", dir.path());
 		assert_eq!(code, 0);
 		assert_eq!(capture.out(), "1700000000\n");

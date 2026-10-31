@@ -688,11 +688,12 @@ impl Run<'_> {
 	/// uutils' splitter also expands `$VAR` and `${VAR:-default}` and reports
 	/// positions; GNU accepts neither form, so this follows GNU.
 	fn build_argv(&mut self, string: &[u8]) -> Result<Vec<Vec<u8>>, Exit> {
-		fn start_arg(args: &mut Vec<Vec<u8>>, sep: &mut bool) {
+		fn start_arg<'a>(args: &'a mut Vec<Vec<u8>>, sep: &mut bool) -> &'a mut Vec<u8> {
 			if *sep {
-				args.push(Vec::new());
 				*sep = false;
+				return args.push_mut(Vec::new());
 			}
+			args.last_mut().expect("started")
 		}
 
 		let mut args: Vec<Vec<u8>> = Vec::new();
@@ -762,9 +763,9 @@ impl Run<'_> {
 					let name = String::from_utf8_lossy(name).into_owned();
 					match self.host.var_os(&name).map(|value| os_bytes_lossy(value).into_owned()) {
 						Some(value) => {
-							start_arg(&mut args, &mut sep);
+							let arg = start_arg(&mut args, &mut sep);
 							self.vmsg(&format!("expanding ${{{name}}} into {}\n", quote(&value)));
-							args.last_mut().expect("started").extend(value);
+							arg.extend(value);
 						},
 						None => self.vmsg(&format!("replacing ${{{name}}} with empty string\n")),
 					}
@@ -774,8 +775,7 @@ impl Run<'_> {
 				},
 				_ => {},
 			}
-			start_arg(&mut args, &mut sep);
-			args.last_mut().expect("started").push(newc);
+			start_arg(&mut args, &mut sep).push(newc);
 			i += 1;
 		}
 		if dq || sq {
