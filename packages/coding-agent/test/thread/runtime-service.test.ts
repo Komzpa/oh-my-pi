@@ -104,6 +104,27 @@ async function jobId(probe: Probe, manager: AsyncJobManager, ownerId: string, wi
 }
 
 describe("runtime thread services: async jobs", () => {
+	it("includes only the owner's foreground jobs in worker quiescence queries", async () => {
+		const manager = newManager();
+		const gate = Promise.withResolvers<string>();
+		const id = manager.register("bash", "foreground", async () => gate.promise, {
+			ownerId: "Worker",
+			foreground: true,
+		});
+		manager.register("bash", "other owner", async () => gate.promise, {
+			ownerId: "Other",
+			foreground: true,
+		});
+		try {
+			const probe = await startWorker();
+			expect(await probe("runningJobs", manager, "Worker", false)).toEqual([]);
+			expect(await probe("runningJobs", manager, "Worker", true)).toEqual([id]);
+		} finally {
+			gate.resolve("done");
+			await manager.waitForAll();
+		}
+	});
+
 	it("runs a worker-registered job in the worker, visible on main, delivering to a worker sink", async () => {
 		const manager = newManager();
 		const probe = await startWorker();
