@@ -31,7 +31,7 @@ import {
 import type { EventBus } from "../utils/event-bus";
 import {
 	attachIrcWakeTurnMonitor,
-	capImplementationWorkerEffortCeiling,
+	workerEffortCeilingFor,
 	compactionThresholdSettings,
 	createMCPProxyTools,
 	createSubagentSettings,
@@ -353,13 +353,11 @@ export function createPersistedSubagentReviverFactory(
 					...(perCallModel ? { model: perCallModel, thinkingLevel: init.perCallThinkingLevel ?? undefined } : {}),
 					...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
 					modelPatternAuthFallback: restoredSeance || init.perCallModel ? undefined : init.resolvedModel,
-					thinkingLevelCeiling: activeModel =>
-						capImplementationWorkerEffortCeiling(
-							init.agent ?? "",
-							activeModel,
-							undefined,
-							readAgentMaxEffort(ctx.settings),
-						),
+					thinkingLevelCeiling: workerEffortCeilingFor(
+						init.agent ?? "",
+						undefined,
+						readAgentMaxEffort(ctx.settings),
+					),
 					settings: subagentSettings,
 					sessionManager: reopened,
 					agentId: ref.id,
@@ -390,13 +388,11 @@ export function createPersistedSubagentReviverFactory(
 					// never switches models, and keeps the live task.maxEffort ceiling the spawn ran under.
 					...(assertApprovedModel
 						? {
-								thinkingLevelCeiling: (activeModel: Model | undefined) =>
-									capImplementationWorkerEffortCeiling(
-										init.agent ?? "",
-										activeModel,
-										cfgTaskMaxEffort.get(ctx.settings),
-										readAgentMaxEffort(ctx.settings),
-									),
+								thinkingLevelCeiling: workerEffortCeilingFor(
+									init.agent ?? "",
+									cfgTaskMaxEffort.get(ctx.settings),
+									readAgentMaxEffort(ctx.settings),
+								),
 								disableModelFallback: true,
 								disableServerSideFallback: true,
 								assertDispatchModel: (model: Model) => {

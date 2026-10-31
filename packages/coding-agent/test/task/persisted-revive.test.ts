@@ -169,7 +169,6 @@ async function createPersistedSession(
 		resolvedModel?: string;
 		compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 		perCallModel?: boolean;
-		resolvedModel?: string;
 		perCallModelIdentity?: string;
 		perCallThinkingLevel?: ConfiguredThinkingLevel | null;
 	},
