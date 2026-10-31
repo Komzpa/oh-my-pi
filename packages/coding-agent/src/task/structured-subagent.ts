@@ -37,6 +37,7 @@ import isolationRecoveryHintTemplate from "../prompts/tools/isolation-recovery-h
 import salvagedChildHintTemplate from "../prompts/tools/salvaged-child-hint.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { TaskEffort } from "@oh-my-pi/pi-tui/thinking";
+import type { TaskImage } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
@@ -147,6 +148,8 @@ export interface StructuredSubagentRequest {
 	 * a project or user agent shadowing the name gets it as a {@link perCallModel}.
 	 */
 	seanceModel?: string | string[];
+	/** Images to include in the subagent's initial context. */
+	images?: TaskImage[];
 
 	/** Presence, rather than truthiness, makes this the highest-priority schema. */
 	outputSchema?: unknown;
