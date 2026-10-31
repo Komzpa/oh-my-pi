@@ -16,7 +16,7 @@ import { attachSessionOwner, EvalKernelNotRunningError, type SessionOwners } fro
 import { shouldDetachKernel } from "../py/spawn-options";
 import { updateEvalState } from "../state";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
-import { getActiveEvalShadowCell } from "../speculation/runtime-context";
+import { getActiveEvalJobId, getActiveEvalShadowCell } from "../speculation/runtime-context";
 import type { ShadowPlan } from "../speculation/types";
 import type { EvalDisplayOutput, EvalToolDescriptor, EvalToolInvokeResult } from "../types";
 import { type ShadowSnapshot, shadowSnapshotDigest } from "./shared/runtime";
@@ -39,6 +39,8 @@ export interface VmRunState {
 	signal?: AbortSignal;
 	onText?: (chunk: string) => void;
 	onDisplay?: (output: EvalDisplayOutput) => void;
+	/** Shows the user `out://` replies of the run's bridged tool calls; absent, those calls are refused. */
+	onReply?: (text: string) => void;
 }
 
 /** Isolated runtime transport used by the context manager and startup regression fixtures. */
@@ -62,6 +64,7 @@ interface PendingRun {
 	runState: VmRunState;
 	toolSession: ToolSession;
 	shadowCell?: EvalShadowCellSession;
+	evalJobId?: string;
 	resolve(value: { value: unknown }): void;
 	reject(error: Error): void;
 	toolCalls: Map<string, AbortController>;
@@ -506,6 +509,7 @@ async function runOnce(
 		runState: options.runState,
 		toolSession: options.session,
 		shadowCell: getActiveEvalShadowCell(),
+		evalJobId: getActiveEvalJobId(),
 		resolve,
 		reject,
 		toolCalls: new Map(),
@@ -814,6 +818,8 @@ async function handleToolCall(session: JsSession, msg: Extract<WorkerOutbound, {
 			signal: ctrl.signal,
 			identity: msg.identity,
 			shadowCell: pending.shadowCell,
+			onReply: pending.runState.onReply,
+			evalJobId: pending.evalJobId,
 			emitStatus: (event: JsStatusEvent) => {
 				trackDeferPhase(pending, event);
 				pending.runState.onDisplay?.({ type: "status", event });

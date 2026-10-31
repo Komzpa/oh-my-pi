@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from "bun:test";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { PYTHON_PRELUDE } from "@oh-my-pi/pi-coding-agent/eval/py/prelude";
 import {
 	disposePyToolBridge,
@@ -7,7 +8,9 @@ import {
 	registerPyToolBridge,
 } from "@oh-my-pi/pi-coding-agent/eval/py/tool-bridge";
 import type { EvalShadowCellSession } from "@oh-my-pi/pi-coding-agent/eval/speculation/cell-session";
+import { runWithEvalJob } from "@oh-my-pi/pi-coding-agent/eval/speculation/runtime-context";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { YieldTool, type YieldDetails } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import { $which, isRecord } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 
@@ -54,6 +57,69 @@ describe("Python tool bridge HTTP server", () => {
 	afterAll(async () => {
 		await disposePyToolBridge();
 	});
+
+	for (const otherJob of [false, true]) {
+		it(`preserves the submitting cell identity across HTTP (other job: ${otherJob})`, async () => {
+			const manager = new AsyncJobManager({});
+			const ownerId = `python-yield-${crypto.randomUUID()}`;
+			const gate = Promise.withResolvers<void>();
+			const jobId = manager.register(
+				"eval",
+				"submitting cell",
+				async () => {
+					await gate.promise;
+					return "finished";
+				},
+				{ ownerId },
+			);
+			if (otherJob)
+				manager.register(
+					"eval",
+					"another cell",
+					async () => {
+						await gate.promise;
+						return "other cell finished";
+					},
+					{ ownerId },
+				);
+			let accepted: YieldDetails | undefined;
+			const session = {
+				cwd: process.cwd(),
+				hasUI: false,
+				requireYieldTool: true,
+				asyncJobManager: manager,
+				getSessionFile: () => null,
+				getAgentId: () => ownerId,
+				getToolByName: (name: string) => (name === "yield" ? yieldTool : undefined),
+			} as ToolSession;
+			const yieldTool = new YieldTool(session);
+			yieldTool.subscribeAcceptedResult((_id, details) => {
+				accepted = details;
+			});
+			const info = await ensurePyToolBridge();
+			const unregister = runWithEvalJob(jobId, () =>
+				registerPyToolBridge(ownerId, "run", {
+					toolSession: session,
+				}),
+			);
+			try {
+				const response = await call(info, {
+					session: ownerId,
+					run: "run",
+					name: "yield",
+					args: { data: "Python answer" },
+				});
+				const body = await response.json();
+				expect(body).toMatchObject({ ok: !otherJob });
+				if (otherJob) expect(accepted).toBeUndefined();
+				else expect(accepted).toMatchObject({ status: "success", data: "Python answer" });
+			} finally {
+				unregister();
+				gate.resolve();
+				await manager.dispose();
+			}
+		});
+	}
 
 	it("dispatches calls to the registered ToolSession and returns the tool value", async () => {
 		const calls: FakeCall[] = [];
