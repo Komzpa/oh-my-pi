@@ -48,6 +48,14 @@ function previewHead(output: string): string {
 	return lastNewline >= PREVIEW_CHARS / 2 ? slice.slice(0, lastNewline) : slice;
 }
 
+function formatRetainedBackgroundJob(job: NonNullable<SingleResult["retainedBackgroundJobs"]>[number]): string {
+	const details = [`type=${job.type}`, `status=${job.status}`];
+	if (job.pid !== undefined) details.push(`pid=${job.pid}`);
+	if (job.label) details.push(`label=${job.label}`);
+	if (job.agentId) details.push(`agent=${job.agentId}`);
+	return `- ${job.id} (${details.join(", ")})`;
+}
+
 /** Render the `<task-result>` envelope for a settled run. */
 export function formatTaskResultSummary(
 	result: SingleResult,
@@ -87,6 +95,9 @@ export function formatTaskResultSummary(
 						lineCount: result.outputMeta.lineCount,
 						charSize: formatBytes(result.outputMeta.charCount),
 					}
+				: undefined,
+			retainedBackgroundJobs: result.retainedBackgroundJobs?.length
+				? escapeHarnessTags(result.retainedBackgroundJobs.map(formatRetainedBackgroundJob).join("\n"))
 				: undefined,
 			mergeSummary: options.mergeSummary === undefined ? "" : escapeHarnessTags(options.mergeSummary),
 		});
