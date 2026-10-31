@@ -3830,138 +3830,159 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 		expect(providerSessionState.active?.pendingActions?.map(action => action.requestID)).toEqual(["req-a"]);
 	});
 
-	it("resumes the preserved GitLab socket with the Agent-produced tool result", async () => {
-		const sent: string[] = [];
-		const providerSessionState = new Map<string, ProviderSessionState>();
-		let socket: GitLabDuoWorkflowWebSocketLike | undefined;
-		let socketCount = 0;
-		const fetchImpl: FetchImpl = async (input: string | URL | Request) => {
-			const url = String(input);
-			if (url.includes("/direct_access")) {
-				return new Response(JSON.stringify({ gitlab_rails: { token: "workflow-token" } }), { status: 201 });
-			}
-			if (url.includes("/workflows")) {
-				return new Response(JSON.stringify({ id: "workflow-1" }), { status: 201 });
-			}
-			if (url.includes("/api/graphql")) {
-				return new Response(
-					JSON.stringify({
-						data: {
-							aiChatAvailableModels: {
-								defaultModel: { name: "Default", ref: "claude_sonnet_4_6_vertex" },
-								selectableModels: [],
-								pinnedModel: null,
-							},
-						},
-					}),
-					{ status: 200 },
-				);
-			}
-			return new Response("{}", { status: 404 });
-		};
-		const webSocketFactory: GitLabDuoWorkflowWebSocketFactory = () => {
-			socketCount += 1;
-			socket = {
-				onopen: null,
-				onmessage: null,
-				onerror: null,
-				onclose: null,
-				send(data) {
-					sent.push(data);
-				},
-				close() {},
-			};
-			return socket;
-		};
-
-		const firstStream = streamGitLabDuoWorkflow(model, context, {
-			apiKey: "redacted",
-			fetch: fetchImpl,
-			rootNamespaceId: "gid://gitlab/Group/root",
-			providerSessionState,
-			webSocketFactory,
-		});
-		for (let attempt = 0; attempt < 10 && !socket; attempt++) {
-			await Bun.sleep(0);
-		}
-		expect(socket).toBeDefined();
-		socket?.onopen?.(new Event("open"));
-		socket?.onmessage?.(
-			new MessageEvent("message", {
-				data: JSON.stringify({
-					newCheckpoint: {
-						status: "RUNNING",
-						checkpoint: JSON.stringify({
-							channel_values: {
-								ui_chat_log: [{ message_type: "agent", message_id: "pre-1", content: "PRE_TOOL" }],
+	it.each([false, true])(
+		"resumes the preserved GitLab socket with the Agent-produced tool result (elapsed tail: %s)",
+		async withElapsed => {
+			const sent: string[] = [];
+			const providerSessionState = new Map<string, ProviderSessionState>();
+			let socket: GitLabDuoWorkflowWebSocketLike | undefined;
+			let socketCount = 0;
+			const fetchImpl: FetchImpl = async (input: string | URL | Request) => {
+				const url = String(input);
+				if (url.includes("/direct_access")) {
+					return new Response(JSON.stringify({ gitlab_rails: { token: "workflow-token" } }), { status: 201 });
+				}
+				if (url.includes("/workflows")) {
+					return new Response(JSON.stringify({ id: "workflow-1" }), { status: 201 });
+				}
+				if (url.includes("/api/graphql")) {
+					return new Response(
+						JSON.stringify({
+							data: {
+								aiChatAvailableModels: {
+									defaultModel: { name: "Default", ref: "claude_sonnet_4_6_vertex" },
+									selectableModels: [],
+									pinnedModel: null,
+								},
 							},
 						}),
+						{ status: 200 },
+					);
+				}
+				return new Response("{}", { status: 404 });
+			};
+			const webSocketFactory: GitLabDuoWorkflowWebSocketFactory = () => {
+				socketCount += 1;
+				socket = {
+					onopen: null,
+					onmessage: null,
+					onerror: null,
+					onclose: null,
+					send(data) {
+						sent.push(data);
 					},
-				}),
-			}),
-		);
-		socket?.onmessage?.(
-			new MessageEvent("message", {
-				data: JSON.stringify({
-					requestID: "req-read-1",
-					runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "README.md" }) },
-				}),
-			}),
-		);
-		const firstAssistant = await firstStream.result();
-		if (firstAssistant.role !== "assistant") throw new Error("Expected assistant message");
-		expect(firstAssistant.content).toContainEqual({ type: "text", text: "PRE_TOOL" });
-		expect(firstAssistant.content).toContainEqual({
-			type: "toolCall",
-			id: "req-read-1",
-			name: "read",
-			arguments: { path: "README.md" },
-		});
+					close() {},
+				};
+				return socket;
+			};
 
-		const toolResult: ToolResultMessage = {
-			role: "toolResult",
-			toolCallId: "req-read-1",
-			toolName: "read",
-			content: [{ type: "text", text: "README file text" }],
-			isError: false,
-			timestamp: Date.now(),
-		};
-		const secondStream = streamGitLabDuoWorkflow(
-			model,
-			{ messages: [...context.messages, firstAssistant, toolResult] },
-			{
+			const firstStream = streamGitLabDuoWorkflow(model, context, {
 				apiKey: "redacted",
 				fetch: fetchImpl,
 				rootNamespaceId: "gid://gitlab/Group/root",
 				providerSessionState,
 				webSocketFactory,
-			},
-		);
-		for (let attempt = 0; attempt < 10 && sent.length < 2; attempt++) {
-			await Bun.sleep(0);
-		}
-		expect(socketCount).toBe(1);
-		expect(JSON.parse(sent[1] ?? "{}")).toEqual({
-			actionResponse: { requestID: "req-read-1", plainTextResponse: { response: "README file text" } },
-		});
-		const continuation = JSON.stringify({
-			channel_values: {
-				ui_chat_log: [
-					{ message_type: "agent", message_id: "pre-2", content: "PRE_TOOL" },
-					{ message_type: "tool", content: "read result" },
-					{ message_type: "agent", message_id: "post", content: "POST_TOOL" },
-				],
-			},
-		});
-		socket?.onmessage?.(
-			new MessageEvent("message", {
-				data: JSON.stringify({ newCheckpoint: { status: "INPUT_REQUIRED", checkpoint: continuation } }),
-			}),
-		);
-		const secondMessage = await secondStream.result();
-		expect(secondMessage.role).toBe("assistant");
-		expect(secondMessage.content).toEqual([{ type: "text", text: "POST_TOOL" }]);
-	});
+			});
+			for (let attempt = 0; attempt < 10 && !socket; attempt++) {
+				await Bun.sleep(0);
+			}
+			expect(socket).toBeDefined();
+			socket?.onopen?.(new Event("open"));
+			socket?.onmessage?.(
+				new MessageEvent("message", {
+					data: JSON.stringify({
+						newCheckpoint: {
+							status: "RUNNING",
+							checkpoint: JSON.stringify({
+								channel_values: {
+									ui_chat_log: [{ message_type: "agent", message_id: "pre-1", content: "PRE_TOOL" }],
+								},
+							}),
+						},
+					}),
+				}),
+			);
+			socket?.onmessage?.(
+				new MessageEvent("message", {
+					data: JSON.stringify({
+						requestID: "req-read-1",
+						runMCPTool: { name: "mcp__omp__read", args: JSON.stringify({ path: "README.md" }) },
+					}),
+				}),
+			);
+			const firstAssistant = await firstStream.result();
+			if (firstAssistant.role !== "assistant") throw new Error("Expected assistant message");
+			expect(firstAssistant.content).toContainEqual({ type: "text", text: "PRE_TOOL" });
+			expect(firstAssistant.content).toContainEqual({
+				type: "toolCall",
+				id: "req-read-1",
+				name: "read",
+				arguments: { path: "README.md" },
+			});
+
+			const toolResult: ToolResultMessage = {
+				role: "toolResult",
+				toolCallId: "req-read-1",
+				toolName: "read",
+				content: [{ type: "text", text: "README file text" }],
+				isError: false,
+				timestamp: Date.now(),
+			};
+			const secondStream = streamGitLabDuoWorkflow(
+				model,
+				{
+					messages: [
+						...context.messages,
+						firstAssistant,
+						toolResult,
+						...(withElapsed
+							? [
+									{
+										role: "developer" as const,
+										content:
+											"elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+										synthetic: true,
+										timestamp: 4,
+									},
+								]
+							: []),
+					],
+				},
+				{
+					apiKey: "redacted",
+					signal: AbortSignal.timeout(5000),
+					fetch: fetchImpl,
+					rootNamespaceId: "gid://gitlab/Group/root",
+					providerSessionState,
+					webSocketFactory,
+				},
+			);
+			for (let attempt = 0; attempt < 10 && sent.length < 2; attempt++) {
+				await Bun.sleep(0);
+			}
+			expect(socketCount).toBe(1);
+			expect(JSON.parse(sent[1] ?? "{}")).toEqual({
+				actionResponse: { requestID: "req-read-1", plainTextResponse: { response: "README file text" } },
+			});
+			const continuation = JSON.stringify({
+				channel_values: {
+					ui_chat_log: [
+						{ message_type: "agent", message_id: "pre-2", content: "PRE_TOOL" },
+						{ message_type: "tool", content: "read result" },
+						{ message_type: "agent", message_id: "post", content: "POST_TOOL" },
+					],
+				},
+			});
+			socket?.onmessage?.(
+				new MessageEvent("message", {
+					data: JSON.stringify({ newCheckpoint: { status: "INPUT_REQUIRED", checkpoint: continuation } }),
+				}),
+			);
+			const secondMessage = await secondStream.result();
+			expect(secondMessage.role).toBe("assistant");
+			expect(secondMessage.content).toEqual([{ type: "text", text: "POST_TOOL" }]);
+		},
+	);
 
 	it("settles stalled when consecutive tool-call boundaries carry byte-identical checkpoints", async () => {
 		// A healthy turn emits checkpoints whose byte size progresses; a stalled workflow
