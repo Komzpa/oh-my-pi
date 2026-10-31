@@ -26,7 +26,7 @@ import { prepareEvalSource } from "../eval/input";
 import type { BackendProbeOptions } from "../eval/probe";
 import { defaultEvalSessionId } from "../eval/session-id";
 import { EvalShadowCellSession } from "../eval/speculation/cell-session";
-import { runWithEvalShadowCell } from "../eval/speculation/runtime-context";
+import { runWithEvalJob, runWithEvalShadowCell } from "../eval/speculation/runtime-context";
 import type {
 	EvalCellResult,
 	EvalLanguage,
@@ -649,16 +649,18 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					}
 				};
 				try {
-					const result = await run(
-						runSignal,
-						(text, details) => {
-							latestText = text;
-							latestDetails = details;
-							void reportProgress(text, { async: { state: "running", jobId, type: "eval" } });
-							if (backgrounded) showJobFrame(text, details, "running");
-							else emitToolUpdate?.(text, details);
-						},
-						() => !backgrounded,
+					const result = await runWithEvalJob(jobId, () =>
+						run(
+							runSignal,
+							(text, details) => {
+								latestText = text;
+								latestDetails = details;
+								void reportProgress(text, { async: { state: "running", jobId, type: "eval" } });
+								if (backgrounded) showJobFrame(text, details, "running");
+								else emitToolUpdate?.(text, details);
+							},
+							() => !backgrounded,
+						),
 					);
 					const finalText =
 						(result.content.find(block => block.type === "text")?.text ?? "") +

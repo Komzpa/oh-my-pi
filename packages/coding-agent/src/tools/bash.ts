@@ -25,6 +25,7 @@ import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash
 import { InternalUrlRouter } from "../internal-urls";
 import { sessionResolveContext } from "../internal-urls/context";
 import { InternalUrlFilesystem, UrlFsError } from "../internal-urls/url-filesystem";
+import bashBackgroundOwnershipTemplate from "../prompts/tools/bash-background-ownership.md" with { type: "text" };
 import { PipeTextSources, TextTap } from "../job-widgets";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import type {
@@ -851,6 +852,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 			lines.push(...options.notices, "");
 		}
 		lines.push(formatBackgroundNotice(jobId, timeoutSec));
+		const owner = this.session.requireYieldTool ? "this worker" : "this session";
+		lines.push(prompt.render(bashBackgroundOwnershipTemplate, { owner }).trim());
 		return {
 			content: [{ type: "text", text: lines.join("\n") }],
 			details,
