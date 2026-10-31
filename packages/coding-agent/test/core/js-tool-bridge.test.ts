@@ -751,7 +751,14 @@ describe("callSessionTool", () => {
 		);
 
 		expect(lookup).toHaveBeenCalledTimes(1);
-		expect(persisted).toEqual([[{ name: "Ship", tasks: [{ content: "Persist alias", status: "completed" }] }]]);
+		expect(persisted).toEqual([
+			[
+				{
+					name: "Ship",
+					tasks: [{ content: "Persist alias", status: "completed", schedule: { finishedAt: expect.any(Number) } }],
+				},
+			],
+		]);
 		expect(statuses).toEqual([expect.objectContaining({ op: "todo", committed: true })]);
 		await callSessionTool("checklist", { op: "view" }, { session });
 		await callSessionTool("checklist", { op: "done", task: "No such task" }, { session });
