@@ -193,6 +193,8 @@ export interface StructuredSubagentRequest {
 	/** Workpool items accepted by the child yield tool during this turn. */
 	workPoolYieldItems?: WorkPoolYieldItem[];
 	signal?: AbortSignal;
+	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	onProgress?: (progress: AgentProgress) => void;
 	/** See {@link ExecutorOptions.onToolResult}. */
 	onToolResult?: (result: SubagentToolResult) => void;
@@ -657,6 +659,7 @@ async function applySpawnHook(
 	const spawnResult = await emit(
 		{
 			type: "before_subagent_spawn",
+			...(request.resources !== undefined ? { resources: request.resources } : {}),
 			agent: policy.agentName,
 			invocationKind: request.invocationKind,
 			modelRole: policy.modelRole,

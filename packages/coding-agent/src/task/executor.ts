@@ -11,7 +11,13 @@ import { AgentBusyError, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-ag
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { isCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, popLoopPhase, prompt, pushLoopPhase, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
-import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobError, AsyncJobManager, type AsyncJobRunResult } from "../async";
+import {
+	ASYNC_JOB_MANAGER_SHUTDOWN_REASON,
+	type AsyncJob,
+	AsyncJobError,
+	AsyncJobManager,
+	type AsyncJobRunResult,
+} from "../async";
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { ModelRegistry } from "../config/model-registry";
@@ -395,6 +401,33 @@ export function collectIrcPeerRoster(
 		}
 	}
 	return { peers, parkedCount, omittedCount };
+}
+
+type RetainedBackgroundJob = NonNullable<SingleResult["retainedBackgroundJobs"]>[number];
+
+function retainedJobPid(job: AsyncJob): number | undefined {
+	const details = job.latestDetails;
+	if (!details) return undefined;
+	const direct = Reflect.get(details, "pid");
+	if (typeof direct === "number" && Number.isFinite(direct)) return direct;
+	const service = Reflect.get(details, "service");
+	if (isRecord(service)) {
+		const servicePid = Reflect.get(service, "pid");
+		if (typeof servicePid === "number" && Number.isFinite(servicePid)) return servicePid;
+	}
+	return undefined;
+}
+
+function retainedBackgroundJob(job: AsyncJob): RetainedBackgroundJob {
+	const pid = retainedJobPid(job);
+	return {
+		id: job.id,
+		type: job.type,
+		status: job.status,
+		...(job.label ? { label: job.label } : {}),
+		...(job.agentId ? { agentId: job.agentId } : {}),
+		...(pid !== undefined ? { pid } : {}),
+	};
 }
 
 /** Options for subagent execution */
@@ -2802,6 +2835,7 @@ interface FinalizeRunArgs {
 	subagentEventBus?: EventBus;
 	parentToolCallId?: string;
 	detached?: boolean;
+	retainedBackgroundJobs?: RetainedBackgroundJob[];
 	/**
 	 * This finalize is a revival/wake or explicit follow-up turn, not the initial
 	 * run. Structured turns only republish a real `yield`; message-result turns
@@ -3029,6 +3063,10 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		outputPath,
 		extractedToolData: progress.extractedToolData,
 		retryFailure: progress.retryFailure,
+		retainedBackgroundJobs:
+			(exitCode !== 0 || wasAborted) && args.retainedBackgroundJobs?.length
+				? args.retainedBackgroundJobs
+				: undefined,
 		outputMeta,
 	};
 }
@@ -4433,6 +4471,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		completionProbe,
 	});
 	const progress = monitor.progress;
+	let retainedBackgroundJobs: RetainedBackgroundJob[] | undefined;
 	let unsubscribe: (() => void) | null = null;
 	// Until the run's result is final, an IRC message waits for its own wake
 	// turn instead of one this run's monitor would take as the result.
@@ -5169,6 +5208,12 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 			const jobManager = options.asyncJobManager;
 			if (jobManager) {
+				if (retainedBackgroundJobs === undefined) {
+					const ownedJobs = jobManager.getAllJobs({ ownerId: id });
+					if (ownedJobs.length > 0) {
+						retainedBackgroundJobs = ownedJobs.map(retainedBackgroundJob);
+					}
+				}
 				const reap = await jobManager.cancelAndReapOwnerJobs(id, cleanupDeadlineAt);
 				if (!reap.settled) {
 					deferCleanup(reap.completion);
@@ -5345,6 +5390,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			subagentEventBus: options.subagentEventBus,
 			parentToolCallId: options.parentToolCallId,
 			detached: options.detached,
+			retainedBackgroundJobs,
 			sessionFile: subtaskSessionFile,
 			startTime,
 		});
