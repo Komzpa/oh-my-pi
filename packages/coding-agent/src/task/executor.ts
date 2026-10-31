@@ -4364,6 +4364,19 @@ export function isImplementationWorkerAgent(agentName: string): boolean {
 }
 
 /**
+ * Per-model ceiling callback for a session. Built at module level so the stored
+ * closure captures only its arguments, never the enclosing run's scope (which would
+ * keep a parked session and its settings overlay reachable).
+ */
+export function workerEffortCeilingFor(
+	agentName: string,
+	ceiling: (typeof THINKING_EFFORTS)[number] | undefined,
+	agentMaxEffort: Readonly<Record<string, unknown>> | undefined,
+): (activeModel: Model | undefined) => (typeof THINKING_EFFORTS)[number] | undefined {
+	return activeModel => capImplementationWorkerEffortCeiling(agentName, activeModel, ceiling, agentMaxEffort);
+}
+
+/**
  * Effort ceiling for an active model. `ceiling` is the operator-opted-in
  * spawn ceiling (`task.maxEffort`, set only when the caller supplied `effort`);
  * it is never synthesized from the setting here, so `task.maxEffort` keeps its
@@ -5013,13 +5026,11 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 								disableServerSideFallback: true,
 							}
 						: {}),
-					thinkingLevelCeiling: activeModel =>
-						capImplementationWorkerEffortCeiling(
-							agent.name,
-							activeModel,
-							spawnEffortCeiling,
-							cfgTaskAgentMaxEffort.get(settings),
-						),
+					thinkingLevelCeiling: workerEffortCeilingFor(
+						agent.name,
+						spawnEffortCeiling,
+						cfgTaskAgentMaxEffort.get(settings),
+					),
 					// Subagents are short-lived; never schedule background warm requests.
 					cacheWarming: false,
 					toolNames,
