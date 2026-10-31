@@ -11,6 +11,7 @@
 
 import { type IrcDeliveryReceipt, type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { PeerSessionError, sendPeerMessage, writeShellReply } from "../collab/registry";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { CustomMessage } from "../session/messages";
@@ -60,10 +61,12 @@ export class IrcBus {
 	readonly #lifecycle: () => AgentLifecycleManager;
 	readonly #mailboxes = new Map<string, IrcMessage[]>();
 	readonly #waiters = new Map<string, IrcWaiter[]>();
-	/** The latest successful send per `from` → `to`; see {@link sentSince}. */
+	/** The latest successful non-progress send per `from` → `to`; see {@link sentSince}. */
 	readonly #lastSent = new Map<string, Map<string, SendMark>>();
-	/** The latest direct (non-broadcast) send per `from` → `to`; see {@link unansweredSends}. */
+	/** The latest direct (non-broadcast, non-progress) send per `from` → `to`; see {@link unansweredSends}. */
 	readonly #lastDirect = new Map<string, Map<string, SendMark>>();
+	/** The latest progress message per `from` → `to`: a promise that a reply will follow. */
+	readonly #lastProgress = new Map<string, Map<string, SendMark>>();
 	/** The latest job-carried reply per agent → owner; see {@link IrcBus.recordReply}. */
 	readonly #lastJobReply = new Map<string, Map<string, SendMark>>();
 	/** Last {@link SendMark.seq} handed out, taken when a send starts. */
@@ -100,8 +103,13 @@ export class IrcBus {
 		const mark: SendMark = { ts: message.ts, seq: ++this.#sendSeq };
 		const receipt = await this.#deliver(message, opts);
 		if (receipt.outcome !== "failed") {
-			this.#record(this.#lastSent, message.from, message.to, mark);
-			if (!message.broadcast && !message.wakeRelay) this.#record(this.#lastDirect, message.from, message.to, mark);
+			if (message.progress) {
+				this.#record(this.#lastProgress, message.from, message.to, mark);
+			} else {
+				this.#record(this.#lastSent, message.from, message.to, mark);
+				if (!message.broadcast && !message.wakeRelay)
+					this.#record(this.#lastDirect, message.from, message.to, mark);
+			}
 		}
 		return receipt;
 	}
@@ -121,39 +129,108 @@ export class IrcBus {
 	}
 
 	/**
-	 * Whether `from` successfully sent `to` anything at or after `sinceTs`.
-	 * The wake-turn relay uses it to skip agents that already answered their
-	 * waker themselves.
+	 * Whether `from` successfully sent `to` anything, progress included, at or
+	 * after `sinceTs`. The wake-turn relay uses it to skip agents that already
+	 * answered their waker themselves, or promised it a later answer.
 	 */
 	sentSince(from: string, to: string, sinceTs: number): boolean {
-		const sent = this.#lastSent.get(from)?.get(to);
-		return sent !== undefined && sent.ts >= sinceTs;
+		return [this.#lastSent, this.#lastProgress].some(table => (table.get(from)?.get(to)?.ts ?? -1) >= sinceTs);
 	}
 
 	/**
-	 * Agents `from` messaged directly at or after `sinceTs` that have sent
-	 * nothing back since, nor settled a job `from` owns, with when the latest
-	 * of those messages went out: the replies a `wait` can block for. "Since"
-	 * is by send order, not timestamp, so an answer to an earlier question
-	 * never settles a later one sent within the same millisecond.
+	 * Agents `from` messaged directly at or after `sinceTs` that have not
+	 * answered since, with when the latest of those messages went out: the
+	 * replies a `wait` can block for. A message back answers, and so does a
+	 * settled job of the agent `from` owns, which delivers its result. Progress
+	 * answers nothing; it marks the request `promised`, and from then on only
+	 * an explicit message answers it (a job settling the turn that sent the
+	 * progress must not). "Since" is by send order, not timestamp, so an answer
+	 * to an earlier question never settles a later one sent within the same
+	 * millisecond.
 	 */
-	unansweredSends(from: string, sinceTs: number): Array<{ to: string; sentAt: number }> {
+	unansweredSends(from: string, sinceTs: number): Array<{ to: string; sentAt: number; promised: boolean }> {
 		const sends = this.#lastDirect.get(from);
 		if (!sends) return [];
-		const unanswered: Array<{ to: string; sentAt: number }> = [];
+		const unanswered: Array<{ to: string; sentAt: number; promised: boolean }> = [];
 		for (const [to, sent] of sends) {
 			if (sent.ts < sinceTs) continue;
-			const answered = [this.#lastSent, this.#lastJobReply].some(
-				replies => (replies.get(to)?.get(from)?.seq ?? 0) > sent.seq,
-			);
-			if (!answered) unanswered.push({ to, sentAt: sent.ts });
+			const after = (table: Map<string, Map<string, SendMark>>) => (table.get(to)?.get(from)?.seq ?? 0) > sent.seq;
+			const promised = after(this.#lastProgress);
+			if (after(this.#lastSent) || (!promised && after(this.#lastJobReply))) continue;
+			unanswered.push({ to, sentAt: sent.ts, promised });
 		}
 		return unanswered;
+	}
+
+	/** Resolve a bare shell reply only from senders that reached this recipient. */
+	resolveShellReplyTarget(recipient: string): string {
+		const candidates: string[] = [];
+		for (const [from, sent] of this.#lastSent) {
+			if (from.startsWith("shell:") && sent.has(recipient)) candidates.push(from);
+		}
+		if (candidates.length === 1) return candidates[0]!;
+		throw new PeerSessionError(
+			"not_found",
+			candidates.length === 0
+				? "No shell sender has messaged this session; use an exact shell:<id> reply address."
+				: `Ambiguous shell reply target; use an exact address: ${candidates.sort().join(", ")}`,
+		);
+	}
+
+	/**
+	 * Route external replies through the same resolver and transport as agent:// writes.
+	 * Shell transport preserves `shell:<id>` as `from`; successful delivery records
+	 * that sender against the receiving agent in #lastSent, making bare replies scoped
+	 * to the replying agent rather than any other agent in this session.
+	 */
+	async #deliverExternal(message: IrcMessage): Promise<IrcDeliveryReceipt> {
+		try {
+			const to = message.to === "shell" ? this.resolveShellReplyTarget(message.from) : message.to;
+			if (to.startsWith("shell:")) {
+				await writeShellReply(to, {
+					from: message.from,
+					...(message.fromName ? { fromName: message.fromName } : {}),
+					text: message.body,
+					createdAt: message.ts,
+				});
+				return { to: message.to, outcome: "injected" };
+			}
+			if (message.to.startsWith("peer:")) {
+				// Derive the replying session's identity from the registry sender so
+				// the peer transport labels the reply the same way agent:// does.
+				const senderSession = this.#registry.get(message.from)?.session;
+				const sessionId = senderSession?.sessionManager?.getSessionId() ?? message.from;
+				const cwd = senderSession?.sessionManager?.getCwd() ?? "";
+				const receipt = await sendPeerMessage({
+					from: { kind: "session", sessionId, cwd },
+					target: message.to,
+					text: message.body,
+				});
+				if (receipt.status === "failed" || receipt.status === "uncertain") {
+					return { to: message.to, outcome: "failed", error: receipt.reason ?? "Peer delivery failed." };
+				}
+				return {
+					to: message.to,
+					outcome: receipt.outcome === "woken" || receipt.outcome === "revived" ? receipt.outcome : "injected",
+				};
+			}
+		} catch (error) {
+			if (error instanceof PeerSessionError) {
+				return { to: message.to, outcome: "failed", error: error.message };
+			}
+			throw error;
+		}
+		return { to: message.to, outcome: "failed", error: `Unknown agent "${message.to}".` };
 	}
 
 	async #deliver(message: IrcMessage, opts?: { suppressRelay?: boolean }): Promise<IrcDeliveryReceipt> {
 		const ref = this.#registry.get(message.to);
 		if (!ref) {
+			// Shell senders and peer sessions are not in-process agents; route
+			// their replies through the same helpers agent:// already uses.
+			if (message.to === "shell" || message.to.startsWith("shell:") || message.to.startsWith("peer:")) {
+				return this.#deliverExternal(message);
+			}
 			return {
 				to: message.to,
 				outcome: "failed",

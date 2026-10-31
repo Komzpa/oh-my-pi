@@ -8,6 +8,8 @@ export interface IrcMessage {
 	id: string;
 	/** Sender agent id. */
 	from: string;
+	/** Readable label of the sending session, when known. */
+	fromName?: string;
 	/** Recipient agent id (resolved; "all" is expanded by the tool, not stored). */
 	to: string;
 	body: string;
@@ -27,6 +29,12 @@ export interface IrcMessage {
 	 * the broadcaster, mostly to say the message was not for it.
 	 */
 	broadcast?: boolean;
+	/**
+	 * Interim acknowledgement or progress on something the recipient asked
+	 * (`agent://<id>?progress`): it neither answers that request nor asks one,
+	 * so the recipient's `wait` keeps waiting for the actual reply.
+	 */
+	progress?: boolean;
 }
 
 /** Delivery outcome for one peer recipient. */

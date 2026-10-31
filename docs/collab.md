@@ -30,19 +30,18 @@ The guest's previous session is restored on `/leave` (or when the host stops).
 
 ### Commands
 
-| Command           | Effect                                                                              |
-| ----------------- | ----------------------------------------------------------------------------------- |
-| `/collab`         | Start full-control sharing; reuse a control room or replace a view-only room        |
-| `/collab <relay>` | Start sharing through a specific relay (`relay.example.com`, `ws://localhost:7475`) |
-| `/collab view [relay]` | Start read-only sharing, or print the existing room's read-only link/QR        |
-| `/collab status`  | Show link + participants                                                            |
-| `/collab stop`    | Stop sharing                                                                        |
-| `/collab list`    | List every active local Collab host (no links)                                      |
-| `/join <link>`    | Join a shared session as a guest                                                    |
-| `/leave`          | Leave (guest) or stop sharing (host)                                                |
+| Command                | Effect                                                                              |
+| ---------------------- | ----------------------------------------------------------------------------------- |
+| `/collab`              | Start full-control sharing; reuse a control room or replace a view-only room        |
+| `/collab <relay>`      | Start sharing through a specific relay (`relay.example.com`, `ws://localhost:7475`) |
+| `/collab view [relay]` | Start read-only sharing, or print the existing room's read-only link/QR             |
+| `/collab status`       | Show link + participants                                                            |
+| `/collab stop`         | Stop sharing                                                                        |
+| `/collab list`         | List every active local Collab host (no links)                                      |
+| `/join <link>`         | Join a shared session as a guest                                                    |
+| `/leave`               | Leave (guest) or stop sharing (host)                                                |
 
 `/collab start [relay]` is also accepted. Passing a relay while a reusable room is active does not move that room to another relay; stop it first to change the relay.
-
 
 ### Sharing every session automatically
 
@@ -142,7 +141,6 @@ Guests with a view-only link can read everything live — back-transcript, strea
 
 Advisor records are not guest-visible subagents: they are excluded from roster snapshots and transcript fetches, and advisor chat/kill/revive commands are rejected.
 
-
 Other session/machine commands remain host-only: `/model`, `/compact`, `/resume`, `/branch`, bash (`!`), python (`$`), skills, etc. Guests keep a small local allowlist (`/dump`, `/export`, `/copy`, `/open`, `/help`, `/hotkeys`, `/theme`, `/settings`, `/leave`, `/collab`, `/exit`, `/quit`).
 
 When a guest joins during an assistant turn, that in-flight turn appears on the first subsequent `message_update`: the guest synthesizes the missing `message_start` from the update's full accumulating message before forwarding the delta. If the host emits no further update for that turn after the guest joins, there is no update from which to synthesize the live component. The durable entry still reaches the replica's message state, but entry frames are intentionally not rendered, so that edge case can remain absent from the live TUI.
@@ -160,9 +158,9 @@ Set `collab.webUrl` when the browser UI is hosted separately from the websocket 
 | `collab.relayUrl`     | `wss://my.omp.sh`     | Relay used by `/collab` when no relay is passed inline                                                         |
 | `collab.webUrl`       | empty                 | Browser UI URL for `/collab` links; empty derives from relay; explicit `http://` is allowed only for localhost |
 | `collab.displayName`  | OS username           | Name shown to other participants                                                                               |
-| `collab.autoStart`    | `off`                 | `view` / `control`: host every interactive session as it starts and publish it to the local registry            |
+| `collab.autoStart`    | `off`                 | `view` / `control`: host every interactive session as it starts and publish it to the local registry           |
 | `share.serverUrl`     | `https://my.omp.sh/s` | Share viewer/upload base used by `/share` (links are `<base>/<id>#<key>`)                                      |
-| `share.store`         | `blob`                | `/share` uploads to the blob server; `gist` uses an authenticated secret gist with blob fallback             |
+| `share.store`         | `blob`                | `/share` uploads to the blob server; `gist` uses an authenticated secret gist with blob fallback               |
 | `share.redactSecrets` | `true`                | Run the secret obfuscator over `/share` snapshots before upload                                                |
 
 ## Self-hosting the relay
@@ -203,3 +201,39 @@ Hub topology — the host is authoritative, guests never peer:
 Guest→host: `hello`, `prompt`, `abort`, `agent-cmd` (hub chat/kill/revive), `fetch-transcript` (incremental subagent-transcript reads answered by targeted `transcript` frames), and `ui-response`. The replica loads through the regular `/resume` machinery, so theming, ctrl+o, and transcript behavior are native by construction; the guest process never chdirs to host paths.
 
 Transcript fetches are capped at 4 MiB per reply and end on complete JSONL lines. Guests continue from `newSize`; a single entry exceeding the cap produces a terminal transcript error instead of an endless empty-read retry.
+
+## Local peer messages and shell replies
+
+`omp peers list [--json]` discovers local sessions. Send a message with
+`omp peers send <id|prefix|cwd|title> <text|@file> [--agent <id>] [--json]`.
+Registered slash commands execute through the target's command dispatcher;
+other text arrives through IRC.
+
+Discovery keeps a live process visible with its last cached title, cwd and
+session identity when its event loop does not answer the short probe; those
+cached fields remain valid selectors. A plain-text send to a busy peer is
+persisted in that session's inbox, acknowledged as `queued for <instance>`,
+and deduplicated by message ID. The receiver drains on the socket wake, after
+tool calls and at turn end. A normal exit or session rotation reports unread
+messages in the sender's shell inbox. Slash commands retain their synchronous
+execution and timeout semantics and are not put in the durable text inbox.
+
+Every shell send creates an owner-private reply inbox before delivery. Its
+receipt includes `replyTo: "agent://shell:<id>"` in JSON mode, or prints
+`Replies: omp peers inbox shell:<id>` in text mode. The receiving message's
+footer advertises that same writable address. A session replies using
+`write` with that address in `path` and the answer in `content`.
+
+Bare `agent://shell` resolves only to the unique shell sender that messaged
+this session. With multiple senders, the error lists their exact `shell:<id>`
+addresses; use one of those addresses to choose the reply inbox.
+
+The shell sender reads answers with `omp peers inbox shell:<id> [--json]`.
+An empty inbox reports no replies yet; an unknown address fails. Reads do not
+consume replies. JSON replies include `from`, `text`, and `createdAt`.
+Replies persist after the sending command exits, under
+`~/.omp/run/peer-sessions/shell-inboxes/<id>.jsonl` (or the
+`OMP_PEER_SESSIONS_DIR` override), with directory mode `0700` and file mode
+`0600` on POSIX. Once no further replies are needed, the sender may delete
+that inbox file; subsequent replies then fail clearly. No background waiter,
+live shell process, or session restart is required.

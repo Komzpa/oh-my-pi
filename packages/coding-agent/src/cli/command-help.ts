@@ -42,6 +42,10 @@ export const collabHelp = {
 		"List active local Collab host metadata without URLs; use collab link <instanceId|pid> to retrieve a control link (--view for view-only)",
 } satisfies CommandMetadata;
 
+export const peersHelp = {
+	description: "List and message local OMP peer sessions",
+} satisfies CommandMetadata;
+
 export const clipHelp = {
 	description: "Upload a /record recording to live.omp.sh as a public clip and print its URL",
 } satisfies CommandMetadata;
@@ -131,7 +135,8 @@ export const sayHelp = {
 export const searchHelp = { description: "Test web search providers" } satisfies CommandMetadata;
 
 export const sessionHelp = {
-	description: "Hand a session to another machine: pack it, unpack it, or mark the local copy moved",
+	description:
+		"Hand a session to another machine (pack, unpack, moved) or check which sessions a running omp owns (lease)",
 } satisfies CommandMetadata;
 
 export const shareHelp = {
