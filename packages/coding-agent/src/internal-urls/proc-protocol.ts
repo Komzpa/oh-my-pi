@@ -77,7 +77,17 @@ function writeOnlyError(id: string, action: "kill" | "mode"): string {
 }
 
 function ownerJobs(session: ToolSession): AsyncJob[] {
-	return session.asyncJobManager?.getAllJobs({ ownerId: session.getAgentId?.() ?? undefined }) ?? [];
+	const manager = session.asyncJobManager;
+	return (
+		manager
+			?.getAllJobs({ ownerId: session.getAgentId?.() ?? undefined })
+			.filter(job => !manager.isJobResultConsumed(job.id)) ?? []
+	);
+}
+
+function ownerJob(session: ToolSession, id: string): AsyncJob | undefined {
+	const job = session.asyncJobManager?.getJob(id);
+	return job && !job.foreground && job.ownerId === (session.getAgentId?.() ?? undefined) ? job : undefined;
 }
 
 /**
@@ -164,7 +174,7 @@ export class ProcProtocolHandler implements ProtocolHandler {
 		if (!session) throw new Error("proc:// requires a tool session");
 		const { id, action } = target(url);
 		if (!id || action !== "stdin" || !cfgLaunchEnabled.get(session.settings)) return null;
-		if (ownerJobs(session).some(job => job.id === id)) return null;
+		if (ownerJob(session, id)) return null;
 		if (runningAgentsOutsideJobs(session).some(agent => agent.id === id)) return null;
 		const logPath = await serviceLogPath(session, id);
 		return options?.create || (await Bun.file(logPath).exists()) ? logPath : null;
@@ -207,8 +217,12 @@ export class ProcProtocolHandler implements ProtocolHandler {
 				daemons: services,
 			});
 		}
+
 		const service = services.find(item => item.name === id);
-		const job = jobs.find(item => item.id === id) ?? (service ? undefined : runningJobOfAgent(jobs, id));
+		const job =
+			ownerJob(session, id) ??
+			jobs.find(item => item.id === id) ??
+			(service ? undefined : runningJobOfAgent(jobs, id));
 		if (job && service) throw new Error(`proc://${id} is ambiguous: both job ${id} and service ${id} exist.`);
 		if (service) {
 			const header = `${serviceStatus(service)}\nready=${service.readyAt !== undefined || service.state === "ready" || service.state === "running"} persist=${service.persist} detached=${service.detached}${service.exitCode === undefined ? "" : ` exit=${service.exitCode}`}`;
@@ -270,7 +284,7 @@ export class ProcProtocolHandler implements ProtocolHandler {
 			);
 		const ownerId = session.getAgentId?.() ?? undefined;
 		const jobs = ownerJobs(session);
-		const exactJob = jobs.find(item => item.id === id);
+		const exactJob = ownerJob(session, id);
 		const agentJob = exactJob ? undefined : runningJobOfAgent(jobs, id);
 		const agent = runningAgentsOutsideJobs(session).find(item => item.id === id);
 		let service: DaemonSnapshot | undefined;
