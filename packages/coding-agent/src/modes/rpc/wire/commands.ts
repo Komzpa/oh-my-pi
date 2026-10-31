@@ -31,7 +31,7 @@ export interface RpcCommandSpec {
 
 const IMAGES = doc("ImageContent[]", "Images attached to the message.");
 
-export const rpcCommands: readonly RpcCommandSpec[] = [
+const rpcCommandDefinitions: readonly RpcCommandSpec[] = [
 	{
 		name: "negotiate_protocol",
 		doc: "Switch the connection to a protocol version advertised by `ready`.",
@@ -191,6 +191,12 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		result: { voice: "string" },
 		unwrap: "voice",
 	},
+	{
+		name: "live_connect",
+		doc: "Start a live voice session whose audio runs on a caller-owned WebRTC peer: send its SDP offer, apply the returned answer.",
+		params: { sdpOffer: "string", "voice?": "string", "instructions?": "string" },
+		result: { voice: "string", sdpAnswer: "string" },
+	},
 	{ name: "live_stop", doc: "Stop the live voice session, if any." },
 	{
 		name: "live_mute",
@@ -262,6 +268,12 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 	{ name: "abort_bash", doc: "Abort the running shell command." },
 
 	{ name: "get_session_stats", doc: "Session statistics.", result: "SessionStats" },
+	{
+		name: "get_session_lease",
+		doc: "Which of these sessions a running process (this one included) owns, probed without taking ownership. Ids in neither list are free; `unknown` could not be probed.",
+		params: { sessionIds: "string[]" },
+		result: { held: "string[]", unknown: "string[]" },
+	},
 	{
 		name: "export_html",
 		doc: "Export the session as HTML; returns the written path.",
@@ -402,3 +414,13 @@ export const rpcCommands: readonly RpcCommandSpec[] = [
 		unwrap: "records",
 	},
 ];
+
+/** Original input is an envelope field, independent of session prompt options. */
+export const rpcCommands: readonly RpcCommandSpec[] = rpcCommandDefinitions.map(command =>
+	command.name === "prompt"
+		? {
+				...command,
+				params: { "rawRequirementText?": "string", ...(typeof command.params === "object" ? command.params : {}) },
+			}
+		: command,
+);

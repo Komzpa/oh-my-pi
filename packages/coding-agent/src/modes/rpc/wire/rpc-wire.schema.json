@@ -331,6 +331,17 @@
 				"clientOmit": []
 			},
 			{
+				"name": "live_connect",
+				"doc": "Start a live voice session whose audio runs on a caller-owned WebRTC peer: send its SDP offer, apply the returned answer.",
+				"params": "LiveConnectParams",
+				"result": "LiveConnectResult",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
 				"name": "live_stop",
 				"doc": "Stop the live voice session, if any.",
 				"params": null,
@@ -555,6 +566,17 @@
 				"doc": "Session statistics.",
 				"params": null,
 				"result": "SessionStats",
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "get_session_lease",
+				"doc": "Which of these sessions a running process (this one included) owns, probed without taking ownership. Ids in neither list are free; `unknown` could not be probed.",
+				"params": "GetSessionLeaseParams",
+				"result": "GetSessionLeaseResult",
 				"nullable": false,
 				"unwrap": null,
 				"timeoutMs": null,
@@ -2315,6 +2337,23 @@
 			],
 			"type": "string"
 		},
+		"TodoAwaitingUser": {
+			"type": "object",
+			"properties": {
+				"action": {
+					"type": "string"
+				},
+				"ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": [
+				"action"
+			]
+		},
 		"TodoItem": {
 			"type": "object",
 			"properties": {
@@ -2336,6 +2375,22 @@
 					"items": {
 						"type": "string"
 					}
+				},
+				"artifactCwd": {
+					"type": "string",
+					"description": "Persisted checkout whose clean HEAD is the row's QA artifact."
+				},
+				"artifactOwner": {
+					"type": "string",
+					"description": "Owner whose checkout was last verified as artifactCwd."
+				},
+				"deployment": {
+					"type": "string",
+					"description": "Explicit deployment identity for this requirement row."
+				},
+				"awaitingUser": {
+					"$ref": "#/$defs/TodoAwaitingUser",
+					"description": "User-owned pending check; it does not constitute verification or close the row."
 				}
 			},
 			"required": [
@@ -6050,6 +6105,9 @@
 				"message": {
 					"type": "string"
 				},
+				"rawRequirementText": {
+					"type": "string"
+				},
 				"images": {
 					"type": "array",
 					"items": {
@@ -6505,6 +6563,38 @@
 				"voice"
 			]
 		},
+		"LiveConnectParams": {
+			"type": "object",
+			"properties": {
+				"sdpOffer": {
+					"type": "string"
+				},
+				"voice": {
+					"type": "string"
+				},
+				"instructions": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"sdpOffer"
+			]
+		},
+		"LiveConnectResult": {
+			"type": "object",
+			"properties": {
+				"voice": {
+					"type": "string"
+				},
+				"sdpAnswer": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"voice",
+				"sdpAnswer"
+			]
+		},
 		"LiveMuteParams": {
 			"type": "object",
 			"properties": {
@@ -6694,6 +6784,41 @@
 			},
 			"required": [
 				"command"
+			]
+		},
+		"GetSessionLeaseParams": {
+			"type": "object",
+			"properties": {
+				"sessionIds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": [
+				"sessionIds"
+			]
+		},
+		"GetSessionLeaseResult": {
+			"type": "object",
+			"properties": {
+				"held": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"unknown": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": [
+				"held",
+				"unknown"
 			]
 		},
 		"ExportHtmlParams": {

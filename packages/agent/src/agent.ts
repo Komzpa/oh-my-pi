@@ -23,7 +23,7 @@ import {
 	type ToolResultMessage,
 } from "@oh-my-pi/pi-ai";
 import type { Dialect } from "@oh-my-pi/pi-ai/dialect";
-import { openAIResponsesReplaysNativeHistory } from "@oh-my-pi/pi-ai/providers/openai-responses";
+import { openAIResponsesReplaysNativeHistory } from "@oh-my-pi/pi-ai/providers/openai-responses-state";
 import type { HarmonyAuditEvent } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -38,6 +38,11 @@ import {
 	steeringQueueState,
 	unpairedToolCallTail,
 } from "./agent-loop";
+import {
+	admitAssistantMessage,
+	getAssistantPublicationGate,
+	setAssistantPublicationGateProvider,
+} from "./assistant-publication";
 import type { AppendOnlyContextManager } from "./append-only-context";
 import { agentPauseGate } from "./pause";
 import { isProviderRefusalMessage } from "./replay-policy";
@@ -69,7 +74,6 @@ import type {
 	ToolChoiceDirective,
 } from "./types";
 import { isSoftToolRequirement } from "./types";
-import { EventLoopKeepalive } from "./utils/yield";
 
 /**
  * Default convertToLlm: Keep only LLM-compatible replay messages.
@@ -644,6 +648,12 @@ export class Agent {
 	}
 
 	/**
+	 * Fields added to every log record written while this agent runs (the
+	 * owning session's `sessionId`), so in-process agents' records stay apart.
+	 */
+	logContext: Readonly<Record<string, unknown>> | undefined;
+
+	/**
 	 * Static metadata forwarded to every API request when no resolver is installed
 	 * (e.g. `metadata.user_id` for Anthropic session attribution). Setting this
 	 * clears any installed resolver.
@@ -819,6 +829,23 @@ export class Agent {
 		this.#pruneToolDescriptions = value;
 	}
 
+	/**
+	 * Whether requests to `model` actually ship description-stripped tool specs.
+	 * Owned dialects render full definitions in-band, so they never prune; the
+	 * loop applies the same rule (`pruneToolDescriptions && !ownedDialect`).
+	 * Context accounting reads this instead of the raw setting.
+	 */
+	prunesToolDescriptions(model: Model | undefined): boolean {
+		return this.#pruneToolDescriptions && model !== undefined && !this.#ownedDialect(model);
+	}
+
+	#ownedDialect(model: Model): Dialect | undefined {
+		return (
+			(this.#dialectResolver ? this.#dialectResolver(model) : this.#dialect) ??
+			resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT)
+		);
+	}
+
 	/** Inject/strip the intent field on tool calls; applies from the next prompt run. */
 	get intentTracing(): boolean {
 		return this.#intentTracing;
@@ -928,9 +955,7 @@ export class Agent {
 	): Promise<Context> {
 		const model = this.#state.model;
 		if (!model) throw new Error("No active model on agent");
-		const ownedDialect =
-			(this.#dialectResolver ? this.#dialectResolver(model) : this.#dialect) ??
-			resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT);
+		const ownedDialect = this.#ownedDialect(model);
 		const messages = normalizeMessagesForProvider(llmMessages, model);
 		const tools = ownedDialect
 			? []
@@ -939,12 +964,11 @@ export class Agent {
 					pruneDescriptions: this.#pruneToolDescriptions,
 				}) ?? []);
 		let context: Context = { systemPrompt, messages, tools };
+		// Side requests reuse the main loop's sent definitions without recording their own; attached before the
+		// transform too, so a request-size clamp in it measures them.
+		context = this.#sentToolDefinitions.withInactiveTools(context);
 		if (this.#transformProviderContext) context = await this.#transformProviderContext(context, model);
-		// Side requests reuse the main loop's sent definitions without recording their own.
-		if (context.tools?.length) {
-			const inactiveTools = this.#sentToolDefinitions.inactiveFor(context.messages, context.tools);
-			if (inactiveTools) context = { ...context, inactiveTools };
-		}
+		context = this.#sentToolDefinitions.withInactiveTools(context);
 		return context;
 	}
 
@@ -1229,6 +1253,7 @@ export class Agent {
 				this.appendMessage(event.message);
 				break;
 			case "tool_execution_start":
+				this.#updateAssistantToolCallArguments(event.toolCallId, event.args);
 				this.#state.pendingToolCalls.add(event.toolCallId);
 				break;
 			case "tool_execution_end":
@@ -1494,6 +1519,21 @@ export class Agent {
 	}
 
 	/** Nonblocking snapshot of the latest results, including provisional payloads while transforms are pending. */
+	#updateAssistantToolCallArguments(toolCallId: string, args: unknown): void {
+		if (!args || typeof args !== "object" || Array.isArray(args)) return;
+		const candidates = [
+			...(this.#state.streamMessage?.role === "assistant" ? [this.#state.streamMessage] : []),
+			...this.#state.messages.slice().reverse(),
+		];
+		for (const message of candidates) {
+			if (message.role !== "assistant") continue;
+			const toolCall = message.content.find(block => block.type === "toolCall" && block.id === toolCallId);
+			if (!toolCall || toolCall.type !== "toolCall") continue;
+			toolCall.arguments = structuredClone(args as Record<string, unknown>);
+			return;
+		}
+	}
+
 	getPendingToolResults(): readonly ToolResultMessage[] {
 		const results = this.#cursorToolResultDrain?.map(({ toolResult }) => toolResult) ?? [];
 		for (const { toolResult } of this.#cursorToolResultBuffer) results.push(toolResult);
@@ -1653,7 +1693,7 @@ export class Agent {
 			promptOptions = imagesOrOptions as AgentPromptOptions | undefined;
 		}
 
-		await this.#runLoop(msgs, promptOptions);
+		await this.#inLogContext(() => this.#runLoop(msgs, promptOptions));
 	}
 
 	/**
@@ -1677,7 +1717,12 @@ export class Agent {
 		return signals.length === 1 ? signals[0] : AbortSignal.any(signals);
 	}
 
-	async continue(signal?: AbortSignal) {
+	continue(signal?: AbortSignal): Promise<void> {
+		// Queued-message hooks run before the loop and are this agent's work too.
+		return this.#inLogContext(() => this.#continue(signal));
+	}
+
+	async #continue(signal?: AbortSignal) {
 		if (this.#state.isStreaming) {
 			throw new AgentBusyError();
 		}
@@ -1759,6 +1804,11 @@ export class Agent {
 		}
 	}
 
+	/** Run `fn` with {@link logContext} on every record it logs. */
+	#inLogContext<T>(fn: () => T): T {
+		return this.logContext ? logger.withContext(this.logContext, fn) : fn();
+	}
+
 	/**
 	 * Run the agent loop.
 	 * If messages are provided, starts a new conversation turn with those messages.
@@ -1774,7 +1824,6 @@ export class Agent {
 		if (!model) throw new Error("No model configured");
 
 		let skipInitialSteeringPoll = options?.skipInitialSteeringPoll === true;
-		using _ = new EventLoopKeepalive();
 		if (!runStateClaimed) {
 			const { promise, resolve } = Promise.withResolvers<void>();
 			this.#runningPrompt = promise;
@@ -2000,6 +2049,7 @@ export class Agent {
 			onDetachedToolUpdate: event => this.emitExternalEvent(event),
 			telemetry: this.#telemetry,
 		};
+		setAssistantPublicationGateProvider(config, () => getAssistantPublicationGate(this));
 
 		let partial: AgentMessage | null = null;
 		const completedToolCallIds = new Set<string>();
@@ -2053,6 +2103,7 @@ export class Agent {
 						break;
 
 					case "tool_execution_start":
+						this.#updateAssistantToolCallArguments(event.toolCallId, event.args);
 						this.#state.pendingToolCalls.add(event.toolCallId);
 						break;
 
@@ -2146,6 +2197,7 @@ export class Agent {
 							errorMessage,
 							timestamp: Date.now(),
 						};
+			await admitAssistantMessage(errorMsg, getAssistantPublicationGate(config), loopSignal, abortReasonText);
 
 			if (shouldEmitVisibleError) {
 				if (!turnOpen) {

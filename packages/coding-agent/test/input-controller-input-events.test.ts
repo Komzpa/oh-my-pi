@@ -13,6 +13,7 @@ import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/inp
 import { getEditorTheme } from "@oh-my-pi/pi-tui/theme/tui-adapters";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
+import { currentRequirementInput } from "@oh-my-pi/pi-coding-agent/session/requirement-input";
 import type { PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { BlobPutOptions, BlobPutResult } from "@oh-my-pi/pi-coding-agent/session/blob-store";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -50,7 +51,11 @@ async function createHarness(factory: ExtensionFactory) {
 	);
 	const runner = new ExtensionRunner([extension], runtime, process.cwd(), sessionManager, {} as ModelRegistry);
 	const editor = new CustomEditor(getEditorTheme());
-	const prompt = vi.fn(async (_text: string, _options?: PromptOptions) => true);
+	const originalInputs: Array<string | undefined> = [];
+	const prompt = vi.fn(async (_text: string, _options?: PromptOptions) => {
+		originalInputs.push(currentRequirementInput());
+		return true;
+	});
 	const session = {
 		extensionRunner: runner,
 		isStreaming: true,
@@ -134,7 +139,18 @@ async function createHarness(factory: ExtensionFactory) {
 		editor.imageLinks = editor.pendingImageLinks;
 		editor.setText(text);
 	}
-	return { ctx, editor, session, prompt, runner, blobs, generatedMessages, pressSubmit, draftWithImage };
+	return {
+		ctx,
+		editor,
+		session,
+		prompt,
+		runner,
+		blobs,
+		generatedMessages,
+		pressSubmit,
+		draftWithImage,
+		originalInputs,
+	};
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -162,9 +178,27 @@ describe("interactive native input ingress", () => {
 		await h.pressSubmit(FOLLOW_UP);
 
 		expect(seen).toEqual([
-			{ type: "input", source: "interactive", text: "original [Image #1]", images: [originalImage] },
-			{ type: "input", source: "interactive", text: "changed [Image #1]", images: [originalImage] },
-			{ type: "input", source: "interactive", text: "changed [Image #1]", images: [transformedImage] },
+			{
+				type: "input",
+				source: "interactive",
+				text: "original [Image #1]",
+				rawText: "original [Image #1]",
+				images: [originalImage],
+			},
+			{
+				type: "input",
+				source: "interactive",
+				text: "changed [Image #1]",
+				rawText: "original [Image #1]",
+				images: [originalImage],
+			},
+			{
+				type: "input",
+				source: "interactive",
+				text: "changed [Image #1]",
+				rawText: "original [Image #1]",
+				images: [transformedImage],
+			},
 		]);
 		expect(h.prompt.mock.calls).toEqual([
 			["changed [Image #1] final", { streamingBehavior: "followUp", images: [transformedImage] }],
@@ -756,7 +790,7 @@ describe("interactive native input ingress", () => {
 		expect(h.editor.imageLinks).toBeUndefined();
 	});
 
-	it("Enter dispatches input once, while continue shortcuts remain synthetic", async () => {
+	it("Enter dispatches input once, while continue shortcuts bypass input handlers as resumes", async () => {
 		const seen: InputEvent[] = [];
 		const h = await createHarness(pi => {
 			pi.on("input", event => {
@@ -766,7 +800,9 @@ describe("interactive native input ingress", () => {
 		});
 		h.editor.setText("original");
 		await h.pressSubmit(ENTER);
-		expect(seen).toEqual([{ type: "input", source: "interactive", text: "original", images: undefined }]);
+		expect(seen).toEqual([
+			{ type: "input", source: "interactive", text: "original", rawText: "original", images: undefined },
+		]);
 		expect(h.prompt.mock.calls).toEqual([["transformed", { streamingBehavior: "steer", images: undefined }]]);
 
 		const callback = vi.fn();
@@ -776,7 +812,7 @@ describe("interactive native input ingress", () => {
 			await h.pressSubmit(ENTER);
 		}
 		expect(callback).toHaveBeenCalledTimes(2);
-		expect(callback.mock.calls[0][0]).toMatchObject({ synthetic: true, started: true, userInitiated: true });
+		expect(callback.mock.calls[0][0]).toMatchObject({ resume: true, started: true });
 		expect(seen).toHaveLength(1);
 		expect(h.prompt).toHaveBeenCalledTimes(1);
 	});
@@ -842,4 +878,25 @@ describe("interactive native input ingress", () => {
 		expect(downstream).not.toHaveBeenCalled();
 		expect(h.prompt).not.toHaveBeenCalled();
 	});
+	it("captures expanded Ctrl+Enter text rather than the collapsed editor marker", async () => {
+		const h = await createHarness(() => {});
+		h.editor.setText("[Paste #1, +100 lines]");
+		vi.spyOn(h.editor, "getExpandedText").mockReturnValue("Full original pasted requirement");
+		await h.pressSubmit(FOLLOW_UP);
+		expect(h.prompt.mock.calls[0]?.[0]).toBe("Full original pasted requirement");
+		expect(h.originalInputs).toEqual(["Full original pasted requirement"]);
+	});
+
+	for (const key of [ENTER, FOLLOW_UP]) {
+		it(`preserves original requirement text across transformed ${key === ENTER ? "Enter" : "follow-up"} input`, async () => {
+			const h = await createHarness(pi => {
+				pi.on("input", () => ({ text: "expanded task" }));
+			});
+			h.editor.setText("original requirement");
+			await h.pressSubmit(key);
+			expect(h.prompt.mock.calls[0]?.[0]).toBe("expanded task");
+			expect(h.originalInputs).toEqual(["original requirement"]);
+			expect(currentRequirementInput()).toBeUndefined();
+		});
+	}
 });

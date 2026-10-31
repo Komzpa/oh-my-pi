@@ -14,8 +14,10 @@ import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { FileSink } from "bun";
 import type { BashResult } from "../../exec/bash-executor";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import { currentRequirementInput } from "../../session/requirement-input";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
+import type { SessionLeaseReport } from "../../session/session-storage";
 import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameDecoder, type RpcProtocolVersion } from "./rpc-frame";
 import type { RpcGoalOp, RpcGoalResult } from "./rpc-goal";
 import {
@@ -890,6 +892,25 @@ export class RpcClient {
 		return this.#getData(response);
 	}
 
+	/**
+	 * Start a GPT live voice session whose audio runs on the caller's own WebRTC peer
+	 * (one Opus audio track plus an `oai-events` data channel). Send the peer's SDP offer and
+	 * apply the returned answer; omp keeps signaling, delegation and transcripts, and opens
+	 * no host microphone or speaker. Frames arrive through {@link onLive}; `live_levels` are not sent.
+	 */
+	async liveConnect(
+		sdpOffer: string,
+		options?: { voice?: string; instructions?: string },
+	): Promise<{ voice: string; sdpAnswer: string }> {
+		const response = await this.#send({
+			type: "live_connect",
+			sdpOffer,
+			voice: options?.voice,
+			instructions: options?.instructions,
+		});
+		return this.#getData(response);
+	}
+
 	/** Stop the live voice session, if any; resolves once it has stopped. */
 	async liveStop(): Promise<void> {
 		const response = await this.#send({ type: "live_stop" });
@@ -1124,6 +1145,15 @@ export class RpcClient {
 	 */
 	async getSessionStats(): Promise<SessionStats> {
 		const response = await this.#send({ type: "get_session_stats" });
+		return this.#getData(response);
+	}
+
+	/**
+	 * Which of `sessionIds` a running process (this one included) owns, probed
+	 * without taking ownership. Ids in neither list are free.
+	 */
+	async getSessionLease(sessionIds: string[]): Promise<SessionLeaseReport> {
+		const response = await this.#send({ type: "get_session_lease", sessionIds });
 		return this.#getData(response);
 	}
 
@@ -1640,7 +1670,12 @@ export class RpcClient {
 		if (!this.#process?.stdin) {
 			throw new Error("Client not started");
 		}
-		const fullCommand = { ...command, id } as RpcCommand;
+		const rawRequirementText = currentRequirementInput();
+		const fullCommand = {
+			...command,
+			...(command.type === "prompt" && rawRequirementText !== undefined ? { rawRequirementText } : {}),
+			id,
+		} as RpcCommand;
 		const { promise, resolve, reject } = Promise.withResolvers<RpcResponse>();
 		let settled = false;
 		const timeoutId = this.#startTimeout(timeoutMs, () => {

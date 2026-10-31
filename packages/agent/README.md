@@ -21,7 +21,7 @@ const agent = new Agent({
 	},
 });
 
-agent.subscribe((event) => {
+agent.subscribe(event => {
 	if (event.type === "message_update" && event.assistantMessageEvent.type === "text_delta") {
 		// Stream just the new text chunk
 		process.stdout.write(event.assistantMessageEvent.delta);
@@ -55,6 +55,12 @@ AgentMessage[] → transformContext() → AgentMessage[] → convertToLlm() → 
 ## Event Flow
 
 The agent emits events for UI updates. Understanding the event sequence helps build responsive interfaces.
+
+### Awaited assistant publication
+
+Guarded session owners can install the pre-publication boundary through the internal bridge in `@oh-my-pi/pi-agent-core/assistant-publication`. Call `setAssistantPublicationGate(agent, gate)` after creating the `Agent`; clear it with `setAssistantPublicationGate(agent, undefined)` when the guard is no longer active. This bridge is used by `coding-agent` and is not an `AgentOptions` property or part of the public SDK entry point.
+
+While the gate runs, provider assistant text, thinking, images, and partial-message events are withheld from subscribers and `Agent.state`; tool-argument previews are also withheld, while safety interceptors and usage accounting continue. Approved tool calls execute after admission. The gate receives the finalized message after `transformAssistantMessage` and the run signal. Return `undefined` to approve the message unchanged, or `{ replacementText, settled?: true, preserveImages?: true }` to replace narrative while retaining tool calls and their arguments. Images are removed by replacement unless `preserveImages: true` is returned. Signed provider thinking required to continue a retained tool call is replayed from private state and stays out of the admitted message and history. A rejected gate or an aborted signal publishes a deterministic refusal instead of falling back to provider text. With a gate installed, the agent emits the ordinary message-start/end lifecycle only after admission.
 
 ### prompt() Event Sequence
 
@@ -219,7 +225,7 @@ await agent.waitForIdle(); // Wait for completion
 ### Events
 
 ```typescript
-const unsubscribe = agent.subscribe((event) => {
+const unsubscribe = agent.subscribe(event => {
 	console.log(event.type);
 });
 unsubscribe();
@@ -274,8 +280,8 @@ Handle custom types in `convertToLlm`:
 
 ```typescript
 const agent = new Agent({
-	convertToLlm: (messages) =>
-		messages.flatMap((m) => {
+	convertToLlm: messages =>
+		messages.flatMap(m => {
 			if (m.role === "notification") return []; // Filter out
 			return [m];
 		}),
@@ -360,7 +366,7 @@ const context: AgentContext = {
 
 const config: AgentLoopConfig = {
 	model: getModel("openai", "gpt-4o"),
-	convertToLlm: (msgs) => msgs.filter((m) => ["user", "assistant", "toolResult"].includes(m.role)),
+	convertToLlm: msgs => msgs.filter(m => ["user", "assistant", "toolResult"].includes(m.role)),
 };
 
 const userMessage = { role: "user", content: "Hello", timestamp: Date.now() };
@@ -376,6 +382,7 @@ for await (const event of agentLoopContinue(context, config)) {
 ```
 
 ## Run-level telemetry
+
 Every `invoke_agent` produces two values alongside the OTEL spans:
 
 - **`AgentRunSummary`** — chat / tool / usage / cost / error counters bucketed
@@ -447,10 +454,7 @@ Callers that drive the loop multiple times (verify pass, benchmark harness)
 fold N summaries with `aggregateAgentRunSummaries` / `aggregateAgentRunCoverage`:
 
 ```typescript
-import {
-	aggregateAgentRunSummaries,
-	aggregateAgentRunCoverage,
-} from "@oh-my-pi/pi-agent";
+import { aggregateAgentRunSummaries, aggregateAgentRunCoverage } from "@oh-my-pi/pi-agent";
 
 const summaries: AgentRunSummary[] = [];
 const coverages: AgentRunCoverage[] = [];

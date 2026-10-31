@@ -7,7 +7,7 @@
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
-import { AgentBusyError, EventLoopKeepalive, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
+import { AgentBusyError, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model, ServiceTierByFamily, Usage } from "@oh-my-pi/pi-ai";
 import { isCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, popLoopPhase, prompt, pushLoopPhase, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
@@ -15,6 +15,7 @@ import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobError, AsyncJobManager, type
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { ModelRegistry } from "../config/model-registry";
+import { MAX_IMAGE_INPUT_BYTES } from "@oh-my-pi/pi-tui/chat/image-loading";
 import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import {
 	previewLine,
@@ -82,7 +83,10 @@ import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
 import { hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import {
+	AUTO_THINKING,
+	assertModelSupportsEffortCeiling,
 	type ConfiguredThinkingLevel,
+	clampThinkingLevelToCeiling,
 	prewalkWouldBeNoop,
 	resolveTaskEffortLevel,
 	type TaskEffort,
@@ -124,6 +128,7 @@ import type { PreparedSeanceSession } from "./seance";
 import {
 	type AgentProgress,
 	type SingleResult,
+	type TaskImage,
 	type StructuredSubagentOutput,
 	type StructuredSubagentSchemaMode,
 	type StructuredSubagentSchemaSource,
@@ -131,7 +136,10 @@ import {
 	type YieldItem,
 } from "@oh-my-pi/pi-tui/tools/task";
 import { yieldSectionShapes } from "./yield-assembly";
+import { assertPerCallModelApproved, PerCallModelError, type PerCallModelGrants } from "./model-approval";
 import { assembleYieldResult } from "@oh-my-pi/pi-tui/tools/task-yield-assembly";
+import taskImageUnavailableTemplate from "../prompts/tools/task-image-unavailable.md" with { type: "text" };
+import { loadImageAttachmentInput } from "../utils/image-loading";
 import {
 	cfgTaskPrewalk,
 	cfgTaskAgentPrewalk,
@@ -410,6 +418,12 @@ export interface ExecutorOptions {
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
+	/**
+	 * Image attachments delivered as real image content parts in the child's
+	 * first prompt (e.g. qa-auditor requirement images). Absent for image-less
+	 * calls, whose prompts stay byte-identical.
+	 */
+	images?: TaskImage[];
 	preparedSession?: PreparedSeanceSession;
 	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
 	context?: string;
@@ -441,6 +455,8 @@ export interface ExecutorOptions {
 	 * if the resolved subagent model has no working credentials. See #985.
 	 */
 	parentActiveModelPattern?: string;
+	/** Set for a per-call `model`; every model the child sends to must stay approved by these grants. */
+	perCallModelGrants?: PerCallModelGrants;
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Caller-requested coarse effort (`lo`/`med`/`hi`); maps onto the resolved model's supported thinking range and wins over {@link thinkingLevel}. */
 	effort?: TaskEffort;
@@ -795,7 +811,7 @@ export function finalizeSubprocessOutput(args: FinalizeSubprocessOutputArgs): Fi
 				} else {
 					try {
 						rawOutput =
-							assembled.rawText && typeof completeData === "string"
+							typeof completeData === "string"
 								? completeData
 								: (JSON.stringify(completeData, null, 2) ?? "null");
 					} catch (err) {
@@ -1160,42 +1176,45 @@ export function createSubagentSettings(
 		modelThresholdsEnabled: cfgCompactionModelThresholdsEnabled.get(baseSettings),
 	};
 	// Every other setting reads through to the parent live; writes on the overlay stay local.
-	const subagentSettings: SubagentChainSettings = baseSettings.overlay({
-		...(inheritedRootThresholds && {
-			"compaction.thresholdPercent": inheritedRootThresholds.thresholdPercent,
-			"compaction.thresholdTokens": inheritedRootThresholds.thresholdTokens,
-			"compaction.modelThresholdsEnabled": inheritedRootThresholds.modelThresholdsEnabled,
-		}),
-		// A subagent's thinking level is chosen at spawn (agent definition, `effort`, or this
-		// snapshot of the parent default); a later parent default edit must not re-steer it.
-		defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
-		"tier.openai": subagentTiers.openai ?? "none",
-		"tier.anthropic": subagentTiers.anthropic ?? "none",
-		"tier.google": subagentTiers.google ?? "none",
-		// Async jobs and bash/eval auto-backgrounding are inherited from the parent:
-		// background jobs are owner-routed to the subagent's own session, and
-		// the run driver's quiescence barrier + teardown reap guarantee no
-		// owner job outlives the run, so worktree capture/cleanup stays
-		// race-free (previously both were force-disabled here).
+	const subagentSettings: SubagentChainSettings = baseSettings.overlay(
+		{
+			...(inheritedRootThresholds && {
+				"compaction.thresholdPercent": inheritedRootThresholds.thresholdPercent,
+				"compaction.thresholdTokens": inheritedRootThresholds.thresholdTokens,
+				"compaction.modelThresholdsEnabled": inheritedRootThresholds.modelThresholdsEnabled,
+			}),
+			// A subagent's thinking level is chosen at spawn (agent definition, `effort`, or this
+			// snapshot of the parent default); a later parent default edit must not re-steer it.
+			defaultThinkingLevel: cfgDefaultThinkingLevel.get(baseSettings),
+			"tier.openai": subagentTiers.openai ?? "none",
+			"tier.anthropic": subagentTiers.anthropic ?? "none",
+			"tier.google": subagentTiers.google ?? "none",
+			// Async jobs and bash/eval auto-backgrounding are inherited from the parent:
+			// background jobs are owner-routed to the subagent's own session, and
+			// the run driver's quiescence barrier + teardown reap guarantee no
+			// owner job outlives the run, so worktree capture/cleanup stays
+			// race-free (previously both were force-disabled here).
 
-		// Subagents run headless — there is no UI to confirm prompts against, so
-		// the parent task approval is the authorization boundary. Use yolo mode
-		// to preserve unattended subagent execution. User `tools.approval` policies still apply.
-		"tools.approvalMode": "yolo",
-		// Subagents run unadvised by default; runSubprocess opts a spawn back in
-		// per agent (frontmatter `advisor` / `task.agentAdvisor`) via overrides.
-		"advisor.enabled": false,
-		// A subagent assignment is one turn: its tool loop ends only when the run
-		// yields, so post-turn `checkCompaction` (driven from `agent_end`) fires
-		// after the run is over and `maintainContextMidRun` is the only proactive
-		// compaction the child ever reaches. `compaction.midTurnEnabled` encodes an
-		// interactive preference — keep compaction boundaries on real user turns —
-		// that has no counterpart here, so inheriting `false` left hours-long
-		// worker runs sailing past the configured threshold until the provider
-		// rejected the context (#13211). A per-spawn override still wins.
-		"compaction.midTurnEnabled": true,
-		...overrides,
-	});
+			// Subagents run headless — there is no UI to confirm prompts against, so
+			// the parent task approval is the authorization boundary. Use yolo mode
+			// to preserve unattended subagent execution. User `tools.approval` policies still apply.
+			"tools.approvalMode": "yolo",
+			// Subagents run unadvised by default; runSubprocess opts a spawn back in
+			// per agent (frontmatter `advisor` / `task.agentAdvisor`) via overrides.
+			"advisor.enabled": false,
+			// A subagent assignment is one turn: its tool loop ends only when the run
+			// yields, so post-turn `checkCompaction` (driven from `agent_end`) fires
+			// after the run is over and `maintainContextMidRun` is the only proactive
+			// compaction the child ever reaches. `compaction.midTurnEnabled` encodes an
+			// interactive preference — keep compaction boundaries on real user turns —
+			// that has no counterpart here, so inheriting `false` left hours-long
+			// worker runs sailing past the configured threshold until the provider
+			// rejected the context (#13211). A per-spawn override still wins.
+			"compaction.midTurnEnabled": true,
+			...overrides,
+		},
+		{ derived: true },
+	);
 	subagentSettings[kRootCompactionThresholds] = rootThresholds;
 	return subagentSettings;
 }
@@ -2416,6 +2435,132 @@ const PROMPT_DISPATCH_IDLE_TIMEOUT_MS = 5_000;
 class PromptDispatchError extends Error {}
 
 /**
+ * A task image with bytes present, ready for the child's first prompt.
+ * Structurally an `ImageContent` with sha256/rn/index metadata preserved so
+ * auditors can tie the part back to its requirement row.
+ */
+interface FirstPromptImage {
+	type: "image";
+	data: string;
+	mimeType: string;
+	sha256?: string;
+	rn?: string;
+	index?: number;
+	sourcePath?: string;
+	artifactPath?: string;
+}
+
+/**
+ * Resolve task image references to prompt bytes exactly at the real
+ * first-prompt boundary. This is the only place task args become bytes:
+ * callers (flat/batch/structured) forward `TaskImage` refs untouched.
+ *
+ * - Inline `data` is size-limited, decoded and checked against its SHA when present.
+ * - References read `artifactPath` then `sourcePath`; the first readable file
+ *   within the central image limit whose bytes verify against the supplied
+ *   `sha256` (when present) becomes a real image part with metadata preserved.
+ * - Missing files, read failures, and SHA mismatches degrade to one child text
+ *   line containing `unavailable` and the SHA — the task continues with zero
+ *   image parts for that image.
+ * - No images leaves the prompt byte-identical: empty suffix, no images key.
+ */
+export async function resolveTaskImagesForFirstPrompt(
+	images: TaskImage[] | undefined,
+): Promise<{ suffix: string; promptImages?: FirstPromptImage[] }> {
+	if (!images?.length) return { suffix: "" };
+	const promptImages: FirstPromptImage[] = [];
+	let suffix = "";
+	for (const image of images) {
+		const sha = image.sha256 ?? "unknown";
+		const label = `Image${typeof image.index === "number" ? ` #${image.index}` : ""}${image.rn ? ` (${image.rn})` : ""}`;
+		let failure: string | undefined;
+		let loaded: { data: string; mimeType: string } | undefined;
+		if (image.data) {
+			try {
+				if (Buffer.byteLength(image.data, "base64") > MAX_IMAGE_INPUT_BYTES) {
+					throw new Error(`image exceeds the ${MAX_IMAGE_INPUT_BYTES} byte input limit`);
+				}
+				const rawBytes = Buffer.from(image.data, "base64");
+				if (image.sha256) {
+					const actual = new Bun.CryptoHasher("sha256").update(rawBytes).digest("hex");
+					if (actual.toLowerCase() !== image.sha256.toLowerCase()) {
+						throw new Error(`SHA mismatch (expected ${image.sha256}, got ${actual})`);
+					}
+				}
+				const validated = await loadImageAttachmentInput({
+					image: { type: "image", data: image.data, mimeType: image.mimeType ?? "image/png" },
+					label,
+					uri: image.sourcePath ?? image.artifactPath ?? label,
+					autoResize: false,
+					maxBytes: MAX_IMAGE_INPUT_BYTES,
+				});
+				if (!validated) throw new Error("unsupported or invalid image data");
+				loaded = { data: validated.data, mimeType: validated.mimeType };
+			} catch (error) {
+				failure = error instanceof Error ? error.message : String(error);
+			}
+		}
+		if (!loaded && !image.data) {
+			for (const candidate of [image.artifactPath, image.sourcePath]) {
+				if (!candidate) continue;
+				try {
+					const metadata = await Bun.file(candidate).stat();
+					if (metadata.size > MAX_IMAGE_INPUT_BYTES) {
+						throw new Error(`image exceeds the ${MAX_IMAGE_INPUT_BYTES} byte input limit`);
+					}
+					const sourceBytes = await fs.readFile(candidate);
+					if (sourceBytes.byteLength > MAX_IMAGE_INPUT_BYTES) {
+						throw new Error(`image exceeds the ${MAX_IMAGE_INPUT_BYTES} byte input limit`);
+					}
+					if (image.sha256) {
+						const actual = new Bun.CryptoHasher("sha256").update(sourceBytes).digest("hex");
+						if (actual.toLowerCase() !== image.sha256.toLowerCase()) {
+							failure = `SHA mismatch at ${candidate} (expected ${image.sha256}, got ${actual})`;
+							continue;
+						}
+					}
+					const validated = await loadImageAttachmentInput({
+						image: {
+							type: "image",
+							data: sourceBytes.toString("base64"),
+							mimeType: image.mimeType ?? "image/png",
+						},
+						label,
+						uri: candidate,
+						autoResize: false,
+						maxBytes: MAX_IMAGE_INPUT_BYTES,
+					});
+					if (!validated) throw new Error(`no readable image at ${candidate}`);
+					loaded = { data: validated.data, mimeType: validated.mimeType };
+					break;
+				} catch (error) {
+					failure = error instanceof Error ? error.message : String(error);
+				}
+			}
+		}
+		if (loaded) {
+			promptImages.push({
+				type: "image",
+				data: loaded.data,
+				mimeType: loaded.mimeType,
+				...(image.sha256 ? { sha256: image.sha256 } : {}),
+				...(image.rn ? { rn: image.rn } : {}),
+				...(typeof image.index === "number" ? { index: image.index } : {}),
+				...(image.sourcePath ? { sourcePath: image.sourcePath } : {}),
+				...(image.artifactPath ? { artifactPath: image.artifactPath } : {}),
+			});
+		} else {
+			suffix += `\n${prompt.render(taskImageUnavailableTemplate, {
+				label,
+				sha256: sha,
+				failure: failure ?? "no data, artifactPath, or sourcePath",
+			})}`;
+		}
+	}
+	return { suffix, ...(promptImages.length ? { promptImages } : {}) };
+}
+
+/**
  * Drive one assignment through a live session: send the prompt (with `restore`,
  * go on with the turn the previous process left unfinished instead:
  * {@link AgentSession.restoreInterruptedTurn}), wait for idle,
@@ -2433,6 +2578,8 @@ async function driveSessionToResult(
 	options: {
 		/** Open-endedness description forwarded to the session's `auto` thinking classifier. */
 		solutionSpace?: string;
+		/** Image attachments delivered as real image content parts in the initial prompt. */
+		images?: TaskImage[];
 		/** `false` = no `yield` tool; the final assistant message is the result. Default `true`. */
 		structured?: boolean;
 		/**
@@ -2445,9 +2592,8 @@ async function driveSessionToResult(
 		restore?: boolean;
 	} = {},
 ): Promise<DriveOutcome> {
-	const { solutionSpace, onPromptBusy, restore } = options;
+	const { solutionSpace, images, onPromptBusy, restore } = options;
 	const structured = options.structured !== false;
-	using _keepalive = new EventLoopKeepalive();
 	const abortSignal = monitor.abortSignal;
 	let exitCode = 0;
 	let error: string | undefined;
@@ -2525,11 +2671,21 @@ async function driveSessionToResult(
 			// wins the race and this prompt throws AgentBusyError; back off through
 			// the caller hook and retry. Bounded so a wedged worker still resolves
 			// instead of hanging the batch.
+			// Task images resolve from refs to bytes exactly here, at the real
+			// first-prompt load — never earlier in task args. Empty stays
+			// byte-identical: no suffix, no images key.
+			const resolvedImages = await resolveTaskImagesForFirstPrompt(images);
+			const firstPromptText = resolvedImages.suffix ? `${task}${resolvedImages.suffix}` : task;
+			const firstPromptOptions = {
+				attribution: "agent" as const,
+				solutionSpace,
+				...(resolvedImages.promptImages ? { images: resolvedImages.promptImages } : {}),
+			};
 			let promptAttempts = 0;
 			for (;;) {
 				try {
 					if (restore) await awaitAbortable(session.restoreInterruptedTurn());
-					else await dispatchPrompt(task, { attribution: "agent", solutionSpace }, "initial prompt");
+					else await dispatchPrompt(firstPromptText, firstPromptOptions, "initial prompt");
 					break;
 				} catch (error) {
 					promptAttempts++;
@@ -3071,7 +3227,13 @@ function wakeSources(records: AgentMessage[], selfId: string): WakeSource[] {
 		// back would ping-pong two idle peers forever. A broadcast leg is not one
 		// either: it asks no one in particular, so relaying every woken peer's
 		// turn back would flood the broadcaster with "not for me" replies.
-		if (details && (Reflect.get(details, "wakeRelay") === true || Reflect.get(details, "broadcast") === true))
+		// A progress note promises a later answer and asks nothing back.
+		if (
+			details &&
+			(Reflect.get(details, "wakeRelay") === true ||
+				Reflect.get(details, "broadcast") === true ||
+				Reflect.get(details, "progress") === true)
+		)
 			continue;
 		const messageId = details ? Reflect.get(details, "id") : undefined;
 		sources.push({ from, messageId: typeof messageId === "string" ? messageId : undefined });
@@ -4072,6 +4234,8 @@ function restoreSubagentSettings(recipe: SubagentSettingsRecipe): Settings {
 interface WarmReviveCapture {
 	sessionFile: string;
 	spec: SubagentSessionSpec;
+	/** A per-call worker never switches models; its warm revive keeps only the exact saved model. */
+	perCallModel: boolean;
 	/** Re-captured whenever the live session is disposed, so a revive restores its latest settings writes. */
 	settings: SubagentSettingsRecipe;
 	parentArtifactManager: ArtifactManager | undefined;
@@ -4160,7 +4324,11 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 		// transcript restores the effort, and the spawn selection only backs the model up when it is
 		// unavailable. The spawn's prewalk stays configured; the coordinator sees it was spent. A seance
 		// fork's selections belong to its source run, never to the consult.
-		const sessionLocalModel = capture.spec.preparedSession ? undefined : reopened.getSessionLocalModelChange()?.model;
+		// A per-call worker never switches models, so its warm revive never prepends a session-local switch.
+		const sessionLocalModel =
+			capture.spec.preparedSession || capture.perCallModel
+				? undefined
+				: reopened.getSessionLocalModelChange()?.model;
 		try {
 			try {
 				const options = buildSubagentSessionOptions(
@@ -4508,6 +4676,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			}
 			checkAbort();
 
+			if (options.perCallModelGrants) {
+				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
+			}
 			const configuredModelPatterns = resolveConfiguredModelPatterns(modelPatterns, settings);
 			const inheritedRetryFallbackChain =
 				configuredModelPatterns.length === 1
@@ -4530,8 +4701,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					modelRegistry,
 					settings,
 					id,
+					options.perCallModelGrants ? { exactOnly: true } : undefined,
 				),
 			);
+			if (options.perCallModelGrants && !model) {
+				throw new PerCallModelError(
+					`Requested exact model ${JSON.stringify(modelPatterns)} is unavailable. Use an exact provider/model[:level] selector; do not substitute another model.`,
+				);
+			}
 			if (modelResolutionWarning) {
 				logger.warn("Subagent model resolution warning", {
 					warning: modelResolutionWarning,
@@ -4545,6 +4722,11 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					resolvedProvider: model.provider,
 					resolvedModel: model.id,
 				});
+			}
+			// Preflight skips these checks while the registry is cold, so hold the model
+			// a per-call child actually starts on to them before its session exists.
+			if (options.perCallModelGrants && model) {
+				assertPerCallModelApproved(model, options.perCallModelGrants, modelRegistry);
 			}
 			// The exact-name `task.agentServiceTierOverrides` entry dispatch resolved
 			// for this agent. The session evaluates it against its final model —
@@ -4584,13 +4766,22 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// through to the normal selectors below.
 			// The ceiling outlives initial resolution: it rides into the session so
 			// retry-fallback recovery can never clamp effort back up past it.
-			const spawnEffortCeiling = options.effort !== undefined ? cfgTaskMaxEffort.get(settings) : undefined;
+			// A per-call `model` is caller-chosen too, so its `:level` is held to the same
+			// ceiling, and a model whose lowest effort is above it fails the spawn
+			// exactly as an `effort` hint does.
+			const spawnEffortCeiling =
+				options.effort !== undefined || options.perCallModelGrants ? cfgTaskMaxEffort.get(settings) : undefined;
+			if (model && spawnEffortCeiling) assertModelSupportsEffortCeiling(model, spawnEffortCeiling);
 			const effortLevel =
 				options.effort !== undefined
 					? resolveTaskEffortLevel(model, options.effort, spawnEffortCeiling)
 					: undefined;
+			const explicitLevel =
+				explicitThinkingLevel && resolvedThinkingLevel !== AUTO_THINKING
+					? clampThinkingLevelToCeiling(model, resolvedThinkingLevel, spawnEffortCeiling)
+					: resolvedThinkingLevel;
 			if (model) {
-				const displayLevel = effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : undefined);
+				const displayLevel = effortLevel ?? (explicitThinkingLevel ? explicitLevel : undefined);
 				progress.resolvedModelIdentity = formatModelStringWithRouting(model);
 				progress.resolvedThinkingLevel = displayLevel;
 				progress.resolvedModel =
@@ -4602,7 +4793,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// model pattern > agent-definition default (e.g. task's `auto`) >
 			// pattern-derived level.
 			const effectiveThinkingLevel =
-				effortLevel ?? (explicitThinkingLevel ? resolvedThinkingLevel : (thinkingLevel ?? resolvedThinkingLevel));
+				effortLevel ?? (explicitThinkingLevel ? explicitLevel : (thinkingLevel ?? resolvedThinkingLevel));
 			resolvedAt = performance.now();
 			const effectiveCwd = worktree ?? cwd;
 			const fork = preparedSession?.fork;
@@ -4633,14 +4824,17 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// fast/cheap target at its first edit/write — the same mechanism as the
 			// session-level --prewalk. The bundled generic `task` agent has no
 			// frontmatter default; the `task.prewalk` toggle (default off) arms it.
-			// Resolution failures skip prewalk instead of failing the spawn.
+			// Resolution failures skip prewalk instead of failing the spawn. A per-call
+			// worker never switches models, so it never prewalks.
+			const perCallModelGrants = options.perCallModelGrants;
 			let prewalk: Prewalk | undefined;
-			const prewalkPattern = preparedSession
-				? undefined
-				: resolveAgentPrewalkPattern({
-						settingsOverride: cfgTaskAgentPrewalk.get(settings)[agent.name],
-						agentPrewalk: resolveAgentPrewalkDefault(agent, cfgTaskPrewalk.get(settings)),
-					});
+			const prewalkPattern =
+				preparedSession || perCallModelGrants
+					? undefined
+					: resolveAgentPrewalkPattern({
+							settingsOverride: cfgTaskAgentPrewalk.get(settings)[agent.name],
+							agentPrewalk: resolveAgentPrewalkDefault(agent, cfgTaskPrewalk.get(settings)),
+						});
 			if (prewalkPattern) {
 				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
 				const resolvedPrewalk = resolveModelOverride([prewalkPattern], modelRegistry, settings);
@@ -4725,6 +4919,17 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 					modelPatternDefaultFallbackChain:
 						model || modelOverride === undefined ? undefined : inheritedRetryFallbackChain,
 					thinkingLevel: effectiveThinkingLevel,
+					...(perCallModelGrants
+						? {
+								// Every request stays on an approved model that can run at or below the spawn's effort ceiling.
+								assertDispatchModel: (dispatchModel: Model) => {
+									assertPerCallModelApproved(dispatchModel, perCallModelGrants, modelRegistry);
+									if (spawnEffortCeiling) assertModelSupportsEffortCeiling(dispatchModel, spawnEffortCeiling);
+								},
+								disableModelFallback: true,
+								disableServerSideFallback: true,
+							}
+						: {}),
 					thinkingLevelCeiling: spawnEffortCeiling,
 					// Subagents are short-lived; never schedule background warm requests.
 					cacheWarming: false,
@@ -4896,6 +5101,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				const reviveCapture: WarmReviveCapture = {
 					sessionFile,
 					spec: sessionSpec,
+					perCallModel: perCallModelGrants !== undefined,
 					settings: captureSubagentSettings(settings, subagentSettings),
 					parentArtifactManager: preparedSession ? undefined : options.parentArtifactManager,
 					keepTodo: prewalk !== undefined,
@@ -4949,6 +5155,14 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				agent: agent.name,
 				modelRole: modelRole ?? resolveExplicitModelRole(modelOverride ?? agent.model, subagentSettings),
 				resolvedModel: progress.resolvedModel,
+				...(perCallModelGrants
+					? {
+							perCallModel: true,
+							// Display selectors can conflate literal :level ids with effort, so revival records each separately.
+							perCallModelIdentity: formatModelStringWithRouting(session.model!),
+							perCallThinkingLevel: session.configuredThinkingLevel() ?? null,
+						}
+					: {}),
 				// Deferred model resolution installs this role inside createAgentSession,
 				// so read it back from the settings both install paths write.
 				retryFallback: getRetryFallbackRole(subagentSettings, subagentRetryFallbackRole(id)),
@@ -5025,6 +5239,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (options.keepAlive !== false) releaseIrcWakes = session.holdIrcWakes();
 			const outcome = await driveSessionToResult(session, monitor, task, {
 				solutionSpace: options.solutionSpace,
+				...(options.images?.length ? { images: options.images } : {}),
 				structured,
 			});
 			// Acceptance boundary (#11079): the run's final result is settled, so

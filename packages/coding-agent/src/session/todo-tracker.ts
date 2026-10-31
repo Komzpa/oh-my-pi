@@ -369,14 +369,10 @@ export class TodoTracker {
 	}
 
 	#clonePhases(phases: TodoPhase[]): TodoPhase[] {
-		return phases.map(phase => ({
-			name: phase.name,
-			tasks: phase.tasks.map(task =>
-				task.blocker !== undefined
-					? { content: task.content, status: task.status, blocker: task.blocker }
-					: { content: task.content, status: task.status },
-			),
-		}));
+		return phases.map(phase => {
+			const { tasks, ...metadata } = phase;
+			return { ...structuredClone(metadata), tasks: tasks.map(task => structuredClone(task)) };
+		});
 	}
 }
 

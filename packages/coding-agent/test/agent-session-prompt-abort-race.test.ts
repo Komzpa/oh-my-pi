@@ -6,7 +6,7 @@
  * and abort() must cancel an in-flight vision description rather than wait on it.
  */
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Agent, AgentBusyError, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -14,8 +14,15 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { withRequirementInput } from "@oh-my-pi/pi-coding-agent/session/requirement-input";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
+import {
+	RequirementsLedgerRuntime,
+	type PreparedRequirementCandidate,
+} from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { getLatestRequirements } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
+import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as imageVisionFallback from "@oh-my-pi/pi-coding-agent/utils/image-vision-fallback";
 import * as imageLoading from "@oh-my-pi/pi-coding-agent/utils/image-loading";
 import { withTimeout } from "@oh-my-pi/pi-utils";
@@ -41,6 +48,7 @@ describe("AgentSession prompt admission racing abort", () => {
 		responses: Array<() => MockResponse | Promise<MockResponse>>,
 		textOnly = false,
 		options: {
+			todoEnabled?: boolean;
 			modelRegistry?: Pick<ModelRegistry, "getApiKey">;
 			clientBridge?: unknown;
 			extensionRunner?: unknown;
@@ -52,16 +60,30 @@ describe("AgentSession prompt admission racing abort", () => {
 		if (!bundled) throw new Error("Expected claude-sonnet-4-5 model to exist");
 		const model: Model = textOnly ? { ...bundled, input: ["text"] } : bundled;
 		const mock = createMockModel({ responses });
+		const sessionManager = SessionManager.inMemory();
+		const todoEnabled = options.todoEnabled === true;
+		const settings = Settings.isolated({ "compaction.enabled": false, "todo.enabled": todoEnabled });
+		const todo = todoEnabled
+			? new TodoTool({
+					cwd: sessionManager.getCwd(),
+					hasUI: false,
+					getSessionFile: () => sessionManager.getSessionFile() ?? null,
+					getSessionSpawns: () => "*",
+					settings,
+					getTodoPhases: () => session?.getTodoPhases() ?? [],
+					setTodoPhases: phases => session?.setTodoPhases(phases),
+				})
+			: undefined;
 		const agent = new Agent({
 			getApiKey: () => "test-key",
-			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			initialState: { model, systemPrompt: ["Test"], tools: todo ? [todo as unknown as AgentTool] : [] },
 			streamFn: mock.stream,
 		});
 		const fallbackRegistry = new ModelRegistry(authStorage);
 		session = new AgentSession({
 			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false, "todo.enabled": false }),
+			sessionManager,
+			settings,
 			modelRegistry: (options.modelRegistry ?? fallbackRegistry) as never,
 			...(options.extensionRunner ? { extensionRunner: options.extensionRunner as never } : {}),
 		});
@@ -70,7 +92,7 @@ describe("AgentSession prompt admission racing abort", () => {
 		}
 		const dropped: string[] = [];
 		session.setPromptDropped(prompt => dropped.push(prompt.text));
-		return { session, dropped, modelRegistry: options.modelRegistry ?? fallbackRegistry };
+		return { session, dropped, modelRegistry: options.modelRegistry ?? fallbackRegistry, sessionManager };
 	}
 
 	/** Holds image normalization for image-bearing calls until released. */
@@ -157,6 +179,281 @@ describe("AgentSession prompt admission racing abort", () => {
 		expect(dropped).toEqual(["queue while normalizing"]);
 		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [], liveSteered: 0 });
 		expect(calls).toBe(1);
+	});
+
+	it("discards a prepared direct candidate when abort wins before admission", async () => {
+		const { session, sessionManager } = await createSession([() => ({ content: ["should not run"] })], false, {
+			todoEnabled: true,
+		});
+		const prepareEntered = Promise.withResolvers<void>();
+		const prepared = Promise.withResolvers<PreparedRequirementCandidate | undefined>();
+		const prepareSpy = spyOn(RequirementsLedgerRuntime.prototype, "prepareCandidate").mockImplementation(() => {
+			prepareEntered.resolve();
+			return prepared.promise;
+		});
+		restores.push(() => prepareSpy.mockRestore());
+		let admitted = false;
+		const prompt = session.prompt("raw user ask", {
+			onPromptAdmitted: () => {
+				admitted = true;
+			},
+		});
+		await withTimeout(prepareEntered.promise, 2_000, "Direct candidate preparation never started");
+		const sessionId = sessionManager.getHeader()?.id;
+		if (!sessionId) throw new Error("Expected an active session identity");
+		let aborting: Promise<void> | undefined;
+		queueMicrotask(() => {
+			aborting = session.abort();
+		});
+		prepared.resolve({ sessionId, sourceText: "raw user ask", images: [] });
+		await withTimeout(prompt, 2_000, "Direct prompt did not settle after abort");
+		expect(admitted).toBe(false);
+		expect(getLatestRequirements(sessionManager.getBranch())).toEqual([]);
+		await aborting;
+	});
+
+	it("retries an Agent.prompt busy rejection and captures only after the retry is admitted", async () => {
+		const { session, sessionManager } = await createSession([() => ({ content: ["accepted after retry"] })], false, {
+			todoEnabled: true,
+		});
+		const originalPrompt = Agent.prototype.prompt as (this: Agent, ...args: any[]) => Promise<void>;
+		let calls = 0;
+		const promptSpy = spyOn(Agent.prototype, "prompt").mockImplementation(function (this: Agent, ...args: any[]) {
+			calls++;
+			if (calls === 1) return Promise.reject(new AgentBusyError());
+			return originalPrompt.apply(this, args);
+		});
+		restores.push(() => promptSpy.mockRestore());
+		let admitted = false;
+
+		await session.prompt("retryable raw ask", {
+			onPromptAdmitted: () => {
+				admitted = true;
+			},
+		});
+		await session.waitForIdle();
+
+		expect(calls).toBe(2);
+		expect(admitted).toBe(true);
+		expect(getLatestRequirements(sessionManager.getBranch())).toMatchObject([
+			{ id: "R1", classification: "candidate", rawText: "retryable raw ask" },
+		]);
+		expect(getLatestRequirements(sessionManager.getBranch())).toHaveLength(1);
+	});
+
+	it("does not persist a candidate when Agent.prompt rejects before claiming a run", async () => {
+		const { session, sessionManager } = await createSession([() => ({ content: ["must not run"] })], false, {
+			todoEnabled: true,
+		});
+		const promptSpy = spyOn(Agent.prototype, "prompt").mockImplementation(() =>
+			Promise.reject(new Error("injected Agent.prompt preflight rejection")),
+		);
+		restores.push(() => promptSpy.mockRestore());
+		let admitted = false;
+
+		await expect(
+			session.prompt("rejected raw ask", {
+				onPromptAdmitted: () => {
+					admitted = true;
+				},
+			}),
+		).rejects.toThrow("injected Agent.prompt preflight rejection");
+
+		expect(admitted).toBe(false);
+		expect(sessionManager.getBranch().filter(entry => entry.type === "custom")).toEqual([]);
+		expect(getLatestRequirements(sessionManager.getBranch())).toEqual([]);
+	});
+
+	it("rechecks prompt generation after the final queued session check", async () => {
+		const turnStarted = Promise.withResolvers<void>();
+		const releaseTurn = Promise.withResolvers<void>();
+		const { session, sessionManager } = await createSession(
+			[
+				async () => {
+					turnStarted.resolve();
+					await releaseTurn.promise;
+					return { content: ["first turn"] };
+				},
+			],
+			false,
+			{ todoEnabled: true },
+		);
+		const running = session.prompt("agent turn", { attribution: "agent" });
+		await withTimeout(turnStarted.promise, 2_000, "First turn never started");
+
+		const prepareEntered = Promise.withResolvers<void>();
+		const prepared = Promise.withResolvers<PreparedRequirementCandidate | undefined>();
+		const prepareSpy = spyOn(RequirementsLedgerRuntime.prototype, "prepareCandidate").mockImplementation(() => {
+			prepareEntered.resolve();
+			return prepared.promise;
+		});
+		restores.push(() => prepareSpy.mockRestore());
+		let admitted = false;
+		const queued = session.prompt("queued user ask", {
+			streamingBehavior: "steer",
+			onPromptAdmitted: () => {
+				admitted = true;
+			},
+		});
+		await withTimeout(prepareEntered.promise, 2_000, "Queued candidate preparation never started");
+		const sessionId = sessionManager.getHeader()?.id;
+		if (!sessionId) throw new Error("Expected an active session identity");
+		prepared.resolve({ sessionId, sourceText: "queued user ask", images: [] });
+		let aborting: Promise<void> | undefined;
+		// Promise resolution schedules the queue continuation first. It passes the
+		// initial generation check and awaits the already-current session check;
+		// this abort then lands before that await's continuation.
+		queueMicrotask(() => {
+			aborting = session.abort();
+		});
+		await withTimeout(queued, 2_000, "Queued admission did not settle");
+		expect(admitted).toBe(false);
+		expect(getLatestRequirements(sessionManager.getBranch())).toEqual([]);
+		expect(session.getQueuedMessages()).toEqual({ steering: [], followUp: [], liveSteered: 0 });
+
+		releaseTurn.resolve();
+		await running.catch(() => {});
+		await aborting;
+		await session.waitForIdle();
+	});
+
+	it("captures a queued user ask once with its raw text before dispatch", async () => {
+		const turnStarted = Promise.withResolvers<void>();
+		const releaseTurn = Promise.withResolvers<void>();
+		const { session, sessionManager } = await createSession(
+			[
+				async () => {
+					turnStarted.resolve();
+					await releaseTurn.promise;
+					return { content: ["first turn"] };
+				},
+				() => ({ content: ["queued turn"] }),
+			],
+			false,
+			{ todoEnabled: true },
+		);
+		const running = session.prompt("agent turn", { attribution: "agent" });
+		await withTimeout(turnStarted.promise, 2_000, "First turn never started");
+		const originalPrepare = RequirementsLedgerRuntime.prototype.prepareCandidate;
+		let captures = 0;
+		const prepareSpy = spyOn(RequirementsLedgerRuntime.prototype, "prepareCandidate").mockImplementation(function (
+			this: RequirementsLedgerRuntime,
+			...args
+		) {
+			captures++;
+			return originalPrepare.apply(this, args);
+		});
+		restores.push(() => prepareSpy.mockRestore());
+		let admitted = false;
+		const queued = withRequirementInput("/review raw request", () =>
+			session.prompt("expanded prompt", {
+				streamingBehavior: "steer",
+				onPromptAdmitted: () => {
+					admitted = true;
+				},
+			}),
+		);
+		await expect(queued).resolves.toBe(true);
+		expect(admitted).toBe(true);
+		expect(getLatestRequirements(sessionManager.getBranch())).toMatchObject([
+			{ id: "R1", classification: "candidate", rawText: "/review raw request" },
+		]);
+		releaseTurn.resolve();
+		await running;
+		await session.waitForIdle();
+		expect(captures).toBe(1);
+		expect(getLatestRequirements(sessionManager.getBranch())).toHaveLength(1);
+		expect(
+			session.agent.state.messages
+				.filter(message => message.role === "assistant")
+				.flatMap(message => (Array.isArray(message.content) ? message.content : []))
+				.filter(part => part.type === "text")
+				.map(part => part.text)
+				.join("\n"),
+		).toContain("Not audit-verified: R1");
+	});
+
+	it("does not capture queued agent-attributed asks", async () => {
+		const turnStarted = Promise.withResolvers<void>();
+		const releaseTurn = Promise.withResolvers<void>();
+		const { session, sessionManager } = await createSession(
+			[
+				async () => {
+					turnStarted.resolve();
+					await releaseTurn.promise;
+					return { content: ["first turn"] };
+				},
+				() => ({ content: ["queued turn"] }),
+			],
+			false,
+			{ todoEnabled: true },
+		);
+		const running = session.prompt("agent turn", { attribution: "agent" });
+		await withTimeout(turnStarted.promise, 2_000, "First turn never started");
+		const prepareSpy = spyOn(RequirementsLedgerRuntime.prototype, "prepareCandidate");
+		restores.push(() => prepareSpy.mockRestore());
+		let admitted = false;
+		const queued = session.prompt("parent notice", {
+			attribution: "agent",
+			streamingBehavior: "steer",
+			onPromptAdmitted: () => {
+				admitted = true;
+			},
+		});
+		await queued;
+		expect(admitted).toBe(true);
+		expect(prepareSpy).not.toHaveBeenCalled();
+		expect(getLatestRequirements(sessionManager.getBranch())).toEqual([]);
+		releaseTurn.resolve();
+		await running;
+		await session.waitForIdle();
+		expect(getLatestRequirements(sessionManager.getBranch())).toEqual([]);
+	});
+
+	it("captures an aside user ask once even when the idle drain later delivers it", async () => {
+		const turnStarted = Promise.withResolvers<void>();
+		const releaseTurn = Promise.withResolvers<void>();
+		const { session, sessionManager } = await createSession(
+			[
+				async () => {
+					turnStarted.resolve();
+					await releaseTurn.promise;
+					return { content: ["first turn"] };
+				},
+				() => ({ content: ["aside turn"] }),
+			],
+			false,
+			{ todoEnabled: true },
+		);
+		const running = session.prompt("agent turn", { attribution: "agent" });
+		await withTimeout(turnStarted.promise, 2_000, "First turn never started");
+		const originalPrepare = RequirementsLedgerRuntime.prototype.prepareCandidate;
+		let captures = 0;
+		const prepareSpy = spyOn(RequirementsLedgerRuntime.prototype, "prepareCandidate").mockImplementation(function (
+			this: RequirementsLedgerRuntime,
+			...args
+		) {
+			captures++;
+			return originalPrepare.apply(this, args);
+		});
+		restores.push(() => prepareSpy.mockRestore());
+		let admitted = false;
+		const aside = session.prompt("aside raw question", {
+			streamingBehavior: "aside",
+			onPromptAdmitted: () => {
+				admitted = true;
+			},
+		});
+		await aside;
+		expect(admitted).toBe(true);
+		expect(getLatestRequirements(sessionManager.getBranch())).toMatchObject([
+			{ id: "R1", classification: "candidate", rawText: "aside raw question" },
+		]);
+		releaseTurn.resolve();
+		await running;
+		await session.waitForIdle();
+		expect(captures).toBe(1);
+		expect(getLatestRequirements(sessionManager.getBranch())).toHaveLength(1);
 	});
 
 	it("keeps the next prompt busy when an interrupted setup unwinds late", async () => {
@@ -578,6 +875,8 @@ describe("AgentSession prompt admission racing abort", () => {
 			false,
 			{
 				extensionRunner: {
+					hasLoadedHandlers: () => false,
+					hasHandlers: () => false,
 					getCommand: (name: string) => (name === "queued-cmd" ? { name: "queued-cmd" } : undefined),
 					emitBeforeAgentStart: async () => undefined,
 				},

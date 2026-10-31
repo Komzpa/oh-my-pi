@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,6 +59,83 @@ describe("in-process VCS bindings", () => {
 
 		await git(root, "add", "untracked.txt");
 		expect(await repo.isDirty()).toBe(true);
+	});
+
+	test("shares one native status across every namespace discovery and derived reader", async () => {
+		const root = await repository();
+		await writeFile(join(root, "tracked.txt"), "changed\n");
+		await writeFile(join(root, "new.txt"), "new\n");
+		const native = vcsGitDiscover(root)!;
+		const probe = spyOn(Object.getPrototypeOf(native), "statusPorcelain");
+		try {
+			const discovered = [
+				vcs.git(root)!,
+				vcs.requireGit(root),
+				vcs.repo(root)!.asGit()!,
+				vcs.require(root).asGit()!,
+				vcs.repoForDisplay(root)!.asGit()!,
+			];
+			const results = await Promise.all(discovered.map(repo => repo.statusSummary()));
+			for (const result of results) expect(result).toEqual({ staged: 0, unstaged: 1, untracked: 1 });
+			expect(await discovered[0]!.isDirty()).toBe(true);
+			expect(await discovered[1]!.statusPorcelain({ untracked: "normal", nulTerminated: true })).toContain(
+				"?? new.txt\0",
+			);
+			expect(probe).toHaveBeenCalledTimes(1);
+		} finally {
+			probe.mockRestore();
+		}
+	});
+
+	test("refreshes after external index and HEAD changes without bypassing the shared interval", async () => {
+		const root = await repository();
+		const repo = vcs.requireGit(root);
+		const starts: number[] = [];
+		const native = vcsGitDiscover(root)!;
+		const original = native.statusPorcelain.bind(native);
+		const probe = spyOn(Object.getPrototypeOf(native), "statusPorcelain").mockImplementation(
+			async (
+				options: Parameters<typeof native.statusPorcelain>[0],
+				signal: Parameters<typeof native.statusPorcelain>[1],
+			) => {
+				starts.push(performance.now());
+				return original(options, signal);
+			},
+		);
+		try {
+			expect(await repo.statusSummary()).toEqual({ staged: 0, unstaged: 0, untracked: 0 });
+			await writeFile(join(root, "tracked.txt"), "staged change\n");
+			await git(root, "add", "tracked.txt");
+			expect(await vcs.requireGit(root).statusSummary()).toEqual({ staged: 1, unstaged: 0, untracked: 0 });
+			await git(root, "commit", "-m", "external commit");
+			expect(await repo.statusSummary()).toEqual({ staged: 0, unstaged: 0, untracked: 0 });
+			expect(starts).toHaveLength(3);
+			for (let index = 1; index < starts.length; index++)
+				expect(starts[index]! - starts[index - 1]!).toBeGreaterThanOrEqual(9_999);
+		} finally {
+			probe.mockRestore();
+		}
+	}, 30_000);
+
+	test("linked worktrees have independent native probe slots", async () => {
+		const root = await repository();
+		const linked = join(root, "linked");
+		await git(root, "worktree", "add", "-b", "linked", linked);
+		await writeFile(join(linked, "tracked.txt"), "linked change\n");
+		const main = vcs.requireGit(root);
+		const other = vcs.requireGit(linked);
+		expect(vcs.statusEpoch(main)!.identity).not.toBe(vcs.statusEpoch(other)!.identity);
+		expect(await Promise.all([main.statusSummary(), other.statusSummary()])).toEqual([
+			{ staged: 0, unstaged: 0, untracked: 1 },
+			{ staged: 0, unstaged: 1, untracked: 0 },
+		]);
+	});
+
+	test("counts a rename as one status entry when porcelain uses NUL delimiters", async () => {
+		const root = await repository();
+		await git(root, "mv", "tracked.txt", "renamed.txt");
+
+		expect(await vcs.requireGit(root).statusSummary()).toEqual({ staged: 1, unstaged: 0, untracked: 0 });
 	});
 
 	test("discovers, diffs, applies, stages, and commits", async () => {
@@ -180,6 +257,12 @@ describe("VcsRepo", () => {
 		const required = vcs.require(root, "stagedDiff");
 		expect(required.kind()).toBe("git");
 		expect(required.supports("revDiff")).toBe(true);
+		await required.statusSummary();
+		const before = vcs.statusEpoch(required)!;
+		vcs.invalidateStatus(root);
+		const after = vcs.statusEpoch(required)!;
+		expect(after.identity).toBe(before.identity);
+		expect(after.generation).toBe(before.generation + 1);
 	});
 
 	test("discovers Jujutsu and rejects unsupported features", async () => {
@@ -192,6 +275,7 @@ describe("VcsRepo", () => {
 		expect(repo?.supports("stagedDiff")).toBe(false);
 		expect(repo?.asGit()).toBeNull();
 		expect(repo?.asJj()).not.toBeNull();
+		expect(vcs.statusEpoch(vcs.repo(root)!)).toBeNull();
 
 		try {
 			vcs.require(root, "stagedDiff");

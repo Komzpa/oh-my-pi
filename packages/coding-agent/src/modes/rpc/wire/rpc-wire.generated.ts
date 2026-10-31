@@ -396,6 +396,11 @@ export type AgentSource = "bundled" | "user" | "project";
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "aborted";
 
+export interface TodoAwaitingUser {
+	action: string;
+	ids?: string[];
+}
+
 export interface TodoItem {
 	content: string;
 	status: TodoStatus;
@@ -403,6 +408,14 @@ export interface TodoItem {
 	blocker?: string;
 	details?: string;
 	notes?: string[];
+	/** Persisted checkout whose clean HEAD is the row's QA artifact. */
+	artifactCwd?: string;
+	/** Owner whose checkout was last verified as artifactCwd. */
+	artifactOwner?: string;
+	/** Explicit deployment identity for this requirement row. */
+	deployment?: string;
+	/** User-owned pending check; it does not constitute verification or close the row. */
+	awaitingUser?: TodoAwaitingUser;
 }
 
 export interface TodoPhase {
@@ -1523,6 +1536,7 @@ export interface NegotiateProtocolResult {
 
 export interface PromptParams {
 	message: string;
+	rawRequirementText?: string;
 	/** Images attached to the message. */
 	images?: ImageContent[];
 	streamingBehavior?: StreamingBehavior;
@@ -1673,6 +1687,17 @@ export interface LiveStartResult {
 	voice: string;
 }
 
+export interface LiveConnectParams {
+	sdpOffer: string;
+	voice?: string;
+	instructions?: string;
+}
+
+export interface LiveConnectResult {
+	voice: string;
+	sdpAnswer: string;
+}
+
 export interface LiveMuteParams {
 	muted?: boolean;
 }
@@ -1740,6 +1765,15 @@ export interface SetAutoRetryParams {
 
 export interface BashParams {
 	command: string;
+}
+
+export interface GetSessionLeaseParams {
+	sessionIds: string[];
+}
+
+export interface GetSessionLeaseResult {
+	held: string[];
+	unknown: string[];
 }
 
 export interface ExportHtmlParams {
@@ -1899,6 +1933,7 @@ export interface RpcWireCommands {
 	cancel_subagent: { params: CancelSubagentParams; result: CancelSubagentResult };
 	steer_subagent: { params: SteerSubagentParams; result: undefined };
 	live_start: { params: LiveStartParams; result: LiveStartResult };
+	live_connect: { params: LiveConnectParams; result: LiveConnectResult };
 	live_stop: { params: undefined; result: undefined };
 	live_mute: { params: LiveMuteParams; result: LiveMuteResult };
 	dictation_start: { params: DictationStartParams; result: undefined };
@@ -1920,6 +1955,7 @@ export interface RpcWireCommands {
 	bash: { params: BashParams; result: BashResult };
 	abort_bash: { params: undefined; result: undefined };
 	get_session_stats: { params: undefined; result: SessionStats };
+	get_session_lease: { params: GetSessionLeaseParams; result: GetSessionLeaseResult };
 	export_html: { params: ExportHtmlParams; result: ExportHtmlResult };
 	switch_session: { params: SwitchSessionParams; result: CancellationResult };
 	branch: { params: BranchParams; result: BranchResult };

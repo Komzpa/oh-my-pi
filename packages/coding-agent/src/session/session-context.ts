@@ -27,6 +27,7 @@ import {
 	type SessionEntry,
 	type SessionMessageEntry,
 } from "./session-entries";
+import { TOOL_EXECUTION_START_CUSTOM_TYPE, type ToolExecutionStartData } from "./exit-diagnostics";
 
 // #4470 crash artifacts had legacy frames (no shape metadata) with 17 frames,
 // ~306k archive chars, and ~1.5M truncated chars. Current snapcompact frames
@@ -362,6 +363,32 @@ export function buildSessionContext(
 	// 2. Emit kept messages (from firstKeptEntryId up to compaction)
 	// 3. Emit messages after compaction
 	const messages: AgentMessage[] = [];
+	// tool_execution_start is appended after the assistant draft. Deferred
+	// handlers can revise a tool's effective args at that boundary; fold those
+	// exact call-id revisions onto detached history messages during reconstruction.
+	const toolArgumentRevisions = new Map<string, Map<string, Record<string, unknown>>>();
+	for (let index = 0; index < path.length; index++) {
+		const marker = path[index];
+		if (marker?.type !== "custom" || marker.customType !== TOOL_EXECUTION_START_CUSTOM_TYPE) continue;
+		const data = marker.data as Partial<ToolExecutionStartData> | undefined;
+		if (
+			typeof data?.toolCallId !== "string" ||
+			!("effectiveArguments" in (data ?? {})) ||
+			!isRecord(data.effectiveArguments)
+		)
+			continue;
+		for (let previous = index - 1; previous >= 0; previous--) {
+			const candidate = path[previous];
+			if (candidate?.type !== "message") continue;
+			if (candidate.message.role === "user") break;
+			if (candidate.message.role !== "assistant") continue;
+			if (!candidate.message.content.some(block => block.type === "toolCall" && block.id === data.toolCallId)) break;
+			const revisions = toolArgumentRevisions.get(candidate.id) ?? new Map<string, Record<string, unknown>>();
+			revisions.set(data.toolCallId, data.effectiveArguments);
+			toolArgumentRevisions.set(candidate.id, revisions);
+			break;
+		}
+	}
 	const cacheMissExplainedAt: boolean[] = [];
 	let pendingReset = false;
 	let currentMode = "none";
@@ -426,7 +453,20 @@ export function buildSessionContext(
 			) {
 				return;
 			}
-			pushMessage(entry.message);
+			const originalMessage = entry.message;
+			const revisions = originalMessage.role === "assistant" ? toolArgumentRevisions.get(entry.id) : undefined;
+			const message =
+				originalMessage.role === "assistant" && revisions && revisions.size > 0
+					? {
+							...originalMessage,
+							content: originalMessage.content.map(block =>
+								block.type === "toolCall" && revisions.has(block.id)
+									? { ...block, arguments: revisions.get(block.id)! }
+									: block,
+							),
+						}
+					: originalMessage;
+			pushMessage(message);
 		} else if (entry.type === "custom_message") {
 			if (
 				!options?.transcript &&

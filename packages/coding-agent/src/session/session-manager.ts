@@ -25,6 +25,7 @@ import {
 	toError,
 } from "@oh-my-pi/pi-utils";
 import { isTaskToolDetails, type StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { moveFileAcrossDevices } from "../utils/atomic-file";
 import { hasAnnotationDraftsSync } from "../extensibility/custom-commands/bundled/annotate/draft-store";
@@ -954,6 +955,7 @@ export class SessionManager {
 	 * in-memory (pre-blob-externalization) entry, so inline images survive.
 	 */
 	onEntryAppended?: (entry: SessionEntry) => void;
+	#entryAppendedListeners = new Set<(entry: SessionEntry) => void>();
 
 	#turnBudgetTotal: number | null = null;
 	#turnBudgetHard = false;
@@ -2015,6 +2017,13 @@ export class SessionManager {
 				callback(entry);
 			} catch (err) {
 				logger.warn("collab entry hook failed", { error: String(err) });
+			}
+		}
+		for (const listener of this.#entryAppendedListeners) {
+			try {
+				listener(entry);
+			} catch (err) {
+				logger.warn("SessionManager entry append observer failed", { error: String(err) });
 			}
 		}
 	}
@@ -3376,6 +3385,14 @@ export class SessionManager {
 		};
 	}
 
+	/** Subscribe to each appended session entry without replacing the collab replication tap. */
+	subscribeEntryAppended(listener: (entry: SessionEntry) => void): () => void {
+		this.#entryAppendedListeners.add(listener);
+		return () => {
+			this.#entryAppendedListeners.delete(listener);
+		};
+	}
+
 	/**
 	 * Subscribe to persistence failures so hosts can surface lost-durability state.
 	 *
@@ -3658,6 +3675,9 @@ export class SessionManager {
 		agent?: string;
 		modelRole?: string;
 		resolvedModel?: string;
+		perCallModel?: boolean;
+		perCallModelIdentity?: string;
+		perCallThinkingLevel?: ConfiguredThinkingLevel | null;
 		retryFallback?: RetryFallbackRole;
 		readOnly?: boolean;
 		outputSchema?: unknown;
@@ -4699,6 +4719,9 @@ export interface PersistedSessionInit {
 	agent?: string;
 	modelRole?: string;
 	resolvedModel?: string;
+	perCallModel?: boolean;
+	perCallModelIdentity?: string;
+	perCallThinkingLevel?: ConfiguredThinkingLevel | null;
 	retryFallback?: RetryFallbackRole;
 	readOnly?: boolean;
 	outputSchema?: unknown;
@@ -4727,6 +4750,9 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			agent: entry.agent,
 			modelRole: entry.modelRole,
 			resolvedModel: entry.resolvedModel,
+			...(entry.perCallModel ? { perCallModel: true } : undefined),
+			perCallModelIdentity: entry.perCallModelIdentity,
+			perCallThinkingLevel: entry.perCallThinkingLevel,
 			retryFallback: entry.retryFallback,
 			readOnly: entry.readOnly,
 			outputSchema: entry.outputSchema,

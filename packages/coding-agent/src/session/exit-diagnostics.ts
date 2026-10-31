@@ -21,6 +21,8 @@ export interface ToolExecutionStartData {
 	toolCallId: string;
 	toolName: string;
 	args?: ToolArgumentSummary;
+	/** Exact arguments after deferred pre-execution rewrites, when they differ from the assistant draft. */
+	effectiveArguments?: unknown;
 	intent?: string;
 	startedAt: string;
 }

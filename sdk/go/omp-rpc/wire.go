@@ -2132,6 +2132,27 @@ func (v *SubagentStatus) UnmarshalJSON(data []byte) error {
 	return unknownValue("SubagentStatus", s)
 }
 
+type TodoAwaitingUser struct {
+	Action string   `json:"action"`
+	Ids    []string `json:"ids,omitempty"`
+}
+
+func (v *TodoAwaitingUser) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoAwaitingUser", v.decodeFrom)
+}
+
+func (v *TodoAwaitingUser) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoAwaitingUser
+	d := fieldDecoder{raw: raw, owner: "TodoAwaitingUser"}
+	d.required("action", &out.Action)
+	d.optional("ids", &out.Ids)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type TodoItem struct {
 	Content string     `json:"content"`
 	Status  TodoStatus `json:"status"`
@@ -2139,6 +2160,14 @@ type TodoItem struct {
 	Blocker *string  `json:"blocker,omitempty"`
 	Details *string  `json:"details,omitempty"`
 	Notes   []string `json:"notes,omitempty"`
+	// Persisted checkout whose clean HEAD is the row's QA artifact.
+	ArtifactCwd *string `json:"artifactCwd,omitempty"`
+	// Owner whose checkout was last verified as artifactCwd.
+	ArtifactOwner *string `json:"artifactOwner,omitempty"`
+	// Explicit deployment identity for this requirement row.
+	Deployment *string `json:"deployment,omitempty"`
+	// User-owned pending check; it does not constitute verification or close the row.
+	AwaitingUser *TodoAwaitingUser `json:"awaitingUser,omitempty"`
 }
 
 func (v *TodoItem) UnmarshalJSON(data []byte) error {
@@ -2153,6 +2182,10 @@ func (v *TodoItem) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("blocker", &out.Blocker)
 	d.optional("details", &out.Details)
 	d.optional("notes", &out.Notes)
+	d.optional("artifactCwd", &out.ArtifactCwd)
+	d.optional("artifactOwner", &out.ArtifactOwner)
+	d.optional("deployment", &out.Deployment)
+	d.optional("awaitingUser", &out.AwaitingUser)
 	if d.err != nil {
 		return d.err
 	}
@@ -7306,6 +7339,27 @@ func (v *LiveStartResult) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type LiveConnectResult struct {
+	Voice     string `json:"voice"`
+	SdpAnswer string `json:"sdpAnswer"`
+}
+
+func (v *LiveConnectResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "LiveConnectResult", v.decodeFrom)
+}
+
+func (v *LiveConnectResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out LiveConnectResult
+	d := fieldDecoder{raw: raw, owner: "LiveConnectResult"}
+	d.required("voice", &out.Voice)
+	d.required("sdpAnswer", &out.SdpAnswer)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type LiveMuteResult struct {
 	Muted bool `json:"muted"`
 }
@@ -7394,6 +7448,27 @@ func (v *SetCacheWarmingResult) decodeFrom(raw map[string]json.RawMessage) error
 	var out SetCacheWarmingResult
 	d := fieldDecoder{raw: raw, owner: "SetCacheWarmingResult"}
 	d.required("mode", &out.Mode)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type GetSessionLeaseResult struct {
+	Held    []string `json:"held"`
+	Unknown []string `json:"unknown"`
+}
+
+func (v *GetSessionLeaseResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "GetSessionLeaseResult", v.decodeFrom)
+}
+
+func (v *GetSessionLeaseResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out GetSessionLeaseResult
+	d := fieldDecoder{raw: raw, owner: "GetSessionLeaseResult"}
+	d.required("held", &out.Held)
+	d.required("unknown", &out.Unknown)
 	if d.err != nil {
 		return d.err
 	}
@@ -7643,7 +7718,8 @@ func (c Commands) NegotiateProtocol(ctx context.Context, p NegotiateProtocolComm
 
 // PromptCommand holds the parameters of "prompt".
 type PromptCommand struct {
-	Message string `json:"message"`
+	Message            string  `json:"message"`
+	RawRequirementText *string `json:"rawRequirementText,omitempty"`
 	// Images attached to the message.
 	Images            []ImageContent     `json:"images,omitempty"`
 	StreamingBehavior *StreamingBehavior `json:"streamingBehavior,omitempty"`
@@ -7957,6 +8033,20 @@ func (c Commands) LiveStart(ctx context.Context, p LiveStartCommand) (string, er
 	return out.Voice, err
 }
 
+// LiveConnectCommand holds the parameters of "live_connect".
+type LiveConnectCommand struct {
+	SdpOffer     string  `json:"sdpOffer"`
+	Voice        *string `json:"voice,omitempty"`
+	Instructions *string `json:"instructions,omitempty"`
+}
+
+// LiveConnect sends "live_connect": Start a live voice session whose audio runs on a caller-owned WebRTC peer: send its SDP offer, apply the returned answer.
+func (c Commands) LiveConnect(ctx context.Context, p LiveConnectCommand) (LiveConnectResult, error) {
+	var out LiveConnectResult
+	err := c.call(ctx, "live_connect", p, 0, &out)
+	return out, err
+}
+
 // LiveStop sends "live_stop": Stop the live voice session, if any.
 func (c Commands) LiveStop(ctx context.Context) error {
 	return c.call(ctx, "live_stop", nil, 0, nil)
@@ -8142,6 +8232,18 @@ func (c Commands) AbortBash(ctx context.Context) error {
 func (c Commands) GetSessionStats(ctx context.Context) (SessionStats, error) {
 	var out SessionStats
 	err := c.call(ctx, "get_session_stats", nil, 0, &out)
+	return out, err
+}
+
+// GetSessionLeaseCommand holds the parameters of "get_session_lease".
+type GetSessionLeaseCommand struct {
+	SessionIds []string `json:"sessionIds"`
+}
+
+// GetSessionLease sends "get_session_lease": Which of these sessions a running process (this one included) owns, probed without taking ownership. Ids in neither list are free; `unknown` could not be probed.
+func (c Commands) GetSessionLease(ctx context.Context, p GetSessionLeaseCommand) (GetSessionLeaseResult, error) {
+	var out GetSessionLeaseResult
+	err := c.call(ctx, "get_session_lease", p, 0, &out)
 	return out, err
 }
 
