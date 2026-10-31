@@ -441,8 +441,8 @@ export async function submitInteractiveInput(
 		| "optimisticSkillMessagePending"
 	> &
 		Partial<Pick<InteractiveMode, "loopPrompt" | "pauseLoop">>,
-	session: Pick<InteractiveSessionConnection, "prompt" | "promptCustomMessage" | "resume" | "isStreaming"> &
-		Pick<AgentSession, "buildUserSkillPrompt">,
+	session: Pick<InteractiveSessionConnection, "prompt" | "promptCustomMessage" | "isStreaming"> &
+		Pick<AgentSession, "buildUserSkillPrompt" | "resume">,
 	input: SubmittedUserInput,
 ): Promise<void> {
 	if (input.cancelled) {
@@ -672,6 +672,7 @@ export async function runInteractiveMode(
 	const sessionConnection = Object.assign(createLocalInteractiveSessionConnection(session), {
 		buildUserSkillPrompt: (...args: Parameters<AgentSession["buildUserSkillPrompt"]>) =>
 			session.buildUserSkillPrompt(...args),
+		resume: () => session.resume(),
 	});
 	const InteractiveModeConstructor = await loadInteractiveModeConstructor();
 	let mode: InteractiveMode;
