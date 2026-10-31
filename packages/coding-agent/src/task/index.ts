@@ -2398,7 +2398,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		tools?: TextTap,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
-		const assignment = (params.task ?? "").trim();
+		const assignment = params.task ?? "";
 		const taskFileMetadata =
 			params.taskFile !== undefined ? { taskFile: params.taskFile, taskFileSha256: params.taskFileSha256 } : {};
 		const route = this.#reworkRoutes.get(`${toolCallId}:${spawnIndex}`);
