@@ -76,6 +76,18 @@ describe("formatTaskResultSummary", () => {
 		expect(summary).not.toContain("<meta");
 	});
 
+	it("delivers 11500 characters whole and previews 11501 within the 12000-character envelope", () => {
+		const output = `${"x".repeat(11496)}TAIL`;
+		const whole = formatTaskResultSummary(settledResult(output), { totalDurationMs: 5 });
+		expect(whole).toContain(`<output>\n${output}\n</output>`);
+		expect(whole).toContain("TAIL");
+		expect(whole.length).toBeLessThanOrEqual(12000);
+		const over = formatTaskResultSummary(settledResult(`${output}!`), { totalDurationMs: 5 });
+		expect(over).toContain('<preview full-output="agent://Scout">');
+		expect(over).not.toContain("TAIL!");
+		expect(over.length).toBeLessThanOrEqual(12000);
+	});
+
 	it("previews an inline-sized report whose merge notice or error would overflow async delivery", () => {
 		// Async delivery cuts an envelope over its cap to a 4k head, which would drop
 		// the <merge-summary> after <output>: the parent's only pointer to an isolated

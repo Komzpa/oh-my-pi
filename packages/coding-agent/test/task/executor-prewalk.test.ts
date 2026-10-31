@@ -5,6 +5,7 @@
  * model it resolves to, and when the hand-off is skipped (override off,
  * target identical to the starting model).
  */
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -156,6 +157,29 @@ describe("runSubprocess per-agent prewalk", () => {
 		const forwarded = spy.mock.calls[0]?.[0];
 		expect(forwarded?.prewalk?.target.id).toBe(target.id);
 		expect(forwarded?.prewalk?.target.provider).toBe(target.provider);
+	});
+
+	it("skips prewalk when the Claude implementation cap makes the target equal to the starting state", async () => {
+		const opus = modelOrThrow("claude-opus-4-6");
+		const spy = vi
+			.spyOn(sdkModule, "createAgentSession")
+			.mockResolvedValue(createSessionResult(yieldEmittingSession()));
+
+		const result = await runSubprocess({
+			...baseOptions("subagent-prewalk-capped-noop", Settings.isolated()),
+			modelRegistry: createModelRegistry([opus]),
+			agent: {
+				...baseAgent,
+				name: "coder",
+				model: [`${opus.provider}/${opus.id}:max`],
+				prewalk: `${opus.provider}/${opus.id}:high`,
+			},
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.thinkingLevel).toBe(ThinkingLevel.High);
+		expect(forwarded?.prewalk).toBeUndefined();
 	});
 
 	it("waits for background discovery before resolving a configured prewalk target", async () => {
