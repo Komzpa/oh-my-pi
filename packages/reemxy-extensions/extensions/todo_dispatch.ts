@@ -4787,8 +4787,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName === "task") chiefRefusals = 0;
     const rerouted = rerouteSettledWorkerWrite(event as { toolName: string; input?: unknown }, ctx);
     if (rerouted) return rerouted;
-    const chief = blockWorkerWork(event as { toolName: string; input?: unknown }, ctx);
-    if (chief) return chief;
     if ((event.toolName === "task" || event.toolName === "todo") && isMain(ctx) && !pauseGate?.paused) {
       const text = JSON.stringify(event.input ?? {});
       const adds = event.toolName === "task" || /"op"\s*:\s*"(append|init)"/.test(text);
@@ -4864,6 +4862,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         return { block: true, reason: `Plan problem ignored: ${verdict.remedyGateIds.join(", ")}. ${remedies.join(" ")}` };
       }
     }
+    // The chief-work gate's remedy is a task dispatch, which an escalated plan demand refuses;
+    // the older ignored demand speaks first so the lead is not sent in a circle.
+    const chief = blockWorkerWork(event as { toolName: string; input?: unknown }, ctx);
+    if (chief) return chief;
     if (event.toolName === "todo" && pendingReplan) pendingReplan.answered = pendingReplan.demands;
     if (event.toolName === "todo" && pendingTaskReconciliation?.linkDemanded) pendingTaskReconciliation.linkAnswered = true;
     if (event.toolName === "task") {
