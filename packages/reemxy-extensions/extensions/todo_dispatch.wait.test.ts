@@ -955,7 +955,7 @@ test("dispatcher renders forecast and deadline times in the persisted goal timez
 			formatPlanForecast: () => "P95=2026-09-25T19:16:00.000Z",
 			formatTaskForecast,
 			getLatestTodoPhasesFromEntries,
-			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 60_000, timezone: "Asia/Tbilisi" }),
+			readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 60_000, timezone: "Asia/Dubai" }),
 		},
 		appendEntry: () => undefined,
 		sendMessage: () => undefined,

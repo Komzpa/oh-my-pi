@@ -1427,7 +1427,7 @@ for (const live of [false, true]) test(`PLAN CHECK reports compaction from ${liv
   mkdirSync(join(sessions, "main"));
   const liveNow = Date.now();
   const compactedAt = liveNow - 2 * 60_000;
-  const compactedClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tbilisi", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(compactedAt));
+  const compactedClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Dubai", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(compactedAt));
   const workerFile = join(sessions, "main", "worker-a.jsonl");
   writeFileSync(
     workerFile,
@@ -1461,7 +1461,7 @@ for (const live of [false, true]) test(`PLAN CHECK reports compaction from ${liv
       handlers[event] = handler;
     },
     getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
-    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000, timezone: "Asia/Tbilisi" }) },
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000, timezone: "Asia/Dubai" }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
     sendMessage: (message: { content: string; customType?: string }) => {
@@ -1633,7 +1633,7 @@ test("PLAN CHECK has the harness ask an overdue worker once instead of telling c
   const api = {
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
     getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
-    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000, timezone: "Asia/Tbilisi" }) },
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: liveNow + 3_600_000, timezone: "Asia/Dubai" }) },
     registerSoftToolRequirementProvider: () => undefined,
     appendEntry: () => undefined,
     sendMessage: (message: { content: string; customType?: string }) => { if (!message.customType?.startsWith("todo-gate-")) sent.push(message.content); },
@@ -1643,7 +1643,7 @@ test("PLAN CHECK has the harness ask an overdue worker once instead of telling c
 	const forecast = forecastTodoPlan(branch[0]!.message.details.phases, { now: liveNow, deadlineAt: liveNow + 3_600_000 });
 	const p95 = forecast.rows.find(row => row.content === "Row A")?.fixedPathP95Finish;
 	if (typeof p95 !== "number") throw new Error("expected the overdue row to have a P95 finish");
-  const checkinClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Tbilisi", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(p95));
+  const checkinClock = new Intl.DateTimeFormat("en-GB", { timeZone: "Asia/Dubai", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(p95));
   let tick: (() => void) | undefined;
   let workerStart = liveNow - 5_000;
   const ctx = {
