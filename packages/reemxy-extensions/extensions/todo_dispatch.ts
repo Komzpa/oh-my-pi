@@ -1248,6 +1248,8 @@ export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; s
 
 const OWNER_ACTORS = /^(?:user|user-review|owner|darafei)$/i;
 /** A blocker or owner that makes the owner himself a dependency. */
+export const ownerAbsentText = (clock: string) => `Darafei last wrote at ${clock} and may not come back. Do not wait for him. For every open question you asked, act on the default you stated now; if you stated none, pick the conservative one and say which. Close rows that only need his look as delivered. Only a missionCritical row may wait. If nothing can proceed without an irreversible/public step, wrap up: close what is done, then one final message listing done / left / defaults taken, and stop.`;
+export const OWNER_ABSENT_WRAPUP = "No progress after the last nudge: write the final summary now and stop.";
 export function waitsOnOwner(owner: unknown, blocker: unknown): boolean {
   if (typeof owner === "string" && OWNER_ACTORS.test(owner.trim())) return true;
   if (typeof blocker !== "string") return false;
@@ -2979,6 +2981,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // re-wake the idle lead every 30 minutes (live datacenter 01a1921c 2026-10-31 15:58-19:02Z: ten identical
   // "user accepted …; NEXT ACTION: fast merge/publish …" wakes, each answered with "nothing changed").
   let userMessageEpoch = 0;
+  // Owner-absent wake: the plan-check dedup above stops a replay of the same list, but an idle lead whose
+  // owner went quiet still needs a nudge that says he may not return (owner 2026-11-01: «этот пульс не
+  // триггерит "юзер может уже и не придёт"»). One wake per ABSENCE_AFTER_MS of silence; a turn that made no
+  // progress gets one final wrap-up wake, then silence until a user message or a worker result.
+  const ABSENCE_AFTER_MS = 30 * 60_000;
+  const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "search", "web_search", "fetch", "lsp", "ls", "glob", "wait", "ask"]);
+  const absence = { startedAt: Date.now(), lastWakeAt: 0, stage: 0 as 0 | 1 | 2, progressMark: 0, jobStamp: "" };
+  let progressEvents = 0;
   let lastPlanEventStamp = "";
   const ORDER = "Put things in order: run the pass of skill://chief-of-staff now (read it first if it is not in your context).";
   const PARALLEL_GATES = "Checks of the same candidate (lint, unit, build, browser, visual, accessibility, performance, video capture) depend on that candidate only, never on each other: give each its own row that depends on the candidate row, run them side by side, and split a long suite into shards on separate workers. Resolving a merge is one row and one worker for all conflicted files; commit it the moment no path is unresolved, and run the checks on that commit.";
@@ -3560,6 +3570,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (user) resetIdleContinuationDemand();
     latestUserRequestAt = Date.now();
     userMessageEpoch += 1;
+    absence.stage = 0;
+    absence.lastWakeAt = 0;
   });
   const resetIdleContinuationDemand = () => {
     if (sprintState.idleContinuationDemands === 0 && sprintState.idleContinuationKey === undefined) return;
@@ -4746,6 +4758,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return undefined;
   };
   pi.on("tool_call", async (event, ctx) => {
+    // A non-read tool call (a todo change, a task dispatch, an edit, a command) is progress for the absence wake.
+    if (!READ_ONLY_TOOLS.has(event.toolName) && !(event.toolName === "todo" && ["view", undefined].includes((event.input as { op?: string } | undefined)?.op))) progressEvents += 1;
     if (event.toolName === "wait") {
       const reason = unansweredUserReasonWithDraft(ctx);
       if (reason) return { block: true, reason };
@@ -5391,6 +5405,35 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       appendFileSync(join(dir, `${session}.gate.jsonl`), `${JSON.stringify({ at: new Date(now).toISOString(), pid: process.pid, plantick: reason, ticks: planTickCount, ...detail })}\n`);
     } catch {}
   };
+  const absenceTick = (ctx: ExtensionContext, now: number) => {
+    const jobs = ctx.getAsyncJobSnapshot();
+    const finished = (jobs?.recent ?? []).filter((job) => job.type === "task").map((job) => `${job.id}:${job.status}`).join("|");
+    const busy = ctx.isIdle?.() !== true || ctx.hasPendingMessages?.() === true;
+    const working = (jobs?.running ?? []).some((job) => job.type === "task" && job.status === "running");
+    if (busy) { absence.jobStamp = finished; return; }
+    // After the final wrap-up the lead stays silent until a user message (resets above) or a worker result.
+    if (absence.stage === 2) {
+      if (finished !== absence.jobStamp) { absence.stage = 0; absence.lastWakeAt = now; absence.jobStamp = finished; }
+      else return;
+    }
+    if (working) return;
+    const rows = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never).flatMap((phase) => phase.tasks);
+    if (!rows.some((row) => isNonClosedRowStatus(row.status))) return;
+    const lastUserAt = latestUserRequestAt ?? absence.startedAt;
+    if (now - Math.max(lastUserAt, absence.lastWakeAt) < ABSENCE_AFTER_MS) return;
+    const delivery = { triggerTurn: true, interruptWait: false };
+    if (absence.stage === 1 && progressEvents === absence.progressMark) {
+      absence.stage = 2;
+      sendHarnessNotice("todo-owner-absent", "wrap-up", OWNER_ABSENT_WRAPUP, { stage: "wrap-up", at: now }, `wrap-up:${now}`, delivery);
+    } else {
+      absence.stage = 1;
+      const clock = formatLocalClock(lastUserAt, sdk.readGoalDeadline(dispatchStateEntries(ctx), ctx.cwd, { includePaused: true })?.timezone);
+      sendHarnessNotice("todo-owner-absent", "absent", ownerAbsentText(clock), { stage: "absent", at: now, lastUserAt }, `absent:${now}`, delivery);
+    }
+    absence.lastWakeAt = now;
+    absence.progressMark = progressEvents;
+    absence.jobStamp = finished;
+  };
   const planTick = async (ctx: ExtensionContext) => {
     lastPlanTickAt = Date.now();
     planTickCount += 1;
@@ -5403,6 +5446,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (!isMain(ctx)) return planTrace(ctx, "not-main");
       if (!pi.getActiveTools().includes("task")) return planTrace(ctx, "task-tool-inactive");
       await refreshLiveWorkerModels(ctx);
+      if (!gateSwitchedOff(ctx)) absenceTick(ctx, Date.now());
       const check = await planCheck(ctx, [], true);
       if (!check) return planTrace(ctx, "no-problems");
       if (check === PLAN_CHECK_CLEAN) return planTrace(ctx, "plan-clean");
