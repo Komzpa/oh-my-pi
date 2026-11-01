@@ -476,7 +476,7 @@ test("healthy worker telemetry does not wake the chief on a plan tick", async ()
 	}
 });
 
-test("repeated retro and checkpoint notices do not send another chief turn", async () => {
+test("repeated retro and checkpoint notices do not send another chief turn, and an unchanged plan-check is delivered once", async () => {
 	const previousLane = process.env.OMP_LANE_UNIT;
 	delete process.env.OMP_LANE_UNIT;
 	let now = Date.now();
@@ -499,8 +499,17 @@ test("repeated retro and checkpoint notices do not send another chief turn", asy
 			now += 11 * 60_000;
 			await h.tick();
 			expect(h.notices.filter(notice => notice.customType === "todo-plan-check")).toHaveLength(1);
-			// The unchanged problem list is re-delivered once, 30 minutes after the first delivery.
+			// An unchanged problem list is never re-delivered on a timer, however long it stands.
 			now += 20 * 60_000;
+			await h.tick();
+			now += 5 * 60_000;
+			await h.tick();
+			expect(h.notices.filter(notice => notice.customType === "todo-plan-check")).toHaveLength(1);
+			// A worker result since the last delivery makes the same list worth delivering again, once.
+			h.setRecent([{ id: "Worker-1", agentId: "Worker-1", type: "task", status: "completed", label: "Some other row", startTime: now - 1_000 }]);
+			await h.tick();
+			expect(h.notices.filter(notice => notice.customType === "todo-plan-check")).toHaveLength(2);
+			now += 1 * 60_000;
 			await h.tick();
 			expect(h.notices.filter(notice => notice.customType === "todo-plan-check")).toHaveLength(2);
 			const silent = h.entries.filter(entry => entry.customType === "todo-dispatch-silent-notice");

@@ -1453,7 +1453,6 @@ function taskDetails(task: TaskRow, timeZone?: string): string {
 
 const USER_REVIEW_CUSTOM_TYPE = "todo-user-review";
 const USER_UNBLOCK_CUSTOM_TYPE = "todo-user-unblock";
-const USER_UNBLOCK_REPEAT_MS = 15 * 60_000;
 
 type DispatchTodoPhases = Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
 
@@ -1489,8 +1488,11 @@ function pendingReview(phases: DispatchTodoPhases): Array<Record<string, unknown
   return phases.flatMap((phase) => phase.tasks).filter((row) => (row.schedule as { review?: unknown } | undefined)?.review === "user");
 }
 
-export function userUnblockAskDue(askedAt: unknown, now: number): boolean {
-  return typeof askedAt !== "number" || !Number.isFinite(askedAt) || now - askedAt >= USER_UNBLOCK_REPEAT_MS;
+/** The owner is asked once per row. A user message re-surfaces it at most once per message
+ * (`userMessageEpoch` is part of the notice identity), never on a timer. */
+export function userUnblockAskDue(askedAt: unknown, lastUserMessageAt?: number): boolean {
+  if (typeof askedAt !== "number" || !Number.isFinite(askedAt)) return true;
+  return typeof lastUserMessageAt === "number" && lastUserMessageAt > askedAt;
 }
 
 function lastUserUnblockAsk(ctx: ExtensionContext, row: string): number | undefined {
@@ -2972,8 +2974,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // situation and points here (user 2026-09-25: "одну идемпотентную доку … её в любой ситуации тыкай").
   const PLAN_CHECK_CLEAN = "PLAN CHECK: no problems.";
   const PLAN_TICK_MS = 60_000;
-  const PLAN_REDELIVERY_MS = 30 * 60_000;
-  let planHeartbeatSeq = 0;
+  // The plan-check is delivered once per distinct problem list. It is delivered again only when something
+  // changed since: a new user message, a worker result, or a row/status change. An unchanged list used to
+  // re-wake the idle lead every 30 minutes (live datacenter 01a1921c 2026-10-31 15:58-19:02Z: ten identical
+  // "user accepted …; NEXT ACTION: fast merge/publish …" wakes, each answered with "nothing changed").
+  let userMessageEpoch = 0;
+  let lastPlanEventStamp = "";
   const ORDER = "Put things in order: run the pass of skill://chief-of-staff now (read it first if it is not in your context).";
   const PARALLEL_GATES = "Checks of the same candidate (lint, unit, build, browser, visual, accessibility, performance, video capture) depend on that candidate only, never on each other: give each its own row that depends on the candidate row, run them side by side, and split a long suite into shards on separate workers. Resolving a merge is one row and one worker for all conflicted files; commit it the moment no path is unresolved, and run the checks on that commit.";
   // Enough rows already (parked >= free slots): adding more only grows the idle pile (live 00:40:
@@ -3553,7 +3559,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (!isMain(ctx) || event.message?.role !== "user") return;
     if (user) resetIdleContinuationDemand();
     latestUserRequestAt = Date.now();
-
+    userMessageEpoch += 1;
   });
   const resetIdleContinuationDemand = () => {
     if (sprintState.idleContinuationDemands === 0 && sprintState.idleContinuationKey === undefined) return;
@@ -5099,10 +5105,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (!wait) continue;
       if (userUnblockWasAsked(ctx, task.content, wait.question)) continue;
       const askedAt = lastUserUnblockAsk(ctx, task.content);
-      if (!userUnblockAskDue(askedAt, now)) continue;
+      if (!userUnblockAskDue(askedAt, latestUserRequestAt)) continue;
       userUnblockDue.push({ row: task.content, question: wait.question });
       const content = `Ask the user now: ${task.content} — ${wait.question}`;
-      sendHarnessNotice(USER_UNBLOCK_CUSTOM_TYPE, task.content, content, { row: task.content, question: wait.question, at: now }, `${content}:${Math.floor(now / USER_UNBLOCK_REPEAT_MS)}`);
+      sendHarnessNotice(USER_UNBLOCK_CUSTOM_TYPE, task.content, content, { row: task.content, question: wait.question, at: now }, `${content}:${userMessageEpoch}`);
     }
     const ready = (decision.dispatchableReady ?? []).filter((row) => openContents.has(row.content));
     const idle = open.length - running.length - (decision.externallyStaffedCount ?? 0);
@@ -5400,25 +5406,25 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const check = await planCheck(ctx, [], true);
       if (!check) return planTrace(ctx, "no-problems");
       if (check === PLAN_CHECK_CLEAN) return planTrace(ctx, "plan-clean");
-      // Once per distinct problem list, plus one heartbeat every PLAN_REDELIVERY_MS while the same problems
-      // stand: a per-minute repeat made the model restate its status every minute (22:08-22:11), while
-      // never repeating let problem kinds without an escalation step (understaffed, no worker) go
-      // unmentioned for the rest of the session. Escalations change the wording, so they change the key.
+      // Once per distinct problem list. Minutes and timestamps change every tick; the problem list is the
+      // same unless the words change. Something that happened since the last delivery (a user message, a
+      // worker result, a row or status change) makes the same list worth delivering again.
       const now = Date.now();
-      // Minutes and timestamps change every tick; the problem list is the same unless the words change.
       const key = lastPlanProblems
         .replace(/\(\d+\) planning round due:.*?\(skill:\/\/chief-of-staff Planning\)\s*/g, "")
         .replace(/\(\d+\) worker sizing:.*?(?= \(\d+\) |\. Fix them with the pass|$)/g, "")
         .replace(/\s+/g, " ")
         .replace(/\d+/g, "#");
       if (gateSwitchedOff(ctx)) return planTrace(ctx, "switched-off");
-      const unchanged = key === lastIdlePlanCheck;
-      if (pendingSizingNoticeIds.length === 0 && unchanged && now - lastIdlePlanCheckAt < PLAN_REDELIVERY_MS)
-        return planTrace(ctx, "same-problems-recently-sent");
-      // A heartbeat re-delivers an unchanged list, so it needs an identity the notice digest has not seen.
-      const heartbeat = unchanged && now - lastIdlePlanCheckAt >= PLAN_REDELIVERY_MS;
-      if (heartbeat) planHeartbeatSeq += 1;
-      if (!unchanged || heartbeat) lastIdlePlanCheckAt = now;
+      const eventStamp = JSON.stringify([
+        userMessageEpoch,
+        (ctx.getAsyncJobSnapshot()?.recent ?? []).filter((job) => job.type === "task").map((job) => `${job.id}:${job.status}`),
+        sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never).flatMap((phase) => phase.tasks.map((task) => `${task.content}:${task.status}`)),
+      ]);
+      const unchanged = key === lastIdlePlanCheck && eventStamp === lastPlanEventStamp;
+      if (pendingSizingNoticeIds.length === 0 && unchanged) return planTrace(ctx, "same-problems-already-delivered");
+      lastPlanEventStamp = eventStamp;
+      if (!unchanged) lastIdlePlanCheckAt = now;
       lastIdlePlanCheck = key;
       // Digest the stable key, not the rendered text: only a changed problem list or an escalation
       // (the stuck-worker and receding-finish wording changes at 30/60/20 min) delivers again.
@@ -5428,7 +5434,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         .flatMap((phase) => phase.tasks)
         .filter((row) => isOpenRowStatus(row.status))
         .map((row) => row.content);
-      sendHarnessNotice("todo-plan-check", key, check, { planRows }, heartbeat ? `${key}|heartbeat-${planHeartbeatSeq}` : key, { interruptWait: activeRecoveries(ctx).length > 0, triggerTurn: ctx.isIdle?.() === true });
+      sendHarnessNotice("todo-plan-check", key, check, { planRows }, `${key}|${eventStamp}`, { interruptWait: activeRecoveries(ctx).length > 0, triggerTurn: ctx.isIdle?.() === true });
       markSizingNotices();
       planTrace(ctx, "sent", { problems: check.slice(0, 160) });
     } catch (error) {
@@ -5689,10 +5695,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           continue;
         }
         const askedAt = lastUserUnblockAsk(ctx, row.content);
-        if (!userUnblockAskDue(askedAt, Date.now())) continue;
+        if (!userUnblockAskDue(askedAt, latestUserRequestAt)) continue;
         const content = `Ask the user now: ${row.content} — ${row.waitsForUser.question}`;
         const at = Date.now();
-        sendHarnessNotice(USER_UNBLOCK_CUSTOM_TYPE, row.content, content, { row: row.content, question: row.waitsForUser.question, at }, `${content}:${Math.floor(at / USER_UNBLOCK_REPEAT_MS)}`);
+        sendHarnessNotice(USER_UNBLOCK_CUSTOM_TYPE, row.content, content, { row: row.content, question: row.waitsForUser.question, at }, `${content}:${userMessageEpoch}`);
       }
     }
     await appendLeadTimeNote(ctx);

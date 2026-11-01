@@ -269,8 +269,12 @@ test("blocked user-unblock row is asked, and a recent persisted ask suppresses d
   ]);
   await recent.handlers.get("turn_end")!({ toolResults: [] }, recent.ctx);
   expect(recent.sent.some((message) => String(message.content).includes("Ask the user now: Show the screenshot"))).toBe(false);
-  expect(userUnblockAskDue(Date.now() - 14 * 60_000, Date.now())).toBe(false);
-  expect(userUnblockAskDue(Date.now() - 15 * 60_000, Date.now())).toBe(true);
+  // Asked once per row: no timer re-asks it, however long it has been; only a later user message does.
+  expect(userUnblockAskDue(Date.now() - 14 * 60_000, undefined)).toBe(false);
+  expect(userUnblockAskDue(Date.now() - 15 * 60_000, undefined)).toBe(false);
+  expect(userUnblockAskDue(Date.now() - 60 * 60_000, Date.now() - 61 * 60_000)).toBe(false);
+  expect(userUnblockAskDue(Date.now() - 60 * 60_000, Date.now() - 1_000)).toBe(true);
+  expect(userUnblockAskDue(undefined, undefined)).toBe(true);
 });
 
 test("missed ETA names every late owner, admits its rescheduled sibling task, and expires when no rows remain late", async () => {
@@ -446,4 +450,37 @@ test("the delivery notice is information, not a question, and the plan-check no 
   expect(String(handoff.content)).not.toContain("Accept, redo, or drop?");
   const result = await harness.handlers.get("tool_result")({ toolName: "todo", toolCallId: "x", isError: false, details: { op: "schedule" }, content: [] }, harness.ctx);
   expect(JSON.stringify(result ?? "")).not.toContain("ask accept / redo / drop");
+});
+
+
+test("the owner-unblock ask is not repeated after 15 or 60 minutes, and one user message re-asks it once", async () => {
+  const phases = [{ name: "Proof", tasks: [{ content: "Show the screenshot", status: "blocked", blocker: "waits for user: provide the visible screenshot", schedule: { dependencies: [] } }] }];
+  const entries = [];
+  const realNow = Date.now;
+  let clock = realNow();
+  Date.now = () => clock;
+  try {
+    const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] }, entries);
+    const asks = () => harness.sent.filter((message) => message.customType === "todo-user-unblock").length;
+    await harness.handlers.get("turn_end")({ toolResults: [] }, harness.ctx);
+    expect(asks()).toBe(1);
+    // The ask reached the branch as a message; a rebuilt harness (restart) sees it.
+    entries.push({ type: "custom_message", customType: "todo-user-unblock", details: { row: "Show the screenshot", at: clock } });
+    for (const minutes of [15, 60]) {
+      clock += minutes * 60_000;
+      await harness.handlers.get("turn_end")({ toolResults: [] }, harness.ctx);
+      expect(asks()).toBe(1);
+    }
+    clock += 1_000;
+    await harness.handlers.get("message_start")({ message: { role: "user", content: [{ type: "text", text: "continue" }] } }, harness.ctx);
+    clock += 1_000;
+    await harness.handlers.get("turn_end")({ toolResults: [] }, harness.ctx);
+    expect(asks()).toBe(2);
+    entries.push({ type: "custom_message", customType: "todo-user-unblock", details: { row: "Show the screenshot", at: clock } });
+    clock += 60 * 60_000;
+    await harness.handlers.get("turn_end")({ toolResults: [] }, harness.ctx);
+    expect(asks()).toBe(2);
+  } finally {
+    Date.now = realNow;
+  }
 });
