@@ -1233,6 +1233,33 @@ function localizeTimestampText(value: string, timeZone?: string): string {
 function safeText(value: unknown, max = MAX_LABEL): string {
   return typeof value === "string" ? shorten(value, max) : "unknown";
 }
+/** A row handed to the user (`review: "user"`) is delivered work, not open work: the owner never has to answer,
+ * so waiting for his verdict must not keep it in the open/blocked counts, the forecast or the plan-check
+ * (live deck 01a1858f 2026-11-01: 13 of 19 rows sat "blocked: Awaiting Darafei's verdicts"). The stored row
+ * keeps its status; consumers read this closed view. A redo/accepted/drop verdict changes `review`, so the
+ * row stops being treated as closed the moment he answers. */
+export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; schedule?: unknown }> }>(phases: P[]): P[] {
+  return phases.map((phase) => phase.tasks.some((task) => (task.schedule as { review?: unknown } | undefined)?.review === "user" && (task.status === "pending" || task.status === "in_progress" || task.status === "blocked"))
+    ? { ...phase, tasks: phase.tasks.map((task) => (task.schedule as { review?: unknown } | undefined)?.review === "user" && (task.status === "pending" || task.status === "in_progress" || task.status === "blocked")
+      ? { ...task, status: "completed" }
+      : task) }
+    : phase);
+}
+
+const OWNER_ACTORS = /^(?:user|user-review|owner|darafei)$/i;
+/** A blocker or owner that makes the owner himself a dependency. */
+export function waitsOnOwner(owner: unknown, blocker: unknown): boolean {
+  if (typeof owner === "string" && OWNER_ACTORS.test(owner.trim())) return true;
+  if (typeof blocker !== "string") return false;
+  return /\b(?:await(?:s|ing)?|wait(?:s|ing)?|pending|needs?|requires?|blocked)\b/i.test(blocker)
+    && /\b(?:darafei|owner|user|his)\b/i.test(blocker)
+    && /\b(?:verdicts?|answers?|repl(?:y|ies)|reviews?|restart|approv\w*|decisions?|responses?|feedback)\b/i.test(blocker);
+}
+export const OWNER_WAIT_REFUSAL = 'Proceed on your default; Darafei is never a dependency. Close delivered work with its link, or continue speculatively. Only a mission-critical stop may wait on him: set missionCritical: "<why: irreversible/public/needs his hands or credential>" on that one row.';
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 function isOpenRowStatus(status: string): boolean {
   return status === "pending" || status === "in_progress";
 }
@@ -1455,7 +1482,7 @@ function rowReviewNotice(row: Record<string, unknown>): string {
   const reportLocation = schedule?.reviewSummary?.match(/https?:\/\/\S+|(?:^|\s)(?:[\w./-]+\.(?:png|jpe?g|webp|html|md|tsx?|jsx?|css|rs|py)|[0-9a-f]{7,40})(?=$|\s|[),.])/gi)?.map((part) => part.trim()).join(", ");
   const where = paths.length ? paths.join(", ") : reportLocation ?? (schedule?.executor?.workerId ? `worker ${schedule.executor.workerId}'s diff/commit` : "the row's diff/commit");
   const changed = schedule?.reviewSummary ? `Changed: ${schedule.reviewSummary}. ` : `Changed: completed ${String(row.content)}. `;
-  return `Delivered to you: ${JSON.stringify(row.content)} is ready to review. ${changed}Look at ${where}. Accept, redo, or drop?`;
+  return `Delivered to you: ${JSON.stringify(row.content)} is ready to review. ${changed}Look at ${where}. Show this link to the user once; this is information, no answer is awaited.`;
 }
 
 function pendingReview(phases: DispatchTodoPhases): Array<Record<string, unknown>> {
@@ -2187,8 +2214,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     formatTaskForecast: hostSdk.formatTaskForecast,
     getTodoPlanningIssues: hostSdk.getTodoPlanningIssues,
     readGoalDeadline: hostSdk.readGoalDeadline ?? readGoalDeadline,
-    getLatestTodoPhasesFromEntries: host.getLatestTodoPhasesFromEntries,
+    getLatestTodoPhasesFromEntries: ((entries: never) => deliveredRowsClosed(host.getLatestTodoPhasesFromEntries(entries))) as typeof host.getLatestTodoPhasesFromEntries,
   };
+  // Rows the lead declared mission-critical (irreversible/public/needs his hands) in a todo call; only these may wait on him.
+  const missionCriticalRows = new Set<string>();
   // The pause switch is host-owned. Never import a second module instance of its singleton.
   const pauseGate = host?.agentPauseGate;
   // Legacy hosts can render advice, but cannot safely schedule autonomous wakes until upgraded.
@@ -4678,6 +4707,38 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       : { note: `plan snapshot unavailable: no current main-session plan` };
   });
 
+  // A todo call may not make the owner a dependency: refuse blocking a row on him (or keeping it blocked
+  // on him) unless that row carries a non-empty missionCritical reason, given now or on an earlier call.
+  const refuseOwnerWait = (input: unknown, ctx: ExtensionContext): string | undefined => {
+    if (!input || typeof input !== "object") return undefined;
+    const call = input as { op?: unknown; task?: unknown; phase?: unknown; reason?: unknown; items?: unknown; missionCritical?: unknown };
+    const rows = todoPhases(ctx).flatMap((phase) => phase.tasks.map((task) => ({ phase: phase.name, task })));
+    const critical = (row: string, ...marks: unknown[]) => {
+      if (marks.some(nonEmptyString)) { missionCriticalRows.add(row); return true; }
+      const stored = (rows.find((candidate) => candidate.task.content === row)?.task.schedule as { missionCritical?: unknown } | undefined)?.missionCritical;
+      return nonEmptyString(stored) || missionCriticalRows.has(row);
+    };
+    if (call.op === "block") {
+      const targets = rows.filter(({ phase, task }) => (typeof call.task === "string" && task.content === call.task) || (typeof call.phase === "string" && phase === call.phase && typeof call.task !== "string"));
+      const waiting = targets.length
+        ? targets.filter(({ task }) => waitsOnOwner((task.schedule as { owner?: unknown } | undefined)?.owner, call.reason)).map(({ task }) => String(task.content))
+        : waitsOnOwner(undefined, call.reason) ? [String(call.task ?? call.phase ?? "")] : [];
+      return waiting.every((name) => critical(name, call.missionCritical)) ? undefined : OWNER_WAIT_REFUSAL;
+    }
+    for (const update of todoScheduleUpdates(input)) {
+      if (typeof update.task !== "string") continue;
+      const row = rows.find((candidate) => candidate.task.content === update.task)?.task;
+      const schedule = row?.schedule as { owner?: unknown } | undefined;
+      const owner = typeof update.owner === "string" ? update.owner : schedule?.owner;
+      const stillBlocked = row?.status === "blocked";
+      if (!stillBlocked || !waitsOnOwner(owner, row?.blocker)) {
+        if (nonEmptyString(update.missionCritical)) missionCriticalRows.add(update.task);
+        continue;
+      }
+      if (!critical(update.task, update.missionCritical, call.missionCritical)) return OWNER_WAIT_REFUSAL;
+    }
+    return undefined;
+  };
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName === "wait") {
       const reason = unansweredUserReasonWithDraft(ctx);
@@ -4715,6 +4776,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       resetFinishHistory(ctx);
     }
     if (event.toolName === "todo") {
+      const ownerWait = refuseOwnerWait(event.input, ctx);
+      if (ownerWait) return { block: true, reason: ownerWait };
       // Naming retro in a todo call no longer clears it ("Retro skipped per <rule>" let the same
       // failure be retried all day); only a retro-facilitator task does.
       const gate = applyTodoOverride(event.input, ctx, false);
@@ -5017,7 +5080,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const unlinked = running.filter((job) => !owners.has(job.id) && !(job.agentId && owners.has(job.agentId)) && ![...owners].some((owner) => job.id.replace(/-\d+$/, "") === owner));
     const missing = (decision.forecast.planningIssues ?? []).length;
     const overdue = open.filter((row) => row.overdue);
-    const pendingReviews = phasesNow.flatMap((phase) => phase.tasks).filter((task) => (task.schedule as { review?: unknown } | undefined)?.review === "user");
     const acceptedMergeDemand = acceptedSpeculativeMergeDemand(phasesNow);
     const firstDeliveryLate = firstDeliveryCutRequired(
       decision.forecast.rows,
@@ -5240,7 +5302,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const problems = [
       retroLine,
-      ...(pendingReviews.length ? [`review: user — hand ${pendingReviews.map((task) => JSON.stringify(task.content)).join(", ")} to the user now; show the changed files/preview/commit and ask accept / redo / drop`] : []),
       ...(acceptedMergeDemand ? [acceptedMergeDemand] : []),
       ...(userUnblockDue.length ? userUnblockDue.map(({ row, question }) => `Ask the user now: ${row} — ${question}`) : []),
       ...staleWorkers,
