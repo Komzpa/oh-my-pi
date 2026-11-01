@@ -63,7 +63,7 @@ function doneText(done: unknown): string {
 	return "";
 }
 
-async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadAfterAudit?: boolean }) {
+async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadAfterAudit?: boolean; assignDuringRun?: boolean }) {
 	const cwd = mkdtempSync(join(tmpdir(), "omp-worker-checkout-"));
 	try {
 		initGitRepo(cwd);
@@ -84,25 +84,36 @@ async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadA
 			{
 				name: "Work",
 				tasks: [
-					{ content: row, status: "pending", artifactOwner: "main", schedule: { owner: worker, resources: [] } },
+					{
+						content: row,
+						status: "pending",
+						artifactOwner: "main",
+						schedule: { owner: options.assignDuringRun ? "main" : worker, resources: [] },
+					},
 				],
 			},
 		];
 		try {
-			registry.register({
-				id: worker,
-				displayName: worker,
-				kind: "sub",
-				status: "idle",
-				session: { sessionManager: { getCwd: () => cwd } } as never,
-			});
+			if (!options.assignDuringRun)
+				registry.register({
+					id: worker,
+					displayName: worker,
+					kind: "sub",
+					status: "idle",
+					session: { sessionManager: { getCwd: () => cwd } } as never,
+				});
 			const head = git(cwd, "rev-parse", "HEAD");
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, [
 				{ ...createRequirementCandidates([], [raw], AT)[0]!, id: "R7", classification: "linked", rows: [row] },
 			]);
 			const agent = options.agent ?? "qa-auditor";
-			await runtime.prepareAuditorTaskCall("task", worker, { name: worker, agent, task: "Audit R7 now" });
+			await runtime.prepareAuditorTaskCall("task", worker, {
+				name: worker,
+				agent,
+				task: "Audit R7 now",
+				...(options.assignDuringRun ? { requirementIds: ["R7"] } : {}),
+			});
 			const outputLines = [
 				"| id | raw words | verdict | evidence | artifact identity |",
 				"|---|---|---|---|---|",
@@ -119,6 +130,14 @@ async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadA
 				projectAgentsDir: null,
 			} as never);
 			vi.spyOn(executorModule, "runSubprocess").mockImplementation(async (spawnOptions: unknown) => {
+				if (options.assignDuringRun) {
+					// The row is handed to this child only after it started, so the pre-run bind never saw it.
+					phases = phases.map(phase => ({
+						...phase,
+						tasks: phase.tasks.map(task => ({ ...task, schedule: { owner: worker, resources: [] } })),
+					}));
+					manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				}
 				let agentName = agent;
 				if (spawnOptions && typeof spawnOptions === "object" && "agent" in spawnOptions) {
 					const candidate = (spawnOptions as { agent: unknown }).agent;
@@ -149,7 +168,12 @@ async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadA
 				getSessionSpawns: () => "*",
 				sessionManager: manager,
 			} as unknown as ToolSession);
-			const taskResult = await taskTool.execute(worker, { agent, task: "Audit R7 now", name: worker } as never);
+			const taskResult = await taskTool.execute(worker, {
+				agent,
+				task: "Audit R7 now",
+				name: worker,
+				...(options.assignDuringRun ? { requirementIds: ["R7"] } : {}),
+			} as never);
 			// The actual effective checkout is captured at the execution boundary and
 			// travels with the result, so completion can bind the row after cleanup.
 			let checkoutCwd: string | undefined;
@@ -212,6 +236,19 @@ describe("non-isolated worker checkout binding", () => {
 		];
 		expect(verdict?.status).toBe("pass");
 		expect(verdict?.auditor).toBe("qa-auditor");
+		expect(checkoutCwd).toBeDefined();
+		expect(JSON.stringify(done.content)).not.toContain("unknown checkout for owner");
+		expect(JSON.stringify(done.content)).not.toContain("checkout mapping unavailable");
+		expect(done.isError).toBeUndefined();
+	});
+	it("binds a row scheduled to the child mid-run so it completes after the child finishes", async () => {
+		const { done, requirements, accepted, checkoutCwd } = await auditMainRow({ assignDuringRun: true });
+		expect(accepted).toBeUndefined();
+		expect(
+			requirements.find(requirement => requirement.id === "R7")?.rowVerdicts?.[
+				"Row completes after its worker leaves the registry"
+			]?.status,
+		).toBe("pass");
 		expect(checkoutCwd).toBeDefined();
 		expect(JSON.stringify(done.content)).not.toContain("unknown checkout for owner");
 		expect(JSON.stringify(done.content)).not.toContain("checkout mapping unavailable");
