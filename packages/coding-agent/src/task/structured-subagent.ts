@@ -1045,8 +1045,11 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		let result: SingleResult;
 		try {
 			if (!isolationContext) {
-				const manager = request.session.sessionManager;
-				if (manager) {
+				// Bind before the run and again after it: a row can be scheduled to this
+				// child mid-run, and the child's registry entry is gone once it finishes.
+				const bindOwnedRows = async (): Promise<void> => {
+					const manager = request.session.sessionManager;
+					if (!manager) return;
 					const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
 					for (const phase of phases) {
 						for (const task of phase.tasks) {
@@ -1066,9 +1069,11 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 							);
 						}
 					}
-				}
+				};
+				await bindOwnedRows();
 				result = await runSubprocess(baseOptions);
 				result.checkoutCwd = baseOptions.cwd;
+				await bindOwnedRows();
 				onSubprocessResult?.(result);
 			} else {
 				result = await runIsolatedSubprocess({
