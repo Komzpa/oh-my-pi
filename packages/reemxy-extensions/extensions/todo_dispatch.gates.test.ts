@@ -415,6 +415,48 @@ test("chief bash can run delivery commands but refuses unsafe chains and builds"
   }
 });
 
+test("chief bash admits agent-cli lookups and write-nothing redirects, and refuses agent-cli writers and file redirects", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    const allowed = [
+      'bin/agent-cli tool batu.market 2>&1 | head -30; ls ~/proj | grep -i -E "batu|hive|market"',
+      "./bin/agent-cli orient",
+      "/home/kom/Dropbox/Reemxy/tasks-loop/bin/agent-cli git --stat",
+      "~/tasks-loop/bin/agent-cli --json mem foo --no-recall",
+      "bin/agent-cli read skills/local-source-patches/SKILL.md",
+      "bin/agent-cli --help",
+      "ls /nope 2>/dev/null; cat f >/dev/null 2>&1; ls &>/dev/null; echo x 1>&2",
+    ];
+    const refused = [
+      "bin/agent-cli crumb append --kind k",
+      "bin/agent-cli ship --paths a",
+      "bin/agent-cli sync",
+      "bin/agent-cli model --refresh",
+      "bin/agent-cli sync --fetch",
+      "bin/agent-cli",
+      "bin/agent-cli $(echo crumb)",
+      "ls > out.txt",
+      "echo x >> f",
+      "cat a 2>err.log",
+      "ls 2>&1 > out.txt",
+      "ls >&file",
+      "ls &> out.txt",
+      "ls >/dev/nullx",
+    ];
+    const results = [];
+    for (const command of [...allowed, ...refused]) {
+      results.push({ command, executed: (await outcome(state, cwd, { name: "bash", arguments: { command } })).executed });
+    }
+    expect(results).toEqual([
+      ...allowed.map((command) => ({ command, executed: true })),
+      ...refused.map((command) => ({ command, executed: false })),
+    ]);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 20_000);
+
 test("chief bash still refuses non-delivery git mutations, tee pipes and redirects", async () => {
   const cwd = repo("clean");
   const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
