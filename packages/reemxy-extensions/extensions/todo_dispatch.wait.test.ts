@@ -12,7 +12,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { execFileSync } from "node:child_process";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import todoDispatch, { noticeDigest, ownerAbsentText, OWNER_ABSENT_WRAPUP } from "./todo_dispatch";
+import todoDispatch, { noticeDigest, userAbsentText, USER_ABSENT_WRAPUP } from "./todo_dispatch";
 
 const todoDispatchStateDir = process.env.OMP_TODO_DISPATCH_STATE_DIR ?? path.join(os.homedir(), ".local", "state", "omp-todo-dispatch");
 
@@ -1868,10 +1868,12 @@ async function absenceHarness() {
 	row.schedule.resources = [];
 	// A far deadline and long estimates keep plan-check escalations out of the way.
 	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
-	const absent = () => h.notices.filter((notice) => notice.customType === "todo-owner-absent");
+	const absent = () => h.notices.filter((notice) => notice.customType === "todo-user-absent");
 	const minutes = async (count: number) => {
-		for (let i = 0; i < count; i += 1) {
-			now += 60_000;
+		// One tick per minute around the 30 minute boundary, one per 10 minutes over long stretches.
+		const step = count > 35 ? 10 : 1;
+		for (let i = 0; i < count; i += step) {
+			now += step * 60_000;
 			await h.tick();
 		}
 	};
@@ -1886,7 +1888,7 @@ async function absenceHarness() {
 	return { h, absent, minutes, user, tool, done, phases, advance: (ms: number) => { now += ms; } };
 }
 
-test("an idle lead with open rows and a silent owner gets the owner-absent wake at 30 minutes", async () => {
+test("an idle lead with open rows and a silent user gets the user-absent wake at 30 minutes", async () => {
 	const t = await absenceHarness();
 	try {
 		await t.minutes(29);
@@ -1895,7 +1897,7 @@ test("an idle lead with open rows and a silent owner gets the owner-absent wake 
 		expect(t.absent()).toHaveLength(1);
 		const wake = t.absent()[0]!;
 		expect(wake.delivery).toMatchObject({ triggerTurn: true });
-		expect(wake.content).toBe(ownerAbsentText(wake.content.match(/last wrote at (\d\d:\d\d)/)![1]!));
+		expect(wake.content).toBe(userAbsentText(wake.content.match(/last wrote at (\d\d:\d\d)/)![1]!));
 		expect(wake.content).toContain("may not come back. Do not wait for them.");
 		console.log(wake.content);
 	} finally {
@@ -1910,7 +1912,7 @@ test("a no-progress turn gets exactly one wrap-up wake, then silence for hours",
 		await t.tool("read", { path: "x" });
 		await t.minutes(31);
 		expect(t.absent().map((notice) => notice.content)).toHaveLength(2);
-		expect(t.absent()[1]!.content).toBe(OWNER_ABSENT_WRAPUP);
+		expect(t.absent()[1]!.content).toBe(USER_ABSENT_WRAPUP);
 		expect(t.absent()[1]!.delivery).toMatchObject({ triggerTurn: true });
 		await t.minutes(3 * 60);
 		expect(t.absent()).toHaveLength(2);
@@ -1924,7 +1926,7 @@ test("a no-progress turn gets exactly one wrap-up wake, then silence for hours",
 	}
 });
 
-test("a progress turn re-arms the 30 minute timer with another owner-absent wake", async () => {
+test("a progress turn re-arms the 30 minute timer with another user-absent wake", async () => {
 	const t = await absenceHarness();
 	try {
 		await t.minutes(31);
@@ -1935,13 +1937,13 @@ test("a progress turn re-arms the 30 minute timer with another owner-absent wake
 		await t.tool("todo", { op: "schedule", updates: [] });
 		await t.minutes(31);
 		expect(t.absent()).toHaveLength(3);
-		expect(t.absent().every((notice) => notice.content !== OWNER_ABSENT_WRAPUP)).toBe(true);
+		expect(t.absent().every((notice) => notice.content !== USER_ABSENT_WRAPUP)).toBe(true);
 	} finally {
 		t.done();
 	}
 });
 
-test("a new user message resets the owner-absent state", async () => {
+test("a new user message resets the user-absent state", async () => {
 	const t = await absenceHarness();
 	try {
 		await t.minutes(31);
@@ -1960,7 +1962,7 @@ test("a new user message resets the owner-absent state", async () => {
 	}
 });
 
-test("no owner-absent wake while workers run or while the lead is busy", async () => {
+test("no user-absent wake while workers run or while the lead is busy", async () => {
 	const t = await absenceHarness();
 	try {
 		t.h.ctx.isIdle = () => false;
