@@ -63,7 +63,13 @@ function doneText(done: unknown): string {
 	return "";
 }
 
-async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadAfterAudit?: boolean; assignDuringRun?: boolean; resources?: string[] }) {
+async function auditMainRow(options: {
+	agent?: string;
+	fail?: boolean;
+	moveHeadAfterAudit?: boolean;
+	assignDuringRun?: boolean;
+	resources?: string[];
+}) {
 	const cwd = mkdtempSync(join(tmpdir(), "omp-worker-checkout-"));
 	try {
 		initGitRepo(cwd);
@@ -134,7 +140,10 @@ async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadA
 					// The row is handed to this child only after it started, so the pre-run bind never saw it.
 					phases = phases.map(phase => ({
 						...phase,
-						tasks: phase.tasks.map(task => ({ ...task, schedule: { owner: worker, resources: options.resources ?? [] } })),
+						tasks: phase.tasks.map(task => ({
+							...task,
+							schedule: { owner: worker, resources: options.resources ?? [] },
+						})),
 					}));
 					manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 				}
