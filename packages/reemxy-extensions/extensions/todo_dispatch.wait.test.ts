@@ -1896,7 +1896,7 @@ test("an idle lead with open rows and a silent owner gets the owner-absent wake 
 		const wake = t.absent()[0]!;
 		expect(wake.delivery).toMatchObject({ triggerTurn: true });
 		expect(wake.content).toBe(ownerAbsentText(wake.content.match(/last wrote at (\d\d:\d\d)/)![1]!));
-		expect(wake.content).toContain("may not come back. Do not wait for him.");
+		expect(wake.content).toContain("may not come back. Do not wait for them.");
 		console.log(wake.content);
 	} finally {
 		t.done();

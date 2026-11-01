@@ -1235,7 +1235,7 @@ function safeText(value: unknown, max = MAX_LABEL): string {
 }
 /** A row handed to the user (`review: "user"`) is delivered work, not open work: the owner never has to answer,
  * so waiting for his verdict must not keep it in the open/blocked counts, the forecast or the plan-check
- * (live deck 01a1858f 2026-11-01: 13 of 19 rows sat "blocked: Awaiting Darafei's verdicts"). The stored row
+ * (live deck 01a1858f 2026-11-01: 13 of 19 rows sat "blocked: awaiting the user's verdicts"). The stored row
  * keeps its status; consumers read this closed view. A redo/accepted/drop verdict changes `review`, so the
  * row stops being treated as closed the moment he answers. */
 export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; schedule?: unknown }> }>(phases: P[]): P[] {
@@ -1246,18 +1246,18 @@ export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; s
     : phase);
 }
 
-const OWNER_ACTORS = /^(?:user|user-review|owner|darafei)$/i;
+const OWNER_ACTORS = /^(?:user|user-review|owner)$/i;
 /** A blocker or owner that makes the owner himself a dependency. */
-export const ownerAbsentText = (clock: string) => `Darafei last wrote at ${clock} and may not come back. Do not wait for him. For every open question you asked, act on the default you stated now; if you stated none, pick the conservative one and say which. Close rows that only need his look as delivered. Only a missionCritical row may wait. If nothing can proceed without an irreversible/public step, wrap up: close what is done, then one final message listing done / left / defaults taken, and stop.`;
+export const ownerAbsentText = (clock: string) => `The user last wrote at ${clock} and may not come back. Do not wait for them. For every open question you asked, act on the default you stated now; if you stated none, pick the conservative one and say which. Close rows that only need their look as delivered. Only a missionCritical row may wait. If nothing can proceed without an irreversible/public step, wrap up: close what is done, then one final message listing done / left / defaults taken, and stop.`;
 export const OWNER_ABSENT_WRAPUP = "No progress after the last nudge: write the final summary now and stop.";
 export function waitsOnOwner(owner: unknown, blocker: unknown): boolean {
   if (typeof owner === "string" && OWNER_ACTORS.test(owner.trim())) return true;
   if (typeof blocker !== "string") return false;
   return /\b(?:await(?:s|ing)?|wait(?:s|ing)?|pending|needs?|requires?|blocked)\b/i.test(blocker)
-    && /\b(?:darafei|owner|user|his)\b/i.test(blocker)
+    && /\b(?:owner|user|user's)\b/i.test(blocker)
     && /\b(?:verdicts?|answers?|repl(?:y|ies)|reviews?|restart|approv\w*|decisions?|responses?|feedback)\b/i.test(blocker);
 }
-export const OWNER_WAIT_REFUSAL = 'Proceed on your default; Darafei is never a dependency. Close delivered work with its link, or continue speculatively. Only a mission-critical stop may wait on him: set missionCritical: "<why: irreversible/public/needs his hands or credential>" on that one row.';
+export const OWNER_WAIT_REFUSAL = 'Proceed on your default; the user is never a dependency. Close delivered work with its link, or continue speculatively. Only a mission-critical stop may wait on the user: set missionCritical: "<why: irreversible/public/needs their hands or credential>" on that one row.';
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
