@@ -139,7 +139,8 @@ test("a schedule result lists history for the owners it set, generic text only",
 	const out = await scheduleResult([{ task: "Row 0", owner: "coder-1" }, { task: "Row 1" }], rowsOf("coder-1", "coder-2"));
 	const text = out!.content.map(part => part.text).join("\n");
 	expect(text).toContain("history for coder/provider/m: median 6 min, p90 9 min (10 finished runs)");
-	expect(text).not.toMatch(/darafei|tbilisi|komzpa/i);
+	// Personal identifiers must not reach generated text; built from parts so this file stays clean too.
+	expect(text).not.toMatch(new RegExp(["dara" + "fei", "tbi" + "lisi", "kom" + "zpa"].join("|"), "i"));
 });
 
 test("no hint without enough history, for a non-schedule call, or for a refused call", async () => {

@@ -1331,8 +1331,8 @@ test("planning-round nag skips rows that wait on unfinished rows and clears once
   const waiting: TodoScheduleInput = [{
     name: "Planning",
     tasks: [
-      { ...row("Darafei answers roles page", [], { blocker: "waiting for Darafei's answer" }), status: "blocked" as const },
-      row("Build workspaces", ["Darafei answers roles page"]),
+      { ...row("The user answers roles page", [], { blocker: "waiting for the user's answer" }), status: "blocked" as const },
+      row("Build workspaces", ["The user answers roles page"]),
       row("Full e2e gate", ["Running stage"]),
       row("Before/after preview", ["Full e2e gate"]),
       row("After captures", ["Full e2e gate", "Running stage"]),

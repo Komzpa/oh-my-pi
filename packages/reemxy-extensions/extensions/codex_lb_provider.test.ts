@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import * as os from "node:os";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import codexLbProvider, { CODEX_LB_ACCOUNT_MODEL_IDS, CODEX_LB_MODELS, CODEX_LB_PROVIDER } from "./codex_lb_provider";
 
@@ -23,7 +24,7 @@ describe("Reemxy codex-lb provider", () => {
 			authHeader: true,
 		});
 		expect(CODEX_LB_PROVIDER.apiKey).toContain(
-			"secret-tool lookup service 'codex-lb omp on nucat.local' username omp",
+			`secret-tool lookup service 'codex-lb omp on ${os.hostname()}.local' username omp`,
 		);
 	});
 
