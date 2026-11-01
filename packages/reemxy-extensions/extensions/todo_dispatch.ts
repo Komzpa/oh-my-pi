@@ -3181,6 +3181,20 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     return true;
   };
+  // tasks-loop `bin/agent-cli` lookups (AGENTS.md mandates it for orientation). Verified in tools/agent_cli.py:
+  // these subcommands only read (doc/usage keep an mtime cache under ~/.cache). `orient` runs
+  // `tasks_loop_git_sync.py status --json` without --fetch, so it reads too. `sync`, `crumb` (appends
+  // breadcrumbs and git-syncs) and `ship` (finish-agent-change commits) stay worker work, and the flags
+  // that fetch or refresh evidence (`--fetch`, `--refresh`) are refused.
+  const AGENT_CLI_LOOKS = /^(?:orient|git|id|doc|mem|port|session|pr|usage|logs|job|svc|model|stack|tool|read)$/;
+  const readOnlyAgentCli = (words: Array<{ value: string; dynamic: boolean }>) => {
+    const flag = /^--?(?:json|help|h)$/;
+    const rest = words.slice(1);
+    if (rest.length > 0 && rest.every((word) => flag.test(word.value))) return true;
+    const sub = rest[0] && words[1].value === "--json" ? rest[1] : rest[0];
+    if (!sub || sub.dynamic || !AGENT_CLI_LOOKS.test(sub.value)) return false;
+    return !rest.some((word) => /^--(?:fetch|refresh)(?:=|$)/.test(word.value) || (sub.value === "model" && word.dynamic));
+  };
   // Delivery commands are allowed for the chief only as a command or an &&-only chain.
   // Inspect shell structure without executing it. Unknown syntax fails closed; substitutions
   // use the same command checks, including inside double quotes and loop headers.
@@ -3231,6 +3245,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         // so `cd x && git status; cd y && git log` passes and `cd x && make` still fails closed.
         if (words[0].value === "cd") return words.length === 2 && !words[1].dynamic && !words[1].value.startsWith("-");
         if (words[0].value === "gh") return readOnlyGh(words);
+        if (/^(?:.*\/)?bin\/agent-cli$/.test(words[0].value)) return readOnlyAgentCli(words);
         if (words[0].value !== "git") return readOnlyLook(words);
         let subcommand = 1;
         // Global options precede the subcommand: `-C <dir>`, `-c k=v`, `--no-pager`, `--git-dir=…`, `--work-tree=…`.
@@ -3325,6 +3340,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const char = command[cursor];
         if (stop && char === stop) { cursor += 1; return tokens; }
         if (char === " " || char === "\t" || char === "\r") { cursor += 1; continue; }
+        // Redirects that write nothing: fd duplication (`2>&1`, `>&2`) and discard to /dev/null
+        // (`>/dev/null`, `2>/dev/null`, `&>/dev/null`). They are dropped, never an argument.
+        // Every other `>`, `>>` or `&>` stays outside this grammar and fails closed.
+        const quiet = /^(?:\d*>&\d+|(?:\d*|&)>[ \t]*\/dev\/null)(?=[\s;|&)`]|$)/.exec(command.slice(cursor));
+        if (quiet) { cursor += quiet[0].length; continue; }
         if (char === "\n" || char === ";" || char === "|" || char === "&") {
           cursor += 1;
           let value = char === "\n" ? ";" : char;
