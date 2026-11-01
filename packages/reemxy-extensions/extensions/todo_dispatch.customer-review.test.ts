@@ -378,6 +378,7 @@ test("acceptance does not demand publishing a worker that has not produced its s
 });
 
 
+// Quoted fixture data from a live session.
 const LIVE_BLOCKER = "Awaiting Darafei's verdicts on the round-2 compare page";
 function ownerWaitPlan() {
   return [{ name: "Work", tasks: [
@@ -392,7 +393,7 @@ test("a todo block waiting on the owner is refused with the action-first text; t
   const live = await call({ op: "block", task: "Compare page", reason: LIVE_BLOCKER });
   expect(live?.block).toBe(true);
   expect(live.reason).toBe(OWNER_WAIT_REFUSAL);
-  expect(live.reason).toStartWith("Proceed on your default; Darafei is never a dependency.");
+  expect(live.reason).toStartWith("Proceed on your default; the user is never a dependency.");
   // The owner label alone is enough, whatever the reason says.
   expect((await call({ op: "block", task: "Compare page", reason: "round 2 is ready" }))?.block).toBe(true);
   // Neighbour: an ordinary external blocker is untouched.
@@ -418,7 +419,7 @@ test("a schedule update keeping an owner-blocked row blocked is refused unless m
   expect((await call({ op: "schedule", updates: [{ task: "Compare page", evidence: "still waiting" }] }))?.block).toBe(true);
   expect((await call({ op: "schedule", updates: [{ task: "Other row", evidence: "fine" }] }))?.block).not.toBe(true);
   expect((await call({ op: "schedule", updates: [{ task: "Compare page", evidence: "irreversible publish", missionCritical: "public post, irreversible" }] }))?.block).not.toBe(true);
-  expect(waitsOnOwner("Coder", "waiting for Darafei's reply")).toBe(true);
+  expect(waitsOnOwner("Coder", "waiting for the user's reply")).toBe(true);
   expect(waitsOnOwner("Coder", "waiting for the CI reply")).toBe(false);
 });
 
