@@ -2006,7 +2006,7 @@ test("PLAN CHECK delivers an unchanged problem once while worker telemetry and t
   }
 }, 60_000);
 
-test("PLAN CHECK heartbeat: an unchanged problem without an escalation step is repeated once per 30 minutes, a changed one at once", async () => {
+test("PLAN CHECK is delivered once: an unchanged problem is never repeated on a timer, a changed one or a new user message delivers at once", async () => {
   const cwd = repo("clean");
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   let clock = Date.now();
@@ -2040,18 +2040,20 @@ test("PLAN CHECK heartbeat: an unchanged problem without an escalation step is r
   const checks = () => sent.filter((text) => text.includes("PLAN CHECK"));
   try {
     handlers.get("session_start")!({}, ctx);
-    // 31 one-minute ticks (minute 0 through minute 30) of the same "no worker" problem.
-    for (let minute = 0; minute < 31; minute += 1) {
+    // 61 one-minute ticks of the same "no worker" problem with no new event: exactly one delivery.
+    for (let minute = 0; minute < 61; minute += 1) {
       await tick!();
-      if (minute < 30) expect(checks()).toHaveLength(1);
+      expect(checks()).toHaveLength(1);
       clock += 60_000;
     }
+    expect(checks()[0]).toContain("have no worker");
+    // A new user message lets the same list ride along once.
+    handlers.get("message_start")!({ message: { role: "user", content: [{ type: "text", text: "continue" }] } }, ctx);
+    await tick!();
     expect(checks()).toHaveLength(2);
-    expect(checks()[1]).toContain("have no worker");
-    // The next heartbeat is 30 minutes after the last delivery (minute 30), so nothing goes out through minute 59.
-    for (let minute = 0; minute < 28; minute += 1) { clock += 60_000; await tick!(); }
+    await tick!();
     expect(checks()).toHaveLength(2);
-    // A changed problem list is delivered at once, regardless of the heartbeat clock.
+    // A changed problem list is delivered at once.
     running = [{ id: "stray-worker", agentId: "stray-worker", type: "task", status: "running", label: "Stray", startTime: clock }];
     await tick!();
     expect(checks()).toHaveLength(3);
