@@ -1,3 +1,4 @@
+import * as os from "node:os";
 import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@oh-my-pi/pi-coding-agent";
 import type { Effort } from "@oh-my-pi/pi-ai";
 
@@ -85,7 +86,7 @@ export const CODEX_LB_PROVIDER: ProviderConfig = {
 	api: "openai-completions",
 	authHeader: true,
 	apiKey:
-		"! env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus secret-tool lookup service 'codex-lb omp on nucat.local' username omp",
+		`! env XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus secret-tool lookup service 'codex-lb omp on ${os.hostname()}.local' username omp`,
 	models: CODEX_LB_MODELS,
 };
 

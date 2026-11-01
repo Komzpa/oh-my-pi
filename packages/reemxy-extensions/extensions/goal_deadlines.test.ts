@@ -38,12 +38,12 @@ import {
 test("an exact user goal clock becomes its deadline at the original message time", () => {
 	const goal = goalRef({ id: "ship", objective: "push it by 13:10", status: "active", createdAt: "2026-10-28T08:51:00Z" });
 	const entries = [{ id: "user-1", type: "message", timestamp: "2026-10-28T08:50:00Z", message: { role: "user", content: "push it by 13:10" } }];
-	const state = deadlineStateFromGoalObjective(goal, entries, "Asia/Tbilisi");
+	const state = deadlineStateFromGoalObjective(goal, entries, "Asia/Dubai");
 	expect(state?.goalId).toBe("ship");
 	expect(new Date(state!.baselineDeadlineAt! * 1_000).toISOString()).toBe("2026-10-28T09:10:00.000Z");
 	expect(state?.userConstraint).toMatchObject({ messageId: "user-1", quote: "push it by 13:10" });
-	expect(deadlineStateFromGoalObjective(goalRef({ id: "ship", objective: "push it soon", status: "active", createdAt: "2026-10-28T08:51:00Z" }), entries, "Asia/Tbilisi")).toBeUndefined();
-	const restored = deadlineStateFromGoalObjective(goal, [{ ...entries[0], message: { role: "user", content: "different request by 13:10" } }], "Asia/Tbilisi");
+	expect(deadlineStateFromGoalObjective(goalRef({ id: "ship", objective: "push it soon", status: "active", createdAt: "2026-10-28T08:51:00Z" }), entries, "Asia/Dubai")).toBeUndefined();
+	const restored = deadlineStateFromGoalObjective(goal, [{ ...entries[0], message: { role: "user", content: "different request by 13:10" } }], "Asia/Dubai");
 	expect(new Date(restored!.baselineDeadlineAt! * 1_000).toISOString()).toBe("2026-10-28T09:10:00.000Z");
 	expect(restored?.userConstraint).toMatchObject({ messageId: "goal:ship", quote: "push it by 13:10" });
 });
@@ -121,16 +121,16 @@ describe("goal deadline reminders", () => {
 
 	test("renders due clocks in the persisted goal timezone", () => {
 		const due = Date.UTC(2026, 8, 25, 19, 16);
-		expect(formatLocalClock(due, "Asia/Tbilisi")).toBe("23:16");
-		expect(formatLocalTimestamp(due, "Asia/Tbilisi")).toBe("2026-09-25 23:16:00 Asia/Tbilisi");
+		expect(formatLocalClock(due, "Asia/Dubai")).toBe("23:16");
+		expect(formatLocalTimestamp(due, "Asia/Dubai")).toBe("2026-09-25 23:16:00 Asia/Dubai");
 		expect(resolveTimeZone("not/a-time-zone")).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
 		const reminder = renderDeadlineReminder({
 			...state,
-			timezone: "Asia/Tbilisi",
+			timezone: "Asia/Dubai",
 			goalStartedAt: due / 1000,
 			stages: [{ id: "ship", label: "Ship", expectedResult: "Verified", deadlineAt: due / 1000 + 60 }],
 		}, due / 1000);
-		expect(reminder).toContain("2026-09-25 23:17:00 Asia/Tbilisi");
+		expect(reminder).toContain("2026-09-25 23:17:00 Asia/Dubai");
 	});
 
 	test("overdue work names missing artifact and continues", () => {
@@ -940,7 +940,7 @@ test("tool results paint deadline state once, after recording delivery", () => {
 describe("goal_deadline resolves wall-clock times and rejects arithmetic slips", () => {
 	afterEach(() => setSystemTime());
 	const NOW = Date.parse("2026-10-21T13:24:00Z");
-	const TBILISI = "Asia/Tbilisi";
+	const DUBAI = "Asia/Dubai";
 
 	const harness = (userText = "Continue until 19:00", userAtMs = NOW) => {
 		const branch: unknown[] = [{ id: "u1", type: "message", timestamp: new Date(userAtMs).toISOString(), message: { role: "user", content: userText } }];
@@ -961,17 +961,17 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		const ctx = { cwd: "/tmp", hasUI: false, sessionManager: branchMock(() => branch), getTodoPhases: () => todoPhases } as unknown as ExtensionContext;
 		handlers.get("session_start")?.({}, ctx);
 		const set = (stage: Record<string, unknown>, quote = userText) =>
-			tool!.execute("set", { action: "set", timezone: TBILISI, user_message: quote, stages: [{ id: "final", label: "Final", expected_result: "Delivered", ...stage }] }, undefined, undefined, ctx);
+			tool!.execute("set", { action: "set", timezone: DUBAI, user_message: quote, stages: [{ id: "final", label: "Final", expected_result: "Delivered", ...stage }] }, undefined, undefined, ctx);
 		return { tool: tool!, set, branch, notices, handlers, ctx, todoPhases };
 	};
 
 	test("resolves a bare HH:MM to the next such moment in the timezone", () => {
-		expect(new Date(resolveWallClock("19:00", TBILISI, NOW)! * 1000).toISOString()).toBe("2026-10-21T15:00:00.000Z");
-		expect(new Date(resolveWallClock("10:00", TBILISI, NOW)! * 1000).toISOString()).toBe("2026-10-22T06:00:00.000Z");
-		expect(new Date(resolveWallClock("2026-10-21 19:00", TBILISI, NOW)! * 1000).toISOString()).toBe("2026-10-21T15:00:00.000Z");
+		expect(new Date(resolveWallClock("19:00", DUBAI, NOW)! * 1000).toISOString()).toBe("2026-10-21T15:00:00.000Z");
+		expect(new Date(resolveWallClock("10:00", DUBAI, NOW)! * 1000).toISOString()).toBe("2026-10-22T06:00:00.000Z");
+		expect(new Date(resolveWallClock("2026-10-21 19:00", DUBAI, NOW)! * 1000).toISOString()).toBe("2026-10-21T15:00:00.000Z");
 		expect(new Date(resolveWallClock("2026-07-01T09:30", "America/New_York", NOW)! * 1000).toISOString()).toBe("2026-07-01T13:30:00.000Z");
-		expect(resolveWallClock("25:00", TBILISI, NOW)).toBeUndefined();
-		expect(resolveWallClock("tomorrow", TBILISI, NOW)).toBeUndefined();
+		expect(resolveWallClock("25:00", DUBAI, NOW)).toBeUndefined();
+		expect(resolveWallClock("tomorrow", DUBAI, NOW)).toBeUndefined();
 	});
 
 	test("live case: 'Continue until 19:00' at 17:24 +04 becomes 15:00Z, not a missed 2025 deadline", async () => {

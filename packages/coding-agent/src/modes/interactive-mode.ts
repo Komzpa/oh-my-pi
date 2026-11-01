@@ -5460,8 +5460,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#formatInlineWorker(worker: ObservableSession, separator = true, description = false): string {
 		const role = worker.agent ?? worker.progress?.agent;
 		const detail = description ? worker.description?.trim() || worker.progress?.description?.trim() : undefined;
-		// Which model serves this worker, the same badge and setting as the subagent feed (Darafei
-		// 2026-09-25: "тут бы писать какая модель за каким воркером").
+		// Which model serves this worker, the same badge and setting as the subagent feed (2026-09-25: "тут бы писать какая модель за каким воркером").
 		const identity = worker.progress?.resolvedModelIdentity ?? worker.progress?.resolvedModel;
 		const modelName = formatTodoModelBadge(identity, worker.progress?.resolvedThinkingLevel);
 		const advisor = worker.progress?.advisor ? ` ${theme.icon.advisor}` : "";

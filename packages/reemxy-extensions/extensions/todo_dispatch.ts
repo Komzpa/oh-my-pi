@@ -5055,7 +5055,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       job.type === "task" && job.status === "running" && [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name)));
     // retroLine is emitted once per incident, so it cannot count ticks; the demand stands while
     // the retro is due and no retro-facilitator is running (a failed one leaves it due).
-    // Only a retro that stops a repeat may block (Darafei 2026-10-27: retros exist so Foo -> Foo-2 ->
+    // Only a retro that stops a repeat may block (2026-10-27: retros exist so Foo -> Foo-2 ->
     // Foo-3 cannot happen). Missed ETAs, gate rejections and failed todo updates stay advisory:
     // forcing those produced review rows instead of product progress (live mail 2026-10-28: 8 of 10
     // rows closed in 6 h were reviews).
