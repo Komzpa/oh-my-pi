@@ -12,7 +12,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { execFileSync } from "node:child_process";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import todoDispatch, { noticeDigest } from "./todo_dispatch";
+import todoDispatch, { noticeDigest, ownerAbsentText, OWNER_ABSENT_WRAPUP } from "./todo_dispatch";
 
 const todoDispatchStateDir = process.env.OMP_TODO_DISPATCH_STATE_DIR ?? path.join(os.homedir(), ".local", "state", "omp-todo-dispatch");
 
@@ -1852,4 +1852,129 @@ test("recovery gates request wait interruption while startup advice stays passiv
   expect(recovery?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: false, interruptWait: true });
   expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
  } finally { h.shutdown(); }
+});
+
+
+async function absenceHarness() {
+	const previousLane = process.env.OMP_LANE_UNIT;
+	delete process.env.OMP_LANE_UNIT;
+	let now = Date.now();
+	const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const phases = chainedPlan(1, now);
+	const row = phases[0]!.tasks[0]!;
+	row.status = "pending";
+	row.schedule.owner = undefined;
+	row.schedule.dependencies = [];
+	row.schedule.resources = [];
+	// A far deadline and long estimates keep plan-check escalations out of the way.
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	const absent = () => h.notices.filter((notice) => notice.customType === "todo-owner-absent");
+	const minutes = async (count: number) => {
+		for (let i = 0; i < count; i += 1) {
+			now += 60_000;
+			await h.tick();
+		}
+	};
+	const user = () => h.handlers.get("message_start")!({ message: { role: "user", content: [{ type: "text", text: "continue" }] } }, h.ctx);
+	const tool = async (toolName: string, input: unknown = {}) => { try { await h.handlers.get("tool_call")!({ toolName, input }, h.ctx); } catch {} };
+	const done = () => {
+		h.shutdown();
+		nowSpy.mockRestore();
+		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
+		else process.env.OMP_LANE_UNIT = previousLane;
+	};
+	return { h, absent, minutes, user, tool, done, phases, advance: (ms: number) => { now += ms; } };
+}
+
+test("an idle lead with open rows and a silent owner gets the owner-absent wake at 30 minutes", async () => {
+	const t = await absenceHarness();
+	try {
+		await t.minutes(29);
+		expect(t.absent()).toHaveLength(0);
+		await t.minutes(2);
+		expect(t.absent()).toHaveLength(1);
+		const wake = t.absent()[0]!;
+		expect(wake.delivery).toMatchObject({ triggerTurn: true });
+		expect(wake.content).toBe(ownerAbsentText(wake.content.match(/last wrote at (\d\d:\d\d)/)![1]!));
+		expect(wake.content).toContain("may not come back. Do not wait for him.");
+		console.log(wake.content);
+	} finally {
+		t.done();
+	}
+});
+
+test("a no-progress turn gets exactly one wrap-up wake, then silence for hours", async () => {
+	const t = await absenceHarness();
+	try {
+		await t.minutes(31);
+		await t.tool("read", { path: "x" });
+		await t.minutes(31);
+		expect(t.absent().map((notice) => notice.content)).toHaveLength(2);
+		expect(t.absent()[1]!.content).toBe(OWNER_ABSENT_WRAPUP);
+		expect(t.absent()[1]!.delivery).toMatchObject({ triggerTurn: true });
+		await t.minutes(3 * 60);
+		expect(t.absent()).toHaveLength(2);
+		// A worker result lifts the silence; a new user message does too.
+		t.h.setRecent([{ id: "W-1", agentId: "W-1", type: "task", status: "completed", label: "x", startTime: Date.now() }]);
+		await t.minutes(31);
+		expect(t.absent()).toHaveLength(3);
+		expect(t.absent()[2]!.content).toContain("may not come back");
+	} finally {
+		t.done();
+	}
+});
+
+test("a progress turn re-arms the 30 minute timer with another owner-absent wake", async () => {
+	const t = await absenceHarness();
+	try {
+		await t.minutes(31);
+		await t.tool("edit", { path: "x" });
+		await t.minutes(31);
+		expect(t.absent()).toHaveLength(2);
+		expect(t.absent()[1]!.content).toContain("may not come back");
+		await t.tool("todo", { op: "schedule", updates: [] });
+		await t.minutes(31);
+		expect(t.absent()).toHaveLength(3);
+		expect(t.absent().every((notice) => notice.content !== OWNER_ABSENT_WRAPUP)).toBe(true);
+	} finally {
+		t.done();
+	}
+});
+
+test("a new user message resets the owner-absent state", async () => {
+	const t = await absenceHarness();
+	try {
+		await t.minutes(31);
+		await t.minutes(31);
+		expect(t.absent()).toHaveLength(2);
+		await t.minutes(120);
+		expect(t.absent()).toHaveLength(2);
+		await t.user();
+		await t.minutes(29);
+		expect(t.absent()).toHaveLength(2);
+		await t.minutes(2);
+		expect(t.absent()).toHaveLength(3);
+		expect(t.absent()[2]!.content).toContain("may not come back");
+	} finally {
+		t.done();
+	}
+});
+
+test("no owner-absent wake while workers run or while the lead is busy", async () => {
+	const t = await absenceHarness();
+	try {
+		t.h.ctx.isIdle = () => false;
+		await t.minutes(90);
+		expect(t.absent()).toHaveLength(0);
+		t.h.ctx.isIdle = () => true;
+		const running = [{ id: "W-1", agentId: "W-1", type: "task", status: "running", label: "x", startTime: Date.now() }];
+		t.h.ctx.getAsyncJobSnapshot = () => ({ running, recent: [], nonJobAgents: [] });
+		await t.minutes(90);
+		expect(t.absent()).toHaveLength(0);
+		t.h.ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [], nonJobAgents: [] });
+		await t.minutes(1);
+		expect(t.absent()).toHaveLength(1);
+	} finally {
+		t.done();
+	}
 });
