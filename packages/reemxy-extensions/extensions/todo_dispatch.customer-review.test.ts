@@ -1,6 +1,6 @@
 // @ts-nocheck -- exercises the extension through its registered runtime hooks.
 import { expect, test } from "bun:test";
-import { decideTodoDispatch, deliveredRowsClosed, OWNER_WAIT_REFUSAL, waitsOnOwner, acceptedSpeculativeMergeDemand, estimateFloorRefusal, firstDeliveryCutRequired, missedEtaRowsText, missingSpeculativeReview, SPRINT_STATE_ENTRY_TYPE, successfulDurationFloors, userUnblockAskDue, workerPastForecast } from "./todo_dispatch";
+import { decideTodoDispatch, deliveredRowsClosed, USER_WAIT_REFUSAL, waitsOnUser, acceptedSpeculativeMergeDemand, estimateFloorRefusal, firstDeliveryCutRequired, missedEtaRowsText, missingSpeculativeReview, SPRINT_STATE_ENTRY_TYPE, successfulDurationFloors, userUnblockAskDue, workerPastForecast } from "./todo_dispatch";
 import todoDispatch from "./todo_dispatch";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -378,40 +378,39 @@ test("acceptance does not demand publishing a worker that has not produced its s
 });
 
 
-// Quoted fixture data from a live session.
-const LIVE_BLOCKER = "Awaiting Darafei's verdicts on the round-2 compare page";
-function ownerWaitPlan() {
+const LIVE_BLOCKER = "Awaiting the user's verdicts on the round-2 compare page";
+function userWaitPlan() {
   return [{ name: "Work", tasks: [
     { content: "Compare page", status: "in_progress", schedule: { owner: "user-review", dependencies: [] } },
     { content: "Other row", status: "in_progress", schedule: { owner: "Coder", dependencies: [] } },
   ] }];
 }
 
-test("a todo block waiting on the owner is refused with the action-first text; the live shape included", async () => {
-  const harness = await reviewHookHarness(ownerWaitPlan(), { running: [], recent: [], nonJobAgents: [] });
+test("a todo block waiting on the user is refused with the action-first text; the live shape included", async () => {
+  const harness = await reviewHookHarness(userWaitPlan(), { running: [], recent: [], nonJobAgents: [] });
   const call = (input) => harness.handlers.get("tool_call")({ toolName: "todo", input }, harness.ctx);
   const live = await call({ op: "block", task: "Compare page", reason: LIVE_BLOCKER });
   expect(live?.block).toBe(true);
-  expect(live.reason).toBe(OWNER_WAIT_REFUSAL);
+  expect(live.reason).toBe(USER_WAIT_REFUSAL);
   expect(live.reason).toStartWith("Proceed on your default; the user is never a dependency.");
-  // The owner label alone is enough, whatever the reason says.
+  // The user-review label alone is enough, whatever the reason says.
   expect((await call({ op: "block", task: "Compare page", reason: "round 2 is ready" }))?.block).toBe(true);
   // Neighbour: an ordinary external blocker is untouched.
   expect((await call({ op: "block", task: "Other row", reason: "CI queue is full" }))?.block).not.toBe(true);
 });
 
-test("a missionCritical row may wait on the owner, now or after being marked", async () => {
-  const harness = await reviewHookHarness(ownerWaitPlan(), { running: [], recent: [], nonJobAgents: [] });
+test("a missionCritical row may wait on the user, now or after being marked", async () => {
+  const harness = await reviewHookHarness(userWaitPlan(), { running: [], recent: [], nonJobAgents: [] });
   const call = (input) => harness.handlers.get("tool_call")({ toolName: "todo", input }, harness.ctx);
-  expect((await call({ op: "block", task: "Compare page", reason: LIVE_BLOCKER, missionCritical: "needs his hands: 2FA code" }))?.block).not.toBe(true);
+  expect((await call({ op: "block", task: "Compare page", reason: LIVE_BLOCKER, missionCritical: "needs their hands: 2FA code" }))?.block).not.toBe(true);
   expect((await call({ op: "block", task: "Compare page", reason: LIVE_BLOCKER }))?.block).not.toBe(true);
   expect((await call({ op: "block", task: "Compare page", reason: LIVE_BLOCKER, missionCritical: "   " }))?.block).not.toBe(true);
-  const blank = await reviewHookHarness(ownerWaitPlan(), { running: [], recent: [], nonJobAgents: [] });
+  const blank = await reviewHookHarness(userWaitPlan(), { running: [], recent: [], nonJobAgents: [] });
   expect((await blank.handlers.get("tool_call")({ toolName: "todo", input: { op: "block", task: "Compare page", reason: LIVE_BLOCKER, missionCritical: "  " } }, blank.ctx))?.block).toBe(true);
 });
 
 test("a schedule update keeping an owner-blocked row blocked is refused unless missionCritical", async () => {
-  const phases = ownerWaitPlan();
+  const phases = userWaitPlan();
   phases[0].tasks[0].status = "blocked";
   phases[0].tasks[0].blocker = LIVE_BLOCKER;
   const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
@@ -419,8 +418,8 @@ test("a schedule update keeping an owner-blocked row blocked is refused unless m
   expect((await call({ op: "schedule", updates: [{ task: "Compare page", evidence: "still waiting" }] }))?.block).toBe(true);
   expect((await call({ op: "schedule", updates: [{ task: "Other row", evidence: "fine" }] }))?.block).not.toBe(true);
   expect((await call({ op: "schedule", updates: [{ task: "Compare page", evidence: "irreversible publish", missionCritical: "public post, irreversible" }] }))?.block).not.toBe(true);
-  expect(waitsOnOwner("Coder", "waiting for the user's reply")).toBe(true);
-  expect(waitsOnOwner("Coder", "waiting for the CI reply")).toBe(false);
+  expect(waitsOnUser("Coder", "waiting for the user's reply")).toBe(true);
+  expect(waitsOnUser("Coder", "waiting for the CI reply")).toBe(false);
 });
 
 test("a delivered review:user row is closed for the HUD blocked count, dispatch and plan-check", async () => {
@@ -432,7 +431,7 @@ test("a delivered review:user row is closed for the HUD blocked count, dispatch 
   const decide = (input) => decideTodoDispatch({ phases: input, jobs: { running: [], recent: [], nonJobAgents: [] }, isMainSession: true, taskEnabled: true, now, capacity: 4, dispatchGateAvailable: true }, { forecastTodoPlan, formatPlanForecast, formatTaskForecast });
   expect(decide(phases).staticPrompt).toContain("blocked=1");
   expect(decide(closed).staticPrompt).toContain("blocked=0");
-  // Neighbour: a redo verdict is not closed any more; the row reopens with his words.
+  // Neighbour: a redo verdict is not closed any more; the row reopens with their words.
   const redo = reviewPlan();
   redo[0].tasks[0].schedule.review = "redo";
   redo[0].tasks[0].status = "pending";
@@ -454,7 +453,7 @@ test("the delivery notice is information, not a question, and the plan-check no 
 });
 
 
-test("the owner-unblock ask is not repeated after 15 or 60 minutes, and one user message re-asks it once", async () => {
+test("the user-unblock ask is not repeated after 15 or 60 minutes, and one user message re-asks it once", async () => {
   const phases = [{ name: "Proof", tasks: [{ content: "Show the screenshot", status: "blocked", blocker: "waits for user: provide the visible screenshot", schedule: { dependencies: [] } }] }];
   const entries = [];
   const realNow = Date.now;
