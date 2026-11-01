@@ -1233,11 +1233,11 @@ function localizeTimestampText(value: string, timeZone?: string): string {
 function safeText(value: unknown, max = MAX_LABEL): string {
   return typeof value === "string" ? shorten(value, max) : "unknown";
 }
-/** A row handed to the user (`review: "user"`) is delivered work, not open work: the owner never has to answer,
- * so waiting for his verdict must not keep it in the open/blocked counts, the forecast or the plan-check
+/** A row handed to the user (`review: "user"`) is delivered work, not open work: the user never has to answer,
+ * so waiting for their verdict must not keep it in the open/blocked counts, the forecast or the plan-check
  * (live deck 01a1858f 2026-11-01: 13 of 19 rows sat "blocked: awaiting the user's verdicts"). The stored row
  * keeps its status; consumers read this closed view. A redo/accepted/drop verdict changes `review`, so the
- * row stops being treated as closed the moment he answers. */
+ * row stops being treated as closed the moment they answer. */
 export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; schedule?: unknown }> }>(phases: P[]): P[] {
   return phases.map((phase) => phase.tasks.some((task) => (task.schedule as { review?: unknown } | undefined)?.review === "user" && (task.status === "pending" || task.status === "in_progress" || task.status === "blocked"))
     ? { ...phase, tasks: phase.tasks.map((task) => (task.schedule as { review?: unknown } | undefined)?.review === "user" && (task.status === "pending" || task.status === "in_progress" || task.status === "blocked")
@@ -1246,18 +1246,18 @@ export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; s
     : phase);
 }
 
-const OWNER_ACTORS = /^(?:user|user-review|owner)$/i;
-/** A blocker or owner that makes the owner himself a dependency. */
-export const ownerAbsentText = (clock: string) => `The user last wrote at ${clock} and may not come back. Do not wait for them. For every open question you asked, act on the default you stated now; if you stated none, pick the conservative one and say which. Close rows that only need their look as delivered. Only a missionCritical row may wait. If nothing can proceed without an irreversible/public step, wrap up: close what is done, then one final message listing done / left / defaults taken, and stop.`;
-export const OWNER_ABSENT_WRAPUP = "No progress after the last nudge: write the final summary now and stop.";
-export function waitsOnOwner(owner: unknown, blocker: unknown): boolean {
-  if (typeof owner === "string" && OWNER_ACTORS.test(owner.trim())) return true;
+const USER_ACTORS = /^(?:user|user-review)$/i;
+/** A row owner label or a blocker that makes the user a dependency. */
+export const userAbsentText = (clock: string) => `The user last wrote at ${clock} and may not come back. Do not wait for them. For every open question you asked, act on the default you stated now; if you stated none, pick the conservative one and say which. Close rows that only need their look as delivered. Only a missionCritical row may wait. If nothing can proceed without an irreversible/public step, wrap up: close what is done, then one final message listing done / left / defaults taken, and stop.`;
+export const USER_ABSENT_WRAPUP = "No progress after the last nudge: write the final summary now and stop.";
+export function waitsOnUser(owner: unknown, blocker: unknown): boolean {
+  if (typeof owner === "string" && USER_ACTORS.test(owner.trim())) return true;
   if (typeof blocker !== "string") return false;
   return /\b(?:await(?:s|ing)?|wait(?:s|ing)?|pending|needs?|requires?|blocked)\b/i.test(blocker)
-    && /\b(?:owner|user|user's)\b/i.test(blocker)
+    && /\b(?:user|user's)\b/i.test(blocker)
     && /\b(?:verdicts?|answers?|repl(?:y|ies)|reviews?|restart|approv\w*|decisions?|responses?|feedback)\b/i.test(blocker);
 }
-export const OWNER_WAIT_REFUSAL = 'Proceed on your default; the user is never a dependency. Close delivered work with its link, or continue speculatively. Only a mission-critical stop may wait on the user: set missionCritical: "<why: irreversible/public/needs their hands or credential>" on that one row.';
+export const USER_WAIT_REFUSAL = 'Proceed on your default; the user is never a dependency. Close delivered work with its link, or continue speculatively. Only a mission-critical stop may wait on the user: set missionCritical: "<why: irreversible/public/needs their hands or credential>" on that one row.';
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
@@ -1490,7 +1490,7 @@ function pendingReview(phases: DispatchTodoPhases): Array<Record<string, unknown
   return phases.flatMap((phase) => phase.tasks).filter((row) => (row.schedule as { review?: unknown } | undefined)?.review === "user");
 }
 
-/** The owner is asked once per row. A user message re-surfaces it at most once per message
+/** The user is asked once per row. A user message re-surfaces it at most once per message
  * (`userMessageEpoch` is part of the notice identity), never on a timer. */
 export function userUnblockAskDue(askedAt: unknown, lastUserMessageAt?: number): boolean {
   if (typeof askedAt !== "number" || !Number.isFinite(askedAt)) return true;
@@ -2220,7 +2220,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     readGoalDeadline: hostSdk.readGoalDeadline ?? readGoalDeadline,
     getLatestTodoPhasesFromEntries: ((entries: never) => deliveredRowsClosed(host.getLatestTodoPhasesFromEntries(entries))) as typeof host.getLatestTodoPhasesFromEntries,
   };
-  // Rows the lead declared mission-critical (irreversible/public/needs his hands) in a todo call; only these may wait on him.
+  // Rows the lead declared mission-critical (irreversible/public/needs their hands) in a todo call; only these may wait on the user.
   const missionCriticalRows = new Set<string>();
   // The pause switch is host-owned. Never import a second module instance of its singleton.
   const pauseGate = host?.agentPauseGate;
@@ -2981,9 +2981,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // re-wake the idle lead every 30 minutes (live datacenter 01a1921c 2026-10-31 15:58-19:02Z: ten identical
   // "user accepted …; NEXT ACTION: fast merge/publish …" wakes, each answered with "nothing changed").
   let userMessageEpoch = 0;
-  // Owner-absent wake: the plan-check dedup above stops a replay of the same list, but an idle lead whose
-  // owner went quiet still needs a nudge that says he may not return (owner 2026-11-01: «этот пульс не
-  // триггерит "юзер может уже и не придёт"»). One wake per ABSENCE_AFTER_MS of silence; a turn that made no
+  // User-absent wake: the plan-check dedup above stops a replay of the same list, but an idle lead whose
+  // user went quiet still needs a nudge that says they may not return. One wake per ABSENCE_AFTER_MS of silence; a turn that made no
   // progress gets one final wrap-up wake, then silence until a user message or a worker result.
   const ABSENCE_AFTER_MS = 30 * 60_000;
   const READ_ONLY_TOOLS = new Set(["read", "grep", "find", "search", "web_search", "fetch", "lsp", "ls", "glob", "wait", "ask"]);
@@ -4725,9 +4724,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       : { note: `plan snapshot unavailable: no current main-session plan` };
   });
 
-  // A todo call may not make the owner a dependency: refuse blocking a row on him (or keeping it blocked
-  // on him) unless that row carries a non-empty missionCritical reason, given now or on an earlier call.
-  const refuseOwnerWait = (input: unknown, ctx: ExtensionContext): string | undefined => {
+  // A todo call may not make the user a dependency: refuse blocking a row on them (or keeping it blocked
+  // on them) unless that row carries a non-empty missionCritical reason, given now or on an earlier call.
+  const refuseUserWait = (input: unknown, ctx: ExtensionContext): string | undefined => {
     if (!input || typeof input !== "object") return undefined;
     const call = input as { op?: unknown; task?: unknown; phase?: unknown; reason?: unknown; items?: unknown; missionCritical?: unknown };
     const rows = todoPhases(ctx).flatMap((phase) => phase.tasks.map((task) => ({ phase: phase.name, task })));
@@ -4739,9 +4738,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (call.op === "block") {
       const targets = rows.filter(({ phase, task }) => (typeof call.task === "string" && task.content === call.task) || (typeof call.phase === "string" && phase === call.phase && typeof call.task !== "string"));
       const waiting = targets.length
-        ? targets.filter(({ task }) => waitsOnOwner((task.schedule as { owner?: unknown } | undefined)?.owner, call.reason)).map(({ task }) => String(task.content))
-        : waitsOnOwner(undefined, call.reason) ? [String(call.task ?? call.phase ?? "")] : [];
-      return waiting.every((name) => critical(name, call.missionCritical)) ? undefined : OWNER_WAIT_REFUSAL;
+        ? targets.filter(({ task }) => waitsOnUser((task.schedule as { owner?: unknown } | undefined)?.owner, call.reason)).map(({ task }) => String(task.content))
+        : waitsOnUser(undefined, call.reason) ? [String(call.task ?? call.phase ?? "")] : [];
+      return waiting.every((name) => critical(name, call.missionCritical)) ? undefined : USER_WAIT_REFUSAL;
     }
     for (const update of todoScheduleUpdates(input)) {
       if (typeof update.task !== "string") continue;
@@ -4749,11 +4748,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const schedule = row?.schedule as { owner?: unknown } | undefined;
       const owner = typeof update.owner === "string" ? update.owner : schedule?.owner;
       const stillBlocked = row?.status === "blocked";
-      if (!stillBlocked || !waitsOnOwner(owner, row?.blocker)) {
+      if (!stillBlocked || !waitsOnUser(owner, row?.blocker)) {
         if (nonEmptyString(update.missionCritical)) missionCriticalRows.add(update.task);
         continue;
       }
-      if (!critical(update.task, update.missionCritical, call.missionCritical)) return OWNER_WAIT_REFUSAL;
+      if (!critical(update.task, update.missionCritical, call.missionCritical)) return USER_WAIT_REFUSAL;
     }
     return undefined;
   };
@@ -4796,8 +4795,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       resetFinishHistory(ctx);
     }
     if (event.toolName === "todo") {
-      const ownerWait = refuseOwnerWait(event.input, ctx);
-      if (ownerWait) return { block: true, reason: ownerWait };
+      const userWait = refuseUserWait(event.input, ctx);
+      if (userWait) return { block: true, reason: userWait };
       // Naming retro in a todo call no longer clears it ("Retro skipped per <rule>" let the same
       // failure be retried all day); only a retro-facilitator task does.
       const gate = applyTodoOverride(event.input, ctx, false);
@@ -5424,11 +5423,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const delivery = { triggerTurn: true, interruptWait: false };
     if (absence.stage === 1 && progressEvents === absence.progressMark) {
       absence.stage = 2;
-      sendHarnessNotice("todo-owner-absent", "wrap-up", OWNER_ABSENT_WRAPUP, { stage: "wrap-up", at: now }, `wrap-up:${now}`, delivery);
+      sendHarnessNotice("todo-user-absent", "wrap-up", USER_ABSENT_WRAPUP, { stage: "wrap-up", at: now }, `wrap-up:${now}`, delivery);
     } else {
       absence.stage = 1;
       const clock = formatLocalClock(lastUserAt, sdk.readGoalDeadline(dispatchStateEntries(ctx), ctx.cwd, { includePaused: true })?.timezone);
-      sendHarnessNotice("todo-owner-absent", "absent", ownerAbsentText(clock), { stage: "absent", at: now, lastUserAt }, `absent:${now}`, delivery);
+      sendHarnessNotice("todo-user-absent", "absent", userAbsentText(clock), { stage: "absent", at: now, lastUserAt }, `absent:${now}`, delivery);
     }
     absence.lastWakeAt = now;
     absence.progressMark = progressEvents;
