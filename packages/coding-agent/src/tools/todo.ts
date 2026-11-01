@@ -550,6 +550,7 @@ async function resolveRequirementRowArtifact(
 		!mainOwner &&
 		!ownerCwd &&
 		!persistedCwd &&
+		!finishedCheckout &&
 		paths.length === 0 &&
 		branchNames.length === 0
 	) {

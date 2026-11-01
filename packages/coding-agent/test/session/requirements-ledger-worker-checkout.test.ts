@@ -63,7 +63,7 @@ function doneText(done: unknown): string {
 	return "";
 }
 
-async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadAfterAudit?: boolean; assignDuringRun?: boolean }) {
+async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadAfterAudit?: boolean; assignDuringRun?: boolean; resources?: string[] }) {
 	const cwd = mkdtempSync(join(tmpdir(), "omp-worker-checkout-"));
 	try {
 		initGitRepo(cwd);
@@ -88,7 +88,7 @@ async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadA
 						content: row,
 						status: "pending",
 						artifactOwner: "main",
-						schedule: { owner: options.assignDuringRun ? "main" : worker, resources: [] },
+						schedule: { owner: options.assignDuringRun ? "main" : worker, resources: options.resources ?? [] },
 					},
 				],
 			},
@@ -134,7 +134,7 @@ async function auditMainRow(options: { agent?: string; fail?: boolean; moveHeadA
 					// The row is handed to this child only after it started, so the pre-run bind never saw it.
 					phases = phases.map(phase => ({
 						...phase,
-						tasks: phase.tasks.map(task => ({ ...task, schedule: { owner: worker, resources: [] } })),
+						tasks: phase.tasks.map(task => ({ ...task, schedule: { owner: worker, resources: options.resources ?? [] } })),
 					}));
 					manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 				}
@@ -243,6 +243,22 @@ describe("non-isolated worker checkout binding", () => {
 	});
 	it("binds a row scheduled to the child mid-run so it completes after the child finishes", async () => {
 		const { done, requirements, accepted, checkoutCwd } = await auditMainRow({ assignDuringRun: true });
+		expect(accepted).toBeUndefined();
+		expect(
+			requirements.find(requirement => requirement.id === "R7")?.rowVerdicts?.[
+				"Row completes after its worker leaves the registry"
+			]?.status,
+		).toBe("pass");
+		expect(checkoutCwd).toBeDefined();
+		expect(JSON.stringify(done.content)).not.toContain("unknown checkout for owner");
+		expect(JSON.stringify(done.content)).not.toContain("checkout mapping unavailable");
+		expect(done.isError).toBeUndefined();
+	});
+	it("binds the child's checkout when the row only lists a non-path resource descriptor", async () => {
+		const { done, requirements, accepted, checkoutCwd } = await auditMainRow({
+			assignDuringRun: true,
+			resources: ["isolated worktree FreezeShaderWarm"],
+		});
 		expect(accepted).toBeUndefined();
 		expect(
 			requirements.find(requirement => requirement.id === "R7")?.rowVerdicts?.[
