@@ -1233,16 +1233,14 @@ function localizeTimestampText(value: string, timeZone?: string): string {
 function safeText(value: unknown, max = MAX_LABEL): string {
   return typeof value === "string" ? shorten(value, max) : "unknown";
 }
-/** A row handed to the user (`review: "user"`) is delivered work, not open work: the user never has to answer,
- * so waiting for their verdict must not keep it in the open/blocked counts, the forecast or the plan-check
- * (live deck 01a1858f 2026-11-01: 13 of 19 rows sat "blocked: awaiting the user's verdicts"). The stored row
- * keeps its status; consumers read this closed view. A redo/accepted/drop verdict changes `review`, so the
- * row stops being treated as closed the moment they answer. */
+/** A review row is closed only when an artifact was actually delivered. */
 export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; schedule?: unknown }> }>(phases: P[]): P[] {
-  return phases.map((phase) => phase.tasks.some((task) => (task.schedule as { review?: unknown } | undefined)?.review === "user" && (task.status === "pending" || task.status === "in_progress" || task.status === "blocked"))
-    ? { ...phase, tasks: phase.tasks.map((task) => (task.schedule as { review?: unknown } | undefined)?.review === "user" && (task.status === "pending" || task.status === "in_progress" || task.status === "blocked")
-      ? { ...task, status: "completed" }
-      : task) }
+  const delivered = (task: P["tasks"][number]) => {
+    const schedule = task.schedule as { review?: unknown; firstDeliveredAt?: unknown; reviewSummary?: unknown; attemptHistory?: Array<{ deliverablePaths?: unknown }> } | undefined;
+    return schedule?.review === "user" && (typeof schedule.firstDeliveredAt === "number" || nonEmptyString(schedule.reviewSummary) || schedule.attemptHistory?.some((attempt) => Array.isArray(attempt.deliverablePaths) && attempt.deliverablePaths.length > 0));
+  };
+  return phases.map((phase) => phase.tasks.some((task) => delivered(task) && isNonClosedRowStatus(task.status))
+    ? { ...phase, tasks: phase.tasks.map((task) => delivered(task) && isNonClosedRowStatus(task.status) ? { ...task, status: "completed" } : task) }
     : phase);
 }
 
@@ -1267,6 +1265,21 @@ function isOpenRowStatus(status: string): boolean {
 }
 function isNonClosedRowStatus(status: string): boolean {
   return status === "pending" || status === "in_progress" || status === "blocked";
+}
+function undeliveredUserWait(row: TodoTaskForecast): boolean {
+  return row.status === "blocked" && !row.awaitingPrerequisite && (
+    row.schedule?.review === "user" || waitsOnUser(row.owner, row.blocker) || row.waitsForUser !== undefined
+  );
+}
+function unresolvedForecastRows(forecast: TodoPlanForecast | null | undefined): TodoTaskForecast[] {
+  return (forecast?.rows ?? []).filter((row) => row.estimateRequired || undeliveredUserWait(row));
+}
+function unresolvedForecastRemedy(rows: TodoTaskForecast[]): string {
+  return `Resolve each unforecast row: ${rows.map((row) => {
+    const task = row.content;
+    const reason = row.issues[0];
+    return `${JSON.stringify(task)}${reason ? ` (${shorten(reason)})` : ""}: state a default, then todo ${JSON.stringify({ op: "unblock", task })} if blocked, plus todo ${JSON.stringify({ op: "schedule", updates: [{ task }] })} with the default as evidence, a usable estimate and real dependencies; or estimate the remaining work with todo ${JSON.stringify({ op: "schedule", updates: [{ task }] })}; or todo ${JSON.stringify({ op: "drop", task })}`;
+  }).join("; ")}`;
 }
 function userWaitRows(phases: TodoScheduleInput): Array<{ content: string; question: string; proposal?: string }> {
   return phases.flatMap((phase) => phase.tasks).flatMap((task) => {
@@ -3945,8 +3958,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (!decision.staffingSnapshotComplete) return gateTrace(ctx, "staffing-snapshot-incomplete");
     if (decision.goalPaused) return gateTrace(ctx, "goal-paused");
     if (!pi.getActiveTools().includes("todo")) return gateTrace(ctx, "todo-tool-inactive");
-    const open = (decision.forecast.rows ?? []).filter((row) => row.status === "pending" || row.status === "in_progress");
-    const unresolved = open.filter((row) => row.estimateRequired);
+    const open = (decision.forecast.rows ?? []).filter((row) => isOpenRowStatus(row.status) || undeliveredUserWait(row));
+    const unresolved = unresolvedForecastRows(decision.forecast);
     const overdueRows = open.filter((row) => row.overdue || decision.alarms?.some((alarm) => alarm.startsWith(`missed-eta:${JSON.stringify(row.content)}:`)));
     const planFinish = decision.forecast.fixedPathP95Finish ?? decision.forecast.resourceFinish;
     const forecastPassed = open.length > 0 && planFinish !== undefined && planFinish <= now;
@@ -3995,7 +4008,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
             : overdueRows.length > 0
               ? "An open row passed its own ETA. Re-forecast the remaining requested rows."
             : unresolved.length > 0
-              ? "Open rows have no usable estimate, so the finish is unknown."
+              ? "Open rows have no usable estimate or await a user answer without delivery, so the finish is unknown."
               : "The previous replan did not give every remaining open row a new estimate.";
       const demandId = `todo-forecast-replan:${decision.key}:${forecastMissCount}`;
       gateTrace(ctx, "forecast-replan-demand", { rows: offendingRows, unresolved: unresolved.length, overdue: overdueRows.length, overDeadline, forecastPassed, autoDeadlineMissed });
@@ -4006,7 +4019,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         satisfies: (toolCall: { name: string }) => toolCall.name === "todo",
         reminder: [{
           role: "developer" as const,
-          content: `MANDATORY REPLAN: ${reason} Rows: ${rowList || "all remaining requested rows"}. Edit the remaining TODO rows with new usable estimates, put the most valuable shippable piece first, cut what cannot land, and keep executing. Forecast missed ${forecastMissCount} time(s)${lateBy === undefined ? "" : `, last by ${lateBy}m`}.`,
+          content: `MANDATORY REPLAN: ${reason} ${unresolved.length ? unresolvedForecastRemedy(unresolved) : ""} Rows: ${rowList || "all remaining requested rows"}. Edit the remaining TODO rows with new usable estimates, put the most valuable shippable piece first, cut what cannot land, and keep executing. Forecast missed ${forecastMissCount} time(s)${lateBy === undefined ? "" : `, last by ${lateBy}m`}.`,
           timestamp: now,
         }],
       };
@@ -4926,6 +4939,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       : [];
     const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) =>
       (id === "retro" || PLAN_DEMAND_IDS.has(id)) && isDemandEscalated(id) && (id !== "missed-eta" || overdueForMissedEta.length > 0));
+    const unresolvedForGate = isMain(ctx) ? unresolvedForecastRows(currentDecision(ctx).forecast).filter(undeliveredUserWait) : [];
+    if (unresolvedForGate.length && !escalatedIds.includes("todo-replan")) escalatedIds.push("todo-replan");
     if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
       const planFix = (call: GateCall): boolean => call.name === "todo" && !PLAN_WORK_OPS.has(todoOpOf(call) ?? "");
       const taskServesRescheduledLateRow = (call: GateCall): boolean => call.name === "task" && taskItems(call.arguments ?? {}).some((item) =>
@@ -4934,6 +4949,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         ? RETRO_REMEDY
         : id === "unread-receipts"
           ? UNREAD_REMEDY(unreadOwners)
+          : id === "todo-replan" && unresolvedForGate.length
+            ? unresolvedForecastRemedy(unresolvedForGate)
           : id === "todo-link"
             ? "Link each running unassigned worker to the todo row matching its actual assignment; create a separate row if needed. Do not reassign it to an unrelated row. Use todo to update the plan."
           : id === "missed-eta" && call && taskServesRescheduledLateRow(call)
@@ -5071,9 +5088,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const rows = decision.forecast.rows ?? [];
     const openContents = new Set(
-      phasesNow.flatMap((phase) => phase.tasks.filter((task) => task.status === "pending" || task.status === "in_progress").map((task) => task.content)),
+      phasesNow.flatMap((phase) => phase.tasks.filter((task) => isOpenRowStatus(task.status)).map((task) => task.content)),
     );
-    const open = rows.filter((row) => (row.status === "pending" || row.status === "in_progress") && openContents.has(row.content));
+    const open = rows.filter((row) => isOpenRowStatus(row.status) && openContents.has(row.content));
     // A todo call is judged by the finish it produces (live 2026-09-25: 13:24 -> 13:44 while the
     // chief added workers, each correction inserting another serial row mid-chain).
     let laterBy = 0;
@@ -5128,8 +5145,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // A row naming an owner that runs nowhere looks staffed in the HUD and is not (user 2026-09-25:
     // "Owner not running - run it!!!!"): name each one so it is resumed by its exact name.
     // The HUD's "N unresolved": open rows omp cannot forecast. Nobody but the chief can fix them.
-    const unresolved = open.filter((row) => (row as { fixedPathP95Finish?: number }).fixedPathP95Finish === undefined);
-    const why = (row: unknown) => ((row as { issues?: string[] }).issues ?? [])[0];
+    const unresolved = rows.filter((row) => undeliveredUserWait(row) || (openContents.has(row.content) && isOpenRowStatus(row.status) && row.fixedPathP95Finish === undefined && !row.awaitingPrerequisite));
     const deadOwners = (decision.readyCandidates ?? []).filter((row) =>
       openContents.has(row.content) && row.owner && row.ownership !== "live-owned" && row.ownership !== "shared-live-owner"
     );
@@ -5340,7 +5356,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       missing ? `${missing} planning issue(s) (missing estimates or dependencies) block every non-read tool` : "",
       overdue.length ? `${overdue.length} late row(s): ${lateRowLines.join("; ")}` : "",
       firstDeliveryLate ? `first user handoff forecast is later than its 30-minute request window or the deadline for ${JSON.stringify(firstDeliveryLate)}; cut scope and ship the smallest visible piece first` : "",
-      unresolved.length ? `${unresolved.length} row(s) have no forecast (the TODO header's "unresolved"); fix their estimate, dependencies or resources, or drop them: ${unresolved.slice(0, 4).map((row) => `${JSON.stringify(shorten(row.content))}${why(row) ? ` (${shorten(why(row)!)})` : ""}`).join(", ")}${unresolved.length > 4 ? `, … ${unresolved.length - 4} more` : ""}` : "",
+      unresolved.length ? `${unresolved.length} row(s) have no forecast (the TODO header's "unresolved"); ${unresolvedForecastRemedy(unresolved)}` : "",
       unlinked.length ? `${unlinked.length} running worker(s) own no row: ${unlinked.slice(0, 6).map((job) => job.id).join(", ")}` : "",
       deadOwners.length ? `${deadOwners.length} ready row(s) name an owner that is not running; staff them in one task call, one item per row with name = that owner and task = the row's exact title plus what to return: ${deadOwners.slice(0, 6).map((row) => `${JSON.stringify(shorten(row.content))} (owner ${row.owner})`).join(", ")}${deadOwners.length > 6 ? `, … ${deadOwners.length - 6} more` : ""}` : "",
       ready.length && running.length < workerCapacity(ctx) ? `${ready.length} ready row(s) have no worker: ${names(ready)}` : "",
@@ -5349,7 +5365,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     trackDemands([
       ...retroDemand,
       ...(receding.includes("plan-doctor") ? ["todo-plan-doctor"] : []),
-      ...(pendingReplan ? ["todo-replan"] : []),
+      ...(pendingReplan || unresolved.length ? ["todo-replan"] : []),
       ...(unlinked.length ? ["todo-link"] : []),
       ...(unread.length ? ["unread-receipts"] : []),
       ...(overdue.length ? ["missed-eta"] : []),
