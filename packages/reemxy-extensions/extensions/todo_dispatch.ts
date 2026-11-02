@@ -4881,7 +4881,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           return { block: true, reason: `Schedule ${JSON.stringify(String(row.content))} as speculative on ${JSON.stringify(dependentReview)} first. Exactly: todo schedule this row with speculativeOn set to that review; use a separate worktree/branch or commit series and do not publish until accepted.` };
         }
         if ((schedule?.attemptHistory?.length ?? 0) >= 1 && !schedule?.review && !pending.some((candidate) => candidate.content === row.content)) {
-          return { block: true, reason: `Hand attempt ${(schedule?.attemptHistory?.length ?? 0)}'s result to the user first (it can stay speculative): ${rowReviewNotice(row)}. Then redo may proceed speculatively.` };
+          return { block: true, reason: `Hand attempt ${(schedule?.attemptHistory?.length ?? 0)}'s result to the user first (it can stay speculative): ${rowReviewNotice(row)}. Then redo may proceed speculatively. After showing the link, record the handoff with: todo op="schedule" updates=[{task:${JSON.stringify(String(row.content))}, review:"user"}]` };
         }
         if (schedule?.speculativeOn && pendingContents.has(schedule.speculativeOn)) {
           item.task = `${brief}\n\n${prompt.render(gateNoticeInstructions, { speculative: true, reviewRow: schedule.speculativeOn }).trim()}`;
