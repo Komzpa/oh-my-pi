@@ -18,7 +18,6 @@ import {
 	formatRequirementGateArtifact,
 	formatUnclassifiedCandidateReminder,
 	formatRequirementGateNotice,
-	formatRequirementPublicationStatus,
 	getLatestRequirements,
 	getLinkedRequirementRows,
 	getUnclassifiedRequirementCandidates,
@@ -218,6 +217,7 @@ export interface RequirementsLedgerRuntimeHost {
 	onSettledAssistantMessage(message: AssistantMessage): void;
 	queueModelNotice?(notice: string): void | Promise<void>;
 	setTodoPhases?(phases: TodoPhase[]): void;
+	setAuditStatus?(text: string | undefined): void;
 	setPublicationGate?(gate: RequirementPublicationGate | undefined): void;
 }
 
@@ -980,6 +980,10 @@ export class RequirementsLedgerRuntime {
 		this.syncPublicationGate();
 		// Never erase the assistant's own text on a generation race: publish unchanged.
 		if (this.#getPublicationGeneration() !== decisionGeneration) return;
+		const total = requirements.filter(
+			item => item.classification === "candidate" || item.classification === "linked",
+		).length;
+		this.#host.setAuditStatus?.(total ? `audit ${open.length}/${total} open` : undefined);
 		if (open.length === 0) {
 			this.#noticeState = "";
 			return;
@@ -1010,68 +1014,8 @@ export class RequirementsLedgerRuntime {
 			}
 			this.#noticeState = noticeState;
 		}
-		const branch = matchingRequirementBranch(
-			this.#host.sessionManager,
-			metadata =>
-				(metadata.type === "message" && metadata.messageRole === "user") ||
-				(metadata.type === "custom" &&
-					(metadata.customType === "requirements_awaiting_user_notice" ||
-						metadata.customType === "requirements_publication_notice")),
-		);
-		const userMessage = branch.findLast(entry => entry.type === "message" && entry.message.role === "user");
-		const announced = new Set<string>();
-		for (const entry of branch) {
-			if (
-				entry.type !== "custom" ||
-				entry.customType !== "requirements_awaiting_user_notice" ||
-				!isRecord(entry.data)
-			)
-				continue;
-			if (Array.isArray(entry.data.keys))
-				for (const key of entry.data.keys) if (typeof key === "string") announced.add(key);
-		}
-		const newKeys: string[] = [];
-		const visible = open.flatMap(item => {
-			const issues = item.issues.filter(issue => {
-				// Only explicit user-owned checks are quieted. Agent-side failures keep blocking every turn.
-				if (!awaitingUserIssues.has(issue)) return true;
-				const key = JSON.stringify([userMessage?.id ?? null, item.requirement.id, item.requirement.rawText, issue]);
-				if (announced.has(key)) return false;
-				newKeys.push(key);
-				return true;
-			});
-			return issues.length
-				? [{ ...item, issues, awaitingUser: issues.every(issue => awaitingUserIssues.has(issue)) }]
-				: [];
-		});
-		if (visible.length === 0) return;
-		if (newKeys.length)
-			this.#host.sessionManager.appendCustomEntry("requirements_awaiting_user_notice", { keys: newKeys });
-		const total = requirements.filter(
-			item => item.classification === "candidate" || item.classification === "linked",
-		).length;
+		// Audit state belongs in the status bar and hidden model notice, never in chat text.
 		this.#host.onSettledAssistantMessage(message);
-		const original = message.content
-			.filter(block => block.type === "text")
-			.map(block => block.text)
-			.join("");
-		// Compare the full open set, independently of turns and changing issue details.
-		const state = JSON.stringify(open.map(item => item.requirement.id).sort());
-		const previousReport = branch.findLast(
-			entry => entry.type === "custom" && entry.customType === "requirements_publication_notice",
-		);
-		if (
-			original.includes("Not audit-verified:") ||
-			(previousReport?.type === "custom" && isRecord(previousReport.data) && previousReport.data.state === state)
-		)
-			return { replacementText: original, settled: true, preserveImages: true };
-		this.#host.sessionManager.appendCustomEntry("requirements_publication_notice", { state });
-		const notice = formatRequirementPublicationStatus(open, total);
-		return {
-			replacementText: original ? `${original}\n\n${notice}` : notice,
-			settled: true,
-			preserveImages: true,
-		};
 	}
 
 	async #refreshRequirementFreshness(signal?: AbortSignal): Promise<{

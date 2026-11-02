@@ -26,7 +26,6 @@ import {
 	evaluateRequirementDoneGate,
 	getPersistedRequirementAuditRejections,
 	getPersistedRequirementAuditorAssignments,
-	requirementAuditSnapshot,
 	requirementSourceDigest,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
@@ -83,6 +82,7 @@ function fixture(
 	appendRequirementsSnapshot(appender, linked.requirements);
 	let gate: RequirementPublicationGate | undefined;
 	const notices: string[] = [];
+	const auditStatuses: Array<string | undefined> = [];
 	const runtime = new RequirementsLedgerRuntime({
 		agent: {} as never,
 		agentKind: () => "main",
@@ -92,11 +92,12 @@ function fixture(
 		queueModelNotice: (notice: string) => {
 			notices.push(notice);
 		},
+		setAuditStatus: text => auditStatuses.push(text),
 		setPublicationGate: next => {
 			gate = next;
 		},
 	});
-	return { cwd, manager, runtime, notices, gate: () => gate };
+	return { cwd, manager, runtime, notices, auditStatuses, gate: () => gate };
 }
 
 // A long session can contain thousands of obsolete snapshots. Restoring pending
@@ -704,7 +705,7 @@ describe("requirements ledger auditor binding", () => {
 				{ content: [{ type: "text", text: "done" }], stopReason: "stop" } as never,
 				new AbortController().signal,
 			);
-			expect(notice?.replacementText).toBe("done\n\nNot audit-verified: R1 (1 of 1)");
+			expect(notice).toBeUndefined();
 			expect(notices[0]).toContain("receipt incomplete or malformed");
 			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts).toBeUndefined();
 		} finally {
@@ -750,8 +751,8 @@ describe("requirements ledger auditor binding", () => {
 				{ content: [{ type: "text", text: "done" }], stopReason: "stop" } as never,
 				new AbortController().signal,
 			);
-			expect(verdict).toMatchObject({ settled: true });
-			expect(JSON.stringify(verdict)).toContain("R1");
+			expect(verdict).toBeUndefined();
+			expect(notices.join("\n")).toContain("R1");
 			expect(notices.join("\n")).toContain(head);
 			expect(notices.join("\n")).toContain(git(cwd, "rev-parse", "HEAD"));
 			// Publication clears the stale pass while retaining its durable artifact evidence.
@@ -1116,8 +1117,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 				{ content: [{ type: "text", text: "answer text" }], stopReason: "stop" } as never,
 				new AbortController().signal,
 			)) as { replacementText: string; settled?: true } | undefined;
-			expect(published?.replacementText).toContain("answer text");
-			expect(published?.replacementText).toContain("Not audit-verified: R1");
+			expect(published).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -1307,7 +1307,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 	});
 });
 
-describe("awaiting-user publication gate", () => {
+describe("audit publication status", () => {
 	it("does not repeat a user-pending check on a later user message", async () => {
 		const { cwd, manager, gate } = fixture();
 		try {
@@ -1331,24 +1331,23 @@ describe("awaiting-user publication gate", () => {
 			} as never;
 			const signal = new AbortController().signal;
 			const first = await gate()?.(message, signal);
-			expect(first?.replacementText).toContain("Not audit-verified:");
+			expect(first).toBeUndefined();
 			expect(await gate()?.(message, signal)).toBeUndefined();
-			expect(first?.replacementText).not.toContain("Press Archive on both cards");
 			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]).toBeUndefined();
 			manager.appendMessage({ role: "user", content: "I have not pressed Archive yet", timestamp: Date.now() });
-			expect((await gate()?.(message, signal))?.replacementText).toBe("Server-side work is ready");
+			expect(await gate()?.(message, signal)).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 
-	it("reports an agent-side unverified row once across user messages without closing it", async () => {
+	it("keeps completion claims unchanged without closing an unaudited row", async () => {
 		const { cwd, manager, gate } = fixture();
 		try {
 			const message = { content: [{ type: "text", text: "done" }], stopReason: "stop" } as never;
 			const signal = new AbortController().signal;
-			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
-			expect((await gate()?.(message, signal))?.replacementText).toBe("done");
+			expect(await gate()?.(message, signal)).toBeUndefined();
+			expect(await gate()?.(message, signal)).toBeUndefined();
 			let restoredGate: RequirementPublicationGate | undefined;
 			new RequirementsLedgerRuntime({
 				agent: {} as never,
@@ -1360,7 +1359,7 @@ describe("awaiting-user publication gate", () => {
 					restoredGate = next;
 				},
 			});
-			expect((await restoredGate?.(message, signal))?.replacementText).toBe("done");
+			expect(await restoredGate?.(message, signal)).toBeUndefined();
 			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]).toBeUndefined();
 			const tool = new TodoTool({
 				cwd,
@@ -1374,75 +1373,51 @@ describe("awaiting-user publication gate", () => {
 			} as ToolSession);
 			expect((await tool.execute("unverified", { op: "done", task: "Build artifact" })).isError).toBe(true);
 			manager.appendMessage({ role: "user", content: "What is the status?", timestamp: Date.now() });
-			expect((await gate()?.(message, signal))?.replacementText).toBe("done");
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
-	it("suppresses an unchanged open notice across consecutive settled messages with a changed audit snapshot", async () => {
-		const { cwd, manager, gate } = fixture();
-		try {
-			const message = { content: [{ type: "text", text: "Working" }], stopReason: "stop" } as never;
-			const signal = new AbortController().signal;
-			const initial = getLatestRequirements(manager.getBranch());
-			const snapshotHash = () =>
-				createHash("sha256")
-					.update(requirementAuditSnapshot(getLatestRequirements(manager.getBranch()), ["R1"]))
-					.digest("hex");
-			const before = snapshotHash();
-			expect(await gate()?.(message, signal)).toMatchObject({
-				replacementText: "Working\n\nNot audit-verified: R1 (1 of 1)",
-				settled: true,
-			});
-			const changed = createRequirementCandidates(initial, ["Additional source context for the artifact"], AT).map(
-				requirement =>
-					requirement.id === "R2"
-						? { ...requirement, classification: "merged" as const, mergeInto: "R1" }
-						: requirement,
-			);
-			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, changed);
-			expect(snapshotHash()).not.toBe(before);
-			expect(await gate()?.(message, signal)).toMatchObject({ replacementText: "Working", settled: true });
-			expect(
-				manager
-					.getBranch()
-					.filter(entry => entry.type === "custom" && entry.customType === "requirements_publication_notice"),
-			).toHaveLength(1);
-		} finally {
-			rmSync(cwd, { recursive: true, force: true });
-		}
-	});
-
-	it("reports changed open requirements again, including when an earlier state recurs", async () => {
-		const { cwd, manager, gate } = fixture();
-		try {
-			const message = { content: [{ type: "text", text: "Working" }], stopReason: "stop" } as never;
-			const signal = new AbortController().signal;
-			const appender = { appendEntry: (type: string, data?: unknown) => manager.appendCustomEntry(type, data) };
-			const initial = getLatestRequirements(manager.getBranch());
-			expect((await gate()?.(message, signal))?.replacementText).toContain("R1 (1 of 1)");
-			const expanded = createRequirementCandidates(initial, ["Inspect the generated summary"], AT);
-			appendRequirementsSnapshot(appender, expanded);
-			expect((await gate()?.(message, signal))?.replacementText).toContain("R1, R2 (2 of 2)");
-			expect((await gate()?.(message, signal))?.replacementText).toBe("Working");
-			appendRequirementsSnapshot(appender, initial);
-			expect((await gate()?.(message, signal))?.replacementText).toContain("R1 (1 of 1)");
-			appendRequirementsSnapshot(appender, []);
 			expect(await gate()?.(message, signal)).toBeUndefined();
-			appendRequirementsSnapshot(appender, initial);
-			expect((await gate()?.(message, signal))?.replacementText).toBe("Working");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 
-	it("does not duplicate a footer already in the assistant text", async () => {
-		const { cwd, gate } = fixture();
+	it.each(["Working", "What should we inspect next?", "Done", "All work is complete."])(
+		"keeps %s out of audit decoration and shows open counts only in status",
+		async text => {
+			const { cwd, manager, gate, auditStatuses, notices } = fixture();
+			try {
+				const message = { content: [{ type: "text", text }], stopReason: "stop" } as never;
+				const signal = new AbortController().signal;
+				expect(await gate()?.(message, signal)).toBeUndefined();
+				expect(auditStatuses.at(-1)).toBe("audit 1/1 open");
+				expect(await gate()?.(message, signal)).toBeUndefined();
+				expect(notices).toHaveLength(1);
+				expect(message).toEqual({ content: [{ type: "text", text }], stopReason: "stop" });
+				expect(
+					manager.getBranch().some(entry => entry.type === "custom" && entry.customType === "requirements_publication_notice"),
+				).toBe(false);
+			} finally {
+				rmSync(cwd, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it("shows zero open after a fresh audit and clears status when no requirements remain", async () => {
+		const { cwd, runtime, manager, gate, auditStatuses } = fixture();
 		try {
-			const text = "Working\n\nNot audit-verified: R1 (1 of 1)";
-			const message = { content: [{ type: "text", text }], stopReason: "stop" } as never;
-			expect((await gate()?.(message, new AbortController().signal))?.replacementText).toBe(text);
+			const message = { content: [{ type: "text", text: "Done" }], stopReason: "stop" } as never;
+			const signal = new AbortController().signal;
+			expect(await gate()?.(message, signal)).toBeUndefined();
+			expect(auditStatuses.at(-1)).toBe("audit 1/1 open");
+			await auditFixtureArtifact(
+				runtime,
+				"qa-status",
+				gitIdentity(cwd, git(cwd, "rev-parse", "HEAD")),
+				"artifact exercised",
+			);
+			expect(await gate()?.(message, signal)).toBeUndefined();
+			expect(auditStatuses.at(-1)).toBe("audit 0/1 open");
+			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, []);
+			expect(await gate()?.(message, signal)).toBeUndefined();
+			expect(auditStatuses.at(-1)).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -1453,7 +1428,7 @@ describe("awaiting-user publication gate", () => {
 		try {
 			const message = { content: [{ type: "text", text: "status" }], stopReason: "stop" } as never;
 			const signal = new AbortController().signal;
-			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
+			expect(await gate()?.(message, signal)).toBeUndefined();
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
 				phases: [
 					{
@@ -1464,7 +1439,7 @@ describe("awaiting-user publication gate", () => {
 					},
 				],
 			});
-			expect((await gate()?.(message, signal))?.replacementText).toBe("status");
+			expect(await gate()?.(message, signal)).toBeUndefined();
 			expect(await gate()?.(message, signal)).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
@@ -1506,7 +1481,7 @@ describe("awaiting-user publication gate", () => {
 			expect((await tool.execute("done-again", { op: "done", task: row })).isError).toBe(true);
 			const message = { content: [{ type: "text", text: "ready" }], stopReason: "stop" } as never;
 			const signal = new AbortController().signal;
-			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
+			expect(await gate()?.(message, signal)).toBeUndefined();
 			expect(await gate()?.(message, signal)).toBeUndefined();
 			manager.appendMessage({ role: "user", content: "Both cards archived", timestamp: Date.now() });
 			expect((await tool.execute("user-confirmed", { op: "unblock", task: row })).isError).toBeUndefined();
@@ -1798,7 +1773,7 @@ describe("real row-scoped auditor receipts", () => {
 				{ content: [{ type: "text", text: "result" }], stopReason: "stop" } as never,
 				new AbortController().signal,
 			);
-			expect(notice?.replacementText).toContain("Not audit-verified: R16");
+			expect(notice).toBeUndefined();
 			expect(getLatestRequirements(manager.getBranch())[0]!.rowVerdicts![row]).toEqual(firstReceipt);
 			const done = await tool.execute("done", { op: "done", task: row });
 			expect(done.isError).toBeUndefined();
@@ -2085,7 +2060,7 @@ describe("PR41 review boundaries", () => {
 
 describe("compact ledger publication notice", () => {
 	it("keeps a many-row replay out of the final answer and only notifies the model on change", async () => {
-		const { cwd, manager, notices, gate } = fixture();
+		const { cwd, manager, notices, gate, auditStatuses } = fixture();
 		try {
 			const requirements = createRequirementCandidates(
 				[],
@@ -2109,9 +2084,9 @@ describe("compact ledger publication notice", () => {
 			const message = { content: [{ type: "text", text: original }], stopReason: "stop" } as never;
 			const signal = new AbortController().signal;
 			const first = await gate()?.(message, signal);
-			expect(first?.replacementText?.startsWith(original)).toBe(true);
-			expect(first?.replacementText?.slice(original.length).trim().split("\n")).toHaveLength(1);
-			expect(first!.replacementText.length - original.length).toBeLessThan(120);
+			expect(first).toBeUndefined();
+			expect(message.content).toEqual([{ type: "text", text: original }]);
+			expect(auditStatuses.at(-1)).toBe("audit 40/40 open");
 			expect(notices).toHaveLength(1);
 			expect(Buffer.byteLength(notices[0]!)).toBeLessThanOrEqual(1500);
 			expect(notices[0]).not.toContain("RAW USER QUOTE");
@@ -2195,7 +2170,7 @@ it("uses the new resource checkout and ignores an old artifact rejection without
 			},
 		);
 		const message = { content: [{ type: "text", text: "Result" }], stopReason: "stop" } as never;
-		expect((await gate()?.(message, new AbortController().signal))?.replacementText).toContain("Not audit-verified:");
+		expect(await gate()?.(message, new AbortController().signal)).toBeUndefined();
 		expect(notices[0]).not.toContain("receipt artifact mismatch");
 		await auditFixtureArtifact(runtime, "qa-current", gitIdentity(resource, head), "new checkout exercised");
 		expect(await gate()?.(message, new AbortController().signal)).toBeUndefined();

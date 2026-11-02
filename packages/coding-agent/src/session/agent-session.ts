@@ -2778,6 +2778,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					{ deliverAs: "nextTurn" },
 				);
 			},
+			setAuditStatus: text => this.#extensionRunner?.getUIContext().setStatus("requirements-audit", text),
 			setPublicationGate: gate => {
 				this.#requirementsPublicationGate = gate;
 				this.#syncAssistantPublicationGate();
