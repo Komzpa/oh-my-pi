@@ -174,6 +174,7 @@ test("attempt two is held until its first result is handed off, then replays the
   const beforeHandoff = { tasks: [{ agent: "Coder", task: "Implement header navigation" }] };
   const refused = await harness.handlers.get("tool_call")!({ toolName: "task", input: beforeHandoff }, harness.ctx) as { reason?: string };
   expect(refused.reason).toContain("Hand attempt 1's result to the user first");
+  expect(refused.reason).toEndWith('todo op="schedule" updates=[{task:"Implement header navigation", review:"user"}]');
   harness.phases()[0].tasks[0].schedule.review = "user";
   harness.phases()[0].tasks[0].status = "blocked";
   await recordReview(harness, "redo", "redo Implement header navigation with the buttons left aligned", "Implement header navigation");
