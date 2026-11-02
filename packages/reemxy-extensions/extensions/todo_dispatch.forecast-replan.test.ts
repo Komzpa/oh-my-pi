@@ -48,7 +48,7 @@ async function demandHarness(tasks: unknown[], deadlineAt?: number, autoDeadline
 			clearTimer: () => undefined,
 		} as unknown as ExtensionContext;
 		await handlers.get("context")?.({ messages: [] }, ctx);
-		return { branch, ctx, provider };
+		return { branch, ctx, provider, handlers };
 	} finally {
 		if (wasPaused) agentPauseGate.pause();
 	}
@@ -67,6 +67,26 @@ test("an unresolved requested row creates a named mandatory forecast replan", as
 	expect(demand?.toolName).toBe("todo");
 	expect(demand?.reminder[0].content).toContain("Estimate the release note");
 	expect(demand?.reminder[0].content).toContain("no usable estimate");
+});
+
+test("an undelivered user wait demands a concrete forecast repair; delivered review is not debt", async () => {
+	const now = Date.now();
+	const schedule = { dependencies: [], resources: ["models"], estimate: estimate(now, 600), review: "user" };
+	const task = { content: "Find better transformer models", status: "blocked", blocker: "Awaiting Darafei: Do/Leave on selection", schedule };
+	const demand = await demandFor([task]);
+	expect(demand?.reminder[0].content).toContain(task.content);
+	expect(demand?.reminder[0].content).toContain('"op":"unblock"');
+	expect(demand?.reminder[0].content).toContain('"op":"schedule"');
+	expect(demand?.reminder[0].content).toContain('"op":"drop"');
+	const h = await demandHarness([task]);
+	const call = (toolName, input) => h.handlers.get("tool_call")({ toolName, input, toolCallId: "call" }, h.ctx);
+	const refusal = await call("task", { tasks: [{ name: "Other", task: "unrelated work" }] });
+	expect(refusal?.block).toBe(true);
+	expect(refusal.reason).toContain(task.content);
+	expect((await call("read", { path: "README.md" }))?.block).not.toBe(true);
+	expect((await call("todo", { op: "unblock", task: task.content }))?.block).not.toBe(true);
+	const delivered = { ...task, schedule: { ...schedule, firstDeliveredAt: now, reviewSummary: "Model comparison delivered" } };
+	expect(await demandFor([delivered])).toBeUndefined();
 });
 
 test("a user delivery deadline after P95 creates a cut-to-fit replan demand", async () => {

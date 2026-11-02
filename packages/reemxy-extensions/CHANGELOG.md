@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Require the chief to resolve undelivered user-answer waits through the existing partial-forecast PLAN CHECK gate; preserve real dependency/external waits and close only delivered user-review rows.
+
 - Keep harness and gate notices passive until the next real turn; preserve stuck-worker wait interruption and explicit overdue-work wakes.
 
 - Refuse main-session wait after a capped reestimate or a 60-minute stuck-worker escalation until the required recovery or fresh worker receipt ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

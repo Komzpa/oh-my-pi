@@ -124,7 +124,7 @@ test("missed ETA notice names every late row, owner, and overrun", () => {
 
 function reviewPlan() {
   return [{ name: "Work", tasks: [
-    { content: "Delivered UI", status: "blocked" as const, blocker: "waits for user: accept, redo, or drop", schedule: { owner: "Coder", review: "user" as const, dependencies: [], executor: { workerId: "Coder", startedAt: now } } },
+    { content: "Delivered UI", status: "blocked" as const, blocker: "waits for user: accept, redo, or drop", schedule: { owner: "Coder", review: "user" as const, firstDeliveredAt: now, reviewSummary: "UI delivered", dependencies: [], executor: { workerId: "Coder", startedAt: now } } },
     { content: "Verify UI", status: "pending" as const, schedule: { owner: "Verifier", dependencies: ["Delivered UI"] } },
     { content: "Independent docs", status: "pending" as const, schedule: { owner: "Docs", dependencies: [] } },
   ] }];
