@@ -82,4 +82,10 @@ describe("Reemxy extension agent model chains", () => {
 				expect(profile.model, profile.name).not.toContain("@free");
 		}
 	});
+
+	test("git-pr-owner runs git against the brief ROOT and does not treat a missing object as a remote hang", () => {
+		const owner = extensionProfiles().find(profile => profile.name === "git-pr-owner");
+		expect(owner?.systemPrompt).toContain("Run every git command as `git -C <ROOT>` against the brief's ROOT.");
+		expect(owner?.systemPrompt).toContain("Treat `bad object` or a missing ref as a wrong-directory or local-object problem first, never as a remote hang.");
+	});
 });
