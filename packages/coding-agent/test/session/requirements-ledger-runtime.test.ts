@@ -1384,11 +1384,11 @@ describe("audit publication status", () => {
 		async text => {
 			const { cwd, manager, gate, auditStatuses, notices } = fixture();
 			try {
-				const message = { content: [{ type: "text", text }], stopReason: "stop" } as never;
+				const message = { content: [{ type: "text", text }], stopReason: "stop" };
 				const signal = new AbortController().signal;
-				expect(await gate()?.(message, signal)).toBeUndefined();
+				expect(await gate()?.(message as never, signal)).toBeUndefined();
 				expect(auditStatuses.at(-1)).toBe("audit 1/1 open");
-				expect(await gate()?.(message, signal)).toBeUndefined();
+				expect(await gate()?.(message as never, signal)).toBeUndefined();
 				expect(notices).toHaveLength(1);
 				expect(message).toEqual({ content: [{ type: "text", text }], stopReason: "stop" });
 				expect(
@@ -2083,9 +2083,9 @@ describe("compact ledger publication notice", () => {
 				})),
 			});
 			const original = "  Here is my own final answer.\n";
-			const message = { content: [{ type: "text", text: original }], stopReason: "stop" } as never;
+			const message = { content: [{ type: "text", text: original }], stopReason: "stop" };
 			const signal = new AbortController().signal;
-			const first = await gate()?.(message, signal);
+			const first = await gate()?.(message as never, signal);
 			expect(first).toBeUndefined();
 			expect(message.content).toEqual([{ type: "text", text: original }]);
 			expect(auditStatuses.at(-1)).toBe("audit 40/40 open");
@@ -2096,13 +2096,13 @@ describe("compact ledger publication notice", () => {
 			expect(notices[0]).toMatch(/\+\d+ more$/);
 			const lines = notices[0]!.split("\n");
 			expect(new Set(lines).size).toBe(lines.length);
-			await gate()?.(message, signal);
+			await gate()?.(message as never, signal);
 			expect(notices).toHaveLength(1);
 			appendRequirementsSnapshot(
 				{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
 				requirements.slice(1),
 			);
-			await gate()?.(message, signal);
+			await gate()?.(message as never, signal);
 			expect(notices).toHaveLength(2);
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
