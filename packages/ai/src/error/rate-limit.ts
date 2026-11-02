@@ -413,7 +413,7 @@ export function isUsageLimitStatus(status: number | undefined): boolean {
 	return status === 429 || status === 402;
 }
 const STATUS_402_QUOTA_PATTERN =
-	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?(?:balance|account.?funds))\b/i;
+	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?(?:balance|credits?|account.?funds)|credits?|billing|can only afford)\b/i;
 
 export function is402BillingCapBody(message: string | undefined): boolean {
 	if (message === undefined || isOpaqueStatusBody(message)) return true;

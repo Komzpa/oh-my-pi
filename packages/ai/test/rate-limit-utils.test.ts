@@ -1019,6 +1019,15 @@ describe("isUsageLimitOutcome", () => {
 		expect(isUsageLimit(new ProviderHttpError("A subscription is required for this endpoint", 402))).toBe(false);
 	});
 
+	it("treats a muse 402 billing-verification failure as a usage limit but the same body on 400 as a bad request", () => {
+		const body =
+			"Billing verification failed. Billing Issue. To use this API key, your team needs to resolve a billing issue first. (type=billing_error param=billing_not_configured)";
+		expect(isUsageLimitOutcome(402, `402 ${body}`)).toBe(true);
+		expect(isUsageLimit(new ProviderHttpError(body, 402))).toBe(true);
+		expect(isUsageLimitOutcome(400, `400 ${body}`)).toBe(false);
+		expect(isUsageLimit(new ProviderHttpError(body, 400))).toBe(false);
+	});
+
 	it("does not rotate on auth/invalid-request statuses with unrelated bodies", () => {
 		expect(isUsageLimitOutcome(401, "Invalid API key")).toBe(false);
 		expect(isUsageLimitOutcome(400, "invalid_request_error: model unsupported")).toBe(false);
