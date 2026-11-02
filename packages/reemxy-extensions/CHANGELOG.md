@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Name the exact row-specific `todo op="schedule"` call with `review:"user"` in the retry handoff refusal, so showing a result link does not leave the recording step implicit.
+
 - git-pr-owner runs every git command as `git -C <ROOT>` against the brief's ROOT, and treats `bad object` or a missing ref as a wrong-directory or local-object problem first, never as a remote hang ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Require the chief to resolve undelivered user-answer waits through the existing partial-forecast PLAN CHECK gate; preserve real dependency/external waits and close only delivered user-review rows.
