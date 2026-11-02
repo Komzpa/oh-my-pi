@@ -1308,7 +1308,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 });
 
 describe("awaiting-user publication gate", () => {
-	it("shows a user-pending check once until the next user message", async () => {
+	it("does not repeat a user-pending check on a later user message", async () => {
 		const { cwd, manager, gate } = fixture();
 		try {
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
@@ -1336,13 +1336,13 @@ describe("awaiting-user publication gate", () => {
 			expect(first?.replacementText).not.toContain("Press Archive on both cards");
 			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]).toBeUndefined();
 			manager.appendMessage({ role: "user", content: "I have not pressed Archive yet", timestamp: Date.now() });
-			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
+			expect((await gate()?.(message, signal))?.replacementText).toBe("Server-side work is ready");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 
-	it("reports an agent-side unverified row once per user message without closing it", async () => {
+	it("reports an agent-side unverified row once across user messages without closing it", async () => {
 		const { cwd, manager, gate } = fixture();
 		try {
 			const message = { content: [{ type: "text", text: "done" }], stopReason: "stop" } as never;
@@ -1374,7 +1374,7 @@ describe("awaiting-user publication gate", () => {
 			} as ToolSession);
 			expect((await tool.execute("unverified", { op: "done", task: "Build artifact" })).isError).toBe(true);
 			manager.appendMessage({ role: "user", content: "What is the status?", timestamp: Date.now() });
-			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
+			expect((await gate()?.(message, signal))?.replacementText).toBe("done");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -1431,13 +1431,24 @@ describe("awaiting-user publication gate", () => {
 			appendRequirementsSnapshot(appender, []);
 			expect(await gate()?.(message, signal)).toBeUndefined();
 			appendRequirementsSnapshot(appender, initial);
-			expect((await gate()?.(message, signal))?.replacementText).toContain("R1 (1 of 1)");
+			expect((await gate()?.(message, signal))?.replacementText).toBe("Working");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 
-	it("reports a newly user-owned check even after an earlier agent-side notice", async () => {
+	it("does not duplicate a footer already in the assistant text", async () => {
+		const { cwd, gate } = fixture();
+		try {
+			const text = "Working\n\nNot audit-verified: R1 (1 of 1)";
+			const message = { content: [{ type: "text", text }], stopReason: "stop" } as never;
+			expect((await gate()?.(message, new AbortController().signal))?.replacementText).toBe(text);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("does not repeat the same open set when a check becomes user-owned", async () => {
 		const { cwd, manager, gate } = fixture();
 		try {
 			const message = { content: [{ type: "text", text: "status" }], stopReason: "stop" } as never;
@@ -1453,7 +1464,7 @@ describe("awaiting-user publication gate", () => {
 					},
 				],
 			});
-			expect((await gate()?.(message, signal))?.replacementText).toContain("Not audit-verified:");
+			expect((await gate()?.(message, signal))?.replacementText).toBe("status");
 			expect(await gate()?.(message, signal)).toBeUndefined();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });

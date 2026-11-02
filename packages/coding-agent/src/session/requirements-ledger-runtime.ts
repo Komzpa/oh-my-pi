@@ -982,12 +982,6 @@ export class RequirementsLedgerRuntime {
 		if (this.#getPublicationGeneration() !== decisionGeneration) return;
 		if (open.length === 0) {
 			this.#noticeState = "";
-			const lastReport = matchingRequirementBranchNewestFirst(
-				this.#host.sessionManager,
-				metadata => metadata.type === "custom" && metadata.customType === "requirements_publication_notice",
-			).next().value;
-			if (lastReport?.type === "custom" && isRecord(lastReport.data) && lastReport.data.state !== null)
-				this.#host.sessionManager.appendCustomEntry("requirements_publication_notice", { state: null });
 			return;
 		}
 		const tools = this.#host.agent.state?.tools;
@@ -1025,7 +1019,6 @@ export class RequirementsLedgerRuntime {
 						metadata.customType === "requirements_publication_notice")),
 		);
 		const userMessage = branch.findLast(entry => entry.type === "message" && entry.message.role === "user");
-		const userTurn = userMessage?.id ?? null;
 		const announced = new Set<string>();
 		for (const entry of branch) {
 			if (
@@ -1062,30 +1055,18 @@ export class RequirementsLedgerRuntime {
 			.filter(block => block.type === "text")
 			.map(block => block.text)
 			.join("");
-		// Suppress unchanged notices across audit-source churn, but publish again
-		// when the visible issues, full open set, total, or user turn changes.
-		const state = new Bun.CryptoHasher("sha256")
-			.update(
-				JSON.stringify([
-					total,
-					visible.map(item => [item.requirement.id, item.issues]),
-					open.map(item => [item.requirement.id, item.issues]),
-				]),
-			)
-			.digest("hex");
+		// Compare the full open set, independently of turns and changing issue details.
+		const state = JSON.stringify(open.map(item => item.requirement.id).sort());
 		const previousReport = branch.findLast(
 			entry => entry.type === "custom" && entry.customType === "requirements_publication_notice",
 		);
 		if (
-			previousReport?.type === "custom" &&
-			isRecord(previousReport.data) &&
-			previousReport.data.userTurn === userTurn &&
-			previousReport.data.state === state &&
-			newKeys.length === 0
+			original.includes("Not audit-verified:") ||
+			(previousReport?.type === "custom" && isRecord(previousReport.data) && previousReport.data.state === state)
 		)
 			return { replacementText: original, settled: true, preserveImages: true };
-		this.#host.sessionManager.appendCustomEntry("requirements_publication_notice", { userTurn, state });
-		const notice = formatRequirementPublicationStatus(visible, total);
+		this.#host.sessionManager.appendCustomEntry("requirements_publication_notice", { state });
+		const notice = formatRequirementPublicationStatus(open, total);
 		return {
 			replacementText: original ? `${original}\n\n${notice}` : notice,
 			settled: true,
