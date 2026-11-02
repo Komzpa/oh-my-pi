@@ -1392,7 +1392,9 @@ describe("audit publication status", () => {
 				expect(notices).toHaveLength(1);
 				expect(message).toEqual({ content: [{ type: "text", text }], stopReason: "stop" });
 				expect(
-					manager.getBranch().some(entry => entry.type === "custom" && entry.customType === "requirements_publication_notice"),
+					manager
+						.getBranch()
+						.some(entry => entry.type === "custom" && entry.customType === "requirements_publication_notice"),
 				).toBe(false);
 			} finally {
 				rmSync(cwd, { recursive: true, force: true });
