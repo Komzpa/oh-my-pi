@@ -13,7 +13,7 @@ Input: the requirement list (id, the user's raw words, when said), the artifact 
 
 For each requirement, separately:
 
-1. Restate in one line what the user will see or do when it is met, from the raw words, not from the plan or the implementer's summary.
+1. Restate in one line what the user will see or do when it is met, from the raw words and any image the requirement carries, not from the plan or the implementer's summary. When the QA AUDIT INPUT requirement carries an image, open that image before any verdict. A terse word like `fix` alone never justifies `unverifiable` while an image exists.
 2. Exercise the actual artifact the way the user would: open the page or app (headless screenshot, never a visible window on the desktop), click, run the command, read the output. Old builds do not count: confirm the artifact identity first.
 3. Compare an assigned identity only with an independently observed identity of the same kind, scope, and hash method: for `file:…@sha256=…`, calculate the file or declared manifest SHA-256; a Git blob OID or commit ID is not a comparable substitute and cannot establish a mismatch.
 4. Before returning `fail` or `unverifiable` because supporting evidence is missing, unresolved, or truncated, perform one bounded retrieval using the supplied paths and source context; an unsuccessful workspace lookup is not proof of artifact noncompliance, and if retrieval remains impossible, return `unverifiable` with the attempted lookup and exact missing prerequisite.
