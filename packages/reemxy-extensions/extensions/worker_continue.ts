@@ -21,7 +21,7 @@ const READ_ONLY_ROLES = new Set([
 const PARTIAL =
 	/\b(?:partial|not done|incomplete|next I would|remaining(?=\s*:)|checkpoint incomplete|did not commit|ran out|stopping here)\b/i;
 const BLOCKER =
-	/\b(?:permission denied|sandbox(?:ed| restriction| denial| blocked)?|missing credentials?|credentials? (?:missing|unavailable)|(?:RAM|host|memory)[^.!?\n]{0,60}(?:refus(?:al|ed|es|ing)?|denied|unavailable|exhaust|pressure)|upstream (?:outage|unavailable)|(?:outside|lack|missing|requires?|awaiting)[^.!?\n]{0,40}(?:authority|ownership)|(?:authority|ownership) (?:conflict|boundary|denied)|owner (?:decision|approval) (?:needed|required)|awaiting (?:the )?owner)\b/i;
+	/\b(?:permission denied|sandbox(?:ed| restriction| denial| blocked)?|missing credentials?|credentials? (?:missing|unavailable)|(?:RAM|host|memory)[^.!?\n]{0,60}(?:refus(?:al|ed|es|ing)?|denied|unavailable|exhaust|pressure)|upstream (?:outage|unavailable)|(?:outside|lack|missing|requires?|awaiting)[^.!?\n]{0,40}(?:authority|ownership)|(?:authority|ownership) (?:conflict|boundary|denied)|owner (?:decision|approval) (?:needed|required)|awaiting (?:the )?owner|awaiting lead answer)\b/i;
 
 function messageText(message: AgentMessage): string {
 	if (!("content" in message)) return "";
