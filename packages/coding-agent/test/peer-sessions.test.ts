@@ -216,6 +216,8 @@ describe("peer sessions", () => {
 			session: {
 				cwd: "/work/hermes",
 				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
 				agentRegistry: sender.registry,
 				getAgentId: () => MAIN_AGENT_ID,
 				getSessionId: () => sessionId,
@@ -256,6 +258,8 @@ describe("peer sessions", () => {
 		const session = {
 			cwd: dir,
 			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
 			agentRegistry: target.registry,
 			getAgentId: () => MAIN_AGENT_ID,
 			getSessionId: () => "sess-bare-shell",
@@ -403,6 +407,8 @@ describe("peer sessions", () => {
 						session: {
 							cwd: dir,
 							hasUI: false,
+							getSessionFile: () => null,
+							getSessionSpawns: () => "*",
 							agentRegistry: target.registry,
 							getAgentId: () => MAIN_AGENT_ID,
 							getSessionId: () => "sess-transition-target",
@@ -961,6 +967,8 @@ describe("peer sessions", () => {
 			session: {
 				cwd: dir,
 				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
 				agentRegistry: target.registry,
 				getAgentId: () => MAIN_AGENT_ID,
 				getSessionId: () => "sess-shell-reply",
@@ -997,6 +1005,8 @@ describe("peer sessions", () => {
 				session: {
 					cwd: dir,
 					hasUI: false,
+					getSessionFile: () => null,
+					getSessionSpawns: () => "*",
 					agentRegistry: target.registry,
 					getAgentId: () => MAIN_AGENT_ID,
 					getSessionId: () => "sess-negative",
@@ -1036,6 +1046,8 @@ describe("peer sessions", () => {
 			session: {
 				cwd: dir,
 				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
 				agentRegistry: target.registry,
 				getAgentId: () => MAIN_AGENT_ID,
 				getSessionId: () => "sess-exited-shell",
@@ -1058,6 +1070,8 @@ describe("peer sessions", () => {
 			session: {
 				cwd: dir,
 				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
 				agentRegistry: target.registry,
 				getAgentId: () => MAIN_AGENT_ID,
 				settings: Settings.isolated(),
@@ -1235,6 +1249,8 @@ describe("peer sessions", () => {
 				session: {
 					cwd: dir,
 					hasUI: false,
+					getSessionFile: () => null,
+					getSessionSpawns: () => "*",
 					agentRegistry: target.registry,
 					getAgentId: () => MAIN_AGENT_ID,
 					getSessionId: () => "sess-target",
@@ -1800,6 +1816,8 @@ describe("PR23 uncertain shell replies", () => {
 						session: {
 							cwd: dir,
 							hasUI: false,
+							getSessionFile: () => null,
+							getSessionSpawns: () => "*",
 							agentRegistry: target.registry,
 							getAgentId: () => MAIN_AGENT_ID,
 							getSessionId: () => "uncertain-replier",

@@ -1,3 +1,4 @@
+import type { PeerCommandReceipt } from "../collab/peer-commands";
 /**
  * Main-thread mirror of an agent session homed on a subagent worker.
  *
@@ -839,6 +840,10 @@ export class RemoteAgentSession implements AgentViewSession {
 	waitForIrcReplies(): Promise<void> {
 		if (this.#closed !== undefined) return Promise.resolve();
 		return this.#command("waitForIrcReplies");
+	}
+
+	executePeerSlashCommand(text: string): Promise<PeerCommandReceipt | null> {
+		return this.#command("executePeerSlashCommand", text);
 	}
 
 	prompt(text: string, options?: PromptOptions): Promise<boolean> {

@@ -56,6 +56,8 @@ const MAILBOX_CAP = 100;
 
 /** Public surface of the process-global IRC bus, implemented locally on main and by a proxy in workers. */
 export interface IrcBusApi {
+	/** Resolve a shell sender from the recipient mailbox history. */
+	resolveShellReplyTarget(recipient: string): string;
 	/** Fire-and-forget delivery; the receipt reports how the message reached the recipient. */
 	send(msg: Omit<IrcMessage, "id" | "ts">): Promise<IrcDeliveryReceipt>;
 	/** Whether `from` successfully sent `to` anything, progress included, at or after `sinceTs`. */

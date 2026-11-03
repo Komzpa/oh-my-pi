@@ -136,6 +136,7 @@ import {
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily, isServiceTierForFamily, serviceTierSettingToTier } from "../config/service-tier";
 import { combine, type SettingsScope } from "../config/registry";
+import { executePeerSlashCommand, type PeerCommandReceipt } from "../collab/peer-commands";
 import type { MCPLoadResult } from "../mcp/manager";
 import { type Settings, withActiveSettings } from "../config/settings";
 import { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
@@ -7716,6 +7717,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Rebuilds the stable base prompt, optionally discarding a stale asynchronous rebuild. */
 	refreshBaseSystemPrompt(commitIf?: () => boolean): Promise<void> {
 		return this.#tools.refreshBaseSystemPrompt(commitIf);
+	}
+
+	executePeerSlashCommand(text: string): Promise<PeerCommandReceipt | null> {
+		return executePeerSlashCommand(this, text);
 	}
 
 	/** Actual owned-runtime reload, never a command-metadata refresh or global lookup. */
