@@ -5,8 +5,7 @@
 import type { ToolResultMessage } from "@oh-my-pi/pi-ai";
 import type { Tokenizer } from "../tokenizer";
 import type { AgentMessage, AgentToolCall } from "../types";
-import type { SessionEntry, SessionMessageEntry } from "./entries";
-import { invalidateMessageCache } from "./message-cache";
+import type { SessionEntry, SessionMessageEntry, ToolResultPruneEntry, ToolResultPruneTarget } from "./entries";
 import { type ConvertToLlm, defaultConvertToLlm, getMessageFromEntry } from "./messages";
 import {
 	collectToolCallsById,
@@ -33,6 +32,62 @@ export interface CacheLookbackConfig {
 	 * messages) as sent. Default {@link defaultConvertToLlm}.
 	 */
 	convertToLlm?: ConvertToLlm;
+}
+
+/**
+ * Stable projection cache keyed by the prune overlay object. Each overlay's
+ * projected copies are memoized per target id so rebuilds return identical
+ * message identities (advisor/cache comparisons rely on this).
+ */
+const pruneProjectionCache = new WeakMap<ToolResultPruneEntry, WeakMap<SessionMessageEntry, SessionMessageEntry>>();
+
+export type { ToolResultPruneTarget, ToolResultPruneEntry };
+
+/** Apply branch-local overlays without changing raw journal entries. First prune on the path wins. */
+export function projectToolResultPrunes<T extends SessionEntry>(path: readonly T[]): T[] {
+	const overlays = new Map<string, { entry: ToolResultPruneEntry; notice: string }>();
+	const preceding = new Set<string>();
+	for (const pathEntry of path) {
+		const entry: SessionEntry = pathEntry;
+		if (entry.type === "tool_result_prune") {
+			for (const target of entry.targets) {
+				if (preceding.has(target.entryId) && !overlays.has(target.entryId)) {
+					overlays.set(target.entryId, { entry, notice: target.notice });
+				}
+			}
+		}
+		preceding.add(entry.id);
+	}
+	if (overlays.size === 0) return path as T[];
+	return path.map(pathEntry => {
+		const entry: SessionEntry = pathEntry;
+		const overlay = overlays.get(entry.id);
+		if (!overlay || entry.type !== "message") return pathEntry;
+		return projectToolResultPrune(entry, overlay.entry, overlay.notice) as unknown as T;
+	});
+}
+
+/** Project one resolved branch-local target while sharing the bulk projector's stable identity cache. */
+export function projectToolResultPrune(entry: SessionMessageEntry, overlay: ToolResultPruneEntry, notice: string) {
+	if (entry.message.role !== "toolResult" || entry.message.prunedAt !== undefined) return entry;
+	let cache = pruneProjectionCache.get(overlay);
+	if (!cache) {
+		cache = new WeakMap();
+		pruneProjectionCache.set(overlay, cache);
+	}
+	let projected = cache.get(entry);
+	if (!projected) {
+		projected = {
+			...entry,
+			message: {
+				...entry.message,
+				content: [{ type: "text", text: notice }],
+				prunedAt: overlay.prunedAt,
+			},
+		};
+		cache.set(entry, projected);
+	}
+	return projected;
 }
 
 export interface PruneConfig extends CacheLookbackConfig {
@@ -84,35 +139,13 @@ export const DEFAULT_PRUNE_CONFIG: PruneConfig = {
 export interface PruneResult {
 	prunedCount: number;
 	tokensSaved: number;
-	/**
-	 * Restore every result this pass blanked. Pruning mutates entries in place,
-	 * so a caller whose persistence of the pruned history fails calls this to keep
-	 * memory matching what is durable.
-	 */
-	undo(): void;
+	/** Prune timestamp carried by every target so projections and durable overlays agree. */
+	prunedAt: number;
+	/** Targets this pass blanked; entries are never mutated. */
+	targets: ToolResultPruneTarget[];
 }
 
-const NOTHING_PRUNED: PruneResult = { prunedCount: 0, tokensSaved: 0, undo: () => {} };
-
-/** Blank `message` to `notice`, returning the step that restores it. */
-function blankToolResult(message: ToolResultMessage, notice: string, prunedAt: number): () => void {
-	const { content, prunedAt: previousPrunedAt } = message;
-	message.content = [{ type: "text", text: notice }];
-	message.prunedAt = prunedAt;
-	invalidateMessageCache(message as AgentMessage);
-	return () => {
-		message.content = content;
-		message.prunedAt = previousPrunedAt;
-		invalidateMessageCache(message as AgentMessage);
-	};
-}
-
-/** Combine per-message restore steps into one {@link PruneResult.undo}. */
-function undoAll(steps: Array<() => void>): () => void {
-	return () => {
-		for (const step of steps) step();
-	};
-}
+const NOTHING_PRUNED: PruneResult = { prunedCount: 0, tokensSaved: 0, prunedAt: 0, targets: [] };
 
 /** Exact placeholder written over a superseded tool result. */
 export const SUPERSEDED_NOTICE = "[Superseded by a newer read of this file]";
@@ -527,11 +560,11 @@ export function pruneSupersededToolResults(
 	if (toPrune.length === 0) return NOTHING_PRUNED;
 
 	let tokensSaved = 0;
-	for (const candidate of toPrune) tokensSaved += estimatePrunedSavings(candidate.tokens, candidate.notice);
-
-	const prunedAt = Date.now();
-	const steps = toPrune.map(candidate => blankToolResult(candidate.message, candidate.notice, prunedAt));
-	return { prunedCount: toPrune.length, tokensSaved, undo: undoAll(steps) };
+	const targets = toPrune.map(candidate => {
+		tokensSaved += estimatePrunedSavings(candidate.tokens, candidate.notice);
+		return { entryId: candidate.entry.id, notice: candidate.notice };
+	});
+	return { prunedCount: targets.length, tokensSaved, prunedAt: now, targets };
 }
 
 export function pruneToolOutputs(
@@ -653,16 +686,16 @@ export function pruneToolOutputs(
 	}
 
 	const prunedAt = Date.now();
-	const steps = candidates.map(candidate => {
+	const targets = candidates.map(candidate => {
 		const notice = candidate.superseded
 			? SUPERSEDED_NOTICE
 			: candidate.useless
 				? USELESS_NOTICE
 				: createPrunedNotice(candidate.tokens);
-		return blankToolResult(candidate.entry.message as ToolResultMessage, notice, prunedAt);
+		return { entryId: candidate.entry.id, notice };
 	});
 
-	return { prunedCount: candidates.length, tokensSaved, undo: undoAll(steps) };
+	return { prunedCount: targets.length, tokensSaved, prunedAt, targets };
 }
 
 /**
