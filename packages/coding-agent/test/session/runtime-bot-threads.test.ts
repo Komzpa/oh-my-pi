@@ -516,7 +516,7 @@ describe("runtime bot-thread regressions", () => {
 		expect(f.notices.join("\n")).toContain("Re-audit R1");
 	});
 
-	it("keeps a stable empty-ledger wrapper and preserves images when appending status", async () => {
+	it("keeps a stable empty-ledger wrapper and preserves image-only answers without adding status", async () => {
 		const f = await fixture({ empty: true });
 		const gate = f.gate();
 		expect(gate).toBeDefined();
@@ -525,13 +525,13 @@ describe("runtime bot-thread regressions", () => {
 		const answer = message([image]);
 		await admitAssistantMessage(answer, gate, undefined, () => "abort");
 		expect(answer.content.some(block => block.type === "image")).toBe(true);
-		expect(answer.content.some(block => block.type === "text")).toBe(true);
+		expect(answer.content).toEqual([image]);
 	});
 
 	it("keeps answers visible and offers recovery when required tools are disabled", async () => {
 		const f = await fixture({ toolsMissing: true });
 		const result = await f.gate()!(message(), new AbortController().signal);
-		expect(result?.replacementText).toContain("User-visible answer");
+		expect(result).toBeUndefined();
 		expect(f.notices.join("\n")).toContain("Required tools are unavailable: todo, task");
 		expect(f.notices.join("\n")).toContain("Do not repeat calls to unavailable tools");
 	});
