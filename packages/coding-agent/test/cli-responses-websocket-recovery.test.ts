@@ -70,7 +70,8 @@ async function withCli(
 			retry: { enabled: true, maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1000, modelFallback: false },
 			providers: {
 				openaiResponsesWebsockets: options.websockets === "default" ? undefined : (options.websockets ?? true),
-				streamFirstEventTimeoutSeconds: options.first ?? 1,
+				// The first-event budget also covers connection setup; deadline tests override it.
+				streamFirstEventTimeoutSeconds: options.first ?? 5,
 				streamIdleTimeoutSeconds: options.idle ?? 1,
 				cacheWarming: "off",
 			},
@@ -152,14 +153,6 @@ function bashEvents(project: string) {
 		}),
 		"resp_tool",
 		"call_append_once",
-	);
-}
-
-function hasTextDelta(event: AgentEvent, text: string): boolean {
-	return (
-		event.type === "message_update" &&
-		event.assistantMessageEvent.type === "text_delta" &&
-		event.assistantMessageEvent.delta.includes(text)
 	);
 }
 
@@ -351,12 +344,12 @@ describe("real CLI Responses WebSocket recovery", () => {
 			let restored: { server: { stop(closeActiveConnections?: boolean): Promise<void> | void } } | undefined;
 			try {
 				await withCli(`${fixture.server.url.origin}/v1`, async ({ client, sessionEvents }) => {
-					const partial = waitForEvent(client, event => hasTextDelta(event, "OUTAGE_PARTIAL"));
 					const result = client.promptAndWait("OUTAGE_USER", undefined, promptTimeout).then(
 						() => ({ error: undefined }),
 						(error: unknown) => ({ error }),
 					);
-					await partial;
+					// Main-session publication holds deltas until admission; interrupt at the wire barrier.
+					await fixture.waitForRequests(1);
 					expect(fixture.requests).toHaveLength(1);
 					await fixture.server.stop(true);
 					const failed = await result;
@@ -385,7 +378,7 @@ describe("real CLI Responses WebSocket recovery", () => {
 	);
 
 	test(
-		"retains text already delivered over RPC and TurnRecovery sends a new SSE continuation, not a replay",
+		"retains admitted partial text and TurnRecovery sends a new SSE continuation, not a replay",
 		async () => {
 			let socket: ResponsesSocket | undefined;
 			const fixture = endpoint(
@@ -397,9 +390,8 @@ describe("real CLI Responses WebSocket recovery", () => {
 			);
 			try {
 				await withCli(`${fixture.server.url.origin}/v1`, async ({ client, events }) => {
-					const partial = waitForEvent(client, event => hasTextDelta(event, "VISIBLE_PREFIX"));
 					const result = client.promptAndWait("CONTINUE_USER", undefined, promptTimeout);
-					await partial;
+					await fixture.waitForRequests(1);
 					expect(fixture.httpRequests).toHaveLength(0);
 					socket?.terminate();
 					await result;
@@ -418,7 +410,14 @@ describe("real CLI Responses WebSocket recovery", () => {
 								message.content.some(block => block.type === "text" && block.text === "VISIBLE_PREFIX "),
 						),
 					).toBe(true);
-					expect(events.filter(event => hasTextDelta(event, "VISIBLE_PREFIX"))).toHaveLength(1);
+					expect(
+						events.filter(
+							event =>
+								event.type === "message_end" &&
+								event.message.role === "assistant" &&
+								event.message.content.some(block => block.type === "text" && block.text === "VISIBLE_PREFIX "),
+						),
+					).toHaveLength(1);
 				});
 			} finally {
 				await fixture.server.stop(true);
@@ -449,10 +448,9 @@ describe("real CLI Responses WebSocket recovery", () => {
 						host.client,
 						event => event.type === "tool_execution_end" && event.toolName === "bash",
 					);
-					const partial = waitForEvent(host.client, event => hasTextDelta(event, "AFTER_TOOL_PARTIAL"));
 					const result = host.client.promptAndWait("EXECUTE_ONCE", undefined, promptTimeout);
 					expect(await executed).toMatchObject({ isError: false });
-					await partial;
+					await fixture.waitForRequests(2);
 					expect(await Bun.file(host.effect).text()).toBe("x");
 					expect(JSON.stringify(fixture.requests[1].body.input)).toContain("TOOL_ROUNDTRIP");
 					socket?.terminate();
@@ -483,12 +481,8 @@ describe("real CLI Responses WebSocket recovery", () => {
 			});
 			try {
 				await withCli(`${fixture.server.url.origin}/v1`, async host => {
-					const args = waitForEvent(
-						host.client,
-						event => event.type === "message_update" && event.assistantMessageEvent.type === "toolcall_delta",
-					);
 					const result = host.client.promptAndWait("HALF_TOOL_USER", undefined, promptTimeout);
-					await args;
+					await fixture.waitForRequests(1);
 					socket?.terminate();
 					await result;
 					expect(await Bun.file(host.effect).exists()).toBe(false);
@@ -516,12 +510,11 @@ describe("real CLI Responses WebSocket recovery", () => {
 			});
 			try {
 				await withCli(`${fixture.server.url.origin}/v1`, async ({ client, sessionEvents }) => {
-					const partial = waitForEvent(client, event => hasTextDelta(event, "CANCEL_PREFIX"));
 					const result = client.promptAndWait("CANCEL_USER", undefined, promptTimeout).then(
 						() => undefined,
 						(error: unknown) => error,
 					);
-					await partial;
+					await fixture.waitForRequests(1);
 					await client.abort();
 					await result;
 					await client.waitForSettled(promptTimeout);
@@ -592,7 +585,7 @@ describe("real CLI Responses WebSocket recovery", () => {
 						},
 						// A first-event deadline shorter than ~1 s can expire during the WebSocket
 						// handshake on a loaded machine, before the request reaches the socket.
-						{ first: 1, idle: phase === "idle" ? 0.2 : 1 },
+						{ first: 5, idle: phase === "idle" ? 0.2 : 5 },
 					);
 				} finally {
 					await fixture.server.stop(true);

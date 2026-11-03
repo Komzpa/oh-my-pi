@@ -127,11 +127,15 @@ fn smoke_real_server() {
 			phases: vec![TodoPhase {
 				name:  "Smoke".into(),
 				tasks: vec![TodoItem {
-					content: "blocked task".into(),
-					status:  TodoStatus::Blocked,
-					blocker: Some("waiting".into()),
-					details: None,
-					notes:   None,
+					content:        "blocked task".into(),
+					status:         TodoStatus::Blocked,
+					blocker:        Some("waiting".into()),
+					details:        None,
+					notes:          None,
+					artifact_cwd:   None,
+					artifact_owner: None,
+					deployment:     None,
+					awaiting_user:  None,
 				}],
 			}],
 		})
@@ -389,8 +393,9 @@ fn smoke_scripted_model() {
 
 fn prompt(message: &str) -> PromptCommand {
 	PromptCommand {
-		message:            message.to_owned(),
-		images:             None,
-		streaming_behavior: None,
+		message:              message.to_owned(),
+		raw_requirement_text: None,
+		images:               None,
+		streaming_behavior:   None,
 	}
 }

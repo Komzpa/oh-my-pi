@@ -328,9 +328,10 @@ fn failed_negotiation_fails_startup() {
 
 fn prompt(message: &str) -> PromptCommand {
 	PromptCommand {
-		message:            message.to_owned(),
-		images:             None,
-		streaming_behavior: None,
+		message:              message.to_owned(),
+		raw_requirement_text: None,
+		images:               None,
+		streaming_behavior:   None,
 	}
 }
 
