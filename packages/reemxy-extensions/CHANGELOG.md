@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Route actual image reads and screenshot results from text-only models through the lead to ui-coder ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Require live review-page artifacts on idle user-decision rows instead of interpreting chat questions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Verify worker yield requirements against commits, files, successful tool calls and tracked worktree state, with bounded blocker retries and budget exemptions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
