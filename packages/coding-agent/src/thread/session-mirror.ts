@@ -235,14 +235,6 @@ export interface SessionAbortOptions {
  * event-stream watch toggle.
  */
 export type SessionHostProtocol = {
-	setFastMode: RpcMethod<[enabled: boolean], boolean>;
-	sendCustomMessage: RpcMethod<
-		[
-			message: CustomMessagePayload,
-			options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
-		],
-		boolean
-	>;
 	prompt: RpcMethod<[text: string, options?: PromptOptions], boolean>;
 	steer: RpcMethod<[text: string, images?: ImageContent[], options?: SteerOptions], void>;
 	abort: RpcMethod<[options?: SessionAbortOptions], void>;
@@ -261,6 +253,14 @@ export type SessionHostProtocol = {
 	 * never be delivered.
 	 */
 	popQueuedMessage: RpcMethod<[id: string], void>;
+	setFastMode: RpcMethod<[enabled: boolean], boolean>;
+	sendCustomMessage: RpcMethod<
+		[
+			message: CustomMessagePayload,
+			options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+		],
+		boolean
+	>;
 	setTodoPhases: RpcMethod<[phases: TodoPhase[]], void>;
 	appendCustomEntry: RpcMethod<[customType: string, data: unknown], void>;
 	appendModelUsage: RpcMethod<
