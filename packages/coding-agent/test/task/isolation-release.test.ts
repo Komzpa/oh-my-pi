@@ -73,6 +73,7 @@ async function commitsAcrossRelease(
 	const session = {
 		prepareForHeadlessAdvisorDrain: () => {},
 		waitForAdvisorCatchup: async () => true,
+		releaseTaskResources: async () => {},
 		dispose: async () => {},
 	} as unknown as AgentSession;
 	vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
