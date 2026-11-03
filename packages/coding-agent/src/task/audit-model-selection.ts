@@ -4,7 +4,7 @@ import { classifyModel } from "@oh-my-pi/pi-catalog/compat/taxonomy";
 import { bareModelId } from "@oh-my-pi/pi-catalog/identity";
 import { splitThinkingSuffix } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
-import { cfgAuditModelRolePools } from "./settings";
+import { lookup as lookupSetting } from "../config/registry";
 import {
 	resolveModelRoleValue,
 	resolveConfiguredModelPatterns,
@@ -251,7 +251,7 @@ export async function selectRowAuditModel(
 		requirements.some(requirement => request.requirementIds?.includes(requirement.id) && requirement.images?.length);
 	const eligible = visual ? available.filter(model => model.input.includes("image")) : available;
 	const resolve = (patterns: string[], role?: string): AuditModelCandidate[] => {
-		const weights = role ? cfgAuditModelRolePools.get(settings)[role] : undefined;
+		const weights = role ? auditRolePoolWeights(settings, role) : undefined;
 		return patterns.flatMap(selector => {
 			const resolved = resolveModelRoleValue(selector, eligible, { settings });
 			const model = resolved.model;
@@ -310,6 +310,16 @@ export async function selectRowAuditModel(
 		modelRole: undefined,
 		modelRoute: `row audit: ${selection.rule}${explicit ? " (explicit override)" : ""}`,
 	};
+}
+
+/**
+ * Relative draw weights for `role`'s members from `modelRolePools`, read through the registry without
+ * declaring that setting: its owner registers it, and while no owner is loaded every member weighs 1.
+ */
+export function auditRolePoolWeights(settings: Settings, role: string): Readonly<Record<string, number>> | undefined {
+	const pools = lookupSetting("modelRolePools")?.get(settings);
+	const weights = isRecord(pools) ? pools[role] : undefined;
+	return isRecord(weights) ? (weights as Readonly<Record<string, number>>) : undefined;
 }
 
 function configuredRoleCandidates(

@@ -25,6 +25,7 @@ import {
 	type AuditModelCandidate,
 } from "../../src/task/audit-model-selection";
 import type { StructuredSubagentRequest, EffectiveSubagentPolicy } from "../../src/task/structured-subagent";
+import { ensureModelRolePoolsOwner } from "../helpers/model-role-pools-owner";
 
 function candidate(id: string, weight = 1, images = true): AuditModelCandidate {
 	const model = buildModel({
@@ -129,7 +130,8 @@ describe("row auditor model independence", () => {
 	});
 });
 
-async function fixture(agent = "qa-auditor") {
+async function fixture(agent = "qa-auditor", pools?: Record<string, Record<string, number>>) {
+	ensureModelRolePoolsOwner();
 	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "audit-selection-"));
 	cleanups.push(directory);
 	const manager = SessionManager.inMemory(directory);
@@ -147,7 +149,7 @@ async function fixture(agent = "qa-auditor") {
 	);
 	const settings = Settings.isolated({
 		modelRoles: { "visual-audit": "test/gpt-6.1-sol, test/claude-opus-5-5", strong: "test/gpt-6-astra" },
-		modelRolePools: { "visual-audit": { "test/gpt-6.1-sol": 100, "test/claude-opus-5-5": 0.1 } },
+		modelRolePools: pools ?? { "visual-audit": { "test/gpt-6.1-sol": 100, "test/claude-opus-5-5": 0.1 } },
 	});
 	const request = {
 		session: {
@@ -194,6 +196,15 @@ it("dispatch reads the bound worker JSONL, filters weighted pool and persists th
 			identicalModel: false,
 		},
 	});
+});
+it("dispatch drops a pool member the owner's modelRolePools weighs at zero", async () => {
+	const { request, policy, manager } = await fixture("qa-auditor", { "visual-audit": { [opus.selector]: 0 } });
+	expect((await selectRowAuditModel(request, policy)).modelOverride).toEqual([sol.selector]);
+	expect(manager.getBranch().at(-1)).toMatchObject({ data: { auditorModel: sol.selector, rule: "higher_class" } });
+});
+it("dispatch without configured pools weighs every member equally", async () => {
+	const { request, policy } = await fixture("qa-auditor", {});
+	expect((await selectRowAuditModel(request, policy)).modelOverride).toEqual([opus.selector]);
 });
 it("non-row audits retain the exact incoming policy without writing a selection", async () => {
 	const { request, policy, manager } = await fixture();
