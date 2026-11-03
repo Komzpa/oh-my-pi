@@ -58,7 +58,19 @@ export const REQUIREMENTS_LEDGER_CUSTOM_TYPE = "requirements_ledger";
 export type RequirementClassification = "candidate" | "linked" | "not-a-requirement" | "merged";
 export type RequirementVerdictStatus = "pass" | "fail" | "unverifiable";
 
+export interface RequirementCollateralDefect {
+	screenshot: string;
+	region: string;
+	defect: string;
+}
+
+export interface RequirementCollateral {
+	screenshots: string[];
+	defects: RequirementCollateralDefect[];
+}
+
 export interface RequirementVerdict {
+	collateral?: RequirementCollateral;
 	status: RequirementVerdictStatus;
 	evidence: string;
 	artifact: string;
@@ -166,7 +178,9 @@ function parseVerdict(value: unknown): RequirementVerdict | undefined {
 		(value.rowChangeId !== undefined && typeof value.rowChangeId !== "string")
 	)
 		return undefined;
+	if (value.collateral !== undefined && !validRequirementCollateral(value.collateral)) return undefined;
 	return {
+		...(value.collateral === undefined ? {} : { collateral: value.collateral as RequirementCollateral }),
 		status: value.status as RequirementVerdictStatus,
 		evidence: value.evidence,
 		artifact: value.artifact,
@@ -1042,6 +1056,7 @@ export async function evaluateRequirementDoneGate(
 	 * re-closed, so these sweeps leave that out. Source changes still re-evaluate it.
 	 */
 	settledRows: ReadonlySet<string> = new Set(),
+	followUpRows: ReadonlySet<string> = new Set(),
 ): Promise<RequirementDoneGateIssue[]> {
 	const targets = new Set(rows);
 	const artifacts = new Map<string, Promise<RequirementGateArtifact>>();
@@ -1077,6 +1092,16 @@ export async function evaluateRequirementDoneGate(
 		}
 		for (const row of getLinkedRequirementRows(requirement, rows)) {
 			const recorded = getRequirementRowVerdict(requirement, row);
+			const unhandled =
+				recorded?.collateral?.defects.filter(
+					defect => !followUpRows.has(collateralFollowUpRow(row, defect.defect)),
+				) ?? [];
+			if (unhandled.length) {
+				issues.push(
+					`${requirement.id} (${JSON.stringify(row)}): collateral defects block closure. Rework and re-audit, or add linked follow-up TODO rows: ${unhandled.map(defect => JSON.stringify(collateralFollowUpRow(row, defect.defect))).join("; ")}`,
+				);
+				continue;
+			}
 			// A settled row's pass survives checkout movement, including one an older sweep already demoted
 			// to unverifiable for staleness alone (same receipt; only status and evidence were rewritten).
 			const settled =
@@ -1282,6 +1307,81 @@ function requirementTableCells(line: string): string[] | null {
 		return text.startsWith("`") && text.endsWith("`") ? text.slice(1, -1).trim() : text;
 	});
 }
+function validRequirementCollateral(value: unknown): value is RequirementCollateral {
+	return (
+		isRecord(value) &&
+		Array.isArray(value.screenshots) &&
+		value.screenshots.length > 0 &&
+		value.screenshots.every(item => typeof item === "string" && item.trim()) &&
+		Array.isArray(value.defects) &&
+		value.defects.every(
+			item =>
+				isRecord(item) &&
+				["screenshot", "region", "defect"].every(key => typeof item[key] === "string" && item[key].trim()),
+		)
+	);
+}
+
+/** Exact receipt grammar; prose outside the section never supplies collateral findings. */
+export function parseRequirementCollateral(output: string): RequirementCollateral | undefined {
+	let decoded: unknown;
+	try {
+		decoded = JSON.parse(output);
+	} catch {
+		decoded = undefined;
+	}
+	if (decoded !== undefined) {
+		const strings: string[] = [];
+		const collect = (value: unknown): void => {
+			if (typeof value === "string") strings.push(value);
+			else if (Array.isArray(value)) value.forEach(collect);
+			else if (isRecord(value)) Object.values(value).forEach(collect);
+		};
+		collect(decoded);
+		output = strings.join("\n");
+	}
+	const lines = output.split(/\r?\n/);
+	let result: RequirementCollateral | undefined;
+	for (let index = 0; index < lines.length; index++) {
+		const line = lines[index]!.trim();
+		const cells = requirementTableCells(line);
+		if (line !== "Collateral: none" && cells?.join("|") !== "screenshot|region|defect") continue;
+		if (result) throw new Error("return exactly one collateral section");
+		if (!lines.slice(0, index).some(prior => requirementTableCells(prior)?.[0]?.toLowerCase() === "id"))
+			throw new Error("collateral section must follow the verdict table");
+		result = { screenshots: [], defects: [] };
+		if (line === "Collateral: none") {
+			while (++index < lines.length) {
+				const entry = lines[index]!.trim();
+				if (!entry) break;
+				if (!entry.startsWith("- "))
+					throw new Error("Collateral: none must be followed by screenshot paths as - path lines");
+				result.screenshots.push(entry.slice(2).replace(/^`(.*)`$/, "$1"));
+			}
+		} else {
+			const separator = requirementTableCells(lines[++index] ?? "");
+			if (separator?.length !== 3 || !separator.every(cell => /^:?-{3,}:?$/.test(cell)))
+				throw new Error("collateral table requires a three-column separator");
+			while (index + 1 < lines.length && lines[index + 1]!.trim().startsWith("|")) {
+				const row = requirementTableCells(lines[++index]!);
+				if (row?.length !== 3 || row.some(cell => !cell.trim()))
+					throw new Error("collateral rows require screenshot, region, and defect");
+				result.defects.push({ screenshot: row[0]!, region: row[1]!, defect: row[2]! });
+				result.screenshots.push(row[0]!);
+			}
+			if (!result.defects.length)
+				throw new Error("empty collateral table; use Collateral: none with inspected screenshot paths");
+		}
+		if (!validRequirementCollateral(result))
+			throw new Error("collateral section must name inspected screenshot paths");
+	}
+	return result;
+}
+
+export function collateralFollowUpRow(row: string, defect: string): string {
+	return `Collateral for ${JSON.stringify(row)}: ${defect}`;
+}
+
 /** Digest the exact captured source bytes, including newlines and image tags. */
 export function requirementSourceDigest(rawText: string): string {
 	return new Bun.CryptoHasher("sha256").update(rawText).digest("hex");

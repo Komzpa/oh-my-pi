@@ -295,7 +295,7 @@ describe("requirements ledger flow notices", () => {
 		}
 	});
 
-	it("announces a saved pass becoming stale before the publication refusal", async () => {
+	it("announces a saved pass becoming stale without rewriting the assistant reply", async () => {
 		const { cwd, manager, notices, runtime, gate } = fixture({ linked: true, withCheckout: true });
 		try {
 			fs.writeFileSync(path.join(cwd, "artifact.txt"), "after\n");
@@ -325,7 +325,7 @@ describe("requirements ledger flow notices", () => {
 			const staleNotice = notices.find(notice => notice.includes("Re-audit R1"));
 			expect(staleNotice).toContain("Re-audit R1");
 			expect(staleNotice).toContain('requirementIds:["R1"]');
-			expect(refusal && "replacementText" in refusal ? refusal.replacementText : "").toContain("Not audit-verified");
+			expect(refusal).toBeUndefined();
 			const retained = getLatestRequirements(manager.getBranch()).find(requirement => requirement.id === "R1");
 			expect(retained?.rows).toEqual(["Build artifact"]);
 			expect(retained?.rowVerdicts?.["Build artifact"]?.status).toBe("unverifiable");

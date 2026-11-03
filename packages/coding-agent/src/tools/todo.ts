@@ -1820,6 +1820,12 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 					lastChange: changes.get(row),
 				}),
 				getPersistedRequirementAuditRejections(branch, sessionManager.getSessionId?.() ?? null),
+				new Set(),
+				new Set(
+					previousPhases.flatMap(phase =>
+						phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content),
+					),
+				),
 			);
 			if (JSON.stringify(getLatestRequirements(sessionManager.getBranch())) !== requirementSnapshot) {
 				return {

@@ -36,6 +36,8 @@ import {
 	type RequirementVerdict,
 	type RequirementGateArtifact,
 	parseRequirementReceipt,
+	parseRequirementCollateral,
+	parseRequirementReceiptIdentities,
 	parseRequirementsLedger,
 	requirementAuditSnapshot,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
@@ -99,7 +101,13 @@ import { BUNDLED_QA_AUDITOR_TEMPLATE } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
 import type { SessionEntry } from "./session-entries";
 import { sha256File } from "../utils/file-hash";
-import { requirementIdentityKey, type RequirementIdentity } from "../utils/requirement-artifact";
+import {
+	requirementAuditReadImage,
+	requirementEvidenceScreenshots,
+	requirementTouchesRenderedFiles,
+	requirementIdentityKey,
+	type RequirementIdentity,
+} from "../utils/requirement-artifact";
 import auditInputTemplate from "../prompts/session/requirements-ledger-audit-input.md" with { type: "text" };
 import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
 import flowNoticeTemplate from "../prompts/session/requirements-ledger-flow-notice.md" with { type: "text" };
@@ -1086,6 +1094,9 @@ export class RequirementsLedgerRuntime {
 			}),
 			getPersistedRequirementAuditRejections(branch, this.#sessionId()),
 			completedRowSet(phases),
+			new Set(
+				phases.flatMap(phase => phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content)),
+			),
 		);
 		const staleRows = this.#staleGateRows(open);
 		const invalidated = invalidateStaleRequirementVerdicts(requirements, open);
@@ -1268,6 +1279,34 @@ export class RequirementsLedgerRuntime {
 			if (identityFailure) return identityFailure;
 			return `${expectedIds.join(", ")}: rejected verdict table: ${parseFailure ?? "unparseable"}`;
 		}
+		let collateral;
+		try {
+			collateral = parseRequirementCollateral(output);
+		} catch (error) {
+			return `${expectedIds.join(", ")}: rejected collateral section: ${error instanceof Error ? error.message : String(error)}`;
+		}
+		const artifactDirectory = this.#host.sessionManager.getArtifactsDir();
+		const roots = [this.#host.cwd(), ...(artifactDirectory ? [artifactDirectory] : [])];
+		const readImage = artifactDirectory
+			? await requirementAuditReadImage(path.join(artifactDirectory, `${workerId}.jsonl`))
+			: false;
+		const parsedIdentities = sourceReceipts.flatMap(receipt => {
+			const parsed = parseRequirementReceiptIdentities(receipt.artifact);
+			return "identities" in parsed ? parsed.identities : [];
+		});
+		for (const identity of parsedIdentities) if (identity.kind === "git") roots.push(identity.repo);
+		const hasScreenshot =
+			(await requirementEvidenceScreenshots(sourceReceipts.map(receipt => receipt.evidence).join("\n"), roots))
+				.length > 0;
+		const collateralRetry = `${expectedIds.join(", ")}: missing collateral section for rendered UI audit. Retry with | screenshot | region | defect | after the verdict table, or the exact line Collateral: none followed by inspected screenshot paths as - path lines. Inspect the changed region with its siblings at default and 420–450 px widths.`;
+		if (!collateral && (hasScreenshot || readImage)) return collateralRetry;
+		if (collateral)
+			for (const screenshot of collateral.screenshots) {
+				if (
+					!(await Promise.all(roots.map(root => Bun.file(path.resolve(root, screenshot)).exists()))).some(Boolean)
+				)
+					return `${expectedIds.join(", ")}: collateral screenshot does not exist on disk: ${screenshot}; retry with inspected screenshot paths.`;
+			}
 		for (const source of sources) {
 			const receipt = sourceReceipts.find(receipt => receipt.id === source.id)!;
 			const issue = getRequirementVerdictSourceIssue(
@@ -1398,7 +1437,20 @@ export class RequirementsLedgerRuntime {
 				const receivedAt = new Date().toISOString();
 				if (identity === undefined)
 					return `${receipt.id}: artifact identity did not identify ${JSON.stringify(row)}; resolved checkout: ${formatRequirementGateArtifact(artifact)}`;
+				if (!collateral) {
+					const identities =
+						artifact.identities ??
+						(artifact.cwd && artifact.head
+							? [{ kind: "git" as const, repo: artifact.cwd, commit: artifact.head }]
+							: []);
+					try {
+						if (await requirementTouchesRenderedFiles(identities)) return collateralRetry;
+					} catch (error) {
+						return `${receipt.id}: cannot inspect artifact diff for collateral review: ${error instanceof Error ? error.message : String(error)}; restore access to the artifact and base, then retry QA.`;
+					}
+				}
 				const verdict: RequirementVerdict = {
+					...(collateral ? { collateral } : {}),
 					status: receipt.status,
 					evidence: receipt.evidence,
 					artifact: identity,
