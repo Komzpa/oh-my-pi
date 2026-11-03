@@ -215,7 +215,11 @@ describe("YieldTool terminal result latch", () => {
 			createSession({
 				requireYieldTool: true,
 				getAgentId: () => "worker",
-				asyncJobManager: { getRunningJobs: () => [job] } as never,
+				asyncJobManager: {
+					// Foreground-backed owner jobs are reaped at teardown, so the guard must ask for them.
+					getRunningJobs: (filter?: { ownerId?: string }, options?: { includeForeground?: boolean }) =>
+						filter?.ownerId === "worker" && options?.includeForeground === true ? [job] : [],
+				} as never,
 			}),
 		);
 		const refusal = await tool.execute("call-refused", { data: { answer: 1 } } as never).catch(error => error);
