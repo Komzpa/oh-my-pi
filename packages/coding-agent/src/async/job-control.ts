@@ -13,7 +13,7 @@ import { USER_INTERRUPT_LABEL } from "../session/messages";
 import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
 import { parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 
-import type { AgentRegistry } from "../registry/agent-registry";
+import type { AgentRegistryApi } from "../registry/agent-registry";
 import type { ToolSession } from "../tools";
 
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-tui/render/render-utils";
@@ -75,7 +75,7 @@ export function undeliveredJobs(manager: AsyncJobManagerApi, ownerId: string | u
  * and remove the only discovery path for the id.
  */
 export function runningAgentsFromRegistryOutsideJobs(
-	registry: AgentRegistry | undefined,
+	registry: AgentRegistryApi | undefined,
 	manager: AsyncJobManagerApi | undefined,
 	selfId: string | undefined,
 ): AgentActivitySnapshot[] {

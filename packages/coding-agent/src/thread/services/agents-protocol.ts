@@ -30,6 +30,10 @@ export const AGENT_SESSION_HOST_KIND = "agent-session-host";
 
 /** `AgentRegistryApi` (with its `awaits`) over the link. */
 export type AgentRegistryProtocol = {
+	restoreIdentity: RpcMethod<
+		[id: string, expected: AgentRef, identity: { displayName: string; parentId?: string }],
+		boolean
+	>;
 	register: RpcMethod<[input: RegisterInput], AgentRef>;
 	registerIfAvailable: RpcMethod<[input: RegisterInput, expected: AgentRef | null], AgentRef | undefined>;
 	reopen: RpcMethod<[id: string, expected: AgentRef], AgentRef | undefined>;

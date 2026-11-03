@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
-import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { type AgentRegistryApi, AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -70,6 +70,12 @@ function makeSession(manager: SessionManager, options: SessionHarnessOptions = {
 	let releaseCount = 0;
 	const session = {
 		sessionManager: manager,
+		getRestartPendingInputCount: () => options.queuedInputCount ?? 0,
+		getRestartBranchEntries: async () => manager.getBranch(),
+		flushRestartJournal: async () => {
+			await manager.ensureOnDisk();
+			await manager.flush();
+		},
 		reconcileRestartNotices: async () => {},
 		agent: {
 			getPendingModelNewsCount: () => options.queuedInputCount ?? 0,
@@ -88,6 +94,9 @@ function makeSession(manager: SessionManager, options: SessionHarnessOptions = {
 					releaseCount++;
 				},
 			};
+		},
+		sendRestartNotice: async (message: { details?: { requestId?: string; state?: string } }) => {
+			await session.sendCustomMessage({ customType: "restart-queued", content: "", display: true, ...message });
 		},
 		sendCustomMessage: async (message: { details?: { requestId?: string; state?: string } }) => {
 			customMessages.push(message);
@@ -114,7 +123,7 @@ function makeSession(manager: SessionManager, options: SessionHarnessOptions = {
 	};
 }
 
-function registerRoot(registry: AgentRegistry, session: AgentSession, file: string): void {
+function registerRoot(registry: AgentRegistryApi, session: AgentSession, file: string): void {
 	registry.register({
 		id: MAIN_AGENT_ID,
 		displayName: MAIN_AGENT_ID,

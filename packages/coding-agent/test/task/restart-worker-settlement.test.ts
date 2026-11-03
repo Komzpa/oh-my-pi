@@ -30,6 +30,12 @@ function session(
 ): AgentSession {
 	return {
 		sessionManager: manager,
+		getRestartPendingInputCount: () => 0,
+		getRestartBranchEntries: async () => manager.getBranch(),
+		flushRestartJournal: async () => {
+			await manager.ensureOnDisk();
+			await manager.flush();
+		},
 		agent: { getPendingModelNewsCount: () => 0 },
 		isStreaming: options.wasRunning ?? false,
 		isDisposed: false,
@@ -39,7 +45,7 @@ function session(
 			release: () => {},
 		}),
 		abort: options.abort,
-		sendCustomMessage: async () => {},
+		sendRestartNotice: async () => {},
 		deliverIrcMessage: async () => "woken",
 		emitNotice: () => {},
 	} as unknown as AgentSession;
