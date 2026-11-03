@@ -274,7 +274,8 @@ it("delivers hidden next-turn notices to a worker-homed session", async () => {
 		{ customType: "repeated-status-notice", content: "Already delivered", display: false, attribution: "agent" },
 		{ deliverAs: "nextTurn", triggerTurn: false },
 	);
-	expect(await probe.localCustomTypes("W1")).not.toContain("repeated-status-notice");
+	expect(await probe.localCustomTypes("W1")).toContain("repeated-status-notice");
+	expect(mirror.isStreaming).toBe(false);
 	await mirror.prompt("continue");
 	expect(await probe.localCustomTypes("W1")).toContain("repeated-status-notice");
 });
@@ -285,6 +286,8 @@ it("changes a worker-homed fast tier and refuses control by a different parent",
 	const ref = liveRef("W1");
 	ref.parentId = "Lead";
 	const mirror = mirrorOf(ref.session);
+	const unsubscribe = mirror.subscribe(() => {});
+	cleanups.push(unsubscribe);
 	const model = mirror.model;
 	if (!model) throw new Error("worker model missing");
 	expect(await AgentRegistry.global().setSubagentFastMode("Other", "W1", true)).toBe(false);

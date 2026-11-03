@@ -4922,11 +4922,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const text = JSON.stringify(event.input ?? {});
       const adds = event.toolName === "task" || /"op"\s*:\s*"(append|init)"/.test(text);
       // A worker told to commit (and push) the merge is the right move, not more merge work.
-      const integration = MERGE_WORK.test(text) && (adds || event.toolName === "task") ? await gitState(ctx, Date.now(), true) : null;
+      // A checkout path can contain "rebase" or "merge" without assigning merge work.
+      const mergeItems = taskItems(event.input).filter((item) => MERGE_WORK.test(`${item.name ?? ""} ${item.task ?? ""}`));
+      const mergeWork = event.toolName === "task" ? mergeItems.length > 0 : MERGE_WORK.test(text);
+      const integration = mergeWork && adds ? await gitState(ctx, Date.now(), true) : null;
       const merge = adds && !/\bcommit/i.test(text) ? resolvedMerge(integration) : null;
       const open = event.toolName === "task" ? integration : null;
       if (open?.mergeHead && !merge) {
-        const items = ((event.input as { tasks?: unknown[] } | undefined)?.tasks ?? [event.input]).filter((item) => MERGE_WORK.test(JSON.stringify(item ?? {})));
+        const items = mergeItems;
         const running = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => job.type === "task" && job.status === "running" && MERGE_WORK.test(`${job.id} ${job.label ?? ""} ${job.agentId ?? ""}`));
         if (items.length > 1 || running.length > 0) {
           gateTrace(ctx, "merge-fanout-refused", { items: items.length, running: running.map((job) => job.id) });

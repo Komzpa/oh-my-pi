@@ -33,7 +33,8 @@ async function demandHarness(tasks: unknown[], deadlineAt?: number, autoDeadline
 	try {
 		await todoDispatch(api);
 		const ctx = {
-			cwd: import.meta.dir,
+			// This harness exercises forecasts without a checkout or unpushed-work debt.
+			cwd: `${import.meta.dir}/forecast-without-checkout`,
 			sessionManager: {
 				getHeader: () => ({ id: "forecast-replan-test" }),
 				getBranch: () => branch,
