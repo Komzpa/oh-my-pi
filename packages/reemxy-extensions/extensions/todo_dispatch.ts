@@ -26,6 +26,7 @@ import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDeadlineUserMessage, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState, resolveTimeZone, STATE_ENTRY as GOAL_DEADLINE_STATE_ENTRY, type DeadlineState } from "./deadlines";
 import unansweredUserInstructions from "./unanswered-user-reply.md" with { type: "text" };
 import gateNoticeInstructions from "./gate-notices.md" with { type: "text" };
+import chatChoiceInstructions from "./chat-choice-gate.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetadata, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
@@ -3573,6 +3574,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 
   };
   let inFlightAssistantHasText = false;
+  let latestAssistantText = "";
+  const refusedChatChoices = new Set<string>();
   pi.on("message_start", (event, ctx) => {
     inFlightAssistantHasText = false;
     if (event.message?.role === "assistant") rescheduledRowsThisTurn.clear();
@@ -3702,9 +3705,23 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
   };
   pi.on("message_update", (event) => {
-    if (event.message.role === "assistant")
-      inFlightAssistantHasText = event.message.content.some((part) => part.type === "text" && part.text.trim().length > 0);
+    if (event.message.role !== "assistant") return;
+    const text = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
+    inFlightAssistantHasText = text.length > 0;
+    if (text) latestAssistantText = text;
   });
+  // A lead's reply that asks the owner Do/Leave/Other in chat is refused once per reply: choices go
+  // through the user-shadow pass and a review page, and chat carries only the link.
+  const chatChoiceReason = (ctx: ExtensionContext) => {
+    if (singleWriterLane || !isMain(ctx)) return;
+    const text = latestAssistantText;
+    const match = chatChoiceMatch(text);
+    if (!match) return;
+    const key = createHash("sha256").update(text).digest("hex");
+    if (refusedChatChoices.has(key)) return;
+    refusedChatChoices.add(key);
+    return prompt.render(chatChoiceInstructions, { excerpt: shorten(match, 120) }).trim();
+  };
   pi.on("message_end", () => {
     inFlightAssistantHasText = false;
   });
@@ -3719,6 +3736,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("session_stop", (_event, ctx) => {
     const reason = unansweredUserReason(ctx);
     if (reason) return { decision: "block", reason };
+    const choiceReason = chatChoiceReason(ctx);
+    if (choiceReason) return { decision: "block", reason: choiceReason };
     const idleReason = demandIdlePlanContinuation(ctx);
     if (idleReason) return { decision: "block", reason: idleReason };
   });
@@ -4775,6 +4794,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName === "wait") {
       const reason = unansweredUserReasonWithDraft(ctx);
       if (reason) return { block: true, reason };
+      const choiceReason = chatChoiceReason(ctx);
+      if (choiceReason) return { block: true, reason: choiceReason };
       const idleReason = demandIdlePlanContinuation(ctx, false);
       if (idleReason) return { block: true, reason: idleReason };
     }
@@ -5835,4 +5856,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     dispatchedAgents.clear();
     armIdleCheck(ctx, decision);
   });
+}
+
+/** A Do/Leave/Other choice asked in chat text without a review-page link; returns the matching line. */
+export function chatChoiceMatch(text: string): string | undefined {
+  if (!text || /\/review\/[\w.-]+/.test(text)) return;
+  return text.split("\n").find((line) => /\bDo\s*(?:\/|,)\s*Leave\b(?:\s*(?:\/|,|or|или)\s*Other\b)?/i.test(line));
 }
