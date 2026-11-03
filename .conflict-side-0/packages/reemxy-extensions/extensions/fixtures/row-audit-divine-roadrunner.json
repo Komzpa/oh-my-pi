@@ -1,0 +1,40 @@
+{
+ "source": "DivineRoadrunner.jsonl yield (DC session 2026-11-06 17:30, gate-runner fallback)",
+ "rows": [
+  {
+   "row": "Collateral for \"Integrate finished lanes onto consolidated branch\": The Power group header carries a three-line sentence \"Required: 1.07–1.11 MW · Supplied: 2 MW · Surplus: 0.89–0.93 MW\" that wraps between \"Supplied:\" and \"2 MW\", separating the label from its value",
+   "verdict": "fail",
+   "findings": "Missing HEAD acceptance evidence. Read PowerHeaderWrap-2: header geometry passed at 1440/390 on isolated 545929902, not requested HEAD or 430px. Only command exercised here was git rev-parse HEAD in ROOT, exit 0, confirming f73f78a6147e1e16d26619b39ab698769e66e461. Next worker must verify integrated change and inspect 1440/430 renderings with passing scoped checks at this exact revision."
+  },
+  {
+   "row": "Power source rows: remove red selection frame and grey boxes",
+   "verdict": "fail",
+   "findings": "Read AuditPowerRows: grey boxes and mouse-selection frame passed at older 54b0302, but keyboard focus retained a red rectangle at both 1440/430. No fresh checks or visible-result proof at requested HEAD was obtained. Next worker must verify all source-row states at HEAD, including keyboard focus."
+  },
+  {
+   "row": "Power source rows: no red keyboard-focus frame",
+   "verdict": "fail",
+   "findings": "Missing completed acceptance evidence at HEAD. ContinentalSnail output was an unfinished review transcript, not a green gate receipt or inspected HEAD screenshots. Next worker must verify integrated focus CSS and run the keyboard-focus oracle at both widths on requested revision."
+  },
+  {
+   "row": "UX graph: no other-package or runtime-only concrete edges",
+   "verdict": "fail",
+   "findings": "Read UxGraphEdges: repair 8cc8a7112 passed 13 unit tests and graph freshness in its isolated checkout; integration and rendered/generated graph correctness at requested HEAD were not verified. Next worker must verify inclusion, run the scoped graph checks and inspect concrete-edge output at HEAD."
+  },
+  {
+   "row": "Land focus, UX graph, standup patches on PR 112",
+   "verdict": "fail",
+   "findings": "Root112Switch-2 confirms ROOT detached at requested f73f78a6 with review server PID 3617705, but explicitly reports no push; it does not supply PR 112 readback proving all three patch sets landed. Next worker must inspect commit inclusion and remote PR source identity for the complete patch sets."
+  },
+  {
+   "row": "UX graph: tab transitions and conflict Back modeled",
+   "verdict": "fail",
+   "findings": "UxGraphModel reports repair committed locally as 27545d7eb4c98209354170039b26f859407ebbbe with no integration or push. Its product journeys tested f73f78a6, but those do not prove analyzer repair exists at that revision. Next worker must integrate the analyzer repair, then verify tab edges, preserved conflict underlay and graph freshness on the resulting frozen revision."
+  },
+  {
+   "row": "Integrate finished lanes onto consolidated branch",
+   "verdict": "fail",
+   "findings": "AuditIntegrate-7 evidence concerns older 54b0302 and unresolved newest-head acceptance. Requested HEAD identity was confirmed, but no consolidated final-head gate or complete visible acceptance evidence was available. BLOCKED: awaiting lead answer: Which single audit command/proof and exclusive resource am I authorized to run for this batch? Asked Main twice; wait reported Main cannot reply while awaiting this result. No source changed, no tests started, no processes started/stopped, no commits/pushes or verdict recording performed. Next worker needs a named authorized gate and frozen-head integration evidence."
+  }
+ ]
+}

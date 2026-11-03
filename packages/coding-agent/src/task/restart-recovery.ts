@@ -6,9 +6,10 @@ import restartContinuationPrompt from "../prompts/restart-continuation.md" with 
 import restartRootContinuationPrompt from "../prompts/restart-root-continuation.md" with { type: "text" };
 import type { IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
-import { AgentRegistry, MAIN_AGENT_ID, type AgentRef } from "../registry/agent-registry";
+import { AgentRegistry, MAIN_AGENT_ID, type AgentRef, type AgentRegistryApi } from "../registry/agent-registry";
 import { getAgentTombstonePath } from "../registry/agent-tombstone";
 import { ensurePersistedRoster, isAgentSessionFileInRootTree } from "../registry/persisted-agents";
+import type { AgentSessionHandle } from "../session/agent-session-handle";
 import type { AgentSession } from "../session/agent-session";
 import {
 	collectPendingToolCalls,
@@ -45,9 +46,9 @@ export interface RootContinuationResult {
 	reason?: string;
 }
 
-export type LiveRestartSubagent = AgentRef & { session: AgentSession };
+export type LiveRestartSubagent = AgentRef & { session: AgentSessionHandle };
 
-function rootSubagentRefs(rootSession: AgentSession, registry: AgentRegistry): AgentRef[] {
+function rootSubagentRefs(rootSession: AgentSession, registry: AgentRegistryApi): AgentRef[] {
 	const rootRef = registry.list().find(ref => ref.kind === "main" && ref.session === rootSession);
 	const rootAgentId = rootRef?.id ?? MAIN_AGENT_ID;
 	const rootSessionFile = rootSession.sessionManager.getSessionFile();
@@ -135,7 +136,7 @@ interface RootSessionIdentity {
 	rootSessionFile: string;
 }
 
-function parentChainIncludesRoot(ref: AgentRef, rootAgentId: string, registry: AgentRegistry): boolean {
+function parentChainIncludesRoot(ref: AgentRef, rootAgentId: string, registry: AgentRegistryApi): boolean {
 	let parentId = ref.parentId;
 	const seen = new Set<string>();
 	while (parentId && !seen.has(parentId)) {
@@ -156,14 +157,12 @@ async function isTombstoned(sessionFile: string): Promise<boolean> {
 	}
 }
 
-async function readBranchEntries(sessionFile: string, liveSession?: AgentSession | null): Promise<SessionEntry[]> {
+async function readBranchEntries(
+	sessionFile: string,
+	liveSession?: AgentSessionHandle | null,
+): Promise<SessionEntry[]> {
 	if (liveSession) {
-		return selectRestartBranchEntries(
-			liveSession.sessionManager,
-			metadata =>
-				metadata.type === "message" ||
-				(metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE),
-		);
+		return liveSession.getRestartBranchEntries();
 	}
 	const manager = await SessionManager.open(sessionFile, undefined, undefined, {
 		suppressBreadcrumb: true,

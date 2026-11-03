@@ -4,7 +4,7 @@ import * as path from "node:path";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
-import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { type AgentRegistryApi, AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 import { createRestartQueueController } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
@@ -82,6 +82,7 @@ function makeTestSession(
 	const notices: TestSession["notices"] = [];
 	const session = {
 		sessionManager: manager,
+		getRestartBranchEntries: async () => manager.getBranch(),
 		get isStreaming() {
 			return streaming;
 		},
@@ -101,7 +102,12 @@ function makeTestSession(
 	} as TestSession & { setStreaming(value: boolean): void };
 }
 
-function registerRoot(registry: AgentRegistry, session: AgentSession, sessionFile: string, id = MAIN_AGENT_ID): void {
+function registerRoot(
+	registry: AgentRegistryApi,
+	session: AgentSession,
+	sessionFile: string,
+	id = MAIN_AGENT_ID,
+): void {
 	registry.register({ id, displayName: id, kind: "main", session, sessionFile, status: "idle" });
 }
 
@@ -423,7 +429,11 @@ describe("subagent restart recovery", () => {
 		const firstRevivalRelease = Promise.withResolvers<void>();
 		const secondRevivalStarted = Promise.withResolvers<void>();
 		const revived = new Map<string, TestSession>();
-		const installReviver = (targetRegistry: AgentRegistry, calls: string[], sessions: Map<string, TestSession>) => {
+		const installReviver = (
+			targetRegistry: AgentRegistryApi,
+			calls: string[],
+			sessions: Map<string, TestSession>,
+		) => {
 			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
 				async ref => {
 					if (!ref.sessionFile) return undefined;
@@ -714,7 +724,7 @@ describe("subagent restart recovery", () => {
 		expect(resumedRegistry.get(child.id)).toMatchObject({ status: "running" });
 		const resumedChild = resumedRegistry.get(child.id)?.session;
 		expect(resumedChild).toBeTruthy();
-		const branch = resumedChild!.sessionManager.getBranch();
+		const branch = await resumedChild!.getRestartBranchEntries();
 		expect(collectPendingToolCalls(branch)).toEqual([]);
 		const interruption = branch.find(
 			entry =>

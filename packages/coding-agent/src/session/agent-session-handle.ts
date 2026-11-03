@@ -40,6 +40,7 @@ import type {
 	PromptOptions,
 	ResolvedRoleModel,
 	RestoredQueuedMessage,
+	RestartDrainLease,
 	RoleModelCycle,
 	RoleModelCycleResult,
 	SessionStats,
@@ -95,6 +96,13 @@ export interface AgentSessionAdvisorOverview {
 
 /** The surface other agents' code uses on a session obtained from the registry, lifecycle, or IRC delivery. */
 export interface AgentSessionHandle {
+	readonly isDisposed: boolean;
+	beginRestartDrain(): RestartDrainLease;
+	getRestartPendingInputCount(): number;
+	getRestartBranchEntries(): Promise<SessionEntry[]>;
+	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void>;
+	flushRestartJournal(): Promise<void>;
+
 	/** Cross-thread identity token: `${homeThreadId}:${snowflake}`, unique per session object. */
 	readonly instanceKey: string;
 	/** Agent loop pause flag and live state. */
@@ -156,6 +164,7 @@ export interface AgentSessionHandle {
 		reason?: string;
 		preserveCompaction?: boolean;
 		deliverQueuedMessages?: boolean;
+		cancelBackgroundJobs?: boolean;
 	}): Promise<void>;
 	/** Replace the pooled-turn yield contract. */
 	setWorkPoolYieldItems(items: readonly WorkPoolYieldItem[]): Promise<void>;

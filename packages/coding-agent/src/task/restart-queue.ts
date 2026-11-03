@@ -2,6 +2,7 @@ import { selectRestartBranchEntries } from "./restart-branch-selection";
 import { formatDuration, logger, withTimeout } from "@oh-my-pi/pi-utils";
 import restartQueuedPrompt from "../prompts/restart-queued.md" with { type: "text" };
 import type { RestartDrainLease } from "../session/agent-session-types";
+import type { AgentSessionHandle } from "../session/agent-session-handle";
 import type { AgentSession } from "../session/agent-session";
 import {
 	captureSubagentsForRestart,
@@ -144,12 +145,12 @@ interface ActiveRestartDrain {
 	cancelled: boolean;
 	cancelSignal: Promise<void>;
 	resolveCancel(): void;
-	leases: Map<AgentSession, RestartDrainLease>;
-	children: Map<string, AgentSession>;
+	leases: Map<AgentSessionHandle, RestartDrainLease>;
+	children: Map<string, AgentSessionHandle>;
 	runningAgentIds: Set<string>;
 	workerGraceDeadlineAt?: number;
 	notifications: Promise<void>[];
-	notifiedSessions: Map<AgentSession, Set<string>>;
+	notifiedSessions: Map<AgentSessionHandle, Set<string>>;
 	irreversible: boolean;
 	callbackStarted: boolean;
 	cancelNoticeDelivered: boolean;
@@ -588,7 +589,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				!pendingAsk &&
 				restartCompleted &&
 				record &&
-				(record.rootWasRunning || this.#session.agent.getPendingModelNewsCount() > 0)
+				(record.rootWasRunning || this.#session.getRestartPendingInputCount() > 0)
 			) {
 				await sendRootContinuationOnce(this.#session, record.requestId);
 			}
@@ -738,7 +739,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		run.record = this.#withDrainStatus({ ...run.record, runningWorkerCount: run.runningAgentIds.size }, run);
 	}
 
-	#prepareChild(run: ActiveRestartDrain, id: string, status: string, session: AgentSession): void {
+	#prepareChild(run: ActiveRestartDrain, id: string, status: string, session: AgentSessionHandle): void {
 		const priorSession = run.children.get(id);
 		if (priorSession) {
 			if (priorSession !== session)
@@ -752,7 +753,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		if (lease.wasRunning) run.runningAgentIds.add(id);
 	}
 
-	#notifySession(run: ActiveRestartDrain, session: AgentSession): void {
+	#notifySession(run: ActiveRestartDrain, session: AgentSessionHandle): void {
 		const bucket = run.notifiedSessions.get(session) ?? new Set<string>();
 		const noticeKey = `${run.record.requestId}:${run.record.state}`;
 		if (bucket.has(noticeKey)) return;
@@ -761,16 +762,13 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		let notification: Promise<void>;
 		try {
 			notification = session
-				.sendCustomMessage(
-					{
-						customType: RESTART_QUEUED_NOTICE_TYPE,
-						content: restartNoticeContent(run.record),
-						display: true,
-						attribution: "agent",
-						details: { requestId: run.record.requestId, state: run.record.state },
-					},
-					{ deliverAs: "nextTurn", triggerTurn: false },
-				)
+				.sendRestartNotice({
+					customType: RESTART_QUEUED_NOTICE_TYPE,
+					content: restartNoticeContent(run.record),
+					display: true,
+					attribution: "agent",
+					details: { requestId: run.record.requestId, state: run.record.state },
+				})
 				.then(() => undefined);
 		} catch (error) {
 			notification = Promise.reject(error);
@@ -791,9 +789,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				startedAt: child.createdAt,
 			}))
 			.sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
-		const sessions = new Set<AgentSession>([this.#session, ...run.children.values()]);
+		const sessions = new Set<AgentSessionHandle>([this.#session, ...run.children.values()]);
 		let queuedInputCount = 0;
-		for (const session of sessions) queuedInputCount += session.agent.getPendingModelNewsCount();
+		for (const session of sessions) queuedInputCount += session.getRestartPendingInputCount();
 		return {
 			...record,
 			runningWorkerCount: runningWorkers.length,
@@ -805,7 +803,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		};
 	}
 
-	#takeLease(run: ActiveRestartDrain, session: AgentSession): RestartDrainLease {
+	#takeLease(run: ActiveRestartDrain, session: AgentSessionHandle): RestartDrainLease {
 		const existing = run.leases.get(session);
 		if (existing) return existing;
 		const lease = session.beginRestartDrain();
@@ -927,7 +925,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	async #waitForWorkerGrace(run: ActiveRestartDrain, startedAt: number): Promise<void> {
 		const childLeases = [...run.children.values()]
 			.map(session => ({ session, lease: run.leases.get(session) }))
-			.filter((item): item is { session: AgentSession; lease: RestartDrainLease } => item.lease !== undefined);
+			.filter((item): item is { session: AgentSessionHandle; lease: RestartDrainLease } => item.lease !== undefined);
 		if (childLeases.length === 0) return;
 		run.workerGraceDeadlineAt = startedAt + this.#restartWorkerGraceMs;
 		const graceMs = Math.max(0, run.workerGraceDeadlineAt - Date.now());
@@ -941,7 +939,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 					}, 1_000)
 				: undefined;
 		try {
-			const settledSessions = new Set<AgentSession>();
+			const settledSessions = new Set<AgentSessionHandle>();
 			const wait = Promise.all(
 				childLeases.map(async item => {
 					try {
@@ -968,7 +966,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		}
 	}
 
-	async #abortUnsettledWorkers(run: ActiveRestartDrain, settledSessions: ReadonlySet<AgentSession>): Promise<void> {
+	async #abortUnsettledWorkers(
+		run: ActiveRestartDrain,
+		settledSessions: ReadonlySet<AgentSessionHandle>,
+	): Promise<void> {
 		const settlement = Promise.all(
 			[...run.children].map(async ([id, session]) => {
 				if (settledSessions.has(session)) return;
@@ -977,7 +978,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 					await session.dispose();
 					return;
 				}
-				const abort = (session as { abort?: AgentSession["abort"] }).abort;
+				const abort = (session as { abort?: AgentSessionHandle["abort"] }).abort;
 				if (typeof abort !== "function")
 					throw new Error(`Restart worker ${id} cannot settle after its grace period`);
 				await abort.call(session, {
@@ -1004,8 +1005,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				// The worker grace deadline may expire while idle parking is still
 				// closing its journal. That terminal flush must finish before relaunch.
 				if (session.isDisposed) await session.dispose();
-				await session.sessionManager.ensureOnDisk();
-				await session.sessionManager.flush();
+				await session.flushRestartJournal();
 			}),
 		);
 	}
@@ -1196,8 +1196,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	}
 
 	async #resumeAfterRestoredAsk(record: RestartRequestRecord | undefined, answered: boolean): Promise<void> {
-		const resumeWork =
-			answered || record?.rootWasRunning === true || this.#session.agent.getPendingModelNewsCount() > 0;
+		const resumeWork = answered || record?.rootWasRunning === true || this.#session.getRestartPendingInputCount() > 0;
 		if (record) await this.#restoreGoalModeFor(record, resumeWork);
 		if (!this.#disposed && resumeWork) this.#session.resumeAfterAskReanswer();
 	}

@@ -47,6 +47,7 @@ import type {
 	PromptOptions,
 	ResolvedRoleModel,
 	RestoredQueuedMessage,
+	RestartDrainLease,
 	RoleModelCycleResult,
 	SessionStats,
 	SteerOptions,
@@ -61,6 +62,8 @@ import type { RemoteObject, RpcMethod } from "./rpc";
 
 /** Data a session homed on another thread exposes synchronously. */
 export interface SessionMirrorState {
+	isDisposed: boolean;
+	restartPendingInputCount: number;
 	isStreaming: boolean;
 	runStartedAt: number | undefined;
 	ircWakesPending: boolean;
@@ -227,6 +230,7 @@ export interface SessionAbortOptions {
 	reason?: string;
 	preserveCompaction?: boolean;
 	deliverQueuedMessages?: boolean;
+	cancelBackgroundJobs?: boolean;
 }
 
 /**
@@ -235,6 +239,11 @@ export interface SessionAbortOptions {
  * event-stream watch toggle.
  */
 export type SessionHostProtocol = {
+	beginRestartDrain: RpcMethod<[], RestartDrainLease>;
+	getRestartBranchEntries: RpcMethod<[], SessionEntry[]>;
+	sendRestartNotice: RpcMethod<[message: Omit<CustomMessage, "role" | "timestamp">], void>;
+	flushRestartJournal: RpcMethod<[], void>;
+
 	prompt: RpcMethod<[text: string, options?: PromptOptions], boolean>;
 	steer: RpcMethod<[text: string, images?: ImageContent[], options?: SteerOptions], void>;
 	abort: RpcMethod<[options?: SessionAbortOptions], void>;
@@ -350,6 +359,8 @@ export class SessionBridgeClient {
 export const SESSION_STATE_READERS: {
 	readonly [K in PeerStateField]: (session: AgentSessionHandle) => SessionMirrorState[K];
 } = {
+	isDisposed: session => session.isDisposed,
+	restartPendingInputCount: session => session.getRestartPendingInputCount(),
 	isStreaming: session => session.isStreaming,
 	runStartedAt: session => session.runStartedAt,
 	ircWakesPending: session => session.ircWakesPending,

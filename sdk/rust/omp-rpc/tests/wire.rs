@@ -165,7 +165,7 @@ fn command_encoding() {
 	assert_eq!(frame, json!({"id": "req_1", "type": "get_entries"}));
 	let frame = encode_command("req_2", &SetEventFilterCommand { events: None }).unwrap();
 	assert_eq!(frame, json!({"id": "req_2", "type": "set_event_filter", "events": null}));
-	let frame = encode_command("req_3", &GetStateCommand {}).unwrap();
+	let frame = encode_command("req_3", &GetStateCommand { view: None }).unwrap();
 	assert_eq!(frame, json!({"id": "req_3", "type": "get_state"}));
 	let goal = GoalCommand {
 		op:           GoalOp::Create,

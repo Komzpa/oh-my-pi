@@ -82,6 +82,8 @@ import {
 /** Full state of a local session, as published to main. */
 export function captureSessionState(session: AgentSession): SessionMirrorState {
 	return {
+		isDisposed: read.isDisposed(session),
+		restartPendingInputCount: read.restartPendingInputCount(session),
 		isStreaming: read.isStreaming(session),
 		runStartedAt: read.runStartedAt(session),
 		ircWakesPending: read.ircWakesPending(session),
@@ -556,6 +558,10 @@ function localModel(session: AgentSession, model: Model): Model {
 
 /** Worker-side implementation of {@link SessionHostProtocol}; commands flush state before their result posts. */
 export const SESSION_HOST_SERVE: RpcServe<SessionPublisher, SessionHostProtocol> = {
+	beginRestartDrain: publisher => publisher.session.beginRestartDrain(),
+	getRestartBranchEntries: publisher => publisher.session.getRestartBranchEntries(),
+	sendRestartNotice: (publisher, message) => settle(publisher, publisher.session.sendRestartNotice(message)),
+	flushRestartJournal: publisher => settle(publisher, publisher.session.flushRestartJournal()),
 	prompt: async (publisher, text, options) => settle(publisher, publisher.session.prompt(text, options)),
 	steer: async (publisher, text, images, options) => settle(publisher, publisher.session.steer(text, images, options)),
 	abort: async (publisher, options) => settle(publisher, publisher.session.abort(options)),

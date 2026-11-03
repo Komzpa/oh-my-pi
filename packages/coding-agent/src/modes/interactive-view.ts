@@ -1,4 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { AgentViewSession } from "../session/agent-session-handle";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionManager } from "../session/session-manager";
 import type { SessionEntry } from "../session/session-entries";
@@ -26,7 +27,7 @@ export interface InteractiveViewSource {
 }
 
 export type LocalInteractiveViewSession = Pick<
-	AgentSession,
+	AgentViewSession,
 	"sessionId" | "sessionFile" | "buildTranscriptSessionContext" | "agent" | "isStreaming" | "sessionManager"
 >;
 

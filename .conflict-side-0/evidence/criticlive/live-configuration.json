@@ -1,0 +1,11 @@
+{
+  "source": "/home/kom/.omp/agent/config.yml",
+  "observedDuring": "2026-11-07 critic-live lane investigation, read only",
+  "configuredExtensions": [
+    "/home/kom/node_modules/@oh-my-pi/reemxy-extensions/extensions/goal_deadlines.ts",
+    "/home/kom/node_modules/@oh-my-pi/reemxy-extensions/extensions/todo_dispatch.ts",
+    "/home/kom/node_modules/@oh-my-pi/reemxy-extensions/extensions/agent_router.ts",
+    "/home/kom/Dropbox/Reemxy/tasks-loop/tools/omp/extensions/search_nudge.ts"
+  ],
+  "finding": "No package-root entry and no plan_critic.ts entry; manifest registration alone cannot load the critic."
+}

@@ -31,6 +31,8 @@ import type {
 import type { CustomMessage } from "../session/messages";
 import type { ServingModel } from "../session/retry-fallback-chains";
 import type { AgentDefinition } from "../task/types";
+import type { RestartDrainLease } from "../session/agent-session-types";
+import type { SessionEntry } from "../session/session-entries";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { ThreadId } from "./identity";
 import { emptyMirrorState } from "./remote-agent-session";
@@ -222,6 +224,25 @@ export class PeerAgentSession implements AgentSessionHandle {
 
 	steer(text: string, images?: ImageContent[], options?: SteerOptions): Promise<void> {
 		return mainBridge().remote.call("steer", this, text, images, options);
+	}
+
+	get isDisposed(): boolean {
+		return this.#field("isDisposed");
+	}
+	getRestartPendingInputCount(): number {
+		return this.#field("restartPendingInputCount");
+	}
+	beginRestartDrain(): RestartDrainLease {
+		return mainBridge().remote.callSync("beginRestartDrain", this);
+	}
+	getRestartBranchEntries(): Promise<SessionEntry[]> {
+		return mainBridge().remote.call("getRestartBranchEntries", this);
+	}
+	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void> {
+		return mainBridge().remote.call("sendRestartNotice", this, message);
+	}
+	flushRestartJournal(): Promise<void> {
+		return mainBridge().remote.call("flushRestartJournal", this);
 	}
 
 	abort(options?: SessionAbortOptions): Promise<void> {

@@ -104,6 +104,9 @@ describe("AgentSession restart drain", () => {
 		const settings = Settings.isolated({ "launch.enabled": false });
 		const toolSession = {
 			cwd: fixtureDir,
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
 			settings,
 			asyncJobManager: manager,
 			getAgentId: () => "Main",
