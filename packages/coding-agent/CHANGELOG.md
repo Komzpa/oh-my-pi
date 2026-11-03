@@ -249,6 +249,8 @@
 ## [18.17.0] - 2026-11-06
 ### Fixed
 
+- UI audit screenshots now require fresh files linked to the auditor’s own tool activity ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 - Completed TODO rows keep their verified audit status after leaving the active plan ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
 
 - UI audits now require distinct before/after screenshots and report unbuildable comparison bases ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).

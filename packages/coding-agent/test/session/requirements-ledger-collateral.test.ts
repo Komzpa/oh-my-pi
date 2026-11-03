@@ -7,7 +7,10 @@ import { Settings } from "../../src/config/settings";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { ToolSession } from "../../src/tools";
 import { SessionManager } from "../../src/session/session-manager";
-import { RequirementsLedgerRuntime } from "../../src/session/requirements-ledger-runtime";
+import {
+	RequirementsLedgerRuntime,
+	type RequirementsLedgerRuntimeHost,
+} from "../../src/session/requirements-ledger-runtime";
 import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
@@ -86,13 +89,14 @@ async function fixture(gitArtifact: "ui" | "cli" | undefined = undefined) {
 			"2026-11-03T00:00:00.000Z",
 		).map((item, i) => ({ ...item, id: `R${98 + i}`, classification: "linked", rows: [ROW] })),
 	);
-	const runtime = new RequirementsLedgerRuntime({
+	const host: RequirementsLedgerRuntimeHost = {
 		agent: {} as never,
 		agentKind: () => "main",
 		cwd: () => cwd,
 		sessionManager: manager,
 		onSettledAssistantMessage: () => {},
-	});
+	};
+	let runtime = new RequirementsLedgerRuntime(host);
 	const tool = new TodoTool({
 		cwd,
 		hasUI: false,
@@ -106,7 +110,14 @@ async function fixture(gitArtifact: "ui" | "cli" | undefined = undefined) {
 		`${HEADER}\n${[98, 99].map(id => `| R${id} | pass | Observed ${evidence} | row ${JSON.stringify(ROW)} @ ${identity} |`).join("\n")}`;
 	let attempt = 0;
 	let lastTask: { task: string } | undefined;
-	const audit = async (output: string) => {
+	const historyDirectory = gitArtifact ? path.join(cwd, ".git/audits") : cwd;
+	spyOn(manager, "getArtifactsDir").mockReturnValue(historyDirectory);
+	const audit = async (
+		output: string,
+		activity: "capture" | "read" | "touch" | "none" | "failed" | "old" | "output" = "capture",
+		stale = false,
+		resume = false,
+	) => {
 		const id = `AuditSingleUps-${++attempt}`;
 		const prepared = await runtime.prepareAuditorTaskCall("task", id, {
 			name: "main",
@@ -115,6 +126,69 @@ async function fixture(gitArtifact: "ui" | "cli" | undefined = undefined) {
 			task: `Audit R98 R99 for ${ROW}`,
 		});
 		lastTask = prepared as { task: string };
+		const paths = [before, screenshot, path.join(cwd, "copy.png")];
+		const now = new Date();
+		for (const file of paths) {
+			if (!(await Bun.file(file).exists())) continue;
+			if (!["touch", "none", "read"].includes(activity)) await Bun.write(file, await Bun.file(file).bytes());
+			const at = stale ? new Date(0) : now;
+			await fs.utimes(file, at, at);
+		}
+		if (activity !== "none") {
+			const timestamp = (activity === "old" ? new Date(0) : now).toISOString();
+			const toolName = activity === "read" ? "read" : "bash";
+			const command =
+				activity === "output"
+					? "./capture.sh"
+					: activity === "touch"
+						? `touch ${paths.join(" ")}`
+						: `bun -e 'await page.screenshot({path: "${before}"}); await page.screenshot({path: "${screenshot}"});' ${paths[2]}`;
+			await Bun.write(
+				path.join(historyDirectory, `${id}.jsonl`),
+				[
+					{
+						timestamp,
+						message: {
+							role: "assistant",
+							content: [{ type: "toolCall", id: "capture", name: toolName, arguments: { command } }],
+						},
+					},
+					{
+						timestamp,
+						message: {
+							role: "toolResult",
+							toolCallId: "capture",
+							toolName,
+							isError: activity === "failed",
+							content: [{ type: "text", text: activity === "output" ? paths.join("\n") : "ok" }],
+						},
+					},
+				]
+					.map(entry => JSON.stringify(entry))
+					.join("\n") + "\n",
+			);
+		}
+		if (resume) {
+			await runtime.afterToolCall({
+				toolCall: { id, name: "task" },
+				result: { content: [], details: { progress: [{ index: 0, agent: "qa-auditor", id }] } },
+				isError: false,
+			} as never);
+			runtime = new RequirementsLedgerRuntime(host);
+			await runtime.afterToolCall({
+				toolCall: { id: "wait", name: "wait" },
+				result: {
+					content: [
+						{
+							type: "text",
+							text: `<task-result id="${id}" agent="qa-auditor" status="completed">\n<output>\n${output}\n</output>\n</task-result>`,
+						},
+					],
+				},
+				isError: false,
+			} as never);
+			return undefined;
+		}
 		return runtime.afterToolCall({
 			toolCall: { id, name: "task" },
 			result: { content: [], details: { results: [{ index: 0, agent: "qa-auditor", id, exitCode: 0, output }] } },
@@ -207,6 +281,76 @@ it("accepts a distinct pair and rejects nonexistent paths, missing before, and i
 		);
 		expect(await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`)).toBeUndefined();
 		expect((await f.tool.execute("done", { op: "done", task: ROW })).isError).not.toBe(true);
+	} finally {
+		await fs.rm(f.cwd, { recursive: true, force: true });
+	}
+});
+
+it("rejects RackTilesQA recycled report images even with an all-pass paired receipt", async () => {
+	const f = await fixture();
+	try {
+		const report = path.join(f.cwd, "playwright-report/data/rack.png");
+		await Bun.write(report, await Bun.file(f.screenshot).bytes());
+		for (const file of [f.before, report]) await fs.utimes(file, new Date(0), new Date(0));
+		const output = `${f.table(`aligned specification rows ${report}`)}\n\n${pair(f.before, report)}`;
+		expect(JSON.stringify(await f.audit(output, "read", true))).toContain("capture your own before/after");
+		for (const requirement of getLatestRequirements(f.manager.getBranch()))
+			expect(requirement.rowVerdicts).toBeUndefined();
+	} finally {
+		await fs.rm(f.cwd, { recursive: true, force: true });
+	}
+});
+
+it.each(["none", "read", "failed", "old"] as const)(
+	"rejects fresh files without successful current auditor activity: %s",
+	async activity => {
+		const f = await fixture();
+		try {
+			expect(JSON.stringify(await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`, activity))).toContain(
+				"lacks auditor activity after task start",
+			);
+		} finally {
+			await fs.rm(f.cwd, { recursive: true, force: true });
+		}
+	},
+);
+
+it("rejects old mtimes even when a successful auditor call names both paths", async () => {
+	const f = await fixture();
+	try {
+		expect(
+			JSON.stringify(await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`, "capture", true)),
+		).toContain("lacks auditor activity after task start");
+	} finally {
+		await fs.rm(f.cwd, { recursive: true, force: true });
+	}
+});
+
+it("accepts paths reported by the auditor's successful capture output", async () => {
+	const f = await fixture();
+	try {
+		expect(await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`, "output")).toBeUndefined();
+	} finally {
+		await fs.rm(f.cwd, { recursive: true, force: true });
+	}
+});
+
+it("retains capture provenance across an async auditor handoff and runtime resume", async () => {
+	const f = await fixture();
+	try {
+		await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`, "capture", false, true);
+		for (const requirement of getLatestRequirements(f.manager.getBranch()))
+			expect(requirement.rowVerdicts?.[ROW]?.status).toBe("pass");
+	} finally {
+		await fs.rm(f.cwd, { recursive: true, force: true });
+	}
+});
+
+it("accepts own touch activity: provenance does not interpret arbitrary shell capture semantics", async () => {
+	const f = await fixture();
+	try {
+		for (const file of [f.before, f.screenshot]) await fs.utimes(file, new Date(0), new Date(0));
+		expect(await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`, "touch")).toBeUndefined();
 	} finally {
 		await fs.rm(f.cwd, { recursive: true, force: true });
 	}
@@ -327,7 +471,7 @@ it("rejects a missing collateral pair when only the auditor's tool history revea
 				},
 			}) + "\n",
 		);
-		expect(JSON.stringify(await f.audit(f.table("exercised artifact")))).toContain("missing collateral pair");
+		expect(JSON.stringify(await f.audit(f.table("exercised artifact"), "none"))).toContain("missing collateral pair");
 	} finally {
 		directory.mockRestore();
 		await fs.rm(f.cwd, { recursive: true, force: true });

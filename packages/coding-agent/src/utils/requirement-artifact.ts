@@ -2,6 +2,7 @@ import * as fsSync from "node:fs";
 import type { Dirent, Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { isRecord } from "@oh-my-pi/pi-utils";
 import { vcsGitDiscover, type VcsGitRepo } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { probeRequirementDeployment, type RequirementDeploymentIdentity } from "./requirement-deployment";
@@ -975,4 +976,57 @@ export async function requirementAuditReadImage(sessionFile: string): Promise<bo
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * Require both filesystem freshness and a successful activity in this worker's
+ * post-dispatch history. mtime alone cannot attribute a write; a path mention
+ * alone could be an old report. Read tools and failed calls never qualify.
+ * This is activity provenance, not shell-program interpretation: an auditor's
+ * own `touch` can satisfy it. Capture semantics remain the auditor's duty.
+ */
+export async function requirementAuditActivityPaths(
+	sessionFile: string | undefined,
+	startedAt: number | undefined,
+	roots: readonly string[],
+): Promise<Set<string>> {
+	const paths = new Set<string>();
+	if (!sessionFile || startedAt === undefined || !Number.isFinite(startedAt)) return paths;
+	try {
+		const entries: unknown[] = Bun.JSONL.parse(await Bun.file(sessionFile).text());
+		const calls = new Map<string, unknown>();
+		for (const entry of entries) {
+			if (!isRecord(entry) || !isRecord(entry.message)) continue;
+			const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : entry.timestamp;
+			if (typeof at !== "number" || !Number.isFinite(at) || at < startedAt) continue;
+			const message = entry.message;
+			if (message.role === "assistant" && Array.isArray(message.content)) {
+				for (const call of message.content) {
+					if (
+						isRecord(call) &&
+						call.type === "toolCall" &&
+						typeof call.id === "string" &&
+						["bash", "browser", "eval", "js"].includes(String(call.name))
+					) {
+						calls.set(call.id, call.arguments);
+					}
+				}
+			}
+			if (message.role !== "toolResult" || message.isError !== false || typeof message.toolCallId !== "string")
+				continue;
+			const args = calls.get(message.toolCallId);
+			if (args === undefined) continue;
+			const texts: string[] = [];
+			JSON.stringify([args, message.content], (_key, value: unknown) => {
+				if (typeof value === "string") texts.push(value);
+				return value;
+			});
+			for (const file of await requirementEvidenceScreenshots(texts.join("\n"), roots)) {
+				if ((await fs.stat(file)).mtimeMs >= startedAt) paths.add(file);
+			}
+		}
+	} catch {
+		// Missing or unreadable worker history cannot establish provenance.
+	}
+	return paths;
 }
