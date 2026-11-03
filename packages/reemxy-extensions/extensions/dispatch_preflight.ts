@@ -1,86 +1,40 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { parseCommandArgs } from "@oh-my-pi/pi-coding-agent/utils/command-args";
 
-const READ_ONLY = new Set(["scout", "researcher", "reviewer", "visual-qa", "adversary", "user-shadow"]);
-const PATH =
-	/(?:~\/|\/[\w.-]|\.\.?\/)[^\s`'",;()[\]<>]*|\b[\w.-]+(?:\/[\w.*-]+)+\/?|\b[\w.-]+\/|\b[\w-]+\.[a-z][a-z0-9]*\b/g;
-
-function paths(text: string): string[] {
-	return [...text.matchAll(PATH)].map(match => match[0].replace(/[:.]\d+(?:-\d+)?$/, "").replace(/[.:]+$/, ""));
-}
-
-function absolute(value: string, cwd: string): string {
-	return path.resolve(
-		cwd,
-		value.startsWith("~/") ? path.join(os.homedir(), value.slice(2)) : value.replace(/[.,;]+$/, ""),
-	);
-}
-
-/** Only explicit change clauses are targets: references and read-only evidence are not writes. */
-export function uncoveredWriteTargets(brief: string, cwd: string, agent: string): string[] {
-	if (READ_ONLY.has(agent.replace(/-strong$/, ""))) return [];
-	const worktree = brief.match(/\b(?:Worktree\s*:|ROOT\s*=)\s*[`'"]?([^\s`'",;)]+)/i)?.[1];
-	const base = worktree ? absolute(worktree, cwd) : cwd;
-	const roots: string[] = [];
-	const targets: string[] = [];
-	let rootList = false;
-	let changeSection = false;
-	let targetList = false;
-	for (let line of brief.split("\n")) {
-		const declaration = line.match(/\b(?:write\s+roots?\s*:?|write\s+only\b|write(?=\s+[`'"]?(?:\/|~\/)))\s*(.*)/i);
-		if (declaration) {
-			const rest = declaration[1]!;
-			const boundary = rest.search(/\.(?=\s+[A-Z])|\b(?:Do not|Never)\b/i);
-			roots.push(...paths(boundary < 0 ? rest : rest.slice(0, boundary)));
-			rootList = rest.trim() === "";
-			if (boundary < 0) continue;
-			line = rest.slice(boundary).replace(/^\.\s*/, "");
-		}
-		if (rootList && /^\s*[-*]\s+/.test(line)) {
-			roots.push(...paths(line));
-			continue;
-		}
-		rootList = false;
-		if (/\b(?:files|paths|targets)\s+(?:to\s+)?(?:change|edit|modify)\s*:\s*$/i.test(line)) {
-			targetList = true;
-			continue;
-		}
-		if (targetList && /^\s*[-*]\s+/.test(line)) {
-			targets.push(...paths(line));
-			continue;
-		}
-		targetList = false;
-		if (/^\s*#/.test(line)) changeSection = /\b(?:change|fix|edit|implement|targets?)\b/i.test(line);
-		// Sentence boundaries keep "Read foo.ts. Update bar.ts" from treating the reference as a target.
-		for (const clause of line.split(/(?<=[.!?])\s+|;/)) {
-			if (/\b(?:do not|don't|never|read.only|read|inspect|reference|source|evidence)\b/i.test(clause)) continue;
-			if (
-				changeSection ||
-				/\b(?:change|edit|modify|update|fix|create|delete|remove|rewrite|patch|touch|implement|targets?)\b/i.test(
-					clause,
-				)
-			)
-				targets.push(...paths(clause));
+export function fileToolTargets(input: Record<string, unknown>): string[] {
+	const targets = [
+		typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path : undefined,
+	];
+	if (Array.isArray(input.paths))
+		targets.push(...input.paths.filter((target): target is string => typeof target === "string"));
+	if (Array.isArray(input.edits)) {
+		for (const edit of input.edits) {
+			if (edit && typeof edit === "object" && typeof (edit as Record<string, unknown>).rename === "string") {
+				targets.push((edit as Record<string, string>).rename);
+			}
 		}
 	}
-	// A worktree is the writable fallback only when there is no narrower declaration.
-	if (!roots.length && worktree && /\bWorktree\s*:/i.test(brief)) roots.push(base);
-	if (!roots.length) return [];
-	const allowed = roots.map(root => absolute(root, base).replace(/\/\*\*?$/, ""));
-	return [...new Set(targets.map(target => absolute(target, base)))].filter(
-		target => !allowed.some(root => target === root || target.startsWith(`${root}${path.sep}`)),
-	);
+	if (typeof input.input === "string") {
+		for (const line of input.input.split(/\r?\n/)) {
+			const hashline = /^\[([^\]]+)\]$/.exec(line.trim());
+			const patchFile = /^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+)$/.exec(line.trim());
+			const patchMove = /^\*\*\*\s+Move to:\s*(.+)$/.exec(line.trim());
+			const unified = /^(?:--- a\/|\+\+\+ b\/)(.+)$/.exec(line.trim());
+			const target =
+				hashline?.[1]?.replace(/#[0-9a-f]{4}$/i, "") ?? patchFile?.[1] ?? patchMove?.[1] ?? unified?.[1];
+			if (target && target !== "/dev/null") targets.push(target);
+		}
+	}
+	return [...new Set(targets.filter((target): target is string => Boolean(target)))];
 }
-
-export function heavyTestBrief(brief: string): boolean {
-	return /\b(?:e2e|browser|playwright|full[ -]suite)\b/i.test(brief);
-}
-
 export interface TestProcess {
 	pid: number;
 	cwd: string;
 	command: string;
+	argv?: string[];
 }
 export interface HostTestResources {
 	memAvailableKiB?: number;
@@ -91,15 +45,155 @@ export interface HostResourceProbes {
 	processes: () => Promise<TestProcess[]>;
 }
 
-/** A process disappearing during the scan is normal. No shell or user browser access. */
+/** Tokenize shell syntax outside quotes, then reuse the central quote decoder. */
+function shellTokens(command: string): string[] {
+	const tokens: string[] = [];
+	let token = "";
+	let quote = "";
+	const flush = () => {
+		if (token) tokens.push(token);
+		token = "";
+	};
+	for (let i = 0; i < command.length; i++) {
+		const char = command[i]!;
+		if (char === "\\" && quote !== "'") {
+			token += char + (command[++i] ?? "");
+			continue;
+		}
+		if (quote) {
+			token += char;
+			if (char === quote) quote = "";
+			continue;
+		}
+		if (char === "'" || char === '\"') {
+			quote = char;
+			token += char;
+			continue;
+		}
+		if ([";", "&", "|", "\n", ">", "<"].includes(char)) {
+			flush();
+			if (command[i + 1] === char && char !== "\n") {
+				tokens.push(char + char);
+				i++;
+			} else tokens.push(char);
+			continue;
+		}
+		if (char === " " || char === "\t") {
+			flush();
+			continue;
+		}
+		token += char;
+	}
+	if (quote) return [];
+	flush();
+	return tokens;
+}
+function decode(token: string): string | undefined {
+	if (["$", "`", "*", "?"].some(char => token.includes(char))) return;
+	try {
+		return parseCommandArgs(token, { strict: true })[0];
+	} catch {
+		return;
+	}
+}
+export function commandArgv(command: string): string[] {
+	const tokens = shellTokens(command);
+	if (tokens.some(token => [";", "&&", "||", "|", "\n", ">", ">>"].includes(token))) return [];
+	return tokens.flatMap(token => {
+		const value = decode(token);
+		return value === undefined ? [] : [value];
+	});
+}
+function unwrap(argv: string[]): string[] {
+	while (argv[0]?.includes("=")) argv = argv.slice(1);
+	const executable = path.basename(argv[0] ?? "");
+	if (["command", "nohup", "env"].includes(executable)) {
+		let rest = argv.slice(1);
+		while (rest[0]?.startsWith("-")) rest = rest.slice(1);
+		return unwrap(rest);
+	}
+	if (executable === "timeout") return unwrap(argv.slice(2));
+	return argv;
+}
+interface ShellAction {
+	argv: string[];
+	cwd: string;
+	targets: string[];
+}
+function shellActions(command: string, cwd: string, depth = 0): ShellAction[] {
+	if (depth > 4) return [];
+	const actions: ShellAction[] = [];
+	let argv: string[] = [];
+	let targets: string[] = [];
+	const flush = () => {
+		argv = unwrap(argv);
+		if (argv[0] === "cd" && argv[1]) cwd = path.resolve(cwd, argv[1]);
+		else if (
+			["bash", "sh", "zsh"].includes(path.basename(argv[0] ?? "")) &&
+			["-c", "-lc"].includes(argv[1] ?? "") &&
+			argv[2]
+		)
+			actions.push(...shellActions(argv[2], cwd, depth + 1));
+		else actions.push({ argv, cwd, targets });
+		argv = [];
+		targets = [];
+	};
+	const tokens = shellTokens(command);
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i]!;
+		if ([";", "&&", "||", "|", "&", "\n"].includes(token)) {
+			flush();
+			continue;
+		}
+		if (token === ">" || token === ">>") {
+			const target = decode(tokens[++i] ?? "");
+			if (target && target !== "&1" && target !== "&2") targets.push(target);
+			continue;
+		}
+		const value = decode(token);
+		if (value !== undefined) argv.push(value);
+	}
+	flush();
+	return actions;
+}
+
+const BROWSERS = new Set([
+	"chromium",
+	"chromium-browser",
+	"chrome",
+	"google-chrome",
+	"chrome-headless-shell",
+	"firefox",
+]);
+const RUNNERS = new Set(["vitest", "jest", "pytest", "nextest"]);
+export function launchesTestProcess(argv: readonly string[]): boolean {
+	argv = unwrap([...argv]);
+	const executable = path.basename(argv[0] ?? "");
+	if (BROWSERS.has(executable) || RUNNERS.has(executable)) return true;
+	if (executable === "playwright") return argv[1] === "test" || argv[1] === "screenshot";
+	if (
+		["bun", "npm", "pnpm", "yarn", "cargo"].includes(executable) &&
+		(argv[1] === "test" || (argv[1] === "run" && argv[2] === "test"))
+	)
+		return true;
+	if (["npx", "bunx"].includes(executable)) return launchesTestProcess(argv.slice(1));
+	if (["node", "bun", "python", "python3"].includes(executable)) {
+		if (argv[1] === "-m") return RUNNERS.has(argv[2] ?? "");
+		const script = path.basename(argv[1] ?? "");
+		if (["playwright", "playwright.js", "cli.js"].includes(script) && argv[2] === "test") return true;
+		return RUNNERS.has(script) || RUNNERS.has(script.slice(0, -3));
+	}
+	return false;
+}
+
 async function testProcesses(): Promise<TestProcess[]> {
-	const entries = await fs.readdir("/proc");
 	const found: TestProcess[] = [];
-	for (const pid of entries.filter(entry => /^\d+$/.test(entry))) {
+	for (const pid of await fs.readdir("/proc")) {
+		if (!Number.isInteger(Number(pid))) continue;
 		try {
-			const command = (await Bun.file(`/proc/${pid}/cmdline`).text()).replaceAll("\0", " ");
-			if (!/\b(?:playwright|chromium|chrome-headless-shell)\b/i.test(command)) continue;
-			found.push({ pid: Number(pid), command, cwd: await fs.readlink(`/proc/${pid}/cwd`) });
+			const argv = (await Bun.file(`/proc/${pid}/cmdline`).text()).split("\0").filter(Boolean);
+			if (!launchesTestProcess(argv)) continue;
+			found.push({ pid: Number(pid), argv, command: argv.join(" "), cwd: await fs.readlink(`/proc/${pid}/cwd`) });
 		} catch {
 			/* exited or inaccessible */
 		}
@@ -114,10 +208,15 @@ export async function probeHostTestResources(
 	},
 ): Promise<HostTestResources> {
 	const [memory, processes] = await Promise.allSettled([probes.meminfo(), probes.processes()]);
-	const available =
-		memory.status === "fulfilled" ? memory.value.match(/^MemAvailable:\s+(\d+)\s+kB$/m)?.[1] : undefined;
+	const fields =
+		memory.status === "fulfilled"
+			? memory.value
+					.split("\n")
+					.find(line => line.startsWith("MemAvailable:"))
+					?.split(/\s+/)
+			: undefined;
 	return {
-		memAvailableKiB: available === undefined ? undefined : Number(available),
+		memAvailableKiB: fields ? Number(fields[1]) : undefined,
 		processes: processes.status === "fulfilled" ? processes.value : [],
 	};
 }
@@ -127,20 +226,66 @@ export function ramThresholdGiB(value = process.env.OMP_DISPATCH_MIN_RAM_GIB): n
 	return value?.trim() && Number.isFinite(parsed) && parsed >= 0 ? parsed : 8;
 }
 
-/** Pure admission decision; a browser elsewhere on the host is not this project's suite. */
-export function heavyTestRefusal(
-	brief: string,
-	cwd: string,
-	resources: HostTestResources,
-	thresholdGiB = 8,
-): string | undefined {
-	if (!heavyTestBrief(brief)) return undefined;
-	const project = absolute(brief.match(/\b(?:Worktree\s*:|ROOT\s*=)\s*[`'"]?([^\s`'",;)]+)/i)?.[1] ?? cwd, cwd);
-	const running = resources.processes.filter(proc => {
-		const inProject = proc.cwd === project || proc.cwd.startsWith(`${project}${path.sep}`);
-		return inProject && /\b(?:playwright\b.*\btest\b|chromium|chrome-headless-shell)\b/i.test(proc.command);
-	});
+async function canonical(target: string): Promise<string> {
+	try {
+		return await fs.realpath(target);
+	} catch {
+		const parent = path.dirname(target);
+		return parent === target ? target : path.join(await canonical(parent), path.basename(target));
+	}
+}
+function inside(root: string, target: string): boolean {
+	return target === root || target.startsWith(`${root}${path.sep}`);
+}
+
+/** Known operands only; opaque scripts and substitutions are not guessed from prose. */
+function bashWriteTargets(argv: string[]): string[] {
+	const executable = path.basename(argv[0] ?? "");
+	const operands = argv.slice(1).filter(arg => !arg.startsWith("-"));
+	if (["touch", "mkdir", "rm", "rmdir", "truncate", "tee"].includes(executable)) return operands;
+	if (["cp", "install"].includes(executable)) return operands.length >= 2 ? operands.slice(-1) : [];
+	if (executable === "mv") return operands.length >= 2 ? operands : [];
+	return [];
+}
+
+export async function workerToolPreflight(
+	event: { toolName: string; input?: unknown },
+	ctx: ExtensionContext,
+	probes?: HostResourceProbes,
+): Promise<{ block: true; reason: string } | undefined> {
+	if (ctx.agent?.kind !== "sub" || !ctx.cwd) return;
+	const input = (event.input ?? {}) as Record<string, unknown>;
+	const actions =
+		event.toolName === "bash" && typeof input.command === "string" ? shellActions(input.command, ctx.cwd) : [];
+	const targets = event.toolName === "edit" || event.toolName === "write" ? fileToolTargets(input) : [];
+	for (const action of actions)
+		targets.push(
+			...[...action.targets, ...bashWriteTargets(action.argv)].map(target => path.resolve(action.cwd, target)),
+		);
+	const root = await canonical(path.resolve(ctx.cwd));
+	for (const target of targets) {
+		if (target.includes("://")) continue;
+		const resolved = await canonical(
+			path.resolve(ctx.cwd, target.startsWith("~/") ? path.join(os.homedir(), target.slice(2)) : target),
+		);
+		if (!inside(root, resolved))
+			return {
+				block: true,
+				reason: `Outside your worktree: ask your lead with write agent://Main before writing ${resolved}.`,
+			};
+	}
+	const app = input.app as { relay?: boolean; cdp_url?: string } | undefined;
+	const opensBrowser = event.toolName === "browser" && input.action === "open" && app?.relay !== true && !app?.cdp_url;
+	if (!opensBrowser && !actions.some(action => launchesTestProcess(action.argv))) return;
+	const resources = await probeHostTestResources(probes);
+	const running = resources.processes.filter(
+		proc => inside(root, path.resolve(proc.cwd)) && launchesTestProcess(proc.argv ?? commandArgv(proc.command)),
+	);
 	const available = resources.memAvailableKiB;
-	if ((available === undefined || available >= thresholdGiB * 1024 ** 2) && !running.length) return undefined;
-	return `Queue it behind the running suite (one suite at a time) or run only targeted specs. MemAvailable=${available === undefined ? "unknown" : `${(available / 1024 ** 2).toFixed(2)} GiB (${available} KiB)`}; minimum=${thresholdGiB} GiB; same-project test processes=${running.length}${running.length ? ` (PIDs ${running.map(proc => proc.pid).join(", ")})` : ""}; project=${project}.`;
+	const minimum = ramThresholdGiB();
+	if ((available === undefined || available >= minimum * 1024 ** 2) && running.length === 0) return;
+	return {
+		block: true,
+		reason: `Queue it behind the running suite or free memory before launching. MemAvailable=${available === undefined ? "unknown" : `${(available / 1024 ** 2).toFixed(2)} GiB (${available} KiB)`}; minimum=${minimum} GiB; same-project test processes=${running.length} (PIDs ${running.map(proc => proc.pid).join(", ")}); project=${root}.`,
+	};
 }

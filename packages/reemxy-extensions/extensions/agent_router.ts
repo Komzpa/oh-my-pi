@@ -12,15 +12,7 @@ import { workerYieldRefusal, type WorkerContinuationState } from "./worker_conti
 import gateNotices from "./gate-notices.md" with { type: "text" };
 import { shortenPath, truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import {
-	heavyTestBrief,
-	heavyTestRefusal,
-	probeHostTestResources,
-	ramThresholdGiB,
-	uncoveredWriteTargets,
-	type HostTestResources,
-	type HostResourceProbes,
-} from "./dispatch_preflight";
+import { workerToolPreflight, fileToolTargets, type HostResourceProbes } from "./dispatch_preflight";
 import { checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
 
 // Model selection lives in core: the agent's frontmatter chain (role groups) plus core fallback.
@@ -271,10 +263,7 @@ interface SpawnState extends SpawnRecord {
 export interface RouterState {
 	spawns: Map<string, SpawnState>;
 	fallbacks: FallbackRecord[];
-	/** Briefs already refused for a text-only coder; created on first use. */
 	visionRefusals?: Set<string>;
-	writeScopeRefusals?: Set<string>;
-	ramRefusals?: Set<string>;
 }
 export interface BeforeSubagentSpawnEvent {
 	agent?: unknown;
@@ -344,30 +333,6 @@ function canonicalPath(target: string): string {
 	return resolve(realpathSync(current), ...suffix);
 }
 
-function fileToolTargets(input: Record<string, unknown>): string[] {
-	const targets = [typeof input.path === "string" ? input.path : undefined];
-	if (Array.isArray(input.paths))
-		targets.push(...input.paths.filter((target): target is string => typeof target === "string"));
-	if (Array.isArray(input.edits)) {
-		for (const edit of input.edits) {
-			if (edit && typeof edit === "object" && typeof (edit as Record<string, unknown>).rename === "string") {
-				targets.push((edit as Record<string, string>).rename);
-			}
-		}
-	}
-	if (typeof input.input === "string") {
-		for (const line of input.input.split(/\r?\n/)) {
-			const hashline = /^\[([^\]]+)\]$/.exec(line.trim());
-			const patchFile = /^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s*(.+)$/.exec(line.trim());
-			const patchMove = /^\*\*\*\s+Move to:\s*(.+)$/.exec(line.trim());
-			const unified = /^(?:--- a\/|\+\+\+ b\/)(.+)$/.exec(line.trim());
-			const target =
-				hashline?.[1]?.replace(/#[0-9a-f]{4}$/i, "") ?? patchFile?.[1] ?? patchMove?.[1] ?? unified?.[1];
-			if (target && target !== "/dev/null") targets.push(target);
-		}
-	}
-	return [...new Set(targets.filter((target): target is string => Boolean(target)))];
-}
 async function fileToolRefusal(event: { toolName?: unknown; input?: unknown }, ctx: ExtensionContext) {
 	if (event.toolName !== "write") return undefined;
 	if (!event.input || typeof event.input !== "object") return undefined;
@@ -454,31 +419,10 @@ export function routeSubagentSpawn(
 		stateFile?: string;
 		now?: () => Date;
 		latestTodo?: LatestTodoGetter;
-		hostResources?: HostTestResources;
-		minRamGiB?: number;
 	} = {},
 ): { block: true; reason: string } | undefined {
 	const agent = stringValue(event.agent);
 	if (!agent) return undefined;
-	const brief = spawnBriefText(event);
-	const key = `${agent}\0${brief}`;
-	const uncovered = uncoveredWriteTargets(brief, ctx.cwd ?? process.cwd(), agent);
-	const scopeRefusals = (state.writeScopeRefusals ??= new Set());
-	if (uncovered.length && !scopeRefusals.has(key)) {
-		scopeRefusals.add(key);
-		return {
-			block: true,
-			reason: `Widen the write roots or drop the target. Uncovered paths: ${uncovered.join(", ")}.`,
-		};
-	}
-	const ramReason =
-		options.hostResources &&
-		heavyTestRefusal(brief, ctx.cwd ?? process.cwd(), options.hostResources, options.minRamGiB ?? ramThresholdGiB());
-	const ramRefusals = (state.ramRefusals ??= new Set());
-	if (ramReason && !ramRefusals.has(key)) {
-		ramRefusals.add(key);
-		return { block: true, reason: ramReason };
-	}
 	const visionRole = VISION_ROLE_FOR[agent];
 	if (visionRole) {
 		const brief = spawnBriefText(event);
@@ -993,6 +937,8 @@ export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbe
 	pi.setLabel?.("Agent Router");
 	const continuedWorkers = new Map<string, WorkerContinuationState>();
 	pi.on("tool_call", async (event, ctx) => {
+		const preflight = await workerToolPreflight(event, ctx, probes);
+		if (preflight) return preflight;
 		if (event.toolName === "yield" && ctx.agent?.kind === "sub") {
 			const decision = await workerYieldRefusal(event.input, ctx, continuedWorkers, event.toolCallId);
 			if (decision) return decision;
@@ -1014,12 +960,9 @@ export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbe
 		);
 	});
 	pi.on("before_subagent_spawn", (event, ctx) => {
-		const route = (hostResources?: HostTestResources) =>
-			routeSubagentSpawn(event as BeforeSubagentSpawnEvent, ctx, state, {
-				latestTodo: pi.pi?.getLatestTodoPhasesFromEntries,
-				hostResources,
-			});
-		return heavyTestBrief(spawnBriefText(event)) ? probeHostTestResources(probes).then(route) : route();
+		return routeSubagentSpawn(event as BeforeSubagentSpawnEvent, ctx, state, {
+			latestTodo: pi.pi?.getLatestTodoPhasesFromEntries,
+		});
 	});
 	pi.on("retry_fallback_applied", (event, ctx) => {
 		recordAndNotifyRetryFallbackApplied(event as RetryFallbackAppliedEvent, ctx, state);
