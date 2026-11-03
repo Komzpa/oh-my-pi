@@ -223,6 +223,10 @@ export class PeerAgentSession implements AgentSessionHandle {
 		return mainBridge().remote.call("abort", this, options);
 	}
 
+	setFastMode(enabled: boolean): Promise<boolean> {
+		return mainBridge().remote.call("setFastMode", this, enabled);
+	}
+
 	setWorkPoolYieldItems(items: readonly WorkPoolYieldItem[]): Promise<void> {
 		return mainBridge().remote.call("setWorkPoolYieldItems", this, items);
 	}

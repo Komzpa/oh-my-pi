@@ -68,7 +68,6 @@ import { buildSkillPromptMessage, type Skill } from "../extensibility/skills";
 import type { HindsightSessionStateApi } from "../hindsight/state";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { IrcBus } from "../irc/bus";
-import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { MCPManagerApi, MCPToolScope } from "../mcp/manager";
 import type { MnemopiSessionStateApi } from "../mnemopi/state";
 import { initializeExtensions } from "../modes/runtime-init";
