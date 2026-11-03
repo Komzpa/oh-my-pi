@@ -105,6 +105,8 @@ import {
 	requirementAuditReadImage,
 	requirementEvidenceScreenshots,
 	requirementTouchesRenderedFiles,
+	requirementArtifactBase,
+	formatRequirementIdentity,
 	requirementIdentityKey,
 	type RequirementIdentity,
 } from "../utils/requirement-artifact";
@@ -639,6 +641,7 @@ export class RequirementsLedgerRuntime {
 				).values(),
 			];
 			const rowHeads: string[] = [];
+			const baseLines: string[] = [];
 			const rowArtifacts: Record<string, string> = {};
 			const declaredArtifacts: string[] = [];
 			const imagePayloads: RequirementAuditImagePayload[] = [];
@@ -719,6 +722,24 @@ export class RequirementsLedgerRuntime {
 							enumerable: true,
 							configurable: true,
 						});
+					const identities =
+						artifact.identities ??
+						(artifact.cwd && artifact.head
+							? [{ kind: "git" as const, repo: artifact.cwd, commit: artifact.head }]
+							: []);
+					for (const identity of identities) {
+						if (identity.kind !== "git") continue;
+						try {
+							const { revision, base } = await requirementArtifactBase(identity);
+							baseLines.push(
+								`row ${JSON.stringify(row)} @ ${formatRequirementIdentity(identity)}: revision=${revision}; base=${base ?? "unavailable (artifact has no parent)"}`,
+							);
+						} catch (error) {
+							baseLines.push(
+								`row ${JSON.stringify(row)} @ ${formatRequirementIdentity(identity)}: base unavailable (${error instanceof Error ? error.message : String(error)}); retrieve the base before UI QA`,
+							);
+						}
+					}
 					const artifactText = formatRequirementGateArtifact(
 						!artifact.head && !artifact.sha256
 							? { ...artifact, lastChange: getTodoRowChanges(branch).get(row) }
@@ -734,6 +755,7 @@ export class RequirementsLedgerRuntime {
 				sources: sources.map(source => `${source.id} (said at ${source.at}): ${source.rawText}`),
 				imageLines,
 				rowHeads,
+				baseLines,
 				receiptHeader: receiptHeader.trim(),
 			});
 			revised[index] = {
@@ -1298,15 +1320,27 @@ export class RequirementsLedgerRuntime {
 		const hasScreenshot =
 			(await requirementEvidenceScreenshots(sourceReceipts.map(receipt => receipt.evidence).join("\n"), roots))
 				.length > 0;
-		const collateralRetry = `${expectedIds.join(", ")}: missing collateral section for rendered UI audit. Retry with | screenshot | region | defect | after the verdict table, or the exact line Collateral: none followed by inspected screenshot paths as - path lines. Inspect the changed region with its siblings at default and 420–450 px widths.`;
+		const collateralRetry = `${expectedIds.join(", ")}: missing collateral pair for rendered UI audit. Retry with | before | after | region | defect | after the verdict table, existing before/after files, and none in the defect column when clean. Compare the same view, state and width at the supplied base and artifact, including siblings, at default and 420–450 px widths.`;
 		if (!collateral && (hasScreenshot || readImage)) return collateralRetry;
-		if (collateral)
+		if (collateral) {
+			const hashes = new Map<string, string>();
 			for (const screenshot of collateral.screenshots) {
-				if (
-					!(await Promise.all(roots.map(root => Bun.file(path.resolve(root, screenshot)).exists()))).some(Boolean)
-				)
-					return `${expectedIds.join(", ")}: collateral screenshot does not exist on disk: ${screenshot}; retry with inspected screenshot paths.`;
+				let hash: string | undefined;
+				for (const root of roots) {
+					try {
+						hash = await sha256File(path.resolve(root, screenshot));
+						break;
+					} catch {}
+				}
+				if (!hash)
+					return `${expectedIds.join(", ")}: collateral screenshot does not exist or cannot be read: ${screenshot}; retry with existing readable before/after files.`;
+				hashes.set(screenshot, hash);
 			}
+			for (const pair of collateral.pairs ?? []) {
+				if (!pair.beforeUnavailable && hashes.get(pair.before) === hashes.get(pair.after))
+					return `${expectedIds.join(", ")}: collateral before and after are byte-identical (sha256): ${pair.before} and ${pair.after}; recapture the base and artifact separately in the same view, state and width.`;
+			}
+		}
 		for (const source of sources) {
 			const receipt = sourceReceipts.find(receipt => receipt.id === source.id)!;
 			const issue = getRequirementVerdictSourceIssue(
@@ -1452,7 +1486,9 @@ export class RequirementsLedgerRuntime {
 				const verdict: RequirementVerdict = {
 					...(collateral ? { collateral } : {}),
 					status: receipt.status,
-					evidence: receipt.evidence,
+					evidence: collateral?.baseUnbuildable
+						? `${receipt.evidence}\nBefore comparison unavailable: base unbuildable (${collateral.baseUnbuildable}).`
+						: receipt.evidence,
 					artifact: identity,
 					rawWords: receipt.rawWords,
 					workerId,

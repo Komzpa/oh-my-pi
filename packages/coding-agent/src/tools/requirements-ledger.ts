@@ -64,7 +64,18 @@ export interface RequirementCollateralDefect {
 	defect: string;
 }
 
+export interface RequirementCollateralPair {
+	before: string;
+	after: string;
+	region: string;
+	defect: string;
+	beforeUnavailable?: string;
+}
+
 export interface RequirementCollateral {
+	/** Optional only for persisted receipts predating the pair protocol. */
+	pairs?: RequirementCollateralPair[];
+	baseUnbuildable?: string;
 	screenshots: string[];
 	defects: RequirementCollateralDefect[];
 }
@@ -1313,6 +1324,20 @@ function validRequirementCollateral(value: unknown): value is RequirementCollate
 		Array.isArray(value.screenshots) &&
 		value.screenshots.length > 0 &&
 		value.screenshots.every(item => typeof item === "string" && item.trim()) &&
+		(value.baseUnbuildable === undefined ||
+			(typeof value.baseUnbuildable === "string" && Boolean(value.baseUnbuildable.trim()))) &&
+		(value.pairs === undefined ||
+			(Array.isArray(value.pairs) &&
+				value.pairs.length > 0 &&
+				value.pairs.every(
+					item =>
+						isRecord(item) &&
+						["before", "after", "region", "defect"].every(
+							key => typeof item[key] === "string" && item[key].trim(),
+						) &&
+						(item.beforeUnavailable === undefined ||
+							(typeof item.beforeUnavailable === "string" && Boolean(item.beforeUnavailable.trim()))),
+				))) &&
 		Array.isArray(value.defects) &&
 		value.defects.every(
 			item =>
@@ -1341,39 +1366,60 @@ export function parseRequirementCollateral(output: string): RequirementCollatera
 		output = strings.join("\n");
 	}
 	const lines = output.split(/\r?\n/);
+	const declarations = lines
+		.map(line => /^Base: unbuildable \((.+)\)$/.exec(line.trim())?.[1])
+		.filter((reason): reason is string => Boolean(reason?.trim()));
+	if (declarations.length > 1) throw new Error("return exactly one Base: unbuildable (<reason>) declaration");
 	let result: RequirementCollateral | undefined;
 	for (let index = 0; index < lines.length; index++) {
 		const line = lines[index]!.trim();
 		const cells = requirementTableCells(line);
-		if (line !== "Collateral: none" && cells?.join("|") !== "screenshot|region|defect") continue;
+		if (line === "Collateral: none" || cells?.join("|") === "screenshot|region|defect")
+			throw new Error(
+				"after-only collateral is not a comparison; retry with | before | after | region | defect | and existing before/after files (defect may be none)",
+			);
+		if (cells?.join("|") !== "before|after|region|defect") continue;
 		if (result) throw new Error("return exactly one collateral section");
 		if (!lines.slice(0, index).some(prior => requirementTableCells(prior)?.[0]?.toLowerCase() === "id"))
 			throw new Error("collateral section must follow the verdict table");
-		result = { screenshots: [], defects: [] };
-		if (line === "Collateral: none") {
-			while (++index < lines.length) {
-				const entry = lines[index]!.trim();
-				if (!entry) break;
-				if (!entry.startsWith("- "))
-					throw new Error("Collateral: none must be followed by screenshot paths as - path lines");
-				result.screenshots.push(entry.slice(2).replace(/^`(.*)`$/, "$1"));
-			}
-		} else {
-			const separator = requirementTableCells(lines[++index] ?? "");
-			if (separator?.length !== 3 || !separator.every(cell => /^:?-{3,}:?$/.test(cell)))
-				throw new Error("collateral table requires a three-column separator");
-			while (index + 1 < lines.length && lines[index + 1]!.trim().startsWith("|")) {
-				const row = requirementTableCells(lines[++index]!);
-				if (row?.length !== 3 || row.some(cell => !cell.trim()))
-					throw new Error("collateral rows require screenshot, region, and defect");
-				result.defects.push({ screenshot: row[0]!, region: row[1]!, defect: row[2]! });
-				result.screenshots.push(row[0]!);
-			}
-			if (!result.defects.length)
-				throw new Error("empty collateral table; use Collateral: none with inspected screenshot paths");
+		result = {
+			screenshots: [],
+			defects: [],
+			pairs: [],
+			...(declarations[0] ? { baseUnbuildable: declarations[0] } : {}),
+		};
+		const separator = requirementTableCells(lines[++index] ?? "");
+		if (separator?.length !== 4 || !separator.every(cell => /^:?-{3,}:?$/.test(cell)))
+			throw new Error("collateral table requires a four-column separator");
+		while (index + 1 < lines.length && lines[index + 1]!.trim().startsWith("|")) {
+			const row = requirementTableCells(lines[++index]!);
+			if (row?.length !== 4 || row.some(cell => !cell.trim()))
+				throw new Error(
+					"collateral pair requires before, after, region, and defect (use none for no defect); retry with both screenshot paths",
+				);
+			const beforeUnavailable = /^before: unavailable \((.+)\)$/.exec(row[0]!)?.[1];
+			if (beforeUnavailable && beforeUnavailable !== result.baseUnbuildable)
+				throw new Error(
+					"before: unavailable (<reason>) requires a matching Base: unbuildable (<reason>) declaration with the failed build command and error",
+				);
+			const pair: RequirementCollateralPair = {
+				before: row[0]!,
+				after: row[1]!,
+				region: row[2]!,
+				defect: row[3]!,
+				...(beforeUnavailable ? { beforeUnavailable } : {}),
+			};
+			result.pairs!.push(pair);
+			if (!beforeUnavailable) result.screenshots.push(pair.before);
+			result.screenshots.push(pair.after);
+			if (pair.defect !== "none")
+				result.defects.push({ screenshot: pair.after, region: pair.region, defect: pair.defect });
 		}
+		if (!result.pairs!.length) throw new Error("missing collateral pair; retry with existing before/after files");
+		if (result.baseUnbuildable && !result.pairs!.some(pair => pair.beforeUnavailable))
+			throw new Error("Base: unbuildable declaration must identify an unavailable before in a collateral pair");
 		if (!validRequirementCollateral(result))
-			throw new Error("collateral section must name inspected screenshot paths");
+			throw new Error("collateral section must name inspected screenshot pairs");
 	}
 	return result;
 }
