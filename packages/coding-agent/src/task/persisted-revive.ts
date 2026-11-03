@@ -459,7 +459,11 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			// never switches models, and keeps the live task.maxEffort ceiling the spawn ran under.
 			...(assertApprovedModel
 				? {
-						thinkingLevelCeiling: workerEffortCeilingFor(init.agent ?? "", cfgTaskMaxEffort.get(spec.settings), readAgentMaxEffort(spec.settings)),
+						thinkingLevelCeiling: workerEffortCeilingFor(
+							init.agent ?? "",
+							cfgTaskMaxEffort.get(spec.settings),
+							readAgentMaxEffort(spec.settings),
+						),
 						disableModelFallback: true,
 						disableServerSideFallback: true,
 						assertDispatchModel: (model: Model) => {
