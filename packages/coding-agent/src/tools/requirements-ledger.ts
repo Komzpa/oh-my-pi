@@ -7,6 +7,7 @@ import receiptHeader from "../prompts/session/requirements-ledger-receipt-header
 import { isAcknowledgementOnlyInput } from "../tiny/text";
 import {
 	formatRequirementIdentity,
+	requirementIdentityKey,
 	parseRequirementIdentity,
 	splitRequirementIdentitySegments,
 	type RequirementIdentity,
@@ -1122,6 +1123,31 @@ export async function evaluateRequirementDoneGate(
 							? `; verdict ${verdict.status} evidence: ${verdict.evidence}`
 							: "";
 					reason = `${requirement.id} freshness check failed: ${staleReason}; resolved checkout: ${formatRequirementGateArtifact(current)}${evidence}`;
+					if (!verdict && current.identities) {
+						const currentKey = await requirementIdentityKey(current.identities);
+						const matches: string[] = [];
+						for (const candidate of requirements) {
+							for (const otherRow of candidate.rows) {
+								if (otherRow === row) continue;
+								const other = getRequirementRowVerdict(candidate, otherRow);
+								if (!other || getRequirementVerdictSourceIssue(candidate, otherRow, other)) continue;
+								if (
+									other.sourceSnapshot !== undefined &&
+									other.sourceSnapshot !== requirementSourceSnapshot(requirements, candidate.id)
+								)
+									continue;
+								const parsed = parseRequirementReceiptIdentities(other.artifact);
+								if (
+									!("identities" in parsed) ||
+									(await requirementIdentityKey(parsed.identities)) !== currentKey
+								)
+									continue;
+								matches.push(otherRow);
+							}
+						}
+						if (matches.length === 1)
+							reason += `; passing audit for the same artifact is bound to row ${JSON.stringify(matches[0])}. Request qa-auditor with requirementIds=[${JSON.stringify(requirement.id)}] and artifact row ${JSON.stringify(row)} @ ${current.identities.map(formatRequirementIdentity).join("; ")}; then retry todo op="done", task=${JSON.stringify(row)}. The other row's verdict cannot close this row.`;
+					}
 				}
 			}
 			if (reason) {

@@ -196,6 +196,7 @@ export async function getRequirementRowArtifact(
  */
 async function declaredRequirementTargets(
 	task: TodoItem,
+	cwd: string,
 ): Promise<RequirementIdentityTarget[] | { error: string } | undefined> {
 	if (task.deployment !== undefined) {
 		const parsed = parseRequirementIdentity(task.deployment);
@@ -207,14 +208,19 @@ async function declaredRequirementTargets(
 	}
 	const schedule = (task as TodoItem & { schedule?: unknown }).schedule;
 	const resources = isRecord(schedule) && Array.isArray(schedule.resources) ? schedule.resources : [];
-	if (
-		resources.length === 0 ||
-		resources.some(resource => typeof resource !== "string" || !nodePath.isAbsolute(resource))
-	)
-		return undefined;
+	if (resources.length === 0 || resources.some(resource => typeof resource !== "string")) return undefined;
+	for (const resource of resources as string[]) {
+		if (
+			!nodePath.isAbsolute(resource) &&
+			!resource.startsWith(".") &&
+			!(await fs.promises.lstat(nodePath.resolve(cwd, resource)).catch(() => undefined))
+		)
+			return undefined;
+	}
 	const targets: RequirementIdentityTarget[] = [];
 	const canonicalResources = new Set<string>();
-	for (const resource of resources as string[]) {
+	for (const given of resources as string[]) {
+		const resource = nodePath.resolve(cwd, given);
 		const canonical = await fs.promises.realpath(resource).catch(() => nodePath.resolve(resource));
 		if (canonicalResources.has(canonical)) return { error: `duplicate canonical resource ${resource}` };
 		canonicalResources.add(canonical);
@@ -231,21 +237,38 @@ async function declaredRequirementTargets(
 }
 
 /** Read-only coverage of a parsed receipt against the row's own declared targets; no probe runs here. */
-function requirementReceiptCoverageIssue(
+async function requirementReceiptCoverageIssue(
 	row: string,
 	targets: readonly RequirementIdentityTarget[],
 	identities: readonly RequirementIdentity[],
 	declaredDeploymentValue?: string,
-): string | undefined {
+): Promise<string | undefined> {
+	const canonical = async (value: string) => fs.promises.realpath(value).catch(() => nodePath.resolve(value));
 	const covered = new Set<number>();
 	for (const identity of identities) {
-		const index = targets.findIndex(target => {
-			if (target.kind === "file") return identity.kind === "file" && identity.path === target.path;
-			if (target.kind === "git") return identity.kind === "git" && nodePath.resolve(identity.repo) === target.repo;
-			if (identity.kind !== "deploy") return false;
-			const { value: _value, ...declared } = identity;
-			return JSON.stringify(declared) === JSON.stringify(target);
-		});
+		let index = -1;
+		for (const [candidate, target] of targets.entries()) {
+			if (target.kind === "deploy") {
+				if (identity.kind !== "deploy") continue;
+				const { value: _value, ...declared } = identity;
+				if (JSON.stringify(declared) === JSON.stringify(target)) index = candidate;
+			} else if (identity.kind !== "deploy") {
+				const actual = await canonical(identity.kind === "file" ? identity.path : identity.repo);
+				const expected = await canonical(target.kind === "file" ? target.path : target.repo);
+				const directory =
+					target.kind === "file" && (await fs.promises.stat(expected).catch(() => undefined))?.isDirectory();
+				const relative = nodePath.relative(expected, actual);
+				if (
+					(actual === expected && identity.kind === target.kind) ||
+					(directory &&
+						relative !== ".." &&
+						!relative.startsWith(`..${nodePath.sep}`) &&
+						!nodePath.isAbsolute(relative))
+				)
+					index = candidate;
+			}
+			if (index >= 0) break;
+		}
 		if (index < 0)
 			return `receipt identity ${formatRequirementIdentity(identity)} is outside row ${JSON.stringify(row)}'s declared targets`;
 		const target = targets[index]!;
@@ -260,9 +283,8 @@ function requirementReceiptCoverageIssue(
 			if (identity.paths?.length === 0) return `receipt git identity for ${target.repo} names an empty paths list`;
 			const declaredPaths = target.paths;
 			if (
-				(declaredPaths === undefined && identity.paths !== undefined) ||
-				(declaredPaths !== undefined &&
-					JSON.stringify([...declaredPaths].sort()) !== JSON.stringify([...(identity.paths ?? [])].sort()))
+				declaredPaths !== undefined &&
+				JSON.stringify([...declaredPaths].sort()) !== JSON.stringify([...(identity.paths ?? [])].sort())
 			)
 				return `receipt git paths do not match the declared scope for ${target.repo}`;
 		}
@@ -280,7 +302,7 @@ async function resolveTypedRequirementArtifact(
 	row: string,
 	task: TodoItem,
 ): Promise<RequirementRowArtifact | undefined> {
-	const declaredTargets = await declaredRequirementTargets(task);
+	const declaredTargets = await declaredRequirementTargets(task, ctx.cwd);
 	const receipt = ctx.receipt;
 	const declaration = task.deployment ? parseRequirementIdentity(task.deployment) : undefined;
 	const declaredDeploymentValue =
@@ -384,7 +406,7 @@ async function resolveTypedRequirementArtifact(
 		receiptIdentities = { identities: [{ kind: "git", repo: target.repo, commit: receiptIdentities.commits[0]! }] };
 	}
 	if ("error" in receiptIdentities) return reject(`invalid typed identity (${receiptIdentities.error})`);
-	const coverageIssue = requirementReceiptCoverageIssue(
+	const coverageIssue = await requirementReceiptCoverageIssue(
 		row,
 		resolvedTargets,
 		receiptIdentities.identities,

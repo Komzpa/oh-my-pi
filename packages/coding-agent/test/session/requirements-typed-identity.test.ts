@@ -5,7 +5,11 @@ import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { afterEach, describe, expect, it } from "bun:test";
-import { currentRequirementIdentity, formatRequirementIdentity } from "../../src/utils/requirement-artifact";
+import {
+	currentRequirementIdentity,
+	formatRequirementIdentity,
+	resolveResourceArtifact,
+} from "../../src/utils/requirement-artifact";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { RequirementsLedgerRuntime } from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
@@ -476,26 +480,18 @@ describe("typed identity: accepted receipts", () => {
 		});
 	}
 
-	it("rejects a git receipt narrowed to paths outside the declared whole-repo scope", async () => {
+	it("closes using audited Git paths within a declared repository", async () => {
 		const { root: repo, head } = await initRepo({
 			"src/a.ts": "export const a = 1;\n",
 			"src/b.ts": "export const b = 1;\n",
 		});
-		// A whole-repository declaration cannot be narrowed by the auditor's receipt.
+		// Unrelated edits do not change the named artifact the auditor read.
 		fs.writeFileSync(path.join(repo, "src", "b.ts"), "export const b = 2;\n");
-		fs.writeFileSync(path.join(repo, "scratch.txt"), "scratch\n");
 		const identity = `git:${repo}@${head} paths=["src/a.ts"]`;
 		const fx = await harness([ROW], { resources: [repo] });
-		expect(fx.classifyResult.isError).not.toBe(true);
-		const prepared = await fx.prepare(ROW);
-		expect(prepared).toBeDefined();
-		const rejected = await fx.receive(artifactCell(ROW, [identity]));
-		expect(rejected).toMatchObject({ isError: true });
-		expect(JSON.stringify(rejected)).toContain("paths do not match the declared scope");
-		expect(verdictOf(fx, ROW)?.status).not.toBe("pass");
-		const done = await fx.done("p3", ROW);
-		expect(done.isError).toBe(true);
-		expect(statusOf(fx, ROW)).toBe("pending");
+		await fx.prepare(ROW);
+		expect(await fx.receive(artifactCell(ROW, [identity]))).toBeUndefined();
+		expect((await fx.done("p3", ROW)).isError).not.toBe(true);
 	}, 30_000);
 });
 
@@ -733,3 +729,81 @@ describe("typed identity: stale receipts block done with expected and observed v
 });
 
 useFastGitStatusCoordinator();
+
+describe("passing audit closure regressions", () => {
+	it("closes a directory over 256 MiB using the audited manifest and rejects changed manifest bytes", async () => {
+		const root = tempDir("omp-large-manifest-");
+		const file = path.join(root, "RELEASE.md");
+		fs.writeFileSync(file, "audited release manifest\n");
+		const large = fs.openSync(path.join(root, "large.bin"), "w");
+		fs.ftruncateSync(large, 256 * 1024 * 1024 + 1);
+		fs.closeSync(large);
+
+		const fx = await harness([ROW], { resources: [root] });
+		await fx.prepare(ROW);
+		expect(await fx.receive(artifactCell(ROW, [fileId(file)]))).toBeUndefined();
+		expect(verdictOf(fx, ROW)?.status).toBe("pass");
+		expect((await fx.done("manifest-done", ROW)).isError).not.toBe(true);
+		fs.writeFileSync(file, "changed release manifest\n");
+		expect((await fx.done("manifest-changed", ROW)).isError).toBe(true);
+		const unpinned = await resolveResourceArtifact([root]);
+		expect(unpinned).toMatchObject({ dirty: true });
+		if (unpinned.dirty) expect(unpinned.reason).toContain("pin the audited");
+	});
+
+	it("closes a large Git directory pinned by its tree and refuses tracked edits", async () => {
+		const { root, head } = await initRepo({ "tree-scope.txt": "audited\n" });
+		const tree = await vcs.requireGit(root).resolveRef(`${head}^{tree}`);
+		const large = fs.openSync(path.join(root, "untracked-large.bin"), "w");
+		fs.ftruncateSync(large, 256 * 1024 * 1024 + 1);
+		fs.closeSync(large);
+		const fx = await harness([ROW], { resources: [root] });
+		await fx.prepare(ROW);
+		expect(await fx.receive(artifactCell(ROW, [`git:${root}@${tree}`]))).toBeUndefined();
+		expect((await fx.done("tree-done", ROW)).isError).not.toBe(true);
+		fs.writeFileSync(path.join(root, "tree-scope.txt"), "changed\n");
+		expect((await fx.done("tree-stale", ROW)).isError).toBe(true);
+	}, 30_000);
+
+	it("normalizes relative resource paths and absolute paths= spellings before closing", async () => {
+		const { root, head } = await initRepo({ "scope.txt": "audited\n" });
+		const fx = await harness([ROW], { resources: [root] });
+		await fx.prepare(ROW);
+		const identity = `git:${root}/@${head} paths=${JSON.stringify([`${root}/./scope.txt/`])}`;
+		expect(await fx.receive(artifactCell(ROW, [identity]))).toBeUndefined();
+		expect((await fx.done("spelling-done", ROW)).isError).not.toBe(true);
+		fs.writeFileSync(path.join(root, "scope.txt"), "changed\n");
+		expect((await fx.done("spelling-stale", ROW)).isError).toBe(true);
+	}, 30_000);
+
+	it("compares a relative resource alias with the absolute audited file by realpath", async () => {
+		const root = tempDir("omp-relative-pin-");
+		const file = path.join(root, "artifact.txt");
+		const alias = path.join(root, "alias.txt");
+		fs.writeFileSync(file, "audited\n");
+		fs.symlinkSync(file, alias);
+		const fx = await harness([ROW], { resources: [file] });
+		const phases = getLatestTodoPhasesFromEntries(fx.manager.getBranch());
+		Object.assign(phases[0]!.tasks[0]!, {
+			schedule: { owner: "AuditTyped-1", resources: [`./${path.relative(fx.cwd, alias)}`] },
+		});
+		fx.manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+		await fx.prepare(ROW);
+		expect(await fx.receive(artifactCell(ROW, [fileId(file)]))).toBeUndefined();
+		expect((await fx.done("alias-done", ROW)).isError).not.toBe(true);
+	});
+
+	it("names a unique passing sibling row without accepting its verdict for this row", async () => {
+		const root = tempDir("omp-sibling-audit-");
+		const file = path.join(root, "artifact.txt");
+		fs.writeFileSync(file, "audited\n");
+		const fx = await harness([ROW, ROW_B], { resources: [file] });
+		await fx.prepare(ROW);
+		expect(await fx.receive(artifactCell(ROW, [fileId(file)]))).toBeUndefined();
+		const result = await fx.done("wrong-row-done", ROW_B);
+		expect(result.isError).toBe(true);
+		expect(textOf(result)).toContain(`passing audit for the same artifact is bound to row ${JSON.stringify(ROW)}`);
+		expect(textOf(result)).toContain(`artifact row ${JSON.stringify(ROW_B)} @ ${fileId(file)}`);
+		expect(statusOf(fx, ROW_B)).toBe("pending");
+	});
+});
