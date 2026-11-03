@@ -1271,6 +1271,8 @@ export function getRequirementAuditSources(
 export const REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE = "requirements_auditor_assignments";
 
 export interface RequirementAuditAssignment {
+	/** Harness dispatch time; old assignments must be retried for UI capture provenance. */
+	startedAt?: number;
 	ids: string[];
 	snapshot: string;
 	sessionId: string;
@@ -1791,6 +1793,7 @@ export function getPersistedRequirementAuditorAssignments(
 			restored.set(workerId, {
 				workerId,
 				agent,
+				...(typeof value.startedAt === "number" ? { startedAt: value.startedAt } : {}),
 				ids: [...requirementIds],
 				snapshot,
 				sessionId,
