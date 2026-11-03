@@ -31,7 +31,12 @@ const GROUPS: Record<string, string[]> = {
 	"retro-facilitator": ["@judgment"],
 	"business-analyst": ["@judgment"],
 	creative: ["@judgment"],
-	researcher: ["@free", "@judgment"],
+	researcher: ["@judgment"],
+	"install-owner": ["@code"],
+	profiler: ["@strong"],
+	"visual-qa": ["@vision-code"],
+	rebaser: ["@code"],
+	"user-shadow": ["@judgment"],
 };
 
 // Fixed per-type effort so the auto effort judge never picks a worker's level
@@ -56,12 +61,16 @@ const LEVELS: Record<string, string> = {
 	"security-reviewer": "high",
 	"plan-doctor": "high",
 	architect: "high",
+	"install-owner": "medium",
+	profiler: "medium",
+	"visual-qa": "medium",
+	rebaser: "medium",
+	"user-shadow": "medium",
 };
 
 describe("Reemxy extension agent model chains", () => {
 	test("profiles name role groups, not literal models", () => {
 		for (const profile of extensionProfiles()) {
-			if (profile.name === "deepseek") continue;
 			expect(profile.model, profile.name).toEqual(GROUPS[profile.name]);
 		}
 	});
@@ -70,7 +79,6 @@ describe("Reemxy extension agent model chains", () => {
 		const names = extensionProfiles().map(profile => profile.name);
 		for (const name of Object.keys(GROUPS)) expect(names, name).toContain(name);
 		for (const profile of extensionProfiles()) {
-			if (profile.name === "deepseek") continue;
 			expect(profile.thinkingLevel as string | undefined, profile.name).toBe(LEVELS[profile.name]);
 			expect((profile.model ?? []).some(model => /:(?:minimal|low|medium|high|xhigh|max)$/.test(model))).toBe(false);
 		}
@@ -78,7 +86,7 @@ describe("Reemxy extension agent model chains", () => {
 
 	test("judgment and strong profiles never include the free group", () => {
 		for (const profile of extensionProfiles()) {
-			if (["reviewer", "architect", "plan-doctor", "adversary", "security-reviewer", "retro-facilitator", "coder-strong", "ui-coder-strong"].includes(profile.name))
+			if (["reviewer", "architect", "plan-doctor", "adversary", "security-reviewer", "retro-facilitator", "coder-strong", "ui-coder-strong", "researcher", "install-owner", "profiler", "visual-qa", "rebaser", "user-shadow"].includes(profile.name))
 				expect(profile.model, profile.name).not.toContain("@free");
 		}
 	});
