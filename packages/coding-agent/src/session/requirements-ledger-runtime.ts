@@ -5,6 +5,7 @@ import {
 	type RequirementEntryMetadata,
 } from "./requirements-branch-selection";
 import * as path from "node:path";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 
 import type { Agent, AfterToolCallContext, AfterToolCallResult, BeforeToolCallResult } from "@oh-my-pi/pi-agent-core";
 import { setAssistantPublicationGate } from "@oh-my-pi/pi-agent-core/assistant-publication";
@@ -98,7 +99,7 @@ import { BUNDLED_QA_AUDITOR_TEMPLATE } from "../task/agents";
 import type { AgentDefinition } from "../task/types";
 import type { SessionEntry } from "./session-entries";
 import { sha256File } from "../utils/file-hash";
-import type { RequirementIdentity } from "../utils/requirement-artifact";
+import { requirementIdentityKey, type RequirementIdentity } from "../utils/requirement-artifact";
 import auditInputTemplate from "../prompts/session/requirements-ledger-audit-input.md" with { type: "text" };
 import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
 import flowNoticeTemplate from "../prompts/session/requirements-ledger-flow-notice.md" with { type: "text" };
@@ -162,8 +163,26 @@ function requirementArtifactState(artifact: RequirementGateArtifact): unknown {
  * A checkout-resolved artifact carries its commit in `head`; a receipt-typed one carries the same
  * commit in a path-less Git identity for that checkout. Compare both shapes at one commit location.
  */
-function comparableArtifactState(state: unknown): string {
+async function comparableArtifactState(state: unknown, dispatch?: unknown): Promise<string> {
 	const value = { ...(state as { cwd?: string; head?: string | null; identities?: RequirementIdentity[] }) };
+	const prior = dispatch as { identities?: RequirementIdentity[] } | undefined;
+	if (prior?.identities && value.identities) {
+		value.identities = await Promise.all(
+			value.identities.map(async identity => {
+				if (identity.kind !== "git") return identity;
+				const whole = prior.identities?.find(
+					target => target.kind === "git" && target.repo === identity.repo && target.paths === undefined,
+				);
+				if (!whole || whole.kind !== "git") return identity;
+				const same =
+					whole.commit === identity.commit ||
+					(await vcs.git(identity.repo)?.resolveRef(`${whole.commit}^{tree}`)) === identity.commit;
+				if (!same) return identity;
+				const { paths: _paths, ...pinned } = identity;
+				return { ...pinned, commit: whole.commit };
+			}),
+		);
+	}
 	const git = value.identities?.filter(
 		identity => identity.kind === "git" && identity.paths === undefined && identity.repo === value.cwd,
 	);
@@ -171,7 +190,10 @@ function comparableArtifactState(state: unknown): string {
 		value.head = git[0]!.commit;
 		delete value.identities;
 	}
-	return JSON.stringify(value);
+	return JSON.stringify({
+		...value,
+		identities: value.identities ? await requirementIdentityKey(value.identities) : undefined,
+	});
 }
 
 /** Exact audit target carrier. It may narrow an already structured row scope, never create one. */
@@ -1365,9 +1387,10 @@ export class RequirementsLedgerRuntime {
 					// `artifact` was resolved through the receipt's typed target above. Compare
 					// like-for-like so a transient QA owner cannot replace the audited target.
 					const current = artifact;
+					const dispatch = JSON.parse(assignment.rowArtifacts[row]!);
 					if (
-						comparableArtifactState(JSON.parse(assignment.rowArtifacts[row]!)) !==
-						comparableArtifactState(requirementArtifactState(current))
+						(await comparableArtifactState(dispatch)) !==
+						(await comparableArtifactState(requirementArtifactState(current), dispatch))
 					)
 						return `${receipt.id}: row artifact changed after audit dispatch for ${JSON.stringify(row)}; dispatch: ${assignment.rowArtifacts[row]}; current: ${JSON.stringify(requirementArtifactState(current))}`;
 				}

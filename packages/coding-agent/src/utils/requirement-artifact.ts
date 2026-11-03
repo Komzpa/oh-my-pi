@@ -92,8 +92,25 @@ export function formatRequirementIdentity(identity: RequirementIdentity): string
 	return `deploy:${wireString(identity.target)}@${wireString(identity.value)}${field}${scope}${env}`;
 }
 
+/** Compare receipt locations by their resolved paths, preserving the exact audited digest and scope. */
+export async function requirementIdentityKey(identities: readonly RequirementIdentity[]): Promise<string> {
+	const keys = await Promise.all(
+		identities.map(async identity => {
+			if (identity.kind === "deploy") return formatRequirementIdentity(identity);
+			const given = identity.kind === "file" ? identity.path : identity.repo;
+			const canonical = await fs.realpath(given).catch(() => path.resolve(given));
+			return formatRequirementIdentity(
+				identity.kind === "file"
+					? { kind: "file", path: canonical, sha256: identity.sha256 }
+					: { ...identity, repo: canonical, ...(identity.paths ? { paths: [...identity.paths].sort() } : {}) },
+			);
+		}),
+	);
+	return keys.sort().join("; ");
+}
+
 function absoluteIdentityPath(value: string): boolean {
-	return path.isAbsolute(value) && !/[\x00-\x1f\x7f]/.test(value) && path.normalize(value) === value;
+	return path.isAbsolute(value) && !/[\x00-\x1f\x7f]/.test(value);
 }
 
 function validGitPath(value: string): boolean {
@@ -158,7 +175,7 @@ export function parseRequirementIdentity(text: string): { identity: RequirementI
 			return {
 				identity: {
 					kind: "file",
-					path: target.value,
+					path: path.resolve(target.value),
 					sha256: value.value.slice(7).toLowerCase(),
 					...(canonicalPath === undefined ? {} : { canonicalPath }),
 				},
@@ -182,16 +199,24 @@ export function parseRequirementIdentity(text: string): { identity: RequirementI
 					!Array.isArray(decoded) ||
 					decoded.length === 0 ||
 					decoded.length > REQUIREMENT_ARTIFACT_LIMITS.maxFiles ||
-					!decoded.every((entry: unknown): entry is string => typeof entry === "string" && validGitPath(entry))
+					!decoded.every(
+						(entry: unknown): entry is string =>
+							typeof entry === "string" &&
+							validGitPath(
+								path.relative(target.value, path.resolve(target.value, entry)).split(path.sep).join("/"),
+							),
+					)
 				)
 					fail("git paths must be a nonempty bounded array of exact relative file paths");
-				paths = decoded;
+				paths = decoded.map(entry =>
+					path.relative(target.value, path.resolve(target.value, entry)).split(path.sep).join("/"),
+				);
 				if (new Set(paths).size !== paths.length) fail("git paths must be unique");
 			}
 			return {
 				identity: {
 					kind: "git",
-					repo: target.value,
+					repo: path.resolve(target.value),
 					commit: value.value.toLowerCase(),
 					...(paths ? { paths } : {}),
 				},
@@ -288,7 +313,7 @@ async function safeArtifactParents(abs: string): Promise<Array<{ path: string; d
 	return parents;
 }
 
-/** Bounded binary descriptor reads; replacement, resize, mode or ancestor drift fails closed. */
+/** Streaming binary descriptor reads; replacement, resize, mode or ancestor drift fails closed. */
 async function readStableArtifactFile(
 	abs: string,
 	consume: (chunk: Uint8Array) => void,
@@ -298,8 +323,6 @@ async function readStableArtifactFile(
 	signal?.throwIfAborted();
 	const parents = await safeArtifactParents(abs);
 	const before = await statRegularFile(abs, abs);
-	if (before.size > REQUIREMENT_ARTIFACT_LIMITS.maxBytes)
-		fail(`${abs}: exceeds byte bound ${REQUIREMENT_ARTIFACT_LIMITS.maxBytes}`);
 	const handle = await fs
 		.open(abs, fsSync.constants.O_RDONLY | fsSync.constants.O_NOFOLLOW | fsSync.constants.O_NONBLOCK)
 		.catch(err => fail(describeFsError(abs, err)));
@@ -317,8 +340,7 @@ async function readStableArtifactFile(
 			const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, null);
 			if (bytesRead === 0) break;
 			bytes += bytesRead;
-			if (bytes > before.size || bytes > REQUIREMENT_ARTIFACT_LIMITS.maxBytes)
-				fail(`${abs}: changed while reading or exceeds byte bound`);
+			if (bytes > before.size) fail(`${abs}: changed while reading`);
 			consume(buffer.subarray(0, bytesRead));
 		}
 		const after = await handle.stat();
@@ -380,7 +402,7 @@ async function statRegularFile(filePath: string, label: string): Promise<Stats> 
 
 /**
  * Streamed SHA-256 of one regular file. Fails closed when the file is missing,
- * inaccessible, non-regular, over the byte bound, or changes while it is read.
+ * inaccessible, non-regular, or changes while it is read.
  */
 export async function hashArtifactFile(filePath: string, signal?: AbortSignal): Promise<string> {
 	const abs = path.resolve(filePath);
@@ -447,7 +469,10 @@ async function walkDirectory(root: string, signal?: AbortSignal): Promise<FileEn
 				bytes += st.size;
 				entry = { rel, abs, identity: identityOf(st), type: "file" };
 			}
-			if (bytes > maxBytes) fail(`${root}: directory exceeds aggregate byte bound ${maxBytes}`);
+			if (bytes > maxBytes)
+				fail(
+					`${root}: directory exceeds aggregate byte bound ${maxBytes}; pin the audited Git commit/tree as git:<repo>@<full SHA>, or pin the audited manifest file as file:<manifest>@sha256=<SHA-256>`,
+				);
 			files.push(entry);
 		}
 		const after = await fs.lstat(dir).catch(err => fail(describeFsError(dir, err)));
@@ -614,7 +639,6 @@ async function checkGitNamedPaths(
 		parents: Array<{ path: string; dev: number; ino: number }>;
 	}> = [];
 	const rootBefore = await fs.lstat(root);
-	let bytes = 0;
 	let stale: RequirementIdentityCheck | undefined;
 	for (const relative of paths) {
 		signal?.throwIfAborted();
@@ -648,10 +672,8 @@ async function checkGitNamedPaths(
 					chunks.push(new Uint8Array(chunk));
 				},
 				signal,
-				opened => {
+				() => {
 					started = true;
-					bytes += opened.size;
-					if (bytes > REQUIREMENT_ARTIFACT_LIMITS.maxBytes) fail("Git path set exceeds aggregate byte bound");
 				},
 			);
 			const current = await repo.worktreeBlobEntry(relative, Buffer.concat(chunks), signal);
@@ -714,6 +736,7 @@ export async function checkRequirementIdentity(
 		const parsed = parseRequirementIdentity(formatRequirementIdentity(identity));
 		if ("error" in parsed) fail(parsed.error);
 		identity = parsed.identity;
+		if (identity.kind === "git") identity = { ...identity, repo: await canonicalArtifactPath(identity.repo) };
 		if (identity.kind === "deploy") {
 			const observed = await probeRequirementDeployment(identity, signal);
 			signal?.throwIfAborted();
@@ -724,7 +747,7 @@ export async function checkRequirementIdentity(
 		}
 		if (identity.kind === "file") {
 			// Legacy real-path receipts implicitly bind canonical location to their given path.
-			const expectedCanonical = identity.canonicalPath ?? identity.path;
+			const expectedCanonical = identity.canonicalPath ?? (await canonicalArtifactPath(identity.path));
 			const canonical = await canonicalArtifactPath(identity.path);
 			if (canonical !== expectedCanonical)
 				return { state: "stale", kind: "file", location, expected: expectedCanonical, observed: canonical };
@@ -745,9 +768,8 @@ export async function checkRequirementIdentity(
 		const repo = await identityGitRepo(identity.repo);
 		if (identity.paths) return await checkGitNamedPaths(repo, identity.repo, identity.commit, identity.paths, signal);
 		// Unscoped legacy-compatible Git identity is deliberately conservative.
-		const resolved = await repo.resolveRef(`${identity.commit}^{commit}`, signal);
-		if (resolved?.toLowerCase() !== identity.commit)
-			fail(`${identity.commit}: expected commit is unavailable or not a commit`);
+		const resolved = await repo.resolveRef(`${identity.commit}^{tree}`, signal);
+		if (!resolved) fail(`${identity.commit}: expected commit/tree is unavailable`);
 		const head = await repo.headSha(signal);
 		if (!head) fail(`${identity.repo}: checkout has no HEAD commit`);
 		// Untracked files are not committed content: HEAD fully identifies the tree. Only
@@ -759,8 +781,9 @@ export async function checkRequirementIdentity(
 		]);
 		if (headAfter !== head) fail(`${identity.repo}: HEAD changed during identity probe`);
 		if (statusAfter !== statusBefore) fail(`${identity.repo}: checkout changed during identity probe`);
-		if (head.toLowerCase() !== identity.commit)
-			return { state: "stale", kind: "git", location, expected: identity.commit, observed: head };
+		const observed = resolved.toLowerCase() === identity.commit ? await repo.resolveRef("HEAD^{tree}", signal) : head;
+		if (observed?.toLowerCase() !== identity.commit)
+			return { state: "stale", kind: "git", location, expected: identity.commit, observed: observed ?? "(missing)" };
 		const trackedChanges = trackedRequirementChangePaths(statusBefore);
 		if (trackedChanges.length)
 			fail(
