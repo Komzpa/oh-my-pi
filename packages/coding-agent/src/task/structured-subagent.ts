@@ -4,6 +4,7 @@
  * The two public frontends deliberately retain their presentation concerns, but
  * every decision that affects what a child may run lives here.
  */
+import { selectRowAuditModel } from "./audit-model-selection";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
@@ -128,6 +129,7 @@ export interface StructuredSubagentIdentity {
 
 /** One normalized child invocation. */
 export interface StructuredSubagentRequest {
+	requirementIds?: string[];
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
@@ -1022,7 +1024,10 @@ function describeSalvagedWork(result: SingleResult): string {
  * lease or child dispatch; callers keep responsibility for their result text.
  */
 export async function runStructuredSubagent(request: StructuredSubagentRequest): Promise<StructuredSubagentResult> {
-	const policy = await applySpawnHook(request, await resolveEffectiveSubagentPolicy(request));
+	const policy = await selectRowAuditModel(
+		request,
+		await applySpawnHook(request, await resolveEffectiveSubagentPolicy(request)),
+	);
 	const lease = await leaseArtifacts(request.session, request.invocationKind);
 	let changesApplied: boolean | null = null;
 	let mergeSummary = "";

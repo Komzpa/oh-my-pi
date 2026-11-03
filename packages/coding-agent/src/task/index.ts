@@ -389,7 +389,13 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if (Array.isArray(params.tasks) && params.tasks.length > 0) {
 		return params.tasks;
 	}
-	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task, taskFile: params.taskFile };
+	const item: TaskItem = {
+		requirementIds: params.requirementIds,
+		name: params.name,
+		agent: params.agent,
+		task: params.task,
+		taskFile: params.taskFile,
+	};
 	if ("images" in params) item.images = params.images;
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
@@ -459,6 +465,7 @@ async function resolveTaskFile(session: ToolSession, item: TaskItem): Promise<Re
  */
 function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent: string): SpawnParams {
 	const spawn: SpawnParams = { agent: item.agent?.trim() || defaultAgent };
+	if (item.requirementIds !== undefined) spawn.requirementIds = item.requirementIds;
 	if (item.name !== undefined) spawn.name = item.name;
 	if (item.task !== undefined) spawn.task = item.task;
 	if (item.taskFile !== undefined) spawn.taskFile = item.taskFile;
@@ -1929,6 +1936,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				assignment,
 				context,
 				agent: params.agent,
+				requirementIds: params.requirementIds,
 				...(params.images?.length ? { images: params.images } : {}),
 				sourceSession: params.sourceSession,
 				...spawnModelFields(params),

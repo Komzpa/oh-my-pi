@@ -1764,7 +1764,8 @@ export function getPersistedRequirementAuditorAssignments(
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index]!;
 		if (entry.type !== "custom" || entry.customType !== REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE) continue;
-		if (!isRecord(entry.data) || entry.data.sessionId !== sessionId) continue;
+		if (!isRecord(entry.data) || entry.data.sessionId !== sessionId || entry.data.kind === "model_selection")
+			continue;
 		if (entry.data.version !== 1 || !Array.isArray(entry.data.jobs)) return restored;
 		for (const value of entry.data.jobs) {
 			if (!isRecord(value)) continue;

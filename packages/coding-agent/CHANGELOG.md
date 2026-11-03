@@ -5,6 +5,8 @@
 ## [18.17.0] - 2026-11-06
 ### Fixed
 
+- Row audits prefer an independent vendor or stronger/different configured model, with visual capability checks and recorded selection reasons ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 - UI audit screenshots now require fresh files linked to the auditor’s own tool activity ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
 
 - Completed TODO rows keep their verified audit status after leaving the active plan ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).

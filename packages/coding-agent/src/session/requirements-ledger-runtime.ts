@@ -754,6 +754,7 @@ export class RequirementsLedgerRuntime {
 			});
 			revised[index] = {
 				...item,
+				requirementIds: ids,
 				...(declaredArtifacts.length ? { artifact: declaredArtifacts.join("; ") } : {}),
 				task: `${item.task}\n\n${protocol}`,
 				...(imagePayloads.length ? { images: imagePayloads } : {}),
@@ -1689,7 +1690,8 @@ export class RequirementsLedgerRuntime {
 				!assignmentEntry &&
 				entry.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE &&
 				isRecord(entry.data) &&
-				entry.data.sessionId === sessionId
+				entry.data.sessionId === sessionId &&
+				entry.data.kind !== "model_selection"
 			)
 				assignmentEntry = entry;
 			if (foundLedger && assignmentEntry) break;
