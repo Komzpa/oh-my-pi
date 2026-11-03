@@ -92,7 +92,7 @@ function createMockSession(
 		agent: { state: { systemPrompt: ["test"] } } as never,
 		model: { api: "anthropic-messages" } as never,
 		extensionRunner: undefined as never,
-		sessionManager: { appendSessionInit: () => {} } as never,
+		sessionManager: SessionManager.inMemory("/tmp/soft-budget-test"),
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -293,6 +293,13 @@ describe("runSubprocess soft request budget", () => {
 		expect(abortCallsAtReminder).toBe(1);
 		// The budget stop forces a synthetic terminal yield.
 		expect(handle.prompts).toHaveLength(2);
+		expect(handle.session.sessionManager.getBranch()).toContainEqual(
+			expect.objectContaining({
+				type: "custom",
+				customType: "worker-budget-stop",
+				data: { sessionId: handle.session.sessionManager.getHeader()?.id },
+			}),
+		);
 		expect(handle.prompts[1]?.options?.synthetic).toBe(true);
 		expect(handle.prompts[1]?.options?.toolChoice).toEqual({ type: "tool", name: "yield" });
 		expect(handle.sentUserMessages).toContainEqual({

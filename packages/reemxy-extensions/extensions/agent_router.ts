@@ -992,9 +992,9 @@ export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbe
 	const announcedGuardSessions = new Set<string>();
 	pi.setLabel?.("Agent Router");
 	const continuedWorkers = new Map<string, WorkerContinuationState>();
-	pi.on("tool_call", (event, ctx) => {
+	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName === "yield" && ctx.agent?.kind === "sub") {
-			const decision = workerYieldRefusal(event.input, ctx, continuedWorkers, event.toolCallId);
+			const decision = await workerYieldRefusal(event.input, ctx, continuedWorkers, event.toolCallId);
 			if (decision) return decision;
 		}
 		return fileToolRefusal(event, ctx);

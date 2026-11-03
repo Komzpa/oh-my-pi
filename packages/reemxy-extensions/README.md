@@ -109,3 +109,7 @@ Harness, router and deadline notices are passive asides (`triggerTurn: false`): 
 ## Idle user decisions
 
 At lead stop and wait, an available session job snapshot with no running jobs and open todo rows requires a recorded user decision. Set `review: "user"` and `reviewPage: "http://..."` through `todo schedule` on each decision row. The existing todo-user-review handoff carries the artifact. Every decision page must answer HTTP 200 now and show one card per decision with accept/redo/drop. Missing rows or failed probes refuse once per row/state/probe digest; reply wording is never inspected. Running background jobs or workers leave this gate inactive.
+
+## Verified worker yields
+
+Terminal mutation workers yield `requirements: [{requirement, done, evidence}]` plus an optional `blocker: {kind, evidence}`. Evidence contains exactly one of `{commit: sha}`, `{path}`, or `{command}`. The harness verifies commit existence and HEAD reachability, filesystem paths in the worker cwd, and paired successful command results after that worker's session initialization. Tracked worktree changes refuse the yield until committed or discarded. An incomplete requirement needs a verified blocker; an identical blocker must survive three consecutive yields. Six refusals cap the loop; a seventh unsuccessful yield returns `goal cap reached; partial`. Read-only roles, main sessions, incremental section submissions and session-bound budget stops are exempt. Report wording never establishes completion or a blocker.
