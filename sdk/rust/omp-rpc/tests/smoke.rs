@@ -127,11 +127,11 @@ fn smoke_real_server() {
 			phases: vec![TodoPhase {
 				name:  "Smoke".into(),
 				tasks: vec![TodoItem {
-					content:        "blocked task".into(),
-					status:         TodoStatus::Blocked,
-					blocker:        Some("waiting".into()),
-					details:        None,
-					notes:          None,
+					content: "blocked task".into(),
+					status:  TodoStatus::Blocked,
+					blocker: Some("waiting".into()),
+					details: None,
+					notes:   None,
 					artifact_cwd:   None,
 					artifact_owner: None,
 					deployment:     None,
