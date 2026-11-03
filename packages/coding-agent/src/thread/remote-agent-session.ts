@@ -96,6 +96,7 @@ import {
 } from "../session/session-context";
 import type { CustomEntry, SessionEntry } from "../session/session-entries";
 import { conversationTip, lastModelChangeRole, SessionEntryIndex } from "../session/session-manager";
+import type { RestartDrainLease } from "../session/agent-session-types";
 import type { AgentDefinition } from "../task/types";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import { type ApprovalGrantStore, getApprovalGrants } from "../tools/approval-cache";
@@ -124,6 +125,8 @@ export class SessionHostClient {
 /** State of a mirror that never received (or no longer has) data from its home. */
 export function emptyMirrorState(): SessionMirrorState {
 	return {
+		isDisposed: false,
+		restartPendingInputCount: 0,
 		isStreaming: false,
 		runStartedAt: undefined,
 		ircWakesPending: false,
@@ -259,6 +262,7 @@ export class RemoteAgentSession implements AgentViewSession {
 	readonly #asyncJobs: AsyncJobManagerApi | undefined;
 	#state: SessionMirrorState;
 	#pendingToolCalls: Set<string>;
+	#restartDrainRelease: Promise<void> | undefined;
 	readonly #messages: AgentMessage[];
 	#view: SessionViewState = emptyViewState();
 	/**
@@ -860,6 +864,33 @@ export class RemoteAgentSession implements AgentViewSession {
 		return this.#command("steer", text, images, options);
 	}
 
+	get isDisposed(): boolean {
+		return this.#closed !== undefined || this.#state.isDisposed;
+	}
+	getRestartPendingInputCount(): number {
+		return this.#state.restartPendingInputCount;
+	}
+	beginRestartDrain(): RestartDrainLease {
+		const lease = this.#command("beginRestartDrain");
+		return {
+			wasRunning: this.isStreaming,
+			waitForQuiescence: async () => (await lease).waitForQuiescence(),
+			release: () => {
+				this.#restartDrainRelease = lease.then(lease => lease.release());
+				void this.#restartDrainRelease.catch(error => logger.warn("Restart drain release failed", { error }));
+			},
+		};
+	}
+	getRestartBranchEntries(): Promise<SessionEntry[]> {
+		return this.#command("getRestartBranchEntries");
+	}
+	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void> {
+		return this.#command("sendRestartNotice", message);
+	}
+	flushRestartJournal(): Promise<void> {
+		return this.#command("flushRestartJournal");
+	}
+
 	abort(options?: SessionAbortOptions): Promise<void> {
 		if (this.#closed !== undefined) return Promise.resolve();
 		return this.#command("abort", options);
@@ -1153,6 +1184,7 @@ export class RemoteAgentSession implements AgentViewSession {
 		method: K,
 		...args: SessionHostProtocol[K]["args"]
 	): Promise<SessionHostProtocol[K]["result"]> {
+		if (this.#restartDrainRelease) await this.#restartDrainRelease;
 		if (this.#closed !== undefined || !this.#host) throw this.#goneError();
 		try {
 			return await this.#host.remote.call(method, ...args);

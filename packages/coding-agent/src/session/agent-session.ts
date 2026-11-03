@@ -7970,6 +7970,25 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * batch. Queued input and completed side effects are persisted before the
 	 * lease reports quiescence; other AgentSession instances remain independent.
 	 */
+
+	getRestartPendingInputCount(): number {
+		return this.agent.getPendingModelNewsCount();
+	}
+	async getRestartBranchEntries(): Promise<SessionEntry[]> {
+		return this.sessionManager.getBranchMatching(
+			metadata =>
+				metadata.type === "message" ||
+				(metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE),
+		);
+	}
+	async sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void> {
+		await this.sendCustomMessage(message, { deliverAs: "nextTurn", triggerTurn: false });
+	}
+	async flushRestartJournal(): Promise<void> {
+		await this.sessionManager.ensureOnDisk();
+		await this.sessionManager.flush();
+	}
+
 	beginRestartDrain(): RestartDrainLease {
 		if (this.#isDisposed) throw new Error("Cannot drain a disposed session for restart");
 		if (this.#restartDrainLeaseCount === 0) {

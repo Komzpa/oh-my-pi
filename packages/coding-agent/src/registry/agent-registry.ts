@@ -151,6 +151,8 @@ export interface AgentRegistryApi {
 	reopen(id: string, expected: AgentRef): AgentRef | undefined;
 	/** Attach transcript-derived identity and telemetry without changing lifecycle state. */
 	setHistory(id: string, history: AgentHistorySummary, expectedSessionFile?: string): boolean;
+	/** Restore persisted identity while the exact ref is still current. */
+	restoreIdentity(id: string, expected: AgentRef, identity: { displayName: string; parentId?: string }): boolean;
 	/** Transition `id` to `status` when it still matches `expected`. */
 	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean;
 	/** Record that the current run handed over its final result. */

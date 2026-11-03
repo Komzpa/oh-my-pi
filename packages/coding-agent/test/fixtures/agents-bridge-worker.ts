@@ -39,7 +39,7 @@ export interface PeerReport {
 export interface AgentsProbe {
 	threadId(): Promise<string>;
 	/** Build a real session (mock model) and register it as `id` in the (remote) registry. */
-	open(id: string, options: { sessionFile?: string; gated?: boolean }): Promise<string>;
+	open(id: string, options: { sessionFile?: string; gated?: boolean; persistedCwd?: string }): Promise<string>;
 	/** Run a prompt on the local session to completion. */
 	prompt(id: string, text: string): Promise<void>;
 	/** Let gated model calls answer. */
@@ -85,7 +85,7 @@ let threadName = "";
 let gate = Promise.withResolvers<void>();
 let gateOpen = false;
 
-async function makeSession(id: string, gated: boolean): Promise<AgentSession> {
+async function makeSession(id: string, gated: boolean, persistedCwd?: string): Promise<AgentSession> {
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 	if (!model) throw new Error("bundled model missing");
 	const mock = createMockModel({
@@ -104,7 +104,9 @@ async function makeSession(id: string, gated: boolean): Promise<AgentSession> {
 	authStorage.keys.setRuntime("anthropic", "test-key");
 	const session = new AgentSession({
 		agent,
-		sessionManager: SessionManager.inMemory(),
+		sessionManager: persistedCwd
+			? SessionManager.create(persistedCwd, `${persistedCwd}/sessions`)
+			: SessionManager.inMemory(),
 		settings: Settings.isolated(),
 		modelRegistry: new ModelRegistry(authStorage),
 		agentId: id,
@@ -123,7 +125,7 @@ function local(id: string): AgentSession {
 const probe: AgentsProbe = {
 	threadId: async () => threadName,
 	open: async (id, options) => {
-		const session = await makeSession(id, options.gated === true);
+		const session = await makeSession(id, options.gated === true, options.persistedCwd);
 		const registry = AgentRegistry.global();
 		registry.register({
 			id,

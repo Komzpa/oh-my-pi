@@ -264,7 +264,9 @@ export function createPersistedSubagentReviverFactory(
 				costGate: ctx.session.costGate,
 				asyncJobManager: ctx.session.asyncJobManager,
 				artifactManager: ctx.session.sessionManager.getArtifactManager() ?? undefined,
-				discoveryOptions: ctx.getSubagentDiscoveryOptions?.(restoredSeance !== undefined || peek.init.restrictToolNames === true),
+				discoveryOptions: ctx.getSubagentDiscoveryOptions?.(
+					restoredSeance !== undefined || peek.init?.restrictToolNames === true,
+				),
 				preparedExtensions: ctx.session.preparedExtensions,
 				authStorage: ctx.authStorage,
 				modelRegistry: ctx.modelRegistry,
