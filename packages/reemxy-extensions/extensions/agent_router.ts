@@ -29,6 +29,30 @@ const WRITE_CAPABLE_WORKERS = new Set([
 
 type LatestTodoGetter = (entries: unknown[]) => TodoScheduleInput;
 
+// Text-only coders cannot open a screenshot. Measured 2026-11-03: since 2026-10-20, 42% (174/415) of
+// briefs that ask to check screenshots, Playwright captures or visuals went to these roles.
+const VISION_ROLE_FOR: Readonly<Record<string, string>> = {
+	coder: "ui-coder",
+	"coder-strong": "ui-coder-strong",
+	"minor-coder": "ui-coder",
+	workhorse: "ui-coder",
+};
+const VISUAL_WORK =
+	/\b(screenshots?|[\w.-]+\.png|playwright|pixels?|visual(?:ly)?|viewport|full-?page|mockups?|looks? like|desktop|mobile|phone)\b/gi;
+
+/** Distinct visual-verification cues in a brief; two or more mean the worker must see images. */
+export function visualWorkCues(text: string): string[] {
+	const cues = new Set<string>();
+	for (const match of text.matchAll(VISUAL_WORK)) cues.add(match[1]!.toLowerCase().replace(/^.*\.png$/, ".png"));
+	return [...cues];
+}
+
+function spawnBriefText(event: BeforeSubagentSpawnEvent): string {
+	return [event.assignment, event.task, event.prompt, event.text, event.message]
+		.filter((value): value is string => typeof value === "string")
+		.join("\n");
+}
+
 export function sessionCwdScopes(ctx: ExtensionContext): string[] | undefined {
 	const cwd = typeof ctx.cwd === "string" && ctx.cwd.trim() !== "" ? ctx.cwd : undefined;
 	if (!cwd) return undefined;
@@ -237,6 +261,8 @@ interface SpawnState extends SpawnRecord {
 export interface RouterState {
 	spawns: Map<string, SpawnState>;
 	fallbacks: FallbackRecord[];
+	/** Briefs already refused for a text-only coder; created on first use. */
+	visionRefusals?: Set<string>;
 }
 export interface BeforeSubagentSpawnEvent {
 	agent?: unknown;
@@ -416,6 +442,21 @@ export function routeSubagentSpawn(
 ): { block: true; reason: string } | undefined {
 	const agent = stringValue(event.agent);
 	if (!agent) return undefined;
+	const visionRole = VISION_ROLE_FOR[agent];
+	if (visionRole) {
+		const brief = spawnBriefText(event);
+		const cues = visualWorkCues(brief);
+		const key = `${agent}\0${brief}`;
+		// Refused once per identical brief: a deliberate resend (non-visual e2e plumbing) goes through.
+		const refused = (state.visionRefusals ??= new Set());
+		if (cues.length >= 2 && !refused.has(key)) {
+			refused.add(key);
+			return {
+				block: true,
+				reason: `Use ${visionRole}: this brief needs eyes (${cues.slice(0, 4).join(", ")}) and ${agent} cannot open images.\nOr strip the visual check from this brief and give it to a visual-qa row. Resend unchanged only if no image must be looked at.`,
+			};
+		}
+	}
 	const latestTodo = memoLatestTodo(options.latestTodo, ctx);
 	const checkoutScopes =
 		WRITE_CAPABLE_WORKERS.has(agent) && event.isolated !== true
