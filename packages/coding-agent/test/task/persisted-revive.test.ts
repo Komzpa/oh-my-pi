@@ -1453,6 +1453,7 @@ describe("persisted subagent revival", () => {
 				revived = await reviver(ref);
 				expect(revived.model?.provider).toBe(provider);
 				expect(revived.model?.id).toBe(modelId);
+				if (!(revived instanceof AgentSession)) throw new Error("Expected a local revived SDK session");
 				revived.setThinkingLevel(Effort.Max);
 				expect(revived.thinkingLevel).toBe(expected);
 			} finally {
