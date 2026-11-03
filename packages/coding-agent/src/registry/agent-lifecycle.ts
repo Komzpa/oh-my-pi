@@ -161,7 +161,7 @@ export interface AgentLifecycleApi {
 	/** Dispose if live and drop timers; `tombstone` keeps a terminal `aborted` row. */
 	release(id: string, expected?: AgentRefExpectation, options?: AgentReleaseOptions): Promise<boolean>;
 	/** Tear down every adopted agent. */
-	dispose(deadlineAt?: number): Promise<void>;
+	dispose(deadlineAt?: number, preserveServices?: boolean): Promise<void>;
 }
 
 export class AgentLifecycleManager implements AgentLifecycleApi {

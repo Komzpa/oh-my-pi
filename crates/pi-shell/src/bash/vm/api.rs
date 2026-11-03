@@ -166,6 +166,7 @@ impl ShellApi<'_, '_> {
 	pub fn run_subshell_in(&mut self, script: Script, mut lineage: Lineage) -> RunId {
 		let caller = self.vproc();
 		lineage.detached |= caller.lineage.detached;
+		lineage.resource_scope = caller.lineage.resource_scope;
 		if lineage.label != 0 {
 			let link = (lineage.label, caller.vpid);
 			if !self.shell.k.callout_labels.contains(&link) {

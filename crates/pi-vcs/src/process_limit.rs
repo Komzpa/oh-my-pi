@@ -29,8 +29,6 @@ use std::{
 	},
 };
 
-use brush_core::ExternalCommandWrapper;
-
 /// Default `TasksMax` per tool slice.
 ///
 /// Measured 2026-10-22: a 12-worker GPU
@@ -638,8 +636,8 @@ impl ToolProcessLimit {
 	}
 }
 
-impl ExternalCommandWrapper for ToolProcessLimit {
-	fn wrap_external_command(
+impl ToolProcessLimit {
+	pub fn wrap_external_command(
 		&self,
 		executable: &OsStr,
 		argv0: &OsStr,
@@ -1069,8 +1067,6 @@ mod tests {
 		process::{Child, Command, Stdio},
 		time::{Duration, Instant},
 	};
-
-	use brush_core::ExternalCommandWrapper;
 
 	use super::{
 		DEFAULT_TASK_LIMIT, MAX_TASK_LIMIT, MIN_TASK_LIMIT, TASK_LIMIT_ENV, ToolProcessLimit,

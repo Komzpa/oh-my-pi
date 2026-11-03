@@ -301,16 +301,19 @@ pub struct PiHost {
 /// What launching an external needs of a [`PiHost`], owned and cheap to
 /// clone, so the future of a spawn that first resolves URLs
 /// ([`crate::bash::SpawnFuture`]) holds no borrow of the host.
+type ProcessBoundaries = Vec<(u16, Arc<pi_vcs::process_limit::ToolProcessLimit>)>;
+
 #[derive(Clone)]
 struct Launcher {
-	spawner:  NativeSpawner,
-	streams:  StdStreams,
-	observer: Option<Arc<dyn SpawnObserver>>,
+	spawner:    NativeSpawner,
+	boundaries: Arc<Mutex<ProcessBoundaries>>,
+	streams:    StdStreams,
+	observer:   Option<Arc<dyn SpawnObserver>>,
 	/// Externals of labeled subshell trees, for the tools.
-	spawns:   SpawnLog,
+	spawns:     SpawnLog,
 	/// Decodes what externals write into a text sink; `None` where output
 	/// needs none ([`output_decode::external_output_decoding`]).
-	decoding: Option<Arc<dyn OutputDecoding>>,
+	decoding:   Option<Arc<dyn OutputDecoding>>,
 }
 
 /// A text sink a relay forwards into.
@@ -407,7 +410,51 @@ impl Launcher {
 			self.route_text(&mut spec, relays, self.decoding.is_none())?;
 		}
 		let lineage = spec.lineage;
-		let mut child = self.spawner.spawn(spec)?;
+		// Detached nohup trees intentionally outlive the per-call boundary.
+		let wrapped = if spec.lineage.detached || spec.lineage.resource_scope == 0 {
+			None
+		} else {
+			let boundary = self
+				.boundaries
+				.lock()
+				.iter()
+				.find(|(id, _)| *id == spec.lineage.resource_scope)
+				.map(|(_, boundary)| Arc::clone(boundary))
+				.ok_or_else(|| io::Error::other("tool process boundary has ended"))?;
+			let executable = spec.path.to_os_str().map_err(io::Error::other)?;
+			let argv: Vec<_> = spec
+				.argv
+				.iter()
+				.map(|arg| arg.to_os_str().map(|s| s.to_owned()))
+				.collect::<Result<_, _>>()
+				.map_err(io::Error::other)?;
+			let env: Vec<_> = spec
+				.env
+				.iter()
+				.map(|(k, v)| Ok((k.to_os_str()?.to_owned(), v.to_os_str()?.to_owned())))
+				.collect::<Result<_, bstr::Utf8Error>>()
+				.map_err(io::Error::other)?;
+			boundary.wrap_external_command(
+				executable.as_ref(),
+				argv
+					.first()
+					.map_or_else(|| executable.as_ref(), |s| s.as_os_str()),
+				&argv[1..],
+				&env,
+			)?
+		};
+		let mut child = if let Some((path, args)) = wrapped {
+			let path_bytes = BString::from(path.as_encoded_bytes());
+			let argv = std::iter::once(path)
+				.chain(args)
+				.map(|a| BString::from(a.as_encoded_bytes()))
+				.collect::<Vec<_>>();
+			self
+				.spawner
+				.spawn(SpawnSpec { path: path_bytes.as_bstr(), argv: &argv, ..spec })?
+		} else {
+			self.spawner.spawn(spec)?
+		};
 		if let Some(relays) = relays {
 			child = relays.wrap(child);
 		}
@@ -432,7 +479,7 @@ impl PiHost {
 		Self {
 			fs,
 			launcher: Launcher {
-				spawner:  NativeSpawner::new(SpawnConfig {
+				spawner:    NativeSpawner::new(SpawnConfig {
 					grace:    TERM_GRACE,
 					sessions: Sessions::Detach,
 					// The session driver is an async task: exits wake its waker
@@ -440,10 +487,11 @@ impl PiHost {
 					exits:    Exits::Thread,
 					umask:    None,
 				}),
-				streams:  StdStreams::default(),
-				observer: None,
-				spawns:   SpawnLog::default(),
-				decoding: output_decode::external_output_decoding(),
+				boundaries: Arc::default(),
+				streams:    StdStreams::default(),
+				observer:   None,
+				spawns:     SpawnLog::default(),
+				decoding:   output_decode::external_output_decoding(),
 			},
 			tools: ToolConfig::default(),
 			runtime,
@@ -507,6 +555,54 @@ impl PiHost {
 	/// Report every external spawned from now on to `observer`.
 	pub fn set_spawn_observer(&mut self, observer: Arc<dyn SpawnObserver>) {
 		self.launcher.observer = Some(observer);
+	}
+
+	/// Install a per-call boundary. Reusing it across segmented runs keeps
+	/// one aggregate task cap. Old jobs retain their own scope identity.
+	pub fn install_process_limit(
+		&mut self,
+		limit: Arc<pi_vcs::process_limit::ToolProcessLimit>,
+	) -> io::Result<u16> {
+		let mut boundaries = self.launcher.boundaries.lock();
+		if let Some((id, _)) = boundaries.iter().find(|(_, old)| Arc::ptr_eq(old, &limit)) {
+			return Ok(*id);
+		}
+		let id = (1..=u16::MAX)
+			.find(|id| !boundaries.iter().any(|(old, _)| old == id))
+			.ok_or_else(|| io::Error::other("too many live tool process boundaries"))?;
+		boundaries.push((id, limit));
+		Ok(id)
+	}
+
+	/// Keep boundaries while either virtual jobs or escaped OS descendants
+	/// can still use them. Errors retain containment rather than dropping it.
+	pub fn prune_process_limits(&mut self, live: impl Fn(u16) -> bool) {
+		self
+			.launcher
+			.boundaries
+			.lock()
+			.retain(|(id, limit)| live(*id) || limit.has_live_tasks().unwrap_or(true));
+	}
+
+	/// Cancellation ends all attached work, including descendants that left
+	/// their original process group.
+	pub async fn clear_process_limits(&mut self) {
+		// The spawner already sent TERM and owns its grace period. Stopping
+		// the cgroup before that period ends would send TERM a second time
+		// to a handler still cleaning up. Finish the spawner's KILL wave
+		// first; then dropping the boundary catches escaped descendants.
+		let deadline = Instant::now() + TERM_GRACE;
+		while self
+			.launcher
+			.spawner
+			.leftovers()
+			.is_ok_and(|left| !left.is_empty())
+			&& Instant::now() < deadline
+		{
+			tokio::time::sleep(Duration::from_millis(10)).await;
+		}
+		let _ = self.launcher.spawner.kill_leftovers();
+		self.launcher.boundaries.lock().clear();
 	}
 
 	/// The spawner (leak checks: [`NativeSpawner::leftovers`]).
