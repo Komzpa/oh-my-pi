@@ -477,7 +477,6 @@ async function resolveTaskFile(session: ToolSession, item: TaskItem): Promise<Re
  */
 function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent: string): SpawnParams {
 	const spawn: SpawnParams = { agent: item.agent?.trim() || defaultAgent };
-	if ("resources" in item) spawn.resources = item.resources;
 	if (item.name !== undefined) spawn.name = item.name;
 	if (item.task !== undefined) spawn.task = item.task;
 	if (item.taskFile !== undefined) spawn.taskFile = item.taskFile;
@@ -490,6 +489,7 @@ function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent
 	if ("effort" in item) spawn.effort = item.effort;
 	if ("sourceSession" in item) spawn.sourceSession = item.sourceSession;
 	if ("model" in item) spawn.model = item.model;
+	if ("resources" in item) spawn.resources = item.resources;
 	if (item.isolated !== undefined) {
 		spawn.isolated = item.isolated;
 	} else if ("isolated" in params) {
