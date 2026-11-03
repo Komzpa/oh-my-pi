@@ -2637,6 +2637,9 @@ async function driveSessionToResult(
 					retryCount = MAX_YIELD_RETRIES - 1;
 					await monitor.waitForBudgetStop();
 					if (monitor.yieldCalled() || abortSignal.aborted) break;
+					session.sessionManager.appendCustomEntry("worker-budget-stop", {
+						sessionId: session.sessionManager.getHeader()?.id,
+					});
 				}
 				// Skip reminders when the model returned a terminal error (e.g.
 				// rate-limit cap hit, auth failure). Re-prompting would just

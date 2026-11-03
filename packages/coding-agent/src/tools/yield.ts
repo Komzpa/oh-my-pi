@@ -63,7 +63,20 @@ export function resolveYieldReportText(messages: readonly AgentMessage[], toolCa
 	}
 }
 
+export type YieldEvidence = { commit: string } | { path: string } | { command: string };
+export interface YieldRequirement {
+	requirement: string;
+	done: boolean;
+	evidence: YieldEvidence;
+}
+export interface YieldBlocker {
+	kind: string;
+	evidence: YieldEvidence;
+}
+
 export interface YieldDetails {
+	requirements?: YieldRequirement[];
+	blocker?: YieldBlocker;
 	/** Successful result payload, or omitted when `useLastTurn` requests last-turn extraction. */
 	data?: unknown;
 	status: "success" | "aborted";
@@ -317,6 +330,35 @@ function assertSupportedRootFields(parameters: TSchema, args: Record<string, unk
 	);
 }
 
+const evidenceSchema = {
+	anyOf: ["commit", "path", "command"].map(key => ({
+		type: "object",
+		properties: { [key]: { type: "string", minLength: 1 } },
+		required: [key],
+		additionalProperties: false,
+	})),
+};
+const requirementsSchema = {
+	type: "array",
+	minItems: 1,
+	items: {
+		type: "object",
+		properties: {
+			requirement: { type: "string", minLength: 1 },
+			done: { type: "boolean" },
+			evidence: evidenceSchema,
+		},
+		required: ["requirement", "done", "evidence"],
+		additionalProperties: false,
+	},
+};
+const blockerSchema = {
+	type: "object",
+	properties: { kind: { type: "string", minLength: 1 }, evidence: evidenceSchema },
+	required: ["kind", "evidence"],
+	additionalProperties: false,
+};
+
 function buildYieldParameters(dataSchema: Record<string, unknown>): Record<string, unknown> {
 	// `data` xor `error`, and "omitted data requires a `type`", are enforced in
 	// `execute()` at runtime, NOT in this schema: a top-level combinator
@@ -329,6 +371,8 @@ function buildYieldParameters(dataSchema: Record<string, unknown>): Record<strin
 		description: "submit data or error",
 		properties: {
 			type: yieldTypeSchema,
+			requirements: requirementsSchema,
+			blocker: blockerSchema,
 			data: dataSchema,
 			error: { type: "string", description: "Failure reason; mutually exclusive with data" },
 		},
@@ -515,6 +559,14 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	): Promise<AgentToolResult<YieldDetails>> {
 		if (!isRecord(params)) throw new Error("yield arguments must be an object");
 		const raw = params;
+		for (const [key, schema] of [
+			["requirements", requirementsSchema],
+			["blocker", blockerSchema],
+		] as const) {
+			if (raw[key] == null) continue;
+			const result = buildOutputValidator(schema).validator!.validate(raw[key]);
+			if (!result.success) throw new Error(`${key}: ${formatAllValidationIssues(result.issues)}`);
+		}
 		const workPoolItems = this.#workPoolItems();
 		assertSupportedRootFields(
 			workPoolItems.length > 0 ? wrapWorkPoolYieldParameters(workPoolItems) : this.#parameters,
@@ -733,6 +785,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			content: [{ type: "text", text: responseText }],
 			details: {
 				data,
+				...(raw.requirements != null ? { requirements: raw.requirements as YieldRequirement[] } : {}),
+				...(raw.blocker != null ? { blocker: raw.blocker as YieldBlocker } : {}),
 				status,
 				error: errorMessage,
 				type: yieldType,
@@ -802,6 +856,8 @@ subprocessToolRegistry.register<YieldDetails>("yield", {
 		if (status !== "success" && status !== "aborted") return undefined;
 		return {
 			data: record.data,
+			...(record.requirements ? { requirements: record.requirements as YieldRequirement[] } : {}),
+			...(record.blocker ? { blocker: record.blocker as YieldBlocker } : {}),
 			status,
 			error: typeof record.error === "string" ? record.error : undefined,
 			type: isYieldType(record.type) ? record.type : undefined,
