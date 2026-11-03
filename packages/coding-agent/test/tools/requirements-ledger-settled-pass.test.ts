@@ -53,6 +53,23 @@ describe("a pass on an already completed row survives a later checkout move", ()
 		expect(invalidateStaleRequirementVerdicts(requirements, sweep)).toEqual(requirements);
 	});
 
+	it("restores a settled row an older sweep already demoted to unverifiable for staleness alone", async () => {
+		const demoted = requirement();
+		demoted.rowVerdicts = {
+			[DONE_ROW]: {
+				...pass(DONE_ROW),
+				status: "unverifiable",
+				evidence: "Previously passing receipt is stale; request a fresh audit.",
+			},
+		};
+		const sweep = await evaluateRequirementDoneGate([demoted], [DONE_ROW], movedHead, new Map(), new Set([DONE_ROW]));
+		expect(sweep).toEqual([]);
+		// a real unverifiable verdict (other evidence) is still reported
+		demoted.rowVerdicts[DONE_ROW] = { ...demoted.rowVerdicts[DONE_ROW]!, evidence: "Could not reproduce the screen" };
+		const still = await evaluateRequirementDoneGate([demoted], [DONE_ROW], movedHead, new Map(), new Set([DONE_ROW]));
+		expect(still.map(item => item.requirement.id)).toEqual(["R1"]);
+	});
+
 	it("closing a different row does not touch the completed row", async () => {
 		const requirements = [requirement()];
 		const open = await evaluateRequirementDoneGate(requirements, [OTHER_ROW], movedHead);

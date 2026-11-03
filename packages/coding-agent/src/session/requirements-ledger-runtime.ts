@@ -63,7 +63,6 @@ function extractRequirementImages(images: readonly ImageContent[] | undefined): 
 	});
 }
 
-/** Payload shape the task tool forwards to the subagent's first message. */
 /** Rows whose every Todo entry is completed: a passing receipt on them survives checkout movement. */
 function completedRowSet(phases: readonly TodoPhase[]): Set<string> {
 	const byRow = new Map<string, boolean>();
@@ -72,6 +71,7 @@ function completedRowSet(phases: readonly TodoPhase[]): Set<string> {
 	return new Set([...byRow].filter(([, done]) => done).map(([row]) => row));
 }
 
+/** Payload shape the task tool forwards to the subagent's first message. */
 export interface RequirementAuditImagePayload {
 	type: "image";
 	mimeType: string;

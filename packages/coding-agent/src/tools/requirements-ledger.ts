@@ -1075,12 +1075,21 @@ export async function evaluateRequirementDoneGate(
 			continue;
 		}
 		for (const row of getLinkedRequirementRows(requirement, rows)) {
-			const verdict = getRequirementRowVerdict(requirement, row);
+			const recorded = getRequirementRowVerdict(requirement, row);
+			// A settled row's pass survives checkout movement, including one an older sweep already demoted
+			// to unverifiable for staleness alone (same receipt; only status and evidence were rewritten).
+			const settled =
+				settledRows.has(row) &&
+				(recorded?.status === "pass" ||
+					(recorded?.status === "unverifiable" &&
+						recorded.evidence === STALE_PASS_EVIDENCE &&
+						!!recorded.artifact));
+			const verdict = settled && recorded ? { ...recorded, status: "pass" as const } : recorded;
 			const sourceIssue = verdict ? getRequirementVerdictSourceIssue(requirement, row, verdict) : undefined;
 			const sourceSnapshotIssue =
 				verdict?.sourceSnapshot !== undefined &&
 				verdict.sourceSnapshot !== requirementSourceSnapshot(requirements, requirement.id);
-			if (settledRows.has(row) && verdict?.status === "pass" && !sourceIssue && !sourceSnapshotIssue) continue;
+			if (settled && !sourceIssue && !sourceSnapshotIssue) continue;
 			const receipt =
 				!sourceIssue && !sourceSnapshotIssue && verdict?.status === "pass" ? verdict.artifact : undefined;
 			const cacheKey = JSON.stringify([row, receipt]);
@@ -1145,6 +1154,8 @@ export async function evaluateRequirementDoneGate(
 	return open;
 }
 
+const STALE_PASS_EVIDENCE = "Previously passing receipt is stale; request a fresh audit.";
+
 /** Remove only passing receipts rejected by the shared gate; preserve failed QA evidence. */
 export function invalidateStaleRequirementVerdicts(
 	requirements: readonly RequirementLedgerItem[],
@@ -1164,7 +1175,7 @@ export function invalidateStaleRequirementVerdicts(
 					...verdict,
 					status: "unverifiable",
 					receivedAt: verdict.receivedAt ?? new Date().toISOString(),
-					evidence: "Previously passing receipt is stale; request a fresh audit.",
+					evidence: STALE_PASS_EVIDENCE,
 				};
 				changed = true;
 			}
