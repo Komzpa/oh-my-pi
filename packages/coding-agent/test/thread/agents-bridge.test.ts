@@ -278,3 +278,19 @@ it("delivers hidden next-turn notices to a worker-homed session", async () => {
 	await mirror.prompt("continue");
 	expect(await probe.localCustomTypes("W1")).toContain("repeated-status-notice");
 });
+
+it("changes a worker-homed fast tier and refuses control by a different parent", async () => {
+	const { probe } = await startWorker();
+	await probe.open("W1", {});
+	const ref = liveRef("W1");
+	ref.parentId = "Lead";
+	const mirror = mirrorOf(ref.session);
+	const model = mirror.model;
+	if (!model) throw new Error("worker model missing");
+	expect(await AgentRegistry.global().setSubagentFastMode("Other", "W1", true)).toBe(false);
+	expect(mirror.effectiveServiceTier(model)).not.toBe("priority");
+	expect(await AgentRegistry.global().setSubagentFastMode("Lead", "W1", true)).toBe(true);
+	expect(mirror.effectiveServiceTier(model)).toBe("priority");
+	expect(await mirror.setFastMode(false)).toBe(true);
+	expect(mirror.effectiveServiceTier(model)).not.toBe("priority");
+});
