@@ -376,14 +376,17 @@ Layout behavior:
 Source: `Komzpa/oh-my-pi#88`, `topic/natives-process` at
 `6441d33945aaa0f49bcbc921dd9a05e7deac2c3e` (15 commits), old base
 `594670d6b0b6d5f8080693aad34dedd38b5ebd94`. Target upstream main:
-`62bfdcc29ee4a6914728bbcb51dc4653ed816ce3`, including engine replacement
+`a60ebbd60706318ac1fbb00136ee8774fe9294f3`, including engine replacement
 `44711a78c1b`. User decision: “A: port the process containment onto upstream's
 new shell engine”. No installed binary or updater checkout is changed.
 
 The engine-independent parts retain their original authorship. The mixed r9
 handoff is applied together with its PR #108 yield removal; that intermediate
 yield change is excluded. The deleted Brush adapters are replaced at
-`PiHost::Launcher::launch`, the new engine's central external spawn owner.
+`PiHost::spawn` and `Launcher::launch`, the new engine's central external
+spawn owner. Manager setup runs on the blocking pool before descriptor routing
+and spawn; cancelling its future cannot launch abandoned user work. Payload
+script redirections retain upstream's asynchronous FIFO fallback.
 `Lineage.resource_scope` follows delayed jobs and tool-created subshells;
 segments share one boundary. Explicitly detached nohup jobs retain upstream's
 intentional exemption. The default cap is 16,384 tasks, not the stale 500 in
@@ -431,9 +434,25 @@ module names and the explicit `crates/` path. “Kept” means engine-independen
 | Brush dependency, deleted builtin adapters and Bazel brush lock refresh | Dropped obsolete dependency/build glue | Cargo checks and native build on this branch |
 | Old historical validation receipt | Retained as historical evidence only | New verification results belong to this port's PR Testing section |
 
-Upstream replacement owners for dropped adapters: byte-valued spawn
-arguments in `crates/pi-shell/src/bash/host.rs`; engine values and exported
-environment in `crates/pi-shell/src/bash/store`; process spawn in
-`crates/pi-shell/src/host.rs`; capture/markers/minimizer in
-`crates/pi-shell/src/shell.rs`. Exact line references and executed counts are
-recorded in the updated PR description after final validation.
+Upstream replacement owners for dropped adapters, at `a60ebbd6070`:
+
+- Byte-valued spawn arguments: `crates/pi-shell/src/bash/host.rs:299`;
+  exported environment: `crates/pi-shell/src/bash/host.rs:643`; stored scalar,
+  indexed and associative values: `crates/pi-shell/src/bash/store.rs:540`.
+  Raw substring offsets needed a port fix in `bash/vm/expand.rs`; the byte
+  contract test exercises it along with argv, env, predicates, read and export.
+- Central asynchronous process spawn: `crates/pi-shell/src/host.rs:450`.
+  Process groups and termination escalation: `crates/pi-shell/src/sys/spawn/mod.rs:301`;
+  detached-session and grace tests: `crates/pi-shell/src/sys/spawn/unix/tests.rs:417`,
+  `:687`, `:694`. The containment wrapper extends this owner rather than
+  restoring Brush's command wrapper and `pi-builtins` exec adapters.
+- Output capture/minimizer and FIFO ownership:
+  `crates/pi-shell/src/shell.rs:1097`, `:1176`, `:1299`, `:1581`;
+  script redirection routing: `crates/pi-shell/src/sys/spawn/unix.rs:438`.
+  Existing output, minimizer and FIFO consumer tests run with containment on.
+- The Brush-only Bazel dependency lock and adapters have no remaining
+  consumer after engine replacement `44711a78c1b`; Cargo checks and the
+  rebuilt native addon verify the new graph.
+
+Executed counts and remaining baseline failures are recorded in the PR's
+Testing section after validation.

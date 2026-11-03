@@ -1602,11 +1602,19 @@ async fn xargs_parallel_signal_death_stops_scheduling() {
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn xargs_unlimited_parallel_observes_signal_before_next_launch() {
-	let (result, output) = execute_captured(
-		"{ printf 'first\\nsecond\\n'; sleep 1; printf 'third\\n'; } | xargs -n1 -P0 sh -c 'if [ \
-		 \"$1\" = first ]; then kill -9 $$; else echo unexpected; fi' _"
-			.into(),
-	)
+	let dir = tempfile::tempdir().unwrap();
+	let pid_file = quote_arg(dir.path().join("first-pid").to_str().unwrap());
+	// Wait for the first child to be reaped before offering the next command.
+	// A fixed sleep can expire while a scoped launch is still being prepared.
+	let (result, output) = execute_captured(format!(
+		r#"{{ printf 'first\nsecond\n';
+while [ ! -s {pid_file} ]; do sleep .01; done
+read -r pid < {pid_file}
+while kill -0 "$pid" 2>/dev/null; do sleep .01; done
+printf 'third\n'; }} | xargs -n1 -P0 sh -c '
+if [ "$2" = first ]; then printf "%s\n" "$$" > "$1"; kill -9 $$;
+else echo unexpected; fi' _ {pid_file}"#
+	))
 	.await;
 	assert_eq!(result.exit_code, Some(125), "{output}");
 	assert!(output.contains("xargs: sh: terminated by signal 9"), "{output}");

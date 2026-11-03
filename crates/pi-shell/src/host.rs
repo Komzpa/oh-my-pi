@@ -11,6 +11,7 @@
 
 use std::{
 	cell::OnceCell,
+	ffi::OsString,
 	hash::{BuildHasher, RandomState},
 	io,
 	sync::{
@@ -305,15 +306,15 @@ type ProcessBoundaries = Vec<(u16, Arc<pi_vcs::process_limit::ToolProcessLimit>)
 
 #[derive(Clone)]
 struct Launcher {
-	spawner:    NativeSpawner,
-	boundaries: Arc<Mutex<ProcessBoundaries>>,
-	streams:    StdStreams,
-	observer:   Option<Arc<dyn SpawnObserver>>,
+	spawner:  NativeSpawner,
+	limits:   Arc<Mutex<ProcessBoundaries>>,
+	streams:  StdStreams,
+	observer: Option<Arc<dyn SpawnObserver>>,
 	/// Externals of labeled subshell trees, for the tools.
-	spawns:     SpawnLog,
+	spawns:   SpawnLog,
 	/// Decodes what externals write into a text sink; `None` where output
 	/// needs none ([`output_decode::external_output_decoding`]).
-	decoding:   Option<Arc<dyn OutputDecoding>>,
+	decoding: Option<Arc<dyn OutputDecoding>>,
 }
 
 /// A text sink a relay forwards into.
@@ -397,9 +398,55 @@ impl Launcher {
 		Ok(())
 	}
 
-	/// Start the external `spec` names, now. Text routing and the observer
-	/// see a spawn only once it succeeded.
-	fn launch(&self, mut spec: SpawnSpec<'_>) -> io::Result<Box<dyn ExtProc>> {
+	/// Prepare the manager boundary without borrowing descriptors or launching
+	/// a child. This runs off the engine thread; dropping the spawn future
+	/// while it waits cannot launch abandoned user work.
+	fn prepare(
+		&self,
+		names: &urls::Names,
+		lineage: crate::bash::Lineage,
+	) -> io::Result<Option<(OsString, Vec<OsString>)>> {
+		// Detached nohup trees intentionally outlive the per-call boundary.
+		let wrapped = if lineage.detached || lineage.resource_scope == 0 {
+			None
+		} else {
+			let boundary = self
+				.limits
+				.lock()
+				.iter()
+				.find(|(id, _)| *id == lineage.resource_scope)
+				.map(|(_, boundary)| Arc::clone(boundary))
+				.ok_or_else(|| io::Error::other("tool process boundary has ended"))?;
+			let executable = names.path.to_os_str().map_err(io::Error::other)?;
+			let argv: Vec<_> = names
+				.argv
+				.iter()
+				.map(|arg| arg.to_os_str().map(|s| s.to_owned()))
+				.collect::<Result<_, _>>()
+				.map_err(io::Error::other)?;
+			let env: Vec<_> = names
+				.env
+				.iter()
+				.map(|(k, v)| Ok((k.to_os_str()?.to_owned(), v.to_os_str()?.to_owned())))
+				.collect::<Result<_, bstr::Utf8Error>>()
+				.map_err(io::Error::other)?;
+			boundary.wrap_external_command(
+				executable,
+				argv.first().map_or(executable, |s| s.as_os_str()),
+				&argv[1..],
+				&env,
+			)?
+		};
+		Ok(wrapped)
+	}
+
+	/// Start the prepared external. Routing and the observer see a spawn
+	/// only once it succeeded.
+	fn launch(
+		&self,
+		mut spec: SpawnSpec<'_>,
+		wrapped: Option<(OsString, Vec<OsString>)>,
+	) -> io::Result<Box<dyn ExtProc>> {
 		let observed = spec.stdio[1..]
 			.iter()
 			.chain(spec.extra_fds.iter().map(|(_, stdio)| stdio))
@@ -410,39 +457,6 @@ impl Launcher {
 			self.route_text(&mut spec, relays, self.decoding.is_none())?;
 		}
 		let lineage = spec.lineage;
-		// Detached nohup trees intentionally outlive the per-call boundary.
-		let wrapped = if spec.lineage.detached || spec.lineage.resource_scope == 0 {
-			None
-		} else {
-			let boundary = self
-				.boundaries
-				.lock()
-				.iter()
-				.find(|(id, _)| *id == spec.lineage.resource_scope)
-				.map(|(_, boundary)| Arc::clone(boundary))
-				.ok_or_else(|| io::Error::other("tool process boundary has ended"))?;
-			let executable = spec.path.to_os_str().map_err(io::Error::other)?;
-			let argv: Vec<_> = spec
-				.argv
-				.iter()
-				.map(|arg| arg.to_os_str().map(|s| s.to_owned()))
-				.collect::<Result<_, _>>()
-				.map_err(io::Error::other)?;
-			let env: Vec<_> = spec
-				.env
-				.iter()
-				.map(|(k, v)| Ok((k.to_os_str()?.to_owned(), v.to_os_str()?.to_owned())))
-				.collect::<Result<_, bstr::Utf8Error>>()
-				.map_err(io::Error::other)?;
-			boundary.wrap_external_command(
-				executable.as_ref(),
-				argv
-					.first()
-					.map_or_else(|| executable.as_ref(), |s| s.as_os_str()),
-				&argv[1..],
-				&env,
-			)?
-		};
 		let mut child = if let Some((path, args)) = wrapped {
 			let path_bytes = BString::from(path.as_encoded_bytes());
 			let argv = std::iter::once(path)
@@ -479,8 +493,8 @@ impl PiHost {
 		Self {
 			fs,
 			launcher: Launcher {
-				boundaries: Arc::default(),
-				spawner:    NativeSpawner::new(SpawnConfig {
+				limits:   Arc::default(),
+				spawner:  NativeSpawner::new(SpawnConfig {
 					grace:    TERM_GRACE,
 					sessions: Sessions::Detach,
 					// The session driver is an async task: exits wake its waker
@@ -488,10 +502,10 @@ impl PiHost {
 					exits:    Exits::Thread,
 					umask:    None,
 				}),
-				streams:    StdStreams::default(),
-				observer:   None,
-				spawns:     SpawnLog::default(),
-				decoding:   output_decode::external_output_decoding(),
+				streams:  StdStreams::default(),
+				observer: None,
+				spawns:   SpawnLog::default(),
+				decoding: output_decode::external_output_decoding(),
 			},
 			tools: ToolConfig::default(),
 			runtime,
@@ -563,23 +577,23 @@ impl PiHost {
 		&mut self,
 		limit: Arc<pi_vcs::process_limit::ToolProcessLimit>,
 	) -> io::Result<u16> {
-		let mut boundaries = self.launcher.boundaries.lock();
-		if let Some((id, _)) = boundaries.iter().find(|(_, old)| Arc::ptr_eq(old, &limit)) {
+		let mut limits = self.launcher.limits.lock();
+		if let Some((id, _)) = limits.iter().find(|(_, old)| Arc::ptr_eq(old, &limit)) {
 			return Ok(*id);
 		}
 		let id = (1..=u16::MAX)
-			.find(|id| !boundaries.iter().any(|(old, _)| old == id))
-			.ok_or_else(|| io::Error::other("too many live tool process boundaries"))?;
-		boundaries.push((id, limit));
+			.find(|id| !limits.iter().any(|(old, _)| old == id))
+			.ok_or_else(|| io::Error::other("too many live tool process limits"))?;
+		limits.push((id, limit));
 		Ok(id)
 	}
 
-	/// Keep boundaries while either virtual jobs or escaped OS descendants
+	/// Keep limits while either virtual jobs or escaped OS descendants
 	/// can still use them. Errors retain containment rather than dropping it.
 	pub fn prune_process_limits(&mut self, live: impl Fn(u16) -> bool) {
 		self
 			.launcher
-			.boundaries
+			.limits
 			.lock()
 			.retain(|(id, limit)| live(*id) || limit.has_live_tasks().unwrap_or(true));
 	}
@@ -602,7 +616,7 @@ impl PiHost {
 			tokio::time::sleep(Duration::from_millis(10)).await;
 		}
 		let _ = self.launcher.spawner.kill_leftovers();
-		self.launcher.boundaries.lock().clear();
+		self.launcher.limits.lock().clear();
 	}
 
 	/// The spawner (leak checks: [`NativeSpawner::leftovers`]).
@@ -685,21 +699,44 @@ impl crate::bash::Host for PiHost {
 	/// awaits the answer: the returned future owns a copy of the names and
 	/// the spawn's descriptors, and launches (routing, observer and all)
 	/// only after the resolution succeeded, so dropping it earlier spawns
-	/// nothing. Any other spawn launches at once and returns a ready future.
+	/// nothing. Scoped spawns also await boundary preparation on the blocking
+	/// pool. Unscoped local spawns launch at once and return a ready future.
 	fn spawn(&mut self, spec: SpawnSpec<'_>) -> SpawnFuture {
-		let Some(fs) = self
+		let fs = self
 			.vfs
 			.as_ref()
 			.filter(|_| urls::names_url(&spec))
-			.map(crate::vfs::VfsFs::filesystem)
-		else {
-			return Box::pin(std::future::ready(self.launcher.launch(spec)));
-		};
+			.map(crate::vfs::VfsFs::filesystem);
+		let lineage = spec.lineage;
+		let scoped = !lineage.detached && lineage.resource_scope != 0;
+		// Check the payload before a wrapper hides its script-fallback hint.
+		if scoped && NativeSpawner::needs_script_redirection(&spec) {
+			return Box::pin(std::future::ready(Err(io::Error::other(
+				"script requires engine redirection",
+			))));
+		}
+		if !scoped && fs.is_none() {
+			return Box::pin(std::future::ready(self.launcher.launch(spec, None)));
+		}
 		let launcher = self.launcher.clone();
+		let runtime = self.runtime.clone();
 		let (names, rest) = urls::split(spec);
 		Box::pin(async move {
-			let hosted = urls::resolve(&fs, &names).await?;
-			rest.launch(&hosted, |spec| launcher.launch(spec))
+			let names = match fs {
+				Some(fs) => urls::resolve(&fs, &names).await?,
+				None => names,
+			};
+			let wrapped = if scoped {
+				let setup = launcher.clone();
+				let payload = names.clone();
+				runtime
+					.spawn_blocking(move || setup.prepare(&payload, lineage))
+					.await
+					.map_err(io::Error::other)??
+			} else {
+				None
+			};
+			rest.launch(&names, |spec| launcher.launch(spec, wrapped))
 		})
 	}
 

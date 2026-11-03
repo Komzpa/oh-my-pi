@@ -126,19 +126,16 @@
 - Fixed X11 background `el.type` and `el.press` bringing the element's window to the front and taking your keyboard; an element that does not already hold a GTK 3 window's focus now runs in takeover instead ([#17921](https://github.com/can1357/oh-my-pi/pull/17921) by [@will-bogusz](https://github.com/will-bogusz))
 ### Fixed
 
-- Strengthened shell sibling-cancellation regression coverage with both live child identities and a release handshake, proving the other run survives cancellation before it exits normally.
-- Preserve command-output hooks, native metadata and exit markers for direct async external commands with stdin-only FIFO redirects, without marking pipelines or redirected output.
-- Avoid delivering duplicate termination signals to shell process groups and their members, allowing TERM traps to flush output and finish cleanup.
-- Isolated the BSD `date -j` no-op regression from host numeric reference files and covered existing-file precedence without changing date selection.
-- Preserve native shell argument and exported-value bytes through expansion and external launches instead of replacing non-UTF-8 bytes.
-- Preserve native values through shell predicates, case/glob/regex matching, IFS/read, parameter transforms and executable shell serialization; preserve native `which` output, backup suffixes and TZif filenames.
-- Fixed Linux per-tool process boundaries rejecting every external command on hosts with coreutils <9.5 (Ubuntu 24.04, Debian 12): the enforcement probe no longer requires `env --argv0`.
-- Fixed scoped command arguments containing `$` being rewritten to `$$` on systemd <254, where scope launches never expand arguments (`sh -c 'echo $HOME'` ran `echo $$HOME`).
-- Let desktop-masked Linux workers launch scoped tools through the systemd user manager without exposing its runtime directory or bus address to tool payloads.
-- Parent Linux tool-call boundaries under a stable session slice when the payload carries `OMP_SESSION_ID`, and export `sessionSliceName` for the session lifecycle owner.
-- Run Linux scoped tool children (external shell commands, PTYs, git hooks, and Python/JavaScript eval kernels) at CPU niceness 19 and best-effort IO priority 7 without lowering omp's own priority.
-- Detached repositories borrow a single transitive object store for healthy `--reference` chains; genuinely cyclic chains are materialized locally without inheriting an alternates pointer.
-- Added `unsetEnv` to native shell session and one-shot options to remove inherited environment variables after session imports and snapshot sourcing.
+- Contain Linux tool children and descendants in per-call scopes with a verified task cap, and keep background jobs in their original scope. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Preserve non-UTF-8 bytes when slicing shell parameter values. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Avoid duplicate termination signals so TERM traps can flush output and finish cleanup. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Return structured cancelled or timed-out results when PTY startup is interrupted before launch. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Let scoped tools launch with coreutils before 9.5 and preserve dollar bytes on systemd before 254. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Let desktop-masked workers reach the systemd user manager while keeping its runtime directory and bus address out of tool payloads. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Parent Linux tool-call scopes under a stable session slice and export sessionSliceName for lifecycle cleanup. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Run scoped shell commands, PTYs, Git hooks and eval kernels at niceness 19 and best-effort IO priority 7 while preserving the parent priority. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Materialize cyclic Git object-store chains locally while retaining borrowing for healthy chains. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Add unsetEnv to remove inherited variables before imports and after snapshot setup. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
 
 ## [18.16.0] - 2026-11-02
 
