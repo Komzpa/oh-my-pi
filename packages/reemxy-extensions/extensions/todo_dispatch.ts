@@ -5861,5 +5861,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 /** A Do/Leave/Other choice asked in chat text without a review-page link; returns the matching line. */
 export function chatChoiceMatch(text: string): string | undefined {
   if (!text || /\/review\/[\w.-]+/.test(text)) return;
-  return text.split("\n").find((line) => /\bDo\s*(?:\/|,)\s*Leave\b(?:\s*(?:\/|,|or|или)\s*Other\b)?/i.test(line));
+  return text.split("\n").find((line) => /\bDo\s*(?:\/|,)\s*Leave\b(?:\s*(?:\/|,|or|или)\s*Other\b)?/i.test(line) || CHAT_CHOICE_LINE.test(line.trim()));
 }
+
+/**
+ * A whole line that is only a short slash-separated option list ending in "?", in any
+ * language: "Делаем / Оставляем / Другое?", "Accept / Redo / Drop?". Darafei 2026-11-03:
+ * the English-only matcher let a Russian Do/Leave/Other question through to chat.
+ */
+const CHAT_CHOICE_LINE = /^[*_`>\s-]*\p{L}[\p{L}\p{N} '’-]{0,30}(?:\s*\/\s*\p{L}[\p{L}\p{N} '’-]{0,30}){1,4}\s*\?[*_`\s]*$/u;
