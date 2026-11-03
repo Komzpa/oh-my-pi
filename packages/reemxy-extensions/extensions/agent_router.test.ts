@@ -19,7 +19,6 @@ import agentRouter, {
 	recordRetryFallbackApplied,
 	recordTaskOutcome,
 	routeSubagentSpawn,
-	visualWorkCues,
 } from "./agent_router";
 
 const CODER_CHAIN = ["codex-lb/gpt-6-luna:medium", "anthropic/claude-sonnet-5-5"];
@@ -118,43 +117,22 @@ describe("agent router", () => {
 		}
 	});
 
-	test("sends visual briefs from text-only coders to the vision role once per brief", async () => {
+	test("visual words in a brief never refuse a spawn", () => {
 		const { dir, file } = tempStateFile();
 		try {
-			const state = createRouterState();
-			const context = ctx({ getAsyncJobSnapshot: () => ({ running: [], recent: [], delivery: {} }) });
-			const visual =
-				"Restore rack-specific grid tracks in FacilityWorkspace.css; capture desktop and mobile Playwright screenshots and compare them to owner.png.";
-			const refused = await routeSubagentSpawn({ agent: "coder", spawnKey: "v-1", assignment: visual }, context, state, {
-				stateFile: file,
-			});
-			expect(refused).toMatchObject({ block: true });
-			expect(refused?.reason).toStartWith("Use ui-coder:");
-			expect(refused?.reason).toContain("playwright");
-			const strong = await routeSubagentSpawn(
-				{ agent: "coder-strong", spawnKey: "v-2", assignment: visual },
-				context,
-				state,
-				{ stateFile: file },
-			);
-			expect(strong?.reason).toStartWith("Use ui-coder-strong:");
 			expect(
-				await routeSubagentSpawn({ agent: "coder", spawnKey: "v-3", assignment: visual }, context, state, { stateFile: file }),
-			).toBeUndefined();
-			expect(
-				await routeSubagentSpawn({ agent: "ui-coder", spawnKey: "v-4", assignment: `${visual} Again.`, isolated: true }, context, state, {
-					stateFile: file,
-				}),
-			).toBeUndefined();
-			expect(
-				await routeSubagentSpawn(
-					{ agent: "coder", spawnKey: "v-5", assignment: "Fix the visual regression test name in vitest config.", isolated: true },
-					context,
-					state,
+				routeSubagentSpawn(
+					{
+						agent: "coder",
+						spawnKey: "visual",
+						assignment: "Check desktop mobile screenshots owner.png visually",
+						isolated: true,
+					},
+					ctx(),
+					createRouterState(),
 					{ stateFile: file },
 				),
 			).toBeUndefined();
-			expect(visualWorkCues("Check the phone viewport screenshot a.png")).toEqual(["phone", "viewport", "screenshot", ".png"]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
