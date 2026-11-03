@@ -1,8 +1,8 @@
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { ExtensionContext, ToolCallEventResult } from "@oh-my-pi/pi-coding-agent";
-import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { resolveYieldReportText } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import continueReminder from "./worker-continue.md" with { type: "text" };
 
 const READ_ONLY_ROLES = new Set([
@@ -19,17 +19,6 @@ const READ_ONLY_ROLES = new Set([
 	"business-analyst",
 	"retro-facilitator",
 ]);
-const PARTIAL =
-	/\b(?:partial|not done|incomplete|next I would|remaining(?=\s*:)|checkpoint incomplete|did not commit|ran out|stopping here)\b/i;
-const BLOCKER =
-	/\b(?:permission denied|sandbox(?:ed| restriction| denial| blocked)?|missing credentials?|credentials? (?:missing|unavailable)|(?:RAM|host|memory)[^.!?\n]{0,60}(?:refus(?:al|ed|es|ing)?|denied|unavailable|exhaust|pressure)|upstream (?:outage|unavailable)|(?:outside|lack|missing|requires?|awaiting)[^.!?\n]{0,40}(?:authority|ownership)|(?:authority|ownership) (?:conflict|boundary|denied)|owner (?:decision|approval) (?:needed|required)|awaiting (?:the )?owner|awaiting lead answer)\b/i;
-
-function messageText(message: AgentMessage): string {
-	if (!("content" in message)) return "";
-	if (typeof message.content === "string") return message.content;
-	return message.content.flatMap(part => (part.type === "text" ? [part.text] : [])).join("\n");
-}
-
 export const MAX_WORKER_REFUSALS = 6;
 export const BLOCKER_YIELDS_REQUIRED = 3;
 export const GOAL_CAP_ANNOTATION = "goal cap reached; partial";
@@ -41,94 +30,121 @@ export interface WorkerContinuationState {
 	budgetStopped: boolean;
 }
 
-function concreteBlocker(report: string): string | undefined {
-	const blockers = report.split(/\n|[.!?](?:\s|$)/).flatMap(rawLine => {
-		const line = rawLine.replace(/\s+/g, " ");
-		const start = line.search(BLOCKER);
-		if (start < 0 || /\b(?:no|without|not|neither)\b[^:;]{0,35}$/i.test(line.slice(0, start))) return [];
-		return [
-			line
-				.slice(start)
-				.toLowerCase()
-				.replace(/\s+/g, " ")
-				.trim()
-				.replace(/[.;:]+$/, ""),
-		];
-	});
-	return blockers.length ? [...new Set(blockers)].sort().join("\n") : undefined;
+export type WorkerEvidence = { commit: string } | { path: string } | { command: string };
+export interface WorkerRequirement {
+	requirement: string;
+	done: boolean;
+	evidence: WorkerEvidence;
 }
 
-/** Pure classification: a partial report needs a concrete external reason to stop. */
-export function shouldContinueWorker(report: string, role: string, budgetStop: boolean): boolean {
-	return !budgetStop && !READ_ONLY_ROLES.has(role) && PARTIAL.test(report) && !concreteBlocker(report);
-}
-
-function dataText(value: unknown): string {
-	if (typeof value === "string") return value;
-	if (Array.isArray(value)) return value.map(dataText).join("\n");
-	if (value && typeof value === "object") return Object.values(value).map(dataText).join("\n");
-	return "";
-}
-
-/** A list with evidence per requirement; the worker must verify coverage against its brief. */
-function hasCompletionAudit(report: string): boolean {
-	const rows = report.split(/\r?\n/).filter(line => /^\s*(?:[-*+] |\d+[.)] )/.test(line));
-	return (
-		rows.length > 0 &&
-		rows.every(
-			line =>
-				/\b[0-9a-f]{7,40}\b/i.test(line) ||
-				/(?:^|[\s`(])(?:\.?\.?\/|~\/)?[a-zA-Z_.@-][\w.@-]*\/[\w./@-]+/.test(line) ||
-				/`[^`]+`\s*(?:→|=>|:|—|->)\s*\S/.test(line),
+async function verifyEvidence(value: unknown, ctx: ExtensionContext): Promise<string | undefined> {
+	if (!value || typeof value !== "object") return "missing evidence";
+	const evidence = value as Record<string, unknown>;
+	const keys = Object.keys(evidence);
+	if (keys.length !== 1 || !["commit", "path", "command"].includes(keys[0]!))
+		return "evidence must contain one commit, path, or command";
+	const key = keys[0]!;
+	const item = evidence[key];
+	if (typeof item !== "string" || !item.trim()) return `empty ${key} evidence`;
+	if (key === "path") {
+		try {
+			await fs.stat(path.resolve(ctx.cwd, item));
+			return;
+		} catch {
+			return `path does not exist: ${item}`;
+		}
+	}
+	if (key === "commit") {
+		try {
+			const repo = vcs.requireGit(ctx.cwd);
+			const commit = await repo.resolveRef(`${item}^{commit}`);
+			if (!commit) return `commit does not exist: ${item}`;
+			if ((await repo.mergeBase(commit, "HEAD")) !== commit) return `commit is not reachable from HEAD: ${item}`;
+			return;
+		} catch {
+			return `commit does not exist: ${item}`;
+		}
+	}
+	const calls = new Set<string>();
+	const branch = ctx.sessionManager.getBranch();
+	const start = branch.findIndex(entry => entry.type === "session_init");
+	for (const entry of start < 0 ? [] : branch.slice(start + 1)) {
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role === "assistant") {
+			for (const part of message.content)
+				if (part.type === "toolCall" && part.name === "bash" && part.arguments?.command === item)
+					calls.add(part.id);
+		} else if (
+			message.role === "toolResult" &&
+			calls.has(message.toolCallId) &&
+			message.isError === false &&
+			(message.details as { exitCode?: unknown } | undefined)?.exitCode === 0
 		)
-	);
+			return;
+	}
+	return `command has no successful result in this worker's history: ${item}`;
 }
 
-/** The synthetic budget-stop path is authoritative; prose in a report is not. */
-export function workerYieldRefusal(
+/** Terminal mutation workers must prove completion from their own execution state. */
+export async function workerYieldRefusal(
 	input: unknown,
 	ctx: ExtensionContext,
 	workers: Map<string, WorkerContinuationState>,
 	toolCallId?: string,
-): ToolCallEventResult | undefined {
+): Promise<ToolCallEventResult | undefined> {
 	if (ctx.agent.kind !== "sub" || READ_ONLY_ROLES.has(ctx.agent.name)) return;
 	const args = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
-	// Incremental sections are progress, not an attempt to end the worker.
 	if (Array.isArray(args.type) && args.type.length > 0) return;
 	const state = workers.get(ctx.agent.id) ?? { refusals: 0, blockerYields: 0, budgetStopped: false };
 	workers.set(ctx.agent.id, state);
-	const messages = buildSessionContext(ctx.sessionManager.getBranch(), undefined, undefined, {
-		inFlightToolCallIds: toolCallId ? new Set([toolCallId]) : undefined,
-	}).messages;
-	state.budgetStopped ||= messages.some(
-		message =>
-			message.role === "developer" &&
-			message.synthetic &&
-			/^<system-reminder>\s*(?:Request|Token) budget crossed; in-flight turn stopped → forced wrap-up\./.test(
-				messageText(message).trimStart(),
-			),
-	);
+	const ownSession = ctx.sessionManager.getHeader()?.id;
+	state.budgetStopped ||= ctx.sessionManager
+		.getBranch()
+		.some(
+			entry =>
+				entry.type === "custom" &&
+				entry.customType === "worker-budget-stop" &&
+				(entry.data as { sessionId?: unknown } | undefined)?.sessionId === ownSession &&
+				ownSession !== undefined,
+		);
 	if (state.budgetStopped) return;
-	const prose = toolCallId ? (resolveYieldReportText(messages, toolCallId) ?? "") : "";
-	const report = [prose, dataText(args.data), typeof args.error === "string" ? args.error : ""].join("\n");
-	const blocker = concreteBlocker(report);
-	state.blockerYields = blocker ? (blocker === state.blocker ? state.blockerYields + 1 : 1) : 0;
-	state.blocker = blocker;
-	if (blocker && state.blockerYields >= BLOCKER_YIELDS_REQUIRED) return;
-	const partial = PARTIAL.test(report);
-	if (!blocker && !partial && hasCompletionAudit(report)) return;
-	if (state.refusals >= MAX_WORKER_REFUSALS) {
-		// Error yields bypass success-schema validation and reach the lead as partial,
-		// including when the original call was data-less or carried structured data.
-		return {
-			input: {
-				error: `${GOAL_CAP_ANNOTATION}\n${[prose, args.data == null ? "" : typeof args.data === "string" ? args.data : JSON.stringify(args.data), args.error].filter(value => typeof value === "string" && value.trim()).join("\n")}`,
-			},
-		};
+	let failure: string | undefined;
+	try {
+		const repo = vcs.git(ctx.cwd);
+		if (repo && (await repo.statusPorcelain({ untracked: "no" })).trim())
+			failure = "Uncommitted tracked changes: commit or discard, then yield";
+	} catch {
+		failure = "Cannot verify worktree state";
 	}
+	const rows = args.requirements;
+	if (!Array.isArray(rows) || rows.length === 0)
+		failure ??= "requirements must list every requirement with done and evidence";
+	if (Array.isArray(rows))
+		for (const [index, raw] of rows.entries()) {
+			const row = raw as Partial<WorkerRequirement> | null;
+			if (!row || typeof row.requirement !== "string" || !row.requirement.trim() || typeof row.done !== "boolean") {
+				failure ??= `requirement ${index + 1}: invalid requirement or done field`;
+				continue;
+			}
+			const error = await verifyEvidence(row.evidence, ctx);
+			if (error) failure ??= `requirement ${index + 1} (${row.requirement}): ${error}`;
+			if (!row.done && !args.blocker)
+				failure ??= `requirement ${index + 1} (${row.requirement}): done:false without a blocker`;
+		}
+	const blocker = args.blocker as { kind?: unknown; evidence?: unknown } | undefined;
+	let blockerKey: string | undefined;
+	if (blocker) {
+		const error = await verifyEvidence(blocker.evidence, ctx);
+		if (typeof blocker.kind !== "string" || !blocker.kind.trim() || error)
+			failure ??= `blocker: ${error ?? "missing kind"}`;
+		else blockerKey = JSON.stringify([blocker.kind, blocker.evidence]);
+	}
+	state.blockerYields = blockerKey ? (state.blocker === blockerKey ? state.blockerYields + 1 : 1) : 0;
+	state.blocker = blockerKey;
+	if (!failure && (!blockerKey || state.blockerYields >= BLOCKER_YIELDS_REQUIRED)) return;
+	if (state.refusals >= MAX_WORKER_REFUSALS)
+		return { input: { error: `${GOAL_CAP_ANNOTATION}\n${JSON.stringify(args)}` } };
 	state.refusals++;
-	return {
-		block: true,
-		reason: prompt.render(continueReminder, { blocker: Boolean(blocker), partial: !blocker && partial }).trim(),
-	};
+	return { block: true, reason: prompt.render(continueReminder, { failure, blocker: Boolean(blockerKey) }).trim() };
 }

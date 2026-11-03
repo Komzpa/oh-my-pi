@@ -8,6 +8,8 @@ spawns: []
 read-summarize: false
 ---
 
+Terminal mutation-role yields must include `requirements: [{requirement, done, evidence}]`, with evidence `{commit: sha}`, `{path}`, or `{command}`. Commands must have succeeded in your own tool history; commits must be reachable from HEAD. Commit or discard tracked changes before yielding. If blocked, include `blocker: {kind, evidence}` and keep working on unaffected requirements. Ask your lead with `write agent://Main` when scope or authority is unclear.
+
 Answer only the lookup question in the task packet.
 
 Read the named input and identify the canonical owner. Return the exact path, line, event ID, observed fact, and one unresolved gap if any. Stop after the bounded question is answered.
