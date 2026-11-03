@@ -66,7 +66,7 @@ function createYieldingSession(
 		model: model("primary", "bad-runtime-model"),
 		servingModel: { selector: "primary/bad-runtime-model", isFallback: false } as ServingModel | undefined,
 		extensionRunner: undefined,
-		sessionManager: { appendSessionInit: () => {} },
+		sessionManager: { appendSessionInit: () => {}, getBranch: () => [] },
 		getActiveToolNames: () => ["yield"],
 		getEnabledToolNames: () => ["yield"],
 		subscribe: (listener: (event: { type: string; [key: string]: unknown }) => void) => {

@@ -968,6 +968,7 @@ export interface RetryFallbackAppliedEvent {
 	from: string;
 	to: string;
 	role: string;
+	source?: "primary" | "advisor";
 	reason?: string;
 }
 

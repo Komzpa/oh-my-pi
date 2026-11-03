@@ -2248,6 +2248,7 @@ export class SessionAdvisors {
 				this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
 				await this.#host.emitSessionEvent({
 					type: "retry_fallback_applied",
+					source: "advisor",
 					from: currentSelector,
 					to: selector.raw,
 					role,
