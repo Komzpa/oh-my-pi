@@ -11,6 +11,15 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import gateNotices from "./gate-notices.md" with { type: "text" };
 import { shortenPath, truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import {
+	heavyTestBrief,
+	heavyTestRefusal,
+	probeHostTestResources,
+	ramThresholdGiB,
+	uncoveredWriteTargets,
+	type HostTestResources,
+	type HostResourceProbes,
+} from "./dispatch_preflight";
 import { checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
 
 // Model selection lives in core: the agent's frontmatter chain (role groups) plus core fallback.
@@ -263,6 +272,8 @@ export interface RouterState {
 	fallbacks: FallbackRecord[];
 	/** Briefs already refused for a text-only coder; created on first use. */
 	visionRefusals?: Set<string>;
+	writeScopeRefusals?: Set<string>;
+	ramRefusals?: Set<string>;
 }
 export interface BeforeSubagentSpawnEvent {
 	agent?: unknown;
@@ -438,10 +449,35 @@ export function routeSubagentSpawn(
 	event: BeforeSubagentSpawnEvent,
 	ctx: ExtensionContext,
 	state = createRouterState(),
-	options: { stateFile?: string; now?: () => Date; latestTodo?: LatestTodoGetter } = {},
+	options: {
+		stateFile?: string;
+		now?: () => Date;
+		latestTodo?: LatestTodoGetter;
+		hostResources?: HostTestResources;
+		minRamGiB?: number;
+	} = {},
 ): { block: true; reason: string } | undefined {
 	const agent = stringValue(event.agent);
 	if (!agent) return undefined;
+	const brief = spawnBriefText(event);
+	const key = `${agent}\0${brief}`;
+	const uncovered = uncoveredWriteTargets(brief, ctx.cwd ?? process.cwd(), agent);
+	const scopeRefusals = (state.writeScopeRefusals ??= new Set());
+	if (uncovered.length && !scopeRefusals.has(key)) {
+		scopeRefusals.add(key);
+		return {
+			block: true,
+			reason: `Widen the write roots or drop the target. Uncovered paths: ${uncovered.join(", ")}.`,
+		};
+	}
+	const ramReason =
+		options.hostResources &&
+		heavyTestRefusal(brief, ctx.cwd ?? process.cwd(), options.hostResources, options.minRamGiB ?? ramThresholdGiB());
+	const ramRefusals = (state.ramRefusals ??= new Set());
+	if (ramReason && !ramRefusals.has(key)) {
+		ramRefusals.add(key);
+		return { block: true, reason: ramReason };
+	}
 	const visionRole = VISION_ROLE_FOR[agent];
 	if (visionRole) {
 		const brief = spawnBriefText(event);
@@ -950,7 +986,7 @@ export async function recordAsyncResultOutcome(
 	return recordTaskOutcome({ toolName: "wait", details: { jobs: synthetic } }, ctx, state, options);
 }
 
-export default function agentRouter(pi: ExtensionAPI) {
+export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbes) {
 	const state = createRouterState();
 	const announcedGuardSessions = new Set<string>();
 	pi.setLabel?.("Agent Router");
@@ -969,11 +1005,14 @@ export default function agentRouter(pi: ExtensionAPI) {
 			{ deliverAs: "aside", triggerTurn: false, interruptWait: false },
 		);
 	});
-	pi.on("before_subagent_spawn", (event, ctx) =>
-		routeSubagentSpawn(event as BeforeSubagentSpawnEvent, ctx, state, {
-			latestTodo: pi.pi?.getLatestTodoPhasesFromEntries,
-		}),
-	);
+	pi.on("before_subagent_spawn", (event, ctx) => {
+		const route = (hostResources?: HostTestResources) =>
+			routeSubagentSpawn(event as BeforeSubagentSpawnEvent, ctx, state, {
+				latestTodo: pi.pi?.getLatestTodoPhasesFromEntries,
+				hostResources,
+			});
+		return heavyTestBrief(spawnBriefText(event)) ? probeHostTestResources(probes).then(route) : route();
+	});
 	pi.on("retry_fallback_applied", (event, ctx) => {
 		recordAndNotifyRetryFallbackApplied(event as RetryFallbackAppliedEvent, ctx, state);
 	});
