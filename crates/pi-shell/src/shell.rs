@@ -40,6 +40,8 @@ use crate::{
 
 /// A live engine session and the filesystem it runs on.
 struct ShellSessionCore {
+	/// Setup and the first execution share one tool-call boundary.
+	init_limit: Option<Arc<pi_vcs::process_limit::ToolProcessLimit>>,
 	session:    Session,
 	/// The engine's filesystem slot (shared with the session's host). Each run
 	/// installs a cancellation-scoped view of the session filesystem, or of
@@ -837,7 +839,13 @@ async fn create_session_for_run(
 		output_decoding: None,
 	})
 	.map_err(|err| Error::msg(format!("Failed to initialize shell: {err}")))?;
-	let mut core = ShellSessionCore { session, slot, filesystem: config.filesystem.clone(), cwd };
+	let mut core = ShellSessionCore {
+		init_limit: Some(Arc::default()),
+		session,
+		slot,
+		filesystem: config.filesystem.clone(),
+		cwd,
+	};
 
 	if !has_env_var {
 		apply_env_fallback(&mut core, &cancel)
@@ -880,7 +888,7 @@ async fn run_setup(
 	let outcome = core
 		.session
 		.run_with(
-			RunOptions { process_limit: Some(Arc::default()), ..RunOptions::new(command) },
+			RunOptions { process_limit: core.init_limit.clone(), ..RunOptions::new(command) },
 			null_stdio()?,
 			cancel.clone(),
 		)
@@ -1123,7 +1131,7 @@ async fn run_shell_command_in_filesystem(
 ) -> Result<CommandResult> {
 	let cwd = requested_cwd(session, options.cwd.as_deref()).await?;
 	let scope = CommandScope {
-		process_limit: Arc::default(),
+		process_limit: session.init_limit.take().unwrap_or_default(),
 		options,
 		env: command_env(options.env.as_ref()),
 		cancel: cancel_token,
@@ -1534,7 +1542,7 @@ async fn run_shell_command_streams_in_filesystem(
 ) -> Result<CommandResult> {
 	let cwd = requested_cwd(session, options.cwd.as_deref()).await?;
 	let scope = CommandScope {
-		process_limit: Arc::default(),
+		process_limit: session.init_limit.take().unwrap_or_default(),
 		options,
 		env: command_env(options.env.as_ref()),
 		cancel: cancel_token.clone(),
