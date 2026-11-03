@@ -273,6 +273,47 @@
 - "What's New" release notes now appear just after the first frame; quitting before it keeps them for the next start
 - Subagents can no longer broadcast (`write agent://all` fails, pointing to a direct `agent://<id>` message) and are no longer told to announce shared-file edits; the main agent can still broadcast
 - Factory Droid Gemini 4 Argon sessions keep earlier turns intact across save and reload, with correct image clamping ([#17861](https://github.com/can1357/oh-my-pi/pull/17861) by [@will-bogusz](https://github.com/will-bogusz))
+- Local Whisper speech-to-text and the local tiny model install their Transformers.js runtime on first use instead of with omp, so installs are smaller; first use needs network access
+- Local Parakeet and Nemotron speech runtimes now install on first use in source and npm installs too, reducing initial install size; first use needs network access
+- `wait` with nothing new now returns after 5s instead of blocking up to 30 minutes, the window growing 5s → 10s → 30s → 1m → 5m across back-to-back waits (5s again after news or a minute away); from the second idle wait on it tells the agent to get on with work that does not need the result instead of waiting
+- In a Tern that types streamed text out itself, omp sends assistant text and thinking as they arrive instead of pacing them, so streaming costs omp less CPU; other terminals keep omp's smooth reveal
+- Source-checkout sessions start faster and record the commit and branch without hashing uncommitted changes; existing build stamps remain readable.
+- The agent's `bash` tool never touches your shell history or completion: it records no history, `fc -R/-W` and `history -r/-w` fail, it has no line editor, `compinit`/`zle`/`bindkey` modules and bash's `complete`/`compgen`/`bind` are unavailable, and a `zsh -i` or `bash -i` it starts skips `.zshrc`/`.bashrc`
+
+- A CLI flag, session-only settings write or SDK override now outranks the setting's environment variable, so `PI_MOTION=none omp --motion full` runs with full motion; env vars still outrank every settings file
+- Updated abort error handling for JS and Python tools to propagate original abort reasons
+- Subagents now move into worker threads when many run at once, so their model streaming and tool work no longer competes with the TUI: up to 3 concurrent subagents run on the main thread, 4 add a worker, and each doubling (8, 16, 32) adds one more, up to the new `task.workerThreads` (default 4; `0` keeps every subagent on the main thread). Each subagent goes where the fewest are running; a needed worker starts while the model is still streaming the spawning call and exits a minute after its last subagent finishes or parks. IRC, the Agent Hub and focus view, `agent://`/`history://`/`proc://`, parking and revival, async jobs, cost caps, account pools and OAuth refresh, runtime model providers, MCP, memory, telemetry, `PI_PROXY` and logs keep working across the thread boundary. If omp's own files change while it runs (a source checkout or an in-place update), new subagents run on the main thread until omp restarts
+- Interactive startup reaches the first frame ~75ms sooner with skills listed in the system prompt: background skill-description compression now starts after the first frame, and resolves its model once per batch of uncached skills instead of once per skill
+- Startup release notes ("What's New") now appear just after the first interactive frame instead of being resolved before the session starts; a launch quit before that frame keeps them for the next start
+- `wait` reports jobs that finish within 1.5 s of each other in one result instead of one wait call per job
+- Broadcasts and progress notes from other agents no longer cut short a `wait` (or interrupt running bash/eval); they arrive after the wait returns. A direct message still ends the wait, and the result now carries every message queued by then instead of one per call
+- A `wait` for a reply to a message you sent gives up after 5 minutes instead of 30, and returns at once when the agent asked is waiting on the user (`ask`, an approval)
+- Subagent and task prompts no longer tell agents to message or broadcast before editing shared files; subagents message only to get unblocked and wait only on their own jobs
+- Subagents can no longer broadcast: `write agent://all` from a subagent fails and points it at a direct `agent://<id>` message, and subagent prompts no longer advertise `agent://all`. The main agent can still broadcast
+
+### Fixed
+- Fixed a second `ask` note on a later single-select question reopening and replacing the previous question's note ([#17979](https://github.com/can1357/oh-my-pi/issues/17979))
+
+- Fixed transient stream drops switching models before same-model retries finish and keeping continuing workers on a fallback after recovery.
+- Fixed unexpected socket closes delaying configured fallback: empty responses switch immediately, while partial responses get one same-model retry before switching.
+- Fixed background skill-description compression bypassing `session.maxCost` during SDK startup; compression now checks and contributes to the session tree's existing spending gate.
+- Fixed committed-text turns stopping after a Responses `stream_incomplete` drop (including drops reported only through the classification message); the turn now continues with a resume reminder ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
+- Fixed committed-text stream-stall recovery burning its whole continuation budget within seconds on repeated websocket drops: the five per-prompt transport continuations are now paced at 2s, 5s, 15s, 30s and 60s instead of resuming immediately, and aborting or resetting the conversation during a pacing wait drops the pending continuation ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
+- Retrying an aborted turn keeps the unsent composer draft instead of clearing it ([#17977](https://github.com/can1357/oh-my-pi/pull/17977) by [@Shadorain](https://github.com/Shadorain))
+- Fixed the `tts` tool never producing Grok Voice audio: xAI rejected every request for a missing `language`, so it silently fell back to local Kokoro. The tool's `language` is now sent to xAI, which auto-detects when it is omitted ([#17992](https://github.com/can1357/oh-my-pi/pull/17992) by [@Mirceone](https://github.com/Mirceone))
+- Fixed Windows bash output on non-UTF-8 code pages (Korean, Chinese, Japanese, …) turning into mojibake for the rest of a command after a builtin wrote one invalid byte (`printf '\xeb'`, `cut -c` through a CJK character); the stray byte now becomes `�` on its own line, and native programs' ANSI output still decodes, including through `| head` or from `cat` of a legacy file ([#17947](https://github.com/can1357/oh-my-pi/pull/17947) by [@H4vC](https://github.com/H4vC))
+- Fixed Hindsight silently dropping the last mental model (often `User Preferences`) from the prompt once models outgrew their share of the render budget ([#17548](https://github.com/can1357/oh-my-pi/issues/17548), [#17955](https://github.com/can1357/oh-my-pi/pull/17955) by [@harshaygadekar](https://github.com/harshaygadekar))
+- Subagent turns woken by IRC, restored after a restart, or run again by a workpool now keep their `task.softRequestBudget` guard instead of running without one ([#17988](https://github.com/can1357/oh-my-pi/pull/17988) by [@sinhduc01](https://github.com/sinhduc01))
+- The run status `blocked` indicator of a focused subagent follows the subagent's own approval mode, tool policies, remembered grants, and "approve for this session" answers instead of the main session's
+- In the bash tool, `exec >file`, `exec 2>/dev/null` or `exec <file` no longer redirects every later command of the session; each command starts with its own stdin, stdout and stderr
+- In the bash tool, an `EXIT` trap fires once, at the end of the command that set it, instead of again after every later command
+- In the bash tool, output a background job (`(sleep 1; echo late) &`) writes after its command ended no longer shows up in a later command's output
+- In the bash tool, `env -i` no longer passes inherited variables whose names are not shell names (`A-B=1`) to the program, and `X=v env -i`/`X=v env -u X` no longer pass an exported outer `X`
+- In the bash tool, `xargs` reports a command killed by a signal as GNU xargs does: `xargs: CMD: terminated by signal N`, no further commands, status 125
+- On macOS, starting a bash tool session no longer briefly sets pi's umask to 022, which could give files created at that moment the wrong permissions
+- In the bash tool, an executable script without a `#!` line started in the background with its input from a FIFO (`./script < fifo &`) runs as a bash script instead of failing with `Exec format error`
+- Fixed subagents hanging forever in an async Python `@tool` call that waits on a kernel-global `asyncio.Lock` (or other asyncio primitive) another subagent's call held; concurrent async tool calls now share one event loop
+- Interrupting or cancelling a subagent mid-call now cancels an async Python `@tool` coroutine, releasing any locks it holds, and the subagent sees `Python tool request was cancelled` instead of `Python tool call returned an invalid response`
 
 ### Fixed
 
@@ -716,11 +757,6 @@
 - Fixed a hashline `PUT` being refused with "would hold one more copy of line N … than the range did" when its body restates the line next to the range, fills the range, and adds a new line equal to that neighbour (a second `@property` or `#[test]`, or a `break;` above a new `case`); it applies again, dropping only the restated line ([#17028](https://github.com/can1357/oh-my-pi/pull/17028))
 - Fixed task subagents receiving `AGENTS.md` files, including the user-level `~/.omp/agent/AGENTS.md`, when the session has additional workspace roots (`--add-dir`, `/add-dir`, `workspace.additionalDirectories`)
 - Fixed an `ask` note added right after picking an answer landing on the next question's answer, in Tern and the TUI; Note now goes to the answer just picked until the next question gets other input ([#17126](https://github.com/can1357/oh-my-pi/pull/17126) by [@H4vC](https://github.com/H4vC))
-- Fixed transient stream drops switching models before same-model retries finish and keeping continuing workers on a fallback after recovery.
-- Fixed unexpected socket closes delaying configured fallback: empty responses switch immediately, while partial responses get one same-model retry before switching.
-- Fixed background skill-description compression bypassing `session.maxCost` during SDK startup; compression now checks and contributes to the session tree's existing spending gate.
-- Fixed committed-text turns stopping after a Responses `stream_incomplete` drop (including drops reported only through the classification message); the turn now continues with a resume reminder ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
-- Fixed committed-text stream-stall recovery burning its whole continuation budget within seconds on repeated websocket drops: the five per-prompt transport continuations are now paced at 2s, 5s, 15s, 30s and 60s instead of resuming immediately, and aborting or resetting the conversation during a pacing wait drops the pending continuation ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
 
 ## [18.13.0] - 2026-10-26
 
@@ -778,7 +814,6 @@
 - Fixed a turn that ended with background jobs still running looking stuck: the working row now says it is waiting for those jobs and names them instead of repeating the last tool call, and Esc ends the wait, so the jobs keep running and their results land in context for your next prompt instead of starting a new turn ([#17032](https://github.com/can1357/oh-my-pi/pull/17032) by [@sjawhar](https://github.com/sjawhar))
 
 ### Fixed
-
 
 - Honored `display_name`, `context_window`, and `input_modalities` when a model list nests them under `metadata`, so codex-lb-style gateways surface the advertised name, window, and image input instead of the raw id and defaults. ([#17010](https://github.com/can1357/oh-my-pi/pull/17010) by [@adi-IL](https://github.com/adi-IL))
 - Recovered spilled tool output in sessions without an artifacts directory: the `artifact://` link the truncation footer advertises now reads the in-memory copy instead of failing with "No session - artifacts unavailable". ([#17009](https://github.com/can1357/oh-my-pi/pull/17009) by [@adi-IL](https://github.com/adi-IL))
@@ -867,10 +902,6 @@
 - Fixed an image pasted while an extension input hook held a submission being dropped from the next message: once the submitted images leave the composer, the images that stay are renumbered from `#1` ([#16805](https://github.com/can1357/oh-my-pi/pull/16805) by [@lemonleks](https://github.com/lemonleks))
 - Fixed a collab guest losing the draft of a host-only command that takes its draft out of the composer on Enter (`/plan`, `/goal`, `/tan`, `/btw` and others): the draft now comes back with its images ([#16805](https://github.com/can1357/oh-my-pi/pull/16805) by [@lemonleks](https://github.com/lemonleks))
 - Fixed a hashline `PUT` whose body repeats the line just above or below its range (or both), and is shorter than the range, silently deleting the range's other lines or writing a neighbouring line twice in Python, TypeScript and other parsed files; it is now refused, and the "too short" refusal names the lines the body leaves out ([#17028](https://github.com/can1357/oh-my-pi/pull/17028) by [@sjawhar](https://github.com/sjawhar))
-- Fixed transient stream drops switching models before same-model retries finish and keeping continuing workers on a fallback after recovery.
-- Fixed committed-text turns stopping after a Responses `stream_incomplete` drop (including drops reported only through the classification message); the turn now continues with a resume reminder ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
-- Fixed committed-text stream-stall recovery burning its whole continuation budget within seconds on repeated websocket drops: the five per-prompt transport continuations are now paced at 2s, 5s, 15s, 30s and 60s instead of resuming immediately, and aborting or resetting the conversation during a pacing wait drops the pending continuation ([#16539](https://github.com/can1357/oh-my-pi/pull/16539) by [@Komzpa](https://github.com/Komzpa))
-
 - Fixed `omp gc --compress` exiting with "the event loop drained while it was still pending" on Bun 1.3.14 when a session artifact is pretty-printed JSON larger than 1 MiB, and session header probes (gc, session move and transfer) reading whole artifacts on Windows ([#15745](https://github.com/can1357/oh-my-pi/issues/15745), [#16754](https://github.com/can1357/oh-my-pi/pull/16754) by [@wolfiesch](https://github.com/wolfiesch))
 - `/resume` into another session now cancels the previous session's background jobs, as `/new` does, instead of delivering their results into the resumed session and starting a turn there ([#16760](https://github.com/can1357/oh-my-pi/pull/16760) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the models config migration writing `models.yml` readable by other users on the machine, and dropping every custom provider when the write was interrupted; the migrated file is now published atomically with owner-only permissions ([#16654](https://github.com/can1357/oh-my-pi/pull/16654) by [@adi-IL](https://github.com/adi-IL))
