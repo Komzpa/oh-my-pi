@@ -161,37 +161,39 @@ describe("persisted verdict freshness", () => {
 });
 
 describe("requirement publication visibility", () => {
-	function publicationFixture() {
+	async function publicationFixture() {
 		const manager = SessionManager.inMemory();
 		let gate: RequirementPublicationGate | undefined;
+		const statuses: Array<string | undefined> = [];
 		const runtime = new RequirementsLedgerRuntime({
 			agent: {} as never,
 			agentKind: () => "main",
 			cwd: () => process.cwd(),
 			sessionManager: manager,
 			onSettledAssistantMessage: () => {},
+			setAuditStatus: status => statuses.push(status),
 			setPublicationGate: value => {
 				gate = value;
 			},
 		});
-		runtime.captureCandidate("Fix the login bug");
-		return { gate: () => gate };
+		await runtime.captureCandidate("Fix the login bug");
+		return { gate: () => gate, statuses };
 	}
 
-	it("keeps the real final answer visible above the unverified status", async () => {
-		const fx = publicationFixture();
+	it("keeps audit status in the UI without replacing the final answer", async () => {
+		const fx = await publicationFixture();
 		const message = {
 			content: [{ type: "text", text: "Login repair is committed; deployment is pending." }],
 			stopReason: "stop",
 		};
 		const result = await fx.gate()?.(message as never, new AbortController().signal);
-		expect(result?.replacementText).toBe(
-			"Login repair is committed; deployment is pending.\n\nNot audit-verified: R1 (1 of 1)",
-		);
+		expect(result).toBeUndefined();
+		expect(fx.statuses.at(-1)).toBe("audit 1/1 open");
+		expect(message.content).toEqual([{ type: "text", text: "Login repair is committed; deployment is pending." }]);
 	});
 
 	it("shows provider failure text without applying requirement decoration", async () => {
-		const fx = publicationFixture();
+		const fx = await publicationFixture();
 		const message = {
 			content: [{ type: "text", text: "Provider stream failed: connection reset" }],
 			stopReason: "error",

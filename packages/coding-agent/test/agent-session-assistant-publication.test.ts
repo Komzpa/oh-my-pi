@@ -273,10 +273,10 @@ describe("assistant publication bridge", () => {
 			.join("\n");
 		expect(probeCalls).toBe(1);
 		expect(probeText).toBe("probe ran");
-		expect(assistantTexts(agent.state.messages).at(-1)).toContain("Not audit-verified: R1");
+		expect(assistantTexts(agent.state.messages).at(-1)).toBe("Classify the new request with todo");
 	});
 
-	it("runs the requirements gate on an extension replacement before publication", async () => {
+	it("preserves extension replacement text while retaining the open requirement", async () => {
 		const { session, agent, manager } = harness({
 			todos: true,
 			responses: [{ content: [UNSAFE] }],
@@ -292,8 +292,7 @@ describe("assistant publication bridge", () => {
 			{ id: "R1", classification: "candidate", rawText: "preserve these exact words" },
 		]);
 		const text = assistantTexts(agent.state.messages).at(-1);
-		expect(text).toContain("Not audit-verified: R1");
-		expect(text).not.toBe("Everything is complete.");
+		expect(text).toBe("Everything is complete.");
 	});
 
 	it("keeps the publication bridge installed across extension suspend and resume", async () => {

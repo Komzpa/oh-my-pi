@@ -111,9 +111,7 @@ describe("TodoCommandController linked-requirement gate", () => {
 
 		await controller.handleTodoCommand("done Gate artifact");
 
-		expect(ctx.showError).toHaveBeenCalledWith(
-			expect.stringContaining("Restore or bind the artifact for R1; then retry done."),
-		);
+		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining("Re-audit R1; then retry done."));
 		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining('R1 ("Gate artifact")'));
 		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining("R1: malformed or partial verdict table"));
 		expect(ctx.setTodos).not.toHaveBeenCalled();
