@@ -17,7 +17,7 @@
 
 - Verify worker yield requirements against commits, files, successful tool calls and tracked worktree state, with bounded blocker retries and budget exemptions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
-- Catch worker briefs with targets outside their write roots and warn before heavy test dispatch when RAM is low or a project suite is running ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Check actual worker writes against their worktree and refuse browser/test launches when live RAM or same-project process state requires it ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Name the exact row-specific `todo op="schedule"` call with `review:"user"` in the retry handoff refusal, so showing a result link does not leave the recording step implicit.
 
