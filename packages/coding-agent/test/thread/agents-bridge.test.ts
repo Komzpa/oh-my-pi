@@ -297,4 +297,3 @@ describe("agent bridging across subagent workers", () => {
 		expect(worker.load).toBe(1);
 	});
 });
-
