@@ -105,3 +105,7 @@ Live 2026-10-03: case A row "Force-layout callouts" (worker IntegrateFacilityCal
 ## Notice delivery
 
 Harness, router and deadline notices are passive asides (`triggerTurn: false`): they join the next real turn while idle and the next provider input while streaming. Informational notices also use `interruptWait: false` on hosts supporting that option. Recovery obligations for stuck workers may interrupt a running wait; they never start an idle turn. The overdue-plan alarm is an explicit wake (`triggerTurn: true`). Compaction restores rules and worker briefs through the existing passive `nextTurn` channel.
+
+## Idle user decisions
+
+At lead stop and wait, an available session job snapshot with no running jobs and open todo rows requires a recorded user decision. Set `review: "user"` and `reviewPage: "http://..."` through `todo schedule` on each decision row. The existing todo-user-review handoff carries the artifact. Every decision page must answer HTTP 200 now and show one card per decision with accept/redo/drop. Missing rows or failed probes refuse once per row/state/probe digest; reply wording is never inspected. Running background jobs or workers leave this gate inactive.

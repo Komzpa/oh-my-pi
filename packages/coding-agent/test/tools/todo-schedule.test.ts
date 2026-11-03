@@ -667,3 +667,19 @@ describe("native todo schedule operation", () => {
 		}
 	});
 });
+
+it("persists and clears the row review artifact through schedule replay", async () => {
+	const harness = createHarness(initialPlan);
+	const result = await harness.tool.execute("publish-review", {
+		op: "schedule",
+		updates: [{ task: "Build parser", review: "user", reviewPage: " http://localhost/review/parser " }],
+	});
+	expect(result.isError).not.toBe(true);
+	const restored = markdownToPhases(phasesToMarkdown(harness.phases()));
+	expect(restored.phases[0].tasks[1].schedule?.reviewPage).toBe("http://localhost/review/parser");
+	await harness.tool.execute("clear-review", {
+		op: "schedule",
+		updates: [{ task: "Build parser", reviewPage: null }],
+	});
+	expect(harness.phases()[0].tasks[1].schedule?.reviewPage).toBeUndefined();
+});

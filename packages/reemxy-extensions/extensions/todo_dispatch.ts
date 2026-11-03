@@ -2221,7 +2221,7 @@ export function syncCriticalFast(
   for (const id of [...fastByWorker.keys()]) if (!want.has(id)) fastByWorker.delete(id);
 }
 
-export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe } = {}): Promise<void> {
+export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe } = {}): Promise<void> {
   const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
   const host = pi.pi;
   const hostSdk = host as DispatchForecastApi | undefined;
@@ -3574,7 +3574,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 
   };
   let inFlightAssistantHasText = false;
-  let latestAssistantText = "";
   const refusedChatChoices = new Set<string>();
   pi.on("message_start", (event, ctx) => {
     inFlightAssistantHasText = false;
@@ -3708,19 +3707,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.message.role !== "assistant") return;
     const text = event.message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n").trim();
     inFlightAssistantHasText = text.length > 0;
-    if (text) latestAssistantText = text;
   });
-  // A lead's reply that asks the owner Do/Leave/Other in chat is refused once per reply: choices go
-  // through the user-shadow pass and a review page, and chat carries only the link.
-  const chatChoiceReason = (ctx: ExtensionContext) => {
+  const chatChoiceReason = async (ctx: ExtensionContext) => {
     if (singleWriterLane || !isMain(ctx)) return;
-    const text = latestAssistantText;
-    const match = chatChoiceMatch(text);
-    if (!match) return;
-    const key = createHash("sha256").update(text).digest("hex");
-    if (refusedChatChoices.has(key)) return;
-    refusedChatChoices.add(key);
-    return prompt.render(chatChoiceInstructions, { excerpt: shorten(match, 120) }).trim();
+    return idleUserReviewRefusal(
+      todoPhases(ctx),
+      ctx.getAsyncJobSnapshot(),
+      refusedChatChoices,
+      options.reviewPageProbe,
+    );
   };
   pi.on("message_end", () => {
     inFlightAssistantHasText = false;
@@ -3733,10 +3728,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // canonical history yet, but its visible text already answers the user.
     return undefined;
   };
-  pi.on("session_stop", (_event, ctx) => {
+  pi.on("session_stop", async (_event, ctx) => {
     const reason = unansweredUserReason(ctx);
     if (reason) return { decision: "block", reason };
-    const choiceReason = chatChoiceReason(ctx);
+    const choiceReason = await chatChoiceReason(ctx);
     if (choiceReason) return { decision: "block", reason: choiceReason };
     const idleReason = demandIdlePlanContinuation(ctx);
     if (idleReason) return { decision: "block", reason: idleReason };
@@ -4794,7 +4789,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName === "wait") {
       const reason = unansweredUserReasonWithDraft(ctx);
       if (reason) return { block: true, reason };
-      const choiceReason = chatChoiceReason(ctx);
+      const choiceReason = await chatChoiceReason(ctx);
       if (choiceReason) return { block: true, reason: choiceReason };
       const idleReason = demandIdlePlanContinuation(ctx, false);
       if (idleReason) return { block: true, reason: idleReason };
@@ -5602,7 +5597,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           accepted: update.review === "accepted",
           correction: typeof update.evidence === "string" ? update.evidence : "Use the customer's actual words from the conversation.",
         }).trim();
-        sendHarnessNotice(USER_REVIEW_CUSTOM_TYPE, update.task, content, { row: update.task, verdict: update.review }, content);
+        sendHarnessNotice(USER_REVIEW_CUSTOM_TYPE, update.task, content, { row: update.task, verdict: update.review, reviewPage: update.reviewPage }, content);
       }
       for (const update of updates) if (typeof update.task === "string" && (update.estimate !== undefined || typeof update.evidence === "string")) rescheduledRowsThisTurn.add(update.task);
       for (const update of updates) {
@@ -5858,15 +5853,45 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   });
 }
 
-/** A Do/Leave/Other choice asked in chat text without a review-page link; returns the matching line. */
-export function chatChoiceMatch(text: string): string | undefined {
-  if (!text || /\/review\/[\w.-]+/.test(text)) return;
-  return text.split("\n").find((line) => /\bDo\s*(?:\/|,)\s*Leave\b(?:\s*(?:\/|,|or|или)\s*Other\b)?/i.test(line) || CHAT_CHOICE_LINE.test(line.trim()));
-}
+export type ReviewPageProbe = (url: string) => Promise<number>;
 
-/**
- * A whole line that is only a short slash-separated option list ending in "?", in any
- * language: "Делаем / Оставляем / Другое?", "Accept / Redo / Drop?". Darafei 2026-11-03:
- * the English-only matcher let a Russian Do/Leave/Other question through to chat.
- */
-const CHAT_CHOICE_LINE = /^[*_`>\s-]*\p{L}[\p{L}\p{N} '’-]{0,30}(?:\s*\/\s*\p{L}[\p{L}\p{N} '’-]{0,30}){1,4}\s*\?[*_`\s]*$/u;
+/** The stop/wait boundary and the session-owned job snapshot establish an idle lead. */
+export async function idleUserReviewRefusal(
+  phases: DispatchTodoPhases,
+  jobs: Jobs | null | undefined,
+  refused: Set<string>,
+  probe: ReviewPageProbe = async (url) => {
+    const response = await fetch(url, { signal: AbortSignal.timeout(5000), redirect: "follow" });
+    await response.body?.cancel();
+    return response.status;
+  },
+): Promise<string | undefined> {
+  if (!jobs || jobs.running.some((job) => job.status === "running")) return;
+  const open = phases.flatMap((phase) => phase.tasks).filter((row) => isNonClosedRowStatus(String(row.status)));
+  if (!open.length) return;
+  // Reuse the todo owner/review interpretation. No assistant message is an input.
+  const decisions = open.filter(
+    (row) =>
+      row.schedule?.review === "user" || (row.status === "blocked" && waitsOnUser(row.schedule?.owner, row.blocker)),
+  );
+  const checks = await Promise.all(
+    decisions.map(async (row) => {
+      const url = row.schedule?.reviewPage;
+      if (typeof url !== "string" || !URL.canParse(url) || !["http:", "https:"].includes(new URL(url).protocol))
+        return { row: row.content, url, status: "missing review page" };
+      try {
+        return { row: row.content, url, status: await probe(url) };
+      } catch {
+        return { row: row.content, url, status: "unreachable" };
+      }
+    }),
+  );
+  const failed = checks.filter((check) => check.status !== 200);
+  if (decisions.length && !failed.length) return;
+  const key = createHash("sha256")
+    .update(JSON.stringify([open.map((row) => [row.content, row.status, row.schedule, row.blocker]), checks]))
+    .digest("hex");
+  if (refused.has(key)) return;
+  refused.add(key);
+  return prompt.render(chatChoiceInstructions, { missingRow: decisions.length === 0, failed }).trim();
+}

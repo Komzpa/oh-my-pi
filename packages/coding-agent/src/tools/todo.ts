@@ -158,6 +158,7 @@ const TodoScheduleUpdateInput = type({
 	"estimate?": TodoEstimateInput,
 	"evidence?": type("string"),
 	"review?": type('"user" | "accepted" | "redo" | "drop" | null'),
+	"reviewPage?": type("string | null").describe("HTTP URL of the published decision review page"),
 	"speculativeOn?": type("string | null"),
 });
 
@@ -1117,6 +1118,8 @@ function applyScheduleUpdates(
 			}
 		}
 		if (update.evidence?.trim()) schedule.progress = { at: now, evidence: update.evidence.trim() };
+		if (update.reviewPage === null) delete schedule.reviewPage;
+		else if (update.reviewPage !== undefined) schedule.reviewPage = update.reviewPage.trim();
 		if (update.review === null) delete schedule.review;
 		else if (update.review !== undefined) schedule.review = update.review;
 		if (update.speculativeOn === null) delete schedule.speculativeOn;
