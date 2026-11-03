@@ -1240,7 +1240,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#openTurnObservation: TurnObservation | undefined;
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
-	#agentRegistry: AgentRegistry;
+	#agentRegistry: AgentRegistryApi;
 	#agentKind: "main" | "sub" = "main";
 	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
@@ -3346,7 +3346,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	/** Registry shared by this session's tool and extension peer-messaging routes. */
-	get agentRegistry(): AgentRegistry {
+	get agentRegistry(): AgentRegistryApi {
 		return this.#agentRegistry;
 	}
 
@@ -12799,7 +12799,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	/** Set fast mode on one of this session's live direct subagents. */
-	setSubagentFastMode(id: string, enabled: boolean): boolean {
+	setSubagentFastMode(id: string, enabled: boolean): boolean | Promise<boolean> {
 		if (!this.#agentId) return false;
 		return this.#agentRegistry.setSubagentFastMode(this.#agentId, id, enabled);
 	}

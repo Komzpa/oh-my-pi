@@ -265,3 +265,16 @@ describe("agent bridging across subagent workers", () => {
 		expect(worker.load).toBe(1);
 	});
 });
+
+it("delivers hidden next-turn notices to a worker-homed session", async () => {
+	const { probe } = await startWorker();
+	await probe.open("W1", {});
+	const mirror = mirrorOf(liveRef("W1").session);
+	await mirror.sendCustomMessage(
+		{ customType: "repeated-status-notice", content: "Already delivered", display: false, attribution: "agent" },
+		{ deliverAs: "nextTurn", triggerTurn: false },
+	);
+	expect(await probe.localCustomTypes("W1")).not.toContain("repeated-status-notice");
+	await mirror.prompt("continue");
+	expect(await probe.localCustomTypes("W1")).toContain("repeated-status-notice");
+});

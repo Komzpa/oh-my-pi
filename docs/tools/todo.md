@@ -18,30 +18,30 @@
 
 The params object **is** a single op — the discriminator and its fields live at the top level (no `ops` array wrapper).
 
-| Op | Required fields | Optional fields | Effect |
+| Op        | Required fields              | Optional fields                                                          | Effect                                                                                                                                                                 |
 | --- | --- | --- | --- |
-| `init` | `list` **or** flat `items` | `phase` (names the phase for the flat `items` form; defaults to `Tasks`) | Replaces the entire list — with `list`, uses the given phases; with a flat `items` array, synthesizes one phase. Every new task starts `pending` before normalization. |
-| `start` | `task` | None | Marks one task `in_progress`; any other `in_progress` task is demoted to `pending`. |
-| `done` | `task` or `phase` or neither | None | Marks the target task, phase, or all tasks `completed`. |
-| `drop` | `task` or `phase` or neither | None | Marks the target task, phase, or all tasks `abandoned`. |
-| `block` | `task` or `phase` | `reason` | Marks actionable target tasks `blocked`; completed/abandoned tasks are left closed. Whitespace in `reason` is collapsed to one line. |
-| `unblock` | `task` or `phase` | None | Returns blocked target tasks to `pending` and clears their blocker notes. |
-| `rm` | `task` or `phase` or neither | None | Removes the target task, clears the phase's task list, or clears all task lists. |
-| `append` | `phase`, `items` | None | Appends new `pending` tasks to a phase; creates the phase if missing. |
+| `init`    | `list` **or** flat `items`   | `phase` (names the phase for the flat `items` form; defaults to `Tasks`) | Replaces the entire list — with `list`, uses the given phases; with a flat `items` array, synthesizes one phase. Every new task starts `pending` before normalization. |
+| `start`   | `task`                       | None                                                                     | Marks one task `in_progress`; any other `in_progress` task is demoted to `pending`.                                                                                    |
+| `done`    | `task` or `phase` or neither | None                                                                     | Marks the target task, phase, or all tasks `completed`.                                                                                                                |
+| `drop`    | `task` or `phase` or neither | None                                                                     | Marks the target task, phase, or all tasks `abandoned`.                                                                                                                |
+| `block`   | `task` or `phase`            | `reason`                                                                 | Marks actionable target tasks `blocked`; completed/abandoned tasks are left closed. Whitespace in `reason` is collapsed to one line.                                   |
+| `unblock` | `task` or `phase`            | None                                                                     | Returns blocked target tasks to `pending` and clears their blocker notes.                                                                                              |
+| `rm`      | `task` or `phase` or neither | None                                                                     | Removes the target task, clears the phase's task list, or clears all task lists.                                                                                       |
+| `append`  | `phase`, `items`             | None                                                                     | Appends new `pending` tasks to a phase; creates the phase if missing.                                                                                                  |
 | `schedule` | `updates` | None | Atomically updates scheduling metadata without changing status. An update may rename a row with `content`; status and executor history stay attached, dependencies follow the new name, and blank/colliding names reject the whole batch. |
 | `view` | None | `archive` | Reads the live list without changing state. `archive: true` additionally shows event-log-recoverable archived rows. |
 
 ### Fields
 
-| Field | Type | Required | Description |
+| Field    | Type                                                                                          | Required                                                                                          | Description                                                                                                                                                                      |
 | --- | --- | --- | --- |
 | `op` | `"init" | "start" | "done" | "block" | "rm" | "drop" | "unblock" | "append" | "schedule" | "view"` | Yes in the schema | Operation discriminator. At execution time, an omitted op is repaired only for unambiguous `list`/`items` payloads (see Flow). |
-| `list` | `{ phase: string; items: string[] }[]` | For `init` (unless a flat `items` list is given) | Full replacement payload. Each phase's `items` has `minItems: 1`; an explicit `list: []` clears all phases. |
-| `task` | `string` | For `start`; for task-targeted `done`/`drop`/`block`/`unblock`/`rm` | Exact task content match. |
-| `phase` | `string` | For `append`; for phase-targeted `done`/`drop`/`block`/`unblock`/`rm`; optional for a flat `init` | Exact phase name match, except `append` lazily creates a missing phase and a flat `init` synthesizes one (default `Tasks`). |
-| `items` | `string[]` | For `append`; or as a flat `init` payload | Tasks to append, or the full task list for a flat `init`. Op-specific validation requires at least one item; a stray empty array on an unrelated op is schema-valid and ignored. |
+| `list`   | `{ phase: string; items: string[] }[]`                                                        | For `init` (unless a flat `items` list is given)                                                  | Full replacement payload. Each phase's `items` has `minItems: 1`; an explicit `list: []` clears all phases.                                                                      |
+| `task`   | `string`                                                                                      | For `start`; for task-targeted `done`/`drop`/`block`/`unblock`/`rm`                               | Exact task content match.                                                                                                                                                        |
+| `phase`  | `string`                                                                                      | For `append`; for phase-targeted `done`/`drop`/`block`/`unblock`/`rm`; optional for a flat `init` | Exact phase name match, except `append` lazily creates a missing phase and a flat `init` synthesizes one (default `Tasks`).                                                      |
+| `items`  | `string[]`                                                                                    | For `append`; or as a flat `init` payload                                                         | Tasks to append, or the full task list for a flat `init`. Op-specific validation requires at least one item; a stray empty array on an unrelated op is schema-valid and ignored. |
 | `updates` | schedule-update objects | For `schedule` | Each update targets a task by exact unique `task` content; optional `content` renames it and rewrites dependent references atomically. |
-| `reason` | `string` | No | Optional blocker note for `block`; normalized to a single trimmed line. |
+| `reason` | `string`                                                                                      | No                                                                                                | Optional blocker note for `block`; normalized to a single trimmed line.                                                                                                          |
 | `archive` | `boolean` | No | On `view` only, explicitly includes archived rows; ordinary results expose only a count and timestamp summary. |
 
 For `init`, an absent or empty phase name becomes `Tasks`; duplicate phase names are rejected after this default applies.
@@ -58,7 +58,7 @@ The tool returns a single-shot `AgentToolResult`:
    - Op-specific errors prefix the summary with `Errors: ...`; schema failures instead return `Invalid todo arguments: ...`. Both set `isError: true` and leave returned/persisted phases at their pre-call state.
 - `details`:
   - `phases: TodoPhase[]` is the live state. Archived rows appear only in the durable compact `edit` event or explicit archive-view payload, not the ordinary displayed list.
-  - `storage: "session" | "memory"`
+   - `storage: "session" | "memory"`
   - `archiveSummary?: { count: number; fromAt: number; toAt: number }` summarizes historical archive events without exposing their rows.
   - `archivedPhases?: TodoPhase[]` is present only for explicit `{ op: "view", archive: true }`.
   - `edit?: TodoPersistedEdit` is a compact event for successful writes; archive events carry `{ v: 1, kind: "archive", at, operation?, archivedPhases }`.
@@ -132,13 +132,13 @@ The same file also exposes non-tool helpers used by `/todo`:
 - Filesystem
    - None in the tool itself.
 - Session state (transcript, memory, jobs, checkpoints, registries)
-  - Mutates the session todo cache through `setTodoPhases`.
-  - `storage` reports whether the session has a backing session file, but the tool does not append a custom session entry itself.
-  - Successful state-changing tool-result messages carry `details.phases`; `getLatestTodoPhasesFromEntries(...)` restores the latest canonical snapshot. Failed and pure-`view` results are skipped.
-  - Eval callers use `committedTodoPhases(...)` to persist mutations separately when there is no direct `todo` tool-result entry.
+   - Mutates the session todo cache through `setTodoPhases`.
+   - `storage` reports whether the session has a backing session file, but the tool does not append a custom session entry itself.
+   - Successful state-changing tool-result messages carry `details.phases`; `getLatestTodoPhasesFromEntries(...)` restores the latest canonical snapshot. Failed and pure-`view` results are skipped.
+   - Eval callers use `committedTodoPhases(...)` to persist mutations separately when there is no direct `todo` tool-result entry.
   - Successful mutations update the live cache and persist compact edits; an archive edit carries the triggering operation and full archived rows so active-branch replay can reconstruct live and archive separately. Earlier full transcript snapshots remain unchanged for historical export consumers.
   - `getLatestTodoArchiveFromEntries(...)` reconstructs archived rows for explicit archive views.
-  - Failed `todo` results cause `agent-session` to enqueue a hidden next-turn reminder (`customType: "todo-error-reminder"`).
+   - Failed `todo` results cause `agent-session` to enqueue a hidden next-turn reminder (`customType: "todo-error-reminder"`).
 - User-visible prompts / interactive UI
    - Transcript block is rendered by `todoToolRenderer` and merged with the call line.
    - `event-controller` updates the visible todo panel from successful results.

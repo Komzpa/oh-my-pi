@@ -1416,7 +1416,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 */
 	#relinkRespawnOwners(
 		spawns: ReadonlyArray<{ requestedName: string; workerId: string }>,
-		manager: AsyncJobManager,
+		manager: AsyncJobManagerApi,
 	): string | undefined {
 		const phases = this.session.getTodoPhases?.();
 		if (!phases || !this.session.setTodoPhases || !this.session.persistTodoPhases) return undefined;

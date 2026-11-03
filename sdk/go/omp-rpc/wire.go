@@ -2168,8 +2168,8 @@ func (v *SubagentStatus) UnmarshalJSON(data []byte) error {
 }
 
 type TodoItem struct {
-	Content  string        `json:"content"`
-	Status   TodoStatus    `json:"status"`
+	Content string     `json:"content"`
+	Status  TodoStatus `json:"status"`
 	Schedule *TodoSchedule `json:"schedule,omitempty"`
 	// What a `blocked` task is waiting on.
 	Blocker *string  `json:"blocker,omitempty"`
@@ -5227,19 +5227,19 @@ func (v *SubagentLifecycleStatus) UnmarshalJSON(data []byte) error {
 }
 
 type SubagentLifecyclePayload struct {
-	ID          string                  `json:"id"`
-	Agent       string                  `json:"agent"`
-	AgentSource AgentSource             `json:"agentSource"`
-	Status      SubagentLifecycleStatus `json:"status"`
-	Index       int64                   `json:"index"`
+	ID               string                  `json:"id"`
+	Agent            string                  `json:"agent"`
+	AgentSource      AgentSource             `json:"agentSource"`
+	Status           SubagentLifecycleStatus `json:"status"`
+	Index            int64                   `json:"index"`
 	// Wall clock of the emitted lifecycle transition, in Unix milliseconds.
 	At                    *float64 `json:"at,omitempty"`
 	ResolvedModelIdentity *string  `json:"resolvedModelIdentity,omitempty"`
 	ResolvedThinkingLevel *string  `json:"resolvedThinkingLevel,omitempty"`
-	Description           *string  `json:"description,omitempty"`
+	Description      *string                 `json:"description,omitempty"`
 	TaskText              *string  `json:"taskText,omitempty"`
-	SessionFile           *string  `json:"sessionFile,omitempty"`
-	ParentToolCallID      *string  `json:"parentToolCallId,omitempty"`
+	SessionFile      *string                 `json:"sessionFile,omitempty"`
+	ParentToolCallID *string                 `json:"parentToolCallId,omitempty"`
 	// The subagent runs as a detached background job.
 	Detached *bool `json:"detached,omitempty"`
 }
