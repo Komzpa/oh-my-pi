@@ -18,7 +18,7 @@
 
 ## Inputs
 
-| Field    | Type                          | Required | Description                                                                                                                         |
+| Field  | Type     | Required | Description                                                                                                                         |
 | -------- | ----------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `action` | `"read" \| "replace" \| "clear"` | Yes      | Operation to perform. `read` returns the latest notebook and never changes it, even if `text` is also supplied. `replace` replaces the entire notebook with `text`. `clear` is the only way to clear the notebook. There is no default: an omitted or unknown `action` is invalid and changes nothing. |
 | `text`   | `string`                      | No       | Entire replacement notebook, required and nonempty for `action: "replace"`; ignored for `read` and `clear`. Empty text never clears. Writes replace rather than append. |

@@ -121,6 +121,10 @@ export class RemoteAgentRegistry implements AgentRegistryApi {
 		return this.#remote.callSync("markResultAccepted", id, expected, responseAt);
 	}
 
+	setSubagentFastMode(parentId: string, id: string, enabled: boolean): Promise<boolean> {
+		return this.#remote.call("setSubagentFastMode", parentId, id, enabled);
+	}
+
 	staleAcceptedRuns(): AgentRef[] {
 		return this.#remote.callSync("staleAcceptedRuns");
 	}

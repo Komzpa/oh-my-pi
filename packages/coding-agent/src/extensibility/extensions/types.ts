@@ -808,7 +808,7 @@ export interface ExtensionContext {
 	 * when the id is not an owned live subagent or its model has no tier control.
 	 * The change applies to the subagent's next provider request.
 	 */
-	setSubagentFastMode?(id: string, enabled: boolean): boolean;
+	setSubagentFastMode?(id: string, enabled: boolean): boolean | Promise<boolean>;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
 	/**
@@ -2469,7 +2469,7 @@ export interface ExtensionContextActions {
 	sendAgentMessage?: (to: string, message: string) => Promise<{ delivered: boolean; text: string }>;
 	runEphemeralTurn?: (options: EphemeralTurnOptions) => Promise<EphemeralTurnResult>;
 	startLive?: (options: ExtensionLiveStartOptions) => Promise<ExtensionLiveSession>;
-	setSubagentFastMode?: (id: string, enabled: boolean) => boolean;
+	setSubagentFastMode?: (id: string, enabled: boolean) => boolean | Promise<boolean>;
 }
 
 /** Actions for ExtensionCommandContext (ctx.* in command handlers). */

@@ -238,6 +238,7 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 		steer: (_bridge, session, text, images, options) => session.steer(text, images, options),
 		abort: (_bridge, session, options) => session.abort(options),
 		dispose: (_bridge, session, options) => session.dispose(options),
+		setFastMode: (_bridge, session, enabled) => session.setFastMode(enabled),
 		deliverIrcMessage: (_bridge, session, msg) => session.deliverIrcMessage(msg),
 		waitForIrcReplies: (_bridge, session) => session.waitForIrcReplies(),
 		setWorkPoolYieldItems: (_bridge, session, items) => session.setWorkPoolYieldItems(items),
@@ -253,6 +254,7 @@ function serveRegistry(bridge: MainSessionBridge): RpcServe<AgentRegistry, Agent
 		setHistory: (registry, id, history, expectedSessionFile) => registry.setHistory(id, history, expectedSessionFile),
 		setStatus: (registry, id, status, expected) => registry.setStatus(id, status, expected),
 		markResultAccepted: (registry, id, expected, responseAt) => registry.markResultAccepted(id, expected, responseAt),
+		setSubagentFastMode: (registry, parentId, id, enabled) => registry.setSubagentFastMode(parentId, id, enabled),
 		staleAcceptedRuns: registry => registry.staleAcceptedRuns(),
 		setActivity: (registry, id, activity) => registry.setActivity(id, activity),
 		attachSession: (registry, id, session, sessionFile, expected) =>

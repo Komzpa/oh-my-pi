@@ -23,7 +23,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { AgentRef } from "../registry/agent-registry";
-import { AgentRegistry } from "../registry/agent-registry";
+import { AgentRegistry, type AgentRegistryApi } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
 import {
@@ -162,7 +162,7 @@ function unknownAgentHints(agentId: string, visible: readonly AgentRef[]): strin
 	return hints;
 }
 
-function registryForContext(context: ResolveContext | undefined): AgentRegistry {
+function registryForContext(context: ResolveContext | undefined): AgentRegistryApi {
 	return context?.agentRegistry ?? AgentRegistry.global();
 }
 
@@ -465,7 +465,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 
 	async #callerRootScope(
 		context: ResolveContext | undefined,
-		registry: AgentRegistry = registryForContext(context),
+		registry: AgentRegistryApi = registryForContext(context),
 	): Promise<CallerRootScope> {
 		const rootSessionFile = context?.sessionFile
 			? await ensurePersistedRoster(registry, context.sessionFile)

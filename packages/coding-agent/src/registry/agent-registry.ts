@@ -137,6 +137,7 @@ export interface RegisterInput {
 
 /** Public surface of the process-global agent registry, implemented locally on main and by a proxy in workers. */
 export interface AgentRegistryApi {
+	setSubagentFastMode(parentId: string, id: string, enabled: boolean): boolean | Promise<boolean>;
 	/** Which of these agents are blocked until others finish. */
 	readonly awaits: AgentAwaitsApi;
 	/** Register (or replace) the ref for `input.id`; always mints a new generation. */
@@ -471,7 +472,7 @@ export class AgentRegistry implements AgentRegistryApi {
 	}
 
 	/** Change fast mode only for a live direct child owned by `parentId`. */
-	setSubagentFastMode(parentId: string, id: string, enabled: boolean): boolean {
+	setSubagentFastMode(parentId: string, id: string, enabled: boolean): boolean | Promise<boolean> {
 		const ref = this.#refs.get(id);
 		if (
 			!ref ||
