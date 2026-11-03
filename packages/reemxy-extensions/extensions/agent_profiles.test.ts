@@ -69,6 +69,20 @@ const LEVELS: Record<string, string> = {
 };
 
 describe("Reemxy extension agent model chains", () => {
+	test("all 19 shared preambles permit observed detail corrections while retaining stop and receipt rules", () => {
+		const profiles = extensionProfiles().filter(profile =>
+			profile.systemPrompt.includes("Before starting, verify the brief gives the goal"),
+		);
+		expect(profiles).toHaveLength(19);
+		const line =
+			"Stop and state exactly what is missing or contradictory if the goal is missing or the task is impossible, unsafe, unauthorized, or outside the write roots; do not guess. If a detail differs (a count, path spelling, branch name, or already-done subpart), note the difference in one line of the receipt and continue with what is actually there.";
+		for (const profile of profiles) {
+			expect(profile.systemPrompt, profile.name).toContain(line);
+			expect(profile.systemPrompt, profile.name).toContain("NOT STARTED: <reason>");
+			expect(profile.systemPrompt, profile.name).toContain("Every final receipt");
+		}
+	});
+
 	test("profiles name role groups, not literal models", () => {
 		for (const profile of extensionProfiles()) {
 			expect(profile.model, profile.name).toEqual(GROUPS[profile.name]);
@@ -86,7 +100,24 @@ describe("Reemxy extension agent model chains", () => {
 
 	test("judgment and strong profiles never include the free group", () => {
 		for (const profile of extensionProfiles()) {
-			if (["reviewer", "architect", "plan-doctor", "adversary", "security-reviewer", "retro-facilitator", "coder-strong", "ui-coder-strong", "researcher", "install-owner", "profiler", "visual-qa", "rebaser", "user-shadow"].includes(profile.name))
+			if (
+				[
+					"reviewer",
+					"architect",
+					"plan-doctor",
+					"adversary",
+					"security-reviewer",
+					"retro-facilitator",
+					"coder-strong",
+					"ui-coder-strong",
+					"researcher",
+					"install-owner",
+					"profiler",
+					"visual-qa",
+					"rebaser",
+					"user-shadow",
+				].includes(profile.name)
+			)
 				expect(profile.model, profile.name).not.toContain("@free");
 		}
 	});
@@ -94,6 +125,8 @@ describe("Reemxy extension agent model chains", () => {
 	test("git-pr-owner runs git against the brief ROOT and does not treat a missing object as a remote hang", () => {
 		const owner = extensionProfiles().find(profile => profile.name === "git-pr-owner");
 		expect(owner?.systemPrompt).toContain("Run every git command as `git -C <ROOT>` against the brief's ROOT.");
-		expect(owner?.systemPrompt).toContain("Treat `bad object` or a missing ref as a wrong-directory or local-object problem first, never as a remote hang.");
+		expect(owner?.systemPrompt).toContain(
+			"Treat `bad object` or a missing ref as a wrong-directory or local-object problem first, never as a remote hang.",
+		);
 	});
 });

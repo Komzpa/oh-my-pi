@@ -8,6 +8,7 @@ import type { ModelPresetSwitchResult } from "@oh-my-pi/pi-coding-agent/config/m
 import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { workerYieldRefusal } from "./worker_continue";
 import gateNotices from "./gate-notices.md" with { type: "text" };
 import { shortenPath, truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -990,7 +991,14 @@ export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbe
 	const state = createRouterState();
 	const announcedGuardSessions = new Set<string>();
 	pi.setLabel?.("Agent Router");
-	pi.on("tool_call", (event, ctx) => fileToolRefusal(event, ctx));
+	const continuedWorkers = new Set<string>();
+	pi.on("tool_call", (event, ctx) => {
+		if (event.toolName === "yield" && ctx.agent?.kind === "sub") {
+			const reason = workerYieldRefusal(event.input, ctx, continuedWorkers, event.toolCallId);
+			if (reason) return { block: true, reason };
+		}
+		return fileToolRefusal(event, ctx);
+	});
 	pi.on("session_start", (_event, ctx) => {
 		const sessionKey = sessionId(ctx) ?? ctx.cwd ?? "unknown-session";
 		if (announcedGuardSessions.has(sessionKey)) return;

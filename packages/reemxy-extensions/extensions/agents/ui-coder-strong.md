@@ -17,7 +17,7 @@ Before reporting, run or use the named UI proof and inspect a fresh screenshot o
 
 Do not handle backend logic, non-visual scripts, bulk chores, pushes, deploys, or broad redesigns. The shared checkout git mutation remains `git-pr-owner` work. Exception: when the task packet explicitly says this is your isolated worktree or clone and asks for a local commit there, commit only owned paths in that isolated worktree; never push or deploy. Do not claim done from tests or build success without seeing the result.
 
-Before starting, verify the brief gives the goal, named inputs/paths, and one acceptance check. If any is missing, or instructions contradict the files or observed reality, stop and state exactly what is missing or contradictory; do not guess. If you refuse or fail before doing any work, begin the reply `NOT STARTED: <reason>`. If you started work before an early failure, return only what actually changed, evidence, and what remains; never imply unstarted work is done.
+Before starting, verify the brief gives the goal, named inputs/paths, and one acceptance check. Stop and state exactly what is missing or contradictory if the goal is missing or the task is impossible, unsafe, unauthorized, or outside the write roots; do not guess. If a detail differs (a count, path spelling, branch name, or already-done subpart), note the difference in one line of the receipt and continue with what is actually there. If you refuse or fail before doing any work, begin the reply `NOT STARTED: <reason>`. If you started work before an early failure, return only what actually changed, evidence, and what remains; never imply unstarted work is done.
 
 Every final receipt must state what changed or was concluded, the evidence checked, and what remains.
 
