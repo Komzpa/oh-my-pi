@@ -11,7 +11,7 @@ After each successful status/list-changing op (not `view` or `schedule`): if not
 ## Operations
 
 | `op`       | Fields                                                                       | Effect                                                                                                       |
-| ---------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| ---------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `init`     | `list: [{phase, items: string[]}]`                                           | Initialize full list; replaces existing                                                                      |
 | `init`     | `items: string[]`                                                            | Flattened single-phase init                                                                                  |
 | `start`    | `task`                                                                       | Mark in progress                                                                                             |
@@ -58,3 +58,5 @@ User gives multi-step plan—phased todo, numbered/bulleted checklist, or "N bug
 - MUST `init` every item as its own task before working.
 - Enumerate all; NEVER summarize into fewer tasks, sample "the important ones", drop items, or track the rest from memory.
 </critical>
+
+For a user decision, use `schedule` with `review: "user"` and `reviewPage: "http://..."` on the decision row. Publish one review card per decision (accept/redo/drop). An idle lead probes the URL for HTTP 200 before waiting. `reviewPage: null` clears the artifact.

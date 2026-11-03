@@ -36,6 +36,8 @@ export interface TodoSchedule {
 	firstDeliveredAt?: number;
 	/** Short final worker report retained for the user's review handoff. */
 	reviewSummary?: string;
+	/** Published decision artifact, probed at the idle lead boundary. */
+	reviewPage?: string;
 	/** Append-only durable attempts for this exact row. */
 	attemptHistory?: TodoReworkAttempt[];
 	/** User review state for a delivered implementation result. */

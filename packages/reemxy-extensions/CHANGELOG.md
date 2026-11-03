@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Require live review-page artifacts on idle user-decision rows instead of interpreting chat questions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Keep workers working after harmless brief discrepancies and retry an unblocked partial yield once, while preserving read-only roles and forced budget wrap-ups ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Catch worker briefs with targets outside their write roots and warn before heavy test dispatch when RAM is low or a project suite is running ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
