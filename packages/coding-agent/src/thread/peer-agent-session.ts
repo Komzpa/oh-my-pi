@@ -1,3 +1,4 @@
+import type { PeerCommandReceipt } from "../collab/peer-commands";
 /**
  * Worker-side handle for an agent session homed on another thread (the main
  * thread or a sibling worker).
@@ -209,6 +210,10 @@ export class PeerAgentSession implements AgentSessionHandle {
 
 	waitForIrcReplies(): Promise<void> {
 		return mainBridge().remote.call("waitForIrcReplies", this);
+	}
+
+	executePeerSlashCommand(text: string): Promise<PeerCommandReceipt | null> {
+		return mainBridge().remote.call("executePeerSlashCommand", this, text);
 	}
 
 	prompt(text: string, options?: PromptOptions): Promise<boolean> {

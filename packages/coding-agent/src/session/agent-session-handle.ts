@@ -1,3 +1,4 @@
+import type { PeerCommandReceipt } from "../collab/peer-commands";
 /**
  * Cross-agent views of an {@link AgentSession}.
  *
@@ -143,6 +144,7 @@ export interface AgentSessionHandle {
 	/** Wait for any in-flight IRC wake-turn relays. */
 	waitForIrcReplies(): Promise<void>;
 	/** Send a prompt (or steer/follow up while streaming, per `options.streamingBehavior`). */
+	executePeerSlashCommand(text: string): Promise<PeerCommandReceipt | null>;
 	prompt(text: string, options?: PromptOptions): Promise<boolean>;
 	/** Queue a steering message for the next step boundary. */
 	steer(text: string, images?: ImageContent[], options?: SteerOptions): Promise<void>;

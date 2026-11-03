@@ -236,6 +236,10 @@ export class RemoteIrcBus implements IrcBusApi {
 		return this.#remote.call("send", msg);
 	}
 
+	resolveShellReplyTarget(recipient: string): string {
+		return this.#remote.callSync("resolveShellReplyTarget", recipient);
+	}
+
 	sentSince(from: string, to: string, sinceTs: number): boolean {
 		return this.#remote.callSync("sentSince", from, to, sinceTs);
 	}

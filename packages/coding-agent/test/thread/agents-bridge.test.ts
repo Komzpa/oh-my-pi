@@ -265,3 +265,30 @@ describe("agent bridging across subagent workers", () => {
 		expect(worker.load).toBe(1);
 	});
 });
+
+describe("peer commands across worker threads", () => {
+	it("executes on each target's home thread and preserves shell reply history", async () => {
+		const { probe } = await startWorker();
+		await probe.open("PeerWorker", {});
+		const remote = mirrorOf(liveRef("PeerWorker").session);
+		expect(await remote.executePeerSlashCommand("/rename Worker title")).toMatchObject({ outcome: "executed" });
+		expect(await remote.executePeerSlashCommand("/session info")).toMatchObject({
+			outcome: "executed",
+			reason: expect.stringContaining("Title: Worker title"),
+		});
+		const main = await mainSession("PeerMain");
+		AgentRegistry.global().register({
+			id: "PeerMain",
+			displayName: "PeerMain",
+			kind: "main",
+			session: main,
+			sessionFile: null,
+			status: "idle",
+		});
+		expect(await probe.peerCommand("PeerMain", "/rename Main title")).toMatchObject({ outcome: "executed" });
+		expect(main.sessionManager.getSessionName()).toBe("Main title");
+		expect(await remote.executePeerSlashCommand("/unknown-peer-command")).toBeNull();
+		await IrcBus.global().send({ from: "shell:fixture", to: "PeerWorker", body: "hello" });
+		expect(await probe.shellReplyTarget("PeerWorker")).toBe("shell:fixture");
+	});
+});
