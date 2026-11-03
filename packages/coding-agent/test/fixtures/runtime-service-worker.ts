@@ -107,9 +107,9 @@ const probe: RuntimeProbe = async (op, ...args) => {
 			return true;
 		case "register":
 			return registerBody(manager(args[0]), String(args[1]), args[2] === true);
-		case "runningOwnerJobs":
+		case "runningJobs":
 			return manager(args[0])
-				.getRunningOwnerJobs(args[1] === undefined ? undefined : String(args[1]))
+				.getRunningJobs({ ownerId: String(args[1]) }, { includeForeground: args[2] === true })
 				.map(job => job.id);
 		case "progress":
 			await body(args[0]).report?.(String(args[1]), typeof args[2] === "string" ? args[2] : undefined);

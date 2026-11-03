@@ -679,7 +679,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		}
 		// Teardown reaps every owner job including foreground-backed and
 		// delivery-suppressed rows; the guard enumerates that same set.
-		for (const job of this.#session.asyncJobManager?.getRunningOwnerJobs(ownerId) ?? []) {
+		for (const job of this.#session.asyncJobManager?.getRunningJobs({ ownerId }, { includeForeground: true }) ?? []) {
 			if (job.id === getActiveEvalJobId()) continue;
 			jobs.push({
 				id: job.id,

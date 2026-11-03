@@ -581,7 +581,9 @@ describe("real executor terminal yield with worker-owned bash", () => {
 				if (!firstResult) {
 					await waitForFile(accepted);
 					expect(await Bun.file(accepted).text()).toBe("accepted");
-					const job = manager.getRunningOwnerJobs(id)[0] ?? manager.getAllJobs({ ownerId: id })[0];
+					const job =
+						manager.getRunningJobs({ ownerId: id }, { includeForeground: true })[0] ??
+						manager.getAllJobs({ ownerId: id })[0];
 					if (!job) throw new Error("worker-owned bash job missing");
 					expect(job.type).toBe("bash");
 					jobId = job.id;

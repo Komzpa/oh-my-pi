@@ -352,7 +352,7 @@ describe("terminal yield through the eval bridge", () => {
 				toolSession: {
 					requireYieldTool: true,
 					getAgentId: () => AGENT_ID,
-					asyncJobManager: { getRunningOwnerJobs: () => jobs } as never,
+					asyncJobManager: { getRunningJobs: () => jobs } as never,
 				},
 			});
 			AgentRegistry.global().register({

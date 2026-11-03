@@ -134,7 +134,7 @@ describe("YieldTool terminal result latch", () => {
 				requireYieldTool: true,
 				getWorkPoolYieldItems: () => [{ id: "review#1", index: 1 }],
 				asyncJobManager: {
-					getRunningOwnerJobs: () =>
+					getRunningJobs: () =>
 						running ? [{ id: "job-1", type: "bash", status: "running", startTime: 1, label: "build" }] : [],
 				} as never,
 			}),
@@ -165,7 +165,7 @@ describe("YieldTool terminal result latch", () => {
 					{ id: "review#2", index: 2 },
 				],
 				asyncJobManager: {
-					getRunningOwnerJobs: () =>
+					getRunningJobs: () =>
 						running ? [{ id: "build", type: "bash", status: "running", startTime: 1, label: "build" }] : [],
 				} as never,
 			}),
@@ -215,7 +215,7 @@ describe("YieldTool terminal result latch", () => {
 			createSession({
 				requireYieldTool: true,
 				getAgentId: () => "worker",
-				asyncJobManager: { getRunningOwnerJobs: () => [job] } as never,
+				asyncJobManager: { getRunningJobs: () => [job] } as never,
 			}),
 		);
 		const refusal = await tool.execute("call-refused", { data: { answer: 1 } } as never).catch(error => error);
