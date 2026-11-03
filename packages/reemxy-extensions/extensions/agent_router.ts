@@ -24,6 +24,7 @@ const WRITE_CAPABLE_WORKERS = new Set([
 	"ui-coder-strong",
 	"workhorse",
 	"git-pr-owner",
+	"rebaser",
 ]);
 
 type LatestTodoGetter = (entries: unknown[]) => TodoScheduleInput;
