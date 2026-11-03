@@ -11,6 +11,7 @@ async fn cmp_is_registered_as_an_in_process_builtin() {
 	std::fs::write(root.join("c"), b"different").expect("write c");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -50,6 +51,7 @@ async fn moreutils_builtins_are_registered_in_process() {
 	let root = std::fs::canonicalize(dir.path()).expect("canonical temp dir");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -129,6 +131,7 @@ async fn uutils_sort_compress_program_uses_shell_path_and_stderr() {
 	std::fs::write(tmp.join("in.txt"), &input).expect("write input");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -192,6 +195,7 @@ async fn uutils_mkdir_resolves_cwd_and_displays_operand() {
 	let tmp_str = tmp.to_str().expect("utf8 temp path");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -239,6 +243,7 @@ async fn command_v_iterates_all_operands() {
 	let tmp_str = tmp.to_str().expect("utf8 temp path");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -297,6 +302,7 @@ async fn every_utility_builtin_is_registered_under_its_own_name() {
 	std::fs::create_dir_all(&tmp).expect("temp dir");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -460,6 +466,7 @@ async fn every_process_builtin_is_installed_and_dispatches() {
 	std::fs::create_dir_all(&tmp).expect("temp dir");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -555,6 +562,7 @@ async fn uutils_mkdir_expands_tilde_for_every_brace_element() {
 	let mut env = HashMap::new();
 	env.insert("HOME".to_string(), home.to_string_lossy().to_string());
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   Some(env),
 		snapshot_path: None,
 		minimizer:     None,
@@ -598,6 +606,7 @@ async fn uutils_mkdir_help_and_bad_flag_do_not_exit_process() {
 	let tmp_str = tmp.to_str().expect("utf8 temp path");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -644,6 +653,7 @@ async fn uutils_head_streams_stdin_and_reads_files() {
 	let tmp_str = tmp.to_str().expect("utf8 temp path");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -697,6 +707,7 @@ async fn uutils_head_help_and_bad_flag_do_not_exit_process() {
 	let tmp_str = tmp.to_str().expect("utf8 temp path");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -742,6 +753,7 @@ async fn uutils_filters_listing_find_grep() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -837,6 +849,7 @@ async fn rg_builtin_uses_ripgrep_defaults() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -911,6 +924,7 @@ async fn fd_builtin_uses_fd_defaults() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -1016,6 +1030,7 @@ async fn rg_builtin_defaults_to_cwd_unless_stdin_is_pipeline() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -1071,6 +1086,7 @@ async fn grep_quiet_and_line_regexp() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -1130,6 +1146,7 @@ async fn uutils_rm_and_mv_operate_on_shell_cwd() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -1174,6 +1191,7 @@ async fn uutils_rm_missing_file_prints_single_diagnostic() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -1213,6 +1231,7 @@ async fn uutils_find_display_and_actions_split_paths() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -1295,6 +1314,7 @@ async fn uutils_sed_substitutes_streams_and_edits_in_place() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -1516,6 +1536,7 @@ async fn uutils_xargs_children_feed_pipeline_and_report_failure() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -1626,6 +1647,7 @@ async fn uutils_jq_filters_json_and_propagates_exit_status() {
 	let tmp_str = tmp.to_str().expect("utf8");
 
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -1670,6 +1692,7 @@ async fn uutils_jq_filters_json_and_propagates_exit_status() {
 #[tokio::test(flavor = "multi_thread")]
 async fn uutils_head_stdin_read_is_cancellable() {
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,
@@ -1718,6 +1741,7 @@ async fn uutils_builtins_respect_disable_env() {
 			.map(|(k, v)| ((*k).to_string(), (*v).to_string()))
 			.collect();
 		ShellConfig {
+			unset_env:     None,
 			session_env:   Some(map),
 			snapshot_path: None,
 			minimizer:     None,
@@ -1727,6 +1751,7 @@ async fn uutils_builtins_respect_disable_env() {
 	};
 
 	let mut default = create_session(&ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,

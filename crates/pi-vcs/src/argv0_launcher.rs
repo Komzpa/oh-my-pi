@@ -9,5 +9,9 @@ fn main() {
 	};
 	let error = Command::new(executable).arg0(argv0).args(args).exec();
 	eprintln!("omp-argv0: {error}");
-	std::process::exit(if error.kind() == std::io::ErrorKind::NotFound { 127 } else { 126 });
+	std::process::exit(if error.kind() == std::io::ErrorKind::NotFound {
+		127
+	} else {
+		126
+	});
 }

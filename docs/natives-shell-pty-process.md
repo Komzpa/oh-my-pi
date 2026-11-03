@@ -255,7 +255,7 @@ Termination path:
 ### Cancellation and timeout semantics
 
 - `timeoutMs` and `AbortSignal` feed a `CancelToken`.
-- Preflight heartbeat checks before `openpty` and spawn reject cancellation as setup errors.
+- Preflight heartbeat checks before `openpty` and spawn return structured cancelled/timed-out results.
 - The running loop calls `ct.heartbeat()` with a 16ms maximum control wait cadence. Timeout classification uses a heartbeat error containing `Timeout`.
 - Cancellation, kill, or a lost JS callback terminates process targets and starts a 300ms post-cancel window. The result may still include an exit code observed while reaping.
 - On non-Windows, cancelled-child reaping polls for up to 500ms, then delegates an unfinished reap to a detached thread rather than pinning the promise.

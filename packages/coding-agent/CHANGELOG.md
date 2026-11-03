@@ -302,6 +302,19 @@
 - Prewalk no longer hands a subagent to its cheap model when the subagent messages its parent or another agent (`write agent://…`) before its first file edit ([#18322](https://github.com/can1357/oh-my-pi/pull/18322) by [@1vivy](https://github.com/1vivy))
 
 ## [18.17.0] - 2026-11-06
+### Fixed
+
+- Spawned browser applications remain in their transcript's native scope on Linux instead of Chrome moving itself into the user manager's app slice; borrowed browsers are unchanged.
+- Session release now reports creation failures from launches already admitted when release began, while retaining failed daemon history without poisoning later releases.
+- Disposed sessions release CPU-monitor callbacks even when stopping their systemd slice fails; failed-stop markers and exit cleanup backstops remain armed without retaining the session or its settings
+- A stdio MCP server whose command is missing or exits during startup now reports its exit code and the first 4 KiB of its stderr instead of a bare `EPIPE` or "closed stdout"; a request the server already received is still never replayed
+- Python eval kernels no longer block the JS event loop on first-use systemd scope setup: `PythonKernel.start` wraps the kernel command through the async `ToolResourceScope` variant, so `systemctl`/`systemd-run` probes run on the worker pool
+- JavaScript eval workers no longer block the JS event loop on first-use systemd scope setup: the scoped worker subprocess is created through the async `ToolResourceScope` boundary before `Bun.spawn`
+- Scoped kernels and workers no longer fail when the session `systemd-run` shim is first on PATH but the payload's complete spawn environment does not carry `OMP_SYSTEMD_RUN_REAL`: native scope launches exec the real manager binary directly
+- Masked desktop-session runtime dirs for Python eval kernels are now keyed by the session id instead of the cwd path: subagents sharing a cwd (or cwd paths sharing a 64-character sanitized prefix) no longer share one `XDG_RUNTIME_DIR`
+- Switching, starting a new session, disposing, and settling subagent tasks (including keep-alive completion, failure, and task abort) await session-owned daemon release. The broker drains accepted launches before stopping all records, late lookups cannot recreate evicted clients, and cleanup errors remain failures even though sockets always close. Resumed agents can acquire fresh clients; ordinary root turn aborts and parent/sibling sessions retain their resources.
+- Broker connect spawns one bounded replacement when the endpoint is still missing past a short grace with no live broker pid, instead of failing blind with ENOENT after 10 s; a live pid keeps waiting for its owner to bind. Releasing a session whose broker acquisition failed no longer starts a fresh broker just for teardown.
+- Process-local Puppeteer fallback Chromium also drops the two user-bus addresses from its own launch environment, preserving its inherited session slice without changing unrelated children.
 
 ### Added
 

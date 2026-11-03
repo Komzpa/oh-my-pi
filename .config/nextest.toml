@@ -57,9 +57,9 @@ threads-required = "num-test-threads"
 max-threads = 8
 
 [[profile.default.overrides]]
-filter = '(package(pi-shell) & (test(shell::tests::) + test(git::))) + (package(pi-vcs) & test(process_limit::))'
+filter = '(package(pi-shell) & (test(shell::tests::) + test(git::) + test(session::tests::process_boundary))) + (package(pi-vcs) & test(process_limit::))'
 test-group = "systemd-user-manager"
 
 [[profile.ci.overrides]]
-filter = '(package(pi-shell) & (test(shell::tests::) + test(git::))) + (package(pi-vcs) & test(process_limit::))'
+filter = '(package(pi-shell) & (test(shell::tests::) + test(git::) + test(session::tests::process_boundary))) + (package(pi-vcs) & test(process_limit::))'
 test-group = "systemd-user-manager"

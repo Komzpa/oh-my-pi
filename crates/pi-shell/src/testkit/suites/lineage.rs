@@ -80,7 +80,8 @@ fn drive(
 	}
 }
 
-const LABELED: Lineage = Lineage { label: LABEL, detached: false };
+const LABELED: Lineage =
+	Lineage { label: LABEL, detached: false, resource_scope: 0 };
 
 #[test]
 fn the_whole_subshell_tree_and_its_externals_carry_the_lineage() {
@@ -135,7 +136,7 @@ fn a_signal_to_the_caller_reaches_its_tree() {
 #[test]
 fn cancel_spares_a_detached_tree() {
 	let mut r = rig(&Arc::default());
-	let detached = Lineage { label: LABEL, detached: true };
+	let detached = Lineage { label: LABEL, detached: true, ..Lineage::default() };
 	let status = drive(&mut r, "wrap sh -c 'while :; do :; done'", detached, |shell, n| {
 		if n == 5 {
 			shell.control().cancel(Signal::Term);
