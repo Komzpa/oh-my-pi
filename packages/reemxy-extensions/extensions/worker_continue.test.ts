@@ -202,3 +202,23 @@ describe("worker continuation gate", async () => {
 		expect(await call({ type: "result" })).toMatchObject({ block: true });
 	});
 });
+
+describe("continue reminder wording", () => {
+	test("keeps the whole brief as the goal and never asks for a single step", async () => {
+		const template = await Bun.file(new URL("./worker-continue.md", import.meta.url)).text();
+		for (const flags of [
+			{ partial: true, blocker: false },
+			{ partial: false, blocker: true },
+			{ partial: false, blocker: false },
+		]) {
+			const text = prompt.render(template, flags).trim();
+			expect(text).not.toMatch(/\b(?:next|one) concrete (?:step|alternative)\b/i);
+			expect(text).not.toMatch(/\bone (?:more )?step\b/i);
+		}
+		const partial = prompt.render(template, { partial: true, blocker: false });
+		expect(partial).toContain("Keep working through all remaining requirements");
+		expect(partial).toContain("do not shrink it");
+		const blocker = prompt.render(template, { partial: false, blocker: true });
+		expect(blocker).toContain("worked every part of the brief the blocker does not touch");
+	});
+});
