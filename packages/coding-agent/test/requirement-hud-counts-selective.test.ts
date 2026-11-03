@@ -67,3 +67,26 @@ it("skips malformed newest ledgers and stops before decoding superseded snapshot
 	expect(counts).toEqual(getRequirementHudCounts(manager));
 	expect(reads).toBe(2);
 });
+
+// Worker-homed TUI sessions expose history reads through a session handle.
+it("refreshes HUD counts from a session handle without selective history methods", () => {
+	const entries: SessionEntry[] = [];
+	const manager = {
+		getLeafId: () => null,
+		getEntries: () => entries,
+		getBranch: () => entries,
+	};
+	expect(getRequirementHudCounts(manager)).toEqual({ total: 0, passed: 0, failed: 0, open: 0 });
+	entries.push({
+		type: "custom",
+		id: "ledger",
+		parentId: null,
+		timestamp: "2026-11-03T00:00:00Z",
+		customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+		data: {
+			version: 1,
+			requirements: createRequirementCandidates([], ["handle requirement"], "2026-11-03T00:00:00Z"),
+		},
+	});
+	expect(getRequirementHudCounts(manager)).toEqual({ total: 1, passed: 0, failed: 0, open: 1 });
+});

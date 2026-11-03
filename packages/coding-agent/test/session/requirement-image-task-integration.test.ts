@@ -262,7 +262,7 @@ async function dispatch(
 			const childSession = childResult.id ? AgentRegistry.global().get(childResult.id)?.session : undefined;
 			if (!childSession) throw new Error(`No accepted child session: ${JSON.stringify(childResult)}`);
 			// Ignore cancelled speculative model requests; inspect returned children.
-			const call = child.calls.find(call => call.options?.sessionId === childSession.sessionId);
+			const call = child.calls.find(call => call.options?.sessionId === childSession.sessionManager.getSessionId());
 			expect(call).toBeDefined();
 			const firstUser = childSession.agent.state.messages.find(message => message.role === "user");
 			if (!firstUser || firstUser.role !== "user") throw new Error("No child user prompt");

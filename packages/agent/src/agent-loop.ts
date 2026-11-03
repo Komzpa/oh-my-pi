@@ -1611,14 +1611,8 @@ async function runLoopBody(
 					await config.transformAssistantMessage?.(message, signal);
 					await admitAssistantMessage(message, publicationGate(), signal, abortReasonText);
 					currentContext.messages.push(message);
-					stream.push({
-						type: "message_start",
-						message: snapshotAssistantMessage(message),
-					});
-					stream.push({
-						type: "message_end",
-						message: snapshotAssistantMessage(message),
-					});
+					stream.push({ type: "message_start", message: snapshotAssistantMessage(message) });
+					stream.push({ type: "message_end", message: snapshotAssistantMessage(message) });
 				}
 				newMessages.push(message);
 
@@ -2500,15 +2494,9 @@ async function streamAssistantResponse(
 						await appendCursorToolResults();
 						finalMessagePublished = true;
 						if (!addedPartial) {
-							stream.push({
-								type: "message_start",
-								message: snapshotAssistantMessage(finalMessage),
-							});
+							stream.push({ type: "message_start", message: snapshotAssistantMessage(finalMessage) });
 						}
-						stream.push({
-							type: "message_end",
-							message: snapshotAssistantMessage(finalMessage),
-						});
+						stream.push({ type: "message_end", message: snapshotAssistantMessage(finalMessage) });
 						await finishChat(finalMessage);
 						speculationSettled = true;
 						providerStreamSettled = true;

@@ -2,15 +2,17 @@ import { latestRequirementsFromSession } from "../../session/requirements-branch
 import type { SessionManager } from "../../session/session-manager";
 import { countRequirements, type RequirementCounts } from "../../tools/requirements-ledger";
 
+type RequirementHudSessionManager = Pick<SessionManager, "getLeafId" | "getEntries" | "getBranch">;
+
 const requirementHudCountsCache = new WeakMap<
-	SessionManager,
+	RequirementHudSessionManager,
 	{ leafId: string | null; entryCount: number; counts: RequirementCounts }
 >();
 
 /** Reuse counts until the session branch or entry count changes, without copying entries. */
-export function getRequirementHudCounts(sessionManager: SessionManager): RequirementCounts {
+export function getRequirementHudCounts(sessionManager: RequirementHudSessionManager): RequirementCounts {
 	const leafId = sessionManager.getLeafId();
-	const counter = sessionManager as SessionManager & { getEntryCount?: () => number };
+	const counter = sessionManager as RequirementHudSessionManager & { getEntryCount?: () => number };
 	const entryCount = counter.getEntryCount?.() ?? sessionManager.getEntries().length;
 	const cached = requirementHudCountsCache.get(sessionManager);
 	if (cached?.leafId === leafId && cached.entryCount === entryCount) return cached.counts;
