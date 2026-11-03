@@ -618,15 +618,6 @@ export const cfgTaskDisabledAgents = register({
 	default: [] as string[],
 });
 
-const EMPTY_MODEL_ROLE_POOLS: Record<string, Record<string, number>> = {};
-
-/** Relative draw weights for configured role members; audit filtering preserves them. */
-export const cfgAuditModelRolePools = register({
-	id: "modelRolePools",
-	type: "record",
-	default: EMPTY_MODEL_ROLE_POOLS,
-});
-
 export const cfgTaskAgentModelOverrides = register({
 	id: "task.agentModelOverrides",
 	protocolDefault: ["rpc", "acp"],
