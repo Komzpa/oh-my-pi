@@ -94,7 +94,9 @@ async function fixture() {
 			enableIrc: false,
 		});
 		expect(result.exitCode, result.stderr).toBe(0);
-		return { ...result, entries: AgentRegistry.global().get(id)?.session?.sessionManager.getEntries() ?? [] };
+		const session = AgentRegistry.global().get(id)?.session;
+		if (!(session instanceof AgentSession)) throw new Error(`expected an in-process session for ${id}`);
+		return { ...result, entries: session.sessionManager.getEntries() };
 	};
 	return { cwd, settings, models, parent, apply, run };
 }
