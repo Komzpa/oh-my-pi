@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { PythonKernel } from "@oh-my-pi/pi-coding-agent/eval/py/kernel";
 import { ToolResourceScope } from "@oh-my-pi/pi-natives";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { ensureSubagentRuntimeDir, TempDir } from "@oh-my-pi/pi-utils";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -13,7 +13,11 @@ describe.skipIf(Bun.env.PI_PYTHON_INTEGRATION !== "1")("Python kernel resource s
 	it("retains a bounded kernel across cells and closes its scope once on shutdown", async () => {
 		using tempDir = TempDir.createSync("@python-kernel-scope-");
 		const close = vi.spyOn(ToolResourceScope.prototype, "close");
+		const wrap = vi.spyOn(ToolResourceScope.prototype, "wrapCommandAsync");
 		const kernel = await PythonKernel.start({ cwd: tempDir.path() });
+		const scope = wrap.mock.contexts[0];
+		expect(wrap).toHaveBeenCalledTimes(1);
+		const closes = () => close.mock.contexts.filter(context => context === scope).length;
 		let output = "";
 		try {
 			await kernel.execute(
@@ -45,13 +49,51 @@ describe.skipIf(Bun.env.PI_PYTHON_INTEGRATION !== "1")("Python kernel resource s
 			});
 			expect(result.status).toBe("ok");
 			expect(output.trim()).toBe("42");
-			expect(close).not.toHaveBeenCalled();
+			expect(closes()).toBe(0);
 		} finally {
 			await kernel.shutdown();
 		}
 		await kernel.shutdown();
-		expect(close).toHaveBeenCalledTimes(1);
+		expect(closes()).toBe(1);
 	});
+
+	it("keeps masked kernels sharing a cwd in separate private runtime directories", async () => {
+		using tempDir = TempDir.createSync("@python-runtime-siblings-");
+		const ids = [crypto.randomUUID(), crypto.randomUUID()];
+		const runtimeDirs = ids.map(id => ensureSubagentRuntimeDir(id));
+		const first = await PythonKernel.start({ cwd: tempDir.path(), maskDesktopSession: true, sessionId: ids[0] });
+		let second: PythonKernel | undefined;
+		try {
+			second = await PythonKernel.start({ cwd: tempDir.path(), maskDesktopSession: true, sessionId: ids[1] });
+			let firstOutput = "";
+			const written = await first.execute(
+				"import os,pathlib\nroot=pathlib.Path(os.environ['XDG_RUNTIME_DIR'])\n(root/'owned-probe').write_text('first')\nprint(root)",
+				{
+					onChunk: text => {
+						firstOutput += text;
+					},
+				},
+			);
+			expect(written.status).toBe("ok");
+			let secondOutput = "";
+			const read = await second.execute(
+				"import os,pathlib\nroot=pathlib.Path(os.environ['XDG_RUNTIME_DIR'])\nprint(root)\nprint((root/'owned-probe').exists())\nprint(oct(root.stat().st_mode & 0o777))",
+				{
+					onChunk: text => {
+						secondOutput += text;
+					},
+				},
+			);
+			expect(read.status).toBe("ok");
+			expect(firstOutput.trim()).toBe(runtimeDirs[0]);
+			expect(secondOutput.trim().split("\n")).toEqual([runtimeDirs[1], "False", "0o700"]);
+			expect(runtimeDirs[0]).not.toBe(runtimeDirs[1]);
+		} finally {
+			await first.shutdown();
+			await second?.shutdown();
+			await Promise.all(runtimeDirs.map(dir => fs.rm(dir, { recursive: true, force: true })));
+		}
+	}, 60_000);
 
 	it("closes the owned scope when the Python runner exits unexpectedly", async () => {
 		using tempDir = TempDir.createSync("@python-kernel-scope-exit-");

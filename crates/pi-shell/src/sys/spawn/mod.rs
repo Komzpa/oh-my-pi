@@ -296,6 +296,20 @@ impl NativeSpawner {
 		crate::sys::pump::orphan::poll(cx);
 	}
 
+	/// Whether the engine must open redirections before retrying a text
+	/// executable. Wrappers must ask about the payload, not their launcher.
+	pub(crate) fn needs_script_redirection(spec: &SpawnSpec<'_>) -> bool {
+		#[cfg(unix)]
+		{
+			spec.redirs.is_some() && unix::may_need_script_fallback(spec.path, spec.cwd)
+		}
+		#[cfg(not(unix))]
+		{
+			let _ = spec;
+			false
+		}
+	}
+
 	/// Spawn `spec`; see the module docs for the process lifecycle.
 	///
 	/// # Errors
