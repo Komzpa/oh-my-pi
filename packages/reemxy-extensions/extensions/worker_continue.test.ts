@@ -69,6 +69,7 @@ describe("worker continuation gate", async () => {
 			"outside authority: deploy needs lead",
 			"ownership conflict: file belongs to other worker",
 			"owner decision needed: choose API",
+			"BLOCKED: awaiting lead answer: keep 36 ids or the 35 in verdicts.json?",
 		])
 			expect(await call({ error: `Partial. ${blocker}` }), blocker).toBeUndefined();
 		expect(await call({ data: "Incomplete; no external blocker." })).toMatchObject({ block: true });
