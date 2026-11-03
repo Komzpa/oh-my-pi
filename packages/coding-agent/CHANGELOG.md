@@ -5,6 +5,8 @@
 ## [18.17.0] - 2026-11-06
 ### Fixed
 
+- Completed TODO rows keep their verified audit status after leaving the active plan ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 - UI audits now require distinct before/after screenshots and report unbuildable comparison bases ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
 
 - UI audits now inspect the changed region at narrow widths and block TODO closure on unhandled collateral defects ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).

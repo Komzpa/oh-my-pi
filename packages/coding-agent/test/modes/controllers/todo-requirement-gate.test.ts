@@ -95,6 +95,7 @@ describe("TodoCommandController linked-requirement gate", () => {
 
 	it("blocks /todo done while a linked requirement has no qa pass", async () => {
 		tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "pi-todo-gate-open-"));
+		await fs.writeFile(path.join(tempRoot, "artifact.txt"), "awaiting QA\n");
 		const manager = SessionManager.inMemory(tempRoot);
 		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
 			phases: [{ name: "Plan", tasks: [{ content: "Gate artifact", status: "pending" }] }],

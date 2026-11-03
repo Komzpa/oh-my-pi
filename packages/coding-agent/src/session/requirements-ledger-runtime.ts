@@ -66,14 +66,6 @@ function extractRequirementImages(images: readonly ImageContent[] | undefined): 
 	});
 }
 
-/** Rows whose every Todo entry is completed: a passing receipt on them survives checkout movement. */
-function completedRowSet(phases: readonly TodoPhase[]): Set<string> {
-	const byRow = new Map<string, boolean>();
-	for (const task of phases.flatMap(phase => phase.tasks))
-		byRow.set(task.content, (byRow.get(task.content) ?? true) && task.status === "completed");
-	return new Set([...byRow].filter(([, done]) => done).map(([row]) => row));
-}
-
 /** Payload shape the task tool forwards to the subagent's first message. */
 export interface RequirementAuditImagePayload {
 	type: "image";
@@ -91,6 +83,7 @@ import { discoverAgents, getAgent } from "../task/discovery";
 import {
 	bindRequirementRowArtifact,
 	getLatestTodoPhasesFromEntries,
+	getCompletedTodoRows,
 	getRequirementRowArtifact,
 	getTodoRowChanges,
 	getTodoActionRows,
@@ -1115,7 +1108,7 @@ export class RequirementsLedgerRuntime {
 				lastChange: changes.get(row),
 			}),
 			getPersistedRequirementAuditRejections(branch, this.#sessionId()),
-			completedRowSet(phases),
+			getCompletedTodoRows(branch),
 			new Set(
 				phases.flatMap(phase => phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content)),
 			),
