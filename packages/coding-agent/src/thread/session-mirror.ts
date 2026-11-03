@@ -239,11 +239,6 @@ export interface SessionAbortOptions {
  * event-stream watch toggle.
  */
 export type SessionHostProtocol = {
-	beginRestartDrain: RpcMethod<[], RestartDrainLease>;
-	getRestartBranchEntries: RpcMethod<[], SessionEntry[]>;
-	sendRestartNotice: RpcMethod<[message: Omit<CustomMessage, "role" | "timestamp">], void>;
-	flushRestartJournal: RpcMethod<[], void>;
-
 	prompt: RpcMethod<[text: string, options?: PromptOptions], boolean>;
 	steer: RpcMethod<[text: string, images?: ImageContent[], options?: SteerOptions], void>;
 	abort: RpcMethod<[options?: SessionAbortOptions], void>;
@@ -274,6 +269,11 @@ export type SessionHostProtocol = {
 		],
 		void
 	>;
+	beginRestartDrain: RpcMethod<[], RestartDrainLease>;
+	getRestartBranchEntries: RpcMethod<[], SessionEntry[]>;
+	sendRestartNotice: RpcMethod<[message: Omit<CustomMessage, "role" | "timestamp">], void>;
+	flushRestartJournal: RpcMethod<[], void>;
+
 	flushSession: RpcMethod<[], void>;
 	ensureOnDisk: RpcMethod<[], void>;
 	getArtifactPath: RpcMethod<[id: string], string | null>;
