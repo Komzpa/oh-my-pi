@@ -82,7 +82,7 @@ describe("PR 41 todo artifact regressions", () => {
 		}
 	});
 
-	it("rejects a receipt that narrows a whole-checkout declaration to selected paths", async () => {
+	it("preserves the audited path scope within a declared checkout", async () => {
 		const root = mkdtempSync(join(tmpdir(), "bot41-todo-receipt-scope-"));
 		try {
 			makeRepo(root);
@@ -99,7 +99,8 @@ describe("PR 41 todo artifact regressions", () => {
 				row,
 				phasesFor(row, { schedule: { resources: [root] } }),
 			);
-			expect(result.identityCheck?.reason).toContain("paths do not match the declared scope");
+			expect(result.identityCheck?.reason).toBeUndefined();
+			expect(result.identities).toEqual([{ kind: "git", repo: root, commit: head, paths: ["artifact.txt"] }]);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

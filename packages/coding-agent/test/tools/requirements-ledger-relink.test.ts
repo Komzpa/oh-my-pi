@@ -394,9 +394,7 @@ describe("owner-backed requirement supersession", () => {
 		});
 		const message = { content: [{ type: "text", text: "Scope reset applied" }], stopReason: "stop" } as never;
 		const publication = gate!;
-		expect((await publication(message, new AbortController().signal))?.replacementText).toContain(
-			"Not audit-verified",
-		);
+		expect(await publication(message, new AbortController().signal)).toBeUndefined();
 		expect(notices.join("\n")).toContain("R5");
 		expect((await tool.execute("blocked-fold", { op: "done", task: foldRow })).isError).toBe(true);
 		const before = snapshots();

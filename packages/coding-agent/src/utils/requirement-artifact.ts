@@ -889,3 +889,80 @@ export async function currentRequirementIdentity(
 		return { error: err instanceof Error ? err.message : String(err) };
 	}
 }
+
+/** File/path facts only: no inference from requirement or auditor prose. */
+export function isRenderedRequirementPath(file: string): boolean {
+	return (
+		/\.(?:tsx|jsx|html?|vue|svelte|css|scss|sass|less|svg|qml|xaml)$/i.test(file) ||
+		/(?:^|\/)(?:components|views|pages|templates|ui)\//.test(file)
+	);
+}
+
+/** Compare the artifact to its default-branch merge base, or its parent in a standalone repo. */
+export async function requirementTouchesRenderedFiles(identities: readonly RequirementIdentity[]): Promise<boolean> {
+	for (const identity of identities) {
+		if (identity.kind !== "git") continue;
+		const repo = vcs.git(identity.repo);
+		if (!repo) continue;
+		// A tree pin has no parents; recover its current commit only when the tree matches exactly.
+		let revision = identity.commit;
+		const head = await repo.headSha();
+		if (head && (await repo.resolveRef(`${head}^{tree}`)) === revision) revision = head;
+		const defaultBranch = await repo.defaultBranch();
+		let base = defaultBranch ? await repo.mergeBase(defaultBranch, revision) : await repo.resolveRef(`${revision}^`);
+		if (base === revision) base = await repo.resolveRef(`${revision}^`);
+		const files = base
+			? await repo.changedFiles({ base, head: revision, files: identity.paths })
+			: await repo.lsTree(identity.commit, identity.paths ?? []);
+		if (files.some(isRenderedRequirementPath)) return true;
+	}
+	return false;
+}
+
+/** Paths named in evidence, checked on disk before becoming a screenshot signal. */
+export async function requirementEvidenceScreenshots(evidence: string, roots: readonly string[]): Promise<string[]> {
+	const candidates = new Set<string>();
+	for (const match of evidence.matchAll(
+		/`([^`]+\.(?:png|jpe?g|webp|gif))`|\]\(([^)]+\.(?:png|jpe?g|webp|gif))\)|([^\s`"'<>()[\],;]+\.(?:png|jpe?g|webp|gif))/gi,
+	)) {
+		const file = match[1] ?? match[2] ?? match[3];
+		if (file) candidates.add(file);
+	}
+	const found: string[] = [];
+	for (const file of candidates) {
+		for (const root of roots) {
+			const resolved = path.resolve(root, file);
+			if (await Bun.file(resolved).exists()) {
+				found.push(resolved);
+				break;
+			}
+		}
+	}
+	return found;
+}
+
+/** A tool result carrying image content proves an image read/capture in this worker's history. */
+export async function requirementAuditReadImage(sessionFile: string): Promise<boolean> {
+	try {
+		const entries: unknown[] = Bun.JSONL.parse(await Bun.file(sessionFile).text());
+		return entries.some(entry => {
+			if (typeof entry !== "object" || entry === null || !("message" in entry)) return false;
+			const message = entry.message;
+			if (
+				typeof message !== "object" ||
+				message === null ||
+				!("role" in message) ||
+				message.role !== "toolResult" ||
+				!("content" in message) ||
+				!Array.isArray(message.content)
+			)
+				return false;
+			return message.content.some(
+				(block: unknown) =>
+					typeof block === "object" && block !== null && "type" in block && block.type === "image",
+			);
+		});
+	} catch {
+		return false;
+	}
+}
