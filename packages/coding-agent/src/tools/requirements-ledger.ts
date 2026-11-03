@@ -1034,6 +1034,13 @@ export async function evaluateRequirementDoneGate(
 	rows: readonly string[],
 	getArtifact: (row: string, receipt?: string) => Promise<RequirementGateArtifact>,
 	rejections: ReadonlyMap<string, string> = new Map(),
+	/**
+	 * Rows already completed and not being closed by this check (turn-end / publication
+	 * sweeps). A still-authentic passing receipt on such a row stays a pass when the
+	 * checkout moves later; staleness is judged only when a row is being closed or
+	 * re-closed, so these sweeps leave that out. Source changes still re-evaluate it.
+	 */
+	settledRows: ReadonlySet<string> = new Set(),
 ): Promise<RequirementDoneGateIssue[]> {
 	const targets = new Set(rows);
 	const artifacts = new Map<string, Promise<RequirementGateArtifact>>();
@@ -1073,6 +1080,7 @@ export async function evaluateRequirementDoneGate(
 			const sourceSnapshotIssue =
 				verdict?.sourceSnapshot !== undefined &&
 				verdict.sourceSnapshot !== requirementSourceSnapshot(requirements, requirement.id);
+			if (settledRows.has(row) && verdict?.status === "pass" && !sourceIssue && !sourceSnapshotIssue) continue;
 			const receipt =
 				!sourceIssue && !sourceSnapshotIssue && verdict?.status === "pass" ? verdict.artifact : undefined;
 			const cacheKey = JSON.stringify([row, receipt]);
