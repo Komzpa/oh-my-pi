@@ -1482,16 +1482,25 @@ async fn shebangless_background_script_with_fifo_stdin() {
 		("./s < input & wait; echo status=$?", "hi\ndata\nstatus=0\n"),
 		("./s & wait; echo status=$?", "hi\nstatus=0\n"),
 		("mkfifo f; printf 'data\\n' > f & ./s < f; wait; echo status=$?", "hi\ndata\nstatus=0\n"),
-		(
-			"./s < f & timeout 2 sh -c \"printf 'data\\n' > f\"; wait; echo status=$?",
-			"hi\ndata\nstatus=0\n",
-		),
+		("./s < f & sh -c \"printf 'data\\n' > f\"; wait; echo status=$?", "hi\ndata\nstatus=0\n"),
 	] {
-		let (result, output) = execute_captured(format!(
-			"cd {}; {invocation}",
-			quote_arg(dir.path().to_str().expect("utf8 path")),
-		))
-		.await;
+		// Bound the complete exchange: a writer-only timeout can expire during
+		// scope startup and strand the reader even when redirection is async.
+		let (tx, rx) = flume::unbounded();
+		let result = execute_shell(
+			ShellExecuteOptions {
+				command: format!(
+					"cd {}; {invocation}",
+					quote_arg(dir.path().to_str().expect("utf8 path"))
+				),
+				..Default::default()
+			},
+			Some(tx),
+			CancelToken::new(Some(10_000)),
+		)
+		.await
+		.expect("bounded FIFO execution");
+		let output: String = rx.try_iter().collect();
 		assert_eq!(result.exit_code, Some(0), "{invocation}: {output}");
 		assert_eq!(output, expected, "{invocation}");
 	}
