@@ -1981,23 +1981,30 @@ test("no user-absent wake while workers run or while the lead is busy", async ()
 	}
 });
 
-test("a lead asking Do/Leave/Other in chat is refused once at stop and at wait, then a link reply passes", async () => {
-	const h = await noticeHarness([], Date.now() + 3600_000);
-	const say = async (text: string) => {
-		await h.handlers.get("message_update")!({ message: { role: "assistant", content: [{ type: "text", text }] } }, h.ctx);
-		await h.handlers.get("message_end")!({ message: { role: "assistant", content: [{ type: "text", text }] } }, h.ctx);
-	};
+test("idle stop and wait require a recorded decision and live page without classifying reply text", async () => {
+	const phases = [
+		{ name: "Review", tasks: [{ content: "Decision", status: "blocked", schedule: { review: "user" } }] },
+	];
+	const h = await noticeHarness(phases, Date.now() + 3600_000);
+	h.ctx.getTodoPhases = () => phases;
+	const server = Bun.serve({ port: 0, fetch: () => new Response("card") });
 	try {
-		await say("Предлагаю одну заливку для всех строк.\n\nDo / Leave / Other?");
 		const stop = await h.handlers.get("session_stop")!({}, h.ctx);
 		expect(stop?.decision).toBe("block");
-		expect(stop.reason).toContain("user-shadow");
-		expect(stop.reason).toContain("Do / Leave / Other?");
-		// The same reply is refused once only, so the lead is never wedged.
+		expect(stop.reason).toContain("missing review page");
 		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).not.toBe(true);
-		await say("Пересобрал вопрос: http://nucat:8767/review/row-shade-2026-11-03/ — по умолчанию одна заливка, иду дальше.");
+		phases[0].tasks[0].schedule.reviewPage = `${server.url}review/decision`;
 		expect((await h.handlers.get("session_stop")!({}, h.ctx))?.decision).not.toBe("block");
-		await say("Air handler first, or chiller? Do / Leave");
+		await h.handlers.get("message_update")!(
+			{ message: { role: "assistant", content: [{ type: "text", text: "Do / Leave / Other?" }] } },
+			h.ctx,
+		);
+		expect((await h.handlers.get("session_stop")!({}, h.ctx))?.decision).not.toBe("block");
+		delete phases[0].tasks[0].schedule.reviewPage;
+		phases[0].tasks[0].content = "Another decision";
 		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
-	} finally { h.shutdown(); }
+	} finally {
+		await server.stop(true);
+		h.shutdown();
+	}
 });
