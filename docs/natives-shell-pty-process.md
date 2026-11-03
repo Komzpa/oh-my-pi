@@ -386,7 +386,7 @@ Layout behavior:
 Source: `Komzpa/oh-my-pi#88`, `topic/natives-process` at
 `6441d33945aaa0f49bcbc921dd9a05e7deac2c3e` (15 commits), old base
 `594670d6b0b6d5f8080693aad34dedd38b5ebd94`. Target upstream main:
-`a60ebbd60706318ac1fbb00136ee8774fe9294f3`, including engine replacement
+`90697feb527386992d7c534e3ffe80e5b2f78bb4`, including engine replacement
 `44711a78c1b`. User decision: “A: port the process containment onto upstream's
 new shell engine”. No installed binary or updater checkout is changed.
 
@@ -396,7 +396,7 @@ yield change is excluded. The deleted Brush adapters are replaced at
 `PiHost::spawn` and `Launcher::launch`, the new engine's central external
 spawn owner. Manager setup runs on the blocking pool before descriptor routing
 and spawn; cancelling its future cannot launch abandoned user work. Payload
-script redirections retain upstream's asynchronous FIFO fallback.
+script execution retains the engine's ENOEXEC fallback and asynchronous FIFO redirections.
 `Lineage.resource_scope` follows delayed jobs and tool-created subshells;
 segments share one boundary. Explicitly detached nohup jobs retain upstream's
 intentional exemption. The default cap is 16,384 tasks, not the stale 500 in
@@ -410,6 +410,7 @@ module names and the explicit `crates/` path. “Kept” means engine-independen
 | --- | --- | --- |
 | Kernel task cap, readback and invalid override fail closed | Kept backend; reimplemented spawn wiring | `pi-vcs process_limit::tests::kernel_cap_contains_forks_preserves_manager_operations_and_keeps_neighbor_independent`, `invalid_override_fails_closed_before_any_command_runs` |
 | Ordinary externals, exec, pipelines, substitution, timeout, xargs and env all use the same call boundary | Reimplemented | `pi-shell session::tests::process_boundary_contains_external_exec_pipeline_and_callout` |
+| Shebangless executable text retains Bash syntax, arguments, environment and FIFO progress | Reimplemented engine fallback before the wrapper hides ENOEXEC | `pi-shell shell::tests::builtins::executable_text_without_shebang_preserves_arguments_and_exit_status`, `shebangless_background_script_with_fifo_stdin` |
 | Kernel rejection becomes an actionable error after output cleanup | Reimplemented | `pi-shell session::tests::process_boundary_caps_forks_and_reports_the_kernel_rejection` |
 | Background loops launch later children in their original call boundary | Reimplemented | `pi-shell session::tests::process_boundary_delayed_background_job_keeps_its_original_call` |
 | Detached nohup work bypasses per-call scope teardown | Reimplemented using upstream detached lineage | `pi-shell session::tests::process_boundary_contains_external_exec_pipeline_and_callout` |
@@ -444,7 +445,7 @@ module names and the explicit `crates/` path. “Kept” means engine-independen
 | Brush dependency, deleted builtin adapters and Bazel brush lock refresh | Dropped obsolete dependency/build glue | Cargo checks and native build on this branch |
 | Old historical validation receipt | Retained as historical evidence only | New verification results belong to this port's PR Testing section |
 
-Upstream replacement owners for dropped adapters, at `a60ebbd6070`:
+Upstream replacement owners for dropped adapters, at `90697feb527`:
 
 - Byte-valued spawn arguments: `crates/pi-shell/src/bash/host.rs:299`;
   exported environment: `crates/pi-shell/src/bash/host.rs:643`; stored scalar,

@@ -983,6 +983,20 @@ mod tests {
 			assert_eq!(captured.outcome.status, 0, "{command}: {}", captured.stderr);
 			assert!(captured.stdout.contains("omp-tool-call-"), "{command}: {}", captured.stdout);
 		}
+		use std::os::unix::fs::PermissionsExt as _;
+		let dir = tempfile::tempdir().unwrap();
+		let script = dir.path().join("scoped-script");
+		std::fs::write(&script, "args=(/proc/self/cgroup); /bin/cat \"${args[0]}\"\n").unwrap();
+		std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+		let scripted = capture(&mut s, RunOptions {
+			process_limit: Some(Arc::clone(&limit)),
+			cwd: Some(BString::from(dir.path().as_os_str().as_encoded_bytes())),
+			..RunOptions::new("./scoped-script")
+		})
+		.await;
+		assert_eq!(scripted.outcome.status, 0, "{}", scripted.stderr);
+		assert!(scripted.stdout.contains("omp-tool-call-"), "{}", scripted.stdout);
+
 		let detached = capture(&mut s, RunOptions {
 			process_limit: Some(limit),
 			..RunOptions::new("nohup /bin/cat /proc/self/cgroup")
@@ -1051,8 +1065,9 @@ mod tests {
 		let dir = tempfile::tempdir().unwrap();
 		let pid_path = dir.path().join("pid");
 		let traps = dir.path().join("traps");
-		let mut neighbor = std::process::Command::new("sleep")
+		let mut neighbor = tokio::process::Command::new("sleep")
 			.arg("20")
+			.kill_on_drop(true)
 			.spawn()
 			.unwrap();
 		let command = format!(
@@ -1065,11 +1080,21 @@ mod tests {
 			let cancel = cancel.clone();
 			let pid_path = pid_path.clone();
 			tokio::spawn(async move {
-				let deadline = Instant::now() + Duration::from_secs(5);
-				while !pid_path.exists() && Instant::now() < deadline {
+				let deadline = Instant::now() + Duration::from_secs(15);
+				let pid = loop {
+					if let Some(pid) = std::fs::read_to_string(&pid_path)
+						.ok()
+						.and_then(|text| text.trim().parse::<i32>().ok())
+					{
+						break Some(pid);
+					}
+					if Instant::now() >= deadline {
+						break None;
+					}
 					tokio::time::sleep(Duration::from_millis(10)).await;
-				}
+				};
 				cancel.cancel();
+				pid
 			})
 		};
 		let result = s
@@ -1083,8 +1108,10 @@ mod tests {
 			)
 			.await
 			.unwrap();
-		stopper.await.unwrap();
-		let pid: i32 = std::fs::read_to_string(pid_path).unwrap().parse().unwrap();
+		let pid = stopper
+			.await
+			.unwrap()
+			.expect("escaped child must be ready before cancellation");
 		let running = || {
 			std::fs::read_to_string(format!("/proc/{pid}/stat"))
 				.is_ok_and(|s| !s.split_once(") ").unwrap().1.starts_with('Z'))
@@ -1101,8 +1128,7 @@ mod tests {
 			}
 		}
 		let neighbor_survived = neighbor.try_wait().unwrap().is_none();
-		neighbor.kill().unwrap();
-		neighbor.wait().unwrap();
+		neighbor.kill().await.unwrap();
 		assert!(result.cancelled);
 		assert!(!escaped_survived, "escaped process {pid} survived cancellation");
 		assert!(neighbor_survived, "unrelated sibling was killed");
