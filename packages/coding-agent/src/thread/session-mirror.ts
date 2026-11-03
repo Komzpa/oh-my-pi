@@ -306,14 +306,6 @@ export type SessionHostProtocol = {
  * local session or its mirror, and routes commands to the home thread).
  */
 export type SessionBridgeProtocol = {
-	beginRestartDrain: RpcMethod<[session: AgentSessionHandle], RestartDrainLease>;
-	getRestartBranchEntries: RpcMethod<[session: AgentSessionHandle], SessionEntry[]>;
-	sendRestartNotice: RpcMethod<
-		[session: AgentSessionHandle, message: Omit<CustomMessage, "role" | "timestamp">],
-		void
-	>;
-	flushRestartJournal: RpcMethod<[session: AgentSessionHandle], void>;
-
 	opened: RpcMethod<[opened: SessionOpened], void>;
 	patch: RpcMethod<[key: string, patch: Partial<SessionMirrorState>], void>;
 	messages: RpcMethod<[key: string, delta: SessionMessagesDelta], void>;
@@ -342,6 +334,14 @@ export type SessionBridgeProtocol = {
 	steer: RpcMethod<[session: AgentSessionHandle, text: string, images?: ImageContent[], options?: SteerOptions], void>;
 	abort: RpcMethod<[session: AgentSessionHandle, options?: SessionAbortOptions], void>;
 	dispose: RpcMethod<[session: AgentSessionHandle, options?: AgentSessionDisposeOptions], void>;
+	beginRestartDrain: RpcMethod<[session: AgentSessionHandle], RestartDrainLease>;
+	getRestartBranchEntries: RpcMethod<[session: AgentSessionHandle], SessionEntry[]>;
+	sendRestartNotice: RpcMethod<
+		[session: AgentSessionHandle, message: Omit<CustomMessage, "role" | "timestamp">],
+		void
+	>;
+	flushRestartJournal: RpcMethod<[session: AgentSessionHandle], void>;
+
 	deliverIrcMessage: RpcMethod<[session: AgentSessionHandle, msg: IrcMessage], "injected" | "woken">;
 	waitForIrcReplies: RpcMethod<[session: AgentSessionHandle], void>;
 	setWorkPoolYieldItems: RpcMethod<[session: AgentSessionHandle, items: readonly WorkPoolYieldItem[]], void>;
