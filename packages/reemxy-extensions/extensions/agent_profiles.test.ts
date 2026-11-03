@@ -69,16 +69,19 @@ const LEVELS: Record<string, string> = {
 };
 
 describe("Reemxy extension agent model chains", () => {
-	test("all 19 shared preambles permit observed detail corrections while retaining stop and receipt rules", () => {
+	test("all 19 shared preambles escalate brief mismatches to the lead and follow the answer", () => {
 		const profiles = extensionProfiles().filter(profile =>
 			profile.systemPrompt.includes("Before starting, verify the brief gives the goal"),
 		);
 		expect(profiles).toHaveLength(19);
 		const line =
-			"Stop and state exactly what is missing or contradictory if the goal is missing or the task is impossible, unsafe, unauthorized, or outside the write roots; do not guess. If a detail differs (a count, path spelling, branch name, or already-done subpart), note the difference in one line of the receipt and continue with what is actually there.";
+			"ask your lead before acting on it: send exactly one message with `write` to `agent://Main`";
 		for (const profile of profiles) {
 			expect(profile.systemPrompt, profile.name).toContain(line);
 			expect(profile.systemPrompt, profile.name).toContain("NOT STARTED: <reason>");
+			expect(profile.systemPrompt, profile.name).toContain("follow it exactly and quote it in your receipt");
+			expect(profile.systemPrompt, profile.name).toContain("BLOCKED: awaiting lead answer: <question>");
+			expect(profile.systemPrompt, profile.name).toContain("Never resolve the question yourself by guessing.");
 			expect(profile.systemPrompt, profile.name).toContain("Every final receipt");
 		}
 	});
