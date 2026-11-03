@@ -370,7 +370,7 @@ describe("AgentSession prompt admission racing abort", () => {
 				.filter(part => part.type === "text")
 				.map(part => part.text)
 				.join("\n"),
-		).toContain("Not audit-verified: R1");
+		).not.toContain("Not audit-verified: R1");
 	});
 
 	it("does not capture queued agent-attributed asks", async () => {

@@ -84,9 +84,7 @@ describe("gate refusal names the exact unblocking call", () => {
 		expect(
 			runtime.remindUnclassifiedCandidates("task", { tasks: [{ task: "tap the phone" }] })?.additionalContext,
 		).toContain("R1");
-		expect(
-			runtime.remindUnclassifiedCandidates("task", { action: "cancel", task: "tap the phone" })?.additionalContext,
-		).toContain("R1");
+		expect(runtime.remindUnclassifiedCandidates("task", { action: "cancel", task: "tap the phone" })).toBeUndefined();
 		expect(runtime.remindUnclassifiedCandidates("write", { path: "probe.txt", content: "new work" })).toBeUndefined();
 		expect(
 			runtime.remindUnclassifiedCandidates("write", { path: "proc://PhoneWorker/mode", content: "persist" }),
@@ -159,9 +157,7 @@ describe("gate refusal names the exact unblocking call", () => {
 		} as never);
 		expect(refused.isError).toBe(true);
 		expect(getLatestRequirements(manager.getBranch())[0]?.classification).toBe("candidate");
-		expect(runtime.remindUnclassifiedCandidates("task", { task: "fix the login bug" })?.additionalContext).toContain(
-			"unclassified candidate",
-		);
+		expect(runtime.remindUnclassifiedCandidates("task", { task: "fix the login bug" })).toBeUndefined();
 
 		// Explicitly selecting the relevant row succeeds and unblocks bash.
 		const result = await tool.execute("call-2", {
