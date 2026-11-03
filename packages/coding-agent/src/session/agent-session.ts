@@ -2320,6 +2320,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			model: () => this.model,
 			contextFitsModel: (model, excludedMessage) => this.#maintenance.contextFitsModel(model, excludedMessage),
 			textOutputCommitted: () => this.#textOutputCommitted,
+			refreshModelSelection: () => this.refreshModelSelection?.() ?? Promise.resolve(false),
 			thinkingLevel: () => this.thinkingLevel,
 			configuredThinkingLevel: () => this.configuredThinkingLevel(),
 			setThinkingLevel: level => this.#models.setThinkingLevel(level),
@@ -2371,6 +2372,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		});
 		this.agent.prepareQueuedMessages = this.#prepareQueuedUserMessages;
 		this.#detachUsageBeforeModelCall = this.agent.addBeforeModelCallHook(async signal => {
+			await this.refreshModelSelection?.();
 			if (!cfgRetryUsageAwareFallback.get(this.settings)) return;
 			if (this.#usagePreflightReadyForNextModelCall) {
 				const checkedModel = this.#usagePreflightReadyModel;
@@ -9126,6 +9128,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// every pre-dispatch bail (generation bump from abort, disposal, usage
 		// preflight denial) exits silently, and prompt() uses the outcome to hand
 		// the typed text back to the host instead of losing it.
+		const modelSelectionGeneration = this.#promptGeneration;
+		await this.refreshModelSelection?.();
+		if (modelSelectionGeneration !== this.#promptGeneration || this.#isDisposed) return false;
 		const inFlightEpoch = this.#beginInFlight();
 		// Client ownership is reserved by #prompt before dispatch preprocessing
 		// and released when its bracket settles; callers that reach this
@@ -12047,6 +12052,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	// Model Management
 	// =========================================================================
 
+	/** Refresh a role-resolved child at a model selection boundary. Returns whether it switched. */
+	refreshModelSelection?: () => Promise<boolean>;
+
 	/**
 	 * Set model directly.
 	 * Validates that a credential source is configured (synchronously, without
@@ -12063,6 +12071,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			selector?: string;
 			thinkingLevel?: ThinkingLevel;
 			persist?: boolean;
+			reason?: string;
 		},
 	): Promise<{ switched: boolean }> {
 		return this.#models.setModel(model, role, options);

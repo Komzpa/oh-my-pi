@@ -251,10 +251,22 @@ export interface RecoveryCompactionResult {
 	historyRewritten?: boolean;
 }
 
+interface RetryModelFallbackOptions {
+	excludeProvider?: string;
+	pinFallback?: boolean;
+	preserveFailedTurn?: boolean;
+	wrapAround?: boolean;
+	/** This hop is a classifier-refusal walk, which visits each model at most once per turn. */
+	refusalWalk?: boolean;
+	/** The retry policy retries the failed model if this hop does not switch. */
+	sameModelRetryAvailable?: boolean;
+}
+
 type RequestBodyReadTimeoutRecovery = "not-applicable" | "handled-retry" | "handled-terminal";
 
 /** Capabilities borrowed from the owning AgentSession. */
 export interface TurnRecoveryHost {
+	refreshModelSelection?(): Promise<boolean>;
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;
@@ -2287,16 +2299,16 @@ export class TurnRecovery {
 	async #tryRetryModelFallback(
 		currentSelector: string,
 		failedMessage: AssistantMessage,
-		options?: {
-			excludeProvider?: string;
-			pinFallback?: boolean;
-			preserveFailedTurn?: boolean;
-			wrapAround?: boolean;
-			/** This hop is a classifier-refusal walk, which visits each model at most once per turn. */
-			refusalWalk?: boolean;
-			/** The retry policy retries the failed model if this hop does not switch. */
-			sameModelRetryAvailable?: boolean;
-		},
+		options?: RetryModelFallbackOptions,
+	): Promise<boolean> {
+		if (await this.#host.refreshModelSelection?.()) return true;
+		return this.#tryRetryModelFallbackFromChain(currentSelector, failedMessage, options);
+	}
+
+	async #tryRetryModelFallbackFromChain(
+		currentSelector: string,
+		failedMessage: AssistantMessage,
+		options?: RetryModelFallbackOptions,
 	): Promise<boolean> {
 		const ceiling = this.#host.thinkingLevelCeiling();
 		const latestAssistant = options?.preserveFailedTurn

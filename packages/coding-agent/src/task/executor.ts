@@ -169,6 +169,7 @@ import {
 	cfgDefaultThinkingLevel,
 } from "../session/settings";
 import { cfgDisabledProviders } from "../config/model-settings";
+import { getSessionModelPreset } from "../config/model-presets";
 import { getRetryFallbackRole, installRetryFallbackRole } from "../session/retry-fallback-chains";
 import {
 	cfgCompactionModelThresholdsEnabled,
@@ -293,7 +294,7 @@ function resolveSubagentRetryFallbackCandidates(
 	const candidates: SubagentRetryFallbackCandidate[] = [];
 	const seen = new Set<string>();
 	const disabledProviders = new Set(cfgDisabledProviders.get(settings));
-	for (const pattern of modelPatterns) {
+	for (const pattern of resolveConfiguredModelPatterns(modelPatterns, settings)) {
 		const resolved = resolveModelOverride([pattern], modelRegistry, settings);
 		if (!resolved.model) continue;
 		if (disabledProviders.has(resolved.model.provider)) continue;
@@ -5066,6 +5067,44 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					void sessionPromise?.then(created => created.session.dispose()).catch(() => {});
 				}
 				throw err;
+			}
+			const liveRole = options.perCallModelGrants
+				? undefined
+				: (modelRole ?? resolveExplicitModelRole(modelOverride ?? agent.model, settings));
+			if (liveRole) {
+				let preset = getSessionModelPreset(settings);
+				session.refreshModelSelection = async () => {
+					const nextPreset = getSessionModelPreset(settings);
+					if (nextPreset === preset) return false;
+					const patterns = resolveConfiguredModelPatterns(`@${liveRole}`, settings);
+					const candidates = resolveSubagentRetryFallbackCandidates(patterns, modelRegistry, settings);
+					const selected = candidates.find(candidate => modelRegistry.hasConfiguredAuth(candidate.model));
+					if (!selected) return false;
+					const role =
+						installSubagentRetryFallbackChain({
+							settings: session.settings,
+							id,
+							candidates,
+							inheritedFallbackChain:
+								patterns.length === 1
+									? (resolveSubagentInheritedRetryFallbackChain(settings, modelRegistry, liveRole) ?? [])
+									: [],
+							model: selected.model,
+							authFallbackUsed: false,
+						}) ?? subagentRetryFallbackRole(id);
+					await session.setModel(selected.model, role, {
+						persist: false,
+						reason: nextPreset
+							? `Session model preset "${nextPreset}" applied`
+							: `Session model preset "${preset}" cleared`,
+					});
+					const resolved = resolveModelOverride([selected.selector], modelRegistry, settings);
+					if (resolved.explicitThinkingLevel && resolved.thinkingLevel !== undefined) {
+						session.setThinkingLevel(resolved.thinkingLevel);
+					}
+					preset = nextPreset;
+					return true;
+				};
 			}
 			mcpFollower?.bind(session);
 			// The SDK records a new session's initial model as the default role.

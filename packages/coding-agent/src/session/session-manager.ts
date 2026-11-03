@@ -3654,6 +3654,20 @@ export class SessionManager {
 		return entry.id;
 	}
 
+	/** Record a preset-driven selection without extending the retry-fallback argument contract. */
+	appendModelSelectionChange(model: string, role: string, reason: string): string {
+		const entry: ModelChangeEntry = {
+			type: "model_change",
+			...this.#freshEntryFields(),
+			model,
+			role,
+			resolvedModelIsFallback: false,
+			reason,
+		};
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
 	/** Append a thinking level change as child of current leaf, then advance leaf. Returns entry id. */
 	appendThinkingLevelChange(thinkingLevel?: string, configured?: string): string {
 		const entry: ThinkingLevelChangeEntry = {
