@@ -721,10 +721,6 @@ impl crate::bash::Host for PiHost {
 			.map(crate::vfs::VfsFs::filesystem);
 		let lineage = spec.lineage;
 		let scoped = !lineage.detached && lineage.resource_scope != 0;
-		// Check the payload before a wrapper hides its script-fallback hint.
-		if scoped && let Some(error) = NativeSpawner::script_fallback_error(&spec) {
-			return Box::pin(std::future::ready(Err(error)));
-		}
 		if !scoped && fs.is_none() {
 			return Box::pin(std::future::ready(self.launcher.launch(spec, None)));
 		}
@@ -736,6 +732,13 @@ impl crate::bash::Host for PiHost {
 				Some(fs) => urls::resolve(&fs, &names).await?,
 				None => names,
 			};
+			// Resolve URLs before checking the payload that the wrapper would
+			// hide from the engine's ENOEXEC fallback.
+			if scoped
+				&& let Some(error) = NativeSpawner::script_fallback_error(&names.path, &names.cwd)
+			{
+				return Err(error);
+			}
 			let wrapped = if scoped {
 				let setup = launcher.clone();
 				let payload = names.clone();

@@ -596,7 +596,9 @@ pub(super) fn may_need_script_fallback(path: &[u8], cwd: &[u8]) -> bool {
 }
 
 pub(super) fn spawn(shared: &Arc<Shared>, spec: SpawnSpec<'_>) -> io::Result<Box<dyn ExtProc>> {
-	if spec.redirs.is_some() && super::NativeSpawner::script_fallback_error(&spec).is_some() {
+	if spec.redirs.is_some()
+		&& super::NativeSpawner::script_fallback_error(spec.path, spec.cwd).is_some()
+	{
 		// The engine retries with its own asynchronous redirection opens.
 		return Err(io::Error::other("script requires engine redirection"));
 	}
