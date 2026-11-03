@@ -16,7 +16,11 @@ import {
 	collateralFollowUpRow,
 } from "../../src/tools/requirements-ledger";
 import { getLatestTodoPhasesFromEntries, TodoTool, USER_TODO_EDIT_CUSTOM_TYPE } from "../../src/tools/todo";
-import { requirementAuditReadImage, requirementTouchesRenderedFiles } from "../../src/utils/requirement-artifact";
+import {
+	requirementArtifactBase,
+	requirementAuditReadImage,
+	requirementTouchesRenderedFiles,
+} from "../../src/utils/requirement-artifact";
 import qaAuditorPrompt from "../../src/prompts/agents/qa-auditor.md" with { type: "text" };
 
 const ROW = "Merge overlapping UPS decisions into one UPS decision";
@@ -38,6 +42,14 @@ async function fixture(gitArtifact: "ui" | "cli" | undefined = undefined) {
 			"base64",
 		),
 	);
+	const before = path.join(cwd, "before-power-group-1568.png");
+	await Bun.write(
+		before,
+		Buffer.from(
+			"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+			"base64",
+		),
+	);
 	let identity = `file:${artifact}@sha256=${sha}`;
 	if (gitArtifact) {
 		await $`git init --initial-branch=main ${cwd}`.quiet();
@@ -48,7 +60,8 @@ async function fixture(gitArtifact: "ui" | "cli" | undefined = undefined) {
 		await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.invalid commit -m artifact`.quiet();
 		const commit = (await $`git -C ${cwd} rev-parse HEAD`.quiet()).text().trim();
 		identity = `git:${cwd}@${commit}`;
-		await fs.rm(screenshot); // screenshots must not dirty a whole-checkout identity
+		await fs.rm(screenshot);
+		await fs.rm(before); // screenshots must not dirty a whole-checkout identity
 	}
 	const manager = SessionManager.inMemory();
 	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
@@ -92,44 +105,63 @@ async function fixture(gitArtifact: "ui" | "cli" | undefined = undefined) {
 	const table = (evidence = screenshot) =>
 		`${HEADER}\n${[98, 99].map(id => `| R${id} | pass | Observed ${evidence} | row ${JSON.stringify(ROW)} @ ${identity} |`).join("\n")}`;
 	let attempt = 0;
+	let lastTask: { task: string } | undefined;
 	const audit = async (output: string) => {
 		const id = `AuditSingleUps-${++attempt}`;
-		await runtime.prepareAuditorTaskCall("task", id, {
+		const prepared = await runtime.prepareAuditorTaskCall("task", id, {
 			name: "main",
 			agent: "qa-auditor",
 			requirementIds: ["R98", "R99"],
 			task: `Audit R98 R99 for ${ROW}`,
 		});
+		lastTask = prepared as { task: string };
 		return runtime.afterToolCall({
 			toolCall: { id, name: "task" },
 			result: { content: [], details: { results: [{ index: 0, agent: "qa-auditor", id, exitCode: 0, output }] } },
 			isError: false,
 		} as never);
 	};
-	return { cwd, manager, tool, table, audit, screenshot };
+	return {
+		cwd,
+		manager,
+		tool,
+		table,
+		audit,
+		screenshot,
+		before,
+		get lastTask() {
+			return lastTask;
+		},
+	};
 }
 
 describe("collateral receipt grammar", () => {
-	it("parses defects with escaped pipes and a no-defect declaration", () => {
-		const text = `${HEADER}\n| R1 | pass | exercised | artifact |\n\n| screenshot | region | defect |\n| --- | --- | --- |\n| /tmp/a.png | Power | Grid \\| Solar overlap |`;
+	it("parses paired defects with escaped pipes and clean pairs", () => {
+		const text = `${HEADER}\n| R1 | pass | exercised | artifact |\n\n| before | after | region | defect |\n| --- | --- | --- | --- |\n| /tmp/b.png | /tmp/a.png | Power | Grid \\| Solar overlap |`;
 		expect(parseRequirementCollateral(text)?.defects).toEqual([
 			{ screenshot: "/tmp/a.png", region: "Power", defect: "Grid | Solar overlap" },
 		]);
-		expect(parseRequirementCollateral(`${HEADER}\n\nCollateral: none\n- /tmp/a.png`)?.defects).toEqual([]);
+		expect(
+			parseRequirementCollateral(
+				`${HEADER}\n\n| before | after | region | defect |\n| --- | --- | --- | --- |\n| /tmp/b.png | /tmp/a.png | Power | none |`,
+			)?.defects,
+		).toEqual([]);
 		expect(parseRequirementCollateral(JSON.stringify({ result: text }))?.defects[0]?.region).toBe("Power");
 	});
 	it("rejects empty, malformed, duplicate, and misplaced sections", () => {
 		for (const section of [
 			"Collateral: none",
-			"| screenshot | region | defect |\n| --- | --- | --- |",
-			"| screenshot | region | defect |\n| --- | --- | --- |\n| a.png | region | |",
-			"Collateral: none\n- a.png\n\nCollateral: none\n- b.png",
+			"| before | after | region | defect |\n| --- | --- | --- |",
+			"| before | after | region | defect |\n| --- | --- | --- |\n| a.png | region | |",
+			"| before | after | region | defect |\n| --- | --- | --- | --- |\n| b.png | a.png | Power | none |\n\n| before | after | region | defect |\n| --- | --- | --- | --- |\n| b.png | a.png | Power | none |",
 		]) {
 			expect(() => parseRequirementCollateral(`${HEADER}\n\n${section}`)).toThrow();
 		}
-		expect(() => parseRequirementCollateral(`Collateral: none\n- a.png\n\n${HEADER}`)).toThrow(
-			"follow the verdict table",
-		);
+		expect(() =>
+			parseRequirementCollateral(
+				`| before | after | region | defect |\n| --- | --- | --- | --- |\n| b.png | a.png | Power | none |\n\n${HEADER}`,
+			),
+		).toThrow("follow the verdict table");
 	});
 });
 
@@ -137,7 +169,7 @@ it("rejects AuditSingleUps-shaped all-pass receipts naming an existing screensho
 	const f = await fixture();
 	try {
 		const result = await f.audit(f.table());
-		expect(JSON.stringify(result)).toContain("missing collateral section for rendered UI audit");
+		expect(JSON.stringify(result)).toContain("missing collateral pair for rendered UI audit");
 		for (const requirement of getLatestRequirements(f.manager.getBranch()))
 			expect(requirement.rowVerdicts).toBeUndefined();
 	} finally {
@@ -156,14 +188,56 @@ it("keeps non-UI audits unaffected even when their prose mentions visual UI", as
 	}
 });
 
-it("accepts Collateral: none and rejects a nonexistent inspected path", async () => {
+const pair = (before: string, after: string, defect = "none") =>
+	`| before | after | region | defect |\n| --- | --- | --- | --- |\n| ${before} | ${after} | Power | ${defect} |`;
+
+it("accepts a distinct pair and rejects nonexistent paths, missing before, and identical bytes", async () => {
 	const f = await fixture();
 	try {
-		expect(JSON.stringify(await f.audit(`${f.table()}\n\nCollateral: none\n- /missing/capture.png`))).toContain(
-			"collateral screenshot does not exist",
+		expect(JSON.stringify(await f.audit(`${f.table()}\n\n${pair("/missing/capture.png", f.screenshot)}`))).toContain(
+			"does not exist or cannot be read",
 		);
-		expect(await f.audit(`${f.table()}\n\nCollateral: none\n- ${f.screenshot}`)).toBeUndefined();
+		expect(JSON.stringify(await f.audit(`${f.table()}\n\n${pair("", f.screenshot)}`))).toContain(
+			"requires before, after",
+		);
+		const copy = path.join(f.cwd, "copy.png");
+		await Bun.write(copy, await Bun.file(f.screenshot).bytes());
+		expect(JSON.stringify(await f.audit(`${f.table()}\n\n${pair(copy, f.screenshot)}`))).toContain(
+			"byte-identical (sha256)",
+		);
+		expect(await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`)).toBeUndefined();
 		expect((await f.tool.execute("done", { op: "done", task: ROW })).isError).not.toBe(true);
+	} finally {
+		await fs.rm(f.cwd, { recursive: true, force: true });
+	}
+});
+
+it("accepts and retains an unbuildable-base reason only with an explicit matching declaration", async () => {
+	const f = await fixture();
+	try {
+		const reason = "bun run build: missing base entry point";
+		const section = pair(`before: unavailable (${reason})`, f.screenshot);
+		expect(JSON.stringify(await f.audit(`${f.table()}\n\n${section}`))).toContain(
+			"requires a matching Base: unbuildable",
+		);
+		expect(await f.audit(`${f.table()}\n\nBase: unbuildable (${reason})\n${section}`)).toBeUndefined();
+		const saved = getLatestRequirements(f.manager.getBranch())[0]?.rowVerdicts?.[ROW]?.collateral;
+		expect(saved?.baseUnbuildable).toBe(reason);
+		expect(getLatestRequirements(f.manager.getBranch())[0]?.rowVerdicts?.[ROW]?.evidence).toContain(
+			`Before comparison unavailable: base unbuildable (${reason})`,
+		);
+		expect(saved?.pairs?.[0]?.beforeUnavailable).toBe(reason);
+	} finally {
+		await fs.rm(f.cwd, { recursive: true, force: true });
+	}
+});
+
+it("rejects the AuditSingleUps after-only collateral replay", async () => {
+	const f = await fixture();
+	try {
+		expect(JSON.stringify(await f.audit(`${f.table()}\n\nCollateral: none\n- ${f.screenshot}`))).toContain(
+			"after-only collateral is not a comparison",
+		);
 	} finally {
 		await fs.rm(f.cwd, { recursive: true, force: true });
 	}
@@ -172,7 +246,7 @@ it("accepts Collateral: none and rejects a nonexistent inspected path", async ()
 it("persists collateral, blocks closure, requires a linked follow-up for every defect, and allows re-audit", async () => {
 	const f = await fixture();
 	try {
-		const defects = `${f.table()}\n\n| screenshot | region | defect |\n| --- | --- | --- |\n| ${f.screenshot} | Power | ${DEFECT} |\n| ${f.screenshot} | Power | ${SECOND} |`;
+		const defects = `${f.table()}\n\n${pair(f.before, f.screenshot, DEFECT)}\n| ${f.before} | ${f.screenshot} | Power | ${SECOND} |`;
 		expect(await f.audit(defects)).toBeUndefined();
 		expect(getLatestRequirements(f.manager.getBranch())[0]?.rowVerdicts?.[ROW]?.collateral?.defects).toHaveLength(2);
 		const done = () => f.tool.execute("done", { op: "done", task: ROW });
@@ -185,7 +259,7 @@ it("persists collateral, blocks closure, requires a linked follow-up for every d
 		f.manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
 		expect((await done()).isError).not.toBe(true);
 		// Re-audit clears the findings rather than retaining an old failure forever.
-		expect(await f.audit(`${f.table()}\n\nCollateral: none\n- ${f.screenshot}`)).toBeUndefined();
+		expect(await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`)).toBeUndefined();
 		expect(getLatestRequirements(f.manager.getBranch())[0]?.rowVerdicts?.[ROW]?.collateral?.defects).toEqual([]);
 		const cleared = getLatestTodoPhasesFromEntries(f.manager.getBranch());
 		cleared[0]!.tasks = cleared[0]!.tasks.filter(task => task.content === ROW);
@@ -205,6 +279,9 @@ it("uses Git diff paths and the worker's image results as independent visual sig
 		await $`git -C ${cwd} add Facility.tsx`.quiet();
 		await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.invalid commit -m UI`.quiet();
 		const commit = (await $`git -C ${cwd} rev-parse HEAD`.quiet()).text().trim();
+		expect((await requirementArtifactBase({ kind: "git", repo: cwd, commit })).base).toBe(
+			(await $`git -C ${cwd} rev-parse HEAD^`.quiet()).text().trim(),
+		);
 		expect(await requirementTouchesRenderedFiles([{ kind: "git", repo: cwd, commit }])).toBe(true);
 		expect(await requirementTouchesRenderedFiles([{ kind: "git", repo: cwd, commit, paths: ["backend.txt"] }])).toBe(
 			false,
@@ -235,7 +312,7 @@ it("uses Git diff paths and the worker's image results as independent visual sig
 	}
 });
 
-it("rejects a missing collateral section when only the auditor's tool history reveals an image read", async () => {
+it("rejects a missing collateral pair when only the auditor's tool history reveals an image read", async () => {
 	const f = await fixture();
 	const directory = spyOn(f.manager, "getArtifactsDir").mockReturnValue(f.cwd);
 	try {
@@ -250,7 +327,7 @@ it("rejects a missing collateral section when only the auditor's tool history re
 				},
 			}) + "\n",
 		);
-		expect(JSON.stringify(await f.audit(f.table("exercised artifact")))).toContain("missing collateral section");
+		expect(JSON.stringify(await f.audit(f.table("exercised artifact")))).toContain("missing collateral pair");
 	} finally {
 		directory.mockRestore();
 		await fs.rm(f.cwd, { recursive: true, force: true });
@@ -263,10 +340,40 @@ it.each(["ui", "cli"] as const)(
 		const f = await fixture(kind);
 		try {
 			const result = await f.audit(f.table("exercised artifact"));
-			if (kind === "ui") expect(JSON.stringify(result)).toContain("missing collateral section");
+			const base = (await $`git -C ${f.cwd} rev-parse HEAD^`.quiet()).text().trim();
+			expect(f.lastTask?.task).toContain(`base=${base}`);
+			if (kind === "ui") expect(JSON.stringify(result)).toContain("missing collateral pair");
 			else expect(result).toBeUndefined();
 		} finally {
 			await fs.rm(f.cwd, { recursive: true, force: true });
 		}
 	},
 );
+
+it("uses the default-branch merge base for a multi-commit artifact and resolves tree pins to the same base", async () => {
+	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-comparison-base-"));
+	try {
+		await $`git init --initial-branch=main ${cwd}`.quiet();
+		await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -m base`.quiet();
+		const base = (await $`git -C ${cwd} rev-parse HEAD`.quiet()).text().trim();
+		await $`git -C ${cwd} update-ref refs/remotes/origin/main ${base}`.quiet();
+		await $`git -C ${cwd} symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main`.quiet();
+		await $`git -C ${cwd} switch -c feature`.quiet();
+		await Bun.write(path.join(cwd, "View.tsx"), "export const View = <div />;");
+		await $`git -C ${cwd} add View.tsx`.quiet();
+		await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.invalid commit -m UI`.quiet();
+		await Bun.write(path.join(cwd, "backend.txt"), "backend change");
+		await $`git -C ${cwd} add backend.txt`.quiet();
+		await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.invalid commit -m backend`.quiet();
+		const commit = (await $`git -C ${cwd} rev-parse HEAD`.quiet()).text().trim();
+		const tree = (await $`git -C ${cwd} rev-parse 'HEAD^{tree}'`.quiet()).text().trim();
+		for (const pin of [commit, tree]) {
+			const identity = { kind: "git" as const, repo: cwd, commit: pin };
+			expect(await requirementArtifactBase(identity)).toEqual({ revision: commit, base });
+			// Parent-only comparison would miss the rendered change from the first commit.
+			expect(await requirementTouchesRenderedFiles([identity])).toBe(true);
+		}
+	} finally {
+		await fs.rm(cwd, { recursive: true, force: true });
+	}
+});

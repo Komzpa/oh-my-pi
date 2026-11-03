@@ -898,19 +898,29 @@ export function isRenderedRequirementPath(file: string): boolean {
 	);
 }
 
+/** One base derivation shared by audit dispatch and the rendered-file signal. */
+export async function requirementArtifactBase(
+	identity: Extract<RequirementIdentity, { kind: "git" }>,
+): Promise<{ revision: string; base: string | null }> {
+	const repo = vcs.git(identity.repo);
+	if (!repo) throw new Error(`${identity.repo}: Git repository unavailable`);
+	// A tree pin has no parents; recover its current commit only when the tree matches exactly.
+	let revision = identity.commit;
+	const head = await repo.headSha();
+	if (head && (await repo.resolveRef(`${head}^{tree}`)) === revision) revision = head;
+	const defaultBranch = await repo.defaultBranch();
+	let base = defaultBranch ? await repo.mergeBase(defaultBranch, revision) : null;
+	if (!base || base === revision) base = await repo.resolveRef(`${revision}^`);
+	return { revision, base: base ?? null };
+}
+
 /** Compare the artifact to its default-branch merge base, or its parent in a standalone repo. */
 export async function requirementTouchesRenderedFiles(identities: readonly RequirementIdentity[]): Promise<boolean> {
 	for (const identity of identities) {
 		if (identity.kind !== "git") continue;
 		const repo = vcs.git(identity.repo);
 		if (!repo) continue;
-		// A tree pin has no parents; recover its current commit only when the tree matches exactly.
-		let revision = identity.commit;
-		const head = await repo.headSha();
-		if (head && (await repo.resolveRef(`${head}^{tree}`)) === revision) revision = head;
-		const defaultBranch = await repo.defaultBranch();
-		let base = defaultBranch ? await repo.mergeBase(defaultBranch, revision) : await repo.resolveRef(`${revision}^`);
-		if (base === revision) base = await repo.resolveRef(`${revision}^`);
+		const { revision, base } = await requirementArtifactBase(identity);
 		const files = base
 			? await repo.changedFiles({ base, head: revision, files: identity.paths })
 			: await repo.lsTree(identity.commit, identity.paths ?? []);
