@@ -101,13 +101,14 @@ describe("bash env parameter", () => {
 	});
 
 	it("passes env through on auto-backgrounded and async commands", async () => {
+		const autoBgManager = new AsyncJobManager({});
 		const autoBgSession = {
 			cwd: process.cwd(),
 			hasUI: false,
 			getAgentId: () => "Main",
 			getSessionId: () => "Main",
 			getSessionFile: () => null,
-			asyncJobManager: new AsyncJobManager({}),
+			asyncJobManager: autoBgManager,
 			settings: Settings.isolated({
 				"launch.enabled": false,
 				"async.enabled": false,
@@ -129,7 +130,7 @@ describe("bash env parameter", () => {
 			});
 			expect(textOf(result)).toContain("autobg-ok");
 		} finally {
-			await autoBgSession.asyncJobManager?.dispose({ timeoutMs: 1_000 });
+			await autoBgManager.dispose({ timeoutMs: 1_000 });
 		}
 		const asyncManager = new AsyncJobManager({});
 		const asyncSession = {

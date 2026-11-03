@@ -319,7 +319,7 @@ describe("bash session infrastructure default denies", () => {
 		for (const [command, expected] of [
 			["printf '' | xargs -n1 printf empty-xargs", "empty-xargs"],
 			["printf 'printf inherited-stdin\\n' | sh -c 'true; sh'", "inherited-stdin"],
-			["bash -n -c 'printf syntax-must-not-run'", "(no output)"],
+			["bash -n -c 'printf syntax-must-not-run'", "(no output, exit code 0)"],
 		]) {
 			const result = await bashTool().execute("safe-review-control", { command });
 			const text = result.content.map(part => (part.type === "text" ? part.text : "")).join("");
