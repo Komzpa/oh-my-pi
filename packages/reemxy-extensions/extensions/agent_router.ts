@@ -8,7 +8,7 @@ import type { ModelPresetSwitchResult } from "@oh-my-pi/pi-coding-agent/config/m
 import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { prompt } from "@oh-my-pi/pi-utils";
-import { workerYieldRefusal } from "./worker_continue";
+import { workerYieldRefusal, type WorkerContinuationState } from "./worker_continue";
 import gateNotices from "./gate-notices.md" with { type: "text" };
 import { shortenPath, truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -991,11 +991,11 @@ export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbe
 	const state = createRouterState();
 	const announcedGuardSessions = new Set<string>();
 	pi.setLabel?.("Agent Router");
-	const continuedWorkers = new Set<string>();
+	const continuedWorkers = new Map<string, WorkerContinuationState>();
 	pi.on("tool_call", (event, ctx) => {
 		if (event.toolName === "yield" && ctx.agent?.kind === "sub") {
-			const reason = workerYieldRefusal(event.input, ctx, continuedWorkers, event.toolCallId);
-			if (reason) return { block: true, reason };
+			const decision = workerYieldRefusal(event.input, ctx, continuedWorkers, event.toolCallId);
+			if (decision) return decision;
 		}
 		return fileToolRefusal(event, ctx);
 	});
