@@ -264,24 +264,24 @@ jobs:
          - name: Rustfmt
            run: bazelisk --bazelrc="${{ steps.cache.outputs.rc }}" build --config=rustfmt //crates/...
 
-  # Provides the linux-x64 addon pair every downstream TS job installs.
-  #
-  # Exact source match or a build from this checkout's own native sources —
-  # never a stale approximation. PRs restore the pair main built for the same
-  # native sources from actions/cache (key = hash of every native build input:
-  # toolchain and build settings plus crates/** and BUILD.bazel). On an exact
-  # cache miss the job builds the pair from the PR's own sources with the same
-  # sequential per-target bazel invocations as main (uncached on hosted
-  # runners); the prefix-newest and latest-npm fallbacks are removed because a
-  # stale binary stamps the current release version yet lacks new native
-  # exports (run 40361495524: 18.12.6 npm binary stamped 18.13.0, missing
-  # editErrorKinds, TypeError at session-anonymizer.ts:565). Only main saves;
-  # see the save step for why.
-  #
-  # Main (vmon, node Bazel cache) builds only the pair here so the TS
-  # fan-out starts as soon as it links; native_addons_cross builds every
-  # other target in parallel. Job name says "bazel" for continuity
-  # with required checks.
+   # Provides the linux-x64 addon pair every downstream TS job installs.
+   #
+   # Exact source match or a build from this checkout's own native sources —
+   # never a stale approximation. PRs restore the pair main built for the same
+   # native sources from actions/cache (key = hash of every native build input:
+   # toolchain and build settings plus crates/** and BUILD.bazel). On an exact
+   # cache miss the job builds the pair from the PR's own sources with the same
+   # sequential per-target bazel invocations as main (uncached on hosted
+   # runners); the prefix-newest and latest-npm fallbacks are removed because a
+   # stale binary stamps the current release version yet lacks new native
+   # exports (run 40361495524: 18.12.6 npm binary stamped 18.13.0, missing
+   # editErrorKinds, TypeError at session-anonymizer.ts:565). Only main saves;
+   # see the save step for why.
+   #
+   # Main (vmon, node Bazel cache) builds only the pair here so the TS
+   # fan-out starts as soon as it links; native_addons_cross builds every
+   # other target in parallel. Job name says "bazel" for continuity
+   # with required checks.
    native_addons:
       name: Build native addons (bazel)
       runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-22.04' || 'vmon-large/from=omp-ci' }}
