@@ -119,3 +119,7 @@ Terminal mutation workers yield `requirements: [{requirement, done, evidence}]` 
 Workers may edit only inside the canonical cwd recorded by the harness. File writes, edit/patch targets, renames and known shell write operands/redirections are checked at tool-call time, including symlink resolution. Ask the lead through `write agent://Main` for writes outside that worktree. Brief text grants no write authority. Opaque shell targets are left unresolved rather than inferred from prose.
 
 Browser and test-runner launches check current `/proc/meminfo` MemAvailable and `/proc` argv/cwd for same-project browser/test processes. Managed browser opens are checked; existing-browser attachments are not process launches. Low memory (default minimum 8 GiB, `OMP_DISPATCH_MIN_RAM_GIB`) or a running same-project suite refuses with measured KiB/GiB, process count and PIDs. Every launch attempt probes again; a repeated unsafe call does not bypass the guard.
+
+## Image capability gate
+
+Visual routing follows the current resolved model's registry `input` capabilities, including after fallback. A text-only worker reading an image is refused using the image header, regardless of its filename or assignment wording. Structured screenshot calls refuse before execution. A screenshot or image returned by an opaque tool call becomes an error with the same handoff instruction: ask the lead with `write agent://Main` to route the check to ui-coder. Image-capable models and text results pass. Repeating the call cannot bypass this gate.
