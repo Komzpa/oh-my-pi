@@ -1096,6 +1096,21 @@ export function observeLatestTodoPhases(
 	return latest ? clonePhases(latest) : [];
 }
 
+/** Last recorded completion survives removal; later open or abandoned states clear it. */
+export function getCompletedTodoRows(entries: SessionEntry[]): Set<string> {
+	const completed = new Set<string>();
+	observeLatestTodoPhases(entries, phases => {
+		const byRow = new Map<string, boolean>();
+		for (const task of phases.flatMap(phase => phase.tasks))
+			byRow.set(task.content, (byRow.get(task.content) ?? true) && task.status === "completed");
+		for (const [row, done] of byRow) {
+			if (done) completed.add(row);
+			else completed.delete(row);
+		}
+	});
+	return completed;
+}
+
 function resolveTaskOrError(
 	phases: TodoPhase[],
 	content: string | undefined,

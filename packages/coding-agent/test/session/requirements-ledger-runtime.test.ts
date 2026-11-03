@@ -1307,6 +1307,79 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 	});
 });
 
+describe("completed row history publication replay", () => {
+	it.each([
+		["removed", false, 0],
+		["removed", true, 0],
+		["archive", true, 0],
+		["reopened", false, 1],
+		["abandoned", false, 1],
+		["open", false, 1],
+		["readded", false, 1],
+		["duplicate open", false, 1],
+	] as const)("%s row (previously demoted: %s) leaves %i audit issues", async (state, demoted, open) => {
+		const { cwd, manager, runtime, gate, auditStatuses } = fixture();
+		try {
+			await auditFixtureArtifact(
+				runtime,
+				"qa-history",
+				gitIdentity(cwd, git(cwd, "rev-parse", "HEAD")),
+				"exercised build",
+			);
+			const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+			const task = phases[0]!.tasks[0]!;
+			task.status = state === "open" || state === "archive" ? "pending" : "completed";
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			if (state === "reopened" || state === "abandoned") {
+				task.status = state === "reopened" ? "pending" : "abandoned";
+				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			}
+			if (state === "duplicate open") {
+				phases[0]!.tasks.push({ ...task, status: "pending" });
+				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			}
+			// Real snapshots keep a ledger entry and full phases separately; dropping a
+			// completed row from the next plan must not erase its last recorded status.
+			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [] });
+			if (state === "archive") {
+				task.status = "completed";
+				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+					phases: [],
+					edit: { v: 1, kind: "archive", at: Date.now(), archivedPhases: phases },
+				});
+			}
+			if (state === "readded") {
+				task.status = "pending";
+				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+			}
+			if (demoted) {
+				const requirements = getLatestRequirements(manager.getBranch());
+				const verdict = requirements[0]!.rowVerdicts![task.content]!;
+				verdict.status = "unverifiable";
+				verdict.evidence = "Previously passing receipt is stale; request a fresh audit.";
+				appendRequirementsSnapshot(
+					{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+					requirements,
+				);
+			}
+			writeFileSync(join(cwd, "artifact.txt"), "checkout moved after completion\n");
+			git(cwd, "add", "artifact.txt");
+			git(cwd, "commit", "-m", "later work");
+			const message = { content: [{ type: "text", text: "Status" }], stopReason: "stop" } as never;
+			await gate()?.(message, new AbortController().signal);
+			expect(auditStatuses.at(-1)).toBe(`audit ${open}/1 open`);
+			await gate()?.(message, new AbortController().signal);
+			expect(auditStatuses.at(-1)).toBe(`audit ${open}/1 open`);
+			if (open)
+				expect(getLatestRequirements(manager.getBranch())[0]!.rowVerdicts![task.content]!.status).toBe(
+					"unverifiable",
+				);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("audit publication status", () => {
 	it("does not repeat a user-pending check on a later user message", async () => {
 		const { cwd, manager, gate } = fixture();
