@@ -71,8 +71,8 @@ const BIT = {
 };
 
 // ---------------------------------------------------------------- fixtures ---
-function makeRepo(kind) {
-  const cwd = mkdtempSync(join(tmpdir(), `liveness-${kind}-`));
+function makeRepo(kind, label = kind) {
+  const cwd = mkdtempSync(join(tmpdir(), `liveness-${label}-`));
   const git = (...args) =>
     execFileSync("git", args, { cwd, encoding: "utf8", env: { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } });
   git("init", "-q", "-b", "main");
@@ -406,7 +406,8 @@ for (const [lo, hi] of [[0, 256], [256, 512]]) {
   test(`real gates, masks ${lo}-${hi - 1}: todo/read admitted, every refusal names an admitted remedy`, async () => {
     if (!repos) {
       repos = { clean: makeRepo("clean"), resolvedStale: makeRepo("resolvedStale") };
-      otherRepo = makeRepo("clean");
+      // A directory name must not turn unrelated docs work into a merge assignment.
+      otherRepo = makeRepo("clean", "rebase-other-checkout");
     }
     await withRepos((mask) => runMask(mask, repos, otherRepo), lo, hi);
   }, 180_000);
