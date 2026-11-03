@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Keep workers working after harmless brief discrepancies and retry an unblocked partial yield once, while preserving read-only roles and forced budget wrap-ups ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Catch worker briefs with targets outside their write roots and warn before heavy test dispatch when RAM is low or a project suite is running ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Name the exact row-specific `todo op="schedule"` call with `review:"user"` in the retry handoff refusal, so showing a result link does not leave the recording step implicit.
