@@ -483,6 +483,7 @@ impl PiHost {
 		Self {
 			fs,
 			launcher: Launcher {
+				boundaries: Arc::default(),
 				spawner:    NativeSpawner::new(SpawnConfig {
 					grace:    TERM_GRACE,
 					sessions: Sessions::Detach,
@@ -491,7 +492,6 @@ impl PiHost {
 					exits:    Exits::Thread,
 					umask:    None,
 				}),
-				boundaries: Arc::default(),
 				streams:    StdStreams::default(),
 				observer:   None,
 				spawns:     SpawnLog::default(),

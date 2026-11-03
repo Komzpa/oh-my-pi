@@ -9,7 +9,7 @@ async fn byte_contract_survives_expansion_export_read_and_serialization() {
 v=$'\xffa'; export RAW="$v"
 python3 -c 'import os,sys; os.write(1,os.fsencode(sys.argv[1])+b"|"+os.environb[b"RAW"]+b"\n")' "$v"
 printf '%s|%s\n' "${v:0:1}" "${v/a/b}"
-printf '\377'; echo -e '\376'
+printf '\377'; echo -e '\0376'
 case "$v" in $'\xff'*) printf 'case\n';; *) exit 21;; esac
 [[ "$v" =~ $'\xff' ]] || exit 22
 printf 'regex\n'
