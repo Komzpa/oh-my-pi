@@ -710,10 +710,8 @@ impl crate::bash::Host for PiHost {
 		let lineage = spec.lineage;
 		let scoped = !lineage.detached && lineage.resource_scope != 0;
 		// Check the payload before a wrapper hides its script-fallback hint.
-		if scoped && NativeSpawner::needs_script_redirection(&spec) {
-			return Box::pin(std::future::ready(Err(io::Error::other(
-				"script requires engine redirection",
-			))));
+		if scoped && let Some(error) = NativeSpawner::script_fallback_error(&spec) {
+			return Box::pin(std::future::ready(Err(error)));
 		}
 		if !scoped && fs.is_none() {
 			return Box::pin(std::future::ready(self.launcher.launch(spec, None)));

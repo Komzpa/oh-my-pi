@@ -561,6 +561,14 @@ pub(super) fn may_need_script_fallback(path: &[u8], cwd: &[u8]) -> bool {
 	} else {
 		Path::new(OsStr::from_bytes(cwd)).join(path)
 	};
+	let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+		return false;
+	};
+	// A readable text file without execute permission must still fail exec.
+	// SAFETY: c_path is an owned, NUL-terminated path.
+	if unsafe { libc::access(c_path.as_ptr(), libc::X_OK) } != 0 {
+		return false;
+	}
 	let Ok(mut file) = fs::OpenOptions::new()
 		.read(true)
 		.custom_flags(libc::O_NONBLOCK)
@@ -585,7 +593,7 @@ pub(super) fn may_need_script_fallback(path: &[u8], cwd: &[u8]) -> bool {
 }
 
 pub(super) fn spawn(shared: &Arc<Shared>, spec: SpawnSpec<'_>) -> io::Result<Box<dyn ExtProc>> {
-	if super::NativeSpawner::needs_script_redirection(&spec) {
+	if spec.redirs.is_some() && super::NativeSpawner::script_fallback_error(&spec).is_some() {
 		// The engine retries with its own asynchronous redirection opens.
 		return Err(io::Error::other("script requires engine redirection"));
 	}

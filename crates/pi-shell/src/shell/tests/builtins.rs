@@ -1435,8 +1435,12 @@ async fn executable_text_without_shebang_preserves_arguments_and_exit_status() {
 
 	let dir = tempfile::tempdir().expect("temp dir");
 	let script = dir.path().join("plain-script");
-	std::fs::write(&script, "printf '%s|%s|%s\\n' \"$1\" \"$2\" \"$SCRIPT_TOKEN\"\nexit 23\n")
-		.expect("write executable text");
+	std::fs::write(
+		&script,
+		"parts=(\"$1\" \"$2\"); printf '%s|%s|%s\\n' \"${parts[0]}\" \"${parts[1]}\" \
+		 \"$SCRIPT_TOKEN\"\nexit 23\n",
+	)
+	.expect("write executable text");
 	std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
 		.expect("make script executable");
 	for invocation in ["./plain-script", "plain-script"] {
@@ -1449,6 +1453,18 @@ async fn executable_text_without_shebang_preserves_arguments_and_exit_status() {
 		assert_eq!(result.exit_code, Some(23), "{invocation}: {output}");
 		assert_eq!(output, "two words|;literal|from-env\n", "{invocation}");
 	}
+	std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o600))
+		.expect("remove execute permission");
+	let (result, output) = execute_captured(format!(
+		"cd {}; ./plain-script",
+		quote_arg(dir.path().to_str().expect("utf8 path")),
+	))
+	.await;
+	assert_eq!(
+		result.exit_code,
+		Some(126),
+		"text fallback must respect execute permission: {output}"
+	);
 }
 
 #[cfg(unix)]
