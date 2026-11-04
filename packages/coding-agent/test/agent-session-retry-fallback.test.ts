@@ -50,6 +50,7 @@ import {
 	isProviderExhausted,
 	isProviderExhaustionError,
 	providerExhaustionRecord,
+	probeUnavailableProviders,
 } from "@oh-my-pi/pi-coding-agent/session/provider-exhaustion";
 import { getProviderCooldownsPath, TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
@@ -9316,6 +9317,51 @@ describe("AgentSession retry fallback", () => {
 		await expect(session.prompt("Try unavailable provider")).rejects.toMatchObject({ failureKind: "infrastructure" });
 		expect(calls).toBe(0);
 	});
+	it.each([false, true])("waits for cold discovery metadata before dispatch (fallback: %s)", async recoverFallback => {
+		const primary = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const recovered = recoverFallback ? getBundledModel("openai", "gpt-4o")! : primary;
+		let ready = false;
+		let calls = 0;
+		const mock = createMockModel();
+		mock.push({ content: ["Recovered catalog"] });
+		vi.spyOn(modelRegistry, "getAll").mockImplementation(() => (ready ? [recovered] : []));
+		coolDownExhaustedProvider(primary.provider, { discoveryFailure: true });
+		if (recoverFallback) coolDownExhaustedProvider(recovered.provider, { discoveryFailure: true });
+		mockSchedulerWaitWithClock().mockImplementationOnce(async () => {
+			expect(calls).toBe(0);
+			expect(session?.model).toBeUndefined();
+			ready = true;
+			await probeUnavailableProviders(async () => ({ available: true }), { now: Date.now() + 300_000 });
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: undefined, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (model, context, options) => {
+				expect(ready).toBe(true);
+				calls++;
+				return mock.stream(model, context, options);
+			},
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.fallbackChains": { default: [`${recovered.provider}/${recovered.id}`] },
+		});
+		settings.setModelRole("default", `${primary.provider}/${primary.id}`);
+		session = new AgentSession({
+			agent,
+			modelRegistry,
+			settings,
+			sessionManager: SessionManager.inMemory(),
+			disableModelFallback: !recoverFallback,
+		});
+		const { retryStartEvents } = trackRetryEvents(session);
+		await session.prompt("Continue when discovery recovers");
+		await session.waitForIdle();
+		expect(calls).toBe(1);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(session.model?.id).toBe(recovered.id);
+	});
+
 	it.each(["stored", "runtime"] as const)(
 		"waits for changed %s credentials on initial no-key setup without dispatching an unavailable model",
 		async source => {

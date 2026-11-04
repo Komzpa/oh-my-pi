@@ -9174,6 +9174,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#resetPromptMaintenanceState();
 			this.#recovery.setAcceptTerminalEmptyStop(options?.acceptTerminalEmptyStop === true);
 
+			// A cold discovery outage has no model metadata yet; recovery waits without inventing one.
+			if (!this.model) await this.#recovery.awaitProviderAvailability(setupAbort.signal);
 			// Validate model
 			const model = this.model;
 			if (!model) {

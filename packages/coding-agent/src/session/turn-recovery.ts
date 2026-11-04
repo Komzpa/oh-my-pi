@@ -27,7 +27,14 @@ import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-cat
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong, sleepUntil } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
+import {
+	formatModelStringWithRouting,
+	resolveModelOverride,
+	resolveAllowedModels,
+	resolveConfiguredModelPatterns,
+	resolveModelRoleValue,
+} from "../config/model-resolver";
+import { cfgDisabledProviders } from "../config/model-settings";
 
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
@@ -817,11 +824,103 @@ export class TurnRecovery {
 	async awaitProviderAvailability(signal?: AbortSignal): Promise<void> {
 		const waitSignal = signal ?? new AbortController().signal;
 		let waiting = false;
+		const waitForRecovery = async (until: number): Promise<void> => {
+			if (!waiting) {
+				waiting = true;
+				await this.#host.emitSessionEvent({
+					type: "auto_retry_start",
+					attempt: 1,
+					maxAttempts: 1,
+					delayMs: Math.max(0, until - Date.now()),
+					errorMessage: "Providers unavailable; waiting for the earliest expected recovery",
+				});
+			}
+			await sleepUntil(Math.min(Math.max(until, Date.now() + 1_000), Date.now() + 5_000), waitSignal);
+		};
 		try {
 			for (;;) {
 				waitSignal.throwIfAborted();
 				const model = this.#host.model();
-				if (!model) return;
+				if (!model) {
+					const disabled = new Set(cfgDisabledProviders.get(this.#host.settings));
+					const patterns =
+						resolveConfiguredModelPatterns(this.#host.settings.getModelRole("default"), this.#host.settings) ??
+						[];
+					const fallbacks: { role: string; primary: string; selector: RetryFallbackSelector }[] = [];
+					if (cfgRetryModelFallback.get(this.#host.settings) && !this.#host.modelFallbackDisabled?.()) {
+						for (const primary of [...patterns]) {
+							for (const role of this.retryFallbackChainKeys(primary, undefined, { roleHint: "default" })) {
+								for (const selector of getRetryFallbackEffectiveChain(
+									this.#getRetryFallbackResolutionContext(),
+									role,
+									primary,
+									undefined,
+									true,
+								)) {
+									fallbacks.push({ role, primary, selector });
+									patterns.push(selector.raw);
+								}
+							}
+						}
+					}
+					const records = patterns.flatMap(pattern => {
+						const selector = parseRetryFallbackSelector(pattern);
+						const record =
+							selector && !disabled.has(selector.provider)
+								? providerExhaustionRecord(selector.provider)
+								: undefined;
+						return record ? [record] : [];
+					});
+					if (!waiting && records.length === 0) return;
+					const catalog = await resolveAllowedModels(
+						{
+							getAvailable: () =>
+								this.#host.modelRegistry.getAll().filter(candidate => !disabled.has(candidate.provider)),
+						},
+						this.#host.settings,
+					);
+					const available = catalog.filter(
+						candidate =>
+							this.#host.modelRegistry.isProviderAvailable(candidate.provider) &&
+							this.#host.modelRegistry.hasConfiguredAuth(candidate),
+					);
+					const configured = this.#host.settings.getModelRole("default");
+					const ready = resolveModelRoleValue(configured, available, { settings: this.#host.settings });
+					const resolved = ready.model
+						? ready
+						: resolveModelRoleValue(configured, catalog, { settings: this.#host.settings });
+					if (resolved.model) {
+						const previousEditMode = this.#host.resolveActiveEditMode();
+						await this.#host.setModelWithProviderSessionReset(resolved.model);
+						this.#host.sessionManager.appendModelChange(formatModelStringWithRouting(resolved.model));
+						if (resolved.explicitThinkingLevel)
+							this.#host.setThinkingLevel(
+								resolved.thinkingLevel === AUTO_THINKING
+									? AUTO_THINKING
+									: clampThinkingLevelToCeiling(
+											resolved.model,
+											resolved.thinkingLevel,
+											this.#host.thinkingLevelCeiling(),
+										),
+							);
+						await this.#host.syncAfterModelChange(previousEditMode);
+						continue;
+					}
+					const fallback = fallbacks.find(({ selector }) =>
+						available.some(candidate => candidate.provider === selector.provider && candidate.id === selector.id),
+					);
+					if (fallback) {
+						await this.applyRetryFallbackCandidate(fallback.role, fallback.selector, fallback.primary, {
+							signal: waitSignal,
+							reason: records[0]?.reason,
+						});
+						continue;
+					}
+					if (records.length === 0) return;
+					if (this.#host.isSubagent?.()) throw new ProviderUnavailableError(records[0].provider, records[0].class);
+					await waitForRecovery(Math.min(...records.map(record => record.until)));
+					continue;
+				}
 				if (!providerExhaustionRecord(model.provider) && !this.#host.modelRegistry.hasConfiguredAuth(model)) {
 					recordProviderFailure(model.provider, {
 						code: "missing_api_key",
@@ -860,17 +959,7 @@ export class TurnRecovery {
 						if (record) until = Math.min(until, record.until);
 					}
 				}
-				if (!waiting) {
-					waiting = true;
-					await this.#host.emitSessionEvent({
-						type: "auto_retry_start",
-						attempt: 1,
-						maxAttempts: 1,
-						delayMs: Math.max(0, until - Date.now()),
-						errorMessage: "Providers unavailable; waiting for the earliest expected recovery",
-					});
-				}
-				await sleepUntil(Math.min(Math.max(until, Date.now() + 1_000), Date.now() + 5_000), waitSignal);
+				await waitForRecovery(until);
 			}
 		} finally {
 			if (waiting)
