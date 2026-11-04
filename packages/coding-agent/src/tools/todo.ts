@@ -169,6 +169,11 @@ const InitListEntry = type({
 
 const todoSchema = type({
 	op: TodoOp,
+	"previewReason?": type({
+		task: "string",
+		kind: '"deferred" | "not-applicable" | "external-blocker"',
+		detail: "string",
+	}),
 	"list?": InitListEntry.array().describe("phases for init"),
 	"task?": type("string").describe("verbatim task content; with view, show that task and its full attempt history"),
 	"phase?": type("string").describe("phase name; with view, lists that whole phase including closed rows"),

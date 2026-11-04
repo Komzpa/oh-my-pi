@@ -206,3 +206,16 @@ export function watch(repo, onChange, intervalMs = HEAD_WATCH_INTERVAL_MS) {
 	fs.watchFile(target, { interval: intervalMs }, listener).unref();
 	return () => fs.unwatchFile(target, listener);
 }
+
+/** Read-only ancestry probe. Exit 1 is a measured negative; errors remain errors. */
+export async function isAncestor(dir, commit, descendant = "HEAD") {
+	const child = Bun.spawn(["git", "merge-base", "--is-ancestor", commit, descendant], {
+		cwd: dir, stdout: "ignore", stderr: "pipe", timeout: 5_000,
+		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+	});
+	const stderr = await new Response(child.stderr).text();
+	const code = await child.exited;
+	if (code === 0) return true;
+	if (code === 1) return false;
+	throw vcsError("Cli", stderr || `git ancestry probe exited ${code}`);
+}
