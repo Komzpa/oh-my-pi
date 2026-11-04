@@ -25,6 +25,7 @@ import type { SkillsSettings } from "./extensibility/settings";
 import type { Personality } from "./session/settings";
 import { type ContextFile, loadCapability, type SystemPrompt as SystemPromptFile } from "./discovery";
 import { expandAtImports } from "./discovery/at-imports";
+import { loadProjectAgentsMd } from "./discovery/project-agents-md";
 import type { EvalPreludeDefinition } from "./eval/preludes";
 import { SkillDescriptionCatalog } from "./extensibility/skill-descriptions";
 import { loadSkills, type Skill } from "./extensibility/skills";
@@ -352,9 +353,9 @@ export function dedupeContainedContextFiles(
 	);
 }
 
-/** Drop context files named `AGENTS.md` (any case). Task subagents never receive them. */
+/** Drop context files named `AGENTS.md` (any case). Used by the strip subagent policy. */
 export function withoutAgentsMd<T extends { path: string }>(files: T[]): T[] {
-	return files.filter(file => path.basename(file.path).toLowerCase() !== "agents.md");
+	return files.filter(file => !["agents.md", "agents.override.md"].includes(path.basename(file.path).toLowerCase()));
 }
 
 /**
@@ -539,6 +540,8 @@ export interface BuildSystemPromptOptions {
 	noContextFiles?: boolean;
 	/** Drop every context file named `AGENTS.md`, including ones discovered for additional workspace roots. */
 	excludeAgentsMd?: boolean;
+	/** Restrict context to the worker repository chain. */
+	projectAgentsMd?: boolean;
 	/** Skills provided directly to system prompt construction. */
 	skills?: readonly Skill[];
 	/** Session-scoped description snapshot; background cache writes apply only to the next session. */
@@ -671,6 +674,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		contextFiles: providedContextFiles,
 		noContextFiles = false,
 		excludeAgentsMd = false,
+		projectAgentsMd = false,
 		skills: providedSkills,
 		rules,
 		alwaysApplyRules,
@@ -789,6 +793,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		? Promise.resolve(null)
 		: logger.time("loadSystemPromptFiles", loadSystemPromptFiles, { cwd: resolvedCwd });
 	const contextFilesPromise = (async () => {
+		if (projectAgentsMd) return noContextFiles ? [] : loadProjectAgentsMd(resolvedCwd);
 		const primary = providedContextFiles
 			? providedContextFiles
 			: await logger.time("loadProjectContextFiles", loadProjectContextFiles, { cwd: resolvedCwd });
@@ -878,9 +883,10 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		withDeadline("loadPersonalityOverride", personalityPromise, bundledPersonality),
 	]);
 	clearTimeout(deadlineTimer);
-	const agentsMdFiles = noContextFiles
-		? []
-		: Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
+	const agentsMdFiles =
+		noContextFiles || projectAgentsMd
+			? []
+			: Array.from(new Set(workspaceTree.agentsMdFiles)).sort().slice(0, AGENTS_MD_LIMIT);
 
 	if (timedOut.length > 0) {
 		logger.warn("System prompt preparation steps timed out; using minimal fallback for those steps", {

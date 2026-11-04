@@ -24,9 +24,11 @@
  *
  * @see https://docs.claude.com/en/docs/claude-code/memory#import-additional-files
  */
+import { AsyncLocalStorage } from "node:async_hooks";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, pathIsWithin } from "@oh-my-pi/pi-utils";
 import { readFile } from "../capability/fs";
 
 /** Maximum number of recursive `@`-import hops. Matches Claude Code's documented cap. */
@@ -56,6 +58,13 @@ export interface ExpandAtImportsOptions {
 	maxDepth?: number;
 	/** Override the home directory used to resolve `~/...` (default: `os.homedir()`). */
 	home?: string;
+}
+
+const importRoot = new AsyncLocalStorage<string>();
+
+/** Expand repository instructions without following includes outside that repository. */
+export async function expandProjectAtImports(content: string, filePath: string, root: string): Promise<string> {
+	return importRoot.run(root, () => expandAtImports(content, filePath));
 }
 
 /**
@@ -164,6 +173,14 @@ async function resolveAndExpand(
 	visited: Set<string>,
 ): Promise<string | null> {
 	const resolved = resolveImportPath(importPath, baseDir, home);
+	const root = importRoot.getStore();
+	if (root) {
+		try {
+			if (!pathIsWithin(await fs.realpath(root), await fs.realpath(resolved))) return null;
+		} catch {
+			return null;
+		}
+	}
 	if (visited.has(resolved)) {
 		logger.debug("@-import: skipping cyclic include", { path: resolved });
 		return null;

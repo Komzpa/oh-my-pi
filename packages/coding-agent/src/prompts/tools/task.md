@@ -14,6 +14,8 @@ Use most specific agent.{{#if scoutAvailable}} Read-only research MUST use `scou
 {{/if}}
 Shared edits need one integration owner; give each task its files. Set interfaces in {{#if batchEnabled}}`context`{{else}}the task{{/if}}. Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.
 
+{{#if projectAgentsMd}}Workers receive their own repository's AGENTS.md chain; do not repeat that repository's rules in assignments.{{else}}Workers have NO AGENTS.md; include relevant repository rules in each assignment.{{/if}} Per-agent policy is listed below and overrides this default.
+
 # Inputs
 {{#if file}}`taskFile`: absolute path or `local://` file; contents become the task, read once at dispatch. Exactly one of `task`/`taskFile`.
 {{/if}}
@@ -35,5 +37,5 @@ Shared edits need one integration owner; give each task its files. Set interface
 # Available Agents
 {{#if spawningDisabled}}Agent spawning is currently disabled.
 {{else}}{{#if hasModelMentions}}`m<N>` = user-tagged model (`<model agent="m<N>" name="…"/>`), not specialist; spawn only when user names it.
-{{/if}}{{#list agents join=""}}- `{{name}}`{{#if readOnly}} (READ-ONLY; investigation only, no edits){{/if}}{{#if blocking}} (BLOCKING; inline result){{/if}}{{#if structured}} (STRUCTURED; schema result){{/if}}: {{description}}
+{{/if}}{{#list agents join=""}}- `{{name}}`{{#if readOnly}} (READ-ONLY; investigation only, no edits){{/if}}{{#if blocking}} (BLOCKING; inline result){{/if}}{{#if structured}} (STRUCTURED; schema result){{/if}}: {{description}} ({{#if projectAgentsMd}}project AGENTS.md; do not repeat its rules{{else}}NO AGENTS.md; supply relevant rules{{/if}})
 {{/list}}{{/if}}
