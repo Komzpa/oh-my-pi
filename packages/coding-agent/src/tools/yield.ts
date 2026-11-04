@@ -313,6 +313,8 @@ function assertSupportedRootFields(parameters: TSchema, args: Record<string, unk
 	const declared = isRecord(parameters) && isRecord(parameters.properties) ? parameters.properties : {};
 	const unsupported: string[] = [];
 	for (const key in args) {
+		// The handover hook owns coordination metadata validation, including workpool results.
+		if (key === "deconfliction") continue;
 		if (args[key] != null && !Object.hasOwn(declared, key)) unsupported.push(key);
 	}
 	if (unsupported.length === 0) return;
@@ -535,9 +537,6 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		_onUpdate?: AgentToolUpdateCallback<YieldDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<YieldDetails>> {
-		// Coordination metadata is validated by the handover gate, separately from result fields.
-		let deconfliction: unknown;
-		if (this.#session.checkPeerHandover && isRecord(params)) ({ deconfliction, ...params } = params);
 		if (!isRecord(params)) throw new Error("yield arguments must be an object");
 		const raw = params;
 		const workPoolItems = this.#workPoolItems();
@@ -565,6 +564,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			yieldType = [item.id];
 		} else {
 			yieldType = parseYieldType(raw.type);
+		}
+		const deconfliction = raw.deconfliction;
+		if (deconfliction != null && !this.#session.checkPeerHandover) {
+			throw new Error("yield arguments carry unsupported root field deconfliction; peer awareness is disabled");
 		}
 		let useLastTurn = errorMessage === undefined && data === undefined && yieldType !== undefined;
 		// Incremental array-typed sections carry partial data (one finding, one
