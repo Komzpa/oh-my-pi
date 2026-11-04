@@ -8,6 +8,7 @@
 
 import {
 	type ProviderExhaustionExclusion,
+	classifyProviderFailure,
 	isProviderExhausted,
 	providerExhaustionExclusion,
 	providerExhaustionRecord,
@@ -2811,7 +2812,19 @@ async function driveSessionToResult(
 				}
 			} else if (lastAssistant.stopReason === "error") {
 				exitCode = 1;
-				error ??= attributeSubagentError(lastAssistant.errorMessage, lastAssistant);
+				const unavailableClass = classifyProviderFailure({
+					status: lastAssistant.errorStatus,
+					type: lastAssistant.errorType,
+					code: lastAssistant.errorCode,
+					catalogModel:
+						session.model?.provider === lastAssistant.provider && session.model.id === lastAssistant.model,
+				});
+				if (unavailableClass) {
+					failureKind = "infrastructure";
+					error = `provider unavailable (${unavailableClass})`;
+				} else {
+					error ??= attributeSubagentError(lastAssistant.errorMessage, lastAssistant);
+				}
 			}
 		}
 

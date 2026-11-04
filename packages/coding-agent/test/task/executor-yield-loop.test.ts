@@ -175,6 +175,32 @@ describe("runSubprocess incremental yield loops", () => {
 		});
 	}
 
+	for (const [status, errorType, expectedClass] of [
+		[402, "billing_error", "entitlement"],
+		[500, "server_error", undefined],
+	] as const) {
+		it(`classifies terminal ${status} as ${expectedClass ? "infrastructure" : "ordinary"} failure`, async () => {
+			const handle = createMockSession(({ pushMessage }) => {
+				pushMessage({
+					role: "assistant",
+					content: [],
+					stopReason: "error",
+					provider: "muse",
+					model: "test",
+					errorStatus: status,
+					errorType,
+					errorMessage: "opaque provider response",
+				});
+			});
+			mockCreateAgentSession(handle.session);
+			const result = await drive(runSubprocess(baseOptions(`terminal-${status}`, 10)));
+			expect(result.exitCode).toBe(1);
+			expect(result.failureKind).toBe(expectedClass ? "infrastructure" : undefined);
+			if (expectedClass) expect(result.error).toBe(`provider unavailable (${expectedClass})`);
+			else expect(result.error).toContain("opaque provider response");
+		});
+	}
+
 	/** One assistant turn whose only content is a terminal `yield`. */
 	function emitTerminalYieldTurn(
 		label: string,

@@ -3,6 +3,8 @@ import * as path from "node:path";
 import * as streams from "@oh-my-pi/pi-ai/stream";
 import { ModelRegistry } from "../src/config/model-registry";
 import { resolveModelOverride } from "../src/config/model-resolver";
+import { Settings } from "../src/config/settings";
+import { validateRetryFallbackChains } from "../src/session/retry-fallback-chains";
 import { AuthStorage } from "../src/session/auth-storage";
 import * as availability from "../src/session/provider-exhaustion";
 import { probeProviderInference } from "../src/session/provider-availability-probe";
@@ -85,7 +87,7 @@ describe("registry provider availability", () => {
 				},
 			}),
 		);
-		let fails = false;
+		let fails = true;
 		let blocked = false;
 		const clear = spyOn(availability, "clearProviderAuthOnCredentialChange").mockImplementation(() => {});
 		cleanup.push(() => clear.mockRestore());
@@ -113,6 +115,16 @@ describe("registry provider availability", () => {
 			() => complete.mockRestore(),
 			() => probe.mockRestore(),
 		);
+		await registry.refreshDiscoverableProviders(["fixture-discovery"], "online");
+		const warnings: string[] = [];
+		validateRetryFallbackChains(
+			Settings.isolated({ "retry.fallbackChains": { default: ["fixture-discovery/retained-model"] } }),
+			registry,
+			warning => warnings.push(warning),
+			{ isDiscoveryPending: provider => registry.isProviderDiscoveryPending(provider) },
+		);
+		expect(warnings).toEqual([]);
+		fails = false;
 		await registry.refreshDiscoverableProviders(["fixture-discovery"], "online");
 		expect(registry.find("fixture-discovery", "retained-model")?.id).toBe("retained-model");
 		fails = true;

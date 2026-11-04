@@ -2,6 +2,7 @@ import { extractRetryHint } from "@oh-my-pi/pi-utils";
 import type { Api } from "../types";
 import { callerAbortReason } from "./abort";
 import { OpenAIHttpError } from "./classes";
+import { MissingApiKeyError } from "./auth";
 import type { AbortSourceTracker } from "../utils/abort";
 import type { CapturedHttpErrorResponse, RawHttpRequestDump } from "../utils/http-inspector";
 import { classify, classifyMessage, status } from "./flags";
@@ -104,7 +105,9 @@ export async function finalize(error: unknown, opts: FinalizeOptions = {}): Prom
 				? detail.param
 				: typeof raw?.code === "string"
 					? raw.code
-					: undefined;
+					: error instanceof MissingApiKeyError
+						? "missing_api_key"
+						: undefined;
 	const resetDelay = extractRetryHint(opts.capturedErrorResponse?.headers ?? raw?.headers);
 	return {
 		id,
