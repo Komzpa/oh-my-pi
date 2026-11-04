@@ -217,7 +217,6 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	const scoutAvailable = isScoutSpawnable(options.disabledAgents, options.parentSpawns);
 	return prompt.render(taskDescriptionTemplate, {
 		agents: renderedAgents,
-		projectAgentsMd: options.agentsMd === "project",
 		scoutAvailable,
 		spawningDisabled,
 		defaultAgent: defaultAgentFor(spawnPolicy, options.planMode),
@@ -236,6 +235,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 		hasModelMentions: options.sessionAgents.length > 0,
 		seanceGuidance: seanceAgent && isBundledSeance(seanceAgent) ? seanceTaskGuidance : "",
 		ircEnabled: options.ircEnabled,
+		projectAgentsMd: options.agentsMd === "project",
 		asyncGuidance: options.asyncGuidance,
 	});
 }
