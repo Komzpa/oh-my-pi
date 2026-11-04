@@ -711,12 +711,12 @@ export async function registerPersistedSubagents(
 		 * against, bounded by this root's own transcript tree.
 		 */
 		owned?: Map<string, string>;
-		/** Observe refs already registered from a different root whose transcript is also present in this root. */
-		onCopiedRef?: (ref: AgentRef) => void;
 		/** Keep this requested parked ref resident for the current resume attempt. */
 		requestedAgentId?: string;
 		/** Restart handoff: inspect only captured transcripts and their ancestors. */
 		sessionFiles?: readonly string[];
+		/** Observe refs already registered from a different root whose transcript is also present in this root. */
+		onCopiedRef?: (ref: AgentRef) => void;
 	} = {},
 ): Promise<void> {
 	if (!sessionFile?.endsWith(".jsonl")) return;
@@ -753,8 +753,8 @@ export async function registerPersistedSubagents(
 		shouldContinue,
 		sessionFile,
 		options.owned,
-		options.onCopiedRef,
 		selectedFiles,
+		options.onCopiedRef,
 	);
 	if (!shouldContinue()) return;
 	// A partial scan must neither evict unrelated refs nor mark the full roster loaded.
@@ -820,8 +820,8 @@ async function registerPersistedSubagentsFromDir(
 	shouldContinue: () => boolean,
 	rootSessionFile: string,
 	owned?: Map<string, string>,
-	onCopiedRef?: (ref: AgentRef) => void,
 	selectedFiles?: ReadonlySet<string>,
+	onCopiedRef?: (ref: AgentRef) => void,
 ): Promise<void> {
 	if (!shouldContinue()) return;
 	let entries: fs.Dirent[];
@@ -1002,8 +1002,8 @@ async function registerPersistedSubagentsFromDir(
 				shouldContinue,
 				rootSessionFile,
 				owned,
-				onCopiedRef,
 				selectedFiles,
+				onCopiedRef,
 			);
 		}
 	}

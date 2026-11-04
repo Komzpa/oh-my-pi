@@ -119,7 +119,6 @@ try {
 		await runInteractiveMode(
 			session,
 			"test",
-			undefined,
 			[],
 			Promise.resolve(undefined),
 			hold ? [] : ["startup second"],
