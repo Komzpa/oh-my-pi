@@ -9329,7 +9329,7 @@ describe("AgentSession retry fallback", () => {
 			streamFn: model => {
 				calls++;
 				return finalizedErrorStream(model, {
-					id: AIError.create(AIError.Flag.BadRequest),
+					id: status,
 					status,
 					stopReason: "error",
 					message: "opaque provider failure",

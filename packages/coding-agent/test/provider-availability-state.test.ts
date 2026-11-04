@@ -79,7 +79,7 @@ describe("provider availability evidence", () => {
 			{ status: 402, type: "billing_error", param: "billing_not_configured", expected: "entitlement" },
 			{ status: 404, type: "invalid_request_error", param: "model_not_found", expected: "entitlement" },
 			{ status: 401, type: "authentication_error", expected: "auth" },
-		];
+		] as const;
 		for (const replay of cases) {
 			const response = {
 				status: replay.status,
