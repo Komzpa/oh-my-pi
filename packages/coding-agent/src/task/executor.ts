@@ -14,6 +14,7 @@ import {
 	providerExhaustionRecord,
 } from "../session/provider-exhaustion";
 import { ProviderUnavailableError } from "../session/provider-unavailable-error";
+import { parseRetryFallbackSelector } from "../session/retry-fallback-chains";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
@@ -178,11 +179,7 @@ import {
 	cfgDefaultThinkingLevel,
 } from "../session/settings";
 import { cfgDisabledProviders } from "../config/model-settings";
-import {
-	getRetryFallbackRole,
-	installRetryFallbackRole,
-	parseRetryFallbackSelector,
-} from "../session/retry-fallback-chains";
+import { getRetryFallbackRole, installRetryFallbackRole } from "../session/retry-fallback-chains";
 import {
 	cfgCompactionModelThresholdsEnabled,
 	cfgCompactionThresholdPercent,
