@@ -2226,18 +2226,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
   const previewConfig = (ctx: ExtensionContext) => ctx.getTodoPreviewConfig?.() ?? { enabled: false, paths: [], thresholdMinutes: 30 };
   let previewPoll: Promise<PreviewRecord[]> | undefined;
-  const previewAncestry = new Map<string, boolean>();
-  const previewContains = async (dir: string, commit: string): Promise<boolean> => {
-    const head = await vcs.git(dir)?.headSha();
-    if (!head) return false;
-    const key = `${dir}\0${head}\0${commit}`;
-    const cached = previewAncestry.get(key);
-    if (cached !== undefined) return cached;
-    const visible = await vcs.isAncestor(dir, commit, head);
-    if (previewAncestry.size >= 2048) previewAncestry.clear();
-    previewAncestry.set(key, visible);
-    return visible;
-  };
   const previewRecords = (ctx: ExtensionContext): PreviewRecord[] => {
     const entry = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === PREVIEW_ENTRY_TYPE);
     return Array.isArray(entry?.data?.records) ? entry.data.records : [];
@@ -2254,7 +2242,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const before = previewRecords(ctx);
       const phases = ctx.getTodoPhases?.() ?? [];
       const captured = await capturePreviewWorkerHeads(ctx, phases, before);
-      const records = await refreshPreviewVisibility(phases, config, captured, Date.now(), previewContains);
+      const records = await refreshPreviewVisibility(phases, config, captured, Date.now());
       if (JSON.stringify(before) !== JSON.stringify(records)) pi.appendEntry(PREVIEW_ENTRY_TYPE, { records });
       for (const row of phases.flatMap(phase => phase.tasks)) {
         if (row.schedule?.firstRequirementAt === undefined) continue;
