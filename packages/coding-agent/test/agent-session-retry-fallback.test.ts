@@ -468,13 +468,9 @@ describe("AgentSession retry fallback", () => {
 		const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
 		const fallbackSelector = `${fallbackModel.provider}/${fallbackModel.id}`;
 
-		let primaryCredential = false;
-		const getApiKey = modelRegistry.getApiKey.bind(modelRegistry);
-		vi.spyOn(modelRegistry, "getApiKey").mockImplementation((model, ...rest) =>
-			model.provider === primaryModel.provider && !primaryCredential
-				? Promise.resolve(undefined)
-				: getApiKey(model, ...rest),
-		);
+		const recoveryAuth = await AuthStorage.create(":memory:");
+		await recoveryAuth.credentials.set(fallbackModel.provider, { type: "api_key", key: "fallback-key" });
+		modelRegistry = new ModelRegistry(recoveryAuth, path.join(tempDir.path(), "recovery-models.yml"));
 
 		const requestedModels: string[] = [];
 		const mock = createMockModel();
@@ -507,11 +503,13 @@ describe("AgentSession retry fallback", () => {
 				from: primarySelector,
 				to: fallbackSelector,
 				role: "anthropic/*",
-				reason: "no credential for anthropic",
+				reason: "provider unavailable (auth)",
 			},
 		]);
 
-		primaryCredential = true;
+		session.addDisposer(() => recoveryAuth.close());
+		await recoveryAuth.credentials.set(primaryModel.provider, { type: "api_key", key: "replacement-key" });
+		await modelRegistry.runAvailabilityProbes();
 		await session.prompt("Work after the primary logs back in");
 		await session.waitForIdle();
 		expect(requestedModels).toEqual([fallbackSelector, primarySelector]);
@@ -9224,7 +9222,9 @@ describe("AgentSession retry fallback", () => {
 			const primarySelector = `${primary.provider}/${primary.id}`;
 			const fallbackSelector = `${fallback.provider}/${fallback.id}`;
 			const requests: string[] = [];
-			let primaryAvailable = false;
+			const recoveryAuth = await AuthStorage.create(":memory:");
+			await recoveryAuth.credentials.set(fallback.provider, { type: "api_key", key: "fallback-key" });
+			modelRegistry = new ModelRegistry(recoveryAuth, path.join(tempDir.path(), "recovery-models.yml"));
 			const mock = createMockModel();
 			const failure = await AIError.finalize(
 				Object.assign(
@@ -9246,9 +9246,6 @@ describe("AgentSession retry fallback", () => {
 					return mock.stream(model, context, options);
 				},
 			});
-			vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async model =>
-				model.provider === primary.provider && !primaryAvailable ? undefined : "test-key",
-			);
 			vi.spyOn(modelRegistry.authStorage.limits, "markReached").mockResolvedValue({ switched: false });
 			const settings = Settings.isolated({
 				"compaction.enabled": false,
@@ -9264,7 +9261,9 @@ describe("AgentSession retry fallback", () => {
 			await session.waitForIdle();
 			expect(requests).toEqual([fallbackSelector]);
 			expect(isProviderExhausted(fallback.provider)).toBe(true);
-			primaryAvailable = true;
+			session.addDisposer(() => recoveryAuth.close());
+			await recoveryAuth.credentials.set(primary.provider, { type: "api_key", key: "replacement-key" });
+			await modelRegistry.runAvailabilityProbes();
 			const waits: number[] = [];
 			const statuses: AgentSessionEvent[] = [];
 			if (allCooling) {
@@ -9317,6 +9316,46 @@ describe("AgentSession retry fallback", () => {
 		await expect(session.prompt("Try unavailable provider")).rejects.toMatchObject({ failureKind: "infrastructure" });
 		expect(calls).toBe(0);
 	});
+	it("waits for changed credentials on initial no-key setup without dispatching an unavailable model", async () => {
+		const primary = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const recoveryAuth = await AuthStorage.create(":memory:");
+		modelRegistry = new ModelRegistry(recoveryAuth, path.join(tempDir.path(), "recovery-models.yml"));
+		let ready = false;
+		let calls = 0;
+		const mock = createMockModel();
+		mock.push({ content: ["Recovered after credential replacement"] });
+		vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async () => (ready ? "test-key" : undefined));
+		mockSchedulerWaitWithClock().mockImplementationOnce(async () => {
+			expect(calls).toBe(0);
+			expect(providerExhaustionRecord(primary.provider)).toMatchObject({ class: "auth", failedCallCount: 1 });
+			await modelRegistry.authStorage.credentials.set(primary.provider, { type: "api_key", key: "replacement-key" });
+			ready = true;
+			await modelRegistry.runAvailabilityProbes();
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (model, context, options) => {
+				calls++;
+				return mock.stream(model, context, options);
+			},
+		});
+		session = new AgentSession({
+			agent,
+			modelRegistry,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			disableModelFallback: true,
+		});
+		session.addDisposer(() => recoveryAuth.close());
+		const { retryStartEvents } = trackRetryEvents(session);
+		await session.prompt("Continue after provider recovery");
+		await session.waitForIdle();
+		expect(calls).toBe(1);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(providerExhaustionRecord(primary.provider)).toBeUndefined();
+	});
+
 	it.each([
 		{ status: 401, expectedClass: "auth" },
 		{ status: 404, expectedClass: "entitlement" },

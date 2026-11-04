@@ -2170,22 +2170,30 @@ export class TurnRecovery {
 	}
 
 	/**
-	 * Switches off a model whose provider has no usable credential onto the first
-	 * keyed fallback candidate. Unpinned, so the primary is restored once its
-	 * credential returns.
+	 * Records missing credentials as shared auth unavailability, then uses a keyed
+	 * fallback or waits for credential recovery without prompting the owner.
 	 */
 	async applyMissingCredentialFallback(signal: AbortSignal): Promise<boolean> {
-		if (!cfgRetryModelFallback.get(this.#host.settings) || this.#host.modelFallbackDisabled?.()) return false;
 		const currentModel = this.#host.model();
 		if (!currentModel) return false;
-		const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
-		const fallback = await this.#findKeyedRetryFallback(currentSelector, currentModel, signal);
-		if (!fallback) return false;
-		return this.applyRetryFallbackCandidate(fallback.role, fallback.selector, currentSelector, {
-			apiKey: fallback.apiKey,
-			signal,
-			reason: `no credential for ${currentModel.provider}`,
-		});
+		if (!providerExhaustionRecord(currentModel.provider)) {
+			recordProviderFailure(currentModel.provider, {
+				code: "missing_api_key",
+				credentialVersion: this.#host.modelRegistry.providerCredentialVersion(currentModel.provider),
+			});
+		}
+		if (cfgRetryModelFallback.get(this.#host.settings) && !this.#host.modelFallbackDisabled?.()) {
+			const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
+			const fallback = await this.#findKeyedRetryFallback(currentSelector, currentModel, signal);
+			if (fallback)
+				return this.applyRetryFallbackCandidate(fallback.role, fallback.selector, currentSelector, {
+					apiKey: fallback.apiKey,
+					signal,
+					reason: "provider unavailable (auth)",
+				});
+		}
+		await this.awaitProviderAvailability(signal);
+		return true;
 	}
 
 	/** First keyed, eligible fallback candidate; undefined when none or when the walk went stale. */
