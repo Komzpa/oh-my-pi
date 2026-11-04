@@ -2,6 +2,24 @@
 
 > Asks the interactive user to fill in one HTML form and returns the submitted form data.
 
+## Optional lead gate
+
+The gate is off by default. Enable it in `config.yml`:
+
+```yaml
+ask:
+  gate:
+    enabled: true
+    agent: user-shadow
+    recentSeconds: 300
+```
+
+For calls offering options, every question must supply an integer `recommended` index within its options. The active session branch must also contain a successful task result from the configured agent profile, either after the latest user message or within `recentSeconds` (seconds; `0` disables the time-window alternative). Failed, aborted, running, wrong-profile and prose-only reports do not count. Async deliveries preserve the completed profile for resume.
+
+A passing non-critical call returns the existing pending identity plus `details.workingDefaults`, without opening a dialog or waiting. The recommended options become working defaults immediately; choices belong on a styled review page with only its link in chat. This grants no permission for actions requiring user approval. Explicit `/tree` re-answer remains interactive.
+
+A genuine mission-critical stop may supply `critical: { kind: "irreversible" | "public" | "hands" | "credential", reason: "concrete reason" }`. Its kind and non-blank reason are recorded in `details.critical`; it bypasses the gate and retains normal pending-question behavior.
+
 ## Source
 
 - Entry: `packages/coding-agent/src/tools/ask.ts`

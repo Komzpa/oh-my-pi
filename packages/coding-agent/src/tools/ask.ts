@@ -42,6 +42,10 @@ import { askTimeoutMs, cfgAskNotify } from "../modes/settings";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import askHeadlessForkMessage from "../prompts/tools/ask-headless-fork.md" with { type: "text" };
 import askResultTemplate from "../prompts/tools/ask-result.md" with { type: "text" };
+import askGateRefused from "../prompts/tools/ask-gate-refused.md" with { type: "text" };
+import askGateDefaults from "../prompts/tools/ask-gate-defaults.md" with { type: "text" };
+import askPending from "../prompts/tools/ask-pending.md" with { type: "text" };
+import { cfgAskGateEnabled, cfgAskGateAgent, cfgAskGateRecentSeconds } from "../modes/settings";
 import { cfgSpeechEnabled } from "../tts/settings";
 import { vocalizer } from "../tts/vocalizer";
 import type { ToolSession } from ".";
@@ -385,6 +389,53 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			urgency: "normal",
 			actions: "focus",
 		});
+	}
+
+	/** Read structured results on this branch only; prose and running jobs are never evidence. */
+	#hasRecentAgentResult(): boolean {
+		const agent = cfgAskGateAgent.get(this.session.settings).trim();
+		if (!agent) return false;
+		const entries = this.session.sessionManager?.getBranch() ?? [];
+		const windowMs = Math.max(0, cfgAskGateRecentSeconds.get(this.session.settings)) * 1000;
+		const now = Date.now();
+		let afterUser = true;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i]!;
+			if (entry.type !== "message") continue;
+			const message = entry.message;
+			if (message.role === "user") afterUser = false;
+			const time = Date.parse(entry.timestamp);
+			if (!afterUser && !(windowMs > 0 && time <= now && now - time <= windowMs)) continue;
+			if (message.role === "toolResult" && message.toolName === "task" && !message.isError) {
+				const details = message.details;
+				if (
+					isRecord(details) &&
+					Array.isArray(details.results) &&
+					details.results.some(
+						result =>
+							isRecord(result) &&
+							result.agent === agent &&
+							result.exitCode === 0 &&
+							!result.aborted &&
+							!result.error,
+					)
+				)
+					return true;
+			}
+			if (message.role === "custom" && message.customType === "async-result") {
+				const details = message.details;
+				if (
+					isRecord(details) &&
+					Array.isArray(details.jobs) &&
+					details.jobs.some(
+						job =>
+							isRecord(job) && job.type === "task" && job.status === "completed" && job.agentProfile === agent,
+					)
+				)
+					return true;
+			}
+		}
+		return false;
 	}
 
 	async execute(

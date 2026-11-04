@@ -14,3 +14,5 @@ Ask only for materially different tradeoffs the user must decide. Default: act u
 - NEVER add buttons (`<button>`, `type="submit"`): the UI supplies Submit and Cancel.
 - Keep forms short: a few questions, 2–5 options each; ask follow-ups in a later call.
 </instruction>
+
+When ask.gate is enabled, option questions require valid recommended indexes and a recent completed result from the configured shadow profile. Passing calls return working defaults without a dialog: proceed immediately and put the choices on a styled review page, with only its link in chat. Use critical.kind (irreversible/public/hands/credential) and a concrete critical.reason only for a genuine mission-critical stop.
