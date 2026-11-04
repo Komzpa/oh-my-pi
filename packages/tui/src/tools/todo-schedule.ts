@@ -32,6 +32,10 @@ export interface TodoSchedule {
 	finishedAt?: number;
 	/** Time this row first entered the plan as a user requirement. */
 	firstRequirementAt?: number;
+	/** Measured preview commit ancestry; written by the preview runtime. */
+	visibleAt?: number;
+	previewPending?: boolean;
+	previewTracked?: boolean;
 	/** First usable result was handed to the user at this time. */
 	firstDeliveredAt?: number;
 	/** Short final worker report retained for the user's review handoff. */
@@ -46,6 +50,7 @@ export interface TodoSchedule {
 	speculativeOn?: string;
 	/** Observed Task worker that actually executed this row, independent of forecast ownership. */
 	executor?: {
+		gitCommits?: { commit: string; repoPath: string }[];
 		workerId: string;
 		agentProfile?: string;
 		resolvedModel?: string;
@@ -58,6 +63,7 @@ export interface TodoSchedule {
 
 /** One immutable terminal worker attempt attached to its owning todo row. */
 export interface TodoReworkAttempt {
+	gitCommits?: { commit: string; repoPath: string }[];
 	attemptId: string;
 	workerName: string;
 	resolvedModel: string;
@@ -1470,6 +1476,13 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 						? `plan required: ${planActions}`
 						: `forecast unavailable${row.issues[0] ? `: ${safeText(row.issues[0])}` : ""}`;
 	const parts = [label];
+	if (row.schedule?.previewTracked && finiteTimestamp(row.schedule.firstRequirementAt)) {
+		const end = row.schedule.visibleAt ?? now;
+		parts.push(
+			`asked→visible ${Math.floor(Math.max(0, end - row.schedule.firstRequirementAt) / 60_000)}m${row.schedule.visibleAt === undefined ? " (live)" : ""}`,
+		);
+		if (row.schedule.previewPending) parts.push("commit not visible");
+	}
 	if (row.schedule?.review === "user") parts.push("review: user");
 	if (row.schedule?.speculativeOn) parts.push(`speculative on ${safeText(row.schedule.speculativeOn)}`);
 	if (row.onProposal?.length) parts.push(`on proposal: ${row.onProposal.map(safeText).join(", ")}`);
@@ -1578,6 +1591,13 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 						? `plan required: ${planActions}`
 						: `forecast unavailable${row.issues[0] ? `: ${safeText(row.issues[0])}` : ""}`;
 	const parts = [label];
+	if (row.schedule?.previewTracked && finiteTimestamp(row.schedule.firstRequirementAt)) {
+		const end = row.schedule.visibleAt ?? now;
+		parts.push(
+			`asked→visible ${Math.floor(Math.max(0, end - row.schedule.firstRequirementAt) / 60_000)}m${row.schedule.visibleAt === undefined ? " (live)" : ""}`,
+		);
+		if (row.schedule.previewPending) parts.push("commit not visible");
+	}
 	if (row.schedule?.review === "user") parts.push("review: user");
 	if (row.schedule?.speculativeOn)
 		parts.push(`speculative on ${truncateToWidth(safeText(row.schedule.speculativeOn), 32)}`);
