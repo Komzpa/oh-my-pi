@@ -68,7 +68,7 @@ export interface AgentsProbe {
 	/** Whether the worker's lifecycle proxy manages the worker's registry proxy. */
 	manages(): Promise<boolean>;
 	/** Open a persisted session so restart tests can read its checkpoint. */
-	open(id: string, options: { sessionFile?: string; gated?: boolean; persistedCwd: string }): Promise<string>;
+	openPersisted(id: string, persistedCwd: string): Promise<string>;
 }
 
 /** Test-only boot globals of the probe service. */
@@ -130,7 +130,7 @@ const probe: AgentsProbe = {
 		const session = await makeSession(
 			id,
 			options.gated === true,
-			"persistedCwd" in options ? options.persistedCwd : undefined,
+			"persistedCwd" in options && typeof options.persistedCwd === "string" ? options.persistedCwd : undefined,
 		);
 		const registry = AgentRegistry.global();
 		registry.register({
@@ -227,6 +227,10 @@ const probe: AgentsProbe = {
 			?.session?.getTodoPhases()
 			.flatMap(phase => phase.tasks.flatMap(row => row.schedule?.resources ?? [])) ?? [],
 	manages: async () => AgentLifecycleManager.global().manages(AgentRegistry.global()),
+	openPersisted: async (id, persistedCwd) => {
+		const options = { gated: false, persistedCwd };
+		return probe.open(id, options);
+	},
 };
 
 function isProbeGlobals(value: unknown): value is AgentsProbeGlobals {
