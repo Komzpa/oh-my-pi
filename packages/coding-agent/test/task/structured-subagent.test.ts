@@ -556,7 +556,12 @@ describe("structured subagent primitive", () => {
 			Effort.Low,
 			Effort.Low,
 		]);
-		expect(create.mock.calls[0]?.[0]?.thinkingLevelCeiling).toBeUndefined();
+		expect(
+			create.mock.calls.map(([options]) => {
+				const ceiling = options?.thinkingLevelCeiling;
+				return typeof ceiling === "function" ? ceiling(model) : ceiling;
+			}),
+		).toEqual([undefined, Effort.Low, Effort.Low]);
 	});
 	it("holds the parent on an inline child until it settles, but not on a detached one", async () => {
 		mockDiscovery();

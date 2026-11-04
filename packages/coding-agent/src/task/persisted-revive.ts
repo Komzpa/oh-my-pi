@@ -37,6 +37,8 @@ import {
 } from "../session/session-manager";
 import type { EventBus } from "../utils/event-bus";
 import {
+	workerEffortCeilingFor,
+	readAgentMaxEffort,
 	attachIrcWakeTurnMonitor,
 	compactionThresholdSettings,
 	createMCPProxyTools,
@@ -426,6 +428,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			...(perCallModel ? { model: perCallModel, thinkingLevel: init.perCallThinkingLevel ?? undefined } : {}),
 			...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
 			modelPatternAuthFallback: restoredSeance || init.perCallModel ? undefined : init.resolvedModel,
+			thinkingLevelCeiling: workerEffortCeilingFor(init.agent ?? "", undefined, readAgentMaxEffort(spec.settings)),
 			settings: subagentSettings,
 			sessionManager: reopened,
 			agentId: ref.id,
@@ -456,7 +459,11 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			// never switches models, and keeps the live task.maxEffort ceiling the spawn ran under.
 			...(assertApprovedModel
 				? {
-						thinkingLevelCeiling: cfgTaskMaxEffort.get(spec.settings),
+						thinkingLevelCeiling: workerEffortCeilingFor(
+							init.agent ?? "",
+							cfgTaskMaxEffort.get(spec.settings),
+							readAgentMaxEffort(spec.settings),
+						),
 						disableModelFallback: true,
 						disableServerSideFallback: true,
 						assertDispatchModel: (model: Model) => {
