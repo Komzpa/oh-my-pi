@@ -413,6 +413,7 @@ export class TurnRecovery {
 	#usageReserveApproval: { model: string; sessionId: string } | undefined;
 	#pendingRetryErrors: PendingRetryError[] = [];
 	#usageLimitOutcomes = new WeakMap<AssistantMessage, Promise<UsageLimitOutcome>>();
+	#availabilityOutcomes = new WeakSet<AssistantMessage>();
 	#emptyStopRetryCount = 0;
 	#unexpectedStopRetryCount = 0;
 	#malformedFunctionCallRetryCount = 0;
@@ -929,6 +930,30 @@ export class TurnRecovery {
 			this.#usageLimitOutcomes.set(message, recorded);
 		}
 		return (await recorded).switchedCredential;
+	}
+
+	/** Record terminal failures even when retry policy is disabled or replay is unsafe. */
+	async recordProviderAvailabilityOutcome(message: AssistantMessage): Promise<void> {
+		if (message.stopReason !== "error" || this.#availabilityOutcomes.has(message)) return;
+		if ((await this.#usageLimitOutcomes.get(message))?.switchedCredential) return;
+		// Optional fields keep this topic standalone on main while newer streams carry wire evidence.
+		const evidence = message as AssistantMessage & {
+			errorType?: string;
+			errorCode?: string;
+			errorResetAt?: number;
+		};
+		if (
+			recordProviderFailure(message.provider, {
+				status: message.errorStatus,
+				type: evidence.errorType,
+				code: evidence.errorCode,
+				resetAt: evidence.errorResetAt,
+				body: message.errorMessage,
+				credentialVersion: this.#host.modelRegistry.providerCredentialVersion(message.provider),
+				catalogModel: this.#host.modelRegistry.find(message.provider, message.model) !== undefined,
+			})
+		)
+			this.#availabilityOutcomes.add(message);
 	}
 
 	/** Prompts after transient overlap with a prior agent run. `onClaimed` fires synchronously
@@ -2999,22 +3024,7 @@ export class TurnRecovery {
 		// sibling account can serve the request now or after a short wait. Cool the provider that
 		// failed, not the active model: /switch may have changed it.
 		if (!staleOpenAIResponsesReplayError && !switchedCredential && !waitForSiblingCredential) {
-			// Optional wire evidence is also understood when this topic runs alone
-			// with main's AssistantMessage type (older providers omit these fields).
-			const evidence = message as AssistantMessage & {
-				errorType?: string;
-				errorCode?: string;
-				errorResetAt?: number;
-			};
-			recordProviderFailure(message.provider, {
-				status: message.errorStatus,
-				type: evidence.errorType,
-				code: evidence.errorCode,
-				resetAt: evidence.errorResetAt,
-				body: message.errorMessage,
-				credentialVersion: this.#host.modelRegistry.providerCredentialVersion(message.provider),
-				catalogModel: this.#host.modelRegistry.find(message.provider, message.model) !== undefined,
-			});
+			await this.recordProviderAvailabilityOutcome(message);
 		}
 		const longUsageLimitFallback =
 			currentModel !== undefined &&

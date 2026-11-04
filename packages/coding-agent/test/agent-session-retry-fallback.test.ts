@@ -49,6 +49,7 @@ import {
 	coolDownExhaustedProvider,
 	isProviderExhausted,
 	isProviderExhaustionError,
+	providerExhaustionRecord,
 } from "@oh-my-pi/pi-coding-agent/session/provider-exhaustion";
 import { getProviderCooldownsPath, TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
@@ -9315,6 +9316,36 @@ describe("AgentSession retry fallback", () => {
 		});
 		await expect(session.prompt("Try unavailable provider")).rejects.toMatchObject({ failureKind: "infrastructure" });
 		expect(calls).toBe(0);
+	});
+	it.each([
+		{ status: 401, expectedClass: "auth" },
+		{ status: 404, expectedClass: "entitlement" },
+	])("records terminal $status availability with retries disabled", async ({ status, expectedClass }) => {
+		const primary = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		let calls = 0;
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: model => {
+				calls++;
+				return finalizedErrorStream(model, {
+					id: AIError.create(AIError.Flag.BadRequest),
+					status,
+					stopReason: "error",
+					message: "opaque provider failure",
+				});
+			},
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "retry.enabled": false, "compaction.enabled": false }),
+			modelRegistry,
+		});
+		await session.prompt("Record terminal infrastructure failure");
+		await session.waitForIdle();
+		expect(calls).toBe(1);
+		expect(providerExhaustionRecord(primary.provider)).toMatchObject({ class: expectedClass, failedCallCount: 1 });
 	});
 	it("cools a balance-exhausted provider across workers but not transient failures", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");

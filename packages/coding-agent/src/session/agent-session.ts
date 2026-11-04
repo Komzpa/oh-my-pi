@@ -5266,6 +5266,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					return;
 				}
 			}
+			await this.#recovery.recordProviderAvailabilityOutcome(msg);
 			// Classifier refusals are persisted-skipped above; also prune the trailing
 			// stub from active context so the next turn's prompt does not replay it.
 			// Keep a reference for post-settle readers (print mode, task executor via
