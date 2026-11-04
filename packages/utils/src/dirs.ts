@@ -805,13 +805,13 @@ export function getPythonGatewayDir(): string {
 /**
  * Get the cross-process provider exhaustion cooldown file
  * (~/.omp/agent/provider-cooldowns.json; XDG default: $XDG_STATE_HOME/omp/provider-cooldowns.json).
- * `bun test` processes get a per-user temp path instead, so suites never read or write the
+ * `bun test` processes get a per-process temp path instead, so suites never read or write the
  * developer's real ban list.
  */
 export function getProviderCooldownsPath(): string {
 	if (isBunTestRuntime()) {
 		const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().username;
-		return path.join(os.tmpdir(), `omp-test-provider-cooldowns-${uid}`, "provider-cooldowns.json");
+		return path.join(os.tmpdir(), `omp-test-provider-cooldowns-${uid}-${process.pid}`, "provider-cooldowns.json");
 	}
 	return dirs.agentSubdir(undefined, "provider-cooldowns.json", "state");
 }

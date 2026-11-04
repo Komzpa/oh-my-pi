@@ -36,7 +36,7 @@ console.log(JSON.stringify(result));
 `;
 	const child = Bun.spawn([process.execPath, "--eval", script], {
 		// The cooldown file lives in the agent dir; point it (and any XDG state home) at the fixture.
-		env: { ...process.env, PI_CODING_AGENT_DIR: stateDir, XDG_STATE_HOME: "" },
+		env: { ...process.env, PI_TEST_RUNTIME: "", PI_CODING_AGENT_DIR: stateDir, XDG_STATE_HOME: "" },
 		stdout: "pipe",
 		stderr: "pipe",
 	});
