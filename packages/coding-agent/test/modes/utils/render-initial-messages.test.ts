@@ -91,6 +91,7 @@ function makeCtx(): RenderInitialMessagesTestContext {
 				buildSessionContext: llmContextSpy,
 				getEntries: vi.fn(() => []),
 				getEntryCount: vi.fn(() => 0),
+				getConversationTip: () => undefined,
 				iterateEntries: vi.fn(() => [][Symbol.iterator]()),
 				getCwd: vi.fn(() => "/tmp"),
 				getConversationTip: () => undefined,
@@ -100,6 +101,7 @@ function makeCtx(): RenderInitialMessagesTestContext {
 			buildSessionContext: llmContextSpy,
 			getEntries: vi.fn(() => []),
 			getEntryCount: vi.fn(() => 0),
+			getConversationTip: () => undefined,
 			iterateEntries: vi.fn(() => [][Symbol.iterator]()),
 			getCwd: vi.fn(() => "/tmp"),
 		},
@@ -209,6 +211,7 @@ function makeRenderCtx(
 			sessionManager: {
 				getEntries: vi.fn(() => []),
 				getEntryCount: vi.fn(() => 0),
+				getConversationTip: () => undefined,
 				iterateEntries: vi.fn(() => [][Symbol.iterator]()),
 				getCwd: vi.fn(() => "/tmp"),
 				getConversationTip: () => undefined,
@@ -223,6 +226,7 @@ function makeRenderCtx(
 		sessionManager: {
 			getEntries: vi.fn(() => []),
 			getEntryCount: vi.fn(() => 0),
+			getConversationTip: () => undefined,
 			iterateEntries: vi.fn(() => [][Symbol.iterator]()),
 			getCwd: vi.fn(() => "/tmp"),
 			putBlobSync: vi.fn(() => ({
