@@ -1,4 +1,7 @@
 import * as path from "node:path";
+import { InstructionFiles } from "./session/instruction-files";
+import { cfgInstructionRefreshEnabled } from "./session/context-settings";
+
 import {
 	Agent,
 	type AgentEvent,
@@ -2468,6 +2471,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorConfigsPromise,
 		]);
 	let contextFiles = initialContextFiles;
+	const instructionFiles = new InstructionFiles(sessionManager);
+	if (cfgInstructionRefreshEnabled.get(settings)) {
+		for (const file of contextFiles ?? []) await instructionFiles.loaded(file.path, file.content, true);
+	}
 
 	let agent: Agent;
 	const effectiveGetApiKey =
@@ -2619,6 +2626,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			skipPythonPreflight: options.skipPythonPreflight,
 			contextFiles,
+			get recordInstructionFile() {
+				return cfgInstructionRefreshEnabled.get(settings)
+					? (filePath: string, body?: string) => instructionFiles.loadedInstruction(filePath, body)
+					: undefined;
+			},
 			noContextFiles: options.noContextFiles,
 			get workspaceTree() {
 				return lateWorkspaceTree ?? resolvedWorkspaceTree;
@@ -4393,6 +4405,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					: { mode: "full" },
 			);
 			const defaultPrompt = await buildSystemPromptInternal({
+				onContextFile: async filePath => {
+					if (cfgInstructionRefreshEnabled.get(settings)) await instructionFiles.loaded(filePath, undefined, true);
+				},
 				cwd: promptCwd,
 				additionalWorkspaceRoots: sessionManager.getAdditionalDirectories(),
 				noContextFiles: options.noContextFiles,
@@ -5088,6 +5103,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// block createAgentSession for tens of seconds while the whole file is
 		// streamed and parsed on the main thread.
 		session = new AgentSession({
+			instructionFiles,
 			cacheWarmer,
 			costGate: options.costGate,
 			advisorWatchdogPrompt,

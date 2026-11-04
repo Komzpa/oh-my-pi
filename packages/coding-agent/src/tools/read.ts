@@ -1,3 +1,4 @@
+import { isInstructionFilePath } from "../session/instruction-files";
 import { isReadableUrlPath, type ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -2333,6 +2334,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		// unbuffered files keep one centralized 256KB peek regardless of
 		// extension, since only magic bytes — never the name — decide.
 		const wholeFileBytes = fileSize <= SNAPSHOT_MAX_BYTES ? await readWholeFile(absolutePath) : undefined;
+		if (this.session.recordInstructionFile && isInstructionFilePath(absolutePath)) {
+			await this.session.recordInstructionFile(absolutePath, wholeFileBytes?.toString("utf8"));
+		}
 		const imageHeader =
 			isRawSelector(parsed) && !rawImages
 				? undefined
