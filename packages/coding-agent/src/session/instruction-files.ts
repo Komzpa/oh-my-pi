@@ -1,10 +1,21 @@
 import * as path from "node:path";
-import { createTwoFilesPatch } from "diff";
+import { structuredPatchHunks } from "@oh-my-pi/pi-natives";
 import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import changedTemplate from "../prompts/system/instruction-file-changed.md" with { type: "text" };
 import type { SessionManager } from "./session-manager";
 
 const ENTRY_TYPE = "instruction-file-version";
+
+function instructionPatch(filePath: string, before: string, after: string): string {
+	const hunks = structuredPatchHunks(before, after, 4);
+	const body = hunks
+		.map(
+			hunk =>
+				`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@\n${hunk.lines.join("\n")}`,
+		)
+		.join("\n");
+	return `--- ${filePath}\n+++ ${filePath}\n${body}\n`;
+}
 
 export function isInstructionFilePath(filePath: string): boolean {
 	const name = path.basename(filePath).toLowerCase();
@@ -92,10 +103,7 @@ export class InstructionFiles {
 				}
 				const notice = prompt.compile(changedTemplate)({
 					path: filePath,
-					body:
-						Buffer.byteLength(body) <= maxBytes
-							? body
-							: createTwoFilesPatch(filePath, filePath, previous.body, body),
+					body: Buffer.byteLength(body) <= maxBytes ? body : instructionPatch(filePath, previous.body, body),
 				});
 				const version: InstructionVersion = {
 					path: filePath,
