@@ -78,7 +78,8 @@ import {
 	type ServingModel,
 	validateRetryFallbackChains,
 } from "./retry-fallback-chains";
-import { coolDownExhaustedProvider, isProviderExhaustionError, providerExhaustionRecord } from "./provider-exhaustion";
+import { ProviderUnavailableError } from "./provider-unavailable-error";
+import { recordProviderFailure, providerExhaustionRecord } from "./provider-exhaustion";
 import { describeUsageFallback } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
@@ -279,6 +280,7 @@ export interface TurnRecoveryHost {
 	thinkingLevelCeiling(): Effort | undefined;
 	/** The session never switches to a retry fallback model (a per-call `model` subagent). */
 	modelFallbackDisabled?(): boolean;
+	isSubagent?(): boolean;
 	isDisposed(): boolean;
 	isStreaming(): boolean;
 	isCompacting(): boolean;
@@ -819,6 +821,12 @@ export class TurnRecovery {
 				waitSignal.throwIfAborted();
 				const model = this.#host.model();
 				if (!model) return;
+				if (!providerExhaustionRecord(model.provider) && !this.#host.modelRegistry.hasConfiguredAuth(model)) {
+					recordProviderFailure(model.provider, {
+						code: "missing_api_key",
+						credentialVersion: this.#host.modelRegistry.providerCredentialVersion(model.provider),
+					});
+				}
 				const cooldown = providerExhaustionRecord(model.provider);
 				if (!cooldown) return;
 				const currentSelector = formatRetryFallbackSelector(model, this.#host.thinkingLevel());
@@ -837,6 +845,7 @@ export class TurnRecovery {
 						continue;
 					}
 				}
+				if (this.#host.isSubagent?.()) throw new ProviderUnavailableError(model.provider, cooldown.class);
 				let until = cooldown.until;
 				for (const role of this.retryFallbackChainKeys(currentSelector, model)) {
 					for (const candidate of getRetryFallbackEffectiveChain(
@@ -857,10 +866,10 @@ export class TurnRecovery {
 						attempt: 1,
 						maxAttempts: 1,
 						delayMs: Math.max(0, until - Date.now()),
-						errorMessage: "Providers cooling down; waiting for the earliest cooldown expiry",
+						errorMessage: "Providers unavailable; waiting for the earliest expected recovery",
 					});
 				}
-				await sleepUntil(until, waitSignal);
+				await sleepUntil(Math.min(Math.max(until, Date.now() + 1_000), Date.now() + 5_000), waitSignal);
 			}
 		} finally {
 			if (waiting)
@@ -2989,14 +2998,22 @@ export class TurnRecovery {
 		// A provider-wide cooldown is only warranted once credential rotation has established that no
 		// sibling account can serve the request now or after a short wait. Cool the provider that
 		// failed, not the active model: /switch may have changed it.
-		if (
-			!staleOpenAIResponsesReplayError &&
-			!switchedCredential &&
-			!waitForSiblingCredential &&
-			isProviderExhaustionError(message.errorStatus, message.errorMessage)
-		) {
-			coolDownExhaustedProvider(message.provider, {
-				reason: `${message.errorStatus ?? ""} ${message.errorMessage ?? "provider exhausted"}`.trim(),
+		if (!staleOpenAIResponsesReplayError && !switchedCredential && !waitForSiblingCredential) {
+			// Optional wire evidence is also understood when this topic runs alone
+			// with main's AssistantMessage type (older providers omit these fields).
+			const evidence = message as AssistantMessage & {
+				errorType?: string;
+				errorCode?: string;
+				errorResetAt?: number;
+			};
+			recordProviderFailure(message.provider, {
+				status: message.errorStatus,
+				type: evidence.errorType,
+				code: evidence.errorCode,
+				resetAt: evidence.errorResetAt,
+				body: message.errorMessage,
+				credentialVersion: this.#host.modelRegistry.providerCredentialVersion(message.provider),
+				catalogModel: this.#host.modelRegistry.find(message.provider, message.model) !== undefined,
 			});
 		}
 		const longUsageLimitFallback =

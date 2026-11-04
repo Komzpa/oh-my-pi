@@ -1,152 +1,418 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { is402BillingCapBody, isDashScopeTokenLimitText, isUsageLimitOutcome } from "@oh-my-pi/pi-ai";
-import { extractRetryHint, getProviderCooldownsPath, logger } from "@oh-my-pi/pi-utils";
+import { getProviderCooldownsPath, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { withFileLockSync } from "@oh-my-pi/pi-utils/file-lock";
 
-/**
- * Billing and quota failures keep a provider out of fallback chains and new
- * subagent spawns; without explicit retry timing the ban lasts one hour.
- */
 export const PROVIDER_EXHAUSTION_COOLDOWN_MS = 60 * 60 * 1_000;
+const PROBE_MIN_MS = 5 * 60 * 1_000;
+const PROBE_LEASE_MS = 60 * 1_000;
+export type ProviderUnavailableClass = "quota" | "balance" | "entitlement" | "auth" | "discovery";
 
-/** One provider's persisted unavailability record. */
+export interface ProviderFailureEvidence {
+	status?: number;
+	type?: string;
+	code?: string;
+	discoveryFailure?: boolean;
+	/** A JSON response body, never human-readable error prose. */
+	body?: unknown;
+	/** Only a catalog-confirmed model miss is an account entitlement failure. */
+	catalogModel?: boolean;
+	resetAt?: number;
+	credentialVersion?: string;
+}
+
 export interface ProviderExhaustionRecord {
 	provider: string;
+	class: ProviderUnavailableClass;
 	reason: string;
 	recordedAt: number;
 	until: number;
+	firstSeen: number;
+	lastSeen: number;
+	failedCallCount: number;
+	status?: number;
+	type?: string;
+	code?: string;
+	resetAt?: number;
+	credentialVersion?: string;
+	revision: string;
+	nextProbeAt: number;
+	probeAttempts: number;
+	leaseOwner?: string;
+	leaseUntil?: number;
 }
 
-/** Reason shown in spawn order/fallbacks when an exhausted provider is skipped. */
 export interface ProviderExhaustionExclusion {
 	provider: string;
 	reason: string;
 	until: number;
 }
 
-function statePath(): string {
-	return getProviderCooldownsPath();
+export interface ProviderAvailabilityTransition {
+	id: string;
+	provider: string;
+	available: boolean;
+	class: ProviderUnavailableClass;
+	since: number;
+	failedCallCount: number;
 }
 
-function readPersisted(now: number): Map<string, ProviderExhaustionRecord> {
-	const live = new Map<string, ProviderExhaustionRecord>();
-	try {
-		const parsed: unknown = JSON.parse(fs.readFileSync(statePath(), "utf8"));
-		if (Array.isArray(parsed)) {
-			for (const entry of parsed) {
-				if (!entry || typeof entry !== "object") continue;
-				const record = entry as Partial<ProviderExhaustionRecord>;
-				if (typeof record.provider !== "string" || typeof record.until !== "number") continue;
-				if (record.until <= now) continue;
-				live.set(record.provider.toLowerCase(), {
-					provider: record.provider,
-					reason: typeof record.reason === "string" ? record.reason : "provider exhausted",
-					recordedAt:
-						typeof record.recordedAt === "number"
-							? record.recordedAt
-							: record.until - PROVIDER_EXHAUSTION_COOLDOWN_MS,
-					until: record.until,
-				});
-			}
+const listeners = new Set<(transition: ProviderAvailabilityTransition) => void>();
+
+/** Signals that durable transitions are ready; consumers atomically claim the queue. */
+export function subscribeProviderTransitions(
+	listener: (transition: ProviderAvailabilityTransition) => void,
+): () => void {
+	listeners.add(listener);
+	return () => listeners.delete(listener);
+}
+
+function transitionFor(record: ProviderExhaustionRecord, available: boolean): ProviderAvailabilityTransition {
+	return {
+		id: `${record.revision}:${available}`,
+		provider: record.provider,
+		available,
+		class: record.class,
+		since: record.firstSeen,
+		failedCallCount: record.failedCallCount,
+	};
+}
+
+function notify(record: ProviderExhaustionRecord, available: boolean): void {
+	const transition = transitionFor(record, available);
+	for (const listener of listeners) {
+		try {
+			listener(transition);
+		} catch (error) {
+			logger.warn("Provider transition notice failed", { provider: record.provider, error: String(error) });
 		}
-	} catch {
-		// Missing or corrupt state is treated as no recorded bans.
 	}
-	return live;
 }
 
-/** Temp file plus rename so concurrent sessions never observe partial state. */
-function writePersisted(records: Iterable<ProviderExhaustionRecord>): void {
-	const file = statePath();
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+function structuredEvidence(evidence: ProviderFailureEvidence): ProviderFailureEvidence {
+	let body = evidence.body;
+	if (typeof body === "string") {
+		try {
+			body = JSON.parse(body);
+		} catch {
+			body = undefined;
+		}
+	}
+	const envelope = asRecord(body);
+	const error = asRecord(envelope?.error) ?? envelope;
+	return {
+		...evidence,
+		status: evidence.status ?? (typeof envelope?.status === "number" ? envelope.status : undefined),
+		type: evidence.type ?? (typeof error?.type === "string" ? error.type : undefined),
+		code:
+			evidence.code ??
+			(typeof error?.code === "string" ? error.code : typeof error?.param === "string" ? error.param : undefined),
+	};
+}
+
+/** Billing and auth decisions use machine fields; prose never changes availability. */
+export function classifyProviderFailure(evidence: ProviderFailureEvidence): ProviderUnavailableClass | undefined {
+	const { status, type, code, catalogModel, discoveryFailure } = structuredEvidence(evidence);
+	if (discoveryFailure) return "discovery";
+	const fields = [type?.toLowerCase(), code?.toLowerCase()];
+	if (
+		fields.some(
+			value => value === "billing_error" || value === "billing_not_configured" || value === "subscription_required",
+		)
+	) {
+		return "entitlement";
+	}
+	if (status === 404 && catalogModel) return "entitlement";
+	if (
+		fields.some(
+			value =>
+				value === "insufficient_balance_error" ||
+				value === "insufficient_balance" ||
+				value === "insufficient_funds" ||
+				value === "credits_exhausted",
+		)
+	) {
+		return "balance";
+	}
+	if (
+		status === 401 ||
+		fields.some(
+			value =>
+				value === "invalid_grant" ||
+				value === "invalid_api_key" ||
+				value === "missing_api_key" ||
+				value === "authentication_error",
+		)
+	)
+		return "auth";
+	if (
+		fields.some(
+			value =>
+				value === "personal-team-blocked:spending-limit" ||
+				value === "insufficient_quota" ||
+				value === "quota_exceeded" ||
+				value === "usage_limit_reached" ||
+				value === "resource_exhausted",
+		)
+	) {
+		return "quota";
+	}
+	// Absent an explicit entitlement code, HTTP payment-required is a balance failure.
+	if (status === 402) return "balance";
+	return undefined;
+}
+
+interface ProviderStateDocument {
+	providers: Map<string, ProviderExhaustionRecord>;
+	transitions: ProviderAvailabilityTransition[];
+}
+
+function readDocument(): ProviderStateDocument {
+	const document: ProviderStateDocument = { providers: new Map(), transitions: [] };
+	const records = document.providers;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(fs.readFileSync(getProviderCooldownsPath(), "utf8"));
+	} catch (error) {
+		if (!isEnoent(error)) logger.warn("Cannot read provider availability", { error: String(error) });
+		return document;
+	}
+	const envelope = asRecord(parsed);
+	if (Array.isArray(envelope?.transitions)) {
+		document.transitions = envelope.transitions.filter((value): value is ProviderAvailabilityTransition => {
+			const event = asRecord(value);
+			return (
+				typeof event?.id === "string" && typeof event.provider === "string" && typeof event.available === "boolean"
+			);
+		});
+	}
+	const providers = Array.isArray(parsed) ? parsed : envelope?.providers;
+	if (!Array.isArray(providers)) return document;
+	for (const entry of providers) {
+		const value = asRecord(entry);
+		if (!value || typeof value.provider !== "string" || typeof value.until !== "number") continue;
+		const firstSeen = typeof value.firstSeen === "number" ? value.firstSeen : Number(value.recordedAt ?? 0);
+		const classification = value.class;
+		const stateClass =
+			classification === "quota" ||
+			classification === "balance" ||
+			classification === "entitlement" ||
+			classification === "auth" ||
+			classification === "discovery"
+				? classification
+				: "quota";
+		const record = entry as ProviderExhaustionRecord;
+		records.set(value.provider.toLowerCase(), {
+			...record,
+			class: stateClass,
+			firstSeen,
+			lastSeen: typeof value.lastSeen === "number" ? value.lastSeen : firstSeen,
+			failedCallCount: typeof value.failedCallCount === "number" ? value.failedCallCount : 1,
+			revision: typeof value.revision === "string" ? value.revision : `legacy-${firstSeen}`,
+			nextProbeAt: typeof value.nextProbeAt === "number" ? value.nextProbeAt : value.until,
+			probeAttempts: typeof value.probeAttempts === "number" ? value.probeAttempts : 0,
+			// Legacy fixed timers are probe deadlines, never authoritative quota resets.
+			resetAt: record.resetAt,
+			reason: `provider unavailable (${stateClass})`,
+		});
+	}
+	return document;
+}
+
+function readPersisted(): Map<string, ProviderExhaustionRecord> {
+	return readDocument().providers;
+}
+
+function writePersisted(document: ProviderStateDocument): void {
+	const file = getProviderCooldownsPath();
 	fs.mkdirSync(path.dirname(file), { recursive: true });
-	const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-	fs.writeFileSync(tmp, JSON.stringify([...records], null, "\t"));
-	fs.renameSync(tmp, file);
+	const temporary = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
+	fs.writeFileSync(
+		temporary,
+		JSON.stringify({ providers: [...document.providers.values()], transitions: document.transitions }, null, "\t"),
+	);
+	fs.renameSync(temporary, file);
 }
 
-/**
- * Read-merge-write under the cross-process lock: the rename keeps readers from
- * seeing partial state, the lock keeps two processes cooling different
- * providers from overwriting each other's record.
- */
-function persist(record: ProviderExhaustionRecord): void {
-	withFileLockSync(statePath(), () => {
-		const merged = readPersisted(Math.min(record.recordedAt, Date.now()));
-		const key = record.provider.toLowerCase();
-		// Preserve other providers already recorded by earlier sessions.
-		const existing = merged.get(key);
-		if (!existing || existing.recordedAt <= record.recordedAt) merged.set(key, record);
-		writePersisted(merged.values());
+function mutate<T>(
+	operation: (records: Map<string, ProviderExhaustionRecord>, transitions: ProviderAvailabilityTransition[]) => T,
+): T {
+	return withFileLockSync(getProviderCooldownsPath(), () => {
+		const document = readDocument();
+		const previous = new Map(document.providers);
+		const result = operation(document.providers, document.transitions);
+		for (const [key, record] of document.providers) {
+			if (!previous.has(key)) document.transitions.push(transitionFor(record, false));
+		}
+		for (const [key, record] of previous) {
+			if (!document.providers.has(key)) document.transitions.push(transitionFor(record, true));
+		}
+		writePersisted(document);
+		return result;
 	});
 }
 
-/** Mark a provider unavailable after a balance/billing/quota failure; shared by all omp processes. */
-export function coolDownExhaustedProvider(provider: string, options?: { now?: number; reason?: string }): void {
-	const now = options?.now ?? Date.now();
-	const detail = options?.reason?.trim() || "provider exhausted";
-	const reason = detail.startsWith("billing:") ? detail : `billing: ${detail}`;
-	const wasCooling = isProviderExhausted(provider, now);
-	const cooldownMs = extractRetryHint(undefined, detail) ?? PROVIDER_EXHAUSTION_COOLDOWN_MS;
+/** Atomically claim pending notices once across processes, including startup transitions. */
+export function claimProviderTransitions(): ProviderAvailabilityTransition[] {
+	if (readDocument().transitions.length === 0) return [];
+	return mutate((_records, transitions) => transitions.splice(0));
+}
+
+/** Returns false for transient or unclassified errors. Failed probes do not count as calls. */
+export function recordProviderFailure(provider: string, evidence: ProviderFailureEvidence, now = Date.now()): boolean {
 	try {
-		persist({ provider, reason, recordedAt: now, until: now + cooldownMs });
+		return persistProviderFailure(provider, evidence, now);
 	} catch (error) {
-		// The cooldown is an optimization: an unwritable state dir must not abort fallback recovery
-		// or mask the original provider error.
-		logger.warn("Failed to persist provider exhaustion cooldown", {
-			provider,
-			stateFile: statePath(),
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return;
-	}
-	if (!wasCooling) {
-		logger.warn("Provider exhausted; cooling down fallback routes", {
-			provider,
-			reason,
-			cooldownMs,
-			stateFile: statePath(),
-		});
+		logger.warn("Cannot persist provider availability", { provider, error: String(error) });
+		return false;
 	}
 }
 
-/** Whether this provider is inside its cross-process exhaustion cooldown. */
-export function isProviderExhausted(provider: string, now = Date.now()): boolean {
-	return readPersisted(now).has(provider.toLowerCase());
+function persistProviderFailure(provider: string, evidence: ProviderFailureEvidence, now: number): boolean {
+	const normalized = structuredEvidence(evidence);
+	const classification = classifyProviderFailure(normalized);
+	if (!classification) return false;
+	const transition = mutate(records => {
+		const key = provider.toLowerCase();
+		const previous = records.get(key);
+		const changed = previous === undefined;
+		const record: ProviderExhaustionRecord = {
+			provider,
+			class: classification,
+			reason: `provider unavailable (${classification})`,
+			recordedAt: now,
+			firstSeen: changed ? now : previous.firstSeen,
+			lastSeen: now,
+			failedCallCount: (previous?.failedCallCount ?? 0) + 1,
+			status: normalized.status,
+			type: normalized.type,
+			code: normalized.code,
+			resetAt:
+				classification === "quota"
+					? (normalized.resetAt ?? (previous?.class === "quota" ? previous.resetAt : undefined))
+					: undefined,
+			credentialVersion: normalized.credentialVersion ?? previous?.credentialVersion,
+			revision: crypto.randomUUID(),
+			nextProbeAt: classification === "quota" ? (normalized.resetAt ?? now + PROBE_MIN_MS) : now + PROBE_MIN_MS,
+			probeAttempts: 0,
+			until:
+				classification === "quota" && normalized.resetAt !== undefined ? normalized.resetAt : now + PROBE_MIN_MS,
+		};
+		records.set(key, record);
+		return changed ? record : undefined;
+	});
+	if (transition) notify(transition, false);
+	return true;
 }
 
-/** The live exhaustion record (with the reason surfaced in order/fallbacks), if any. */
+/** Legacy entry point; reason is diagnostic-only and never classified as prose. */
+export function coolDownExhaustedProvider(
+	provider: string,
+	options?: ProviderFailureEvidence & { now?: number; reason?: string },
+): void {
+	recordProviderFailure(
+		provider,
+		{ ...options, body: options?.body ?? options?.reason, status: options?.status ?? 402 },
+		options?.now,
+	);
+}
+
 export function providerExhaustionRecord(provider: string, now = Date.now()): ProviderExhaustionRecord | undefined {
-	return readPersisted(now).get(provider.toLowerCase());
+	const record = readPersisted().get(provider.toLowerCase());
+	if (record?.class !== "quota" || record.resetAt === undefined || record.resetAt > now) return record;
+	const cleared = mutate(records => {
+		const current = records.get(provider.toLowerCase());
+		if (current?.revision !== record.revision) return undefined;
+		records.delete(provider.toLowerCase());
+		return current;
+	});
+	if (cleared) notify(cleared, true);
+	return cleared ? undefined : readPersisted().get(provider.toLowerCase());
 }
 
-/** Explain an exclusion to callers without discarding the original provider error. */
+export function isProviderExhausted(provider: string, now = Date.now()): boolean {
+	return providerExhaustionRecord(provider, now) !== undefined;
+}
+
 export function providerExhaustionExclusion(provider: string): ProviderExhaustionExclusion | undefined {
 	const record = providerExhaustionRecord(provider);
-	if (!record) return undefined;
-	return { provider, reason: `${record.reason} until ${new Date(record.until).toISOString()}`, until: record.until };
+	return record ? { provider, reason: record.reason, until: record.until } : undefined;
 }
 
-/** Billing and long-lived quota failures ban a provider; transient rate limits retain short retries. */
 export function isProviderExhaustionError(status: number | undefined, message: string | undefined): boolean {
-	const detail = message ?? "";
-	// Defer to the established usage-limit classifier for what is NOT exhaustion: minute-scale token
-	// throttles (DashScope `#token-limit`) and informative 402s such as "subscription required".
-	if (isDashScopeTokenLimitText(detail)) return false;
-	if (status === 402 && !is402BillingCapBody(message)) return false;
-	// A 429 carried only inside the message (no structured status) counts too.
-	if (status === 429 || (status === undefined && /\b429\b/u.test(detail))) {
-		// `quota` wording must also be an account-scoped cap per the shared classifier: rolling TPM/RPM
-		// windows are phrased with it too but self-heal within the minute.
-		return (
-			(/per[\s_-]+day|daily|quota/iu.test(detail) && isUsageLimitOutcome(429, detail)) ||
-			(extractRetryHint(undefined, detail) ?? 0) >= 10 * 60 * 1_000
-		);
+	return classifyProviderFailure({ status, body: message }) !== undefined;
+}
+
+/** Re-login/credential replacement is the sole automatic auth recovery signal. */
+export function clearProviderAuthOnCredentialChange(provider: string, credentialVersion: string): void {
+	const observed = readPersisted().get(provider.toLowerCase());
+	if (observed?.class !== "auth" || observed.credentialVersion === credentialVersion) return;
+	const cleared = mutate(records => {
+		const record = records.get(provider.toLowerCase());
+		if (record?.class !== "auth" || record.credentialVersion === credentialVersion) return undefined;
+		records.delete(provider.toLowerCase());
+		return record;
+	});
+	if (cleared) notify(cleared, true);
+}
+
+export interface ProviderProbeResult {
+	available: boolean;
+	credentialVersion?: string;
+}
+
+/**
+ * One leased probe per provider across all processes. Lease expiry permits a
+ * crashed owner to be replaced; owner + revision comparison rejects stale success.
+ */
+export async function probeUnavailableProviders(
+	probe: (record: ProviderExhaustionRecord) => Promise<ProviderProbeResult>,
+	options: { now?: number; owner?: string } = {},
+): Promise<void> {
+	const now = options.now ?? Date.now();
+	const owner = options.owner ?? `${process.pid}:${crypto.randomUUID()}`;
+	for (const snapshot of readPersisted().values()) {
+		if (snapshot.class === "quota" && snapshot.resetAt !== undefined) {
+			providerExhaustionRecord(snapshot.provider, now);
+			continue;
+		}
+		if (snapshot.class === "auth" || snapshot.nextProbeAt > now) continue;
+		const leased = mutate(records => {
+			const current = records.get(snapshot.provider.toLowerCase());
+			if (!current || current.nextProbeAt > now || (current.leaseUntil ?? 0) > now) return undefined;
+			current.leaseOwner = owner;
+			current.leaseUntil = now + PROBE_LEASE_MS;
+			return { ...current };
+		});
+		if (!leased) continue;
+		let result: ProviderProbeResult;
+		try {
+			result = await probe(leased);
+		} catch {
+			result = { available: false };
+		}
+		const cleared = mutate(records => {
+			const key = leased.provider.toLowerCase();
+			const current = records.get(key);
+			if (current?.revision !== leased.revision || current.leaseOwner !== owner) return undefined;
+			if (result.available) {
+				records.delete(key);
+				return current;
+			}
+			current.probeAttempts += 1;
+			current.nextProbeAt =
+				now + Math.min(PROVIDER_EXHAUSTION_COOLDOWN_MS, PROBE_MIN_MS * 2 ** current.probeAttempts);
+			current.until = current.resetAt ?? current.nextProbeAt;
+			delete current.leaseOwner;
+			delete current.leaseUntil;
+			return undefined;
+		});
+		if (cleared) notify(cleared, true);
 	}
-	if (status !== undefined && status >= 500 && status <= 599) return false;
-	if (status === 402 || /insufficient\s+balance/iu.test(detail)) return true;
-	return (
-		(status === 403 || (status === undefined && /\b403\b/iu.test(detail))) &&
-		/usage[\s_-]+limit|billing[\s_-]+cycle|quota/iu.test(detail)
-	);
 }

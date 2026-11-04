@@ -9269,7 +9269,7 @@ describe("AgentSession retry fallback", () => {
 			if (allCooling) {
 				let now = Date.now();
 				vi.spyOn(Date, "now").mockImplementation(() => now);
-				coolDownExhaustedProvider(primary.provider, { reason: "402 spending limit; retry-after-ms=20000" });
+				coolDownExhaustedProvider(primary.provider, { status: 429, code: "quota_exceeded", resetAt: now + 20_000 });
 				vi.spyOn(scheduler, "wait").mockImplementation(async delay => {
 					expect(requests).toEqual([fallbackSelector]);
 					waits.push(delay);
@@ -9292,6 +9292,30 @@ describe("AgentSession retry fallback", () => {
 			}
 		},
 	);
+	it("ends a blocked subagent as infrastructure before any model call", async () => {
+		const primary = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		let calls = 0;
+		const mock = createMockModel();
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: (model, context, options) => {
+				calls++;
+				return mock.stream(model, context, options);
+			},
+		});
+		coolDownExhaustedProvider(primary.provider, { status: 402 });
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			agentKind: "sub",
+			disableModelFallback: true,
+		});
+		await expect(session.prompt("Try unavailable provider")).rejects.toMatchObject({ failureKind: "infrastructure" });
+		expect(calls).toBe(0);
+	});
 	it("cools a balance-exhausted provider across workers but not transient failures", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const nextModel = getBundledModel("openai", "gpt-4o-mini");
@@ -9306,7 +9330,12 @@ describe("AgentSession retry fallback", () => {
 			streamFn: (model, context, options) => {
 				requestedModels.push(`${model.provider}/${model.id}`);
 				if (model.provider === primaryModel.provider) {
-					mock.push({ throw: Object.assign(new Error("402 Insufficient Balance"), { status: 402 }) });
+					return finalizedErrorStream(model, {
+						id: AIError.create(AIError.Flag.UsageLimit),
+						status: 402,
+						stopReason: "error",
+						message: "Insufficient Balance",
+					});
 				} else {
 					mock.push({ content: [`ok:${model.provider}/${model.id}`] });
 				}

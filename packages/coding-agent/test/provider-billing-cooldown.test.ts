@@ -3,7 +3,6 @@ import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const sourceDir = path.join(import.meta.dir, "..", "src", "session");
-const HOUR_MS = 60 * 60 * 1_000;
 
 /**
  * Every step runs in a fresh Bun process so module state cannot carry a ban;
@@ -18,14 +17,6 @@ const context = {
 	getModelRole: () => undefined,
 	modelLookup: { find: () => ({}), hasProvider: () => true },
 };
-// Mirrors TurnRecovery: a failed turn cools its provider once rotation found no sibling credential.
-function logProviderTurnError(message) {
-	if (exhaustion.isProviderExhaustionError(message.errorStatus, message.errorMessage)) {
-		exhaustion.coolDownExhaustedProvider(message.provider, {
-			reason: ((message.errorStatus ?? "") + " " + (message.errorMessage ?? "provider exhausted")).trim(),
-		});
-	}
-}
 function pick() {
 	const exclusions = [];
 	const candidates = findRetryFallbackCandidates(context, "default", "openai/gpt-4o-mini", undefined, { exclusions });
@@ -47,7 +38,6 @@ console.log(JSON.stringify(result));
 	]);
 	if (exitCode !== 0) throw new Error(`child exited ${exitCode}: ${stderr}`);
 	const result: unknown = JSON.parse(stdout.trim().split("\n").at(-1) ?? "null");
-	console.log(JSON.stringify(result));
 	return result;
 }
 
@@ -62,153 +52,66 @@ describe("persisted provider billing cooldown", () => {
 		stateDir.removeSync();
 	});
 
-	it("(a) skips deepseek 402 and kimi monthly-limit 403 in a fresh process with the reason", async () => {
+	it("skips balance and structured quota failures across processes without changing the chain", async () => {
 		await runProcess(
 			stateDir.path(),
-			`logProviderTurnError({ stopReason: "error", provider: "deepseek", model: "deepseek-v4-pro", errorStatus: 402, errorMessage: "Insufficient Balance" });
-			logProviderTurnError({ stopReason: "error", provider: "kimi-code", model: "kimi-for-coding", errorStatus: 403, errorMessage: "permission_error: You've reached your monthly usage limit for this billing cycle" });
-			return true;`,
+			`
+exhaustion.recordProviderFailure("deepseek", { status: 402 });
+exhaustion.recordProviderFailure("kimi-code", { status: 403, code: "quota_exceeded" });
+return null;`,
 		);
-		const picked = (await runProcess(stateDir.path(), "return pick();")) as {
-			order: string[];
-			exclusions: Array<{ provider: string; reason: string; until: number }>;
-		};
-
-		expect(picked.order).toEqual(["codex-lb"]);
-		expect(picked.exclusions).toEqual([
-			{
-				provider: "deepseek",
-				reason: expect.stringMatching(/^billing: 402 Insufficient Balance until \d{4}-\d\d-\d\dT/),
-				until: expect.any(Number),
-			},
-			{
-				provider: "kimi-code",
-				reason: expect.stringMatching(/^billing: 403 .*monthly usage limit.* until \d{4}-/),
-				until: expect.any(Number),
-			},
-		]);
+		const picked = await runProcess(stateDir.path(), "return { ...pick(), configured: context.chains.default };");
+		expect(picked).toMatchObject({
+			order: ["codex-lb"],
+			exclusions: [
+				{ provider: "deepseek", reason: "provider unavailable (balance)" },
+				{ provider: "kimi-code", reason: "provider unavailable (quota)" },
+			],
+			configured: ["deepseek/deepseek-v4-pro", "kimi-code/kimi-for-coding", "codex-lb/gpt-5.5"],
+		});
 	});
 
-	it("(b) restores a provider after its cooldown expires", async () => {
+	it("restores a probed provider at its original fallback position", async () => {
 		await runProcess(
 			stateDir.path(),
-			`exhaustion.coolDownExhaustedProvider("deepseek", { reason: "402 Insufficient Balance" });
-			exhaustion.coolDownExhaustedProvider("kimi-code", { reason: "403 monthly usage limit", now: Date.now() - ${2 * HOUR_MS} });
-			return true;`,
+			`
+exhaustion.recordProviderFailure("deepseek", { status: 402 }, Date.now() - 400000);
+exhaustion.recordProviderFailure("kimi-code", { code: "quota_exceeded" });
+await exhaustion.probeUnavailableProviders(async record => ({ available: record.provider === "deepseek" }));
+return null;`,
 		);
-		const picked = (await runProcess(stateDir.path(), "return pick();")) as {
-			order: string[];
-			exclusions: Array<{ provider: string }>;
-		};
-
-		expect(picked.order).toEqual(["kimi-code", "codex-lb"]);
-		expect(picked.exclusions.map(exclusion => exclusion.provider)).toEqual(["deepseek"]);
+		expect(await runProcess(stateDir.path(), "return pick();")).toMatchObject({
+			order: ["deepseek", "codex-lb"],
+			exclusions: [{ provider: "kimi-code" }],
+		});
 	});
 
-	it("leaves minute-scale token throttles and informative 402s out of the long ban", async () => {
-		const result = await runProcess(
-			stateDir.path(),
-			`return {
-				dashscope: exhaustion.isProviderExhaustionError(429, "You exceeded your current quota, please check your plan and billing details. For more information, see https://help.aliyun.com/zh/model-studio/error-code#token-limit"),
-				subscription: exhaustion.isProviderExhaustionError(402, "A subscription is required for this endpoint"),
-				balance: exhaustion.isProviderExhaustionError(402, "Insufficient Balance"),
-			};`,
-		);
-
-		expect(result).toEqual({ dashscope: false, subscription: false, balance: true });
-	});
-
-	it("does not lose a concurrent process's cooldown", async () => {
+	it("retains every provider when different processes record failures concurrently", async () => {
 		const providers = ["p1", "p2", "p3", "p4", "p5", "p6"];
 		await Promise.all(
 			providers.map(provider =>
 				runProcess(
 					stateDir.path(),
-					`exhaustion.coolDownExhaustedProvider(${JSON.stringify(provider)}, { reason: "402 Insufficient Balance" }); return true;`,
+					`exhaustion.recordProviderFailure(${JSON.stringify(provider)}, { status: 402 }); return null;`,
 				),
 			),
 		);
-		const cooled = (await runProcess(
+		const unavailable = await runProcess(
 			stateDir.path(),
 			`return ${JSON.stringify(providers)}.filter(provider => exhaustion.isProviderExhausted(provider));`,
-		)) as string[];
-
-		expect(cooled).toEqual(providers);
+		);
+		expect(unavailable).toEqual(providers);
 	});
 
-	it("treats an unwritable state directory as best effort", async () => {
+	it("keeps an unwritable store from masking the original provider failure", async () => {
 		const blocker = path.join(stateDir.path(), "not-a-directory");
 		await Bun.write(blocker, "file");
 		const result = await runProcess(
 			path.join(blocker, "state"),
-			`let threw = false;
-			try { exhaustion.coolDownExhaustedProvider("deepseek", { reason: "402 Insufficient Balance" }); } catch { threw = true; }
-			return { threw, cooled: exhaustion.isProviderExhausted("deepseek") };`,
+			`
+const persisted = exhaustion.recordProviderFailure("deepseek", { status: 402 });
+return { persisted, unavailable: exhaustion.isProviderExhausted("deepseek") };`,
 		);
-
-		expect(result).toEqual({ threw: false, cooled: false });
-	});
-
-	it("(c) keeps rate limits short and plain 403 authentication errors unbanned", async () => {
-		const result = await runProcess(
-			stateDir.path(),
-			`logProviderTurnError({ stopReason: "error", provider: "codex-lb", model: "gpt-5.5", errorStatus: 429, errorMessage: "429 rate_limit_error retry-after-ms=1000" });
-			logProviderTurnError({ stopReason: "error", provider: "kimi-code", model: "kimi-for-coding", errorStatus: 403, errorMessage: "permission_error: invalid api key" });
-			return { billing429: exhaustion.isProviderExhaustionError(429, "429 rate_limit_error"), auth403: exhaustion.isProviderExhaustionError(403, "permission_error: invalid api key"), ...pick() };`,
-		);
-
-		expect(result).toEqual({
-			billing429: false,
-			auth403: false,
-			order: ["deepseek", "kimi-code", "codex-lb"],
-			exclusions: [],
-		});
-	});
-
-	it("classifies a daily-quota 429 present only in the message", () => {
-		const message = "429 Rate limit exceeded: free-models-per-day-high-balance. retry-after-ms=17354298";
-		return runProcess(
-			stateDir.path(),
-			`return { embedded: exhaustion.isProviderExhaustionError(undefined, ${JSON.stringify(message)}), plain: exhaustion.isProviderExhaustionError(undefined, "429 rate_limit_error") };`,
-		).then(result => expect(result).toEqual({ embedded: true, plain: false }));
-	});
-
-	it("cools daily-quota 429 until retry-after and skips it in the next process", async () => {
-		const message = "429 Rate limit exceeded: free-models-per-day-high-balance. retry-after-ms=17354298";
-		const recorded = (await runProcess(
-			stateDir.path(),
-			`const now = Date.now();
-			logProviderTurnError({ stopReason: "error", provider: "openrouter", model: "dots-studio/dots-3-note-preview:free", errorStatus: 429, errorMessage: ${JSON.stringify(message)} });
-			return { now, classified: exhaustion.isProviderExhaustionError(429, ${JSON.stringify(message)}), record: exhaustion.providerExhaustionRecord("openrouter") };`,
-		)) as { now: number; classified: boolean; record?: { until: number; recordedAt: number } };
-		expect(recorded.classified).toBe(true);
-		expect(recorded.record).toBeDefined();
-		// Measure from recordedAt so slow logging/persistence cannot flake the bound.
-		expect(recorded.record!.until - recorded.record!.recordedAt).toBe(17_354_298);
-		const picked = await runProcess(
-			stateDir.path(),
-			`context.chains.default = ["openrouter/dots-studio/dots-3-note-preview:free", "codex-lb/gpt-5.5"]; return pick();`,
-		);
-		expect(picked).toEqual({
-			order: ["codex-lb"],
-			exclusions: [expect.objectContaining({ provider: "openrouter", until: recorded.record!.until })],
-		});
-	});
-
-	it("classifies long retry windows and quota messages but leaves two-second 429 unbanned", async () => {
-		const result = await runProcess(
-			stateDir.path(),
-			`logProviderTurnError({ stopReason: "error", provider: "deepseek", model: "deepseek-v4-pro", errorStatus: 429, errorMessage: "429 Rate limit exceeded retry-after-ms=2000" });
-			logProviderTurnError({ stopReason: "error", provider: "openrouter", model: "free", errorStatus: 429, errorMessage: "daily quota exceeded" });
-			const record = exhaustion.providerExhaustionRecord("openrouter");
-			return { long: exhaustion.isProviderExhaustionError(429, "rate limited retry-after-ms=600000"), short: exhaustion.isProviderExhaustionError(429, "rate limited retry-after-ms=2000"), fallback: record ? record.until - record.recordedAt : null, ...pick() };`,
-		);
-		expect(result).toEqual({
-			long: true,
-			short: false,
-			fallback: HOUR_MS,
-			order: ["deepseek", "kimi-code", "codex-lb"],
-			exclusions: [],
-		});
+		expect(result).toEqual({ persisted: false, unavailable: false });
 	});
 });

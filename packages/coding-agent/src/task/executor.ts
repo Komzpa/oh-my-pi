@@ -10,7 +10,9 @@ import {
 	type ProviderExhaustionExclusion,
 	isProviderExhausted,
 	providerExhaustionExclusion,
+	providerExhaustionRecord,
 } from "../session/provider-exhaustion";
+import { ProviderUnavailableError } from "../session/provider-unavailable-error";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
@@ -43,6 +45,7 @@ import {
 	resolveConfiguredModelPatterns,
 	resolveExplicitModelRole,
 	resolveModelOverride,
+	resolveModelRoleValue,
 	resolveModelOverrideWithAuthFallback,
 } from "../config/model-resolver";
 import type { PromptTemplate } from "../config/prompt-templates";
@@ -2480,6 +2483,7 @@ interface DriveOutcome {
 	error?: string;
 	aborted: boolean;
 	abortReasonText?: string;
+	failureKind?: "infrastructure";
 }
 
 /**
@@ -2533,6 +2537,7 @@ async function driveSessionToResult(
 	const abortSignal = monitor.abortSignal;
 	let exitCode = 0;
 	let error: string | undefined;
+	let failureKind: "infrastructure" | undefined;
 	let aborted = false;
 	let abortReasonText: string | undefined;
 	const checkAbort = () => {
@@ -2837,7 +2842,13 @@ async function driveSessionToResult(
 		} else {
 			exitCode = 1;
 			if (!abortSignal.aborted) {
-				error = err instanceof Error ? err.stack || err.message : String(err);
+				error =
+					err instanceof ProviderUnavailableError
+						? err.message
+						: err instanceof Error
+							? err.stack || err.message
+							: String(err);
+				if (err instanceof ProviderUnavailableError) failureKind = "infrastructure";
 			}
 		}
 	} finally {
@@ -2851,12 +2862,19 @@ async function driveSessionToResult(
 		}
 	}
 
-	return { exitCode, error, aborted, abortReasonText };
+	return { exitCode, error, aborted, abortReasonText, failureKind };
 }
 
 interface FinalizeRunArgs {
 	monitor: SubagentRunMonitor;
-	done: { exitCode: number; error?: string; aborted?: boolean; abortReason?: string; durationMs: number };
+	done: {
+		exitCode: number;
+		error?: string;
+		aborted?: boolean;
+		abortReason?: string;
+		durationMs: number;
+		failureKind?: "infrastructure";
+	};
 	index: number;
 	id: string;
 	agent: AgentDefinition;
@@ -3081,6 +3099,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		exitCode,
 		output: truncatedOutput,
 		stderr,
+		failureKind: done.failureKind,
 		truncated: Boolean(truncated),
 		...(finalized.structuredOutput ? { structuredOutput: finalized.structuredOutput } : {}),
 		durationMs: Date.now() - args.startTime,
@@ -4640,12 +4659,14 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 		error?: string;
 		aborted?: boolean;
 		abortReason?: string;
+		failureKind?: "infrastructure";
 		durationMs: number;
 	}> => {
 		const sessionAbortController = new AbortController();
 		const abortSignal = monitor.abortSignal;
 		let exitCode = 0;
 		let error: string | undefined;
+		let failureKind: "infrastructure" | undefined;
 		let aborted = false;
 		let abortReasonText: string | undefined;
 		const checkAbort = () => {
@@ -4714,7 +4735,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					: undefined;
 			const exclusions: ProviderExhaustionExclusion[] = [];
 			const availableModelPatterns = configuredModelPatterns.filter(pattern => {
-				const resolved = resolveModelOverride([pattern], modelRegistry, settings);
+				const resolved = resolveModelRoleValue(pattern, modelRegistry.getAll(), { settings });
 				const exclusion = resolved.model ? providerExhaustionExclusion(resolved.model.provider) : undefined;
 				if (!exclusion) return true;
 				exclusions.push(exclusion);
@@ -4723,7 +4744,10 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			if (exclusions.length > 0) {
 				logger.warn("Skipping unavailable subagent providers", { exclusions });
 				if (availableModelPatterns.length === 0) {
-					throw new Error(exclusions.map(entry => `${entry.provider}: ${entry.reason}`).join("; "));
+					throw new ProviderUnavailableError(
+						exclusions[0]!.provider,
+						providerExhaustionRecord(exclusions[0]!.provider)?.class ?? "discovery",
+					);
 				}
 			}
 			// Unchanged requests keep their original patterns so alias resolution stays exactly as before.
@@ -5303,10 +5327,17 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			error = outcome.error;
 			aborted = outcome.aborted;
 			abortReasonText = outcome.abortReasonText;
+			failureKind = outcome.failureKind;
 		} catch (err) {
 			exitCode = 1;
 			if (!abortSignal.aborted) {
-				error = err instanceof Error ? err.stack || err.message : String(err);
+				error =
+					err instanceof ProviderUnavailableError
+						? err.message
+						: err instanceof Error
+							? err.stack || err.message
+							: String(err);
+				if (err instanceof ProviderUnavailableError) failureKind = "infrastructure";
 			}
 		} finally {
 			const cleanupDeadlineAt = Date.now() + cleanupGraceMs;
@@ -5517,6 +5548,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			error,
 			aborted,
 			abortReason: aborted ? abortReasonText : undefined,
+			failureKind,
 			durationMs: Date.now() - startTime,
 		};
 	};
