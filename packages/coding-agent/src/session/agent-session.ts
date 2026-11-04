@@ -10492,13 +10492,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			timestamp: Date.now(),
 		};
 		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
-		if (options?.deliverAs === "aside" && options.wakeIdle === false) {
-			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
-			if (this.isStreaming) this.#irc.queueAside([normalizedAppMessage]);
-			else this.#recordWithoutTurn([normalizedAppMessage]);
-			return false;
-		}
-
 		if (this.isStreaming) {
 			// Queued into a turn the agent owns: that turn holds the session. Busy only
 			// from another prompt's setup claims nothing (that prompt decides).
@@ -10551,6 +10544,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		if (options?.deliverAs === "aside") {
 			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
+			if (options.wakeIdle === false) {
+				this.#recordWithoutTurn([normalizedAppMessage]);
+				return false;
+			}
 			if (this.#planModeState?.enabled) {
 				// Plan mode stays user-driven: fold into context without an autonomous turn, same as
 				// IrcBridge.deliver()/#resumeStrandedIrcAsides do in plan mode. Routed through the
