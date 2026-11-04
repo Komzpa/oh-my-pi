@@ -48,6 +48,8 @@ export interface QuestionResult {
 
 /** Answers and redirect metadata displayed for an ask tool result. */
 export interface AskToolDetails {
+	critical?: { kind: "irreversible" | "public" | "hands" | "credential"; reason: string };
+	workingDefaults?: { id: string; option: string }[];
 	pending?: { id: string; sessionId?: string; questions: ExtensionAskDialogQuestion[] };
 	question?: string;
 	options?: string[];

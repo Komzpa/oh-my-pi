@@ -8,3 +8,5 @@ Questions are asynchronous: ask returns a pending identity and shows the questio
 - NEVER supply "Other": UI adds "Other (type your own)". Clarifying custom input? Answer first; re-ask unresolved questions.
 - Blocks immediately: MUST first emit unseen decision context (findings, diffs, drafts) as assistant text, even when batching `ask` with other tools.
 </instruction>
+
+When ask.gate is enabled, option questions require valid recommended indexes and a recent completed result from the configured shadow profile. Passing calls return working defaults without a dialog: proceed immediately and put the choices on a styled review page, with only its link in chat. Use critical.kind (irreversible/public/hands/credential) and a concrete critical.reason only for a genuine mission-critical stop.
