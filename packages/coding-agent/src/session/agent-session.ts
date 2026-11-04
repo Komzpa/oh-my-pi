@@ -10397,6 +10397,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		options?: {
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+			/** False keeps an aside passive when the current run has already ended. */
+			wakeIdle?: boolean;
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -10409,6 +10411,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		options?: {
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+			wakeIdle?: boolean;
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -10435,6 +10438,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			| {
 					triggerTurn?: boolean;
 					deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+					wakeIdle?: boolean;
 					queueChipText?: string;
 					acceptTerminalEmptyStop?: boolean;
 			  }
@@ -10540,6 +10544,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		if (options?.deliverAs === "aside") {
 			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
+			if (options.wakeIdle === false) {
+				this.#recordWithoutTurn([normalizedAppMessage]);
+				return false;
+			}
 			if (this.#planModeState?.enabled) {
 				// Plan mode stays user-driven: fold into context without an autonomous turn, same as
 				// IrcBridge.deliver()/#resumeStrandedIrcAsides do in plan mode. Routed through the

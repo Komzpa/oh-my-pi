@@ -93,7 +93,26 @@ it("observes edits to initially dirty files without blaming siblings for a share
 	const init = Bun.spawnSync(["git", "init", "-q", "--initial-branch=main", root]);
 	expect(init.exitCode).toBe(0);
 	const file = path.join(root, "src/existing.txt");
+	const restored = path.join(root, "src/restored.txt");
+	await Bun.write(file, "clean");
+	await Bun.write(restored, "clean");
+	expect(Bun.spawnSync(["git", "-C", root, "add", "src"]).exitCode).toBe(0);
+	expect(
+		Bun.spawnSync([
+			"git",
+			"-C",
+			root,
+			"-c",
+			"user.name=Test",
+			"-c",
+			"user.email=test@example.com",
+			"commit",
+			"-qm",
+			"baseline",
+		]).exitCode,
+	).toBe(0);
 	await Bun.write(file, "pre-existing dirty work");
+	await Bun.write(restored, "pre-existing dirty work");
 	const registry = new AgentRegistry();
 	for (const id of ["a", "b"])
 		registry.register({
@@ -133,6 +152,9 @@ it("observes edits to initially dirty files without blaming siblings for a share
 		expect(await runtime.checkHandover(undefined)).toBeUndefined();
 		await Bun.write(file, "changed by the worker without a write hook");
 		expect(await runtime.checkHandover(undefined)).toContain(`path:${file}`);
+		expect(Bun.spawnSync(["git", "-C", root, "restore", "src/restored.txt"]).exitCode).toBe(0);
+		expect(await Bun.file(restored).text()).toBe("clean");
+		expect(await runtime.checkHandover(undefined)).toContain(`path:${restored}`);
 	} finally {
 		runtime.dispose();
 	}

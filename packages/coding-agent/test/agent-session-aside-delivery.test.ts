@@ -131,7 +131,7 @@ describe("AgentSession aside delivery", () => {
 
 		await session.sendCustomMessage(
 			{ customType: "ext-aside", content: "ASIDE_BODY", display: false, attribution: "agent" },
-			{ deliverAs: "aside" },
+			{ deliverAs: "aside", wakeIdle: false },
 		);
 
 		expect(abortSeen).toBe(false);
