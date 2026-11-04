@@ -80,6 +80,9 @@ export function formatTaskResultSummary(
 			abortReason: result.aborted ? escapeHarnessTags(result.abortReason ?? "") || undefined : undefined,
 			error: error === undefined ? undefined : escapeHarnessTags(error),
 			resumable,
+			deconfliction: result.deconfliction?.length
+				? escapeHarnessTags(JSON.stringify(result.deconfliction))
+				: undefined,
 			preview: escapeHarnessTags(truncated ? previewHead(output) : output),
 			truncated,
 			meta: result.outputMeta

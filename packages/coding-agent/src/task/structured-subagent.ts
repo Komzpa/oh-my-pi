@@ -1,3 +1,4 @@
+import type { PeerScope } from "./peer-coordination";
 /**
  * Shared policy resolution and execution for task and eval subagents.
  *
@@ -126,6 +127,7 @@ export interface StructuredSubagentIdentity {
 
 /** One normalized child invocation. */
 export interface StructuredSubagentRequest {
+	scope?: PeerScope;
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
@@ -792,6 +794,8 @@ function buildExecutorOptions(
 		agent: policy.effectiveAgent,
 		task: renderSubagentUserPrompt(request.assignment),
 		assignment: request.assignment.trim(),
+		peerScope: request.scope,
+		peerTask: request.assignment.trim().slice(0, 160),
 		preparedSession,
 		context: request.context?.trim() || undefined,
 		planReference: undefined,

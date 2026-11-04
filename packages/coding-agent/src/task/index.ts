@@ -91,6 +91,7 @@ import { appendToolResult, createTaskWidgetInputs } from "./widget-inputs";
 import { cfgAsyncEnabled } from "../tools/settings";
 import {
 	cfgTaskBatch,
+	cfgTaskPeerAwareness,
 	cfgTaskDisabledAgents,
 	cfgTaskEnableEffort,
 	cfgTaskEnableLsp,
@@ -161,6 +162,7 @@ export {
 } from "./types";
 
 interface TaskDescriptionOptions {
+	peerAwareness?: boolean;
 	agents: AgentDefinition[];
 	sessionAgents: readonly AgentDefinition[];
 	isolationEnabled: boolean;
@@ -214,6 +216,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	const scoutAvailable = isScoutSpawnable(options.disabledAgents, options.parentSpawns);
 	return prompt.render(taskDescriptionTemplate, {
 		agents: renderedAgents,
+		peerAwareness: options.peerAwareness,
 		scoutAvailable,
 		spawningDisabled,
 		defaultAgent: defaultAgentFor(spawnPolicy, options.planMode),
@@ -397,6 +400,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 		return params.tasks;
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task, taskFile: params.taskFile };
+	if ("scope" in params) item.scope = params.scope;
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
@@ -485,6 +489,7 @@ function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent
 	const spawn: SpawnParams = { agent: item.agent?.trim() || defaultAgent };
 	if (item.name !== undefined) spawn.name = item.name;
 	if (item.task !== undefined) spawn.task = item.task;
+	if (item.scope !== undefined) spawn.scope = item.scope;
 	if (item.taskFile !== undefined) spawn.taskFile = item.taskFile;
 	if (item.taskFileSha256 !== undefined) spawn.taskFileSha256 = item.taskFileSha256;
 	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
@@ -925,6 +930,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
 		const isolationEnabled = !planMode && cfgTaskIsolationEnabled.get(this.session.settings);
 		return getTaskSchema({
+			peerAwareness: cfgTaskPeerAwareness.get(this.session.settings),
 			isolationEnabled,
 			batchEnabled: this.#isBatchEnabled(),
 			effortEnabled: cfgTaskEnableEffort.get(this.session.settings),
@@ -980,6 +986,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			structured: this.#isStructured(),
 			file: cfgTaskFile.get(this.session.settings),
 			asyncEnabled: cfgAsyncEnabled.get(this.session.settings),
+			peerAwareness: cfgTaskPeerAwareness.get(this.session.settings),
 			ircEnabled: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
 			planMode,
 			asyncGuidance: this.delegationGuidance,
@@ -1987,6 +1994,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				session: this.session,
 				invocationKind: "task",
 				assignment,
+				scope: params.scope,
 				context,
 				agent: params.agent,
 				sourceSession: params.sourceSession,

@@ -1,3 +1,4 @@
+import type { PeerCoordinationState } from "../task/peer-coordination";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type {
 	ImageContent,
@@ -275,6 +276,7 @@ export interface CredentialPinEntry extends SessionEntryBase {
 
 /** Session init entry - captures initial context for subagent sessions (debugging/replay). */
 export interface SessionInitEntry extends SessionEntryBase {
+	peerCoordination?: PeerCoordinationState;
 	type: "session_init";
 	/** System prompt blocks exactly as sent to the model; files written before blocks were kept store one joined string. */
 	systemPrompt: string[] | string;

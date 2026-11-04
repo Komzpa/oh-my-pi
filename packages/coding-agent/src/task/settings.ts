@@ -688,3 +688,16 @@ export const cfgTaskShowResolvedModelBadge = register({
 	},
 });
 effect(cfgTaskShowResolvedModelBadge, setFeedModelBadgeEnabled);
+
+/** Adds peer task/scope context and structural conflict checks to task children. */
+export const cfgTaskPeerAwareness = register({
+	id: "task.peerAwareness",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "tasks",
+		group: "Coordination",
+		label: "Peer Awareness",
+		description: "Share sibling task scopes and require deconfliction before handover",
+	},
+});
