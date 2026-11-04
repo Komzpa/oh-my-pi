@@ -3684,6 +3684,10 @@ export class SessionManager {
 	appendSessionInit(init: {
 		systemPrompt: string[];
 		task: string;
+		/** Original assignment start time in epoch milliseconds; absent on legacy sessions. */
+		assignmentStartedAt?: number;
+		/** Start time of the current worker attempt; lifecycle revival keeps this clock. */
+		attemptStartedAt?: number;
 		tools: string[];
 		mountedTools?: string[];
 		agent?: string;
@@ -4726,6 +4730,8 @@ export function hasConversationalHistory(entries: readonly FileEntry[]): boolean
 export interface PersistedSessionInit {
 	systemPrompt: string[];
 	task: string;
+	assignmentStartedAt?: number;
+	attemptStartedAt?: number;
 	tools: string[];
 	mountedTools?: string[];
 	agent?: string;
@@ -4758,6 +4764,8 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 		init = {
 			systemPrompt: typeof entry.systemPrompt === "string" ? [entry.systemPrompt] : entry.systemPrompt,
 			task: entry.task,
+			assignmentStartedAt: entry.assignmentStartedAt,
+			attemptStartedAt: entry.attemptStartedAt,
 			tools: entry.tools,
 			mountedTools: entry.mountedTools,
 			agent: entry.agent,

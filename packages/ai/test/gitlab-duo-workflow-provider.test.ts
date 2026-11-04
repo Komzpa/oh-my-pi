@@ -3830,7 +3830,7 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 		expect(providerSessionState.active?.pendingActions?.map(action => action.requestID)).toEqual(["req-a"]);
 	});
 
-	it("resumes the preserved GitLab socket with the Agent-produced tool result", async () => {
+	it.each([false, true])("resumes GitLab tool results (elapsed tail: %s)", async withElapsed => {
 		const sent: string[] = [];
 		const providerSessionState = new Map<string, ProviderSessionState>();
 		let socket: GitLabDuoWorkflowWebSocketLike | undefined;
@@ -3928,9 +3928,27 @@ describe("GitLab Duo Workflow WebSocket state machine", () => {
 		};
 		const secondStream = streamGitLabDuoWorkflow(
 			model,
-			{ messages: [...context.messages, firstAssistant, toolResult] },
+			{
+				messages: [
+					...context.messages,
+					firstAssistant,
+					toolResult,
+					...(withElapsed
+						? [
+								{
+									role: "developer" as const,
+									content:
+										"elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+									synthetic: true,
+									timestamp: 4,
+								},
+							]
+						: []),
+				],
+			},
 			{
 				apiKey: "redacted",
+				signal: AbortSignal.timeout(5000),
 				fetch: fetchImpl,
 				rootNamespaceId: "gid://gitlab/Group/root",
 				providerSessionState,
