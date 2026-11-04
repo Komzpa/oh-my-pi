@@ -731,7 +731,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 			modelRegistry,
 		});
 		eventBus = new EventBus();
-		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, eventBus);
+		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, eventBus);
 	});
 
 	afterEach(() => {
@@ -1196,7 +1196,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 
 		async function initCapturingAllocation(): Promise<AllocationApply> {
 			allocBus = new EventBus();
-			const m = new InteractiveMode(session, "test", undefined, undefined, undefined, undefined, allocBus);
+			const m = new InteractiveMode(session, "test", undefined, undefined, undefined, allocBus);
 			allocMode = m;
 			vi.spyOn(m.statusLine, "watchBranch").mockImplementation(() => {});
 			let apply: AllocationApply | undefined;
