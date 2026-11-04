@@ -236,14 +236,6 @@ export class RemoteIrcBus implements IrcBusApi {
 		return this.#remote.call("send", msg);
 	}
 
-	exchangeCursor(): number {
-		return this.#remote.callSync("exchangeCursor");
-	}
-
-	exchangedSince(from: string, to: string, sinceTs: number): boolean {
-		return this.#remote.callSync("exchangedSince", from, to, sinceTs);
-	}
-
 	sentSince(from: string, to: string, sinceTs: number): boolean {
 		return this.#remote.callSync("sentSince", from, to, sinceTs);
 	}
@@ -260,6 +252,14 @@ export class RemoteIrcBus implements IrcBusApi {
 		options?: { drainPending?: boolean },
 	): Promise<IrcMessage | null> {
 		return this.#remote.call("wait", agentId, filter, timeoutMs, signal, options);
+	}
+
+	exchangeCursor(): number {
+		return this.#remote.callSync("exchangeCursor");
+	}
+
+	exchangedSince(from: string, to: string, sinceTs: number): boolean {
+		return this.#remote.callSync("exchangedSince", from, to, sinceTs);
 	}
 
 	take(agentId: string, from?: string): IrcMessage | undefined {

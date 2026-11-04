@@ -10395,10 +10395,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	async sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
 		options?: {
+			wakeIdle?: boolean;
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
-			/** False keeps an aside passive when the current run has already ended. */
-			wakeIdle?: boolean;
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -10409,9 +10408,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	async #sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
 		options?: {
+			wakeIdle?: boolean;
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
-			wakeIdle?: boolean;
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -10436,9 +10435,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		message: CustomMessagePayload<T>,
 		options:
 			| {
+					wakeIdle?: boolean;
 					triggerTurn?: boolean;
 					deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
-					wakeIdle?: boolean;
 					queueChipText?: string;
 					acceptTerminalEmptyStop?: boolean;
 			  }
@@ -10520,6 +10519,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			return false;
 		}
 
+		if (options?.deliverAs === "aside" && options.wakeIdle === false) {
+			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
+			if (this.isStreaming) this.#irc.queueAside([normalizedAppMessage]);
+			else this.#recordWithoutTurn([normalizedAppMessage]);
+			return false;
+		}
+
 		if (options?.deliverAs === "nextTurn") {
 			if (options?.triggerTurn) {
 				if (this.#clientBridge?.deferAgentInitiatedTurns && !this.#allowAcpAgentInitiatedTurns) {
@@ -10544,10 +10550,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		if (options?.deliverAs === "aside") {
 			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
-			if (options.wakeIdle === false) {
-				this.#recordWithoutTurn([normalizedAppMessage]);
-				return false;
-			}
 			if (this.#planModeState?.enabled) {
 				// Plan mode stays user-driven: fold into context without an autonomous turn, same as
 				// IrcBridge.deliver()/#resumeStrandedIrcAsides do in plan mode. Routed through the

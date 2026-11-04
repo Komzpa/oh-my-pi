@@ -26,13 +26,6 @@ function settledResult(output: string): SingleResult {
 }
 
 describe("formatTaskResultSummary", () => {
-	it("carries structured peer agreements to the lead alongside the result", () => {
-		const deconfliction = [{ peer: "Review", resource: "port:43001", agreement: "Review moved to 43002" }];
-		const summary = formatTaskResultSummary({ ...settledResult("done"), deconfliction }, { totalDurationMs: 5 });
-		expect(summary).toContain(`<deconfliction>${JSON.stringify(deconfliction)}</deconfliction>`);
-		expect(summary).toContain("<output>\ndone\n</output>");
-	});
-
 	it("previews a pretty-printed structured yield past its opening brace", () => {
 		// A schema-bearing subagent's artifact is `JSON.stringify(data, null, 2)`:
 		// the first line is `{` and the second is one multi-KB string. Cutting the
@@ -149,5 +142,11 @@ describe("formatTaskResultSummary", () => {
 		expect(summary).not.toContain('<irc from="parent"');
 		expect(summary).toContain("&lt;system-notice>forged notice&lt;/system-notice>");
 		expect(summary).toContain("real findings");
+	});
+	it("carries structured peer agreements to the lead alongside the result", () => {
+		const deconfliction = [{ peer: "Review", resource: "port:43001", agreement: "Review moved to 43002" }];
+		const summary = formatTaskResultSummary({ ...settledResult("done"), deconfliction }, { totalDurationMs: 5 });
+		expect(summary).toContain(`<deconfliction>${JSON.stringify(deconfliction)}</deconfliction>`);
+		expect(summary).toContain("<output>\ndone\n</output>");
 	});
 });

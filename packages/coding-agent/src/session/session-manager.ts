@@ -4805,7 +4805,6 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 		init = {
 			systemPrompt: typeof entry.systemPrompt === "string" ? [entry.systemPrompt] : entry.systemPrompt,
 			task: entry.task,
-			peerCoordination: entry.peerCoordination,
 			tools: entry.tools,
 			mountedTools: entry.mountedTools,
 			agent: entry.agent,
@@ -4821,6 +4820,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			restrictToolNames: entry.restrictToolNames,
 			readSummarize: entry.readSummarize,
 			spawns: entry.spawns,
+			peerCoordination: entry.peerCoordination,
 			advisor: entry.advisor,
 			isolated: entry.isolated,
 			...(entry.compactionThreshold !== undefined ? { compactionThreshold: entry.compactionThreshold } : undefined),

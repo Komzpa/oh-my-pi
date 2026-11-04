@@ -205,11 +205,11 @@ function createTaskSchema(options: {
 		if (options.isolationEnabled) {
 			const item = type.raw({
 				"name?": "string",
-				...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 				agent,
 				...taskFields,
 				solutionSpace: "string",
 				...effortField,
+				...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 				...schemaFields,
 				...toolsField,
 				...seanceFields,
@@ -226,11 +226,11 @@ function createTaskSchema(options: {
 		}
 		const item = type.raw({
 			"name?": "string",
-			...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 			agent,
 			...taskFields,
 			solutionSpace: "string",
 			...effortField,
+			...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 			...schemaFields,
 			...toolsField,
 			...seanceFields,
@@ -247,11 +247,11 @@ function createTaskSchema(options: {
 	if (options.isolationEnabled) {
 		return type.raw({
 			"name?": "string",
-			...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 			agent,
 			...taskFields,
 			solutionSpace: "string",
 			...effortField,
+			...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 			...schemaFields,
 			...toolsField,
 			...seanceFields,
@@ -261,11 +261,11 @@ function createTaskSchema(options: {
 	}
 	return type.raw({
 		"name?": "string",
-		...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 		agent,
 		...taskFields,
 		solutionSpace: "string",
 		...effortField,
+		...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 		...schemaFields,
 		...toolsField,
 		...seanceFields,
