@@ -10774,6 +10774,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	async sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
 		options?: {
+			/** False delivers an aside without starting an idle agent. */
 			wakeIdle?: boolean;
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
@@ -10870,6 +10871,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			timestamp: Date.now(),
 		};
 		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
+		if (options?.deliverAs === "aside" && options.wakeIdle === false) {
+			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
+			if (this.isStreaming) this.#irc.queueAside([normalizedAppMessage]);
+			else this.#recordWithoutTurn([normalizedAppMessage]);
+			return false;
+		}
+
 		if (this.isStreaming) {
 			// Queued into a turn the agent owns: that turn holds the session. Busy only
 			// from another prompt's setup claims nothing (that prompt decides).
@@ -10895,13 +10903,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				this.agent.steer(normalizedAppMessage);
 			}
 			this.#scheduleIdleQueueDrain();
-			return false;
-		}
-
-		if (options?.deliverAs === "aside" && options.wakeIdle === false) {
-			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
-			if (this.isStreaming) this.#irc.queueAside([normalizedAppMessage]);
-			else this.#recordWithoutTurn([normalizedAppMessage]);
 			return false;
 		}
 

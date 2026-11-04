@@ -2292,9 +2292,9 @@ export interface TaskParams {
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
 	schemaMode?: "permissive" | "strict";
-	/** Eval-defined tool names exposed to the flat-form child. */
 	/** Declared resource ownership; paths are relative to root. */
 	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
+	/** Eval-defined tool names exposed to the flat-form child. */
 	tools?: string[];
 	/** Batch form (`task.batch`): one subagent per item. */
 	tasks?: TaskItem[];
@@ -2491,6 +2491,7 @@ export interface SingleResult {
 	lastIntent?: string;
 	exitCode: number;
 	output: string;
+	deconfliction?: unknown[];
 	stderr: string;
 	truncated: boolean;
 	/**
@@ -2498,7 +2499,6 @@ export interface SingleResult {
 	 * selected an output schema or strict schema mode.
 	 */
 	structuredOutput?: StructuredSubagentOutput;
-	deconfliction?: unknown[];
 	durationMs: number;
 	/** Cumulative input + output + cacheWrite tokens across all turns. Excludes cacheRead (re-reads cached context every turn, making cumulative sum misleading). */
 	tokens: number;

@@ -267,6 +267,8 @@ import {
 } from "./system-prompt";
 import type { AgentDefinition } from "./task/types";
 import { AgentOutputManager } from "./task/output-manager";
+import { PeerRuntime } from "./task/peer-runtime";
+import type { PeerCoordinationState } from "./task/peer-coordination";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
 import { isScoutSpawnable } from "./task/spawn-policy";
@@ -576,8 +578,6 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
 	}
 }
 
-import { PeerRuntime } from "./task/peer-runtime";
-import type { PeerCoordinationState } from "./task/peer-coordination";
 // Types
 export interface CreateAgentSessionOptions {
 	peerCoordination?: PeerCoordinationState;
