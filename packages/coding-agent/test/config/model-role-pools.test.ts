@@ -2,7 +2,9 @@ import { describe, expect, it } from "bun:test";
 import {
 	resolveAgentModelSelection,
 	resolveConfiguredModelPatterns,
+	resolveModelOverride,
 } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { drawPoolOrder } from "@oh-my-pi/pi-coding-agent/config/model-role-pools";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 
@@ -29,6 +31,34 @@ describe("modelRolePools", () => {
 		expect((firsts.get("or/free-a") ?? 0) / draws).toBeCloseTo(0.6, 1);
 		expect((firsts.get("or/free-b") ?? 0) / draws).toBeCloseTo(0.2, 1);
 		expect((firsts.get("or/free-c") ?? 0) / draws).toBeCloseTo(0.2, 1);
+	});
+
+	it("renormalizes a draw over available members without losing the unavailable fallback position", () => {
+		const blocked = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const left = getBundledModel("openai", "gpt-4o-mini")!;
+		const right = getBundledModel("google", "gemini-1.5-pro")!;
+		const selectors = [blocked, left, right].map(model => `${model.provider}/${model.id}`);
+		const settings = Settings.isolated({
+			modelRoles: { pool: selectors.join(", ") },
+			modelRolePools: { pool: { [selectors[0]]: 100, [selectors[1]]: 3, [selectors[2]]: 1 } },
+		});
+		const registry = { getAvailable: () => [left, right] };
+		const counts = new Map<string, number>();
+		let recoveryOrder: string[] = [];
+		for (let i = 0; i < 2_000; i++) {
+			const { patterns } = resolveAgentModelSelection({ agentModel: "@pool", settings, seed: `draw-${i}` });
+			const { model } = resolveModelOverride(patterns, registry, settings);
+			if (!model) throw new Error("An available pool member must resolve");
+			counts.set(model.provider, (counts.get(model.provider) ?? 0) + 1);
+			if (patterns[0] === selectors[0]) recoveryOrder = patterns;
+		}
+		expect(counts.get(blocked.provider)).toBeUndefined();
+		expect((counts.get(left.provider) ?? 0) / 2_000).toBeCloseTo(0.75, 1);
+		expect((counts.get(right.provider) ?? 0) / 2_000).toBeCloseTo(0.25, 1);
+		// The same spawn order can use the recovered provider again; selection did not delete it.
+		expect(resolveModelOverride(recoveryOrder, { getAvailable: () => [blocked, left, right] }, settings).model).toBe(
+			blocked,
+		);
 	});
 
 	it("never puts a zero-weight member first and keeps it at the tail in original order", () => {
