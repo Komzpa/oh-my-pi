@@ -105,7 +105,7 @@ describe("agent bridging across subagent workers", () => {
 	it("drains and releases a worker journal through the restart owner", async () => {
 		const { probe } = await startWorker();
 		using temp = TempDir.createSync("omp-restart-worker-");
-		await probe.open("RestartWorker", { persistedCwd: temp.path() });
+		await probe.openPersisted("RestartWorker", temp.path());
 		const remote = mirrorOf(liveRef("RestartWorker").session);
 		await remote.prompt("work before restart");
 		const lease = remote.beginRestartDrain();
