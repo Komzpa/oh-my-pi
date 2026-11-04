@@ -1115,7 +1115,10 @@ export class InputController {
 			// agent-core queue.
 			if (!text && !hasPendingImages && this.sessionConnection.isStreaming) {
 				if (this.ctx.session.hasInterruptibleInput) {
-					const aborting = this.sessionConnection.abort({ reason: USER_INTERRUPT_LABEL, deliverQueuedMessages: true });
+					const aborting = this.sessionConnection.abort({
+						reason: USER_INTERRUPT_LABEL,
+						deliverQueuedMessages: true,
+					});
 					await aborting;
 					this.ctx.updatePendingMessagesDisplay();
 					this.ctx.ui.requestRender();

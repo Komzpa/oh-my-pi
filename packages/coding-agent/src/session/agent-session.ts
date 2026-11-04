@@ -472,7 +472,12 @@ import {
 	type SessionAdvisorsHost,
 } from "./session-advisors";
 import type { BuildSessionContextOptions, SessionContext, TranscriptSessionContextOptions } from "./session-context";
-import { buildSessionContext, createRestartNoticeFilter, getRestorableSessionModels, isTranscriptEntry } from "./session-context";
+import {
+	buildSessionContext,
+	createRestartNoticeFilter,
+	getRestorableSessionModels,
+	isTranscriptEntry,
+} from "./session-context";
 import {
 	type CacheRefreshOutcome,
 	type CacheWarmer,
