@@ -232,7 +232,7 @@ describe("subagent runtime model resolution", () => {
 		expect(candidates).toEqual(["fallback/working-model"]);
 	});
 
-	it("passes ordered subagent candidates as a child retry fallback chain", async () => {
+	it("keeps remaining pool members before the role fallback chain", async () => {
 		const primary = model("primary", "bad-runtime-model");
 		const fallback = model("fallback", "working-model");
 		let childFallbackChains: Record<string, string[]> | undefined;
@@ -246,6 +246,7 @@ describe("subagent runtime model resolution", () => {
 
 		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
 		const settings = Settings.isolated({
+			modelRolePools: { task: { "primary/bad-runtime-model": 1, "fallback/working-model": 1 } },
 			"retry.fallbackChains": {
 				default: ["global/inherited-model"],
 			},
@@ -258,6 +259,7 @@ describe("subagent runtime model resolution", () => {
 			index: 0,
 			id: "issue-2750",
 			modelOverride: ["primary/bad-runtime-model", "fallback/working-model"],
+			modelRole: "task",
 			settings,
 			modelRegistry: {
 				refresh: async () => {},
@@ -283,7 +285,7 @@ describe("subagent runtime model resolution", () => {
 			}
 		}
 		expect(firstFallbackRole).toBe("subagent:issue-2750");
-		expect(subagentFallbackChain).toEqual(["fallback/working-model"]);
+		expect(subagentFallbackChain).toEqual(["fallback/working-model", "global/inherited-model"]);
 		expect(inheritedFallbackChain).toEqual(["global/inherited-model"]);
 		expect(result.modelOverride).toEqual(["primary/bad-runtime-model", "fallback/working-model"]);
 		expect(result.resolvedModel).toBe("fallback/working-model");
