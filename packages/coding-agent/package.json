@@ -531,7 +531,6 @@
 		"bench:guard": "bun scripts/bench-guard.ts"
 	},
 	"dependencies": {
-		"diff": "catalog:",
 		"@babel/parser": "catalog:",
 		"@oh-my-pi/omp-stats": "catalog:",
 		"@oh-my-pi/omptype": "catalog:",

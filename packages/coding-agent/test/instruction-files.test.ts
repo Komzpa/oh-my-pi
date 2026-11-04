@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
-import { applyPatch } from "diff";
+import { $ } from "bun";
 import { InstructionFiles } from "../src/session/instruction-files";
 import { SessionManager } from "../src/session/session-manager";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
@@ -39,8 +39,10 @@ describe("loaded instruction refresh", () => {
 		await fs.utimes(file, new Date(), new Date(Date.now() + 2000));
 		const updates = await tracker.refresh(16384);
 		expect(updates).toHaveLength(1);
-		const patch = updates[0].slice(updates[0].indexOf("Index:"));
-		expect(applyPatch(before, patch)).toBe(after);
+		const patch = updates[0].slice(updates[0].indexOf("--- "));
+		await Bun.write(file, before);
+		await $`patch ${file} < ${new Blob([patch])}`.quiet();
+		expect(await Bun.file(file).text()).toBe(after);
 		expect(updates[0]).toContain(file);
 		expect(updates[0]).not.toContain(after);
 	});
