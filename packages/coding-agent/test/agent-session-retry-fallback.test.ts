@@ -9316,45 +9316,55 @@ describe("AgentSession retry fallback", () => {
 		await expect(session.prompt("Try unavailable provider")).rejects.toMatchObject({ failureKind: "infrastructure" });
 		expect(calls).toBe(0);
 	});
-	it("waits for changed credentials on initial no-key setup without dispatching an unavailable model", async () => {
-		const primary = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-		const recoveryAuth = await AuthStorage.create(":memory:");
-		modelRegistry = new ModelRegistry(recoveryAuth, path.join(tempDir.path(), "recovery-models.yml"));
-		let ready = false;
-		let calls = 0;
-		const mock = createMockModel();
-		mock.push({ content: ["Recovered after credential replacement"] });
-		vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async () => (ready ? "test-key" : undefined));
-		mockSchedulerWaitWithClock().mockImplementationOnce(async () => {
-			expect(calls).toBe(0);
-			expect(providerExhaustionRecord(primary.provider)).toMatchObject({ class: "auth", failedCallCount: 1 });
-			await modelRegistry.authStorage.credentials.set(primary.provider, { type: "api_key", key: "replacement-key" });
-			ready = true;
-			await modelRegistry.runAvailabilityProbes();
-		});
-		const agent = new Agent({
-			getApiKey: () => "test-key",
-			initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [] },
-			streamFn: (model, context, options) => {
-				calls++;
-				return mock.stream(model, context, options);
-			},
-		});
-		session = new AgentSession({
-			agent,
-			modelRegistry,
-			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated({ "compaction.enabled": false }),
-			disableModelFallback: true,
-		});
-		session.addDisposer(() => recoveryAuth.close());
-		const { retryStartEvents } = trackRetryEvents(session);
-		await session.prompt("Continue after provider recovery");
-		await session.waitForIdle();
-		expect(calls).toBe(1);
-		expect(retryStartEvents).toHaveLength(1);
-		expect(providerExhaustionRecord(primary.provider)).toBeUndefined();
-	});
+	it.each(["stored", "runtime"] as const)(
+		"waits for changed %s credentials on initial no-key setup without dispatching an unavailable model",
+		async source => {
+			const primary = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+			const recoveryAuth = await AuthStorage.create(":memory:");
+			modelRegistry = new ModelRegistry(recoveryAuth, path.join(tempDir.path(), "recovery-models.yml"));
+			let ready = false;
+			let calls = 0;
+			const mock = createMockModel();
+			mock.push({ content: ["Recovered after credential replacement"] });
+			vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async () => (ready ? "test-key" : undefined));
+			mockSchedulerWaitWithClock().mockImplementationOnce(async () => {
+				expect(calls).toBe(0);
+				expect(providerExhaustionRecord(primary.provider)).toMatchObject({ class: "auth", failedCallCount: 1 });
+				if (source === "stored") {
+					await modelRegistry.authStorage.credentials.set(primary.provider, {
+						type: "api_key",
+						key: "replacement-key",
+					});
+				} else {
+					modelRegistry.authStorage.keys.setRuntime(primary.provider, "replacement-key");
+				}
+				ready = true;
+				await modelRegistry.runAvailabilityProbes();
+			});
+			const agent = new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [] },
+				streamFn: (model, context, options) => {
+					calls++;
+					return mock.stream(model, context, options);
+				},
+			});
+			session = new AgentSession({
+				agent,
+				modelRegistry,
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({ "compaction.enabled": false }),
+				disableModelFallback: true,
+			});
+			session.addDisposer(() => recoveryAuth.close());
+			const { retryStartEvents } = trackRetryEvents(session);
+			await session.prompt("Continue after provider recovery");
+			await session.waitForIdle();
+			expect(calls).toBe(1);
+			expect(retryStartEvents).toHaveLength(1);
+			expect(providerExhaustionRecord(primary.provider)).toBeUndefined();
+		},
+	);
 
 	it.each([
 		{ status: 401, expectedClass: "auth" },

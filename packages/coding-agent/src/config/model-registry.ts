@@ -57,6 +57,7 @@ import {
 	clearProviderAuthOnCredentialChange,
 	isProviderExhausted,
 	probeUnavailableProviders,
+	providerExhaustionRecord,
 	recordProviderFailure,
 } from "../session/provider-exhaustion";
 import { probeProviderInference } from "../session/provider-availability-probe";
@@ -310,6 +311,7 @@ export class ModelRegistry {
 	#availabilityTimer: NodeJS.Timeout | undefined;
 	#availabilityRun: Promise<void> | undefined;
 	#credentialVersions = new Map<string, string>();
+	#resolvedCredentialVersions = new Map<string, string>();
 	#discoveryProbeProviders = new Set<string>();
 	#models: Model<Api>[] = [];
 	#unprojectedModels: Model<Api>[] = [];
@@ -947,12 +949,23 @@ export class ModelRegistry {
 		return !this.#isProviderDisabled(provider) && !isProviderExhausted(provider);
 	}
 
+	async #rememberResolvedOverride(provider: string): Promise<void> {
+		const source = this.authStorage.keys.source(provider)?.kind;
+		if (source === "runtime" || source === "config") {
+			const key = await this.authStorage.keys.peek(provider);
+			this.#resolvedCredentialVersions.set(provider, Bun.hash(key ?? "").toString(16));
+		} else {
+			this.#resolvedCredentialVersions.delete(provider);
+		}
+	}
+
 	/** Fingerprint only; credential material is never persisted in availability records. */
 	providerCredentialVersion(provider: string): string {
 		return Bun.hash(
 			JSON.stringify([
 				this.authStorage.credentials.list(provider).map(({ id, credential }) => [id, credential]),
 				this.#runtimeProviderApiKeys.get(provider),
+				this.#resolvedCredentialVersions.get(provider),
 				this.#providerOverrides.get(provider)?.apiKey,
 				getEnvApiKey(provider),
 			]),
@@ -993,6 +1006,15 @@ export class ModelRegistry {
 	async #runAvailabilityProbes(): Promise<void> {
 		await this.authStorage.credentials.poll();
 		for (const provider of this.#knownStaticProviders()) {
+			if (providerExhaustionRecord(provider)?.class === "auth") {
+				// Peek neither refreshes OAuth nor rotates accounts. Include CLI and
+				// command-backed overrides without exposing key material in state.
+				try {
+					await this.#rememberResolvedOverride(provider);
+				} catch {
+					continue;
+				}
+			}
 			const version = this.providerCredentialVersion(provider);
 			const previous = this.#credentialVersions.get(provider);
 			if (
@@ -3788,12 +3810,14 @@ export class ModelRegistry {
 		if (this.#isKeylessProvider(model.provider)) {
 			return kNoAuth;
 		}
-		return this.authStorage.keys.get(model.provider, sessionId, {
+		const key = await this.authStorage.keys.get(model.provider, sessionId, {
 			baseUrl: model.baseUrl,
 			modelId: model.id,
 			accountIds: model.accountAccess && Object.keys(model.accountAccess),
 			signal: options?.signal,
 		});
+		await this.#rememberResolvedOverride(model.provider);
+		return key;
 	}
 
 	/** Resolve request authentication through the historical Pi extension facade. */
@@ -3851,7 +3875,7 @@ export class ModelRegistry {
 			return { apiKey: kNoAuth };
 		}
 		const accountAccess = options?.modelId ? this.find(provider, options.modelId)?.accountAccess : undefined;
-		return this.authStorage.keys.getWithCredential(provider, sessionId, {
+		const credential = await this.authStorage.keys.getWithCredential(provider, sessionId, {
 			baseUrl: options?.baseUrl,
 			modelId: options?.modelId,
 			accountIds: accountAccess && Object.keys(accountAccess),
@@ -3860,6 +3884,8 @@ export class ModelRegistry {
 			rejectedAccessToken: options?.rejectedAccessToken,
 			signal: options?.signal,
 		});
+		await this.#rememberResolvedOverride(provider);
+		return credential;
 	}
 
 	/**
@@ -3887,7 +3913,9 @@ export class ModelRegistry {
 		if (this.#keylessProviders.has(provider) && this.authStorage.keys.source(provider) === undefined) {
 			return kNoAuth;
 		}
-		return this.authStorage.keys.peek(provider, options);
+		const key = await this.authStorage.keys.peek(provider, options);
+		await this.#rememberResolvedOverride(provider);
+		return key;
 	}
 
 	/**

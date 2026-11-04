@@ -71,6 +71,30 @@ describe("registry provider availability", () => {
 		expect(registry.find("openai", "gpt-5-mini")?.id).toBe("gpt-5-mini");
 	});
 
+	test.each(["runtime", "config"] as const)(
+		"a changed %s override restores selection while the rejected key stays unavailable",
+		async source => {
+			const { auth, registry } = await fixture();
+			const model = registry.find("openai", "gpt-5-mini")!;
+			const setKey = (key: string) => {
+				if (source === "runtime") auth.keys.setRuntime("openai", key);
+				else auth.keys.setConfig("openai", key);
+			};
+			setKey("rejected-key");
+			await registry.getApiKey(model);
+			availability.recordProviderFailure("openai", {
+				status: 401,
+				credentialVersion: registry.providerCredentialVersion("openai"),
+			});
+			cleanup.push(() => availability.clearProviderAuthOnCredentialChange("openai", "test-cleanup"));
+			await registry.runAvailabilityProbes();
+			expect(registry.getAvailableForProviders(new Set(["openai"]))).toEqual([]);
+			setKey("replacement-key");
+			await registry.runAvailabilityProbes();
+			expect(resolveModelOverride(["openai/gpt-5-mini"], registry).model?.id).toBe("gpt-5-mini");
+		},
+	);
+
 	test("failed discovery retains known membership and requires catalog recovery rather than chat success", async () => {
 		const { auth, directory } = await fixture();
 		const configPath = path.join(directory.path(), "discovery.json");
