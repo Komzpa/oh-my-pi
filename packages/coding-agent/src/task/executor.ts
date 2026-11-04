@@ -3666,7 +3666,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			record.role === "user" ? record.attribution === "user" : record.role === "developer" && record.userInitiated,
 		);
 		return async turnError => {
-			while (!turnMonitor.abortSignal.aborted) {
+			while (session.isRestartDraining && !turnMonitor.abortSignal.aborted) {
 				try {
 					const outcome = await untilAborted(turnMonitor.abortSignal, () => session.waitForRestartDrainRelease());
 					if (outcome === "disposed") break;
