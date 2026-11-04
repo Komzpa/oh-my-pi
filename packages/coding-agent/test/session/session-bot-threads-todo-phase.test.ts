@@ -18,10 +18,12 @@ describe("todo phase command selectors", () => {
 			},
 			{ name: "Elsewhere", tasks: [{ content: "untouched", status: "pending" }] },
 		];
-		const setTodoPhases = vi.fn();
+		const commitTodoPhases = vi.fn();
 		const ctx = {
 			agent: { appendMessage: vi.fn() },
-			session: { getTodoPhases: () => phases, setTodoPhases },
+			// Upstream c20241686da folded setTodoPhases + appendCustomEntry into
+			// session.commitTodoPhases; assert against the new single call.
+			session: { getTodoPhases: () => phases, setTodoPhases: vi.fn(), commitTodoPhases },
 			sessionManager: {
 				appendCustomEntry: vi.fn(),
 				appendMessage: vi.fn(),
@@ -36,8 +38,8 @@ describe("todo phase command selectors", () => {
 
 		await new TodoCommandController(ctx).handleTodoCommand(command);
 
-		expect(setTodoPhases).toHaveBeenCalledTimes(1);
-		const result = setTodoPhases.mock.calls[0]?.[0] as TodoPhase[];
+		expect(commitTodoPhases).toHaveBeenCalledTimes(1);
+		const result = commitTodoPhases.mock.calls[0]?.[0] as TodoPhase[];
 		expect(result[0]?.tasks.map(task => task.status)).toEqual([expectedStatus, expectedStatus]);
 		expect(result[1]?.tasks[0]?.content).toBe("untouched");
 		expect(ctx.showError).not.toHaveBeenCalled();
