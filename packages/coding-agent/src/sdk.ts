@@ -2717,7 +2717,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
 			getTodoPhases: () => session.getTodoPhases(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
-			commitTodoPhases: phases => session.commitTodoPhases(phases),
 			persistTodoPhases: (phases, edit) => {
 				if (edit) {
 					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
@@ -4200,7 +4199,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			emitEvent: event => cursorEventEmitter?.(event),
 			getTodoPhases: () => session.getTodoPhases(),
 			commitTodoPhases: phases => session.commitTodoPhases(phases),
-			setTodoPhases: phases => session.setTodoPhases(phases),
 			persistTodoPhases: (phases, edit) => {
 				if (edit) {
 					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
