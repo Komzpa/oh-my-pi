@@ -1828,7 +1828,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Agents count as the status-line badge counts them, from the agent
 		// registry: the observer registry only hears task-executor lifecycles,
 		// so an agent a peer message woke or revived would run without a segment.
-		const showAgents = cfgDisplayPinnedAgents.get(settings) !== "off";
+		const showAgents = cfgDisplayPinnedAgents.get(this.settings) !== "off";
 		this.#agentsSegment = agentsSegment(
 			this.#agentsSegment,
 			showAgents ? this.#runningSubagentCount : 0,
@@ -2154,7 +2154,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Flip the pinned jump list between its collapsed few and the full list, overriding the setting. */
 	togglePinnedHudExpanded(): void {
-		const mode = cfgDisplayPinnedAgents.get(settings);
+		const mode = cfgDisplayPinnedAgents.get(this.settings);
 		const expanded = this.#pinnedHudOverride ?? mode === "full";
 		this.#pinnedHudOverride = !expanded;
 		this.#renderSubagentList();
@@ -5610,7 +5610,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const activeDescs = this.#getActiveSubagentDescriptions();
 		this.#todoHudSubagentKey = activeDescs.join("\n");
 		const running =
-			cfgDisplayPinnedAgents.get(settings) === "off"
+			cfgDisplayPinnedAgents.get(this.settings) === "off"
 				? []
 				: this.#observerRegistry.getSessions().filter(isHudSubagent);
 		if (this.#todoHudHidden) {
@@ -5699,7 +5699,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// The list is replaced in place: its declaration next to the row-budget record stays identical to the
 		// upstream TODO panel topic's, so both apply together.
 		const activeTodoWorkers =
-			cfgDisplayPinnedAgents.get(settings) === "off"
+			cfgDisplayPinnedAgents.get(this.settings) === "off"
 				? linkTodoWorkers(livePhases, this.#observerRegistry.getSessions())
 				: workers;
 		activeDescs.splice(0, activeDescs.length, ...[...activeTodoWorkers.byTask.keys()].map(todo => todo.content));
@@ -6131,7 +6131,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				tickMs: number | undefined;
 		  }
 		| undefined {
-		const mode = cfgDisplayPinnedAgents.get(settings);
+		const mode = cfgDisplayPinnedAgents.get(this.settings);
 		if (mode === "off") return undefined;
 		const sourcePhases = this.todoPhases;
 		const phases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
