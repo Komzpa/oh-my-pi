@@ -272,6 +272,18 @@ function validateEffort(effort: TaskEffort | undefined, label: string): string |
 	if (effort === undefined || TASK_EFFORTS.includes(effort)) return undefined;
 	return `${label} has an invalid \`effort\` value ${JSON.stringify(effort)}. Use "lo", "med", or "hi".`;
 }
+/** Reject a malformed `resources` declaration on internal/stale-transcript calls that bypass the wire schema. `[]` is valid (owns nothing); entries must be non-blank strings. */
+function validateResources(resources: TaskItem["resources"], label: string): string | undefined {
+	if (resources === undefined) return undefined;
+	if (!Array.isArray(resources))
+		return `${label} has an invalid \`resources\` value ${JSON.stringify(resources)}. Provide an array of checkout path strings, or omit it.`;
+	for (const entry of resources) {
+		if (typeof entry !== "string" || entry.trim() === "") {
+			return `${label} has an invalid \`resources\` entry ${JSON.stringify(entry)}. Every entry must be a non-blank checkout path string.`;
+		}
+	}
+	return undefined;
+}
 
 function validateTaskInput(item: TaskItem | undefined, label: string, fileEnabled: boolean): string | undefined {
 	const hasTask = item?.task !== undefined;
@@ -325,6 +337,8 @@ function validateSpawnParams(
 			const label = `Task ${i + 1}${item?.name ? ` (\`${item.name}\`)` : ""}`;
 			const inputError = validateTaskInput(item, label, fileEnabled);
 			if (inputError) return inputError;
+			const resourcesError = validateResources(item.resources, label);
+			if (resourcesError) return resourcesError;
 			const effortError = validateEffort(item.effort, label);
 			if (effortError) return effortError;
 			const modelError = validateModel(item, label, defaultAgent, settings);
@@ -349,8 +363,13 @@ function validateSpawnParams(
 	if (batchEnabled && params.task === undefined && params.taskFile === undefined) {
 		return "Missing `tasks`. Provide a `tasks` array (one subagent per item) with a shared `context`.";
 	}
+	const callInputError = validateTaskInput(params, "The call", fileEnabled);
+	if (callInputError === undefined) {
+		const callResourcesError = validateResources(params.resources, "The call");
+		if (callResourcesError && validateEffort(params.effort, "The call") === undefined) return callResourcesError;
+	}
 	return (
-		validateTaskInput(params, "The call", fileEnabled) ??
+		callInputError ??
 		validateEffort(params.effort, "The call") ??
 		validateModel(params, "The call", defaultAgent, settings)
 	);
@@ -394,6 +413,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
 	if ("tools" in params) item.tools = params.tools;
 	if ("effort" in params) item.effort = params.effort;
+	if ("resources" in params) item.resources = params.resources;
 	if ("isolated" in params) item.isolated = params.isolated;
 	if ("sourceSession" in params) item.sourceSession = params.sourceSession;
 	if ("model" in params) item.model = params.model;
@@ -469,6 +489,7 @@ function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent
 	if ("effort" in item) spawn.effort = item.effort;
 	if ("sourceSession" in item) spawn.sourceSession = item.sourceSession;
 	if ("model" in item) spawn.model = item.model;
+	if ("resources" in item) spawn.resources = item.resources;
 	if (item.isolated !== undefined) {
 		spawn.isolated = item.isolated;
 	} else if ("isolated" in params) {
@@ -1931,6 +1952,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...spawnModelFields(params),
 				...this.#resultParams(params),
 				...this.#effortParams(params),
+				...(Object.hasOwn(params, "resources") ? { resources: params.resources } : {}),
 				solutionSpace: params.solutionSpace,
 				...(params.tools?.length
 					? {
