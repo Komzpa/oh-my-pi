@@ -1,5 +1,4 @@
 import * as path from "node:path";
-import { loadProjectAgentsMd } from "./discovery/project-agents-md";
 import {
 	Agent,
 	type AgentEvent,
@@ -95,6 +94,7 @@ import "./discovery";
 import { LiveImageUrlService } from "./blob-broker/service";
 import { wrapStreamFnWithBlobUrlFallback } from "./blob-broker/stream-fallback";
 import { initializeWithSettings } from "./discovery";
+import { loadProjectAgentsMd } from "./discovery/project-agents-md";
 import { setInvocationConfiguredExtensions, withOmpExtensionRootScope } from "./discovery/omp-extension-roots";
 import { disposeVmContextsByOwner } from "./eval/js/context-manager";
 import { getEnabledEvalPreludes, type EvalPreludeDefinition } from "./eval/preludes";
