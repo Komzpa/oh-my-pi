@@ -64,6 +64,7 @@
 - Apostrophes in slash-command and prompt-template arguments, such as `/fix the user's login bug` or `/fix don't break it`, now reach `$ARGUMENTS` and `$1`, `$2`, … intact instead of being stripped and merging the rest of the line into one argument ([#18008](https://github.com/can1357/oh-my-pi/issues/18008))
 - Automatic continuations switch away from exhausted providers, or pause until a cooldown expires when every candidate is unavailable.
 - Model selection skips unavailable providers without changing preferences; sessions wait for recovery, with shared probes and host-routable transition notices.
+- Model selection skips unavailable providers without changing preferences; sessions wait for recovery, with shared probes and host-routable transition notices ([#16532](https://github.com/can1357/oh-my-pi/pull/16532) by [@Komzpa](https://github.com/Komzpa)).
 - Long bash output cut in the middle no longer splits a line at the `[…N ln elided…]` marker, and its "Showing lines …" notice now names the lines actually shown, ending at the output's real last line ([#17957](https://github.com/can1357/oh-my-pi/pull/17957) by [@H4vC](https://github.com/H4vC))
 - A bash command that prints nothing and succeeds now returns `(no output, exit code 0)` instead of a bare `(no output)`, so an empty diff or search no longer reads like a failed command ([#17957](https://github.com/can1357/oh-my-pi/pull/17957) by [@H4vC](https://github.com/H4vC))
 - The first frame of a new session always shows your configured default model and the thinking level a new session starts at; a session launched with `--model`, a model switched mid-session, or a project-only default no longer leaks into other folders' first frame
@@ -863,7 +864,6 @@
 - Fixed supported Bedrock Claude models falling back to soft instead of remote compaction ([#16343](https://github.com/can1357/oh-my-pi/pull/16343) by [@anatoli-tsinovoy](https://github.com/anatoli-tsinovoy))
 - Fixed browser `tab.run(fn, [url])` and `browser.open("https://…")` failing with a bare "expects an options object"; the errors now say to pass `{ args: [...] }` and `browser.open({ url, name })` ([#16236](https://github.com/can1357/oh-my-pi/pull/16236) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed the built-in `ts-set-map`, `ts-import-type` and `ts-no-any` rules reminding you about code they allow: an empty or computed `Set`/`Map`, a runtime `await import()`, or the word "any" in a comment ([#16242](https://github.com/can1357/oh-my-pi/pull/16242) by [@will-bogusz](https://github.com/will-bogusz))
-- Providers that report balance or quota exhaustion (402/403 or a daily-quota 429) are now cooled down for one hour (or the provider's own retry hint, if given) once no sibling credential can serve, so fallback chains and new subagent spawns skip them; transient rate limits and server failures keep their existing retries ([#16532](https://github.com/can1357/oh-my-pi/pull/16532) by [@Komzpa](https://github.com/Komzpa))
 
 ## [18.12.3] - 2026-10-19
 

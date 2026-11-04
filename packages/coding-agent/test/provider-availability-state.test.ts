@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { finalize } from "@oh-my-pi/pi-ai/error/finalize";
 import { OpenAIHttpError } from "@oh-my-pi/pi-ai/error/classes";
-import { classifyProviderFailure } from "../src/session/provider-exhaustion";
+import { classifyProviderFailure, type ProviderUnavailableClass } from "../src/session/provider-exhaustion";
 
 const fixtures: TempDir[] = [];
 afterEach(() => {
@@ -73,13 +73,13 @@ describe("provider availability evidence", () => {
 	it("replays November 4 captured responses through error finalization and availability", async () => {
 		// omp.2026-11-04.1547436.log:19620, :4331, :19528;
 		// omp.2026-11-04.3069605.log:13. Auth is the owner's missing-key scenario.
-		const cases = [
+		const cases: { status: number; type: string; param?: string; expected: ProviderUnavailableClass }[] = [
 			{ status: 402, type: "personal-team-blocked:spending-limit", expected: "quota" },
 			{ status: 402, type: "insufficient_balance_error", expected: "balance" },
 			{ status: 402, type: "billing_error", param: "billing_not_configured", expected: "entitlement" },
 			{ status: 404, type: "invalid_request_error", param: "model_not_found", expected: "entitlement" },
 			{ status: 401, type: "authentication_error", expected: "auth" },
-		] as const;
+		];
 		for (const replay of cases) {
 			const response = {
 				status: replay.status,
