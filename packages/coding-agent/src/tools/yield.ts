@@ -536,9 +536,15 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<YieldDetails>> {
 		if (!isRecord(params)) throw new Error("yield arguments must be an object");
-		const raw = params;
+		// Coordination metadata is validated by the handover gate, separately from result fields.
+		const deconfliction = this.#session.checkPeerHandover ? params.deconfliction : undefined;
+		const raw = deconfliction === undefined ? params : { ...params };
+		if (deconfliction !== undefined) delete raw.deconfliction;
 		const workPoolItems = this.#workPoolItems();
-		assertSupportedRootFields(this.parameters, raw);
+		assertSupportedRootFields(
+			workPoolItems.length > 0 ? wrapWorkPoolYieldParameters(workPoolItems) : this.#parameters,
+			raw,
+		);
 		let workPoolItemId: string | undefined;
 		let yieldType: string | string[] | undefined;
 		// Strict-mode providers send omitted optionals as `null`; treat it as absent.
@@ -566,7 +572,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// is validated as a whole at finalization (executor finalizeSubprocessOutput).
 		const isIncremental = Array.isArray(yieldType) && yieldType.length > 0;
 		if ((!isIncremental || workPoolItemId !== undefined) && this.#session.checkPeerHandover) {
-			const refusal = await this.#session.checkPeerHandover(raw.deconfliction);
+			const refusal = await this.#session.checkPeerHandover(deconfliction);
 			if (refusal) throw new Error(refusal);
 		}
 
@@ -759,7 +765,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				status,
 				error: errorMessage,
 				type: yieldType,
-				deconfliction: raw.deconfliction,
+				deconfliction,
 				useLastTurn: useLastTurn || undefined,
 				complete: workPoolComplete || undefined,
 				schemaOverridden: schemaValidationOverridden || undefined,
