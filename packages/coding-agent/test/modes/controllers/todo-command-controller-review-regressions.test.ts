@@ -40,6 +40,9 @@ describe("PR41 slash TODO controller regressions", () => {
 			session: {
 				getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
 				setTodoPhases: vi.fn(),
+				commitTodoPhases: (phases: TodoPhase[]) => {
+					manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				},
 			},
 			sessionManager: manager,
 			setTodos: vi.fn(),
