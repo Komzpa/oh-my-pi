@@ -3461,7 +3461,7 @@ export class ModelRegistry {
 		// those rather than extending the lifetime of their output.
 		if (availableProviders.size === 1 && this.#runtimeModelModifiers.size === 0) {
 			const models = this.#modelsForProviderLookup(availableProviders.values().next().value!);
-			return filterBlacklistedModels(kind === "all" ? models.slice() : models.filter(model => modelKind(model) === kind));
+			return kind === "all" ? models.slice() : models.filter(model => modelKind(model) === kind);
 		}
 		const models = this.#composeStaticModels(availableProviders);
 		return kind === "all" ? models : models.filter(model => modelKind(model) === kind);
