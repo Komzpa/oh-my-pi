@@ -9128,9 +9128,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// every pre-dispatch bail (generation bump from abort, disposal, usage
 		// preflight denial) exits silently, and prompt() uses the outcome to hand
 		// the typed text back to the host instead of losing it.
-		const modelSelectionGeneration = this.#promptGeneration;
-		await this.refreshModelSelection?.();
-		if (modelSelectionGeneration !== this.#promptGeneration || this.#isDisposed) return false;
+		if (this.refreshModelSelection) {
+			const modelSelectionGeneration = this.#promptGeneration;
+			await this.refreshModelSelection();
+			if (modelSelectionGeneration !== this.#promptGeneration || this.#isDisposed) return false;
+		}
 		const inFlightEpoch = this.#beginInFlight();
 		// Client ownership is reserved by #prompt before dispatch preprocessing
 		// and released when its bracket settles; callers that reach this
