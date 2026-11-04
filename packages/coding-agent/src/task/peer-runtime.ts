@@ -68,7 +68,7 @@ export class PeerRuntime {
 			void session
 				.sendCustomMessage(
 					{ customType: "peer-coordination", content, display: false },
-					{ deliverAs: "nextTurn", triggerTurn: false },
+					{ deliverAs: "aside", wakeIdle: false },
 				)
 				.catch(error => logger.debug("Peer notice failed", { id, error: String(error) }));
 		});
@@ -97,12 +97,15 @@ export class PeerRuntime {
 		runtimes.set(session, this);
 	}
 	async initialize(): Promise<void> {
-		const repository = vcs.git(this.cwd);
+		const repository = vcs.git(this.#scopeRoot());
 		if (!repository) return;
 		const status = await repository.statusPorcelain({ untracked: "all", nulTerminated: true });
 		this.#baseline = await this.#snapshot(repository.info().repoRoot ?? this.cwd, status);
 		this.#head = await repository.headSha();
 		this.#branch = await repository.currentBranch();
+	}
+	#scopeRoot(): string {
+		return path.resolve(this.cwd, this.registry.get(this.id)?.history?.peerCoordination?.scope.root ?? this.cwd);
 	}
 	async #snapshot(root: string, status: string): Promise<Map<string, string>> {
 		const snapshot = new Map<string, string>();
@@ -122,7 +125,8 @@ export class PeerRuntime {
 		if (!value.includes("://")) this.#coordination.touch([`path:${path.resolve(this.cwd, value)}`]);
 	}
 	async #observe(): Promise<void> {
-		const repository = vcs.git(this.cwd);
+		const scopeRoot = this.#scopeRoot();
+		const repository = vcs.git(scopeRoot);
 		if (repository) {
 			const status = await repository.statusPorcelain({ untracked: "all", nulTerminated: true });
 			const root = repository.info().repoRoot ?? this.cwd;
@@ -134,15 +138,15 @@ export class PeerRuntime {
 					peer =>
 						peer.id !== this.id &&
 						peer.status === "running" &&
-						peer.history?.peerCoordination?.scope.root === this.cwd,
+						peer.history?.peerCoordination?.scope.root === scopeRoot,
 				);
 			// Git status belongs to a checkout, not to an agent. In a shared checkout only
 			// corroborate the worker's declared paths; actual tool mutations are attributed directly.
-			const paths = [...snapshot]
-				.filter(([value, signature]) => this.#baseline.get(value) !== signature)
-				.map(([value]) => path.resolve(root, value));
+			const paths = [...new Set([...snapshot.keys(), ...this.#baseline.keys()])]
+				.filter(value => this.#baseline.get(value) !== snapshot.get(value))
+				.map(value => path.resolve(root, value));
 			this.#baseline = snapshot;
-			const owned = (state?.scope.paths ?? []).map(value => path.resolve(this.cwd, value));
+			const owned = (state?.scope.paths ?? []).map(value => path.resolve(scopeRoot, value));
 			this.#coordination.touch(
 				paths
 					.filter(

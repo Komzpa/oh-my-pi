@@ -5058,7 +5058,10 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 						? {
 								task: (options.peerTask ?? options.description ?? id).slice(0, 160),
 								profile: agent.name,
-								scope: { ...options.peerScope, root: worktree ?? options.peerScope?.root ?? cwd },
+								scope: {
+									...options.peerScope,
+									root: path.resolve(cwd, worktree ?? options.peerScope?.root ?? cwd),
+								},
 								touched: [],
 							}
 						: undefined,
