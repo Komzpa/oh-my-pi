@@ -1,3 +1,4 @@
+import type { PeerCoordinationState } from "../task/peer-coordination";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -3697,6 +3698,7 @@ export class SessionManager {
 	}
 
 	appendSessionInit(init: {
+		peerCoordination?: PeerCoordinationState;
 		systemPrompt: string[];
 		task: string;
 		tools: string[];
@@ -4768,6 +4770,7 @@ export function hasConversationalHistory(entries: readonly FileEntry[]): boolean
  * the {@link SessionInitEntry} payload without its tree bookkeeping fields.
  */
 export interface PersistedSessionInit {
+	peerCoordination?: PeerCoordinationState;
 	systemPrompt: string[];
 	task: string;
 	tools: string[];
@@ -4802,6 +4805,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 		init = {
 			systemPrompt: typeof entry.systemPrompt === "string" ? [entry.systemPrompt] : entry.systemPrompt,
 			task: entry.task,
+			peerCoordination: entry.peerCoordination,
 			tools: entry.tools,
 			mountedTools: entry.mountedTools,
 			agent: entry.agent,

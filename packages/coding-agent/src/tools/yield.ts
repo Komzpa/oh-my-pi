@@ -64,6 +64,7 @@ export function resolveYieldReportText(messages: readonly AgentMessage[], toolCa
 }
 
 export interface YieldDetails {
+	deconfliction?: unknown;
 	/** Successful result payload, or omitted when `useLastTurn` requests last-turn extraction. */
 	data?: unknown;
 	status: "success" | "aborted";
@@ -271,12 +272,16 @@ function withSectionVariants(dataSchema: Record<string, unknown>): Record<string
 	return description !== undefined ? { description, anyOf: branches } : { anyOf: branches };
 }
 
-function wrapWorkPoolYieldParameters(items: readonly WorkPoolYieldItem[]): Record<string, unknown> {
+function wrapWorkPoolYieldParameters(
+	items: readonly WorkPoolYieldItem[],
+	deconfliction?: unknown,
+): Record<string, unknown> {
 	return {
 		type: "object",
 		additionalProperties: false,
 		description: "submit one workpool item outcome",
 		properties: {
+			...(deconfliction ? { deconfliction } : {}),
 			key: {
 				enum: items.map(item => item.index),
 				description: "1-based workpool item number",
@@ -373,6 +378,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	#hasIncrementalSections = false;
 	readonly #session: ToolSession;
 	readonly #parameters: TSchema;
+	readonly #deconflictionSchema: unknown;
 	#workPoolBatchKey = "";
 	readonly #submittedWorkPoolItems = new Set<string>();
 
@@ -389,7 +395,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 
 	get parameters(): TSchema {
 		const items = this.#workPoolItems();
-		return items.length > 0 ? wrapWorkPoolYieldParameters(items) : this.#parameters;
+		return items.length > 0 ? wrapWorkPoolYieldParameters(items, this.#deconflictionSchema) : this.#parameters;
 	}
 
 	constructor(session: ToolSession) {
@@ -477,6 +483,22 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#rejectUnknownSections = rejectUnknownSections;
 		this.#knownSectionLabels = knownSectionLabels;
 		this.#isKnownSection = isKnownSection;
+		if (session.checkPeerHandover && isRecord(parameters.properties)) {
+			parameters.properties.deconfliction = {
+				type: "array",
+				items: {
+					type: "object",
+					properties: {
+						peer: { type: "string" },
+						resource: { type: "string" },
+						agreement: { type: "string" },
+					},
+					required: ["peer", "resource", "agreement"],
+					additionalProperties: false,
+				},
+			};
+		}
+		this.#deconflictionSchema = (parameters.properties as Record<string, unknown>).deconfliction;
 		this.#parameters = parameters;
 	}
 
@@ -516,10 +538,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		if (!isRecord(params)) throw new Error("yield arguments must be an object");
 		const raw = params;
 		const workPoolItems = this.#workPoolItems();
-		assertSupportedRootFields(
-			workPoolItems.length > 0 ? wrapWorkPoolYieldParameters(workPoolItems) : this.#parameters,
-			raw,
-		);
+		assertSupportedRootFields(this.parameters, raw);
 		let workPoolItemId: string | undefined;
 		let yieldType: string | string[] | undefined;
 		// Strict-mode providers send omitted optionals as `null`; treat it as absent.
@@ -708,6 +727,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			}
 		}
 
+		if ((!isIncremental || workPoolItemId !== undefined) && this.#session.checkPeerHandover) {
+			const refusal = await this.#session.checkPeerHandover(raw.deconfliction);
+			if (refusal) throw new Error(refusal);
+		}
 		this.#emptyResultFailures = 0;
 		if (status === "success" && isIncremental) this.#hasIncrementalSections = true;
 		let workPoolComplete = false;
@@ -733,6 +756,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			content: [{ type: "text", text: responseText }],
 			details: {
 				data,
+				deconfliction: raw.deconfliction,
 				status,
 				error: errorMessage,
 				type: yieldType,
@@ -802,6 +826,7 @@ subprocessToolRegistry.register<YieldDetails>("yield", {
 		if (status !== "success" && status !== "aborted") return undefined;
 		return {
 			data: record.data,
+			deconfliction: record.deconfliction,
 			status,
 			error: typeof record.error === "string" ? record.error : undefined,
 			type: isYieldType(record.type) ? record.type : undefined,

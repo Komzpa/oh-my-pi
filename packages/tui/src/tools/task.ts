@@ -2238,6 +2238,8 @@ export const LABEL_MAX = 80;
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
+	/** Declared resource ownership; paths are relative to root. */
+	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
 	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
 	name?: string;
 	/** Agent type to run this item (e.g. "scout"). Defaults to the spawn policy's default agent. */
@@ -2270,6 +2272,8 @@ export interface TaskItem {
  * transcripts using the flat form keep working under either setting.
  */
 export interface TaskParams {
+	/** Declared resource ownership; paths are relative to root. */
+	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
 	/** Stable agent name (flat form). */
 	name?: string;
 	/** Agent type to spawn (flat form); omitted values resolve from the session spawn policy. */
@@ -2475,6 +2479,7 @@ export interface AgentProgress {
 
 /** Result from a single agent execution */
 export interface SingleResult {
+	deconfliction?: unknown[];
 	index: number;
 	id: string;
 	agent: string;

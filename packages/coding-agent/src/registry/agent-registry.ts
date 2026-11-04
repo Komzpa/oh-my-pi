@@ -10,6 +10,7 @@
  */
 
 import { logger } from "@oh-my-pi/pi-utils";
+import type { PeerCoordinationState } from "../task/peer-coordination";
 import type { AgentSessionHandle } from "../session/agent-session-handle";
 import { AgentAwaits, type AgentAwaitsApi } from "./agent-awaits";
 import { oneLineLabel } from "@oh-my-pi/pi-tui/tools/task";
@@ -44,6 +45,7 @@ export interface AgentRunLifecycle {
 
 /** Historical identity and telemetry that remain available after the live session is disposed. */
 export interface AgentHistorySummary {
+	peerCoordination?: PeerCoordinationState;
 	agent?: string;
 	modelRole?: string;
 	resolvedModel?: string;

@@ -15,6 +15,8 @@ Use most specific agent.{{#if scoutAvailable}} Read-only research MUST use `scou
 Shared edits need one integration owner; give each task its files. Set interfaces in {{#if batchEnabled}}`context`{{else}}the task{{/if}}. Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.
 
 # Inputs
+{{#if peerAwareness}}`scope`: structured ownership from the task brief and todo schedule: `{root, branch, paths, resources, ports}`. Use the real ROOT/worktree, branch, owned paths, resource identifiers and reserved port numbers. Do not put these only in prose. The worker sees sibling scopes and must deconflict unexpected overlap before handover.
+{{/if}}
 {{#if file}}`taskFile`: absolute path or `local://` file; contents become the task, read once at dispatch. Exactly one of `task`/`taskFile`.
 {{/if}}
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name.{{#if structured}} `outputSchema` overrides agent/session schemas.{{/if}}

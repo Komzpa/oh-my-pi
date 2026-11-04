@@ -59,6 +59,10 @@ export interface IrcBusApi {
 	send(msg: Omit<IrcMessage, "id" | "ts">): Promise<IrcDeliveryReceipt>;
 	/** Whether `from` successfully sent `to` anything, progress included, at or after `sinceTs`. */
 	sentSince(from: string, to: string, sinceTs: number): boolean;
+	/** Monotonic boundary for successful direct exchanges. */
+	exchangeCursor(): number;
+	/** Both agents sent a successful direct message after the boundary; excludes progress/broadcasts. */
+	exchangedSince(from: string, to: string, sinceCursor: number): boolean;
 	/** Agents `from` messaged directly at or after `sinceTs` that have not answered since. */
 	unansweredSends(from: string, sinceTs: number): Array<{ to: string; sentAt: number; promised: boolean }>;
 	/** Block until a message for `agentId` that `filter` accepts arrives; null on timeout. */
@@ -180,6 +184,16 @@ export class IrcBus implements IrcBusApi {
 	 * after `sinceTs`. The wake-turn relay uses it to skip agents that already
 	 * answered their waker themselves, or promised it a later answer.
 	 */
+	exchangeCursor(): number {
+		return this.#sendSeq;
+	}
+
+	exchangedSince(from: string, to: string, sinceCursor: number): boolean {
+		const sent = this.#lastDirect.get(from)?.get(to);
+		const reply = this.#lastDirect.get(to)?.get(from);
+		return sent !== undefined && reply !== undefined && sent.seq > sinceCursor && reply.seq > sinceCursor;
+	}
+
 	sentSince(from: string, to: string, sinceTs: number): boolean {
 		return [this.#lastSent, this.#lastProgress].some(table => (table.get(from)?.get(to)?.ts ?? -1) >= sinceTs);
 	}

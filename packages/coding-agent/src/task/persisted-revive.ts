@@ -1,3 +1,4 @@
+import { cfgTaskPeerAwareness } from "./settings";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -448,6 +449,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			sessionManager: reopened,
 			agentId: ref.id,
 			agentDisplayName: ref.displayName,
+			peerCoordination: cfgTaskPeerAwareness.get(subagentSettings) ? init.peerCoordination : undefined,
 			// `agents` rule scoping keys on the durable definition name (see `persistedAgentName`).
 			agentName: persistedAgentName(ref.displayName, init),
 			parentTaskPrefix: ref.id,

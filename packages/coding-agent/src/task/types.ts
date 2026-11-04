@@ -45,6 +45,13 @@ export interface SubagentEventPayload {
 // Keep this explicit: ArkType serializes `unknown` as a boolean subschema, which llama.cpp grammars reject.
 const outputSchemaInputSchema = type("object | boolean | string | null");
 // Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
+const peerScopeSchema = type({
+	"root?": "string",
+	"branch?": "string",
+	"paths?": "string[]",
+	"resources?": "string[]",
+	"ports?": "number[]",
+});
 const effortRule = '"lo" | "med" | "hi"' as const;
 
 // Per-spawn fields the seance schema adds or widens. Typed against
@@ -174,6 +181,7 @@ type SeanceItemKey = {
 }[keyof SeanceTaskSchemaFields];
 
 function createTaskSchema(options: {
+	peerAwareness?: boolean;
 	isolationEnabled: boolean;
 	batchEnabled: boolean;
 	defaultAgent: string;
@@ -197,6 +205,7 @@ function createTaskSchema(options: {
 		if (options.isolationEnabled) {
 			const item = type.raw({
 				"name?": "string",
+				...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 				agent,
 				...taskFields,
 				solutionSpace: "string",
@@ -217,6 +226,7 @@ function createTaskSchema(options: {
 		}
 		const item = type.raw({
 			"name?": "string",
+			...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 			agent,
 			...taskFields,
 			solutionSpace: "string",
@@ -237,6 +247,7 @@ function createTaskSchema(options: {
 	if (options.isolationEnabled) {
 		return type.raw({
 			"name?": "string",
+			...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 			agent,
 			...taskFields,
 			solutionSpace: "string",
@@ -250,6 +261,7 @@ function createTaskSchema(options: {
 	}
 	return type.raw({
 		"name?": "string",
+		...(options.peerAwareness ? { "scope?": peerScopeSchema } : {}),
 		agent,
 		...taskFields,
 		solutionSpace: "string",
@@ -263,6 +275,7 @@ function createTaskSchema(options: {
 
 /** Build the task wire schema for the current settings and spawn policy. */
 export function getTaskSchema(options: {
+	peerAwareness?: boolean;
 	isolationEnabled: boolean;
 	batchEnabled: boolean;
 	effortEnabled?: boolean;
@@ -282,11 +295,19 @@ export function getTaskSchema(options: {
 	const structured = options.structured ?? true;
 	const file = options.file ?? false;
 	const seanceFields = options.seanceFields ?? {};
-	if (defaultAgent === "task" && !effortEnabled && evalToolsEnabled && structured && !file && !options.seanceFields) {
+	if (
+		!options.peerAwareness &&
+		defaultAgent === "task" &&
+		!effortEnabled &&
+		evalToolsEnabled &&
+		structured &&
+		!file &&
+		!options.seanceFields
+	) {
 		if (options.batchEnabled) return options.isolationEnabled ? taskSchemaBatch : taskSchemaBatchNoIsolation;
 		return options.isolationEnabled ? taskSchema : taskSchemaNoIsolation;
 	}
-	const key = `${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${evalToolsEnabled ? "tools" : "notools"}:${structured ? "structured" : "prose"}:${file ? "file" : "inline"}:${options.seanceFields ? "seance" : "plain"}:${defaultAgent}`;
+	const key = `${options.peerAwareness ? "peers" : "nopeers"}:${options.isolationEnabled ? "iso" : "flat"}:${options.batchEnabled ? "batch" : "single"}:${effortEnabled ? "effort" : "default"}:${evalToolsEnabled ? "tools" : "notools"}:${structured ? "structured" : "prose"}:${file ? "file" : "inline"}:${options.seanceFields ? "seance" : "plain"}:${defaultAgent}`;
 	const cached = taskSchemaCache.get(key);
 	if (cached) return cached;
 	const schema = createTaskSchema({
