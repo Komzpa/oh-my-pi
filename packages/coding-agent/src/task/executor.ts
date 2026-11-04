@@ -30,7 +30,7 @@ import {
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { ModelRegistry } from "../config/model-registry";
-import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
+import { formatModelSelectorValue, parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import {
 	previewLine,
 	replaceTabs,
@@ -4748,8 +4748,10 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					: undefined;
 			const exclusions: ProviderExhaustionExclusion[] = [];
 			const availableModelPatterns = configuredModelPatterns.filter(pattern => {
-				const resolved = resolveModelRoleValue(pattern, modelRegistry.getAll(), { settings });
-				const exclusion = resolved.model ? providerExhaustionExclusion(resolved.model.provider) : undefined;
+				const provider =
+					parseModelString(pattern)?.provider ??
+					resolveModelRoleValue(pattern, modelRegistry.getAll(), { settings }).model?.provider;
+				const exclusion = provider ? providerExhaustionExclusion(provider) : undefined;
 				if (!exclusion) return true;
 				exclusions.push(exclusion);
 				return false;
