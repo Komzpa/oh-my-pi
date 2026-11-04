@@ -165,18 +165,19 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			schemaStatusLabel: structured ? structuredStatusLabel(structured.status) : undefined,
 			schemaError: structured?.error === undefined ? undefined : escapeHarnessTags(structured.error),
 			schemaValid: structured?.status === "valid",
+			agentProfile: completedAgentProfile(entry.job),
 		};
 	});
 	const details: AsyncResultDetails = {
 		meta: { source: { type: "report", value: "background job delivery" } },
-		jobs: jobs.map((job, index) => ({
+		jobs: jobs.map(job => ({
 			jobId: job.jobId,
-			agentProfile: completedAgentProfile(entries[index]?.job),
 			type: job.type,
 			status: job.status,
 			agentId: job.agentId,
 			label: job.label,
 			durationMs: job.durationMs,
+			agentProfile: job.agentProfile,
 			...(job.meta ? { meta: job.meta } : {}),
 			...(job.structured ? { schema: job.structured } : {}),
 		})),
