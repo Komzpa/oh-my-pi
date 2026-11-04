@@ -1,7 +1,4 @@
 import * as path from "node:path";
-import { InstructionFiles } from "./session/instruction-files";
-import { cfgInstructionRefreshEnabled } from "./session/context-settings";
-
 import {
 	Agent,
 	type AgentEvent,
@@ -253,6 +250,7 @@ import { anthropicSlowModeHasNoSiblingHeadroom } from "./session/anthropic-slow-
 import { CacheWarmer } from "./session/cache-warmer";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
+import { InstructionFiles } from "./session/instruction-files";
 import { createSnapcompactSavingsRecorder } from "./session/snapcompact-savings-journal";
 import { createSpeculativeToolExecutionConfig } from "./speculation/host";
 import { closeAllConnections } from "./ssh/connection-manager";
@@ -366,7 +364,7 @@ import {
 	cfgToolsXdevInlineDevices,
 	cfgSessionToolGates,
 } from "./tools/settings";
-import { cfgToolsFormat } from "./session/context-settings";
+import { cfgToolsFormat, cfgInstructionRefreshEnabled } from "./session/context-settings";
 import { cfgAutolearnEnabled } from "./autolearn/settings";
 import { cfgBrowserEnabled } from "./tools/browser/settings";
 import {
