@@ -15,6 +15,7 @@ import {
 	type RequirementLedgerItem,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
@@ -40,6 +41,9 @@ describe("TodoCommandController linked-requirement gate", () => {
 			session: {
 				getTodoPhases: () => getLatestTodoPhasesFromEntries(manager.getBranch()),
 				setTodoPhases: vi.fn(),
+				commitTodoPhases: (phases: TodoPhase[]) => {
+					manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				},
 			},
 			sessionManager: manager,
 			setTodos: vi.fn(),
