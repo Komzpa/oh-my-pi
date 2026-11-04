@@ -10544,15 +10544,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		if (options?.deliverAs === "aside") {
 			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
-			if (options.wakeIdle === false) {
-				this.#recordWithoutTurn([normalizedAppMessage]);
-				return false;
-			}
 			if (this.#planModeState?.enabled) {
 				// Plan mode stays user-driven: fold into context without an autonomous turn, same as
 				// IrcBridge.deliver()/#resumeStrandedIrcAsides do in plan mode. Routed through the
 				// event-emitting fold path (not a direct append) so a displayable aside that began
 				// streaming still gets the message_end its sender's rebuild-skip decision expects.
+				this.#recordWithoutTurn([normalizedAppMessage]);
+				return false;
+			}
+			if (options.wakeIdle === false) {
 				this.#recordWithoutTurn([normalizedAppMessage]);
 				return false;
 			}

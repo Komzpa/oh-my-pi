@@ -535,11 +535,11 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		_onUpdate?: AgentToolUpdateCallback<YieldDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<YieldDetails>> {
-		if (!isRecord(params)) throw new Error("yield arguments must be an object");
 		// Coordination metadata is validated by the handover gate, separately from result fields.
-		const deconfliction = this.#session.checkPeerHandover ? params.deconfliction : undefined;
-		const raw = deconfliction === undefined ? params : { ...params };
-		if (deconfliction !== undefined) delete raw.deconfliction;
+		let deconfliction: unknown;
+		if (this.#session.checkPeerHandover && isRecord(params)) ({ deconfliction, ...params } = params);
+		if (!isRecord(params)) throw new Error("yield arguments must be an object");
+		const raw = params;
 		const workPoolItems = this.#workPoolItems();
 		assertSupportedRootFields(
 			workPoolItems.length > 0 ? wrapWorkPoolYieldParameters(workPoolItems) : this.#parameters,
