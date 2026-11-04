@@ -34,7 +34,12 @@ it.each([false, true])("startup skill compression respects exhausted=%s and mete
 	vi.spyOn(descriptions, "openSessionSkillDescriptionStore").mockReturnValue(store);
 	const billed = createAssistantMessage("Use for safe data migrations.");
 	billed.usage.cost.total = 0.25;
-	const send = vi.spyOn(agentCore, "instrumentedCompleteSimple").mockResolvedValue(billed);
+	const send = vi
+		.spyOn(agentCore, "instrumentedCompleteSimple")
+		.mockImplementation(async (_model, _context, options) => {
+			await options?.onAttempt?.(billed);
+			return billed;
+		});
 	const render = vi.spyOn(descriptions.SkillDescriptionCatalog.prototype, "render");
 	let session: AgentSession | undefined;
 	try {
