@@ -259,6 +259,7 @@ import { createSpeculativeToolExecutionConfig } from "./speculation/host";
 import { closeAllConnections } from "./ssh/connection-manager";
 import {
 	type BuildSystemPromptResult,
+	type ContextFileSnapshot,
 	buildSystemPrompt as buildSystemPromptInternal,
 	cfgSystemPromptInputs,
 	composeAppendPrompt,
@@ -1364,7 +1365,7 @@ export async function discoverContextFiles(
 	cwd?: string,
 	_agentDir?: string,
 	disabledExtensions?: string[],
-): Promise<Array<{ path: string; content: string; depth?: number }>> {
+): Promise<ContextFileSnapshot[]> {
 	return await loadContextFilesInternal({
 		cwd: cwd ?? getProjectDir(),
 		disabledExtensions,
@@ -2471,7 +2472,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let contextFiles = initialContextFiles;
 	const instructionFiles = new InstructionFiles(sessionManager);
 	if (cfgInstructionRefreshEnabled.get(settings)) {
-		for (const file of contextFiles ?? []) await instructionFiles.loaded(file.path, file.content, true);
+		for (const file of contextFiles ?? []) {
+			for (const source of (file as ContextFileSnapshot).sources ?? [file]) {
+				await instructionFiles.loaded(source.path, source.content, true);
+			}
+		}
 	}
 
 	let agent: Agent;
@@ -4398,8 +4403,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					: { mode: "full" },
 			);
 			const defaultPrompt = await buildSystemPromptInternal({
-				onContextFile: async filePath => {
-					if (cfgInstructionRefreshEnabled.get(settings)) await instructionFiles.loaded(filePath, undefined, true);
+				onContextFile: async file => {
+					if (cfgInstructionRefreshEnabled.get(settings)) {
+						for (const source of file.sources ?? [file])
+							await instructionFiles.loaded(source.path, source.content, true);
+					}
 				},
 				cwd: promptCwd,
 				additionalWorkspaceRoots: sessionManager.getAdditionalDirectories(),

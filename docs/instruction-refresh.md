@@ -1,7 +1,7 @@
 # Instruction refresh
 
 OMP tracks the content hash and loaded text of prompt context files, invoked skills,
-and `SKILL.md`, `AGENTS.md`, or `AGENTS.override.md` files opened by `read` or the
+including files expanded through `@file` imports, and `SKILL.md`, `AGENTS.md`, or `AGENTS.override.md` files opened by `read` or the
 embedded shell filesystem. Catalog descriptions alone do not count as loading a skill.
 External programs that open files themselves bypass the embedded shell filesystem.
 

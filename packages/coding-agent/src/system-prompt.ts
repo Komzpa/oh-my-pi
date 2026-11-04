@@ -312,6 +312,14 @@ export async function resolvePromptInput(input: string | undefined, description:
 	}
 }
 
+export interface ContextFileSnapshot {
+	path: string;
+	content: string;
+	depth?: number;
+	/** Original source files before @-import expansion. */
+	sources?: Array<{ path: string; content: string }>;
+}
+
 export interface LoadContextFilesOptions {
 	/** Working directory to start walking up from. Default: getProjectDir() */
 	cwd?: string;
@@ -333,9 +341,7 @@ export interface LoadContextFilesOptions {
  *
  * @internal Exported for testing.
  */
-export function dedupeContainedContextFiles(
-	contextFiles: Array<{ path: string; content: string; depth?: number }>,
-): Array<{ path: string; content: string; depth?: number }> {
+export function dedupeContainedContextFiles(contextFiles: ContextFileSnapshot[]): ContextFileSnapshot[] {
 	// Sort by depth descending: higher depth (farther from cwd, less
 	// authoritative) first, lower depth (closer to cwd, more authoritative)
 	// last. Stable sort preserves caller order among equal-depth files.
@@ -364,9 +370,7 @@ export function withoutAgentsMd<T extends { path: string }>(files: T[]): T[] {
  * Returns {path, content, depth} entries for all discovered context files.
  * Files are sorted by depth (descending) so files closer to cwd appear last/more prominent.
  */
-export async function loadProjectContextFiles(
-	options: LoadContextFilesOptions = {},
-): Promise<Array<{ path: string; content: string; depth?: number }>> {
+export async function loadProjectContextFiles(options: LoadContextFilesOptions = {}): Promise<ContextFileSnapshot[]> {
 	const resolvedCwd = options.cwd ?? getProjectDir();
 
 	const result = await loadCapability(contextFileCapability.id, {
@@ -381,9 +385,12 @@ export async function loadProjectContextFiles(
 	const files = await Promise.all(
 		result.items.map(async item => {
 			const contextFile = item as ContextFile;
+			const loadedFiles = new Map<string, string>([[contextFile.path, contextFile.content]]);
+			const content = await expandAtImports(contextFile.content, contextFile.path, { loadedFiles });
 			return {
 				path: contextFile.path,
-				content: await expandAtImports(contextFile.content, contextFile.path),
+				content,
+				sources: [...loadedFiles].map(([path, content]) => ({ path, content })),
 				depth: contextFile.depth,
 			};
 		}),
@@ -536,8 +543,8 @@ export interface BuildSystemPromptOptions {
 	/** Additional workspace directories beyond cwd (multi-root), absolute. Injected into the project prompt. */
 	additionalWorkspaceRoots?: string[];
 	/** Pre-loaded context files (skips discovery if provided). */
-	contextFiles?: Array<{ path: string; content: string; depth?: number }>;
-	onContextFile?: (filePath: string) => Promise<void>;
+	contextFiles?: ContextFileSnapshot[];
+	onContextFile?: (file: ContextFileSnapshot) => Promise<void>;
 	/** Load no context files beyond `contextFiles`: none for additional workspace roots, no nested AGENTS.md list. */
 	noContextFiles?: boolean;
 	/** Drop every context file named `AGENTS.md`, including ones discovered for additional workspace roots. */
@@ -987,7 +994,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		resolvedCustomPrompt,
 		resolvedAppendPrompt,
 	]);
-	for (const file of contextFiles) await options.onContextFile?.(file.path);
+	for (const file of contextFiles) await options.onContextFile?.(file);
 	const contextPromptSources = contextFiles.map(file => file.content);
 	const promptSources = [
 		effectiveSystemPromptCustomization,

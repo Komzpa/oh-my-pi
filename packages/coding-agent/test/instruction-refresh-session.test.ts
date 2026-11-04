@@ -6,17 +6,34 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
 import { createAgentSession } from "../src/sdk";
+import { loadProjectContextFiles } from "../src/system-prompt";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 // Real SDK loading, tools, session hook and request serialization; no provider traffic.
 describe("instruction refresh at the model boundary", () => {
-	for (const route of ["read", "bash", "invocation", "context", "disabled", "short-child", "mature-child"] as const) {
+	for (const route of [
+		"read",
+		"bash",
+		"invocation",
+		"context",
+		"disabled",
+		"short-child",
+		"mature-child",
+		"import",
+	] as const) {
 		it(`refreshes loaded instructions via ${route} with the configured eligibility`, async () => {
 			using dir = TempDir.createSync("@instruction-session-");
-			const file = dir.join(route === "context" ? "RULES.md" : "SKILL.md");
+			const file = dir.join(route === "context" ? "RULES.md" : route === "import" ? "details.md" : "SKILL.md");
 			await Bun.write(file, "original instruction\n");
+			if (route === "import") await Bun.write(dir.join("AGENTS.md"), "@./details.md\n");
+			const contextFiles =
+				route === "import"
+					? await loadProjectContextFiles({ cwd: dir.path() })
+					: route === "context"
+						? [{ path: file, content: "original instruction\n" }]
+						: [];
 			const auth = await AuthStorage.create(dir.join("auth.db"));
 			const registry = new ModelRegistry(auth, dir.join("models.yml"));
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
@@ -38,7 +55,7 @@ describe("instruction refresh at the model boundary", () => {
 				taskDepth: route === "short-child" || route === "mature-child" ? 1 : 0,
 				sessionManager: SessionManager.inMemory(dir.path()),
 				skills: [],
-				contextFiles: route === "context" ? [{ path: file, content: "original instruction\n" }] : [],
+				contextFiles,
 				noContextFiles: true,
 				disableExtensionDiscovery: true,
 				enableMCP: false,
@@ -64,9 +81,14 @@ describe("instruction refresh at the model boundary", () => {
 				} else if (route === "bash") {
 					const result = await session.getToolByName("bash")!.execute("load", { command: `cat '${file}'` });
 					expect(result.isError).not.toBe(true);
-				} else if (route !== "context") {
+				} else if (route !== "context" && route !== "import") {
 					const result = await session.getToolByName("read")!.execute("load", { path: file });
 					expect(result.isError).not.toBe(true);
+				}
+				if (route === "import") {
+					await session.agent.prompt("before change");
+					expect(requests[0]).not.toContain("changed since you loaded it");
+					requests.length = 0;
 				}
 				await Bun.write(file, "updated instruction\n");
 				await fs.utimes(file, new Date(), new Date(Date.now() + 2000));
