@@ -30,9 +30,10 @@ import { getEditorTheme, initTheme } from "@oh-my-pi/pi-tui/theme";
 import { ADVISOR_RENDER_OPTIONS } from "@oh-my-pi/pi-coding-agent/advisor/delta-split";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls/local-protocol";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
+import { encodeRawPng } from "@oh-my-pi/pi-coding-agent/utils/png-encode";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { materializeImageChipLinks, UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -42,8 +43,9 @@ import { formatSessionHistoryMarkdown } from "@oh-my-pi/pi-coding-agent/session/
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { setAgentDir } from "@oh-my-pi/pi-utils";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
+import { cfgImagesAutoResize } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
-const TINY_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+const TINY_PNG = encodeRawPng(new Uint8Array([0, 0, 0, 255, 255, 255, 255, 255]), 2, 1, 4).toString("base64");
 
 interface StubEditor {
 	pendingImages: ImageContent[];
@@ -146,6 +148,94 @@ describe("path-pasted image source path (#12244)", () => {
 		expect(editor.pendingImages.length).toBe(1);
 		return { editor, imagePath };
 	}
+
+	async function pasteClipboardImage(bytes: Uint8Array) {
+		if (!session) throw new Error("Session was not initialized");
+		cfgImagesAutoResize.set(settings, false);
+		const sessionManager = SessionManager.create(tmpDir, path.join(tmpDir, "paste-sessions"));
+		const { ctx, editor, showStatus } = createPasteContext(sessionManager);
+		const imageBytes = Buffer.from(bytes);
+		const controller = new InputController(ctx, {
+			readImage: async () => ({ data: imageBytes, mimeType: "image/png" }),
+			readText: async () => "",
+		});
+		await controller.handleImagePaste();
+		return { ctx, editor, showStatus, sessionManager };
+	}
+
+	it("refuses and reports a fully transparent clipboard image", async () => {
+		const blank = encodeRawPng(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0]), 2, 1, 4);
+		const { editor, showStatus, sessionManager } = await pasteClipboardImage(blank);
+
+		expect(editor.pendingImages).toHaveLength(0);
+		const savedPath = resolveLocalUrlToPath(
+			`local://pasted-image-${Bun.hash(blank).toString(16)}.png`,
+			localOptions(sessionManager),
+		);
+		expect(await Bun.file(savedPath).exists()).toBe(false);
+		expect(showStatus).toHaveBeenCalledWith(
+			"Pasted image is empty (2×1, fully transparent) — not attached. Copy the screenshot again.",
+		);
+	});
+
+	it("refuses an opaque solid-color clipboard image and names its color", async () => {
+		const black = encodeRawPng(new Uint8Array([0, 0, 0, 255, 0, 0, 0, 255]), 2, 1, 4);
+		const { editor, showStatus, sessionManager } = await pasteClipboardImage(black);
+
+		expect(editor.pendingImages).toHaveLength(0);
+		const savedPath = resolveLocalUrlToPath(
+			`local://pasted-image-${Bun.hash(black).toString(16)}.png`,
+			localOptions(sessionManager),
+		);
+		expect(await Bun.file(savedPath).exists()).toBe(false);
+		expect(showStatus).toHaveBeenCalledWith(
+			"Pasted image is empty (2×1, solid color #000000) — not attached. Copy the screenshot again.",
+		);
+	});
+
+	it("attaches a non-blank clipboard image with its original bytes", async () => {
+		const visible = encodeRawPng(new Uint8Array([255, 0, 0, 255, 0, 0, 255, 255]), 2, 1, 4);
+		const { editor, showStatus } = await pasteClipboardImage(visible);
+
+		expect(editor.pendingImages).toHaveLength(1);
+		expect(editor.pendingImages[0]).toMatchObject({
+			type: "image",
+			data: visible.toString("base64"),
+			mimeType: "image/png",
+		});
+		expect(showStatus).not.toHaveBeenCalled();
+	});
+
+	it("keeps a large image with one visible pixel between the former sampling positions", async () => {
+		const pixels = new Uint8Array(512 * 512 * 4);
+		pixels[7] = 255;
+		const visible = encodeRawPng(pixels, 512, 512, 4);
+		const { editor, showStatus } = await pasteClipboardImage(visible);
+		expect(editor.pendingImages).toHaveLength(1);
+		expect(showStatus).not.toHaveBeenCalled();
+	});
+
+	it("keeps a large opaque image with one different pixel between sampling positions", async () => {
+		const pixels = new Uint8Array(512 * 512 * 4);
+		for (let offset = 3; offset < pixels.length; offset += 4) pixels[offset] = 255;
+		pixels[4] = 255;
+		const visible = encodeRawPng(pixels, 512, 512, 4);
+		const { editor, showStatus } = await pasteClipboardImage(visible);
+		expect(editor.pendingImages).toHaveLength(1);
+		expect(showStatus).not.toHaveBeenCalled();
+	});
+
+	it("keeps an undecodable supported-MIME payload attached", async () => {
+		const opaquePayload = Buffer.from("decoder-specific unsupported payload");
+		const { editor } = await pasteClipboardImage(opaquePayload);
+
+		expect(editor.pendingImages).toHaveLength(1);
+		expect(editor.pendingImages[0]).toMatchObject({
+			type: "image",
+			data: opaquePayload.toString("base64"),
+			mimeType: "image/png",
+		});
+	});
 
 	it("delivers the original file path into the submitted model-visible content", async () => {
 		if (!session) throw new Error("Session was not initialized");

@@ -119,6 +119,11 @@ interface RgbaPixels {
 	pixels: Uint8Array;
 }
 
+export type ImageContentInspection =
+	| { width: number; height: number; kind: "transparent" }
+	| { width: number; height: number; kind: "solid"; color: string }
+	| undefined;
+
 /**
  * `image`'s pixels when it decodes to RGBA. `Bun.Image` has no raw output, so this reads
  * its uncompressed PNG, whose rows it leaves unfiltered; `undefined` for RGB output (no
@@ -155,6 +160,42 @@ async function readRgba(image: Bun.Image): Promise<RgbaPixels | undefined> {
 		pixels.set(raw.subarray(row + 1, row + 1 + stride), y * stride);
 	}
 	return { width, height, pixels };
+}
+
+/** Reject empty images only after checking every pixel; sparse content must survive. */
+export async function inspectImageContent(bytes: Uint8Array): Promise<ImageContentInspection> {
+	try {
+		const decoded = await readRgba(new Bun.Image(bytes));
+		if (!decoded) return undefined;
+		const { width, height, pixels } = decoded;
+		let firstR = -1;
+		let firstG = -1;
+		let firstB = -1;
+		let firstA = -1;
+		let fullyTransparent = true;
+		let sameColor = true;
+		for (let pixel = 0; pixel < width * height; pixel++) {
+			const offset = pixel * 4;
+			const r = pixels[offset]!;
+			const g = pixels[offset + 1]!;
+			const b = pixels[offset + 2]!;
+			const a = pixels[offset + 3]!;
+			if (a !== 0) fullyTransparent = false;
+			if (firstA < 0) {
+				firstR = r;
+				firstG = g;
+				firstB = b;
+				firstA = a;
+			} else if (r !== firstR || g !== firstG || b !== firstB || a !== firstA) sameColor = false;
+			if (!fullyTransparent && !sameColor) return undefined;
+		}
+		if (fullyTransparent) return { width, height, kind: "transparent" };
+		if (!sameColor) return undefined;
+		const hex = [firstR, firstG, firstB].map(channel => channel.toString(16).padStart(2, "0")).join("");
+		return { width, height, kind: "solid", color: `#${hex}` };
+	} catch {
+		return undefined;
+	}
 }
 
 /**
