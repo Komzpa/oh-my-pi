@@ -739,7 +739,7 @@ describe("callSessionTool", () => {
 			setTodoPhases: next => {
 				phases = next;
 			},
-			commitTodoPhases: next => persisted.push(next),
+			persistTodoPhases: next => persisted.push(next),
 			getToolForEvalBridge: lookup,
 		};
 		const todoTool = Object.assign(new TodoTool(session), { customWireName: "checklist" });
