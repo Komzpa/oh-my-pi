@@ -5,9 +5,12 @@ Enable in project or user `config.yml`:
 ```yaml
 task:
   peerAwareness: true
+  structured: true
 ```
 
-The default is `false`. Enabling it adds task/profile/scope context to the
+`peerAwareness` defaults to `false`. `structured: true` enables the yield
+tool and its explicit agreement entries; unstructured children can resolve
+clashes through messaging or peer completion. Awareness adds task/profile/scope context to the
 spawn roster, coalesced sibling join/leave notices, structural clash notices,
 and a handover check. Known writer overlap must still be resolved by the lead
 before dispatch; peer messages do not release declared ownership.
