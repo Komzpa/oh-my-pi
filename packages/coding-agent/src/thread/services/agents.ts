@@ -248,13 +248,13 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 
 function serveRegistry(bridge: MainSessionBridge): RpcServe<AgentRegistry, AgentRegistryProtocol> {
 	return {
+		setSubagentFastMode: (registry, parentId, id, enabled) => registry.setSubagentFastMode(parentId, id, enabled),
 		register: (registry, input) => registry.register(input),
 		registerIfAvailable: (registry, input, expected) => registry.registerIfAvailable(input, expected),
 		reopen: (registry, id, expected) => registry.reopen(id, expected),
 		setHistory: (registry, id, history, expectedSessionFile) => registry.setHistory(id, history, expectedSessionFile),
 		setStatus: (registry, id, status, expected) => registry.setStatus(id, status, expected),
 		markResultAccepted: (registry, id, expected, responseAt) => registry.markResultAccepted(id, expected, responseAt),
-		setSubagentFastMode: (registry, parentId, id, enabled) => registry.setSubagentFastMode(parentId, id, enabled),
 		staleAcceptedRuns: registry => registry.staleAcceptedRuns(),
 		setActivity: (registry, id, activity) => registry.setActivity(id, activity),
 		attachSession: (registry, id, session, sessionFile, expected) =>

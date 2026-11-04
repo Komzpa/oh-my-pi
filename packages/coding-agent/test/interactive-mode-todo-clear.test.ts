@@ -100,16 +100,6 @@ describe("InteractiveMode todo HUD persistence", () => {
 		cfgTasksTodoClearDelay.override(session.settings, todoClearDelay);
 	}
 
-	it("renders session todos after global settings are reset", async () => {
-		resetSettingsForTest();
-		try {
-			mode.setTodos([{ name: "Active", tasks: [{ content: "Keep the session plan", status: "pending" }] }]);
-			expect(mode.todoContainer.render(120).join("\n")).toContain("Keep the session plan");
-		} finally {
-			await Settings.init({ inMemory: true, cwd: tempDir.path() });
-		}
-	});
-
 	it("clears closed todos from the panel instantly without mutating session history", async () => {
 		vi.useFakeTimers();
 		setTodoClearDelay(0);
@@ -190,6 +180,16 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(mutationTranscript).not.toContain("current task");
 		expect(pinnedHud.match(/current task/g)?.length ?? 0).toBe(1);
 		expect(pinnedHud).toContain("2/3");
+	});
+
+	it("renders session todos after global settings are reset", async () => {
+		resetSettingsForTest();
+		try {
+			mode.setTodos([{ name: "Active", tasks: [{ content: "Keep the session plan", status: "pending" }] }]);
+			expect(mode.todoContainer.render(120).join("\n")).toContain("Keep the session plan");
+		} finally {
+			await Settings.init({ inMemory: true, cwd: tempDir.path() });
+		}
 	});
 
 	it("keeps an unfinished plan's progress when auto-clear is instant", () => {
