@@ -936,18 +936,13 @@ export class TurnRecovery {
 	async recordProviderAvailabilityOutcome(message: AssistantMessage): Promise<void> {
 		if (message.stopReason !== "error" || this.#availabilityOutcomes.has(message)) return;
 		if ((await this.#usageLimitOutcomes.get(message))?.switchedCredential) return;
-		// Optional fields keep this topic standalone on main while newer streams carry wire evidence.
-		const evidence = message as AssistantMessage & {
-			errorType?: string;
-			errorCode?: string;
-			errorResetAt?: number;
-		};
+
 		if (
 			recordProviderFailure(message.provider, {
 				status: message.errorStatus,
-				type: evidence.errorType,
-				code: evidence.errorCode,
-				resetAt: evidence.errorResetAt,
+				type: message.errorType,
+				code: message.errorCode,
+				resetAt: message.errorResetAt,
 				body: message.errorMessage,
 				credentialVersion: this.#host.modelRegistry.providerCredentialVersion(message.provider),
 				catalogModel: this.#host.modelRegistry.find(message.provider, message.model) !== undefined,

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { finalize } from "@oh-my-pi/pi-ai/error/finalize";
+import { OpenAIHttpError } from "@oh-my-pi/pi-ai/error/classes";
 import { classifyProviderFailure } from "../src/session/provider-exhaustion";
 
 const fixtures: TempDir[] = [];
@@ -68,24 +70,35 @@ describe("provider availability evidence", () => {
 		expect(classifyProviderFailure({ status: 429, code: "rate_limit_exceeded" })).toBeUndefined();
 	});
 
-	it("replays November 4 wire fields without matching their human messages", () => {
+	it("replays November 4 captured responses through error finalization and availability", async () => {
 		// omp.2026-11-04.1547436.log:19620, :4331, :19528;
 		// omp.2026-11-04.3069605.log:13. Auth is the owner's missing-key scenario.
-		expect(classifyProviderFailure({ status: 402, type: "personal-team-blocked:spending-limit" })).toBe("quota");
-		expect(classifyProviderFailure({ status: 402, type: "insufficient_balance_error" })).toBe("balance");
-		expect(classifyProviderFailure({ status: 402, type: "billing_error", code: "billing_not_configured" })).toBe(
-			"entitlement",
-		);
-		expect(
-			classifyProviderFailure({
-				status: 404,
-				type: "invalid_request_error",
-				code: "model_not_found",
-				catalogModel: true,
-			}),
-		).toBe("entitlement");
-		expect(classifyProviderFailure({ code: "missing_api_key" })).toBe("auth");
+		const cases = [
+			{ status: 402, type: "personal-team-blocked:spending-limit", expected: "quota" },
+			{ status: 402, type: "insufficient_balance_error", expected: "balance" },
+			{ status: 402, type: "billing_error", param: "billing_not_configured", expected: "entitlement" },
+			{ status: 404, type: "invalid_request_error", param: "model_not_found", expected: "entitlement" },
+			{ status: 401, type: "authentication_error", expected: "auth" },
+		];
+		for (const replay of cases) {
+			const response = {
+				status: replay.status,
+				headers: new Headers(),
+				bodyJson: { error: { type: replay.type, param: replay.param } },
+				bodyText: JSON.stringify({ error: { type: replay.type, param: replay.param } }),
+			};
+			const result = await finalize(new OpenAIHttpError("opaque provider failure", response));
+			expect(
+				classifyProviderFailure({
+					status: result.status,
+					type: result.errorType,
+					code: result.errorCode,
+					catalogModel: true,
+				}),
+			).toBe(replay.expected);
+		}
 	});
+
 	it("shares evidence across processes and keeps balance unavailable after an hour", async () => {
 		const directory = fixture();
 		await run(
