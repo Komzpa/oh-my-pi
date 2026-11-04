@@ -5586,7 +5586,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#currentTodoWorkerDisplayKey(): string {
 		const running =
-			cfgDisplayPinnedAgents.get(settings) === "off"
+			cfgDisplayPinnedAgents.get(this.settings) === "off"
 				? []
 				: this.#observerRegistry.getSessions().filter(isHudSubagent);
 		return JSON.stringify([
