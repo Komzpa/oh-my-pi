@@ -2375,7 +2375,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		});
 		this.agent.prepareQueuedMessages = this.#prepareQueuedUserMessages;
 		this.#detachUsageBeforeModelCall = this.agent.addBeforeModelCallHook(async signal => {
-			await this.#recovery.awaitProviderAvailability(signal);
 			if (!cfgRetryUsageAwareFallback.get(this.settings)) return;
 			if (this.#usagePreflightReadyForNextModelCall) {
 				const checkedModel = this.#usagePreflightReadyModel;
@@ -2388,6 +2387,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				throw new DOMException("Usage preflight cancelled", "AbortError");
 			}
 		});
+		const detachUsagePreflight = this.#detachUsageBeforeModelCall;
+		const detachProviderAvailability = this.agent.addBeforeModelCallHook(signal =>
+			this.#recovery.awaitProviderAvailability(signal),
+		);
+		this.#detachUsageBeforeModelCall = () => {
+			detachProviderAvailability();
+			detachUsagePreflight();
+		};
 		const statsHost: SessionStatsTrackerHost = {
 			session: this,
 			agent: this.agent,
