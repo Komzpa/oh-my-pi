@@ -6,11 +6,6 @@ import {
 	preserveTodoMetadata,
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
-	USER_TODO_EDIT_CUSTOM_TYPE,
-	getCompletionTargets,
-	getRequirementRowArtifact,
-	getTodoRowChanges,
-	type RequirementRowArtifact,
 } from "../../tools/todo";
 import { type TodoItem, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { copyToClipboard } from "../../utils/clipboard";
@@ -25,6 +20,13 @@ import {
 	invalidateStaleRequirementVerdicts,
 	parseRequirementsLedger,
 } from "../../tools/requirements-ledger";
+
+import {
+	getCompletionTargets,
+	getRequirementRowArtifact,
+	getTodoRowChanges,
+	type RequirementRowArtifact,
+} from "../../tools/todo";
 
 const USAGE = [
 	"Usage: /todo <verb> [args]",

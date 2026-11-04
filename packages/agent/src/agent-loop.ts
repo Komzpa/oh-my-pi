@@ -1291,7 +1291,7 @@ async function runLoopBody(
 			stream,
 			messages.filter(message => !undelivered.has(message)),
 		);
-		const aborted = emitAbortedAssistantMessage(null, false, new Set(), currentContext, config, stream, signal);
+		const aborted = await emitAbortedAssistantMessage(null, false, new Set(), currentContext, config, stream, signal);
 		newMessages.push(aborted);
 		await emitTurnEnd(stream, currentContext, aborted, [], config, signal, { willContinue: false });
 		endAgentStream(stream, newMessages, telemetry, stepCounter.count);
