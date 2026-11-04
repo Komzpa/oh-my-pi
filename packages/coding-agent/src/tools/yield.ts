@@ -70,8 +70,8 @@ export interface YieldDetails {
 	error?: string;
 	/** Optional result section/classification supplied by the yield caller. */
 	type?: string | string[];
-	/** True when the caller intentionally omitted success data so the executor uses the last assistant turn. */
 	deconfliction?: unknown;
+	/** True when the caller intentionally omitted success data so the executor uses the last assistant turn. */
 	useLastTurn?: boolean;
 	/** True when this incremental workpool yield completed every item in the active batch. */
 	complete?: boolean;
@@ -538,6 +538,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		if (!isRecord(params)) throw new Error("yield arguments must be an object");
 		const raw = params;
 		const workPoolItems = this.#workPoolItems();
+		assertSupportedRootFields(this.parameters, raw);
 		let workPoolItemId: string | undefined;
 		let yieldType: string | string[] | undefined;
 		// Strict-mode providers send omitted optionals as `null`; treat it as absent.
@@ -564,7 +565,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// field) that cannot satisfy the full output schema; the assembled result
 		// is validated as a whole at finalization (executor finalizeSubprocessOutput).
 		const isIncremental = Array.isArray(yieldType) && yieldType.length > 0;
-		assertSupportedRootFields(this.parameters, raw);
+		if ((!isIncremental || workPoolItemId !== undefined) && this.#session.checkPeerHandover) {
+			const refusal = await this.#session.checkPeerHandover(raw.deconfliction);
+			if (refusal) throw new Error(refusal);
+		}
 
 		if (errorMessage !== undefined && data !== undefined) {
 			throw new Error(renderDataErrorConflictMessage(errorMessage, yieldType));
@@ -595,11 +599,6 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		if (workPoolItemId !== undefined && errorMessage !== undefined) data = { error: errorMessage };
 		let schemaValidationOverridden = false;
 		let schemaValidationFailureCount = 0;
-		if ((!isIncremental || workPoolItemId !== undefined) && this.#session.checkPeerHandover) {
-			const refusal = await this.#session.checkPeerHandover(raw.deconfliction);
-			if (refusal) throw new Error(refusal);
-		}
-
 		// Unknown incremental labels are a hard contract mismatch with the closed caller
 		// schema. Reject before the last-turn short-circuit too: `type: ["findings"], result: {}`
 		// would otherwise be accepted as a typed last-turn incremental yield, then a sibling
