@@ -8,9 +8,9 @@
 {{asyncGuidance}}
 {{/if}}
 
-# Delegation
 {{#if projectAgentsMd}}Workers receive their own repository's AGENTS.md chain; do not repeat that repository's rules in assignments.{{else}}Workers have NO AGENTS.md; include relevant repository rules in each assignment.{{/if}} Per-agent policy is listed below and overrides this default.
 
+# Delegation
 Use most specific agent.{{#if scoutAvailable}} Read-only research MUST use `scout` only when files unknown.{{/if}} Prefer one agent to investigate + edit. Omit `agent` only for default (`{{defaultAgent}}`); NEVER specify it.
 {{#if batchEnabled}}Specialist `agent` selectors belong inside each `tasks[]` item; NEVER put `agent` at the top level.
 {{/if}}
