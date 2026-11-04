@@ -66,6 +66,7 @@ import {
 	formatRetryFallbackBaseSelector,
 	formatRetryFallbackSelector,
 	getRetryFallbackChains,
+	getRetryFallbackEffectiveChain,
 	getRetryFallbackRevertPolicy,
 	parseRetryFallbackSelector,
 	type RetryFallbackChains,
@@ -77,7 +78,7 @@ import {
 	type ServingModel,
 	validateRetryFallbackChains,
 } from "./retry-fallback-chains";
-import { coolDownExhaustedProvider, isProviderExhaustionError } from "./provider-exhaustion";
+import { coolDownExhaustedProvider, isProviderExhaustionError, providerExhaustionRecord } from "./provider-exhaustion";
 import { describeUsageFallback } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
@@ -807,6 +808,64 @@ export class TurnRecovery {
 	 */
 	maybeRestoreRetryFallbackPrimary(): Promise<boolean> {
 		return this.#maybeRestoreRetryFallbackPrimary();
+	}
+
+	/** Every model call, including extension re-prompts, must respect provider cooldowns. */
+	async awaitProviderAvailability(signal?: AbortSignal): Promise<void> {
+		const waitSignal = signal ?? new AbortController().signal;
+		let waiting = false;
+		try {
+			for (;;) {
+				waitSignal.throwIfAborted();
+				const model = this.#host.model();
+				if (!model) return;
+				const cooldown = providerExhaustionRecord(model.provider);
+				if (!cooldown) return;
+				const currentSelector = formatRetryFallbackSelector(model, this.#host.thinkingLevel());
+				if (cfgRetryModelFallback.get(this.#host.settings) && !this.#host.modelFallbackDisabled?.()) {
+					const fallback = await this.#findKeyedRetryFallback(currentSelector, model, waitSignal, {
+						wrapAround: true,
+					});
+					waitSignal.throwIfAborted();
+					if (!modelsAreEqual(this.#host.model(), model)) continue;
+					if (fallback) {
+						await this.applyRetryFallbackCandidate(fallback.role, fallback.selector, currentSelector, {
+							apiKey: fallback.apiKey,
+							signal: waitSignal,
+							reason: cooldown.reason,
+						});
+						continue;
+					}
+				}
+				let until = cooldown.until;
+				for (const role of this.retryFallbackChainKeys(currentSelector, model)) {
+					for (const candidate of getRetryFallbackEffectiveChain(
+						this.#getRetryFallbackResolutionContext(),
+						role,
+						currentSelector,
+						model,
+						false,
+					)) {
+						const record = providerExhaustionRecord(candidate.provider);
+						if (record) until = Math.min(until, record.until);
+					}
+				}
+				if (!waiting) {
+					waiting = true;
+					await this.#host.emitSessionEvent({
+						type: "auto_retry_start",
+						attempt: 1,
+						maxAttempts: 1,
+						delayMs: Math.max(0, until - Date.now()),
+						errorMessage: "Providers cooling down; waiting for the earliest cooldown expiry",
+					});
+				}
+				await sleepUntil(until, waitSignal);
+			}
+		} finally {
+			if (waiting)
+				await this.#host.emitSessionEvent({ type: "auto_retry_end", success: !waitSignal.aborted, attempt: 1 });
+		}
 	}
 
 	/** Applies model fallback policy from live usage health before a turn starts. */
@@ -1887,7 +1946,9 @@ export class TurnRecovery {
 
 	/** Checks whether a fallback selector remains in cooldown. */
 	isRetryFallbackSelectorSuppressed(selector: RetryFallbackSelector): boolean {
-		return this.#host.modelRegistry.isSelectorSuppressed(selector.raw);
+		return (
+			!!providerExhaustionRecord(selector.provider) || this.#host.modelRegistry.isSelectorSuppressed(selector.raw)
+		);
 	}
 
 	/** Records the cooldown that should suppress a failing selector. */
@@ -2102,11 +2163,12 @@ export class TurnRecovery {
 		currentSelector: string,
 		currentModel: Model,
 		signal: AbortSignal,
+		options?: { wrapAround?: boolean },
 	): Promise<{ role: string; selector: RetryFallbackSelector; apiKey: string } | undefined> {
 		const stale = () => signal.aborted || !modelsAreEqual(this.#host.model(), currentModel);
 		const ceiling = this.#host.thinkingLevelCeiling();
 		for (const role of this.retryFallbackChainKeys(currentSelector, currentModel)) {
-			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
+			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel, options)) {
 				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
 				const resolved = resolveModelOverride([candidate.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
@@ -3023,7 +3085,7 @@ export class TurnRecovery {
 					pinFallback: classifierRefusal,
 					refusalWalk: classifierRefusal,
 					preserveFailedTurn,
-					wrapAround: longUsageLimitFallback,
+					wrapAround: longUsageLimitFallback || !!providerExhaustionRecord(message.provider),
 					// Deferring a chain candidate only pays when the code below makes
 					// another attempt on this model that can succeed. Each term is a
 					// branch below that, with no switch, ends the turn instead (a spent

@@ -45,7 +45,11 @@ import { computerTurnInFlight, registerComputerController } from "@oh-my-pi/pi-c
 import { convertToLlm, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { resolveSubagentRetryFallbackCandidates } from "@oh-my-pi/pi-coding-agent/task/executor";
-import { isProviderExhausted, isProviderExhaustionError } from "@oh-my-pi/pi-coding-agent/session/provider-exhaustion";
+import {
+	coolDownExhaustedProvider,
+	isProviderExhausted,
+	isProviderExhaustionError,
+} from "@oh-my-pi/pi-coding-agent/session/provider-exhaustion";
 import { getProviderCooldownsPath, TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
@@ -9211,6 +9215,83 @@ describe("AgentSession retry fallback", () => {
 		expect(requestedModels).toContain("openrouter/z-ai/glm-4.7@chutes");
 		expect(getLastAssistantMessage(session).stopReason).not.toBe("error");
 	});
+	it.each([false, true])(
+		"routes stop-continuation away from a billing-cooled fallback (all cooling: %s)",
+		async allCooling => {
+			const primary = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+			const fallback = getBundledModel("openai", "gpt-4o-mini")!;
+			const primarySelector = `${primary.provider}/${primary.id}`;
+			const fallbackSelector = `${fallback.provider}/${fallback.id}`;
+			const requests: string[] = [];
+			let primaryAvailable = false;
+			const mock = createMockModel();
+			const failure = await AIError.finalize(
+				Object.assign(
+					new Error(
+						"402 You have run out of credits or need a Grok subscription. (type=personal-team-blocked:spending-limit)",
+					),
+					{ status: 402 },
+				),
+				{ api: fallback.api, provider: fallback.provider, model: fallback.id },
+			);
+			const agent = new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model: primary, systemPrompt: ["Test"], tools: [], messages: [] },
+				streamFn: (model, context, options) => {
+					requests.push(`${model.provider}/${model.id}`);
+					if (model.provider === fallback.provider) {
+						return finalizedErrorStream(model, failure);
+					} else mock.push({ content: ["recovered"] });
+					return mock.stream(model, context, options);
+				},
+			});
+			vi.spyOn(modelRegistry, "getApiKey").mockImplementation(async model =>
+				model.provider === primary.provider && !primaryAvailable ? undefined : "test-key",
+			);
+			vi.spyOn(modelRegistry.authStorage.limits, "markReached").mockResolvedValue({ switched: false });
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.usageAwareFallback": false,
+				"retry.baseDelayMs": 1,
+				"retry.maxRetries": 1,
+				"retry.maxDelayMs": 10,
+				"retry.fallbackChains": { [primarySelector]: [fallbackSelector] },
+			});
+			settings.setModelRole("default", primarySelector);
+			session = new AgentSession({ agent, sessionManager: SessionManager.inMemory(), settings, modelRegistry });
+			await session.prompt("Run while primary is logged out");
+			await session.waitForIdle();
+			expect(requests).toEqual([fallbackSelector]);
+			expect(isProviderExhausted(fallback.provider)).toBe(true);
+			primaryAvailable = true;
+			const waits: number[] = [];
+			const statuses: AgentSessionEvent[] = [];
+			if (allCooling) {
+				let now = Date.now();
+				vi.spyOn(Date, "now").mockImplementation(() => now);
+				coolDownExhaustedProvider(primary.provider, { reason: "402 spending limit; retry-after-ms=20000" });
+				vi.spyOn(scheduler, "wait").mockImplementation(async delay => {
+					expect(requests).toEqual([fallbackSelector]);
+					waits.push(delay);
+					now += delay;
+				});
+				session.subscribe(event => {
+					if (event.type === "auto_retry_start") statuses.push(event);
+				});
+			}
+			await session.sendCustomMessage(
+				{ customType: "session-stop-continuation", content: "Continue", display: false },
+				{ triggerTurn: true },
+			);
+			await session.waitForIdle();
+			expect(requests).toEqual([fallbackSelector, primarySelector]);
+			if (allCooling) {
+				expect(waits.reduce((sum, delay) => sum + delay, 0)).toBe(20_000);
+				expect(statuses).toHaveLength(1);
+				expect(isProviderExhausted(fallback.provider)).toBe(true);
+			}
+		},
+	);
 	it("cools a balance-exhausted provider across workers but not transient failures", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
 		const nextModel = getBundledModel("openai", "gpt-4o-mini");

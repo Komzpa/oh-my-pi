@@ -575,7 +575,7 @@ function parseRetryFallbackChainEntry(
 }
 
 /** Builds a fallback chain beginning with its effective primary selector. */
-function getRetryFallbackEffectiveChain(
+export function getRetryFallbackEffectiveChain(
 	context: RetryFallbackResolutionContext,
 	chainKey: string,
 	currentSelector: string,
