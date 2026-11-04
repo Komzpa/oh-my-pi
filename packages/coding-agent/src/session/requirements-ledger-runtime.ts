@@ -1316,16 +1316,19 @@ export class RequirementsLedgerRuntime {
 		const hasScreenshot =
 			(await requirementEvidenceScreenshots(sourceReceipts.map(receipt => receipt.evidence).join("\n"), roots))
 				.length > 0;
-		const collateralRetry = `${expectedIds.join(", ")}: missing collateral pair for rendered UI audit. Retry with | before | after | region | defect | after the verdict table, existing before/after files, and none in the defect column when clean. Compare the same view, state and width at the supplied base and artifact, including siblings, at default and 420–450 px widths.`;
+		const collateralRetry = `${expectedIds.join(", ")}: missing collateral pair for rendered UI audit. Retry with | before | after | region | defect | after the verdict table, absolute paths to existing before/after files, and none in the defect column when clean. Compare the same view, state and width at the supplied base and artifact, including siblings, at default and 420–450 px widths.`;
 		if (!collateral && (hasScreenshot || readImage)) return collateralRetry;
 		if (collateral) {
 			const activityPaths = await requirementAuditActivityPaths(
 				artifactDirectory ? path.join(artifactDirectory, `${workerId}.jsonl`) : undefined,
 				assignment.startedAt,
 				roots,
+				collateral.screenshots,
 			);
 			const hashes = new Map<string, string>();
 			for (const screenshot of collateral.screenshots) {
+				if (!path.isAbsolute(screenshot))
+					return `${expectedIds.join(", ")}: collateral screenshot path is relative or shorthand: ${screenshot}; re-audit and use absolute paths in the collateral table.`;
 				let hash: string | undefined;
 				let resolved: string | undefined;
 				for (const root of roots) {
@@ -1336,9 +1339,9 @@ export class RequirementsLedgerRuntime {
 					} catch {}
 				}
 				if (!hash)
-					return `${expectedIds.join(", ")}: collateral screenshot does not exist or cannot be read: ${screenshot}; retry with existing readable before/after files.`;
+					return `${expectedIds.join(", ")}: collateral screenshot does not exist or cannot be read: ${screenshot}; re-audit and use absolute paths in the collateral table pointing to existing readable before/after files.`;
 				if (!resolved || !activityPaths.has(resolved))
-					return `${expectedIds.join(", ")}: collateral screenshot lacks auditor activity after task start: ${screenshot}; capture your own before/after at the supplied base and artifact during this audit. Each file must have mtime at or after dispatch and be named by a successful bash/browser/eval/js call in this auditor’s session; existing implementer screenshots and image reads do not qualify. Retry the audit if its dispatch time or worker history is unavailable.`;
+					return `${expectedIds.join(", ")}: collateral screenshot lacks auditor activity after task start: ${screenshot}; capture your own before/after at the supplied base and artifact during this audit. Each file must have mtime at or after dispatch and within the execution window (with 2 s slack) of a successful bash/browser/eval/js call in this auditor’s session; paths may be named literally or built dynamically; existing implementer screenshots and image reads do not qualify. Use absolute paths in the collateral table when re-auditing. Retry the audit if its dispatch time or worker history is unavailable.`;
 				hashes.set(screenshot, hash);
 			}
 			for (const pair of collateral.pairs ?? []) {

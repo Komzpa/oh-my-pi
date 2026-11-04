@@ -980,8 +980,8 @@ export async function requirementAuditReadImage(sessionFile: string): Promise<bo
 
 /**
  * Require both filesystem freshness and a successful activity in this worker's
- * post-dispatch history. mtime alone cannot attribute a write; a path mention
- * alone could be an old report. Read tools and failed calls never qualify.
+ * post-dispatch history: a literal path or a write within its execution window.
+ * A path mention alone could be an old report. Read tools and failed calls never qualify.
  * This is activity provenance, not shell-program interpretation: an auditor's
  * own `touch` can satisfy it. Capture semantics remain the auditor's duty.
  */
@@ -989,17 +989,33 @@ export async function requirementAuditActivityPaths(
 	sessionFile: string | undefined,
 	startedAt: number | undefined,
 	roots: readonly string[],
+	screenshots: readonly string[] = [],
 ): Promise<Set<string>> {
 	const paths = new Set<string>();
 	if (!sessionFile || startedAt === undefined || !Number.isFinite(startedAt)) return paths;
 	try {
 		const entries: unknown[] = Bun.JSONL.parse(await Bun.file(sessionFile).text());
-		const calls = new Map<string, unknown>();
+		const calls = new Map<string, { args: unknown; start: number }>();
+		const windows: { start: number; end: number }[] = [];
 		for (const entry of entries) {
-			if (!isRecord(entry) || !isRecord(entry.message)) continue;
+			if (!isRecord(entry)) continue;
 			const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : entry.timestamp;
 			if (typeof at !== "number" || !Number.isFinite(at) || at < startedAt) continue;
-			const message = entry.message;
+			if (entry.customType === "tool_execution_start" && isRecord(entry.data)) {
+				const data = entry.data;
+				if (
+					typeof data.toolCallId === "string" &&
+					["bash", "browser", "eval", "js"].includes(String(data.toolName))
+				) {
+					const call = calls.get(data.toolCallId);
+					calls.set(data.toolCallId, { args: call?.args ?? data.args, start: at });
+				}
+			}
+			const message =
+				entry.customType === "tool_execution_end" && isRecord(entry.data)
+					? { ...entry.data, role: "toolResult", content: entry.data.result }
+					: entry.message;
+			if (!isRecord(message)) continue;
 			if (message.role === "assistant" && Array.isArray(message.content)) {
 				for (const call of message.content) {
 					if (
@@ -1008,22 +1024,35 @@ export async function requirementAuditActivityPaths(
 						typeof call.id === "string" &&
 						["bash", "browser", "eval", "js"].includes(String(call.name))
 					) {
-						calls.set(call.id, call.arguments);
+						calls.set(call.id, { args: call.arguments, start: at });
 					}
 				}
 			}
 			if (message.role !== "toolResult" || message.isError !== false || typeof message.toolCallId !== "string")
 				continue;
-			const args = calls.get(message.toolCallId);
-			if (args === undefined) continue;
+			const call = calls.get(message.toolCallId);
+			if (!call || at < call.start) continue;
+			windows.push({ start: call.start, end: at });
 			const texts: string[] = [];
-			JSON.stringify([args, message.content], (_key, value: unknown) => {
+			JSON.stringify([call.args, message.content], (_key, value: unknown) => {
 				if (typeof value === "string") texts.push(value);
 				return value;
 			});
 			for (const file of await requirementEvidenceScreenshots(texts.join("\n"), roots)) {
-				if ((await fs.stat(file)).mtimeMs >= startedAt) paths.add(file);
+				const { mtimeMs } = await fs.stat(file);
+				if (mtimeMs >= startedAt && mtimeMs >= call.start - 2000 && mtimeMs <= at + 2000) paths.add(file);
 			}
+		}
+		for (const file of screenshots) {
+			if (!path.isAbsolute(file)) continue;
+			try {
+				const { mtimeMs } = await fs.stat(file);
+				if (
+					mtimeMs >= startedAt &&
+					windows.some(window => mtimeMs >= window.start - 2000 && mtimeMs <= window.end + 2000)
+				)
+					paths.add(path.resolve(file));
+			} catch {}
 		}
 	} catch {
 		// Missing or unreadable worker history cannot establish provenance.
