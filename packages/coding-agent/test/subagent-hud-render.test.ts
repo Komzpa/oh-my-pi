@@ -1090,7 +1090,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 	});
 
 	it("repaints native checklist changes outside the terminal TODO window", async () => {
-		cfgDisplayPinnedAgents.override(Settings.instance, "off");
+		cfgDisplayPinnedAgents.override(session.settings, "off");
 		await mode.init({ suppressWelcomeIntro: true });
 		const cx: DescribeContext = {
 			cols: 120,
@@ -1136,7 +1136,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 	});
 
 	it("keeps compact mutation receipts stable after the sticky HUD auto-clears", async () => {
-		cfgDisplayPinnedAgents.override(Settings.instance, "off");
+		cfgDisplayPinnedAgents.override(session.settings, "off");
 		cfgTasksTodoClearDelay.override(session.settings, 0);
 		await mode.init({ suppressWelcomeIntro: true });
 		vi.useFakeTimers();
