@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { TodoCommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/todo-command-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import { USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
+import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	sessionContextEntryMetadata,
 	type SessionContextEntryMetadata,
@@ -21,10 +21,24 @@ function createContext(cwd: string, phases: TodoPhase[]): InteractiveModeContext
 		},
 		session: {
 			getTodoPhases: () => phases,
-			commitTodoPhases: vi.fn(),
+			setTodoPhases: (next: TodoPhase[]) => {
+				phases = next;
+			},
 		},
 		sessionManager: {
 			appendMessage: vi.fn(),
+			appendCustomEntry: (customType: string, data: unknown) => {
+				const id = `entry-${branch.length}`;
+				branch.push({
+					type: "custom",
+					id,
+					parentId: branch.at(-1)?.id ?? null,
+					timestamp: new Date().toISOString(),
+					customType,
+					data,
+				});
+				return id;
+			},
 			getBranch: () => branch,
 			getBranchMatching: (predicate: (metadata: SessionContextEntryMetadata) => boolean) =>
 				branch.filter(entry => predicate(sessionContextEntryMetadata(entry))),
@@ -84,7 +98,8 @@ describe("TodoCommandController", () => {
 		await controller.handleTodoCommand("import");
 
 		const expected: TodoPhase[] = [{ name: "Imported", tasks: [{ content: "From cwd", status: "in_progress" }] }];
-		expect(ctx.session.commitTodoPhases).toHaveBeenCalledWith(expected);
+		expect(ctx.session.getTodoPhases()).toEqual(expected);
+		expect(getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch())).toEqual(expected);
 		expect(ctx.setTodos).toHaveBeenCalledWith(expected);
 		expect(ctx.agent.appendMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "developer" }));
 		expect(ctx.sessionManager.appendMessage).toHaveBeenCalledWith(expect.objectContaining({ role: "developer" }));
@@ -104,7 +119,8 @@ describe("TodoCommandController", () => {
 		const expected: TodoPhase[] = [
 			{ name: "Quoted", tasks: [{ content: "From quoted path", status: "in_progress" }] },
 		];
-		expect(ctx.session.commitTodoPhases).toHaveBeenCalledWith(expected);
+		expect(ctx.session.getTodoPhases()).toEqual(expected);
+		expect(getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch())).toEqual(expected);
 		expect(ctx.showStatus).toHaveBeenCalledWith(`Imported 1 phase(s), 1 task(s) from ${target}.`);
 		expect(ctx.showError).not.toHaveBeenCalled();
 	});
@@ -119,7 +135,7 @@ describe("TodoCommandController", () => {
 		await controller.handleTodoCommand("import");
 
 		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining(`Could not parse ${target}:`));
-		expect(ctx.session.commitTodoPhases).not.toHaveBeenCalled();
+		expect(ctx.sessionManager.getBranch()).toEqual([]);
 		expect(ctx.setTodos).not.toHaveBeenCalled();
 	});
 
@@ -132,7 +148,7 @@ describe("TodoCommandController", () => {
 
 		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining("Failed to read todos:"));
 		expect(ctx.showError).toHaveBeenCalledWith(expect.stringContaining("internal scheme"));
-		expect(ctx.session.commitTodoPhases).not.toHaveBeenCalled();
+		expect(ctx.sessionManager.getBranch()).toEqual([]);
 		expect(ctx.setTodos).not.toHaveBeenCalled();
 	});
 
