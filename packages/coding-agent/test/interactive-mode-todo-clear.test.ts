@@ -1106,35 +1106,6 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(oneHidden).toContain("1 more stage");
 	});
 
-	it("expands and collapses the complete todo HUD through /todo", async () => {
-		mode.setTodos([
-			{
-				name: "Implementation",
-				tasks: Array.from({ length: 8 }, (_, index): TodoItem => ({
-					content: `Task ${index + 1}`,
-					status: index === 0 ? "in_progress" : "pending",
-				})),
-			},
-		]);
-
-		await mode.handleTodoCommand("expand");
-		await mode.handleTodoCommand("expand");
-
-		expect(renderTodos(mode)).toContain("Task 8");
-		expect(renderTodos(mode)).not.toContain("more todo");
-
-		await mode.handleTodoCommand("collapse");
-		await mode.handleTodoCommand("collapse");
-
-		// A short terminal leaves a 6-row panel: 3 rows of chrome, the stage header,
-		// 1 summary row, so 1 task row fits and 7 open todos are reported hidden.
-		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
-		mode.setTodos(mode.todoPhases);
-		expect(renderTodos(mode)).not.toContain("Task 8");
-		expect(renderTodos(mode)).toContain("Task 1");
-		expect(renderTodos(mode)).toContain("7 more todos · /todo expand");
-	});
-
 	describe("collapsed panel row budget", () => {
 		function setTerminalRows(rows: number): void {
 			Object.defineProperty(mode.ui.terminal, "rows", { get: () => rows, configurable: true });
@@ -1188,6 +1159,35 @@ describe("InteractiveMode todo HUD anchor", () => {
 			expect(text).not.toContain("build p5");
 			expect(text).toContain(`${open - shown.length} more todos · /todo expand`);
 		});
+	});
+
+	it("expands and collapses the complete todo HUD through /todo", async () => {
+		mode.setTodos([
+			{
+				name: "Implementation",
+				tasks: Array.from({ length: 8 }, (_, index): TodoItem => ({
+					content: `Task ${index + 1}`,
+					status: index === 0 ? "in_progress" : "pending",
+				})),
+			},
+		]);
+
+		await mode.handleTodoCommand("expand");
+		await mode.handleTodoCommand("expand");
+
+		expect(renderTodos(mode)).toContain("Task 8");
+		expect(renderTodos(mode)).not.toContain("more todo");
+
+		await mode.handleTodoCommand("collapse");
+		await mode.handleTodoCommand("collapse");
+
+		// A short terminal leaves a 6-row panel: 3 rows of chrome, the stage header,
+		// 1 summary row, so 1 task row fits and 7 open todos are reported hidden.
+		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
+		mode.setTodos(mode.todoPhases);
+		expect(renderTodos(mode)).not.toContain("Task 8");
+		expect(renderTodos(mode)).toContain("Task 1");
+		expect(renderTodos(mode)).toContain("7 more todos · /todo expand");
 	});
 
 	describe("compact todo for small terminal height (< 18 rows)", () => {
