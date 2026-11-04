@@ -169,15 +169,15 @@ const InitListEntry = type({
 
 const todoSchema = type({
 	op: TodoOp,
+	"list?": InitListEntry.array().describe("phases for init"),
+	"task?": type("string").describe("verbatim task content; with view, show that task and its full attempt history"),
+	"phase?": type("string").describe("phase name; with view, lists that whole phase including closed rows"),
+	"archive?": type("boolean").describe("with view, include archived rows"),
 	"previewReason?": type({
 		task: "string",
 		kind: '"deferred" | "not-applicable" | "external-blocker"',
 		detail: "string",
 	}),
-	"list?": InitListEntry.array().describe("phases for init"),
-	"task?": type("string").describe("verbatim task content; with view, show that task and its full attempt history"),
-	"phase?": type("string").describe("phase name; with view, lists that whole phase including closed rows"),
-	"archive?": type("boolean").describe("with view, include archived rows"),
 	"items?": type("string")
 		.describe("task content")
 		.array()
