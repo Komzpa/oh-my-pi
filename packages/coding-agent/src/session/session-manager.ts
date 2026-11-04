@@ -720,6 +720,7 @@ export class SessionEntryIndex {
 		} else {
 			this.#branchCache = undefined;
 		}
+
 		const bucket = this.#children.get(entry.parentId);
 		if (bucket) bucket.push(entry.id);
 		else this.#children.set(entry.parentId, [entry.id]);
@@ -727,6 +728,7 @@ export class SessionEntryIndex {
 			if (entry.label) this.#labels.set(entry.targetId, entry.label);
 			else this.#labels.delete(entry.targetId);
 		}
+
 		const usage = entryUsage(entry);
 		addUsage(this.#usage, usage);
 		if (usage && entry.type === "message" && entry.message.role === "toolResult")
@@ -768,9 +770,11 @@ export class SessionEntryIndex {
 	*entries(retainIdentity = false): IterableIterator<SessionEntry> {
 		for (const entry of this.#ordered) yield this.get(entry.id, retainIdentity)!;
 	}
+
 	leafId(): string | null {
 		return this.#leaf;
 	}
+
 	leafEntry(): SessionEntry | undefined {
 		return this.#leaf ? this.get(this.#leaf) : undefined;
 	}
@@ -787,6 +791,7 @@ export class SessionEntryIndex {
 		}
 		this.setLeaf(leaf);
 	}
+
 	setLeaf(id: string | null): void {
 		if (this.#leaf === id) return;
 		this.#leaf = id;
@@ -803,12 +808,15 @@ export class SessionEntryIndex {
 	childrenOf(parentId: string): SessionEntry[] {
 		return (this.#children.get(parentId) ?? []).map(id => this.get(id)!);
 	}
+
 	labelFor(id: string): string | undefined {
 		return this.#labels.get(id);
 	}
+
 	labelsInEffect(): IterableIterator<[string, string]> {
 		return this.#labels.entries();
 	}
+
 	usageSnapshot(): UsageStatistics {
 		return { ...this.#usage };
 	}
@@ -953,12 +961,14 @@ export class SessionEntryIndex {
 			if (parent) parent.children.push(node);
 			else roots.push(node);
 		}
+
 		const stack = [...roots];
 		while (stack.length) {
 			const node = stack.pop()!;
 			node.children.sort(orderedByTimestamp);
 			stack.push(...node.children);
 		}
+
 		return roots;
 	}
 }

@@ -280,6 +280,7 @@ export async function visitEntriesFromFileStream(
 	const yieldEveryEntries = Math.max(0, options.yieldEveryEntries ?? STREAM_YIELD_ENTRIES);
 	const sink = new ConcatSink();
 	const decoder = new TextDecoder();
+
 	const yieldToMacrotask = async (): Promise<void> => {
 		if (
 			(yieldEveryBytes > 0 && bytesSinceYield >= yieldEveryBytes) ||
