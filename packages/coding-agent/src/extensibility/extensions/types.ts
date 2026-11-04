@@ -792,6 +792,7 @@ export interface ExtensionLiveSession {
 }
 
 export interface ExtensionContext {
+	getTodoPreviewConfig?(): { enabled: boolean; paths: string[]; thresholdMinutes: number };
 	/** Current hydrated plan, without replaying the session journal. Undefined before session initialization. */
 	getTodoPhases?(): TodoPhase[] | undefined;
 	/** Merge a schedule annotation into one exact row and append its durable snapshot. Never changes task status or attempt history. */
@@ -799,7 +800,14 @@ export interface ExtensionContext {
 		task: string,
 		patch: Pick<
 			TodoSchedule,
-			"review" | "reviewSummary" | "firstRequirementAt" | "firstDeliveredAt" | "speculativeOn"
+			| "review"
+			| "reviewSummary"
+			| "firstRequirementAt"
+			| "firstDeliveredAt"
+			| "speculativeOn"
+			| "visibleAt"
+			| "previewPending"
+			| "previewTracked"
 		>,
 	): boolean;
 	/** UI methods for user interaction */

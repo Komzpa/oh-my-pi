@@ -107,3 +107,6 @@ export declare const HEAD_WATCH_INTERVAL_MS: number;
 
 /** Watch a repository for head changes; returns a disposer. */
 export declare function watch(repo: VcsRepo, onChange: () => void, intervalMs?: number): () => void;
+
+/** Whether commit is an ancestor of descendant (HEAD by default). */
+export declare function isAncestor(dir: string, commit: string, descendant?: string): Promise<boolean>;

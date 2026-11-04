@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { PREVIEW_ENTRY_TYPE, refreshPreviewVisibility, overduePreviewRows, previewScheduleRefusal, previewDispatchRefusal, previewReason, type PreviewRecord } from "./todo_preview";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { prompt } from "@oh-my-pi/pi-utils";
@@ -1484,7 +1485,7 @@ function updateTodoSchedule(ctx: ExtensionContext, update: (phases: DispatchTodo
     const previous = before.flatMap((entry) => entry.tasks).find((candidate) => candidate.content === row.content);
     if (!previous || JSON.stringify(previous.schedule) === JSON.stringify(row.schedule)) continue;
     const patch = {} as Record<string, unknown>;
-    for (const key of ["review", "reviewSummary", "firstRequirementAt", "firstDeliveredAt", "speculativeOn"]) {
+    for (const key of ["review", "reviewSummary", "firstRequirementAt", "firstDeliveredAt", "speculativeOn", "visibleAt", "previewPending", "previewTracked"]) {
       if (row.schedule?.[key] !== previous.schedule?.[key]) patch[key] = row.schedule?.[key];
     }
     ctx.updateTodoSchedule(String(row.content), patch);
@@ -2223,6 +2224,51 @@ export function syncCriticalFast(
 
 export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe } = {}): Promise<void> {
   const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
+  const previewConfig = (ctx: ExtensionContext) => ctx.getTodoPreviewConfig?.() ?? { enabled: false, paths: [], thresholdMinutes: 30 };
+  let previewPoll: Promise<PreviewRecord[]> | undefined;
+  const previewAncestry = new Map<string, boolean>();
+  const previewContains = async (dir: string, commit: string): Promise<boolean> => {
+    const head = await vcs.git(dir)?.headSha();
+    if (!head) return false;
+    const key = `${dir}\0${head}\0${commit}`;
+    const cached = previewAncestry.get(key);
+    if (cached !== undefined) return cached;
+    const visible = await vcs.isAncestor(dir, commit, head);
+    if (previewAncestry.size >= 2048) previewAncestry.clear();
+    previewAncestry.set(key, visible);
+    return visible;
+  };
+  const previewRecords = (ctx: ExtensionContext): PreviewRecord[] => {
+    const entry = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === PREVIEW_ENTRY_TYPE);
+    return Array.isArray(entry?.data?.records) ? entry.data.records : [];
+  };
+  const pollPreview = async (ctx: ExtensionContext): Promise<PreviewRecord[]> => {
+    const config = previewConfig(ctx);
+    if (!config.enabled) {
+      for (const row of (ctx.getTodoPhases?.() ?? []).flatMap(phase => phase.tasks))
+        if (row.schedule?.previewTracked) ctx.updateTodoSchedule?.(row.content, { previewTracked: false, previewPending: false });
+      return [];
+    }
+    if (previewPoll) return previewPoll;
+    previewPoll = (async () => {
+      const before = previewRecords(ctx);
+      const phases = ctx.getTodoPhases?.() ?? [];
+      const captured = await capturePreviewWorkerHeads(ctx, phases, before);
+      const records = await refreshPreviewVisibility(phases, config, captured, Date.now(), previewContains);
+      if (JSON.stringify(before) !== JSON.stringify(records)) pi.appendEntry(PREVIEW_ENTRY_TYPE, { records });
+      for (const row of phases.flatMap(phase => phase.tasks)) {
+        if (row.schedule?.firstRequirementAt === undefined) continue;
+        const observed = records.filter(record => record.task === row.content);
+        const visibleAt = observed.filter(record => record.visibleAt !== undefined).map(record => record.visibleAt).sort((a,b) => a-b)[0];
+        const pending = observed.length > 0 && visibleAt === undefined;
+        if (row.schedule.previewTracked !== true || row.schedule.previewPending !== pending || row.schedule.visibleAt !== visibleAt)
+          ctx.updateTodoSchedule?.(row.content, { previewTracked: true, previewPending: pending, ...(visibleAt === undefined ? {} : { visibleAt }) });
+      }
+      return records;
+    })();
+    try { return await previewPoll; } finally { previewPoll = undefined; }
+  };
+
   const host = pi.pi;
   const hostSdk = host as DispatchForecastApi | undefined;
   if (!hostSdk?.forecastTodoPlan || !hostSdk.formatPlanForecast || !hostSdk.formatTaskForecast) return;
@@ -4397,6 +4443,60 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (own.length) return own;
     return sessionCwd ? [sessionCwd] : [];
   };
+  const previewHeadTimes = new Map<string, number>();
+  // Capture ordinary shared-checkout output only inside a measured, completed worker run.
+  // A later lead/gate commit is outside that interval and cannot become this row's output.
+  const capturePreviewWorkerHeads = async (ctx: ExtensionContext, phases: TodoScheduleInput, records: PreviewRecord[]): Promise<PreviewRecord[]> => {
+    const next = [...records];
+    const recent = ctx.getAsyncJobSnapshot()?.recent ?? [];
+    for (const row of phases.flatMap(phase => phase.tasks)) {
+      if (row.schedule?.firstRequirementAt === undefined || records.some(record => record.task === row.content)) continue;
+      const executor = row.schedule.executor;
+      const runs = [
+        ...(executor?.outcome === "completed" && typeof executor.finishedAt === "number"
+          ? [{ id: executor.workerId, startedAt: executor.startedAt, finishedAt: executor.finishedAt }] : []),
+        ...(row.schedule.attemptHistory ?? []).filter(attempt => attempt.terminalStatus === "completed")
+          .map(attempt => ({ id: attempt.workerName, startedAt: attempt.startedAt, finishedAt: attempt.finishedAt })),
+      ];
+      if (!executor && typeof row.schedule.owner === "string") {
+        const owner = row.schedule.owner;
+        for (const sibling of phases.flatMap(phase => phase.tasks)) {
+          const observed = sibling.schedule?.executor;
+          if (observed?.outcome === "completed" && typeof observed.finishedAt === "number" && liveJobMatchesOwner({ id: observed.workerId }, owner))
+            runs.push({ id: observed.workerId, startedAt: observed.startedAt, finishedAt: observed.finishedAt });
+          for (const attempt of sibling.schedule?.attemptHistory ?? [])
+            if (attempt.terminalStatus === "completed" && liveJobMatchesOwner({ id: attempt.workerName }, owner))
+              runs.push({ id: attempt.workerName, startedAt: attempt.startedAt, finishedAt: attempt.finishedAt });
+        }
+        for (const job of recent) {
+          if (job.type !== "task" || job.status !== "completed" || !liveJobMatchesOwner(job, owner) || typeof job.startTime !== "number" || typeof job.endTime !== "number") continue;
+          runs.push({ id: job.agentId ?? job.id, startedAt: job.startTime, finishedAt: job.endTime });
+        }
+      }
+      for (const run of runs) {
+        if (!Number.isFinite(run.startedAt) || !Number.isFinite(run.finishedAt) || run.finishedAt < run.startedAt) continue;
+        const declaredRoots = (row.schedule.resources ?? []).map(resource => resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "")).filter(resource => isAbsolute(resource));
+        for (const root of new Set([...workerRepoRoots(ctx, run.id), ...declaredRoots])) {
+          try {
+            const repo = vcs.git(root);
+            const commit = await repo?.headSha();
+            if (!repo || !commit) continue;
+            const key = `${root}\0${commit}`;
+            let at = previewHeadTimes.get(key);
+            if (at === undefined) {
+              at = await vcs.lastCommitTime(repo);
+              if (typeof at !== "number" || await repo.headSha() !== commit) continue;
+              if (previewHeadTimes.size >= 2048) previewHeadTimes.clear();
+              previewHeadTimes.set(key, at);
+            }
+            if (at < Math.floor(run.startedAt / 1000) * 1000 || at > run.finishedAt) continue;
+            if (!next.some(record => record.task === row.content && record.commit === commit)) next.push({ task: row.content, commit });
+          } catch {}
+        }
+      }
+    }
+    return next;
+  };
   const workerCommitAt = async (ctx: ExtensionContext, id: string): Promise<number | undefined> => {
     const times: number[] = [];
     for (const root of workerRepoRoots(ctx, id)) {
@@ -4803,6 +4903,27 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const reason = refuseRelativeWorkerWrite(workerWorksElsewhere, ctx.sessionManager.getHeader()?.id ?? ctx.cwd, event.toolName, event.input, ctx.cwd);
       if (reason) return { block: true, reason };
     }
+    const visibility = await pollPreview(ctx);
+    if (previewConfig(ctx).enabled && isMain(ctx)) {
+      const phases = ctx.getTodoPhases?.() ?? [];
+      if (event.toolName === "todo") {
+        const profiles = new Map<string, string | undefined>();
+        for (const job of ctx.getAsyncJobSnapshot()?.running ?? []) {
+          const session = AgentRegistry.global().get(job.agentId ?? job.id)?.session;
+          if (!session) continue;
+          const init = selectBranchEntries(session.sessionManager, metadata => metadata.type === "session_init")
+            .findLast(entry => typeof entry.agent === "string");
+          profiles.set(job.id, init?.agent);
+          profiles.set(job.agentId ?? job.id, init?.agent);
+        }
+        const refusal = previewScheduleRefusal(event.input, phases, visibility, profiles);
+        if (refusal) return { block: true, reason: refusal };
+      }
+      if (event.toolName === "task") {
+        const refusal = previewDispatchRefusal(event.input, overduePreviewRows(phases, visibility, previewConfig(ctx), Date.now()));
+        if (refusal) return { block: true, reason: refusal };
+      }
+    }
     await refreshLiveWorkerModels(ctx);
     if (gateSwitchedOff(ctx)) return;
     if (singleWriterLane) return;
@@ -5065,6 +5186,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   let lastPlanProblems = "";
   const planCheck = async (ctx: ExtensionContext, pending: unknown[] = [], problemsOnly = false): Promise<string | null> => {
+    const visibility = await pollPreview(ctx);
+    const visibilityProblem = previewDispatchRefusal({}, overduePreviewRows(ctx.getTodoPhases?.() ?? [], visibility, previewConfig(ctx), Date.now()));
+    if (visibilityProblem) return visibilityProblem;
     // Finish I/O before reading or mutating plan state. A worker may finish or
     // a todo result may arrive while Git is pending; judge the fresh snapshot.
     const sampledJobs = (ctx.getAsyncJobSnapshot()?.running ?? []).filter((job) => job.type === "task" && job.status === "running");
@@ -5469,6 +5593,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     absence.jobStamp = finished;
   };
   const planTick = async (ctx: ExtensionContext) => {
+    await pollPreview(ctx);
     lastPlanTickAt = Date.now();
     planTickCount += 1;
     try {
@@ -5554,7 +5679,36 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
   };
   pi.on("tool_result", async (event, ctx) => {
+    if (previewConfig(ctx).enabled && isMain(ctx)) {
+      if (event.toolName === "todo" && !event.isError) {
+        const exception = previewReason(event.input);
+        if (exception) {
+          const before = previewRecords(ctx);
+          const records = before.map(record => record.task === exception.task ? { ...record, reason: exception.reason } : record);
+          if (JSON.stringify(records) !== JSON.stringify(before)) pi.appendEntry(PREVIEW_ENTRY_TYPE, { records });
+        }
+      }
+      const results = event.details?.results;
+      if (Array.isArray(results)) {
+        const records = previewRecords(ctx);
+        const next = [...records];
+        const rows = (ctx.getTodoPhases?.() ?? []).flatMap(phase => phase.tasks);
+        for (const result of results) {
+          if (result?.exitCode !== 0 || typeof result.branchName !== "string" || typeof result.branchBaseSha !== "string") continue;
+          const matchingRows = rows.filter(row => row.schedule?.executor?.workerId === result.id || row.schedule?.attemptHistory?.some(attempt => attempt.workerName === result.id) || (!row.schedule?.executor && typeof row.schedule?.owner === "string" && liveJobMatchesOwner({ id: result.id }, row.schedule.owner)));
+          if (!matchingRows.length) continue;
+          try {
+            const repo = vcs.git(ctx.cwd);
+            const commit = await repo?.resolveRef(result.branchName);
+            if (commit && commit !== result.branchBaseSha) for (const row of matchingRows)
+              if (!next.some(record => record.task === row.content && record.commit === commit)) next.push({ task: row.content, commit });
+          } catch {}
+        }
+        if (JSON.stringify(next) !== JSON.stringify(records)) pi.appendEntry(PREVIEW_ENTRY_TYPE, { records: next });
+      }
+    }
     healPlanTicker(ctx);
+    await pollPreview(ctx);
     await refreshLiveWorkerModels(ctx);
     if (singleWriterLane) return;
     if (!event.isError && isMain(ctx)) {

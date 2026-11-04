@@ -2238,6 +2238,7 @@ export const LABEL_MAX = 80;
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
+	previewIntegration?: { task: string; kind: "refresh" | "integration" };
 	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
 	name?: string;
 	/** Agent type to run this item (e.g. "scout"). Defaults to the spawn policy's default agent. */

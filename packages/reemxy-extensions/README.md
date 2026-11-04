@@ -123,3 +123,22 @@ Browser and test-runner launches check current `/proc/meminfo` MemAvailable and 
 ## Image capability gate
 
 Visual routing follows the current resolved model's registry `input` capabilities, including after fallback. A text-only worker reading an image is refused using the image header, regardless of its filename or assignment wording. Structured screenshot calls refuse before execution. A screenshot or image returned by an opaque tool call becomes an error with the same handoff instruction: ask the lead with `write agent://Main` to route the check to ui-coder. Image-capable models and text results pass. Repeating the call cannot bypass this gate.
+
+
+## Preview visibility
+
+Disabled by default. Enable for a lead project whose preview checkout serves the user:
+
+```yaml
+todo:
+  preview:
+    enabled: true
+    paths: [/absolute/path/to/preview-checkout]
+    thresholdMinutes: 30
+```
+
+The runtime probes `git merge-base --is-ancestor <worker-commit> HEAD` in each configured checkout on tool events and every 60 seconds. A match in any checkout records the first observation as `visibleAt` in the append-only `todo-preview-visibility` custom entry. This measures checkout ancestry, not whether a browser has reloaded. Commit identities come from executor/attempt `gitCommits` receipts, successful isolated task branch results, completed workers’ repository HEADs captured within their measured run, or explicit row resources `git:/absolute/repository@<full-commit-sha>`; worker prose is never parsed. TODO forecasts show live `asked→visible` elapsed time, freeze it at first visibility, and mark `commit not visible`.
+
+After 30 minutes from the row's `firstRequirementAt`, a produced commit still absent from preview blocks unrelated task dispatch. The next task must carry `previewIntegration: {task: <exact row title>, kind: refresh}` (or `kind: integration`). Single and batch task calls accept this marker. Until visibility is measured, `todo schedule` also refuses assigning user-requested rows to a `gate-runner` or making them depend on a whole-suite/landing gate. Refresh the preview first, then batch the gate.
+
+An explicit exception is recorded only after a successful todo call, for example `todo {op: "view", previewReason: {task: "<exact row title>", kind: "external-blocker", detail: "<reason>"}}`. Accepted reason kinds are `deferred`, `not-applicable`, and `external-blocker`. Reasons waive dispatch obligations for the recorded commits; they do not fabricate visibility or bypass the schedule refusal.

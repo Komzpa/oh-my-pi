@@ -4,6 +4,8 @@
 
 ### Added
 
+- Track asked-to-visible preview latency and require preview integration before delayed work waits behind suite gates, opt-in via `todo.preview` ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Add the `minor-coder` agent for small, known fixes of about 10 minutes or less (pool: Luna low, Mercury-3 low, Haiku 5.5 low, free dots, Sol low, mimo) and register it in the router pool sizes, write-capable workers, Claude effort cap and the dots role sanction; `coder` becomes the bigger-task role.
 - Reorder agent pools by the omp agent x model report: `ui-coder` opens on Sol high then Sonnet 5.5 and drops Luna; `git-pr-owner` opens on Haiku 5.5 low, Sol low, Mercury-3 low and drops Luna; `coder` opens on Sol medium then Muse Spark and drops Luna; these four roles have a pool of two (different providers, shared load), the rest ordered fallbacks. `xiaomi/mimo-v2.6-*` moves to the end of every chain; scout, gate-runner, scribe and workhorse pool sizes drop by one to keep their pool members unchanged.
 - Require commit workers to inspect effective Git author/committer identity and provenance, use configured real identities, stop without committing when identity is missing or invalid, preserve genuine contributor authors, and read back commit identities.
