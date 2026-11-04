@@ -1,3 +1,0 @@
-ancestorEntries = ["packages/coding-agent/src/thread/services/agents-protocol.ts", "packages/coding-agent/src/thread/session-mirror.ts"]
-ourEntries = ["packages/coding-agent/src/thread/services/agents-protocol.ts", "packages/coding-agent/src/thread/session-mirror.ts"]
-theirEntries = ["packages/coding-agent/src/thread/services/agents-protocol.ts", "packages/coding-agent/src/thread/session-mirror.ts"]

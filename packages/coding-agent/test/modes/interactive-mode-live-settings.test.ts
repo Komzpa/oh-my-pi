@@ -82,7 +82,6 @@ describe("InteractiveMode live settings", () => {
 			undefined,
 			undefined,
 			undefined,
-			undefined,
 			connection,
 		);
 		await mode.init({ suppressWelcomeIntro: true });
@@ -110,7 +109,6 @@ describe("InteractiveMode live settings", () => {
 		mode = new InteractiveMode(
 			session,
 			"test",
-			undefined,
 			undefined,
 			undefined,
 			undefined,

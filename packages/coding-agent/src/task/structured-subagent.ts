@@ -946,6 +946,19 @@ function buildExecutorOptions(
 		skills,
 		// Autoload runs after session start, outside the seance isolation options.
 		autoloadSkills: preparedSession ? undefined : autoloadSkills,
+		workspaceTree: session.workspaceTree,
+		promptTemplates: session.promptTemplates,
+		rules: session.rules,
+		// Root policy and module paths have separate jobs: the live policy drives
+		// recursive sub-discovery; preloaded paths only avoid re-scanning/reusing
+		// parent-bound extension instances while constructing the child.
+		// Forward the provider itself, never bound to `session`: the child's revive
+		// capture outlives its parking, so a bound copy would keep this parent's
+		// whole session graph alive for as long as the child can be revived.
+		extensionRoots: session.effectiveExtensionRoots,
+		preloadedExtensionPaths: restrictToolNames ? [] : session.extensionPaths,
+		preloadedPreparedExtensions: session.preparedExtensions,
+		preloadedCustomToolPaths: restrictToolNames ? [] : session.customToolPaths,
 		localProtocolOptions,
 		parentArtifactManager: preparedSession ? undefined : (session.getArtifactManager?.() ?? undefined),
 		onRelease:
