@@ -1155,8 +1155,26 @@ describe("is402BillingCapBody", () => {
 		expect(is402BillingCapBody("concurrent requests limit reached")).toBe(true);
 	});
 
+	it("recognizes structured billing fields even without billing prose", () => {
+		for (const body of [
+			"402 Request rejected (type=billing_error param=billing_not_configured)",
+			"402 Request rejected (code=billing_not_configured)",
+			'{"error":{"message":"Request rejected","type":"billing_error"}}',
+			'{"error":{"message":"Request rejected","code":"billing_not_configured"}}',
+		]) {
+			expect(is402BillingCapBody(body)).toBe(true);
+			expect(isUsageLimitOutcome(402, body)).toBe(true);
+		}
+		for (const code of ["billing_error", "billing_not_configured"]) {
+			expect(isUsageLimit(new ProviderHttpError("Request rejected", 402, { code }))).toBe(true);
+			expect(isUsageLimit(new ProviderHttpError("Request rejected", 400, { code }))).toBe(false);
+		}
+	});
+
 	it("returns false for non-quota informative bodies", () => {
 		expect(is402BillingCapBody("A subscription is required for this endpoint")).toBe(false);
 		expect(is402BillingCapBody("Rate limit exceeded, too many requests")).toBe(false);
+		expect(is402BillingCapBody("A subscription is required; see the billing page")).toBe(false);
+		expect(is402BillingCapBody("Request rejected (type=billing_error_other)")).toBe(false);
 	});
 });

@@ -26,7 +26,7 @@
 - API-key logins now honor the auth rule's `store-as` provider instead of storing the key under the auth id ([#13637](https://github.com/can1357/oh-my-pi/pull/13637) by [@pavel-kalmykov](https://github.com/pavel-kalmykov))
 ### Fixed
 
-- HTTP 402 bodies that name billing or credits (muse "Billing verification failed. Billing Issue", OpenRouter "requires more credits") now classify as usage limits, so `retry.fallbackOn: usage-limit` sessions fall over to the next model in the role instead of ending the turn; a 400 with the same body stays a bad request
+- Fixed model fallback on HTTP 402 billing errors and exhausted credits while preserving subscription-required errors ([#161](https://github.com/Komzpa/oh-my-pi/pull/161) by [@Komzpa](https://github.com/Komzpa))
 
 ### Changed
 

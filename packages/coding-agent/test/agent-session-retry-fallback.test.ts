@@ -3504,6 +3504,11 @@ describe("AgentSession retry fallback", () => {
 				"400 Billing verification failed. Billing Issue. To use this API key, your team needs to resolve a billing issue first. (type=billing_error param=billing_not_configured)",
 			fallsBack: false,
 		},
+		{
+			name: "informative 402 subscription requirement does not fall back even with billing prose",
+			message: "402 A subscription is required for this endpoint; see the billing page",
+			fallsBack: false,
+		},
 	])("$name", async ({ message, fallsBack = true }) => {
 		const primaryModel = getBundledModel("openai", "gpt-4o") ?? getBundledModel("anthropic", "claude-sonnet-4-5");
 		const fallbackModel = getBundledModel("google", "gemini-1.5-pro") ?? getBundledModel("openai", "gpt-4o-mini");
