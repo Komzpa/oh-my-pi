@@ -30,7 +30,7 @@ import {
 import type { Rule } from "../capability/rule";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { ModelRegistry } from "../config/model-registry";
-import { formatModelSelectorValue, parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
+import { formatModelSelectorValue } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import {
 	previewLine,
 	replaceTabs,
@@ -178,7 +178,11 @@ import {
 	cfgDefaultThinkingLevel,
 } from "../session/settings";
 import { cfgDisabledProviders } from "../config/model-settings";
-import { getRetryFallbackRole, installRetryFallbackRole } from "../session/retry-fallback-chains";
+import {
+	getRetryFallbackRole,
+	installRetryFallbackRole,
+	parseRetryFallbackSelector,
+} from "../session/retry-fallback-chains";
 import {
 	cfgCompactionModelThresholdsEnabled,
 	cfgCompactionThresholdPercent,
@@ -4749,7 +4753,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			const exclusions: ProviderExhaustionExclusion[] = [];
 			const availableModelPatterns = configuredModelPatterns.filter(pattern => {
 				const provider =
-					parseModelString(pattern)?.provider ??
+					parseRetryFallbackSelector(pattern)?.provider ??
 					resolveModelRoleValue(pattern, modelRegistry.getAll(), { settings }).model?.provider;
 				const exclusion = provider ? providerExhaustionExclusion(provider) : undefined;
 				if (!exclusion) return true;
