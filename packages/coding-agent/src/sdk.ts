@@ -5258,7 +5258,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			agentId: resolvedAgentId,
 			agentRegistry,
 			agentKind,
-			agentRegistry,
 			providerSessionId: options.providerSessionId,
 			accountPoolScope,
 			providerPromptCacheKeySource,

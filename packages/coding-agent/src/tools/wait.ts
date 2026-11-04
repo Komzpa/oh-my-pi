@@ -218,7 +218,16 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 				};
 			}
 		}
-		return this.#blockUntilWake({ jobs, manager, messaging, serviceRunning, idle, signal, onUpdate, todoTracksTasks });
+		return this.#blockUntilWake({
+			jobs,
+			manager,
+			messaging,
+			serviceRunning,
+			idle,
+			signal,
+			onUpdate,
+			todoTracksTasks,
+		});
 	}
 
 	/**
