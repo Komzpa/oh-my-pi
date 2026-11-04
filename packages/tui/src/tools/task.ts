@@ -2238,7 +2238,6 @@ export const LABEL_MAX = 80;
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
-	previewIntegration?: { task: string; kind: "refresh" | "integration" };
 	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
 	name?: string;
 	/** Agent type to run this item (e.g. "scout"). Defaults to the spawn policy's default agent. */
@@ -2250,6 +2249,7 @@ export interface TaskItem {
 	/** Inline instructions; exactly one of task or taskFile is required. */
 	task?: string;
 	taskFile?: string;
+	previewIntegration?: { task: string; kind: "refresh" | "integration" };
 	/** How open-ended the work is; required by the schema and the child's sole `auto` thinking classification input. */
 	solutionSpace?: string;
 	/** Chief's one-line rejection reason for redispatching a completed row. */
