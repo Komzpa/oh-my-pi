@@ -114,7 +114,19 @@ async function fixture(gitArtifact: "ui" | "cli" | undefined = undefined) {
 	spyOn(manager, "getArtifactsDir").mockReturnValue(historyDirectory);
 	const audit = async (
 		output: string,
-		activity: "capture" | "read" | "touch" | "none" | "failed" | "old" | "output" = "capture",
+		activity:
+			| "capture"
+			| "read"
+			| "touch"
+			| "none"
+			| "failed"
+			| "old"
+			| "output"
+			| "computed"
+			| "computed-start"
+			| "computed-end"
+			| "outside-named"
+			| "outside" = "capture",
 		stale = false,
 		resume = false,
 	) => {
@@ -131,14 +143,19 @@ async function fixture(gitArtifact: "ui" | "cli" | undefined = undefined) {
 		for (const file of paths) {
 			if (!(await Bun.file(file).exists())) continue;
 			if (!["touch", "none", "read"].includes(activity)) await Bun.write(file, await Bun.file(file).bytes());
-			const at = stale ? new Date(0) : now;
+			const at = stale
+				? new Date(0)
+				: new Date(
+						now.getTime() + (activity.startsWith("outside") ? 20000 : activity.startsWith("computed") ? 5000 : 0),
+					);
 			await fs.utimes(file, at, at);
 		}
 		if (activity !== "none") {
 			const timestamp = (activity === "old" ? new Date(0) : now).toISOString();
 			const toolName = activity === "read" ? "read" : "bash";
-			const command =
-				activity === "output"
+			const command = ["computed", "computed-start", "computed-end", "outside"].includes(activity)
+				? `python -c 'from pathlib import Path; out=Path("${cwd}"); [capture(out/f"{kind}-power-group-1568.png") for kind in ["before", "after"]]'`
+				: activity === "output"
 					? "./capture.sh"
 					: activity === "touch"
 						? `touch ${paths.join(" ")}`
@@ -153,15 +170,35 @@ async function fixture(gitArtifact: "ui" | "cli" | undefined = undefined) {
 							content: [{ type: "toolCall", id: "capture", name: toolName, arguments: { command } }],
 						},
 					},
+					...(["computed-start", "computed-end"].includes(activity)
+						? [
+								{
+									customType: "tool_execution_start",
+									timestamp: new Date(now.getTime() + 3000).toISOString(),
+									data: { toolCallId: "capture", toolName, args: { command } },
+								},
+							]
+						: []),
 					{
-						timestamp,
-						message: {
-							role: "toolResult",
-							toolCallId: "capture",
-							toolName,
-							isError: activity === "failed",
-							content: [{ type: "text", text: activity === "output" ? paths.join("\n") : "ok" }],
-						},
+						timestamp: ["computed", "computed-start", "computed-end", "outside", "outside-named"].includes(
+							activity,
+						)
+							? new Date(now.getTime() + 9000).toISOString()
+							: timestamp,
+						...(activity === "computed-end"
+							? {
+									customType: "tool_execution_end",
+									data: { toolCallId: "capture", toolName, isError: false, result: { content: [] } },
+								}
+							: {
+									message: {
+										role: "toolResult",
+										toolCallId: "capture",
+										toolName,
+										isError: activity === "failed",
+										content: [{ type: "text", text: activity === "output" ? paths.join("\n") : "ok" }],
+									},
+								}),
 					},
 				]
 					.map(entry => JSON.stringify(entry))
@@ -330,6 +367,48 @@ it("accepts paths reported by the auditor's successful capture output", async ()
 	const f = await fixture();
 	try {
 		expect(await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`, "output")).toBeUndefined();
+	} finally {
+		await fs.rm(f.cwd, { recursive: true, force: true });
+	}
+});
+
+it.each(["computed", "computed-start", "computed-end"] as const)(
+	"accepts ReauditCooling captures built in Python within a successful call window: %s",
+	async activity => {
+		const f = await fixture();
+		try {
+			expect(await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`, activity)).toBeUndefined();
+			expect((await f.tool.execute("done", { op: "done", task: ROW })).isError).not.toBe(true);
+		} finally {
+			await fs.rm(f.cwd, { recursive: true, force: true });
+		}
+	},
+);
+
+it.each(["outside", "outside-named"] as const)(
+	"rejects a file written during the audit outside every successful auditor call window: %s",
+	async activity => {
+		const f = await fixture();
+		try {
+			expect(JSON.stringify(await f.audit(`${f.table()}\n\n${pair(f.before, f.screenshot)}`, activity))).toContain(
+				"lacks auditor activity after task start",
+			);
+			expect((await f.tool.execute("done", { op: "done", task: ROW })).isError).toBe(true);
+		} finally {
+			await fs.rm(f.cwd, { recursive: true, force: true });
+		}
+	},
+);
+
+it("tells the lead to re-audit with absolute collateral paths for report shorthand", async () => {
+	const f = await fixture();
+	try {
+		const result = JSON.stringify(
+			await f.audit(`${f.table()}\n\n${pair("L/crops/before-1440-panel-crop.png", f.screenshot)}`),
+		);
+		expect(result).toContain("relative or shorthand");
+		expect(result).toContain("re-audit and use absolute paths in the collateral table");
+		expect((await f.tool.execute("done", { op: "done", task: ROW })).isError).toBe(true);
 	} finally {
 		await fs.rm(f.cwd, { recursive: true, force: true });
 	}

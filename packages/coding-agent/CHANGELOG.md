@@ -5,6 +5,8 @@
 ## [18.17.0] - 2026-11-06
 ### Fixed
 
+- UI audits accept screenshots created within successful auditor tool calls even when paths are assembled in code, and request absolute collateral paths ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 - Row audits prefer an independent vendor or stronger/different configured model, with visual capability checks and recorded selection reasons ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
 
 - UI audit screenshots now require fresh files linked to the auditor’s own tool activity ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
