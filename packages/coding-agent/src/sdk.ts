@@ -1,5 +1,3 @@
-import { PeerRuntime } from "./task/peer-runtime";
-import type { PeerCoordinationState } from "./task/peer-coordination";
 import * as path from "node:path";
 import {
 	Agent,
@@ -578,6 +576,8 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
 	}
 }
 
+import { PeerRuntime } from "./task/peer-runtime";
+import type { PeerCoordinationState } from "./task/peer-coordination";
 // Types
 export interface CreateAgentSessionOptions {
 	peerCoordination?: PeerCoordinationState;
@@ -2701,8 +2701,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			registerSessionChangeCallback: callback => session?.registerSessionChangeCallback(callback),
 			bumpFileMutationVersion: path => {
-				peerRuntime?.touch(path);
 				const next = (fileMutationVersions.get(path) ?? 0) + 1;
+				peerRuntime?.touch(path);
 				fileMutationVersions.set(path, next);
 				return next;
 			},

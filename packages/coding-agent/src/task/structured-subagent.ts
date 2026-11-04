@@ -127,10 +127,10 @@ export interface StructuredSubagentIdentity {
 
 /** One normalized child invocation. */
 export interface StructuredSubagentRequest {
-	scope?: PeerScope;
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
+	scope?: PeerScope;
 	context?: string;
 	agent?: string;
 	/** Saved source session selected for the bundled seance agent. */
@@ -794,11 +794,11 @@ function buildExecutorOptions(
 		agent: policy.effectiveAgent,
 		task: renderSubagentUserPrompt(request.assignment),
 		assignment: request.assignment.trim(),
-		peerScope: request.scope,
-		peerTask: request.assignment.trim().slice(0, 160),
 		preparedSession,
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
+		peerScope: request.scope,
+		peerTask: request.assignment.trim().slice(0, 160),
 		// Task `name` is the spawn handle (id allocation). Eval `label` is a
 		// real UI description. Copy it only for eval so generateTaskLabel can run.
 		description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,

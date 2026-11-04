@@ -2238,8 +2238,6 @@ export const LABEL_MAX = 80;
 
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
-	/** Declared resource ownership; paths are relative to root. */
-	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
 	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
 	name?: string;
 	/** Agent type to run this item (e.g. "scout"). Defaults to the spawn policy's default agent. */
@@ -2259,6 +2257,8 @@ export interface TaskItem {
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
 	schemaMode?: "permissive" | "strict";
+	/** Declared resource ownership; paths are relative to root. */
+	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
 	/** Eval-defined tool names exposed to this child. */
 	tools?: string[];
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
@@ -2272,8 +2272,6 @@ export interface TaskItem {
  * transcripts using the flat form keep working under either setting.
  */
 export interface TaskParams {
-	/** Declared resource ownership; paths are relative to root. */
-	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
 	/** Stable agent name (flat form). */
 	name?: string;
 	/** Agent type to spawn (flat form); omitted values resolve from the session spawn policy. */
@@ -2295,6 +2293,8 @@ export interface TaskParams {
 	/** Validation behavior for a caller-provided or inherited output schema. */
 	schemaMode?: "permissive" | "strict";
 	/** Eval-defined tool names exposed to the flat-form child. */
+	/** Declared resource ownership; paths are relative to root. */
+	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
 	tools?: string[];
 	/** Batch form (`task.batch`): one subagent per item. */
 	tasks?: TaskItem[];
@@ -2479,7 +2479,6 @@ export interface AgentProgress {
 
 /** Result from a single agent execution */
 export interface SingleResult {
-	deconfliction?: unknown[];
 	index: number;
 	id: string;
 	agent: string;
@@ -2499,6 +2498,7 @@ export interface SingleResult {
 	 * selected an output schema or strict schema mode.
 	 */
 	structuredOutput?: StructuredSubagentOutput;
+	deconfliction?: unknown[];
 	durationMs: number;
 	/** Cumulative input + output + cacheWrite tokens across all turns. Excludes cacheRead (re-reads cached context every turn, making cumulative sum misleading). */
 	tokens: number;

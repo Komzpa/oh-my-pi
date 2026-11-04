@@ -287,10 +287,10 @@ function serveLifecycle(bridge: MainSessionBridge): RpcServe<AgentLifecycleManag
 function serveBus(bridge: MainSessionBridge): RpcServe<IrcBus, IrcBusProtocol> {
 	return {
 		send: (bus, msg) => bus.send(msg),
-		exchangeCursor: bus => bus.exchangeCursor(),
-		exchangedSince: (bus, from, to, sinceTs) => bus.exchangedSince(from, to, sinceTs),
 		sentSince: (bus, from, to, sinceTs) => bus.sentSince(from, to, sinceTs),
 		unansweredSends: (bus, from, sinceTs) => bus.unansweredSends(from, sinceTs),
+		exchangeCursor: bus => bus.exchangeCursor(),
+		exchangedSince: (bus, from, to, sinceTs) => bus.exchangedSince(from, to, sinceTs),
 		// A wait parked by a dead worker must not swallow the next message for its agent.
 		wait: (bus, agentId, filter, timeoutMs, signal, options) =>
 			bus.wait(
