@@ -39,7 +39,7 @@ export interface PeerReport {
 export interface AgentsProbe {
 	threadId(): Promise<string>;
 	/** Build a real session (mock model) and register it as `id` in the (remote) registry. */
-	open(id: string, options: { sessionFile?: string; gated?: boolean; persistedCwd?: string }): Promise<string>;
+	open(id: string, options: { sessionFile?: string; gated?: boolean }): Promise<string>;
 	/** Run a prompt on the local session to completion. */
 	prompt(id: string, text: string): Promise<void>;
 	/** Let gated model calls answer. */
@@ -66,6 +66,8 @@ export interface AgentsProbe {
 	disposed(key: string): Promise<boolean>;
 	/** Whether the worker's lifecycle proxy manages the worker's registry proxy. */
 	manages(): Promise<boolean>;
+	/** Open a persisted session so restart tests can read its checkpoint. */
+	open(id: string, options: { sessionFile?: string; gated?: boolean; persistedCwd: string }): Promise<string>;
 }
 
 /** Test-only boot globals of the probe service. */
@@ -124,7 +126,11 @@ function local(id: string): AgentSession {
 const probe: AgentsProbe = {
 	threadId: async () => threadName,
 	open: async (id, options) => {
-		const session = await makeSession(id, options.gated === true, options.persistedCwd);
+		const session = await makeSession(
+			id,
+			options.gated === true,
+			"persistedCwd" in options ? options.persistedCwd : undefined,
+		);
 		const registry = AgentRegistry.global();
 		registry.register({
 			id,
