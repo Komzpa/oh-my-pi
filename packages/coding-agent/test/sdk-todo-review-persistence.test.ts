@@ -52,6 +52,7 @@ test("real extension context persists customer review annotations through sessio
 		expect(
 			ctx.updateTodoSchedule!("Delivered UI", {
 				review: "user",
+				reviewPagePending: true,
 				reviewSummary: "Header controls changed",
 				firstDeliveredAt: 456,
 			}),
@@ -64,6 +65,7 @@ test("real extension context persists customer review annotations through sessio
 		expect(current[0].tasks[0].schedule).toEqual({
 			...phases[0].tasks[0].schedule,
 			review: "user",
+			reviewPagePending: true,
 			reviewSummary: "Header controls changed",
 			firstDeliveredAt: 456,
 			speculativeOn: "Delivered UI",
@@ -73,6 +75,13 @@ test("real extension context persists customer review annotations through sessio
 		manager.flushSync();
 		const reopened = await SessionManager.open(manager.getSessionFile()!);
 		expect(getLatestTodoPhasesFromEntries(reopened.getBranch())).toEqual(current);
+		expect(ctx.updateTodoSchedule!("Delivered UI", { reviewPagePending: undefined })).toBe(true);
+		await manager.ensureOnDisk();
+		manager.flushSync();
+		const ready = await SessionManager.open(manager.getSessionFile()!);
+		const restored = getLatestTodoPhasesFromEntries(ready.getBranch());
+		expect(restored[0].tasks[0].schedule?.reviewPagePending).toBeUndefined();
+		expect(restored[0].tasks[0].schedule?.review).toBe("user");
 	} finally {
 		await session.dispose();
 		authStorage.close();

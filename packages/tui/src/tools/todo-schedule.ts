@@ -10,7 +10,8 @@ export function isTodoAwaitingReview(task: { status: string; schedule?: TodoSche
 	return (
 		task.status !== "abandoned" &&
 		task.schedule?.review === "user" &&
-		(task.status === "completed" ||
+		(task.schedule.reviewPagePending === true ||
+			task.status === "completed" ||
 			task.schedule.visibleAt !== undefined ||
 			task.schedule.firstDeliveredAt !== undefined ||
 			!!task.schedule.reviewSummary?.trim() ||
@@ -66,6 +67,8 @@ export interface TodoSchedule {
 	reviewSummary?: string;
 	/** Published decision artifact, probed at the idle lead boundary. */
 	reviewPage?: string;
+	/** A refused handoff remains pending until its published row card resolves. */
+	reviewPagePending?: boolean;
 	/** Append-only durable attempts for this exact row. */
 	attemptHistory?: TodoReworkAttempt[];
 	/** User review state for a delivered implementation result. */
@@ -1812,7 +1815,7 @@ function displayTimestamp(value: number | undefined, now: number): string {
 
 export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, expanded = false): string {
 	if (isTodoAwaitingReview(row))
-		return row.schedule?.reviewPage
+		return row.schedule?.reviewPage && !row.schedule.reviewPagePending
 			? `awaiting your review → ${safeText(row.schedule.reviewPage)}`
 			: `handoff pending → skill://review-questions-page${row.schedule?.resources?.[0] ? ` · ${safeText(row.schedule.resources[0])}` : ""}`;
 	if (row.schedule?.review === "accepted" && row.status !== "completed" && row.status !== "abandoned")
