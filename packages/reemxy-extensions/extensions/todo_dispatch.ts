@@ -6199,6 +6199,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   });
 }
 
+const DEADLINE_REPLAN_GRACE_MS = 15 * 60_000;
 /** Uses the plan's canonical timing and exact live-owner observations at the idle boundary. */
 export function idleRedRowsRefusal(
   decision: DispatchDecision,
@@ -6220,7 +6221,19 @@ export function idleRedRowsRefusal(
     outcome: outcomes.get(row.content) ?? row.schedule?.executor?.outcome ?? "no live executor",
   }));
   const overdue = scoped.filter(row => row.overdue);
-  if (forecast?.deadlineStatus === "will-miss" || overdue.length) {
+  // The deadline-miss refusal belongs to an active user deadline only. Without one, an overdue row is
+  // an estimate problem: waiting on its live worker is correct, and an unstaffed started row is still
+  // caught by the red-row check below. With a deadline, live workers on every critical/overdue row and
+  // a re-plan within DEADLINE_REPLAN_GRACE_MS also allow waiting.
+  const deadlineActive = Boolean(decision.deadline) && !decision.deadline?.paused;
+  const deadlineCauses = scoped.filter(row => row.critical || row.overdue || (row.expectedResourceFinish ?? 0) > (forecast?.deadlineAt ?? Infinity));
+  // A re-plan is a revised estimate (revision 2+), not the row's original estimate.
+  const lastReplanAt = Math.max(0, ...deadlineCauses
+    .filter(row => (row.estimateRevision ?? 1) > 1)
+    .map(row => row.estimateUpdatedAt ?? 0));
+  const staffedAndReplanned = deadlineCauses.length > 0 && deadlineCauses.every(row => running.has(row.content)) &&
+    forecast !== null && forecast.now - lastReplanAt <= DEADLINE_REPLAN_GRACE_MS;
+  if (deadlineActive && !staffedAndReplanned && (forecast?.deadlineStatus === "will-miss" || overdue.length)) {
     const finish = forecast.expectedResourceFinish ?? Math.max(...scoped.map(row => row.expectedResourceFinish ?? 0));
     const late = Math.max(0, Math.ceil((finish - (forecast.deadlineAt ?? finish)) / 60_000), ...overdue.map(row => Math.ceil((forecast.now - (row.resourceFinish ?? forecast.now)) / 60_000)));
     const causes = scoped.filter(row => row.critical || overdue.includes(row) || (row.expectedResourceFinish ?? 0) > (forecast.deadlineAt ?? Infinity));
