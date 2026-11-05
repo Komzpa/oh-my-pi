@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Exhausted providers stay excluded when starting or resuming sessions, until their reset or cooldown expires.
+
 ### Added
 
 - Model selection skips unavailable providers without changing preferences; sessions wait for recovery, with shared probes and host-routable transition notices ([#16532](https://github.com/can1357/oh-my-pi/pull/16532) by [@Komzpa](https://github.com/Komzpa)).
