@@ -129,6 +129,7 @@ describe("path-pasted image source path (#12244)", () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		applyHyperlinkSetting("auto");
 		await session?.dispose();
 		session = undefined;
@@ -193,6 +194,23 @@ describe("path-pasted image source path (#12244)", () => {
 		);
 	});
 
+	it("rejects solid RGB PNG and JPEG clipboard images without saving attachments", async () => {
+		const rgb = encodeRawPng(new Uint8Array(8 * 8 * 3).fill(255), 8, 8, 3);
+		const jpeg = await new Bun.Image(rgb).jpeg().bytes();
+		for (const bytes of [rgb, jpeg]) {
+			const { editor, showStatus, sessionManager } = await pasteClipboardImage(bytes);
+			expect(editor.pendingImages).toHaveLength(0);
+			expect(showStatus).toHaveBeenCalledWith(
+				"Pasted image is empty (8×8, solid color #ffffff) — not attached. Copy the screenshot again.",
+			);
+			const savedPath = resolveLocalUrlToPath(
+				`local://pasted-image-${Bun.hash(bytes).toString(16)}.png`,
+				localOptions(sessionManager),
+			);
+			expect(await Bun.file(savedPath).exists()).toBe(false);
+		}
+	});
+
 	it("attaches a non-blank clipboard image with its original bytes", async () => {
 		const visible = encodeRawPng(new Uint8Array([255, 0, 0, 255, 0, 0, 255, 255]), 2, 1, 4);
 		const { editor, showStatus } = await pasteClipboardImage(visible);
@@ -203,6 +221,25 @@ describe("path-pasted image source path (#12244)", () => {
 			data: visible.toString("base64"),
 			mimeType: "image/png",
 		});
+		expect(showStatus).not.toHaveBeenCalled();
+	});
+
+	it("rejects a solid image when the encoder returns RGB scanlines", async () => {
+		const rgb = encodeRawPng(new Uint8Array(8 * 8 * 3).fill(255), 8, 8, 3);
+		// Bun currently emits RGBA here; exercise the alternative valid encoder layout.
+		vi.spyOn(Bun.Image.prototype, "bytes").mockResolvedValue(rgb);
+		const { editor, showStatus } = await pasteClipboardImage(rgb);
+		expect(editor.pendingImages).toHaveLength(0);
+		expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("solid color #ffffff"));
+	});
+
+	it("keeps RGB content when the last pixel differs", async () => {
+		const pixels = new Uint8Array(64 * 32 * 3).fill(255);
+		pixels[pixels.length - 1] = 0;
+		const visible = encodeRawPng(pixels, 64, 32, 3);
+		const { editor, showStatus } = await pasteClipboardImage(visible);
+		expect(editor.pendingImages).toHaveLength(1);
+		expect(editor.pendingImages[0]?.data).toBe(visible.toString("base64"));
 		expect(showStatus).not.toHaveBeenCalled();
 	});
 
