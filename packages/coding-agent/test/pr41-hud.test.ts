@@ -84,12 +84,12 @@ describe("pr41-hud", () => {
 		});
 		mode.setTodos([]);
 		await mode.init();
-		const width = 20;
+		const width = 30;
 		const rows = mode.renderRequirementHudSegment(() => [], width);
 		expect(rows.length).toBe(2);
 		for (const row of rows) expect(row).not.toContain("\n");
 		for (const row of rows) expect(visibleWidth(Bun.stripANSI(row))).toBeLessThanOrEqual(width);
-		expect(Bun.stripANSI(rows.join("\n"))).toContain("req 1");
+		expect(Bun.stripANSI(rows.join("\n"))).toContain("requirements 1");
 	});
 
 	it("exposes a native requirement summary even with no checklist rows", async () => {
@@ -111,8 +111,51 @@ describe("pr41-hud", () => {
 		expect(mode.describeTodoHud({ ...cx, supports: () => false })).toBeUndefined();
 		const summary = mode.describeRequirementHudSummary();
 		expect(summary).toBeDefined();
-		expect(JSON.stringify(summary)).toContain("req 1");
+		expect(JSON.stringify(summary)).toContain("requirements 1");
 		session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements: [] });
 		expect(mode.describeRequirementHudSummary()).toBeUndefined();
+	});
+	it("labels requirements separately from live DC TODO rows, once per header", async () => {
+		await replaceMode();
+		cfgTasksTodoClearDelay.override(session.settings, -1);
+		const phases = [
+			{
+				name: "Final handoff",
+				tasks: [
+					{ content: "Rack tiles fit panel height at 1568, no scrollbar", status: "in_progress" as const },
+					{ content: "Brag video: storyboard, capture, render", status: "blocked" as const },
+					{ content: "Final full gate and push of the branch", status: "completed" as const },
+					{ content: "Power switches restyled to MM skin", status: "abandoned" as const },
+				],
+			},
+		];
+		session.sessionManager.appendCustomEntry("requirements_ledger", {
+			version: 1,
+			requirements: [
+				{
+					id: "R1",
+					at: AT,
+					rawText: "Rack tiles fit panel height",
+					classification: "linked",
+					rows: [phases[0]!.tasks[0]!.content],
+				},
+			],
+		});
+		await mode.init();
+		mode.setTodos(phases);
+		const rendered = Bun.stripANSI(
+			mode
+				.renderRequirementHudSegment(
+					width => mode.todoContainer.children.flatMap(child => child.render(width)),
+					250,
+				)
+				.join("\n"),
+		);
+		expect(rendered).toContain("requirements 1: 0 passed · 1 open · 0 failed");
+		expect(rendered).toContain("rows 4: 1 done · 2 open · 1 dropped");
+		expect(rendered.match(/requirements 1:/g)).toHaveLength(1);
+		expect(rendered.match(/rows 4:/g)).toHaveLength(1);
+		session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements: [] });
+		expect(mode.renderRequirementHudSegment(() => ["base TODO rows"], 100)).toEqual(["base TODO rows"]);
 	});
 });

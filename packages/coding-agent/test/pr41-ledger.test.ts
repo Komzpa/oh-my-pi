@@ -188,7 +188,7 @@ describe("requirement publication visibility", () => {
 		};
 		const result = await fx.gate()?.(message as never, new AbortController().signal);
 		expect(result).toBeUndefined();
-		expect(fx.statuses.at(-1)).toBe("audit 1/1 open");
+		expect(fx.statuses.at(-1)).toBe("requirement audits: 1 of 1 need verification");
 		expect(message.content).toEqual([{ type: "text", text: "Login repair is committed; deployment is pending." }]);
 	});
 
