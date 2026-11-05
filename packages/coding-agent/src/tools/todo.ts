@@ -477,6 +477,7 @@ function replayTodoEdit(
 	)
 		return undefined;
 	const current = phases ? (options.mutable ? phases : copyTodoData(phases)) : [];
+	healStoredSelfEdges(current);
 	if (edit.kind === "executor") {
 		const updated = applyTodoExecutorObservation(current, {
 			...edit.observation,
@@ -2058,7 +2059,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 				op,
 				storage,
 				forecastAt: now,
-				...(!healedRows.length ? (archiveEdit ? { edit: archiveEdit } : operation ? { edit: operation } : {}) : {}),
+				...(archiveEdit ? { edit: archiveEdit } : operation ? { edit: operation } : {}),
 			} as TodoToolDetails,
 			effective,
 			forecast,

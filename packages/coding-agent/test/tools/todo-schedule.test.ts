@@ -737,6 +737,11 @@ describe("live schedule admission", () => {
 			.find(t => t.content === "Facility 2D: too much empty space around site")!;
 		expect(row.schedule?.speculativeOn).toBe("Land crash and Guide fixes on PR #109, push");
 		expect(row.schedule?.owner).toBe("BuildingSquare-2");
+		const restored = getLatestTodoPhasesFromEntries([
+			{ type: "custom", customType: "user_todo_edit", data: { phases: selfEdgeReplay.phases } },
+			{ type: "message", message: { role: "toolResult", toolName: "todo", ...JSON.parse(JSON.stringify(result)) } },
+		] as SessionEntry[]);
+		expect(restored).toEqual(h.phases());
 		const next = await h.tool.execute("view-after-heal", { op: "view" });
 		expect(
 			next.content
