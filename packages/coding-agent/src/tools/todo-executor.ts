@@ -1,5 +1,9 @@
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import type { TodoReworkAttempt, TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import {
+	todoEstimateMeanSeconds,
+	type TodoReworkAttempt,
+	type TodoSchedule,
+} from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { stripOmpCollisionSuffixChain } from "../task/id-collision";
 
 export interface TodoExecutorObservation {
@@ -139,6 +143,9 @@ export function applyTodoExecutorObservation(
 		owner === undefined || owner === observation.workerId || !(observation.runningWorkerIds?.has(owner) ?? false);
 	const nextSchedule = {
 		...target.schedule,
+		...(target.schedule?.riskEstimateMeanSeconds === undefined && target.schedule?.estimate
+			? { riskEstimateMeanSeconds: todoEstimateMeanSeconds(target.schedule.estimate) }
+			: {}),
 		...(shouldSetOwner ? { owner: observation.workerId } : {}),
 		executor,
 	};
