@@ -294,7 +294,7 @@ describe("bash session infrastructure default denies", () => {
 	it("retains group pipe input until a command consumes it", () => {
 		for (const command of [
 			"printf 'killall plasmashell\\n' | (true; sh)",
-			"printf 'killall plasmashell\\n' | ((true; sh))",
+			"printf 'killall plasmashell\\n' | ( (true; sh) )",
 			"printf 'killall plasmashell\\n' | (cat </dev/null; sh)",
 		]) {
 			expect(bashTool().approval({ command })).toMatchObject({ policy: "deny" });
