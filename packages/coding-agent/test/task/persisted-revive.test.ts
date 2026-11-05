@@ -1401,35 +1401,6 @@ describe("persisted subagent revival", () => {
 		).toBe(Effort.High);
 	});
 
-	it("re-applies task.agentMaxEffort to a scout on a non-Claude model on cold revival", async () => {
-		const cwd = makeTempDir("@pi-agent-max-effort-revive-");
-		const sessionFile = await createPersistedSession(cwd, false, "default", undefined, {
-			agent: "scout",
-			resolvedModel: "openai-codex/gpt-5.6-sol",
-		});
-		const claude = getBundledModel("openai-codex", "gpt-5.6-sol");
-		if (!claude) throw new Error("Expected bundled gpt-5.6-sol");
-		let capturedOptions: CreateAgentSessionOptions | undefined;
-		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
-			capturedOptions = options;
-			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
-		});
-
-		const ref = createRef(sessionFile);
-		const modelRegistry = { authStorage: {}, getAvailable: () => [claude] } as unknown as ModelRegistry;
-		const reviver = await createFactory(cwd, undefined, { modelRegistry })(ref);
-		if (!reviver) throw new Error("Expected a persisted reviver");
-		await reviver(ref);
-		expect(capturedOptions?.modelPattern).toBe("openai-codex/gpt-5.6-sol");
-		expect(capturedOptions?.modelPatternAuthFallback).toBe("openai-codex/gpt-5.6-sol");
-
-		expect(
-			typeof capturedOptions?.thinkingLevelCeiling === "function"
-				? capturedOptions.thinkingLevelCeiling(claude)
-				: capturedOptions?.thinkingLevelCeiling,
-		).toBe(Effort.Low);
-	});
-
 	it.each([
 		["coder", "anthropic", "claude-opus-4-6", Effort.High],
 		["scout", "openai-codex", "gpt-5.6-sol", Effort.Low],

@@ -227,9 +227,13 @@ export class ModelControls {
 
 	/** Hard per-session effort ceiling every thinking-level change is clamped to. */
 	get thinkingLevelCeiling(): Effort | undefined {
-		const ceiling = this.getThinkingLevelCeiling();
-		if (this.#model && ceiling && !modelSupportsEffortCeiling(this.#model, ceiling)) {
-			throw new Error(`Model ${this.#model.provider}/${this.#model.id} cannot honor effort ceiling ${ceiling}`);
+		return this.#validateThinkingLevelCeiling(this.#model);
+	}
+
+	#validateThinkingLevelCeiling(model: Model | undefined): Effort | undefined {
+		const ceiling = this.getThinkingLevelCeiling(model);
+		if (model && ceiling && !modelSupportsEffortCeiling(model, ceiling)) {
+			throw new Error(`Model ${model.provider}/${model.id} cannot honor effort ceiling ${ceiling}`);
 		}
 		return ceiling;
 	}
@@ -335,6 +339,7 @@ export class ModelControls {
 		}
 
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
+		this.#validateThinkingLevelCeiling(targetModel);
 
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
 		this.#host.clearActiveRetryFallback();
@@ -381,6 +386,7 @@ export class ModelControls {
 		}
 
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
+		this.#validateThinkingLevelCeiling(targetModel);
 
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
 		this.#host.clearActiveRetryFallback();
@@ -503,6 +509,9 @@ export class ModelControls {
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
 
+		// Reject an incompatible ceiling before changing the model or transcript.
+		this.#validateThinkingLevelCeiling(next.model);
+
 		// Apply model
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(next.model));
 		this.#host.clearActiveRetryFallback();
@@ -535,6 +544,7 @@ export class ModelControls {
 			throw new Error(`No API key for ${nextModel.provider}/${nextModel.id}`);
 		}
 
+		this.#validateThinkingLevelCeiling(nextModel);
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(nextModel));
 		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(nextModel);

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { Model } from "@oh-my-pi/pi-catalog/types";
@@ -79,4 +79,43 @@ describe("task effort policy on the effective model", () => {
 				),
 		).toThrow(/cannot honor effort ceiling low/);
 	});
+	it.each(["persistent", "temporary"])(
+		"rejects a %s incompatible switch without changing the working session",
+		async mode => {
+			const original = requiredModel("openai-codex", "gpt-5.6-sol");
+			const mini = requiredModel("azure", "gpt-5.1-codex-mini");
+			let active = original;
+			const appendModelChange = vi.fn();
+			const reset = vi.fn(async (model: Model) => {
+				active = model;
+			});
+			const controls = new ModelControls(
+				{
+					model: () => active,
+					agent: { setThinkingLevel: () => {}, setDisableReasoning: () => {} },
+					clearInheritedProviderPromptCacheKey: () => {},
+					sessionManager: { appendThinkingLevelChange: () => {}, appendModelChange },
+					emit: () => {},
+					resolveActiveEditMode: () => undefined,
+					modelRegistry: {
+						hasConfiguredAuth: () => true,
+						clearSuppressedSelector: () => {},
+						refreshSelectedModelMetadata: async () => mini,
+					},
+					setModelWithProviderSessionReset: reset,
+					clearActiveRetryFallback: () => {},
+					settings: { getStorage: () => undefined },
+				} as unknown as ModelControlsHost,
+				{ thinkingLevel: Effort.Low, thinkingLevelCeiling: Effort.Low },
+			);
+			await expect(
+				mode === "persistent" ? controls.setModel(mini) : controls.setModelTemporary(mini),
+			).rejects.toThrow(/cannot honor effort ceiling low/);
+			expect(active).toBe(original);
+			expect(reset).not.toHaveBeenCalled();
+			expect(appendModelChange).not.toHaveBeenCalled();
+			controls.setThinkingLevel(Effort.Max);
+			expect(controls.thinkingLevel).toBe(Effort.Low);
+		},
+	);
 });
