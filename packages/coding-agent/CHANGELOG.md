@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Exhausted providers stay excluded when starting or resuming sessions, until their reset or cooldown expires.
+- Exhausted providers stay excluded in sessions, benchmarks, per-call workers and the auth gateway until their reset or cooldown expires.
 
 ### Added
 
