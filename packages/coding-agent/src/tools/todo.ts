@@ -1854,7 +1854,6 @@ function attachLiveTodoDetails(
 // =============================================================================
 
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
-	#validatingReviewClosure = false;
 	readonly name = "todo";
 	readonly approval = "read" as const;
 	readonly label = "Todo";
@@ -1866,6 +1865,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	// Raw args reach execute() on schema failure; resolveTodoParams re-validates
 	// and repairs the one recoverable shape (missing `op`, unambiguous payload).
 	readonly lenientArgValidation = true;
+	#validatingReviewClosure = false;
 
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
