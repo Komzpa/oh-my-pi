@@ -1,4 +1,6 @@
 import { beforeAll, expect, it } from "bun:test";
+import { StatusLineComponent } from "../src/status-line/component";
+import type { StatusLineHost, StatusLineSession } from "../src/status-line/host";
 import { describeSegment, renderSegment, type SegmentContext } from "../src/status-line/segments";
 import { initTheme } from "../src/theme";
 
@@ -51,16 +53,16 @@ function createContext(overrides: Partial<SegmentContext> = {}): SegmentContext 
 	};
 }
 
-// Session 01a1921c: the first-task title remained after work reached Final handoff.
+// The first-task title must not remain after work reaches the final phase.
 it("renders the current phase and follows goal changes in ANSI and native status", () => {
 	let phase = "Final handoff";
 	let objective = "All open rows done";
 	let active = true;
 	const ctx = createContext({
 		session: {
-			sessionManager: { getSessionName: () => "DC: Create datacenter work branch" },
+			sessionManager: { getSessionName: () => "Create feature branch" },
 			getTodoPhases: () => [{ name: phase, tasks: [{ status: active ? "in_progress" : "completed" }] }],
-			getGoalModeState: () => ({ goal: { status: "active", objective } }),
+			getGoalModeState: () => ({ goal: { status: "active", objective, tokensUsed: 0 } }),
 		} as unknown as SegmentContext["session"],
 	});
 	const shown = () => Bun.stripANSI(renderSegment("session_name", ctx).content);
@@ -77,5 +79,81 @@ it("renders the current phase and follows goal changes in ANSI and native status
 	objective = "Publish the review page";
 	expect(shown()).toBe("Publish the review page");
 	ctx.session.getGoalModeState = () => undefined;
-	expect(shown()).toBe("DC: Create datacenter work branch");
+	expect(shown()).toBe("Create feature branch");
+});
+
+it("falls through an empty active phase to the goal and saved session title", () => {
+	const ctx = createContext({
+		session: {
+			sessionManager: { getSessionName: () => "Saved session" },
+			getTodoPhases: () => [{ name: " \t", tasks: [{ status: "in_progress" }] }],
+			getGoalModeState: () => ({ goal: { status: "active", objective: "Current goal" } }),
+		} as unknown as SegmentContext["session"],
+	});
+	expect(Bun.stripANSI(renderSegment("session_name", ctx).content)).toBe("Current goal");
+	expect(
+		describeSegment("session_name", ctx)
+			?.spans.map(part => part.t)
+			.join(""),
+	).toBe("Current goal");
+	ctx.session.getGoalModeState = () => undefined;
+	expect(Bun.stripANSI(renderSegment("session_name", ctx).content)).toBe("Saved session");
+});
+
+it("invalidates the ANSI component cache and refreshes native preview titles as work changes", () => {
+	let phase = "Implementation";
+	let active = true;
+	let objective = "Ship feature";
+	const session: StatusLineSession = {
+		state: { messages: [] },
+		isStreaming: false,
+		isAutoThinking: false,
+		sessionManager: {
+			getSessionName: () => "Saved title",
+			getSessionId: () => "",
+			getUsageStatistics: () => createContext().usageStats,
+		},
+		modelRegistry: { isUsingOAuth: () => false },
+		getContextUsage: () => undefined,
+		autoResolvedThinkingLevel: () => undefined,
+		isFastModeActive: () => false,
+		getAsyncJobSnapshot: () => null,
+		getTodoPhases: () => [{ name: phase, tasks: [{ status: active ? "in_progress" : "completed" }] }],
+		getGoalModeState: () => ({ goal: { status: "active", objective, tokensUsed: 0 } }),
+	};
+	const host: StatusLineHost = {
+		getSettings: () => ({ preset: "custom", leftSegments: ["session_name"], rightSegments: [] }),
+		gitEnabled: () => false,
+		codexResetFireworksEnabled: () => false,
+		getSettingsRevision: () => 0,
+		getSessionSettingsIdentity: () => undefined,
+		getSessionSettingsRevision: () => 0,
+		goalStatusInFooter: () => false,
+		activeAccount: () => undefined,
+		canFetchUsageReports: () => false,
+		fetchUsageReports: async () => null,
+		resolveActiveRepo: () => null,
+		lookupPullRequest: async () => ({ stdout: "", exitCode: 1 }),
+		calculateTokensPerSecond: () => null,
+		limitMatchesActiveAccount: () => false,
+		computeCompactionBoundaries: () => null,
+	};
+	const component = new StatusLineComponent(session, host);
+	try {
+		const checkTitle = (title: string) => {
+			expect(Bun.stripANSI(component.renderBottomBar(160, "full"))).toContain(title);
+			expect(JSON.stringify(component.describePreview())).toContain(title);
+			// Composer facts omit the session title: the native pane owns that display.
+			expect(JSON.stringify(component.describeComposerFacts().extras)).not.toContain(title);
+		};
+		checkTitle("Implementation");
+		phase = "Verification";
+		checkTitle("Verification");
+		active = false;
+		checkTitle("Ship feature");
+		objective = "Publish feature";
+		checkTitle("Publish feature");
+	} finally {
+		component.dispose();
+	}
 });
