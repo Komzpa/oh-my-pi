@@ -683,3 +683,28 @@ it("persists and clears the row review artifact through schedule replay", async 
 	});
 	expect(harness.phases()[0].tasks[1].schedule?.reviewPage).toBeUndefined();
 });
+
+it("accepts the live previewReason-only schedule but rejects a truly empty schedule", async () => {
+	const harness = createHarness(initialPlan);
+	const before = structuredClone(harness.phases());
+	const input = {
+		op: "schedule" as const,
+		i: "Deferring preview refresh until push",
+		previewReason: {
+			task: "Land power and e2e repair patches, gates, push again",
+			kind: "deferred" as const,
+			detail:
+				"Review checkout fast-forwards to the pushed SHA after CI PID 647137 and rack fix land; preview refresh happens once then.",
+		},
+		updates: [],
+	};
+	const result = await harness.tool.execute("live-preview-defer", input);
+	expect(result.isError).not.toBe(true);
+	expect(result.details?.op).toBe("schedule");
+	expect(harness.phases()).toEqual(before);
+	const empty = await harness.tool.execute("empty-schedule", { op: "schedule", updates: [] });
+	expect(empty.isError).toBe(true);
+	expect(empty.content).toContainEqual(
+		expect.objectContaining({ text: expect.stringContaining("schedule requires a non-empty updates array") }),
+	);
+});
