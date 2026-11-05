@@ -4,7 +4,7 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -145,17 +145,7 @@ describe("pr41-hud", () => {
 		mode.setTodos(phases);
 		const rendered = Bun.stripANSI(
 			mode
-				.renderRequirementHudSegment(
-					width =>
-						mode.todoContainer.children.flatMap(child =>
-							child
-								.render(width)
-								.map(line =>
-									Bun.stripANSI(line).trim().startsWith("TODO") ? `${line} 1 ✓ · 2 open · 1 ×` : line,
-								),
-						),
-					250,
-				)
+				.renderRequirementHudSegment(() => [theme.bold(theme.fg("accent", "TODO")) + " 1 ✓ · 2 open · 1 ×"], 250)
 				.join("\n"),
 		);
 		expect(rendered).toContain("requirements 1: 0 passed · 1 open · 0 failed");
