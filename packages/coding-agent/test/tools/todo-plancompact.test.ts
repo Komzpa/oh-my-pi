@@ -123,7 +123,12 @@ describe("DC plan compaction", () => {
 		const closed = await tool.execute("close", { op: "done", task: open(live)[0]!.content });
 		expect(closed.isError).not.toBe(true);
 		expect(closed.details?.edit?.kind).toBe("archive");
-		persist(closed.details?.edit);
+		const legacyArchive = structuredClone(closed.details?.edit);
+		if (legacyArchive?.kind !== "archive") throw new Error("Expected compaction event");
+		// Older archivers hid completed deliveries before their user review was accepted.
+		const delivery = legacyArchive.archivedPhases[0]!.tasks[0]!;
+		delivery.schedule = { ...delivery.schedule, review: "user" };
+		persist(legacyArchive);
 		expect(closed.content[0]).toMatchObject({ text: expect.stringContaining("closed rows archived (done ") });
 		expect(getLatestTodoPhasesFromEntries(entries)).toEqual(live);
 		const archived = getLatestTodoArchiveFromEntries(entries).flatMap(phase => phase.tasks)[0]!;
@@ -133,6 +138,7 @@ describe("DC plan compaction", () => {
 		expect(ordinary.content[0]).toMatchObject({
 			text: expect.stringContaining(`Overall: ${closedCount}/${total} done`),
 		});
+		expect(archived.schedule?.review).toBe("user");
 		const found = await tool.execute("get", { op: "view", task: archived.content });
 		expect(found.content[0]).toMatchObject({ text: expect.stringContaining(archived.content) });
 		const accepted = await tool.execute("accept", {
