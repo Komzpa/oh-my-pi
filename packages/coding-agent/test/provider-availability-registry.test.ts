@@ -6,8 +6,10 @@ import {
 	findInitialModel,
 	restoreModelFromSession,
 	resolveCliModel,
+	resolveSessionModelSelector,
 	resolveModelOverride,
 } from "../src/config/model-resolver";
+import { resolveSharpshooterModel } from "../src/sharpshooter/extract";
 import { Settings } from "../src/config/settings";
 import { validateRetryFallbackChains } from "../src/session/retry-fallback-chains";
 import { AuthStorage } from "../src/session/auth-storage";
@@ -65,6 +67,13 @@ describe("registry provider availability", () => {
 			).model,
 		).toBeUndefined();
 		expect((await restoreModelFromSession("openai", model.id, model, false, registry)).model).toBeUndefined();
+		expect(resolveSessionModelSelector(registry, "openai/gpt-5-mini")).toBeUndefined();
+		expect(
+			await resolveSharpshooterModel(
+				Settings.isolated({ "sharpshooter.model": "openai/gpt-5-mini", modelRoles: { smol: "openai/gpt-5-mini" } }),
+				registry,
+			),
+		).toBeUndefined();
 		blocked.mockReturnValue(false);
 		expect(resolveCliModel({ cliModel: "@auditor", modelRegistry: registry, settings }).model?.id).toBe(model.id);
 		expect(

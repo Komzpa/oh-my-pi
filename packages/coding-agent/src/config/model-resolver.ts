@@ -1787,7 +1787,7 @@ export function resolveSessionModelSelector(
 	const parsed = parseSessionModelSelector(modelRegistry, selector);
 	if (!parsed) return undefined;
 	const model = modelRegistry.find(parsed.provider, parsed.id);
-	if (!model || !modelRegistry.hasConfiguredAuth(model)) return undefined;
+	if (!model || isProviderExhausted(model.provider) || !modelRegistry.hasConfiguredAuth(model)) return undefined;
 	return { model, thinkingLevel: parsed.thinkingLevel };
 }
 
