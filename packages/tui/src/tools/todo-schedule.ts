@@ -216,9 +216,11 @@ export type TodoPlanningIssueCode =
 	| "missing-estimate"
 	| "missing-dependencies"
 	| "task-too-large"
-	| "blocked-without-reason";
+	| "blocked-without-reason"
+	| "owner-overlap";
 
 const PLANNING_ACTION_LABELS: Record<TodoPlanningIssueCode, string> = {
+	"owner-overlap": "schedule shared worker sequentially",
 	"missing-estimate": "estimate remaining effort",
 	"missing-dependencies": "clarify prerequisites",
 	"task-too-large": "decompose to at most one hour",
@@ -644,7 +646,25 @@ function analyzeDependencies(
 
 /** Validate exact task references for atomic schedule admission; all open tasks need explicit deps. */
 export function validateTodoDependencies(phases: TodoScheduleInput): TodoDependencyIssue[] {
-	return analyzeDependencies(phases).issues;
+	// Speculation relaxes execution readiness, never graph integrity. Validate its
+	// reference as an edge even when the referenced row awaits user review.
+	return analyzeDependencies(
+		phases.map(phase => ({
+			...phase,
+			tasks: phase.tasks.map(task => ({
+				...task,
+				schedule: task.schedule
+					? {
+							...task.schedule,
+							speculativeOn: undefined,
+							dependencies: task.schedule.speculativeOn
+								? [...new Set([...(task.schedule.dependencies ?? []), task.schedule.speculativeOn])]
+								: task.schedule.dependencies,
+						}
+					: undefined,
+			})),
+		})),
+	).issues;
 }
 
 /** Display order shares the validator's graph; unknown/cyclic rows are retained, never dropped. */
@@ -689,6 +709,39 @@ function collectTodoPlanningIssues(phases: TodoScheduleInput, analysis: Dependen
 		analysis.issues.filter(issue => issue.code === "dependencies-unknown").map(issue => issue.task),
 	);
 	const issues: TodoPlanningIssue[] = [];
+	const open = analysis.nodes.filter(node => !isClosed(node.status));
+	const precedes = (first: PlanNode, second: PlanNode): boolean => {
+		const seen = new Set<PlanNode>();
+		const pending = [...second.predecessors];
+		while (pending.length) {
+			const node = pending.pop()!;
+			if (node === first) return true;
+			if (seen.has(node)) continue;
+			seen.add(node);
+			pending.push(...node.predecessors);
+		}
+		return false;
+	};
+	for (let i = 0; i < open.length; i++) {
+		for (const other of open.slice(i + 1)) {
+			const node = open[i]!;
+			const owner = node.schedule?.owner;
+			if (
+				typeof owner !== "string" ||
+				!owner ||
+				["main", "root"].includes(owner.toLowerCase()) ||
+				owner !== other.schedule?.owner ||
+				precedes(node, other) ||
+				precedes(other, node)
+			)
+				continue;
+			issues.push({
+				task: other.content,
+				code: "owner-overlap",
+				message: `Worker ${owner} owns two open rows without a sequential dependency: ${node.content}; ${other.content}. Schedule the second after the first or assign another worker.`,
+			});
+		}
+	}
 	for (const phase of phases) {
 		for (const task of phase.tasks) {
 			if (isClosed(task.status)) continue;
@@ -1487,10 +1540,10 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 		const end = row.schedule.visibleAt ?? now;
 		parts.push(
 			row.schedule.previewIdentityMissing
-				? "asked→visible ?m (no commit recorded)"
+				? "asked→visible: no commit"
 				: `asked→visible ${Math.floor(Math.max(0, end - row.schedule.firstRequirementAt) / 60_000)}m${row.schedule.visibleAt === undefined ? " (live)" : ""}`,
 		);
-		if (row.schedule.previewPending)
+		if (row.schedule.previewPending && !row.schedule.previewIdentityMissing)
 			parts.push(
 				row.schedule.previewPartial
 					? "partially visible"
@@ -1613,10 +1666,10 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 		const end = row.schedule.visibleAt ?? now;
 		parts.push(
 			row.schedule.previewIdentityMissing
-				? "asked→visible ?m (no commit recorded)"
+				? "asked→visible: no commit"
 				: `asked→visible ${Math.floor(Math.max(0, end - row.schedule.firstRequirementAt) / 60_000)}m${row.schedule.visibleAt === undefined ? " (live)" : ""}`,
 		);
-		if (row.schedule.previewPending)
+		if (row.schedule.previewPending && !row.schedule.previewIdentityMissing)
 			parts.push(
 				row.schedule.previewPartial
 					? "partially visible"

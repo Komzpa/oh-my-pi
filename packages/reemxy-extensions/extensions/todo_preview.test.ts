@@ -273,7 +273,7 @@ test("no identity has no measured delay and partial visibility remains a plan pr
 	row.schedule!.executor!.gitCommits = [];
 	Object.assign(row.schedule!, { previewTracked: true, previewPending: true, previewIdentityMissing: true });
 	const forecast = forecastTodoPlan(phases, { now: asked + 30 * 60_000 }).rows[0]!;
-	expect(formatTaskForecastDisplay(forecast, asked + 30 * 60_000)).toContain("asked→visible ?m (no commit recorded)");
+	expect(formatTaskForecastDisplay(forecast, asked + 30 * 60_000)).toContain("asked→visible: no commit");
 	const overdue = overduePreviewRows(phases, [], config, asked + 30 * 60_000);
 	expect(previewDispatchRefusal({ tasks: [{ agent: "gate-runner", task: row.content }] }, overdue)).toBeUndefined();
 	expect(previewPlanProblem(overdue)).toContain("no commit identity");
@@ -296,13 +296,13 @@ test("invisible rows accept maintenance; explicit gate assignment accepts its do
 		expect(previewScheduleRefusal({ op: "schedule", updates: [update] }, phases, records, profiles)).toBeUndefined();
 	const input = { op: "schedule", updates: [{ task, owner: "Gate" }] };
 	expect(previewScheduleRefusal(input, phases, records, profiles)).toContain("previewReason={task:");
-	const previewReason = { task, kind: "deferred", detail: "Preview unavailable until landing" };
+	const previewReason = { task, kind: "deferred", deferUntil: Date.now() + 60_000, detail: "Preview unavailable until landing" };
 	expect(previewScheduleRefusal({ ...input, previewReason }, phases, records, profiles)).toBeUndefined();
 	expect(
 		previewScheduleRefusal(
 			input,
 			phases,
-			records.map(record => ({ ...record, reason: { kind: "deferred" as const, detail: "Deferred" } })),
+			records.map(record => ({ ...record, reason: { kind: "deferred" as const, deferUntil: Date.now() + 60_000, detail: "Deferred" } })),
 			profiles,
 		),
 	).toBeUndefined();

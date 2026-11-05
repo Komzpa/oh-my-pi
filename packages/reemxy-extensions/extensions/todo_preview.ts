@@ -11,6 +11,7 @@ export interface PreviewConfig {
 export interface PreviewReason {
 	kind: "deferred" | "not-applicable" | "external-blocker";
 	detail: string;
+	deferUntil?: number;
 }
 export interface PreviewRecord {
 	task: string;
@@ -87,8 +88,9 @@ export async function refreshPreviewVisibility(
 			? landed
 			: [
 					...previewCommits(row),
-					...records.filter(record => record.task === row.content).map(record => record.commit),
+					...records.filter(record => record.task === row.content && COMMIT.test(record.commit)).map(record => record.commit),
 				];
+		if (commits.length) next = next.filter(record => record.task !== row.content || record.commit !== "");
 		if (landed.length) next = next.filter(record => record.task !== row.content || landed.includes(record.commit));
 		for (const commit of new Set(commits)) {
 			let index = next.findIndex(record => record.task === row.content && record.commit === commit);
@@ -128,10 +130,13 @@ export function overduePreviewRows(
 	return phases
 		.flatMap(phase => phase.tasks)
 		.filter(row => {
-			const asked = row.schedule?.firstRequirementAt;
+			const asked = row.schedule?.firstRequirementAt ?? row.schedule?.startedAt;
 			if (asked === undefined || now - asked < Math.max(0, config.thresholdMinutes) * 60_000) return false;
 			const observed = records.filter(record => record.task === row.content);
-			return observed.length === 0 || observed.some(record => record.visibleAt === undefined && !record.reason);
+			const deferred = (record: PreviewRecord) => record.reason?.kind === "deferred" &&
+				typeof record.reason.deferUntil === "number" && record.reason.deferUntil > now;
+			return observed.length === 0 || observed.some(record => record.visibleAt === undefined &&
+				!(record.reason?.kind === "not-applicable" || record.reason?.kind === "external-blocker" || deferred(record)));
 		});
 }
 
@@ -219,7 +224,7 @@ export function previewPlanProblem(rows: TodoScheduleInputTask[]): string | unde
 }
 
 export function previewReason(input: unknown): { task: string; reason: PreviewReason } | undefined {
-	const value = (input as { previewReason?: { task?: unknown; kind?: unknown; detail?: unknown } })?.previewReason;
+	const value = (input as { previewReason?: { task?: unknown; kind?: unknown; detail?: unknown; deferUntil?: unknown } })?.previewReason;
 	if (
 		!value ||
 		typeof value.task !== "string" ||
@@ -228,5 +233,5 @@ export function previewReason(input: unknown): { task: string; reason: PreviewRe
 		!["deferred", "not-applicable", "external-blocker"].includes(String(value.kind))
 	)
 		return;
-	return { task: value.task, reason: { kind: value.kind as PreviewReason["kind"], detail: value.detail.trim() } };
+	return { task: value.task, reason: { kind: value.kind as PreviewReason["kind"], detail: value.detail.trim(), ...(typeof value.deferUntil === "number" && Number.isFinite(value.deferUntil) ? { deferUntil: value.deferUntil } : {}) } };
 }
