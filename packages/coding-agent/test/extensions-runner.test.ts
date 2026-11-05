@@ -249,7 +249,8 @@ describe("ExtensionRunner", () => {
 			getSessionFile: () => null,
 		};
 		const extensionPath = path.join(extensionsDir, "agent-message.ts");
-		const extension: Extension = {
+		// Asserted: optional registries added by other topics (e.g. transcriptPresenters) stay empty here.
+		const extension = {
 			path: extensionPath,
 			resolvedPath: extensionPath,
 			handlers: new Map([
@@ -275,7 +276,7 @@ describe("ExtensionRunner", () => {
 			commands: new Map(),
 			flags: new Map(),
 			shortcuts: new Map(),
-		};
+		} as Extension;
 		const runner = new ExtensionRunner(
 			[extension],
 			new ExtensionRuntime(),
