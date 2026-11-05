@@ -91,6 +91,38 @@ describe("YieldTool terminal result latch", () => {
 		expect(result.details).toMatchObject({ status: "success", data: "fresh" });
 	});
 
+	it("settles forced-final sibling sections after a delayed rejected wrapper without cyclic waits", async () => {
+		const tool = new YieldTool(createSession());
+		const rejectEarlier = tool.deferResultAcceptance("earlier");
+		await expect(tool.execute("earlier", { data: "invalid", error: "conflict" })).rejects.toThrow();
+		tool.setFinalResultForced(true);
+		const signal = AbortSignal.timeout(1_000);
+		const runSection = async (id: string) => {
+			const settle = tool.deferResultAcceptance(id);
+			try {
+				const result = await tool.execute(id, { type: ["notes"], data: id }, signal);
+				settle(result);
+				return result;
+			} catch (error) {
+				settle();
+				throw error;
+			}
+		};
+		const first = runSection("first");
+		const second = runSection("second");
+		rejectEarlier();
+		const results = await Promise.allSettled([first, second]);
+		expect(results.filter(result => result.status === "fulfilled")).toHaveLength(1);
+		expect(results.filter(result => result.status === "rejected")).toHaveLength(1);
+		const accepted = results.find(result => result.status === "fulfilled");
+		expect(accepted?.status === "fulfilled" ? accepted.value.details : undefined).toMatchObject({
+			status: "success",
+			type: ["notes"],
+			complete: true,
+			data: "first",
+		});
+	});
+
 	it("accepts only one of two concurrent sibling terminal yields", async () => {
 		const tool = new YieldTool(createSession());
 		const results = await Promise.allSettled([

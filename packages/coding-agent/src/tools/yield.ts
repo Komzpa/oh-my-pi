@@ -850,7 +850,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		const isIncremental = Array.isArray(yieldType) && yieldType.length > 0;
 
 		const deferred = this.#deferredAcceptances.get(toolCallId);
-		if (deferred) deferred.incremental = isIncremental && errorMessage === undefined;
+		if (deferred) deferred.incremental = isIncremental && errorMessage === undefined && !this.#finalResultForced;
 		// Drain sections admitted while a previous result extension was pending too.
 		// Later terminal calls remain excluded so sibling closes cannot wait on each other.
 		if (workPoolItems.length === 0 && (!isIncremental || errorMessage !== undefined || this.#finalResultForced)) {
