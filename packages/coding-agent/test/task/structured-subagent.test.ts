@@ -147,30 +147,6 @@ afterEach(() => {
 });
 
 describe("structured subagent primitive", () => {
-	it("uses the spawn identity seed during role pool preflight", async () => {
-		mockDiscovery({ ...AGENT, model: ["@pool"] });
-		const settings = Settings.isolated({
-			modelRoles: { pool: "pool/a, pool/b, pool/c" },
-			modelRolePools: { pool: { "pool/a": 0, "pool/b": 1, "pool/c": 1 } },
-		});
-		const expected = resolveAgentModelSelection({
-			agentModel: "@pool",
-			settings,
-			seed: "pool-spawn|call|3|123",
-		}).patterns;
-		const policy = await resolveEffectiveSubagentPolicy(
-			request({
-				session: session({ settings }),
-				identity: { id: "pool-spawn" },
-				parentToolCallId: "call",
-				index: 3,
-				invokedAt: 123,
-			}),
-		);
-		expect(policy.modelOverride).toEqual(expected);
-		expect(policy.modelOverride?.at(-1)).toBe("pool/a");
-	});
-
 	it("resolves user-tagged model agents for task and eval but rejects untagged names", async () => {
 		mockDiscovery();
 		const taggedSession = session();
@@ -1812,5 +1788,31 @@ describe("per-call model preflight", () => {
 			expect(policy.modelOverride).toEqual(["mock/target"]);
 			expect(policy.perCallModelGrants?.agentName).toBe("seance");
 		});
+	});
+});
+
+describe("role pool spawn preflight", () => {
+	it("uses the spawn identity seed during role pool preflight", async () => {
+		mockDiscovery({ ...AGENT, model: ["@pool"] });
+		const settings = Settings.isolated({
+			modelRoles: { pool: "pool/a, pool/b, pool/c" },
+			modelRolePools: { pool: { "pool/a": 0, "pool/b": 1, "pool/c": 1 } },
+		});
+		const expected = resolveAgentModelSelection({
+			agentModel: "@pool",
+			settings,
+			seed: "pool-spawn|call|3|123",
+		}).patterns;
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: session({ settings }),
+				identity: { id: "pool-spawn" },
+				parentToolCallId: "call",
+				index: 3,
+				invokedAt: 123,
+			}),
+		);
+		expect(policy.modelOverride).toEqual(expected);
+		expect(policy.modelOverride?.at(-1)).toBe("pool/a");
 	});
 });
