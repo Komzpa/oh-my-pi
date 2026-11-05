@@ -169,6 +169,7 @@ async function createPersistedSession(
 	advisor?: string,
 	contract?: {
 		assignmentStartedAt?: number;
+		noContextFiles?: boolean;
 		attemptStartedAt?: number;
 		tools?: string[];
 		readOnly?: boolean;
@@ -189,6 +190,7 @@ async function createPersistedSession(
 		systemPrompt: ["persisted prompt"],
 		task: "persisted task",
 		assignmentStartedAt: contract?.assignmentStartedAt,
+		noContextFiles: contract?.noContextFiles,
 		attemptStartedAt: contract?.attemptStartedAt,
 		tools: contract?.tools ?? ["read", "yield"],
 		restrictToolNames,
@@ -495,6 +497,24 @@ describe("persisted subagent revival", () => {
 		expect(attemptedDiscovery).toEqual([]);
 		expect(activeToolNames).toEqual([["read", "yield"]]);
 	});
+
+	it.each([true, false, undefined])(
+		"preserves the context-file discovery policy through revival (%s)",
+		async noContextFiles => {
+			const cwd = makeTempDir("@pi-context-policy-revive-");
+			const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, { noContextFiles });
+			let capturedOptions: CreateAgentSessionOptions | undefined;
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+				capturedOptions = options;
+				return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+			});
+			const ref = createRef(sessionFile);
+			const reviver = await createFactory(cwd)(ref);
+			if (!reviver) throw new Error("Expected a persisted reviver");
+			await reviver(ref);
+			expect(capturedOptions?.noContextFiles).toBe(noContextFiles);
+		},
+	);
 
 	it("strips synthetic write from legacy read-only cold revival", async () => {
 		const cwd = makeTempDir("@pi-read-only-revive-");

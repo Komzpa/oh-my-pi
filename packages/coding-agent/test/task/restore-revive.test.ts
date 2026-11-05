@@ -1,3 +1,4 @@
+import { isPersistedSubagentElapsedNote } from "@oh-my-pi/pi-ai/utils/subagent-elapsed-note";
 /**
  * `omp --restore` end to end for a subagent: a transcript a crash cut off mid tool
  * call is revived from disk, its cut-off call runs again, the agent answers, and the
@@ -150,7 +151,7 @@ async function restoreInterruptedChild(options: { transcript?: "handoff" | "fall
 				id,
 				reasoning: true,
 				handler: (context, streamOptions) => {
-					const last = context.messages.at(-1);
+					const last = context.messages.findLast(message => !isPersistedSubagentElapsedNote(message));
 					if (last?.role !== "toolResult" || last.toolName !== "read") return { content: ["label"] };
 					readResults[id]!.push(JSON.stringify(last.content));
 					readEfforts[id]!.push(streamOptions?.reasoning);

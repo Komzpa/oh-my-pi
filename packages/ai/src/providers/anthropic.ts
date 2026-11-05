@@ -5884,6 +5884,7 @@ export function convertAnthropicMessages(
 	if (!opts?.compactionRequest) {
 		for (let index = transformedMessages.length - 1; index >= 0; index--) {
 			const message = transformedMessages[index];
+			if (isLegacySubagentElapsedNote(message)) continue;
 			if (message.role === "assistant") break;
 			if (
 				message.role === "user" ||

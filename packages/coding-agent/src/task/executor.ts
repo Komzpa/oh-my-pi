@@ -98,7 +98,7 @@ import type { AuthStorage } from "../session/auth-storage";
 import { type CostCapRefusal, CostCapError, type CostGateApi } from "../session/cost-gate";
 import { INTERRUPTED_TURN_ERROR } from "../session/exit-diagnostics";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
-import { hasConversationalHistory, SessionManager } from "../session/session-manager";
+import { extractSessionInit, hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import {
 	AUTO_THINKING,
@@ -186,7 +186,7 @@ import {
 	cfgCompactionThresholdPercent,
 	cfgCompactionThresholdTokens,
 } from "../session/context-settings";
-import { SubagentElapsedSignal } from "./subagent-elapsed-signal";
+import { findLastPersistedSubagentElapsedNoteAt, SubagentElapsedSignal } from "./subagent-elapsed-signal";
 
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
@@ -4249,6 +4249,26 @@ function restoreSubagentSettings(recipe: SubagentSettingsRecipe): Settings {
 	return settings;
 }
 
+function createSessionElapsedSignal(
+	session: AgentSession,
+	attemptStartedAt: number,
+	lastNoteAt?: number,
+): SubagentElapsedSignal {
+	return new SubagentElapsedSignal({
+		attemptStartedAt,
+		lastNoteAt,
+		appendMessage: message => {
+			if (
+				typeof session.agent.appendMessage !== "function" ||
+				typeof session.sessionManager.appendMessage !== "function"
+			)
+				return;
+			session.agent.appendMessage(message);
+			session.sessionManager.appendMessage(message);
+		},
+	});
+}
+
 /** Everything the lifecycle reviver of a kept-alive subagent needs, captured explicitly. */
 interface WarmReviveCapture {
 	sessionFile: string;
@@ -4338,6 +4358,14 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 			? followMCPTools(mcpManager, { scope: reopened.getSessionId() }, explicitSubagentToolNames(capture.spec))
 			: undefined;
 		let revived: AgentSession;
+		let elapsedSignal: SubagentElapsedSignal | undefined;
+		const savedAttemptStart = extractSessionInit(reopened.getEntries())?.attemptStartedAt;
+		const attemptStartedAt =
+			typeof savedAttemptStart === "number" && Number.isFinite(savedAttemptStart) ? savedAttemptStart : Date.now();
+		const messages = reopened
+			.getBranch()
+			.flatMap(entry => (entry.type === "message" && entry.message.role === "developer" ? [entry.message] : []));
+		const lastNoteAt = findLastPersistedSubagentElapsedNoteAt(messages, attemptStartedAt);
 		// Account pools are owner policy: take the live exact-name entry, as
 		// dispatch and persisted revival do, never the spawn-time copy.
 		const agentAccountPools = validateAgentAccountPools(cfgTaskAgentAccountPools.get(capture.settings.parent));
@@ -4362,6 +4390,10 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 				);
 				({ session: revived } = await createAgentSession({
 					...options,
+					transformProviderContext: context => {
+						const note = elapsedSignal?.appendIfDue();
+						return note ? { ...context, messages: [...context.messages, note] } : context;
+					},
 					...(sessionLocalModel
 						? {
 								model: undefined,
@@ -4386,6 +4418,7 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 				mcpFollower?.dispose();
 				throw error;
 			}
+			elapsedSignal = createSessionElapsedSignal(revived, attemptStartedAt, lastNoteAt);
 			mcpFollower?.bind(revived);
 			trackSubagentSettings(revived, capture);
 			trackSubagentPendingCandidate(revived, capture);
@@ -5163,7 +5196,8 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			if (sessionFile !== null) {
 				const reviveCapture: WarmReviveCapture = {
 					sessionFile,
-					spec: sessionSpec,
+					// A provider transform owns the live session. Never retain it in the parked recipe.
+					spec: { ...sessionSpec, options: { ...sessionSpec.options, transformProviderContext: undefined } },
 					perCallModel: perCallModelGrants !== undefined,
 					settings: captureSubagentSettings(settings, subagentSettings),
 					parentArtifactManager: preparedSession ? undefined : options.parentArtifactManager,
@@ -5239,24 +5273,14 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				outputSchemaMode: options.outputSchemaMode,
 				restrictToolNames: restrictToolNames || undefined,
 				assignmentStartedAt,
+				noContextFiles: options.noContextFiles,
 				attemptStartedAt: startTime,
 				// Isolated runs are never revivable (worktree merged + cleaned):
 				// stamp the contract so cold revival leaves them transcript-only
 				// even when the workspace was retained for recovery.
 				isolated: worktree !== undefined || undefined,
 			});
-			elapsedSignal = new SubagentElapsedSignal({
-				attemptStartedAt: startTime,
-				appendMessage: message => {
-					if (
-						typeof session.agent.appendMessage !== "function" ||
-						typeof session.sessionManager.appendMessage !== "function"
-					)
-						return;
-					session.agent.appendMessage(message);
-					session.sessionManager.appendMessage(message);
-				},
-			});
+			elapsedSignal = createSessionElapsedSignal(session, startTime);
 			elapsedSignal.start();
 
 			abortSignal.addEventListener(
