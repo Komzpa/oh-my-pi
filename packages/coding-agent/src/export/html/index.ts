@@ -1,3 +1,4 @@
+import { sessionEntryForExport } from "../../session/session-entries";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { buildSessionTraceFromSnapshots } from "@oh-my-pi/omp-stats/trace";
@@ -194,7 +195,7 @@ function sessionHeaderForExport(header: SessionHeader | null): SessionHeader | n
 export function buildSessionData(sm: SessionManager, state?: AgentState): SessionData {
 	return {
 		header: sessionHeaderForExport(sm.getHeader()),
-		entries: sm.getEntries(),
+		entries: sm.getEntries().map(sessionEntryForExport),
 		leafId: sm.getLeafId(),
 		systemPrompt: state?.systemPrompt.join("\n\n"),
 		tools: state?.tools?.map(t => ({ name: t.name, description: t.description })),
@@ -204,7 +205,10 @@ export function buildSessionData(sm: SessionManager, state?: AgentState): Sessio
 /** All trace transcripts next to `sessionFile`, with export-only header fields stripped. */
 async function collectExportSubSessions(sessionFile: string): Promise<Record<string, SubSession>> {
 	const subSessions = await collectSubSessions(sessionFile, { includeAdvisors: true, includeCompressed: true });
-	for (const sub of Object.values(subSessions)) sub.header = sessionHeaderForExport(sub.header);
+	for (const sub of Object.values(subSessions)) {
+		sub.header = sessionHeaderForExport(sub.header);
+		sub.entries = sub.entries.map(sessionEntryForExport);
+	}
 	return subSessions;
 }
 
