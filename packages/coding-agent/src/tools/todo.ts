@@ -948,6 +948,22 @@ function indexTasksByContent(phases: TodoPhase[]): Map<string, TodoItem[]> {
 	return indexed;
 }
 
+/** Repair legacy self-edges before taking the next durable snapshot. */
+function healStoredSelfEdges(phases: TodoPhase[]): string[] {
+	const healed: string[] = [];
+	for (const row of phases.flatMap(phase => phase.tasks)) {
+		const schedule = row.schedule;
+		if (!schedule) continue;
+		const selfDependency = schedule.dependencies?.includes(row.content);
+		const selfSpeculation = schedule.speculativeOn === row.content;
+		if (!selfDependency && !selfSpeculation) continue;
+		if (selfDependency) schedule.dependencies = schedule.dependencies!.filter(dep => dep !== row.content);
+		if (selfSpeculation) delete schedule.speculativeOn;
+		healed.push(row.content);
+	}
+	return healed;
+}
+
 /** Reuse the shared graph validator; unknown prerequisites remain forecast issues. */
 function validateScheduleDependencyGraph(
 	phases: TodoPhase[],
@@ -972,8 +988,42 @@ function validateScheduleDependencyGraph(
 	for (const issue of getTodoPlanningIssues(candidatePhases)) {
 		if (checkOwners && issue.code === "owner-overlap") errors.push(issue.message);
 	}
+	const edges = (schedule: TodoSchedule | undefined): string[] => [
+		...(schedule?.dependencies ?? []),
+		...(schedule?.speculativeOn ? [schedule.speculativeOn] : []),
+	];
+	const graph = new Map(
+		candidatePhases.flatMap(phase => phase.tasks.map(row => [row.content, edges(row.schedule)] as const)),
+	);
+	// Only a newly added edge can introduce a cycle. Check against the whole candidate
+	// graph so two rows added in the same operation cannot bypass validation.
+	for (const row of phases.flatMap(phase => phase.tasks)) {
+		const name = renamedTasks.get(row) ?? row.content;
+		const previous = new Set(edges(row.schedule).map(dep => (dep === row.content ? name : dep)));
+		for (const dependency of graph.get(name) ?? []) {
+			if (previous.has(dependency)) continue;
+			const pending = [dependency];
+			const visited = new Set<string>();
+			while (pending.length) {
+				const current = pending.pop()!;
+				if (current === name) {
+					errors.push(
+						dependency === name
+							? `Task cannot depend on itself: ${name}`
+							: `Task introduces a dependency cycle: ${name}`,
+					);
+					break;
+				}
+				if (visited.has(current)) continue;
+				visited.add(current);
+				pending.push(...(graph.get(current) ?? []));
+			}
+		}
+	}
 	for (const issue of validateTodoDependencies(withArchivedPrerequisites(candidatePhases, archived))) {
 		if (
+			issue.code === "self-dependency" ||
+			issue.code === "dependency-cycle" ||
 			issue.code === "dependencies-unknown" ||
 			issue.code === "unresolved-prerequisite" ||
 			issue.code === "abandoned-dependency" ||
@@ -1145,7 +1195,7 @@ function applyScheduleUpdates(
 		if (update.review === null) delete schedule.review;
 		else if (update.review !== undefined) schedule.review = update.review;
 		if (update.postDeadline !== undefined) schedule.postDeadline = update.postDeadline;
-		if (update.speculativeOn === null) delete schedule.speculativeOn;
+		if (update.speculativeOn === null || update.speculativeOn?.trim() === "") delete schedule.speculativeOn;
 		else if (update.speculativeOn !== undefined) schedule.speculativeOn = update.speculativeOn.trim();
 		candidates.set(task, schedule);
 	}
@@ -1920,6 +1970,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
+		const healedRows = healStoredSelfEdges(previousPhases);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
 		if (typeof resolved === "string") {
@@ -1981,7 +2032,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			readOnly || failed || (op === "schedule" && !reviewClosures.length)
 				? []
 				: getCompletionTransitions(previousPhases, updated);
-		if (archived && !this.#validatingReviewClosure) this.session.setTodoPhases?.(effective);
+		if ((archived || healedRows.length) && !this.#validatingReviewClosure) this.session.setTodoPhases?.(effective);
 		const operation = !readOnly && !failed ? buildTodoOpPersistedEdit(op, entry, now) : undefined;
 		if (operation && reviewClosures.length) operation.reviewClosures = reviewClosures;
 		const archiveEdit: TodoArchivePersistedEdit | undefined =
@@ -1996,7 +2047,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 				op,
 				storage,
 				forecastAt: now,
-				...(archiveEdit ? { edit: archiveEdit } : operation ? { edit: operation } : {}),
+				...(!healedRows.length ? (archiveEdit ? { edit: archiveEdit } : operation ? { edit: operation } : {}) : {}),
 			} as TodoToolDetails,
 			effective,
 			forecast,
@@ -2030,6 +2081,9 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 					type: "text",
 					text: [
 						summary,
+						...(healedRows.length
+							? [`Healed stored self-edges: ${healedRows.map(row => JSON.stringify(row)).join("; ")}`]
+							: []),
 						...reviewClosures
 							.filter(row => row.reason)
 							.map(row => `${JSON.stringify(row.task)}: accepted by user, closing blocked: ${row.reason}`),
