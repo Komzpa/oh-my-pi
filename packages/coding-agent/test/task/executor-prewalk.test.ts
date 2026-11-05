@@ -182,6 +182,36 @@ describe("runSubprocess per-agent prewalk", () => {
 		expect(forwarded?.prewalk).toBeUndefined();
 	});
 
+	it.each([
+		["low", false],
+		["high", true],
+	] as const)("arms prewalk only when its target can honor a %s worker ceiling", async (ceiling, armed) => {
+		const start = getBundledModel("openai-codex", "gpt-5.6-sol");
+		const mini = getBundledModel("azure", "gpt-5.1-codex-mini");
+		if (!start || !mini) throw new Error("Expected bundled prewalk fixtures");
+		const settings = Settings.isolated({ "task.agentMaxEffort": { workhorse: ceiling } });
+		const session = yieldEmittingSession(["read", "todo", "yield"]);
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const result = await runSubprocess({
+			...baseOptions(`subagent-prewalk-floor-${ceiling}`, settings),
+			modelRegistry: createModelRegistry([start, mini]),
+			agent: {
+				...baseAgent,
+				name: "workhorse",
+				model: [`${start.provider}/${start.id}`],
+				prewalk: `${mini.provider}/${mini.id}`,
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		if (armed) {
+			expect(spy.mock.calls[0]?.[0]?.prewalk?.target.id).toBe(mini.id);
+			expect(session.getActiveToolNames()).toContain("todo");
+		} else {
+			expect(spy.mock.calls[0]?.[0]?.prewalk).toBeUndefined();
+			expect(session.getActiveToolNames()).not.toContain("todo");
+		}
+	});
+
 	it("waits for background discovery before resolving a configured prewalk target", async () => {
 		const models = [primary];
 		const registry = createModelRegistry(models);

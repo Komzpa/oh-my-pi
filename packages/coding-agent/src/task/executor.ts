@@ -4918,11 +4918,23 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
 				const resolvedPrewalk = resolveModelOverride([prewalkPattern], modelRegistry, settings);
 				const target = resolvedPrewalk.model;
+				const targetCeiling = capImplementationWorkerEffortCeiling(
+					agent.name,
+					target,
+					spawnEffortCeiling,
+					cfgTaskAgentMaxEffort.get(settings),
+				);
 				if (!target || !modelRegistry.hasConfiguredAuth(target)) {
 					logger.warn("Subagent prewalk target unavailable; skipping prewalk", {
 						agent: agent.name,
 						pattern: prewalkPattern,
 						warning: resolvedPrewalk.warning,
+					});
+				} else if (targetCeiling !== undefined && !modelSupportsEffortCeiling(target, targetCeiling)) {
+					logger.warn("Subagent prewalk target cannot honor effort ceiling; skipping prewalk", {
+						agent: agent.name,
+						pattern: prewalkPattern,
+						ceiling: targetCeiling,
 					});
 				} else if (
 					prewalkWouldBeNoop(
