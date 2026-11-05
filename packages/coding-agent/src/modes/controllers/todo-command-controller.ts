@@ -450,6 +450,10 @@ export class TodoCommandController {
 				lastChange: changes.get(row),
 			}),
 			getPersistedRequirementAuditRejections(branch, this.ctx.sessionManager.getHeader()?.id ?? null),
+			new Set(),
+			new Set(
+				current.flatMap(phase => phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content)),
+			),
 		);
 		const currentBranch = this.ctx.sessionManager.getBranch();
 		if (
@@ -502,7 +506,12 @@ export class TodoCommandController {
 		}
 		const newlyCompleted = next
 			.flatMap(phase => phase.tasks)
-			.filter(task => task.status === "completed" && phasesByRow.get(task.content)?.status !== "completed")
+			.filter(
+				task =>
+					task.status === "completed" &&
+					phasesByRow.has(task.content) &&
+					phasesByRow.get(task.content)?.status !== "completed",
+			)
 			.map(task => task.content);
 		if (newlyCompleted.length > 0 && !(await this.#assertDoneAllowed(current, { items: newlyCompleted })))
 			return false;

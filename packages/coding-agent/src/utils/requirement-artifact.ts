@@ -3,7 +3,7 @@ import type { Dirent, Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isRecord } from "@oh-my-pi/pi-utils";
-import { vcsGitDiscover, type VcsGitRepo } from "@oh-my-pi/pi-natives";
+import { type VcsGitRepo } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { probeRequirementDeployment, type RequirementDeploymentIdentity } from "./requirement-deployment";
 
@@ -23,15 +23,13 @@ export type RequirementIdentityCheck =
 	| { state: "stale"; kind: RequirementIdentity["kind"]; location: string; expected: string; observed: string }
 	| { state: "unverifiable"; kind: RequirementIdentity["kind"]; location: string; expected: string; reason: string };
 
-/** Foreground identity checks must not wait on the display polling coordinator. */
+/** Foreground checks bypass stale snapshots through the shared status queue. */
 export function currentRequirementGitStatus(
 	repo: VcsGitRepo,
 	signal?: AbortSignal,
 	includeUntracked = false,
 ): Promise<string> {
-	const native = vcsGitDiscover(repo.info().repoRoot);
-	if (!native) throw new Error("Requirement checkout is no longer a Git repository");
-	return native.statusPorcelain({ untracked: includeUntracked ? "all" : "no", nulTerminated: true }, signal);
+	return vcs.statusPorcelainFresh(repo, { untracked: includeUntracked ? "all" : "no", nulTerminated: true }, signal);
 }
 
 function trackedRequirementChangePaths(status: string): string[] {

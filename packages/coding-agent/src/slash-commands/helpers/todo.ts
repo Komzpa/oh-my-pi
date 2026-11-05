@@ -142,6 +142,10 @@ async function completionRefusal(
 			lastChange: changes.get(row),
 		}),
 		getPersistedRequirementAuditRejections(branch, runtime.sessionManager.getHeader()?.id ?? null),
+		new Set(),
+		new Set(
+			current.flatMap(phase => phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content)),
+		),
 	);
 	if (
 		JSON.stringify(currentPhases(runtime)) !== phasesSnapshot ||
@@ -180,7 +184,12 @@ async function removalRefusal(
 		return `Cannot remove unfinished requirement-linked TODO row ${JSON.stringify(unfinished)}. Complete and audit it first, or relink its requirement to a replacement row.`;
 	const newlyCompleted = next
 		.flatMap(phase => phase.tasks)
-		.filter(task => task.status === "completed" && existing.get(task.content)?.status !== "completed")
+		.filter(
+			task =>
+				task.status === "completed" &&
+				existing.has(task.content) &&
+				existing.get(task.content)?.status !== "completed",
+		)
 		.map(task => task.content);
 	const audited = [...new Set([...removed, ...newlyCompleted])];
 	if (audited.length === 0) return undefined;

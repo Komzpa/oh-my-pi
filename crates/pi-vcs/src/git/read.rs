@@ -218,7 +218,7 @@ impl GitRepo {
 				#[cfg(unix)]
 				{
 					use std::os::unix::fs::PermissionsExt;
-					if metadata.permissions().mode() & 0o111 != 0 {
+					if metadata.permissions().mode() & 0o100 != 0 {
 						mode = 0o100755;
 					}
 				}
@@ -286,7 +286,7 @@ impl GitRepo {
 			#[cfg(unix)]
 			{
 				use std::os::unix::fs::PermissionsExt;
-				if metadata.permissions().mode() & 0o111 != 0 {
+				if metadata.permissions().mode() & 0o100 != 0 {
 					0o100755
 				} else {
 					0o100644

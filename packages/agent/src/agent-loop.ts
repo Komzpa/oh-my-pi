@@ -3143,7 +3143,15 @@ function isTodoMutationCall(name: string, args: unknown): boolean {
 	if (name !== "todo") return false;
 	if (typeof args !== "object" || args === null) return true;
 	if (!("op" in args)) return true;
-	return args.op !== "view";
+	return args.op !== "view" && args.op !== "done" && args.op !== "drop";
+}
+
+function resolveToolInterruptible(tool: AgentTool | undefined, args: Record<string, unknown>): boolean {
+	try {
+		return typeof tool?.interruptible === "function" ? tool.interruptible(args) : tool?.interruptible === true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -3514,20 +3522,7 @@ async function executeToolCalls(
 			args: toolCall.arguments as Record<string, unknown>,
 		};
 		const { tool, args } = prepared;
-		const interruptibleMode = tool?.interruptible;
-		let interruptible = false;
-		if (typeof interruptibleMode === "function") {
-			try {
-				// Resolved from the prepared (possibly hook-revised) args so an
-				// argument-dependent policy governs the call that actually runs.
-				interruptible = interruptibleMode(args);
-			} catch {
-				// Resolver failures default to preserving the tool's outcome.
-				interruptible = false;
-			}
-		} else {
-			interruptible = interruptibleMode === true;
-		}
+		const interruptible = resolveToolInterruptible(tool, args);
 		return {
 			toolCall,
 			tool,
@@ -4010,6 +4005,9 @@ async function executeToolCalls(
 					const revised = validateAgentToolArguments(tool, { ...toolCall, arguments: gateResult.args });
 					toolCall.arguments = gateResult.args;
 					record.args = revised;
+					record.interruptible = resolveToolInterruptible(tool, revised);
+					record.handlesToolInterrupt = record.interruptible && tool.handlesToolInterrupt === true;
+					record.signal = record.interruptible ? interruptibleSignal : nonInterruptibleSignal;
 				} catch (validationError) {
 					record.args = gateResult.args;
 					record.validationErrorMessage =

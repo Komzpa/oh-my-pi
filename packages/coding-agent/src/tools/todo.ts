@@ -183,7 +183,7 @@ export async function getRequirementRowArtifact(
 ): Promise<RequirementRowArtifact> {
 	const artifact = await resolveRequirementRowArtifact(ctx, row, phases, checkoutCache);
 	const tasks = phases.flatMap(phase => phase.tasks).filter(task => task.content === row);
-	const pending = tasks.length === 1 && tasks[0]!.status === "blocked" ? tasks[0]!.awaitingUser : undefined;
+	const pending = tasks.length === 1 ? tasks[0]!.awaitingUser : undefined;
 	return pending?.action.trim() ? { ...artifact, awaitingUser: pending } : artifact;
 }
 
@@ -251,7 +251,8 @@ async function requirementReceiptCoverageIssue(
 			if (target.kind === "deploy") {
 				if (identity.kind !== "deploy") continue;
 				const { value: _value, ...declared } = identity;
-				if (JSON.stringify(declared) === JSON.stringify(target)) index = candidate;
+				const { value: _targetValue, ...declaredTarget } = target;
+				if (JSON.stringify(declared) === JSON.stringify(declaredTarget)) index = candidate;
 			} else if (identity.kind !== "deploy") {
 				const actual = await canonical(identity.kind === "file" ? identity.path : identity.repo);
 				const expected = await canonical(target.kind === "file" ? target.path : target.repo);
@@ -323,6 +324,7 @@ async function resolveTypedRequirementArtifact(
 		if (!("legacy" in parsed))
 			targets = parsed.identities.map(identity => {
 				if (identity.kind === "deploy") {
+					if (identity.scope !== undefined) return identity;
 					const { value: _value, ...target } = identity;
 					return target;
 				}
@@ -655,6 +657,9 @@ async function dirtyCheckoutFingerprint(
 	status: string,
 	signal?: AbortSignal,
 ): Promise<{ sha256: string } | { reason: string }> {
+	const repo = vcs.git(repoRoot);
+	if (!repo) return { reason: "Git checkout unavailable while fingerprinting" };
+	const observeMode = process.platform !== "win32" && (await repo.configGet("core.fileMode", signal)) !== "false";
 	const fields = status.split("\0");
 	const entries: Array<[path: string, code: string, origin: string]> = [];
 	for (let index = 0; index < fields.length; index++) {
@@ -682,7 +687,7 @@ async function dirtyCheckoutFingerprint(
 				bytes += info.size;
 				if (bytes > REQUIREMENT_ARTIFACT_LIMITS.maxBytes)
 					return { reason: `dirty checkout exceeds aggregate byte bound ${REQUIREMENT_ARTIFACT_LIMITS.maxBytes}` };
-				content = `file\0${await hashArtifactFile(absolute, signal)}`;
+				content = `file\0${observeMode ? (info.mode & 0o100 ? "100755" : "100644") : ""}\0${await hashArtifactFile(absolute, signal)}`;
 			} else return { reason: `${relative}: dirty path is neither a file nor a symlink` };
 		} catch (error) {
 			if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
@@ -775,8 +780,6 @@ function mergeCanonicalArtifactBindings(phases: TodoPhase[], canonical: readonly
 		if (
 			JSON.stringify((task as TodoItem & { schedule?: unknown }).schedule) !==
 				JSON.stringify((source as TodoItem & { schedule?: unknown }).schedule) ||
-			task.artifactCwd !== undefined ||
-			task.artifactOwner !== undefined ||
 			typeof source.artifactCwd !== "string" ||
 			typeof source.artifactOwner !== "string"
 		)

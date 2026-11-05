@@ -92,6 +92,54 @@ describe("PR #41 publication loop boundaries", () => {
 		expect(previewCalls).toEqual([]);
 	});
 
+	it("keeps completion after preceding artifact changes in the emitted batch", async () => {
+		const order: string[] = [];
+		const parameters = type({ op: "string" });
+		const todo: AgentTool<typeof parameters> = {
+			name: "todo",
+			label: "Todo",
+			description: "Complete row",
+			parameters,
+			concurrency: "exclusive",
+			async execute() {
+				order.push("done");
+				return { content: [{ type: "text", text: "complete" }] };
+			},
+		};
+		const bash: AgentTool<typeof parameters> = {
+			name: "bash",
+			label: "Bash",
+			description: "Change artifact",
+			parameters,
+			concurrency: "shared",
+			async execute() {
+				await Bun.sleep(1);
+				order.push("changed");
+				return { content: [{ type: "text", text: "changed" }] };
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "bash-change", name: "bash", arguments: { op: "change" } },
+						{ type: "toolCall", id: "todo-done", name: "todo", arguments: { op: "done" } },
+					],
+				},
+				{ content: ["finished"] },
+			],
+		});
+		const run = agentLoop(
+			[createUserMessage("change and complete")],
+			{ systemPrompt: [""], messages: [], tools: [todo, bash] },
+			{ model: mock.model, convertToLlm: identityConverter, beforeToolCall: () => undefined },
+			undefined,
+			mock.stream,
+		);
+		await run.result();
+		expect(order).toEqual(["changed", "done"]);
+	});
+
 	it("recomputes phase-two concurrency from deferred arguments", async () => {
 		const todoSchema = type({ op: "string" });
 		const todo: AgentTool<typeof todoSchema> = {
@@ -153,6 +201,70 @@ describe("PR #41 publication loop boundaries", () => {
 		releaseFirst.resolve();
 		await completion;
 		expect(secondStarted).toBe(true);
+	});
+
+	it("interrupts a deferred wait using its hook-revised policy", async () => {
+		const todoSchema = type({ op: "string" });
+		const todo: AgentTool<typeof todoSchema> = {
+			name: "todo",
+			label: "Todo",
+			description: "Mutation barrier",
+			parameters: todoSchema,
+			async execute() {
+				return { content: [{ type: "text", text: "updated" }] };
+			},
+		};
+		const waitSchema = type({ enabled: "boolean" });
+		let ready = false;
+		let drained = false;
+		let aborted = false;
+		const wait: AgentTool<typeof waitSchema> = {
+			name: "wait",
+			label: "Wait",
+			description: "Wait for steering",
+			parameters: waitSchema,
+			interruptible: args => (args as { enabled: boolean }).enabled,
+			async execute(_id, _args, signal) {
+				ready = true;
+				const stopped = Promise.withResolvers<void>();
+				signal?.addEventListener("abort", () => stopped.resolve(), { once: true });
+				await Promise.race([stopped.promise, Bun.sleep(1000)]);
+				aborted = signal?.aborted === true;
+				return { content: [{ type: "text", text: aborted ? "interrupted" : "timed out" }] };
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "todo-1", name: "todo", arguments: { op: "append" } },
+						{ type: "toolCall", id: "wait-1", name: "wait", arguments: { enabled: false } },
+					],
+				},
+				{ content: ["finished"] },
+			],
+		});
+		const run = agentLoop(
+			[createUserMessage("run")],
+			{ systemPrompt: [""], messages: [], tools: [todo, wait] },
+			{
+				model: mock.model,
+				convertToLlm: identityConverter,
+				interruptMode: "immediate",
+				beforeToolCall: ({ toolCall }) => (toolCall.name === "wait" ? { args: { enabled: true } } : undefined),
+				hasSteeringMessages: () => ready && !drained,
+				getSteeringMessages: async () => {
+					if (!ready || drained) return [];
+					drained = true;
+					return [createUserMessage("interrupt")];
+				},
+			},
+			undefined,
+			mock.stream,
+		);
+		await run.result();
+		expect(aborted).toBe(true);
+		expect(drained).toBe(true);
 	});
 
 	it("updates Agent history from effective args on a deferred tool start", async () => {

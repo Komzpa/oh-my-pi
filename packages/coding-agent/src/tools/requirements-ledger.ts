@@ -1,8 +1,9 @@
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 import type { SessionEntry } from "../session/session-entries";
+import rowAuditTemplate from "../prompts/session/requirements-ledger-row-audit.md" with { type: "text" };
 import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
 import { isAcknowledgementOnlyInput } from "../tiny/text";
 import {
@@ -820,7 +821,11 @@ export function getRequirementRowArtifactIdentity(
 			(explicit === undefined && label === row && /^(?:git|file|deploy):/.test(segment)) ||
 			(continuation && "legacy" in continuation && continuation.commits.length > 0)
 		)
-			named.push(segment);
+			named.push(
+				explicit === row && !REQUIREMENT_QUOTED_ROW_PREFIX.test(segment)
+					? `row ${JSON.stringify(row)} @ ${segment.slice(segment.indexOf(" @ ") + 3).trim()}`
+					: segment,
+			);
 	}
 	if (named.length) return named.join("; ");
 	// An explicit label naming any row (assigned or foreign) scopes the cell:
@@ -1967,7 +1972,13 @@ export function formatDoneGateRefusal(open: readonly RequirementDoneGateIssue[])
 	}
 	const calls = [...byRow].map(([row, retry]) => {
 		const ids = [...retry.ids].join(", ");
-		const task = `Audit exact requirement IDs ${ids} for TODO row ${JSON.stringify(row)} at its current artifact (${formatRequirementGateArtifact(retry.artifact, row)}). Return one table row per exact ID; do not append letter suffixes.`;
+		const task = prompt
+			.render(rowAuditTemplate, {
+				ids,
+				row: JSON.stringify(row),
+				artifact: formatRequirementGateArtifact(retry.artifact, row),
+			})
+			.trim();
 		return `agent="qa-auditor", requirementIds=${JSON.stringify([...retry.ids])}, task=${JSON.stringify(task)}`;
 	});
 	const first = open[0]!;
