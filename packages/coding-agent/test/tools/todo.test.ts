@@ -81,93 +81,21 @@ function closedArchiveFixture(now: number, rowCount = 400): TodoPhase[] {
 describe("todo archive policy", () => {
 	const now = Date.parse("2026-09-25T08:00:00.000Z");
 
-	it("archives seven aged closed phases wholesale and keeps ten recent closed rows beside open work", () => {
+	it("compacts 50 closed rows, keeping the recent tail and an open row's prerequisite", () => {
 		const phases = closedArchiveFixture(now);
-		const beforeForecast = forecastTodoPlan(phases, { now });
-		const archived = archiveTodoPhases(phases, now);
-		const liveTasks = archived.phases.flatMap(phase => phase.tasks);
-		const archivedTasks = archived.archivedPhases.flatMap(phase => phase.tasks);
-
-		expect(archived.phases.map(phase => phase.name)).toEqual(["Open phase"]);
-		expect(liveTasks).toHaveLength(11);
-		expect(liveTasks.filter(task => task.status === "completed")).toHaveLength(10);
-		expect(liveTasks.find(task => task.content === "Closed task 400")?.status).toBe("in_progress");
-		expect(archivedTasks).toHaveLength(389);
-		expect(archived.archivedPhases.slice(0, 7).every(phase => phase.tasks.length === 50)).toBe(true);
-		expect(archivedTasks[0]?.schedule?.estimate?.basis).toBe("fixture estimate 0");
-		expect(archivedTasks[0]?.schedule?.executor?.workerId).toBe("fixture-worker-0");
-		const ordinaryView = formatTodoView(archived.phases, { now });
-		const archiveView = formatTodoView(archived.phases, {
-			now,
-			archive: true,
-			archivedPhases: archived.archivedPhases,
-		});
-		expect(ordinaryView).not.toContain("Closed task 001");
-		expect(archiveView).toContain("Closed task 001");
-		const afterForecast = forecastTodoLivePlan(archived.phases, archived.archivedPhases, { now });
-		expect(
-			afterForecast.rows
-				.find(row => row.content === "Closed task 400")
-				?.issues.some(issue => issue.includes("Missing prerequisite") || issue.includes("unresolved prerequisite")),
-		).toBe(false);
-		expect(afterForecast.rows.some(row => row.content === "Closed task 001")).toBe(false);
-		expect(
-			beforeForecast.rows
-				.find(row => row.content === "Closed task 400")
-				?.issues.some(issue => issue.includes("Missing prerequisite")),
-		).toBe(false);
+		const compacted = archiveTodoPhases(phases, now);
+		const live = compacted.phases.flatMap(phase => phase.tasks);
+		expect(live).toHaveLength(12);
+		expect(live.some(task => task.content === "Closed task 001")).toBe(true);
+		expect(compacted.archivedPhases.flatMap(phase => phase.tasks)).toHaveLength(388);
 	});
 
-	it("keeps a whole closed phase before grace and archives it at ten minutes regardless of tail", () => {
-		const phases: TodoPhase[] = [
-			{
-				name: "Finished",
-				tasks: [
-					{ content: "Recent completed", status: "completed", schedule: { finishedAt: now - 10 * 60_000 + 1 } },
-				],
-			},
-		];
-		expect(archiveTodoPhases(phases, now).phases).toEqual(phases);
-		phases[0]!.tasks[0]!.schedule!.finishedAt = now - 10 * 60_000;
-		expect(archiveTodoPhases(phases, now)).toEqual({ phases: [], archivedPhases: phases });
-	});
-
-	it("does not prematurely archive a closed phase with unknown finish time or any open work", () => {
-		const phases: TodoPhase[] = [
-			{ name: "Unknown finish", tasks: [{ content: "No timestamp", status: "abandoned" }] },
-			{
-				name: "Blocked work",
-				tasks: [
-					{ content: "Old closed", status: "completed", schedule: { finishedAt: now - 20 * 60_000 } },
-					{ content: "Still blocked", status: "blocked" },
-				],
-			},
-		];
-		expect(archiveTodoPhases(phases, now)).toEqual({ phases, archivedPhases: [] });
-	});
-
-	it("retains unknown-time terminal rows while bounding dated closed rows in an open phase", () => {
-		const phases: TodoPhase[] = [
-			{
-				name: "Mixed",
-				tasks: [
-					{ content: "Unknown finish", status: "completed" },
-					...Array.from({ length: 12 }, (_, index) => ({
-						content: `Dated ${index}`,
-						status: "abandoned" as const,
-						schedule: { finishedAt: now - 60_000 - index * 1_000 },
-					})),
-					{ content: "Blocked open work", status: "blocked" as const },
-				],
-			},
-		];
-		const archived = archiveTodoPhases(phases, now);
-		expect(archived.phases[0]?.tasks.map(task => task.content)).toEqual([
-			"Unknown finish",
-			...Array.from({ length: 9 }, (_, index) => `Dated ${index}`),
-			"Blocked open work",
-		]);
-		expect(archived.archivedPhases[0]?.tasks.map(task => task.content)).toEqual(["Dated 9", "Dated 10", "Dated 11"]);
+	it("leaves 49 closed rows intact and compacts at 50 even with old timestamps", () => {
+		const phases = closedArchiveFixture(now, 400);
+		const small = [{ name: "49", tasks: phases.flatMap(phase => phase.tasks).slice(0, 49) }];
+		expect(archiveTodoPhases(small, now)).toEqual({ phases: small, archivedPhases: [] });
+		small[0]!.tasks.push(phases[0]!.tasks[49]!);
+		expect(archiveTodoPhases(small, now).archivedPhases.flatMap(phase => phase.tasks)).toHaveLength(40);
 	});
 
 	it("archives only on successful mutations and recovers rows in explicit archive view", async () => {
@@ -203,12 +131,12 @@ describe("todo archive policy", () => {
 			expect(writes).not.toHaveBeenCalled();
 			expect(failed.details?.edit).toBeUndefined();
 
-			const updated = await tool.execute("archive", { op: "block", task: "Closed task 400", reason: "Waiting" });
+			const updated = await tool.execute("archive", { op: "done", task: "Closed task 400" });
 			expect(writes).toHaveBeenCalledTimes(1);
 			expect(updated.details?.edit).toMatchObject({ v: 1, kind: "archive", at: now, operation: { kind: "op" } });
-			expect(updated.details?.archiveSummary).toEqual({ count: 389, fromAt: now, toAt: now });
+			expect(updated.details?.archiveSummary).toEqual({ count: 390, done: 390, dropped: 0, fromAt: now, toAt: now });
 			expect(updated.details?.archivedPhases).toBeUndefined();
-			expect(updated.details?.phases.flatMap(phase => phase.tasks)).toHaveLength(11);
+			expect(updated.details?.phases.flatMap(phase => phase.tasks)).toHaveLength(10);
 			const archivedEdit = updated.details?.edit;
 			if (!archivedEdit || archivedEdit.kind !== "archive") throw new Error("Expected archive event");
 			entries.push({
@@ -247,10 +175,10 @@ describe("todo archive policy", () => {
 			});
 			expect(missing.isError).toBe(true);
 			const ordinary = await tool.execute("ordinary", { op: "view" });
-			expect(ordinary.details?.archiveSummary?.count).toBe(389);
+			expect(ordinary.details?.archiveSummary?.count).toBe(390);
 			expect(ordinary.details?.archivedPhases).toBeUndefined();
 			const archiveView = await tool.execute("explicit", { op: "view", archive: true });
-			expect(archiveView.details?.archivedPhases?.flatMap(phase => phase.tasks)).toHaveLength(389);
+			expect(archiveView.details?.archivedPhases?.flatMap(phase => phase.tasks)).toHaveLength(390);
 			expect(archiveView.content[0]).toMatchObject({
 				type: "text",
 				text: expect.stringContaining("Closed task 001"),

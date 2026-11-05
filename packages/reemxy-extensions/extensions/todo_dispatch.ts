@@ -9,7 +9,7 @@ import { truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
-import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { getLatestTodoArchiveFromEntries, withTodoArchive, isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -2536,7 +2536,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return { facilitatorSettled, updaterRejected };
   };
   const touchSprintState = (ctx: ExtensionContext, phases: TodoScheduleInput, jobs: Jobs | null, now: number, deadline: DispatchInput["deadline"], alarms: string[]) => {
-    const tasks = phases.flatMap((phase) => phase.tasks);
+    const tasks = withTodoArchive(phases, getLatestTodoArchiveFromEntries(selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata))).flatMap((phase) => phase.tasks);
     sprintLiveRows = new Set(tasks.map((task) => task.content));
     const open = tasks.filter((task) => isOpenRowStatus(task.status));
     const nonClosed = tasks.filter((task) => isNonClosedRowStatus(task.status));
