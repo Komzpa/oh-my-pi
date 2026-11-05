@@ -8,9 +8,49 @@ import { overduePreviewRows } from "./todo_preview";
 const brag = "Brag video inventory";
 const finance = "Finance manifest drift";
 const adaptive = "Adaptive 60 MW: annotation leaders cross the hall";
-function decision(rows, ownerRunStates = [], atRisk = false) {
-  return { alarms: [], ownerRunStates, forecast: { rows, deadlineStatus: atRisk ? "at-risk" : "on-track" } };
+const activeDeadline = { goalId: "user-deadline", deadlineAt: 2_000_000_000_000, timezone: "Asia/Tbilisi" };
+function decision(rows, ownerRunStates = [], atRisk = false, deadline = activeDeadline) {
+  return { alarms: [], ownerRunStates, deadline, forecast: { rows, deadlineStatus: atRisk ? "at-risk" : "on-track" } };
 }
+
+// Live DC 2026-11-05 ~21:58 +04: reemxy-goal-deadlines active=false ("no pending stages"), every
+// overdue Adaptive row had a live worker, yet wait was refused with the deadline re-plan lecture.
+const liveAdaptive = ["Adaptive layout: Levels 1-4 and plant on roof", "Adaptive Levels: N-level layout and admission"];
+function liveAdaptiveDecision(deadline, { running = true, replannedAgoMs = 60 * 60_000, deadlineStatus = "on-track" } = {}) {
+  const now = 1_793_897_880_000;
+  const rows = liveAdaptive.map((content, index) => ({
+    content, status: index === 0 ? "in_progress" : "pending", owner: index === 0 ? "AdaptiveLevelsLayout-2" : undefined,
+    startedAt: index === 0 ? now - 80 * 60_000 : undefined, overdue: true, critical: true, totalFloatSeconds: 0,
+    estimateUpdatedAt: now - replannedAgoMs, estimateRevision: 3, resourceFinish: now - 21 * 60_000,
+  }));
+  return { alarms: [], deadline, ownerRunStates: running ? liveAdaptive.map(content => ({ content, running: true })) : [], forecast: { now, rows, deadlineStatus, deadlineAt: deadline?.deadlineAt } };
+}
+
+test("no active deadline: overdue rows with live workers allow waiting", () => {
+  expect(idleRedRowsRefusal(liveAdaptiveDecision(undefined))).toBeUndefined();
+  // Paused deadline is not an active one either.
+  expect(idleRedRowsRefusal(liveAdaptiveDecision({ ...activeDeadline, paused: true }))).toBeUndefined();
+});
+
+test("no active deadline: a started overdue row without a live worker is still a red row, without the deadline lecture", () => {
+  const reason = idleRedRowsRefusal(liveAdaptiveDecision(undefined, { running: false }));
+  expect(reason).toContain(liveAdaptive[0]);
+  expect(reason ?? "").not.toContain("expected deadline miss");
+});
+
+test("negative control: an active will-miss deadline with unstaffed critical rows refuses", () => {
+  const reason = idleRedRowsRefusal(liveAdaptiveDecision(activeDeadline, { running: false, deadlineStatus: "will-miss" }));
+  expect(reason).toContain("WAIT/STOP REFUSED: expected deadline miss");
+});
+
+test("active deadline: live workers on every critical row allow waiting only after a recent re-plan", () => {
+  expect(idleRedRowsRefusal(liveAdaptiveDecision(activeDeadline, { deadlineStatus: "will-miss", replannedAgoMs: 5 * 60_000 }))).toBeUndefined();
+  expect(idleRedRowsRefusal(liveAdaptiveDecision(activeDeadline, { deadlineStatus: "will-miss", replannedAgoMs: 60 * 60_000 }))).toContain("WAIT/STOP REFUSED");
+  // An original estimate (revision 1) is not a re-plan, however recent.
+  const original = liveAdaptiveDecision(activeDeadline, { deadlineStatus: "will-miss", replannedAgoMs: 5 * 60_000 });
+  for (const row of original.forecast.rows) row.estimateRevision = 1;
+  expect(idleRedRowsRefusal(original)).toContain("WAIT/STOP REFUSED");
+});
 
 test("an overdue Brag/Finance model label and attempt do not permit waiting on unrelated jobs", () => {
   const rows = [brag, finance].map(content => ({ content, status: "in_progress", owner: "worker", overdue: true, estimateRevision: 3 }));
