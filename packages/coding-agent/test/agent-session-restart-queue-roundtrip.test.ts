@@ -400,6 +400,129 @@ describe("AgentSession restart queue round trip", () => {
 		},
 	);
 
+	it("delivers the newest state note at the next tool boundary of a running turn", async () => {
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const inputs: string[] = [];
+		const tool: AgentTool = {
+			name: "work",
+			label: "Work",
+			description: "Work until released",
+			parameters: type({}),
+			execute: async () => {
+				entered.resolve();
+				await release.promise;
+				return { content: [{ type: "text", text: "work finished" }], details: {} };
+			},
+		};
+		session = createSession(
+			currentManager(),
+			[
+				{ content: [{ type: "toolCall", id: "work-1", name: "work", arguments: {} }] },
+				{ content: ["continued with latest state"], stopReason: "stop" },
+			],
+			inputs,
+			[tool],
+		);
+		const running = session.prompt("keep working");
+		await entered.promise;
+		try {
+			for (let index = 0; index < 95; index++) {
+				await session.sendCustomMessage(
+					{ customType: "todo-dispatch-time-note", content: `time-state-${index}`, display: false },
+					{ deliverAs: "steer", triggerTurn: false, supersedes: "todo-dispatch-time-note" },
+				);
+			}
+			await session.sendCustomMessage(
+				{ customType: "goal-deadline-time-note", content: "deadline-state", display: false },
+				{ deliverAs: "steer", triggerTurn: false, supersedes: "goal-deadline-time-note" },
+			);
+			expect(session.agent.peekSteeringQueue()).toHaveLength(2);
+			release.resolve();
+			await running;
+			expect(inputs[1]).toContain("time-state-94");
+			expect(inputs.slice(1).join("\n")).toContain("deadline-state");
+			expect(inputs.slice(1).join("\n")).not.toContain("time-state-93");
+			expect(session.agent.peekSteeringQueue()).toHaveLength(0);
+		} finally {
+			release.resolve();
+		}
+	});
+
+	it("collapses 95 legacy time notes without replacing other kinds or user steering, and replays the latest key", async () => {
+		appendPriorAssistant(currentManager());
+		session = createSession(currentManager());
+		const lease = session.beginRestartDrain();
+		for (let index = 0; index < 95; index++) {
+			session.queueDeferredMessage({
+				...hiddenNextTurnMessage("x".repeat(113_000)),
+				customType: "todo-dispatch-time-note",
+			});
+		}
+		session.queueDeferredMessage({ ...hiddenNextTurnMessage("deadline"), customType: "goal-deadline-time-note" });
+		session.agent.steer({ role: "user", content: "todo-dispatch-time-note", timestamp: Date.now() });
+		await session.sendCustomMessage(
+			{ customType: "todo-dispatch-time-note", content: "latest", display: false },
+			{ deliverAs: "steer", triggerTurn: false, supersedes: "todo-dispatch-time-note" },
+		);
+		await session.sendCustomMessage(
+			{ customType: "todo-dispatch-time-note", content: "newest", display: false },
+			{ deliverAs: "steer", triggerTurn: false, supersedes: "todo-dispatch-time-note" },
+		);
+		await lease.waitForQuiescence();
+		const checkpoint = restartQueueCheckpoints(currentManager()).at(-1);
+		expect(checkpoint?.type === "custom" ? checkpoint.data : undefined).toMatchObject({
+			steering: [{ role: "user", content: "todo-dispatch-time-note" }],
+			followUp: [{ content: "newest", supersedes: "todo-dispatch-time-note" }],
+			pendingNextTurn: [{ customType: "goal-deadline-time-note" }],
+		});
+		const sessionFile = currentManager().getSessionFile();
+		if (!sessionFile) throw new Error("Expected durable session file");
+		await session.dispose();
+		session = undefined;
+		sessionManager = undefined;
+		const restored = await reopenSession(sessionFile);
+		expect(restored.agent.peekFollowUpQueue()).toMatchObject([
+			{ content: "newest", supersedes: "todo-dispatch-time-note" },
+		]);
+		expect(restored.agent.peekSteeringQueue()).toMatchObject([{ role: "user", content: "todo-dispatch-time-note" }]);
+	});
+
+	it("does not write another live-sized checkpoint when queues are unchanged", async () => {
+		appendPriorAssistant(currentManager());
+		session = createSession(currentManager());
+		const lease = session.beginRestartDrain();
+		// DC queue shape: 95 time notes (~113 KB), 123 deadline notes, 74 other messages.
+		for (let index = 0; index < 292; index++) {
+			session.queueDeferredMessage({
+				...hiddenNextTurnMessage(index < 95 ? "x".repeat(113_000) : "state"),
+				customType: index < 95 ? "todo-dispatch-time-note" : index < 218 ? "goal-deadline-time-note" : "other",
+			});
+		}
+		const start = performance.now();
+		await lease.waitForQuiescence();
+		const initialMs = performance.now() - start;
+		const writes = currentManager()
+			.getEntries()
+			.filter(entry => entry.type === "custom" && entry.customType === "omp:restart-pending-queues").length;
+		lease.release();
+		const nextLease = session.beginRestartDrain();
+		const unchangedStart = performance.now();
+		await nextLease.waitForQuiescence();
+		const unchangedMs = performance.now() - unchangedStart;
+		process.stderr.write(
+			`restart queue benchmark: first=${initialMs.toFixed(3)}ms unchanged=${unchangedMs.toFixed(3)}ms\n`,
+		);
+
+		expect(
+			currentManager()
+				.getEntries()
+				.filter(entry => entry.type === "custom" && entry.customType === "omp:restart-pending-queues"),
+		).toHaveLength(writes);
+		expect(initialMs).toBeLessThan(50);
+		expect(unchangedMs).toBeLessThan(50);
+	});
+
 	it("delivers restart completion into a turn already running before restore", async () => {
 		const manager = currentManager();
 		appendPriorAssistant(manager);

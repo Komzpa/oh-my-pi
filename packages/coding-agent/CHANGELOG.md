@@ -927,6 +927,8 @@
 
 ### Fixed
 
+- Pending state notes can replace older notes by key, and unchanged restart queues no longer serialize megabytes of context ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
+
 - Graceful restart bounds dead-worker waits, preserves workers for revival, and reports the current drain stage and elapsed time ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
 - Graceful restart waits up to 30 minutes for isolated workers and saves recovery snapshots before teardown; `OMP_RESTART_ISOLATION_WAIT_MS` overrides the wait.

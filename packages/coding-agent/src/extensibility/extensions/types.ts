@@ -2196,7 +2196,13 @@ export interface ExtensionAPI {
 	 */
 	sendMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+			interruptWait?: boolean;
+			/** Replace undelivered custom messages with this key (legacy customType also matches). User messages are never replaced. */
+			supersedes?: string;
+		},
 	): void;
 
 	/** Send a user prompt: idle starts a turn; streaming queues as steer unless deliverAs is set.
@@ -2434,7 +2440,13 @@ export type SendMessageHandler = <T = unknown>(
 	 * `deliverAs: "aside"` injects at the next step boundary without interrupting the in-flight
 	 * tool batch, except that it ends a running interruptible `wait`; idle starts a turn unless `triggerTurn` is explicitly false (plan mode folds into context).
 	 */
-	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+	options?: {
+		triggerTurn?: boolean;
+		deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+		interruptWait?: boolean;
+		/** Replace undelivered custom messages with this key (legacy customType also matches). User messages are never replaced. */
+		supersedes?: string;
+	},
 ) => void;
 
 /** `deliverAs: "aside"` injects at the next step boundary without interrupting the in-flight tool
