@@ -276,7 +276,7 @@ describe("ExtensionRunner", () => {
 			commands: new Map(),
 			flags: new Map(),
 			shortcuts: new Map(),
-		} as Extension;
+		} as unknown as Extension;
 		const runner = new ExtensionRunner(
 			[extension],
 			new ExtensionRuntime(),
