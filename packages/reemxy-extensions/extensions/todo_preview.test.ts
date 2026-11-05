@@ -316,3 +316,19 @@ test("invisible rows accept maintenance; explicit gate assignment accepts its do
 		previewDispatchRefusal({ tasks: [{ agent: "coder", task: "Another feature" }] }, [phases[0]!.tasks[0]!]),
 	).toBeUndefined();
 });
+
+test("a coder owning a suite row is still eligible to own an invisible feature", async () => {
+	const phases = plan();
+	const gate = phases[0]!.tasks[1]!;
+	gate.schedule!.owner = "Coder";
+	gate.schedule!.executor!.agentProfile = "coder";
+	const records = await refreshPreviewVisibility(phases, config, [], asked, async () => false);
+	expect(
+		previewScheduleRefusal(
+			{ op: "schedule", updates: [{ task: "Rename Network rooms", owner: "Coder" }] },
+			phases,
+			records,
+			new Map([["Coder", "coder"]]),
+		),
+	).toBeUndefined();
+});
