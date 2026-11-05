@@ -994,11 +994,21 @@ function validateScheduleDependencyGraph(
 	const graph = new Map(
 		candidatePhases.flatMap(phase => phase.tasks.map(row => [row.content, edges(row.schedule)] as const)),
 	);
+	const previousNames = new Map(
+		phases.flatMap(phase => phase.tasks.map(row => [row.content, renamedTasks.get(row) ?? row.content] as const)),
+	);
 	// Only a newly added edge can introduce a cycle. Check against the whole candidate
 	// graph so two rows added in the same operation cannot bypass validation.
 	for (const row of phases.flatMap(phase => phase.tasks)) {
 		const name = renamedTasks.get(row) ?? row.content;
-		const previous = new Set(edges(row.schedule).map(dep => (dep === row.content ? name : dep)));
+		// Compare resolved row identities across renames. An unresolved old title that
+		// becomes a row in this operation is a new edge and still needs validation.
+		const previous = new Set(
+			edges(row.schedule).flatMap(dep => {
+				const target = previousNames.get(dep);
+				return target === undefined ? [] : [target];
+			}),
+		);
 		for (const dependency of graph.get(name) ?? []) {
 			if (previous.has(dependency)) continue;
 			const pending = [dependency];
