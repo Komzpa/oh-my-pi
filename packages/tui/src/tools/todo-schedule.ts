@@ -48,6 +48,7 @@ export interface TodoSchedule {
 	attemptHistory?: TodoReworkAttempt[];
 	/** User review state for a delivered implementation result. */
 	review?: "user" | "accepted" | "redo" | "drop";
+	reviewClosingBlocked?: string;
 	/** A row whose work is speculative until the named review is accepted. */
 	speculativeOn?: string;
 	/** Observed Task worker that actually executed this row, independent of forecast ownership. */
@@ -1366,7 +1367,11 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 			criticalityKnown,
 			ready: node.ready,
 			stale: node.stale,
-			overdue: !terminal && resourceTaskFinish !== undefined && now > resourceTaskFinish,
+			overdue:
+				node.schedule?.review !== "accepted" &&
+				!terminal &&
+				resourceTaskFinish !== undefined &&
+				now > resourceTaskFinish,
 			estimateRevision: node.schedule?.estimateRevision ?? (node.estimate ? 1 : 0),
 			reestimateCount: node.schedule?.reestimateCount ?? 0,
 			confidence: rowConfidence,
@@ -1581,6 +1586,8 @@ function displayTimestamp(value: number | undefined, now: number): string {
 }
 
 export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, expanded = false): string {
+	if (row.schedule?.review === "accepted" && row.status !== "completed" && row.status !== "abandoned")
+		return `accepted by user, closing${row.schedule.reviewClosingBlocked ? ` blocked: ${safeText(row.schedule.reviewClosingBlocked)}` : ""}`;
 	const terminal = row.status === "completed" || row.status === "abandoned";
 	const effort = row.estimateRangeSeconds
 		? `effort O/L/P ${Math.round(row.estimateRangeSeconds.optimistic)}/${Math.round(row.estimateRangeSeconds.likely)}/${Math.round(row.estimateRangeSeconds.pessimistic)}s`

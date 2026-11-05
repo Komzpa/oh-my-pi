@@ -1,5 +1,5 @@
 // @ts-nocheck -- exercises the extension through its registered runtime hooks.
-import { expect, test } from "bun:test";
+import { expect, test, spyOn } from "bun:test";
 import { decideTodoDispatch, deliveredRowsClosed, USER_WAIT_REFUSAL, waitsOnUser, acceptedSpeculativeMergeDemand, estimateFloorRefusal, firstDeliveryCutRequired, missedEtaRowsText, missingSpeculativeReview, SPRINT_STATE_ENTRY_TYPE, successfulDurationFloors, userUnblockAskDue, workerPastForecast } from "./todo_dispatch";
 import todoDispatch from "./todo_dispatch";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
@@ -335,7 +335,8 @@ async function recordReview(harness, verdict, evidence = "Customer decision reco
   const input = { op: "schedule", updates: [{ task, review: verdict, evidence }] };
   const result = await new TodoTool(session as never).execute("record-review", input);
   expect(result.isError).not.toBe(true);
-  await harness.handlers.get("tool_result")({ toolName: "todo", input, ...result }, harness.ctx);
+  const hook = await harness.handlers.get("tool_result")({ toolName: "todo", input, ...result }, harness.ctx);
+  return { result, hook };
 }
 
 
@@ -484,4 +485,70 @@ test("the user-unblock ask is not repeated after 15 or 60 minutes, and one user 
   } finally {
     Date.now = realNow;
   }
+});
+
+
+test("accepted review closes in the schedule result and remains closed after replay", async () => {
+  const phases = reviewPlan();
+  const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
+  const { result } = await recordReview(harness, "accepted");
+  expect(harness.phases()[0].tasks[0].status).toBe("completed");
+  expect(result.details.completedTasks).toContainEqual({ phase: phases[0].name, content: "Delivered UI" });
+  const replayed = getLatestTodoPhasesFromEntries([
+    { type: "custom", customType: "user_todo_edit", data: { phases } },
+    { type: "message", message: { role: "toolResult", toolName: "todo", details: JSON.parse(JSON.stringify(result.details)) } },
+  ]);
+  expect(replayed[0].tasks[0].status).toBe("completed");
+});
+
+test("a refused done gate preserves acceptance, its exact reason and a blocking plan problem", async () => {
+  const phases = reviewPlan();
+  phases[0].tasks.splice(1);
+  const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
+  const execute = TodoTool.prototype.execute;
+  const refusal = "Rn7: fresh qa-auditor pass missing for Delivered UI";
+  const spy = spyOn(TodoTool.prototype, "execute").mockImplementation(function (...args) {
+    if (args[1].op === "done") return Promise.resolve({ isError: true, content: [{ type: "text", text: refusal }] });
+    return execute.apply(this, args);
+  });
+  try {
+    const { result, hook } = await recordReview(harness, "accepted");
+    const row = harness.phases()[0].tasks[0];
+    expect(row.status).toBe("blocked");
+    expect(row.schedule.review).toBe("accepted");
+    expect(row.schedule.reviewClosingBlocked).toBe(refusal);
+    expect(result.content[0].text).toContain(`accepted by user, closing blocked: ${refusal}`);
+    expect(hook.content.map(part => part.text).join("\n")).toContain(`user accepted "Delivered UI"; close it or fix: ${refusal}`);
+    const replayed = getLatestTodoPhasesFromEntries([
+      { type: "custom", customType: "user_todo_edit", data: { phases } },
+      { type: "message", message: { role: "toolResult", toolName: "todo", details: JSON.parse(JSON.stringify(result.details)) } },
+    ]);
+    expect(replayed[0].tasks[0].schedule.reviewClosingBlocked).toBe(refusal);
+    const forecast = forecastTodoPlan(harness.phases(), { now: now + 3600000 }).rows[0];
+    expect(forecast.overdue).toBe(false);
+    expect(formatTaskForecastDisplay(forecast, now)).toBe(`accepted by user, closing blocked: ${refusal}`);
+  } finally { spy.mockRestore(); }
+});
+
+test("redo reopens a completed row and sends the user's actual note as the next brief", async () => {
+  const phases = reviewPlan();
+  phases[0].tasks[0].status = "completed";
+  phases[0].tasks[0].schedule.finishedAt = now;
+  const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
+  const note = "Move the buttons to the left";
+  await recordReview(harness, "redo", note);
+  const row = harness.phases()[0].tasks[0];
+  expect(row.status).toBe("in_progress");
+  expect(row.schedule.finishedAt).toBeUndefined();
+  const input = { tasks: [{ agent: "Coder", task: "Delivered UI" }] };
+  await harness.handlers.get("tool_call")({ toolName: "task", input }, harness.ctx);
+  expect(input.tasks[0].task).toContain(`USER CORRECTION TO HONOR: ${note}`);
+});
+
+test("drop abandons the reviewed row and releases its dependants", async () => {
+  const phases = reviewPlan();
+  const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
+  await recordReview(harness, "drop", "Do not ship this UI");
+  expect(harness.phases()[0].tasks[0].status).toBe("abandoned");
+  expect(harness.phases()[0].tasks[1].schedule.dependencies).not.toContain("Delivered UI");
 });
