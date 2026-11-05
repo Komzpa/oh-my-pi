@@ -63,6 +63,25 @@ test("admission and opener require the published matching result card, then open
 			input: { op: "schedule", updates: [{ task: row.content, review: "user", reviewPage: url }] },
 		};
 		expect((await handlers.get("tool_call")(event, ctx)).reason).toContain("422");
+		expect(
+			(
+				await handlers.get("tool_call")(
+					{
+						toolName: "todo",
+						input: {
+							op: "init",
+							phases: [
+								{
+									name: "Review",
+									tasks: [{ content: row.content, status: "completed", schedule: { review: "user" } }],
+								},
+							],
+						},
+					},
+					ctx,
+				)
+			).reason,
+		).toContain("missing review page");
 		expect(await probeReviewPage("http://localhost:8800/review/dc/", row.content)).toBe(400);
 		landed = `Commit abc — row: ${row.content}`;
 		expect(await probeReviewPage(url, row.content)).toBe(200);
