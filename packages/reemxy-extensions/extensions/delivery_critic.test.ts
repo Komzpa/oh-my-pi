@@ -60,7 +60,7 @@ function harness(outcome: "completed" | "failed" = "completed", preview = false)
 	const record = async (_row: unknown, verdict: DeliveryVerdict) => {
 		records.push(verdict);
 	};
-	const queue = (now = 10) => queueDeliveryCritic(ctx, row, "", record, now);
+	const queue = (now = 10, previewPath?: string) => queueDeliveryCritic(ctx, row, "", record, now, previewPath);
 	const finish = async (verdict: DeliveryVerdict) => {
 		deferred.resolve({ details: { results: [{ output: JSON.stringify(verdict) }] } });
 		await deferred.promise;
@@ -98,7 +98,8 @@ test("evidenced defect becomes redo with the critic evidence as the next brief a
 });
 test("preview-only delivery joins the batch after clean and displays the verdict", async () => {
 	const h = harness("completed", true);
-	h.queue();
+	h.row.schedule.reviewPage = undefined;
+	h.queue(10, "https://preview.example/rack");
 	await h.finish({ verdict: "clean", findings: [] });
 	expect(h.row.schedule.handoffPending).toBe(true);
 	expect(h.row.schedule.review).toBe("user");
