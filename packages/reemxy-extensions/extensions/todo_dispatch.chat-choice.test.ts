@@ -65,3 +65,58 @@ test("default HTTP probe admits 200 and refuses a page that has gone away", asyn
 		await server.stop(true);
 	}
 });
+
+test("live unfinished review rows do not demand decision pages before delivery", async () => {
+	const rows = [
+		{
+			name: "Work",
+			tasks: [
+				{
+					content: "Finance manifest drift: refresh and precommit green",
+					status: "in_progress",
+					schedule: { review: "user", owner: "PrecommitGreen" },
+				},
+				{
+					content: "Brag video: inventory user-visible changes since 2026-10-29",
+					status: "in_progress",
+					schedule: { review: "user", owner: "BragRerender" },
+				},
+				{
+					content: "Final full gate and push of the branch",
+					status: "in_progress",
+					schedule: { review: "user", owner: "Main" },
+				},
+				{
+					content: "Adaptive layout: heat pipes reach heat plant",
+					status: "pending",
+					schedule: { review: "user" },
+				},
+			],
+		},
+	];
+	expect(await idleUserReviewRefusal(rows, idle, new Set())).toBeUndefined();
+});
+
+test("delivered and visible review rows still require a page even after closure", async () => {
+	for (const delivery of [
+		{ status: "completed", schedule: {} },
+		{ status: "in_progress", schedule: { firstDeliveredAt: 123 } },
+		{ status: "in_progress", schedule: { visibleAt: 123 } },
+		{ status: "in_progress", schedule: { reviewSummary: "Delivered result" } },
+		{ status: "in_progress", schedule: { attemptHistory: [{ deliverablePaths: ["result.html"] }] } },
+	]) {
+		const rows = [
+			{
+				name: "Work",
+				tasks: [{ content: "Delivered result", ...delivery, schedule: { ...delivery.schedule, review: "user" } }],
+			},
+		];
+		expect(await idleUserReviewRefusal(rows, idle, new Set())).toContain("missing review page");
+	}
+});
+
+test("an abandoned result no longer demands a user decision", async () => {
+	const rows = plan({ review: "user", firstDeliveredAt: 123 });
+	rows[0].tasks[0].status = "abandoned";
+	expect(await idleUserReviewRefusal(rows, idle, new Set())).toBeUndefined();
+});

@@ -4,7 +4,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { TodoTool, getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch from "./todo_dispatch";
 import { PREVIEW_ENTRY_TYPE } from "./todo_preview";
 
@@ -315,4 +316,40 @@ test("the refusal's one-call schedule previewReason escape is admitted and persi
 	await h.hooks.get("tool_result")({ toolName: "todo", input, isError: false, details: { op: "schedule" } }, h.ctx);
 	delete input.previewReason;
 	expect((await call({ toolName: "todo", input }, h.ctx))?.reason).toBeUndefined();
+});
+
+test("live empty-updates deferral executes successfully and unblocks preview dispatch", async () => {
+	const h = await harness(true);
+	const task = "Land power and e2e repair patches, gates, push again";
+	h.phases()[0].tasks[0].content = task;
+	const input = {
+		op: "schedule",
+		i: "Deferring preview refresh until push",
+		previewReason: {
+			task,
+			kind: "deferred",
+			detail:
+				"Review checkout fast-forwards to the pushed SHA after CI PID 647137 and rack fix land; preview refresh happens once then.",
+		},
+		updates: [],
+	};
+	const dispatch = { toolName: "task", input: { tasks: [{ agent: "gate-runner", task }] } };
+	const call = h.hooks.get("tool_call");
+	expect((await call(dispatch, h.ctx))?.reason).toContain("preview-not-visible");
+	expect((await call({ toolName: "todo", input }, h.ctx))?.block).not.toBe(true);
+	const tool = new TodoTool({
+		...h.ctx,
+		hasUI: false,
+		getSessionFile: () => null,
+		getSessionSpawns: () => "*",
+		settings: Settings.isolated(),
+	});
+	const result = await tool.execute("live-preview-deferral", input);
+	expect(result.isError).not.toBe(true);
+	await h.hooks.get("tool_result")({ toolName: "todo", input, ...result }, h.ctx);
+	expect((await call(dispatch, h.ctx))?.reason ?? "").not.toContain("preview-not-visible");
+	expect(h.journal.filter(entry => entry.customType === PREVIEW_ENTRY_TYPE).at(-1).data.records[0].reason).toEqual({
+		kind: input.previewReason.kind,
+		detail: input.previewReason.detail,
+	});
 });

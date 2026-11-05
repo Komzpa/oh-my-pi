@@ -1028,7 +1028,8 @@ function applyScheduleUpdates(
 ): TodoPhase[] {
 	const updates = entry.updates;
 	if (!updates || updates.length === 0) {
-		errors.push("schedule requires a non-empty updates array");
+		if (entry.previewReason) return phases;
+		errors.push("schedule requires a non-empty updates array or previewReason");
 		return phases;
 	}
 

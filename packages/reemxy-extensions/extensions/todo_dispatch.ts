@@ -1235,14 +1235,16 @@ function localizeTimestampText(value: string, timeZone?: string): string {
 function safeText(value: unknown, max = MAX_LABEL): string {
   return typeof value === "string" ? shorten(value, max) : "unknown";
 }
+/** Shared delivery evidence for review closure and the idle decision gate. */
+function isDeliveredReview(task: { status: string; schedule?: unknown }): boolean {
+  const schedule = task.schedule as { review?: unknown; firstDeliveredAt?: unknown; visibleAt?: unknown; reviewSummary?: unknown; attemptHistory?: Array<{ deliverablePaths?: unknown }> } | undefined;
+  return schedule?.review === "user" && (task.status === "completed" || typeof schedule.visibleAt === "number" || typeof schedule.firstDeliveredAt === "number" || nonEmptyString(schedule.reviewSummary) || schedule.attemptHistory?.some((attempt) => Array.isArray(attempt.deliverablePaths) && attempt.deliverablePaths.length > 0)) === true;
+}
+
 /** A review row is closed only when an artifact was actually delivered. */
 export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; schedule?: unknown }> }>(phases: P[]): P[] {
-  const delivered = (task: P["tasks"][number]) => {
-    const schedule = task.schedule as { review?: unknown; firstDeliveredAt?: unknown; reviewSummary?: unknown; attemptHistory?: Array<{ deliverablePaths?: unknown }> } | undefined;
-    return schedule?.review === "user" && (typeof schedule.firstDeliveredAt === "number" || nonEmptyString(schedule.reviewSummary) || schedule.attemptHistory?.some((attempt) => Array.isArray(attempt.deliverablePaths) && attempt.deliverablePaths.length > 0));
-  };
-  return phases.map((phase) => phase.tasks.some((task) => delivered(task) && isNonClosedRowStatus(task.status))
-    ? { ...phase, tasks: phase.tasks.map((task) => delivered(task) && isNonClosedRowStatus(task.status) ? { ...task, status: "completed" } : task) }
+  return phases.map((phase) => phase.tasks.some((task) => isDeliveredReview(task) && isNonClosedRowStatus(task.status))
+    ? { ...phase, tasks: phase.tasks.map((task) => isDeliveredReview(task) && isNonClosedRowStatus(task.status) ? { ...task, status: "completed" } : task) }
     : phase);
 }
 
@@ -6022,7 +6024,7 @@ export async function idleUserReviewRefusal(
   },
 ): Promise<string | undefined> {
   if (!jobs || jobs.running.some((job) => job.status === "running")) return;
-  const open = phases.flatMap((phase) => phase.tasks).filter((row) => isNonClosedRowStatus(String(row.status)));
+  const open = phases.flatMap((phase) => phase.tasks).filter((row) => row.status === "blocked" || (row.status !== "abandoned" && isDeliveredReview(row)));
   if (!open.length) return;
   // Reuse the todo owner/review interpretation. No assistant message is an input.
   const decisions = open.filter(
