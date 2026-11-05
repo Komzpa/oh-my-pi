@@ -65,6 +65,14 @@ export interface TodoSchedule {
 	firstDeliveredAt?: number;
 	/** Short final worker report retained for the user's review handoff. */
 	reviewSummary?: string;
+	handoffPending?: boolean;
+	deliveryCritic?: {
+		key: string;
+		startedAt: number;
+		verdict: "pending" | "clean" | "defects";
+		timedOut?: boolean;
+		evidence?: string;
+	};
 	/** Published decision artifact, probed at the idle lead boundary. */
 	reviewPage?: string;
 	/** A refused handoff remains pending until its published row card resolves. */
@@ -1714,6 +1722,10 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 						: "commit not visible",
 			);
 	}
+	if (row.schedule?.deliveryCritic)
+		parts.push(
+			`shadow: ${row.schedule.deliveryCritic.verdict}${row.schedule.deliveryCritic.timedOut ? " (handoff released)" : ""}`,
+		);
 	if (row.schedule?.review === "user") parts.push("review: user");
 	if (row.schedule?.speculativeOn) parts.push(`speculative on ${safeText(row.schedule.speculativeOn)}`);
 	if (row.onProposal?.length) parts.push(`on proposal: ${row.onProposal.map(safeText).join(", ")}`);
@@ -1814,10 +1826,13 @@ function displayTimestamp(value: number | undefined, now: number): string {
 }
 
 export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, expanded = false): string {
+	const critic = row.schedule?.deliveryCritic;
+	const criticLabel = critic ? `shadow: ${critic.verdict}${critic.timedOut ? " (handoff released)" : ""}` : "";
+	if (critic?.verdict === "pending" && !critic.timedOut) return criticLabel;
 	if (isTodoAwaitingReview(row))
 		return row.schedule?.reviewPage && !row.schedule.reviewPagePending
-			? `awaiting your review → ${safeText(row.schedule.reviewPage)}`
-			: `handoff pending → skill://review-questions-page${row.schedule?.resources?.[0] ? ` · ${safeText(row.schedule.resources[0])}` : ""}`;
+			? `awaiting your review → ${safeText(row.schedule.reviewPage)}${criticLabel ? ` · ${criticLabel}` : ""}`
+			: `handoff pending → skill://review-questions-page${row.schedule?.resources?.[0] ? ` · ${safeText(row.schedule.resources[0])}` : ""}${criticLabel ? ` · ${criticLabel}` : ""}`;
 	if (row.schedule?.review === "accepted" && row.status !== "completed" && row.status !== "abandoned")
 		return `accepted by user, closing${row.schedule.reviewClosingBlocked ? ` blocked: ${safeText(row.schedule.reviewClosingBlocked)}` : ""}`;
 	const terminal = row.status === "completed" || row.status === "abandoned";
@@ -1840,7 +1855,7 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 					: planActions
 						? `plan required: ${planActions}`
 						: `forecast unavailable${row.issues[0] ? `: ${safeText(row.issues[0])}` : ""}`;
-	const parts = [label];
+	const parts = [label, ...(criticLabel ? [criticLabel] : [])];
 	if (row.schedule?.previewTracked && finiteTimestamp(row.schedule.firstRequirementAt)) {
 		const end = row.schedule.visibleAt ?? now;
 		parts.push(

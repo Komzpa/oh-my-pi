@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Critique completed deliveries before batching handoffs, automatically redo evidenced defects, and release handoffs after 15 minutes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Keep worker dispatch moving while result handoffs await a batch page; retry failed attempts without a handoff ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Require a published matching result card for user review handoffs and keep waits gated until publication ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

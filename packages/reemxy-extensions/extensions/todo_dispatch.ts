@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { resetDeliveryCriticTimers, queueDeliveryCritic, type DeliveryRow, type DeliveryVerdict } from "./delivery_critic";
 import { openReviewPages, probeReviewPage } from "./todo_review_opener";
 import { PREVIEW_ENTRY_TYPE, refreshPreviewVisibility, overduePreviewRows, previewScheduleRefusal, previewDispatchRefusal, previewPlanProblem, previewReason, type PreviewRecord } from "./todo_preview";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
@@ -1492,7 +1493,7 @@ function updateTodoSchedule(ctx: ExtensionContext, update: (phases: DispatchTodo
     const previous = before.flatMap((entry) => entry.tasks).find((candidate) => candidate.content === row.content);
     if (!previous || JSON.stringify(previous.schedule) === JSON.stringify(row.schedule)) continue;
     const patch = {} as Record<string, unknown>;
-    for (const key of ["review", "reviewSummary", "firstRequirementAt", "firstDeliveredAt", "speculativeOn", "visibleAt", "previewPending", "previewTracked", "previewIdentityMissing", "previewPartial"]) {
+    for (const key of ["deliveryCritic", "handoffPending", "progress", "review", "reviewSummary", "firstRequirementAt", "firstDeliveredAt", "speculativeOn", "visibleAt", "previewPending", "previewTracked", "previewIdentityMissing", "previewPartial"]) {
       if (row.schedule?.[key] !== previous.schedule?.[key]) patch[key] = row.schedule?.[key];
     }
     ctx.updateTodoSchedule(String(row.content), patch);
@@ -2253,7 +2254,16 @@ export function syncCriticalFast(
   for (const id of [...fastByWorker.keys()]) if (!want.has(id)) fastByWorker.delete(id);
 }
 
-export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe; reviewPageOpener?: (url: string) => void } = {}): Promise<void> {
+export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe; reviewPageOpener?: (url: string) => void; deliveryCriticRecord?: (row: DeliveryRow, verdict: DeliveryVerdict) => Promise<void> } = {}): Promise<void> {
+  const priorDeliveries = new Set<string>();
+  const deliveryKey = (row) => JSON.stringify([row.content, row.schedule?.executor?.workerId, row.schedule?.executor?.startedAt, row.schedule?.executor?.finishedAt]);
+  const checkDeliveries = (ctx: ExtensionContext) => {
+    if (!isMain(ctx)) return;
+    for (const phase of todoPhases(ctx)) for (const row of phase.tasks) {
+      if (row.schedule?.deliveryCritic || !priorDeliveries.has(deliveryKey(row)))
+        queueDeliveryCritic(ctx, row, "", options.deliveryCriticRecord, Date.now(), previewRecords(ctx).find(record => record.task === row.content)?.previewPath);
+    }
+  };
   const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
   const previewConfig = (ctx: ExtensionContext) => ctx.getTodoPreviewConfig?.() ?? { enabled: false, paths: [], thresholdMinutes: 15 };
   let previewPoll: Promise<PreviewRecord[]> | undefined;
@@ -2709,6 +2719,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return promise;
   };
   const load = (ctx: ExtensionContext) => {
+    resetDeliveryCriticTimers(ctx);
+    priorDeliveries.clear();
+    for (const phase of todoPhases(ctx)) for (const row of phase.tasks)
+      if (row.schedule?.executor?.outcome === "completed") priorDeliveries.add(deliveryKey(row));
+    checkDeliveries(ctx);
     flushSprintState();
     risk = undefined; riskCheckedAt = 0;
     reset();
@@ -5109,7 +5124,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
               display: true, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: false });
           }
           const schedule = row.schedule ?? {};
-          const unseen = !schedule.review && (schedule.attemptHistory ?? predecessor?.schedule?.attemptHistory)?.some(attempt => attempt.terminalStatus === "completed");
+          const unseen = !(schedule.deliveryCritic?.verdict === "pending" && !schedule.deliveryCritic?.timedOut) && !schedule.review && (schedule.attemptHistory ?? predecessor?.schedule?.attemptHistory)?.some(attempt => attempt.terminalStatus === "completed");
           const dependentReview = missingSpeculativeReview(item, phases, row);
           const reviewTarget = dependentReview ?? schedule.speculativeOn ?? (schedule.review === "user" || unseen ? String(row.content) : undefined);
           const patch = {
@@ -5700,6 +5715,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     absence.jobStamp = finished;
   };
   const planTick = async (ctx: ExtensionContext) => {
+    checkDeliveries(ctx);
     await pollPreview(ctx);
     lastPlanTickAt = Date.now();
     planTickCount += 1;
@@ -5920,6 +5936,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
               if (!worker) return row;
               const result = resultById.get(worker) as { output?: unknown } | undefined;
               const output = typeof result?.output === "string" ? result.output.trim() : "";
+              if (queueDeliveryCritic(ctx, row, output, options.deliveryCriticRecord, Date.now(), previewRecords(ctx).find(record => record.task === row.content)?.previewPath)) return row;
               const summary = output.split(/\n\s*\n/).at(-1)?.trim().slice(-800);
               const updated = { ...row, schedule: {
                 ...schedule,
@@ -6018,6 +6035,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
 
   pi.on("turn_end", async (_event, ctx) => {
+    checkDeliveries(ctx);
     announceGates(ctx);
     if (isMain(ctx)) {
       for (const row of pendingReview(todoPhases(ctx))) {

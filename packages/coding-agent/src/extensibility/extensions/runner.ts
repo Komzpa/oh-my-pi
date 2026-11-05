@@ -867,7 +867,7 @@ export class ExtensionRunner {
 		if (depth >= 8) {
 			throw new Error(`invokeTool: delegation depth exceeded 8 (recursive invokeTool for "${name}"?)`);
 		}
-		const toolCallId = `invoke-${name}-${Date.now().toString(36)}-${depth}`;
+		const toolCallId = `invoke-${name}-${crypto.randomUUID()}-${depth}`;
 		return (await resolved.tool.execute(
 			toolCallId,
 			params as never,
@@ -1876,6 +1876,8 @@ export class ExtensionRunner {
 			getTaskMaxConcurrency: () => (this.settings ? cfgTaskMaxConcurrency.get(this.settings) : undefined),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
+			runDeliveryCritic: (task, signal) =>
+				this.invokeNativeTool("task", { agent: "user-shadow", task, effort: "lo" }, { signal }),
 			getTodoPhases: () => this.getTodoPhases?.(),
 			updateTodoSchedule: (task, patch) => this.updateTodoSchedule?.(task, patch) ?? false,
 			setSubagentFastMode: this.#setSubagentFastModeFn,
