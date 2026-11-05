@@ -29,6 +29,7 @@ import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDea
 import unansweredUserInstructions from "./unanswered-user-reply.md" with { type: "text" };
 import gateNoticeInstructions from "./gate-notices.md" with { type: "text" };
 import chatChoiceInstructions from "./chat-choice-gate.md" with { type: "text" };
+import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetadata, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
@@ -6040,10 +6041,10 @@ export function idleRedRowsRefusal(
     return true;
   });
   if (!red.length && !preview.length) return;
-  return [
-    red.length ? `Refusing idle/wait: open rows need a live owner: ${red.map(row => JSON.stringify(row.content)).join(", ")}. In one call, staff it with task; re-plan it with todo schedule and a new estimate/date; hand it to the user with todo op="block", task=<exact row>, reason=<user action>, missionCritical=<why their action is required>; or drop it with todo op="drop", task=<exact row>, reason=<why>.` : "",
-    preview.length ? `Refusing idle/wait: preview is overdue for ${preview.map(row => JSON.stringify(row.content)).join(", ")}. Land the partial change in the preview checkout now, or record todo previewReason kind=deferred with a reason and deferUntil=<future Unix milliseconds>.` : "",
-  ].filter(Boolean).join("\n");
+  return prompt.render(idleRedRowsInstructions, {
+    red: red.map(row => JSON.stringify(row.content)).join(", "),
+    preview: preview.map(row => JSON.stringify(row.content)).join(", "),
+  }).trim();
 }
 
 export type ReviewPageProbe = (url: string) => Promise<number>;
