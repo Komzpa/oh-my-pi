@@ -103,10 +103,13 @@ function writeAndObserveLiveSettings(id: string): WeakRef<Settings> {
 }
 
 /** Runs `AGENT_ID` to a finished keep-alive state; `release` drops the mock's session-bound recordings. */
-async function runKeptAliveSubagent(checkpoints?: {
-	advanceClock(): void;
-	requests: Message[][];
-}): Promise<{ release(): void; close(): void }> {
+async function runKeptAliveSubagent(
+	checkpoints?: {
+		advanceClock(): void;
+		requests: Message[][];
+	},
+	invokedAt?: number,
+): Promise<{ release(): void; close(): void }> {
 	// Under the isolated HOME: project discovery walks up from cwd and stops at os.homedir(). On Windows
 	// os.tmpdir() lives under the real home, so a cwd outside the fake HOME would walk into the real
 	// ~/.omp and load the developer's installed plugins as project plugins.
@@ -144,6 +147,7 @@ async function runKeptAliveSubagent(checkpoints?: {
 			task: "report done",
 			index: 0,
 			id: AGENT_ID,
+			invokedAt,
 			modelOverride: "mock/mock-model",
 			authStorage,
 			modelRegistry,
@@ -271,5 +275,48 @@ it("retains a five-minute checkpoint as a stable prefix across later tool reques
 		clock.mockRestore();
 		run.release();
 		run.close();
+	}
+}, 30_000);
+
+it("redispatches an old assignment with a fresh persisted attempt checkpoint", async () => {
+	const originalAssignmentStart = Date.now();
+	let now = originalAssignmentStart;
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const first = await runKeptAliveSubagent(undefined, originalAssignmentStart);
+	try {
+		await AgentLifecycleManager.global().release(AGENT_ID);
+		first.release();
+		now += 8 * 24 * 60 * 60_000;
+		const requests: Message[][] = [];
+		const redispatched = await runKeptAliveSubagent({ requests, advanceClock: () => {} }, originalAssignmentStart);
+		try {
+			const checkpoint = requests[0]!.filter(isPersistedSubagentElapsedNote).at(-1)!;
+			expect(checkpoint.timestamp).toBe(now);
+			expect(checkpoint.content).toContain("elapsed 0m in this attempt");
+			const session = localSession(AgentRegistry.global().get(AGENT_ID)?.session);
+			const init = session.sessionManager
+				.getEntries()
+				.filter(entry => entry.type === "session_init")
+				.at(-1)!;
+			expect(init.assignmentStartedAt).toBe(originalAssignmentStart);
+			expect(init.attemptStartedAt).toBe(now);
+			const persisted = session.sessionManager
+				.getBranch()
+				.flatMap(entry => (entry.type === "message" ? [entry.message] : []))
+				.filter(message => message.role === "developer" && isPersistedSubagentElapsedNote(message))
+				.at(-1)!;
+			expect(persisted).toMatchObject({
+				role: checkpoint.role,
+				content: checkpoint.content,
+				timestamp: checkpoint.timestamp,
+			});
+		} finally {
+			redispatched.release();
+			redispatched.close();
+		}
+	} finally {
+		first.release();
+		first.close();
+		clock.mockRestore();
 	}
 }, 30_000);

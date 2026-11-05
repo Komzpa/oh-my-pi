@@ -52,18 +52,6 @@ it("keeps the history unchanged before five minutes and persists at the next due
 	expect(messages[1]?.content).toContain("elapsed 5m in this attempt");
 });
 
-it("starts a redispatched attempt at zero even when its assignment is days old", () => {
-	const messages: Message[] = [];
-	const originalAssignmentStart = new Date(2026, 9, 20, 8, 0).getTime();
-	const attemptStartedAt = new Date(2026, 9, 28, 8, 0).getTime();
-	const signal = new SubagentElapsedSignal({ attemptStartedAt, appendMessage: message => messages.push(message) });
-
-	signal.start();
-
-	expect(attemptStartedAt - originalAssignmentStart).toBeGreaterThan(7 * 24 * 60 * 60_000);
-	expect(messages[0]?.content).toContain("elapsed 0m in this attempt");
-});
-
 it("revives the same attempt from its last persisted note and continues the clock", () => {
 	const messages: Message[] = [];
 	const attemptStartedAt = new Date(2026, 9, 28, 8, 0).getTime();
