@@ -362,6 +362,44 @@ export function clearProviderAuthOnCredentialChange(provider: string, credential
 	if (cleared) notify(cleared, true);
 }
 
+/** Raw shared records, including timers that have not yet been revisited. */
+export function listProviderCooldowns(): ProviderExhaustionRecord[] {
+	return [...readPersisted().values()];
+}
+
+/** Revision check also invalidates any outstanding probe's lease. */
+export function clearProviderCooldown(provider: string, revision?: string): boolean {
+	const observed = readPersisted().get(provider.toLowerCase());
+	if (!observed || (revision !== undefined && observed.revision !== revision)) return false;
+	const cleared = mutate(records => {
+		const current = records.get(provider.toLowerCase());
+		if (current?.revision !== observed.revision || current.leaseOwner !== observed.leaseOwner) return undefined;
+		records.delete(provider.toLowerCase());
+		return current;
+	});
+	if (cleared) notify(cleared, true);
+	return cleared !== undefined;
+}
+
+/** A successful inference proves billing/entitlement recovery, never catalog or auth recovery. */
+export function recordProviderSuccess(provider: string): void {
+	try {
+		const observed = readPersisted().get(provider.toLowerCase());
+		if (!observed || observed.class === "auth" || observed.class === "discovery") return;
+		clearProviderCooldown(provider, observed.revision);
+	} catch (error) {
+		logger.warn("Cannot persist provider recovery", { provider, error: String(error) });
+	}
+}
+
+export interface ProviderProbeOptions {
+	now?: number;
+	owner?: string;
+	force?: boolean;
+	provider?: string;
+	onResult?: (provider: string, result: "available" | "unavailable" | "leased" | "stale" | "auth") => void;
+}
+
 export interface ProviderProbeResult {
 	available: boolean;
 	credentialVersion?: string;
@@ -373,34 +411,45 @@ export interface ProviderProbeResult {
  */
 export async function probeUnavailableProviders(
 	probe: (record: ProviderExhaustionRecord) => Promise<ProviderProbeResult>,
-	options: { now?: number; owner?: string } = {},
+	options: ProviderProbeOptions = {},
 ): Promise<void> {
 	const now = options.now ?? Date.now();
 	const owner = options.owner ?? `${process.pid}:${crypto.randomUUID()}`;
 	for (const snapshot of readPersisted().values()) {
-		if (snapshot.resetAt !== undefined) {
+		if (options.provider && snapshot.provider.toLowerCase() !== options.provider.toLowerCase()) continue;
+		if (!options.force && snapshot.resetAt !== undefined) {
 			providerExhaustionRecord(snapshot.provider, now);
 			continue;
 		}
-		if (snapshot.class === "auth" || snapshot.nextProbeAt > now) continue;
+		if (snapshot.class === "auth") {
+			options.onResult?.(snapshot.provider, "auth");
+			continue;
+		}
+		if (!options.force && snapshot.nextProbeAt > now) continue;
 		const leased = mutate(records => {
 			const current = records.get(snapshot.provider.toLowerCase());
-			if (!current || current.nextProbeAt > now || (current.leaseUntil ?? 0) > now) return undefined;
+			if (!current || (!options.force && current.nextProbeAt > now) || (current.leaseUntil ?? 0) > now)
+				return undefined;
 			current.leaseOwner = owner;
 			current.leaseUntil = now + PROBE_LEASE_MS;
 			return { ...current };
 		});
-		if (!leased) continue;
+		if (!leased) {
+			options.onResult?.(snapshot.provider, "leased");
+			continue;
+		}
 		let result: ProviderProbeResult;
 		try {
 			result = await probe(leased);
 		} catch {
 			result = { available: false };
 		}
+		let applied = false;
 		const cleared = mutate(records => {
 			const key = leased.provider.toLowerCase();
 			const current = records.get(key);
 			if (current?.revision !== leased.revision || current.leaseOwner !== owner) return undefined;
+			applied = true;
 			if (result.available) {
 				records.delete(key);
 				return current;
@@ -414,5 +463,6 @@ export async function probeUnavailableProviders(
 			return undefined;
 		});
 		if (cleared) notify(cleared, true);
+		options.onResult?.(leased.provider, applied ? (cleared ? "available" : "unavailable") : "stale");
 	}
 }

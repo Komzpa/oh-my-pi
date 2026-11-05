@@ -57,6 +57,7 @@ import {
 	clearProviderAuthOnCredentialChange,
 	isProviderExhausted,
 	probeUnavailableProviders,
+	type ProviderProbeOptions,
 	providerExhaustionRecord,
 	recordProviderFailure,
 } from "../session/provider-exhaustion";
@@ -995,7 +996,8 @@ export class ModelRegistry {
 	}
 
 	/** Run one leased recovery pass. Explicit entry point also permits network-free regression tests. */
-	runAvailabilityProbes(): Promise<void> {
+	runAvailabilityProbes(options: ProviderProbeOptions = {}): Promise<void> {
+		if (options.force) return this.#runAvailabilityProbes(options);
 		if (this.#owner) return Promise.resolve();
 		this.#availabilityRun ??= this.#runAvailabilityProbes().finally(() => {
 			this.#availabilityRun = undefined;
@@ -1003,7 +1005,7 @@ export class ModelRegistry {
 		return this.#availabilityRun;
 	}
 
-	async #runAvailabilityProbes(): Promise<void> {
+	async #runAvailabilityProbes(options: ProviderProbeOptions = {}): Promise<void> {
 		await this.authStorage.credentials.poll();
 		for (const provider of this.#knownStaticProviders()) {
 			if (providerExhaustionRecord(provider)?.class === "auth") {
@@ -1040,7 +1042,7 @@ export class ModelRegistry {
 				}
 			}
 			return { available: await probeProviderInference(this, record.provider) };
-		});
+		}, options);
 	}
 
 	#recordDiscoveryFailure(provider: string, error: unknown): void {

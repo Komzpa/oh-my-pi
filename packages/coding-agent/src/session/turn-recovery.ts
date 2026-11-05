@@ -86,7 +86,7 @@ import {
 	validateRetryFallbackChains,
 } from "./retry-fallback-chains";
 import { ProviderUnavailableError } from "./provider-unavailable-error";
-import { recordProviderFailure, providerExhaustionRecord } from "./provider-exhaustion";
+import { recordProviderFailure, recordProviderSuccess, providerExhaustionRecord } from "./provider-exhaustion";
 import { describeUsageFallback } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
@@ -1023,7 +1023,11 @@ export class TurnRecovery {
 
 	/** Record terminal failures even when retry policy is disabled or replay is unsafe. */
 	async recordProviderAvailabilityOutcome(message: AssistantMessage): Promise<void> {
-		if (message.stopReason !== "error" || this.#availabilityOutcomes.has(message)) return;
+		if (message.stopReason !== "error") {
+			if (message.stopReason !== "aborted") recordProviderSuccess(message.provider);
+			return;
+		}
+		if (this.#availabilityOutcomes.has(message)) return;
 		if ((await this.#usageLimitOutcomes.get(message))?.switchedCredential) return;
 
 		if (

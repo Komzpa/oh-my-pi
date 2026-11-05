@@ -8,6 +8,7 @@
 
 ### Added
 
+- Check provider cooldowns and probe recovery immediately with `omp providers` and `/providers`; successful inference clears billing cooldowns ([#16532](https://github.com/can1357/oh-my-pi/pull/16532) by [@Komzpa](https://github.com/Komzpa)).
 - Model selection skips unavailable providers without changing preferences; sessions wait for recovery, with shared probes and host-routable transition notices ([#16532](https://github.com/can1357/oh-my-pi/pull/16532) by [@Komzpa](https://github.com/Komzpa)).
 - Added `skills.manualSkills` glob patterns to keep skills available manually while hiding them from the model catalog, without editing their `SKILL.md` files ([#18114](https://github.com/can1357/oh-my-pi/pull/18114) by [@Shadorain](https://github.com/Shadorain))
 - Added Keenable as a web search engine (`web/keenable`). It uses `KEENABLE_API_KEY` or a stored `keenable` credential when present; an explicit selection without a key uses Keenable's keyless public endpoint ([#17953](https://github.com/can1357/oh-my-pi/pull/17953) by [@KGKallasmaa](https://github.com/KGKallasmaa))

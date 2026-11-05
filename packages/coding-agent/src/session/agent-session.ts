@@ -4849,6 +4849,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 			if (event.message.role === "assistant") {
 				const assistantMsg = event.message as AssistantMessage;
+				if (assistantMsg.stopReason !== "error")
+					await this.#recovery.recordProviderAvailabilityOutcome(assistantMsg);
 				// Fold this turn's timing into per-model perf aggregates (drives the
 				// /models TPS/TTFT display). Errored turns measure nothing; aborted
 				// turns with reported usage are still valid throughput samples.

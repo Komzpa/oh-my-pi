@@ -18,6 +18,13 @@ async function run(stateDir: string, body: string): Promise<unknown> {
 			"--eval",
 			`
 import * as state from ${JSON.stringify(source)};
+import { providersCommand } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/session/providers-command.ts"))};
+import { BUILTIN_SESSION_SLASH_COMMANDS } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/slash-commands/builtin-session.ts"))};
+import { TurnRecovery } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/session/turn-recovery.ts"))};
+import { ModelRegistry } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/config/model-registry.ts"))};
+import { AuthStorage } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/session/auth-storage.ts"))};
+import * as streams from "@oh-my-pi/pi-ai/stream";
+import { spyOn } from "bun:test";
 const output = await (async () => { ${body} })();
 process.stdout.write(JSON.stringify(output));
 `,
@@ -211,6 +218,109 @@ return { calls, record: state.providerExhaustionRecord("muse", 301002) };`,
 			calls: 1,
 			record: { class: "balance", failedCallCount: 2, lastSeen: 301001 },
 		});
+	});
+
+	it("operator commands use real registry inference for immediate recovery and keep failed providers", async () => {
+		const result = await run(
+			fixture(),
+			`
+const auth = await AuthStorage.create(":memory:");
+await auth.credentials.set("openai", { type: "api_key", key: "fixture" });
+const registry = new ModelRegistry(auth);
+state.recordProviderFailure("openai", { code: "quota_exceeded" });
+const inference = spyOn(streams, "completeSimple").mockResolvedValue({ stopReason: "error" });
+const slash = BUILTIN_SESSION_SLASH_COMMANDS.find(command => command.name === "providers");
+let failed;
+await slash.handle({ args: "probe openai" }, { session: { modelRegistry: registry }, output: text => { failed = text; } });
+const attempts = state.listProviderCooldowns()[0].probeAttempts;
+inference.mockResolvedValue({ stopReason: "stop" });
+const success = await providersCommand(["probe", "--all"], async () => registry);
+const remaining = state.listProviderCooldowns();
+state.recordProviderFailure("muse", { status: 402 });
+const listed = await providersCommand([], async () => { throw new Error("listing initialized auth"); });
+const cli = Bun.spawn([process.execPath, ${JSON.stringify(path.resolve(import.meta.dir, "../src/cli.ts"))}, "providers", "clear", "muse"], { stdout: "pipe", stderr: "pipe" });
+const cleared = (await new Response(cli.stdout).text()).trim();
+if (await cli.exited !== 0) throw new Error(await new Response(cli.stderr).text());
+const empty = state.listProviderCooldowns();
+const calls = inference.mock.calls.length;
+registry.stopAvailabilityMonitoring(); auth.close();
+return { failed, attempts, success, remaining, listed, cleared, empty, calls };`,
+		);
+		expect(result).toMatchObject({
+			failed: "openai: still unavailable; cooldown retained.",
+			attempts: 1,
+			success: "openai: available; cooldown cleared.",
+			remaining: [],
+			empty: [],
+			calls: 2,
+		});
+		expect((result as { listed: string }).listed).toContain("muse\tbalance");
+		expect((result as { cleared: string }).cleared).toContain("availability was not probed");
+	});
+
+	it("manual probe bypasses the Codex reset timer but preserves unrelated providers and failed backoff", async () => {
+		const directory = fixture();
+		const result = await run(
+			directory,
+			`
+state.recordProviderFailure("codex-lb", { code: "quota_exceeded", resetAt: 9999999 }, 1000);
+state.recordProviderFailure("muse", { status: 402 }, 1000);
+let calls = 0;
+await state.probeUnavailableProviders(async () => { calls++; return { available: false }; }, { force: true, provider: "codex-lb", now: 2000 });
+const failed = state.listProviderCooldowns().find(row => row.provider === "codex-lb");
+await state.probeUnavailableProviders(async () => { calls++; return { available: true }; }, { force: true, provider: "CODEX-LB", now: 2001 });
+return { calls, failed, remaining: state.listProviderCooldowns().map(row => row.provider) };`,
+		);
+		expect(result).toMatchObject({
+			calls: 2,
+			failed: { probeAttempts: 1, nextProbeAt: 602000 },
+			remaining: ["muse"],
+		});
+		expect(await run(directory, `return state.isProviderExhausted("codex-lb", 2002);`)).toBe(false);
+	});
+
+	it("explicit clear invalidates a leased result and stale revisions cannot clear a newer failure", async () => {
+		const result = await run(
+			fixture(),
+			`
+state.recordProviderFailure("codex-lb", { code: "quota_exceeded" }, 1000);
+const revision = state.listProviderCooldowns()[0].revision;
+const gate = Promise.withResolvers();
+const started = Promise.withResolvers();
+let calls = 0;
+const probe = state.probeUnavailableProviders(async () => { calls++; started.resolve(); await gate.promise; return { available: false }; }, { force: true, now: 2000 });
+await started.promise;
+await state.probeUnavailableProviders(async () => { calls++; return { available: true }; }, { force: true, now: 2001 });
+const cleared = state.clearProviderCooldown("CODEX-LB");
+gate.resolve();
+await probe;
+const empty = state.listProviderCooldowns();
+state.recordProviderFailure("codex-lb", { code: "quota_exceeded" }, 3000);
+return { calls, cleared, empty, stale: state.clearProviderCooldown("codex-lb", revision), remaining: state.listProviderCooldowns().length };`,
+		);
+		expect(result).toEqual({ calls: 1, cleared: true, empty: [], stale: false, remaining: 1 });
+	});
+
+	it("successful inference clears quota and entitlement immediately but preserves auth and discovery", async () => {
+		const directory = fixture();
+		await run(
+			directory,
+			`
+state.recordProviderFailure("codex-lb", { code: "quota_exceeded" });
+state.recordProviderFailure("muse", { code: "billing_not_configured" });
+state.recordProviderFailure("auth", { status: 401 });
+state.recordProviderFailure("catalog", { discoveryFailure: true });
+const recovery = new TurnRecovery({}, { deferFallbackChainValidation: true });
+await recovery.recordProviderAvailabilityOutcome({ provider: "codex-lb", stopReason: "aborted" });
+const abortedRetained = state.isProviderExhausted("codex-lb");
+if (!abortedRetained) throw new Error("aborted call cleared quota");
+for (const provider of ["codex-lb", "muse", "auth", "catalog"]) await recovery.recordProviderAvailabilityOutcome({ provider, stopReason: "toolUse" });
+return null;`,
+		);
+		expect(await run(directory, `return state.listProviderCooldowns().map(row => row.provider);`)).toEqual([
+			"auth",
+			"catalog",
+		]);
 	});
 
 	it("backs failed probes off and never uses time or a probe to clear auth", async () => {
