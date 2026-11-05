@@ -1821,9 +1821,10 @@ function formatSummary(
 	readOnly = false,
 	now = Date.now(),
 	focusPhase?: string,
+	accountingPhases = phases,
 ): string {
-	const tasks = phases.flatMap(phase => phase.tasks);
-	if (tasks.length === 0) {
+	const tasks = accountingPhases.flatMap(phase => phase.tasks);
+	if (tasks.length === 0 || phases.length === 0) {
 		if (errors.length > 0) return `Errors: ${errors.join("; ")}`;
 		return readOnly ? "Todo list is empty." : "Todo list cleared.";
 	}
@@ -1949,8 +1950,9 @@ function formatMutationSummary(
 	errors: string[],
 	forecast: TodoPlanForecast,
 	now: number,
+	accountingPhases = phases,
 ): string {
-	const tasks = phases.flatMap(phase => phase.tasks);
+	const tasks = accountingPhases.flatMap(phase => phase.tasks);
 	const open = tasks.filter(task => task.status === "pending" || task.status === "in_progress").length;
 	const closed = tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
 	const blocked = tasks.filter(task => task.status === "blocked");
@@ -2188,6 +2190,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 						phase.tasks.filter(task => task.content === entry.task).map(task => ({ phase: phase.name, task })),
 					)
 				: undefined;
+		const accountingPhases = withTodoArchive(effective, [...archivedPhases, ...newArchive]);
 		const summary = matchingTasks
 			? matchingTasks.length
 				? JSON.stringify(matchingTasks, null, 2)
@@ -2195,8 +2198,16 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			: readOnly && entry.archive
 				? formatTodoView(effective, { now, all: true, archive: true, archivedPhases })
 				: op === "init" || readOnly
-					? formatSummary(effective, errors, forecast, readOnly, now, readOnly ? entry.phase : undefined)
-					: formatMutationSummary(op, previousPhases, updated, errors, forecast, now);
+					? formatSummary(
+							effective,
+							errors,
+							forecast,
+							readOnly,
+							now,
+							readOnly ? entry.phase : undefined,
+							accountingPhases,
+						)
+					: formatMutationSummary(op, previousPhases, updated, errors, forecast, now, accountingPhases);
 		const droppedEdges =
 			op === "drop" && !failed
 				? healStoredDanglingEdges(
