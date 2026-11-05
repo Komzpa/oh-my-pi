@@ -21,6 +21,7 @@ import {
 	formatTaskForecastDisplay,
 	getTodoPlanningIssues,
 	type TodoConfidence,
+	type RowRiskOptions,
 	type TodoSchedule,
 	type TodoPlanForecast,
 	type TodoReworkAttempt,
@@ -34,6 +35,7 @@ import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
+import { loadRowRisk } from "../task/row-risk";
 import { cfgTaskMaxConcurrency } from "../task/settings";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
@@ -154,6 +156,7 @@ const TodoScheduleUpdateInput = type({
 	"content?": type("string").describe("Rename the row; keeps its owner and history"),
 	"dependencies?": type("string").array(),
 	"owner?": type("string"),
+	"agentProfile?": type("string"),
 	"resources?": type("string").array(),
 	"estimate?": TodoEstimateInput,
 	"evidence?": type("string"),
@@ -743,7 +746,7 @@ function withArchivedPrerequisites(phases: TodoPhase[], archived: TodoPhase[]): 
 export function forecastTodoLivePlan(
 	phases: TodoPhase[],
 	archived: TodoPhase[],
-	options: { now: number; capacity?: number; deadlineAt?: number },
+	options: { now: number; capacity?: number; deadlineAt?: number; risk?: RowRiskOptions },
 ): TodoPlanForecast {
 	const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
 	const forecast = forecastTodoPlan(withArchivedPrerequisites(phases, archived), options);
@@ -1171,6 +1174,7 @@ function applyScheduleUpdates(
 			else schedule.owner = update.owner.trim();
 		}
 		if (ownerChanged) schedule.reestimateCount = 0;
+		if (update.agentProfile !== undefined) schedule.agentProfile = update.agentProfile.trim() || undefined;
 		if (update.resources !== undefined) schedule.resources = update.resources.map(resource => resource.trim());
 		if (update.estimate) {
 			const estimate = { ...update.estimate, basis: update.estimate.basis.trim() };
@@ -2035,6 +2039,13 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const forecast = forecastTodoLivePlan(effective, [...archivedPhases, ...newArchive], {
 			now,
 			capacity: cfgTaskMaxConcurrency.get(this.session.settings),
+			risk: await loadRowRisk(
+				this.session.settings,
+				this.session.modelRegistry,
+				this.session.cwd,
+				this.session.effectiveExtensionRoots?.(),
+				now,
+			),
 			...(deadline === undefined ? {} : { deadlineAt: deadline.deadlineAt }),
 		});
 		const details = attachLiveTodoDetails(

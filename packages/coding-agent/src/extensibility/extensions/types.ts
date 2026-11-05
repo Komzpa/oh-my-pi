@@ -48,7 +48,7 @@ import type { LoopConditionConfig } from "@oh-my-pi/pi-tui/status-line/loop";
 import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import type { TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { RowRiskOptions, TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	Api,
@@ -537,6 +537,7 @@ export interface CompactOptions {
  * into the mutable registry or re-implementing matching/family heuristics.
  */
 export interface ExtensionModelQuery {
+	rowRisk?(): Promise<RowRiskOptions | undefined>;
 	/** Authenticated models available this session (the same set `--model` selection sees). */
 	list(): Model[];
 	/** The current session model, if one is set. */

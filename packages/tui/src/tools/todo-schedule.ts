@@ -1,3 +1,5 @@
+import { drawAttemptChain, riskCells, riskRandom, type RowRiskOptions, type RowRiskForecast } from "./todo-row-risk";
+export * from "./todo-row-risk";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { truncateToWidth } from "../utils";
 
@@ -17,6 +19,7 @@ export interface TodoEstimate {
 
 /** Forecast metadata belongs to the exact task content; there are deliberately no generated IDs. */
 export interface TodoSchedule {
+	agentProfile?: string;
 	/** Explicit scope cut, retained as a visible follow-up. */
 	postDeadline?: boolean;
 	/** `undefined` means unknown; `[]` explicitly means independent. References are exact task content. */
@@ -28,6 +31,8 @@ export interface TodoSchedule {
 	estimate?: TodoEstimate;
 	/** Server-owned revisions; first estimate is revision 1, with zero reestimates. */
 	estimateRevision?: number;
+	/** PERT mean captured at first dispatch, used by empirical attempt ratios. */
+	riskEstimateMeanSeconds?: number;
 	reestimateCount?: number;
 	progress?: { at: number; evidence: string };
 	startedAt?: number;
@@ -160,6 +165,8 @@ export interface TodoTaskForecast {
 export type TodoDeadlineStatus = "overdue" | "will-miss" | "at-risk" | "on-track" | "unknown";
 
 export interface TodoPlanForecast {
+	risk?: RowRiskForecast;
+	riskModelUnavailable?: boolean;
 	rows: TodoTaskForecast[];
 	now: number;
 	deadlineAt?: number;
@@ -190,6 +197,7 @@ export interface TodoPlanForecast {
 }
 
 export interface TodoForecastOptions {
+	risk?: RowRiskOptions;
 	now: number;
 	deadlineAt?: number;
 	/** Positive integer concurrency; 0 means Unlimited. Omitted/invalid input uses default 32; effective capacity is bounded by forecastable open tasks. */
@@ -789,10 +797,14 @@ function collectTodoPlanningIssues(phases: TodoScheduleInput, analysis: Dependen
 	return issues;
 }
 
+export function todoEstimateMeanSeconds(estimate: TodoEstimate): number {
+	return (estimate.optimisticSeconds + 4 * estimate.likelySeconds + estimate.pessimisticSeconds) / 6;
+}
+
 function estimateDurations(estimate: TodoEstimate): DurationEstimates {
-	const { optimisticSeconds: optimistic, likelySeconds: mode, pessimisticSeconds: pessimistic } = estimate;
+	const { optimisticSeconds: optimistic, pessimisticSeconds: pessimistic } = estimate;
 	const spread = pessimistic - optimistic;
-	return { optimistic, expected: (optimistic + 4 * mode + pessimistic) / 6, pessimistic, spread };
+	return { optimistic, expected: todoEstimateMeanSeconds(estimate), pessimistic, spread };
 }
 
 function nodeDurations(node: PlanNode): DurationEstimates {
@@ -871,6 +883,7 @@ function scheduleResources(
 	capacity: number,
 	scenario: ResourceScenario,
 	priority: Map<PlanNode, number>,
+	sampled?: { durations: Map<PlanNode, number>; now: number },
 ): ResourceSchedule {
 	const starts = new Map<PlanNode, number>();
 	const finishes = new Map<PlanNode, number>();
@@ -893,7 +906,7 @@ function scheduleResources(
 	const active: { node: PlanNode; finish: number }[] = [];
 	const unassigned: PlanNode[] = [];
 	const releaseAt = (node: PlanNode): number | undefined => {
-		let at = estimateAnchor(node);
+		let at = sampled ? Math.max(sampled.now, estimateAnchor(node)) : estimateAnchor(node);
 		for (const predecessor of node.predecessors) {
 			const finishedAt = finishes.get(predecessor);
 			if (finishedAt === undefined) return undefined;
@@ -927,7 +940,7 @@ function scheduleResources(
 			const node = candidates.find(candidate => canStart(candidate, active));
 			if (!node) break;
 			unscheduled.delete(node);
-			const anchor = estimateAnchor(node);
+			const anchor = sampled ? Math.max(sampled.now, estimateAnchor(node)) : estimateAnchor(node);
 			const predecessorFinish = Math.max(0, ...node.predecessors.map(predecessor => finishes.get(predecessor) ?? 0));
 			const baseRelease = Math.max(anchor, predecessorFinish);
 			let controllers: PlanNode[] = [];
@@ -972,7 +985,7 @@ function scheduleResources(
 				node.fixedPathVarianceSeconds = ambiguous ? undefined : pathVariance;
 				node.fixedPathStart = parent ? parent.fixedPathStart : anchor;
 			}
-			const finish = time + durationMs(node, scenario);
+			const finish = time + (sampled?.durations.get(node) ?? durationMs(node, scenario));
 			starts.set(node, time);
 			finishes.set(node, finish);
 			if (finish <= time) completed.add(node);
@@ -1493,7 +1506,109 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		deadlineSlackSeconds,
 		issues: [...new Set(issues)],
 	};
+	if (options.risk && !hasUnresolvedOpen) {
+		plan.risk = simulateRowRisk(validNodes, schedulerCapacity, taskPriority(validTopological), options);
+		if (deadlineAt !== undefined && !deadlineMissed && plan.risk.onTimeProbability !== undefined) {
+			plan.deadlineStatus =
+				plan.risk.onTimeProbability < 0.5
+					? "will-miss"
+					: plan.risk.onTimeProbability < 0.8
+						? "at-risk"
+						: "on-track";
+			plan.issues = plan.issues.filter(
+				issue => issue !== "Expected work misses the deadline" && issue !== "Forecast risks missing the deadline",
+			);
+			if (plan.deadlineStatus === "will-miss") plan.issues.push("Redo risk forecast misses the deadline");
+			else if (plan.deadlineStatus === "at-risk") plan.issues.push("Redo risk forecast risks missing the deadline");
+		}
+	} else if (!options.risk) plan.riskModelUnavailable = true;
 	return plan;
+}
+
+const riskCache = new Map<string, RowRiskForecast>();
+function simulateRowRisk(
+	nodes: PlanNode[],
+	capacity: number,
+	priority: Map<PlanNode, number>,
+	options: TodoForecastOptions,
+): RowRiskForecast {
+	const risk = options.risk!;
+	const key = JSON.stringify([
+		nodes.map(node => [node.content, node.status, node.schedule]),
+		capacity,
+		risk,
+		options.now,
+		options.deadlineAt,
+	]);
+	const cached = riskCache.get(key);
+	if (cached) return cached;
+	const open = nodes.filter(node => !isClosed(node.status));
+	const random = riskRandom(risk.seed ?? 157);
+	const samples = Math.max(1, Math.min(2000, Math.floor(Number.isFinite(risk.samples) ? risk.samples! : 2000)));
+	const finishes: number[] = [];
+	const lastCounts = new Map<PlanNode, number>();
+	const workerType = (node: PlanNode) =>
+		node.schedule?.agentProfile ?? node.schedule?.executor?.agentProfile ?? risk.defaultWorkerType ?? "task";
+	for (let sample = 0; sample < samples; sample++) {
+		const durations = new Map<PlanNode, number>();
+		for (const node of open) {
+			const start = node.schedule?.executor?.startedAt ?? node.schedule?.startedAt;
+			const elapsed =
+				node.status === "in_progress" && start !== undefined ? Math.max(0, (options.now - start) / 1000) : 0;
+			durations.set(
+				node,
+				drawAttemptChain(
+					risk,
+					workerType(node),
+					node.schedule?.riskEstimateMeanSeconds ?? nodeDurations(node).expected,
+					(node.schedule?.attemptHistory?.length ?? 0) + 1,
+					elapsed,
+					random,
+				) * 1000,
+			);
+		}
+		const scheduled = scheduleResources(nodes, capacity, "pessimistic", priority, { durations, now: options.now });
+		const finish = Math.max(
+			options.now,
+			...open.map(node => scheduled.finishes.get(node) ?? Number.POSITIVE_INFINITY),
+		);
+		finishes.push(finish);
+		const last = open.filter(node => scheduled.finishes.get(node) === finish);
+		for (const node of last) lastCounts.set(node, (lastCounts.get(node) ?? 0) + 1 / last.length);
+	}
+	finishes.sort((a, b) => a - b);
+	const percentile = (p: number) => finishes[Math.ceil(samples * p) - 1];
+	const result: RowRiskForecast = {
+		p50Finish: percentile(0.5),
+		p80Finish: percentile(0.8),
+		p90Finish: percentile(0.9),
+		samples,
+		onTimeProbability:
+			options.deadlineAt === undefined
+				? undefined
+				: finishes.filter(finish => finish <= options.deadlineAt!).length / samples,
+		criticalRows: open
+			.map(node => {
+				const cells = riskCells(risk, workerType(node));
+				const weight = cells.reduce((sum, cell) => sum + cell.weight, 0);
+				return {
+					content: node.content,
+					workerType: workerType(node),
+					redoRisk:
+						cells.reduce(
+							(sum, cell) =>
+								sum +
+								cell.weight * cell.component.p_redo[Math.min(node.schedule?.attemptHistory?.length ?? 0, 2)],
+							0,
+						) / weight,
+					lastFinishProbability: (lastCounts.get(node) ?? 0) / samples,
+				};
+			})
+			.sort((a, b) => b.lastFinishProbability - a.lastFinishProbability),
+	};
+	if (riskCache.size >= 8) riskCache.delete(riskCache.keys().next().value!);
+	riskCache.set(key, result);
+	return result;
 }
 
 function safeText(value: string): string {
@@ -1637,6 +1752,16 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 /** Bounded plan summary; consumers needing task details use `plan.rows` and `plan.issues`. */
 export function formatPlanForecast(plan: TodoPlanForecast, _now: number): string {
 	const parts: string[] = [];
+	if (plan.risk)
+		parts.push(
+			`${plan.risk.onTimeProbability === undefined ? "" : `P(on time) ${Math.round(plan.risk.onTimeProbability * 100)}% · `}P80 ${displayTimestamp(plan.risk.p80Finish, plan.now)}`,
+		);
+	else if (plan.riskModelUnavailable) parts.push("risk model unavailable");
+	if (plan.risk) {
+		if (plan.deadlineAt !== undefined) parts.push(`due ${displayTimestamp(plan.deadlineAt, plan.now)}`);
+		if (plan.deadlineStatus) parts.push(plan.deadlineStatus);
+		return parts.join(" · ");
+	}
 	if (plan.unresolvedCount > 0) {
 		if (plan.knownWorkFinish !== undefined)
 			parts.push(`Known work fixed-path P95 (partial): ${formatTimestamp(plan.knownWorkFinish)}`);
@@ -1747,6 +1872,16 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 
 export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): string {
 	const parts: string[] = [];
+	if (plan.risk)
+		parts.push(
+			`${plan.risk.onTimeProbability === undefined ? "" : `P(on time) ${Math.round(plan.risk.onTimeProbability * 100)}% · `}P80 ${displayTimestamp(plan.risk.p80Finish, plan.now)}`,
+		);
+	else if (plan.riskModelUnavailable) parts.push("risk model unavailable");
+	if (plan.risk) {
+		if (plan.deadlineAt !== undefined) parts.push(`due ${displayTimestamp(plan.deadlineAt, plan.now)}`);
+		if (plan.deadlineStatus) parts.push(plan.deadlineStatus);
+		return parts.join(" · ");
+	}
 	if (plan.unresolvedCount > 0) {
 		if (plan.knownWorkFinish !== undefined)
 			parts.push(`Known work by ${displayTimestamp(plan.knownWorkFinish, now)} (partial)`);
