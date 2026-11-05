@@ -488,6 +488,31 @@ describe("AgentSession restart queue round trip", () => {
 		expect(restored.agent.peekSteeringQueue()).toMatchObject([{ role: "user", content: "todo-dispatch-time-note" }]);
 	});
 
+	it("does not resurrect a restored note after an idle replacement", async () => {
+		const file = await checkpointHiddenMessagesForRestart([
+			{ ...hiddenNextTurnMessage("stale clock"), customType: "todo-dispatch-time-note" },
+		]);
+		const restored = await reopenSession(file);
+		await restored.sendCustomMessage(
+			{ customType: "todo-dispatch-time-note", content: "current clock", display: false, attribution: "agent" },
+			{ deliverAs: "steer", triggerTurn: false, supersedes: "todo-dispatch-time-note" },
+		);
+		const checkpoint = restartQueueCheckpoints(currentManager()).at(-1);
+		expect(checkpoint?.type === "custom" ? checkpoint.data : undefined).toMatchObject({
+			steering: [],
+			followUp: [],
+			pendingNextTurn: [],
+		});
+		await restored.dispose();
+		session = undefined;
+		sessionManager = undefined;
+		const reopened = await reopenSession(file);
+		const lease = reopened.beginRestartDrain();
+		await lease.waitForQuiescence();
+		const latest = restartQueueCheckpoints(currentManager()).at(-1);
+		expect(latest?.type === "custom" ? latest.data : undefined).toMatchObject({ pendingNextTurn: [] });
+	});
+
 	it("does not write another live-sized checkpoint when queues are unchanged", async () => {
 		appendPriorAssistant(currentManager());
 		session = createSession(currentManager());
