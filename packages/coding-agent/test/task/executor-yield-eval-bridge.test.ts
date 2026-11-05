@@ -277,7 +277,7 @@ describe("terminal yield through the eval bridge", () => {
 			const job = manager.getJob(jobId);
 			expect(job).toBeDefined();
 			// Precondition (passes on baseline): the real tool accepted the
-			// bridged terminal submission — "Result submitted." + details. Surface
+			// bridged terminal submission and its semantic details. Surface
 			// actual bridge or earlier job failures instead of leaving this pending.
 			await Promise.race([
 				bridgeAccepted.promise,
@@ -285,7 +285,7 @@ describe("terminal yield through the eval bridge", () => {
 					throw new Error(job!.errorText ?? "Task settled before the bridged yield was accepted");
 				}),
 			]);
-			expect(JSON.stringify(bridgeValue)).toContain("Result submitted.");
+			expect(bridgeValue).toMatchObject({ details: { status: "success", data: { answer: 42 } } });
 
 			await job!.promise;
 			await manager.waitForAll();

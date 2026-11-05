@@ -3333,6 +3333,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				});
 			}
 		};
+		const queuedYieldReminders: AgentMessage[] = [];
 		const turnMonitor = createSubagentRunMonitor({
 			index,
 			id,
@@ -3355,7 +3356,12 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			signal: jobCancel.signal,
 			onProgress: progress => reportJobProgress?.(progress),
 			onToolResult: result => appendToolResult(tools, result),
-			onYieldAccepted: registerWakeJob,
+			onYieldAccepted: () => {
+				// Abort preserves follow-ups; withdraw only reminders this turn queued.
+				if (queuedYieldReminders.length > 0) session.dropQueuedMessages(queuedYieldReminders);
+				queuedYieldReminders.length = 0;
+				registerWakeJob();
+			},
 		});
 
 		const startedPayload = {
@@ -3397,9 +3403,18 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					budgetStop: false,
 					structured: true,
 				});
-				void session.followUp(reminder, undefined, { synthetic: true }).catch(error => {
-					logger.warn("Wake-turn yield reminder failed", { id, error: String(error) });
-				});
+				void session
+					.followUp(reminder, undefined, {
+						synthetic: true,
+						onPromptQueued: messages => {
+							// Queue normalization may finish after a successful same-loop retry.
+							if (turnMonitor.yieldCalled()) session.dropQueuedMessages(messages);
+							else queuedYieldReminders.push(...messages);
+						},
+					})
+					.catch(error => {
+						logger.warn("Wake-turn yield reminder failed", { id, error: String(error) });
+					});
 			}
 			if (event.type !== "message_end" || !session.isParentIrcSteer(event.message)) return;
 			ownerPrompted = true;

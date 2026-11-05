@@ -13,10 +13,15 @@ import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { runSubagentFollowUpTurn, runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
+import {
+	attachIrcWakeTurnMonitor,
+	runSubagentFollowUpTurn,
+	runSubprocess,
+} from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { TempDir, sanitizeText } from "@oh-my-pi/pi-utils";
+import { PREVIEW_LIMITS, previewLine } from "@oh-my-pi/pi-tui/render/render-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
 import { createSessionDefaults } from "../helpers/session-defaults";
 
@@ -587,7 +592,10 @@ describe("real executor terminal yield with worker-owned bash", () => {
 					if (!job) throw new Error("worker-owned bash job missing");
 					expect(job.type).toBe("bash");
 					jobId = job.id;
-					jobCommand = (job.process?.command ?? job.label).replace(/\s+/g, " ").slice(0, 120);
+					jobCommand = previewLine(
+						sanitizeText(job.process?.command ?? job.label),
+						PREVIEW_LIMITS.RUNNING_COMMAND_WIDTH,
+					);
 					jobStartedAt = job.startTime;
 					expect(
 						JSON.stringify(
@@ -750,3 +758,73 @@ describe("real executor terminal yield with worker-owned bash", () => {
 		expect(result.abandonedJobs).toBeUndefined();
 	}, 20_000);
 });
+
+it("does not start a second autonomous turn after a refused yield succeeds in the same loop", async () => {
+	using root = TempDir.createSync("@omp-wake-retry-");
+	const auth = createInMemoryAuthStorage();
+	auth.keys.setRuntime("mock", "test-key");
+	const modelRegistry = new ModelRegistry(auth);
+	let requests = 0;
+	const mock = createMockModel({
+		handler: () => ({
+			content: [
+				{
+					type: "toolCall",
+					name: "yield",
+					arguments: ++requests === 1 ? { type: "result", data: "" } : { data: "retained" },
+				},
+			],
+		}),
+	});
+	const { session } = await sdkModule.createAgentSession({
+		cwd: root.path(),
+		agentDir: root.path(),
+		modelRegistry,
+		model: mock,
+		sessionManager: SessionManager.inMemory(root.path()),
+		settings: Settings.isolated({
+			"compaction.enabled": false,
+			"retry.enabled": false,
+			"todo.enabled": false,
+			"todo.reminders": false,
+			"async.enabled": false,
+		}),
+		disableExtensionDiscovery: true,
+		skills: [],
+		contextFiles: [],
+		promptTemplates: [],
+		slashCommands: [],
+		enableMCP: false,
+		enableLsp: false,
+		skipPythonPreflight: true,
+		requireYieldTool: true,
+		toolNames: ["yield"],
+		agentId: "wake-retry",
+		taskDepth: 1,
+	});
+	session.agent.streamFn = mock.stream;
+	let turns = 0;
+	let refusals = 0;
+	let accepted = 0;
+	const unsubscribe = session.subscribe(event => {
+		if (event.type === "agent_start") turns++;
+		if (event.type === "tool_execution_end" && event.toolName === "yield") {
+			if (event.isError) refusals++;
+			else accepted++;
+		}
+	});
+	attachIrcWakeTurnMonitor(session, { id: "wake-retry", agent: baseAgent });
+	try {
+		await session.prompt("return the answer");
+		await session.waitForIdle();
+		expect(refusals).toBe(1);
+		expect(accepted).toBe(1);
+		expect(turns).toBe(1);
+		expect(requests).toBe(2);
+		expect(session.queuedMessageCount).toBe(0);
+	} finally {
+		unsubscribe();
+		await session.dispose();
+		auth.close();
+	}
+}, 20_000);
