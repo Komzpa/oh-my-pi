@@ -348,6 +348,8 @@ export interface AgentSessionConfig {
 	rawSseDebugBuffer?: RawSseDebugBuffer;
 	/** Current session message-to-LLM conversion pipeline. */
 	convertToLlm?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	/** Mutable boot context delivered with the first conversation turn. */
+	getStartupContext?: () => string | undefined;
 	/** System prompt builder that can consider tool availability. */
 	rebuildSystemPrompt?: (
 		toolNames: string[],
