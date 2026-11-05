@@ -1,5 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import { PREVIEW_ENTRY_TYPE, refreshPreviewVisibility, overduePreviewRows, previewScheduleRefusal, previewDispatchRefusal, previewReason, type PreviewRecord } from "./todo_preview";
+import { PREVIEW_ENTRY_TYPE, refreshPreviewVisibility, overduePreviewRows, previewScheduleRefusal, previewDispatchRefusal, previewPlanProblem, previewReason, type PreviewRecord } from "./todo_preview";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { prompt } from "@oh-my-pi/pi-utils";
@@ -5180,7 +5180,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let lastPlanProblems = "";
   const planCheck = async (ctx: ExtensionContext, pending: unknown[] = [], problemsOnly = false): Promise<string | null> => {
     const visibility = await pollPreview(ctx);
-    const visibilityProblem = previewDispatchRefusal({}, overduePreviewRows(ctx.getTodoPhases?.() ?? [], visibility, previewConfig(ctx), Date.now()));
+    const visibilityProblem = previewPlanProblem(overduePreviewRows(ctx.getTodoPhases?.() ?? [], visibility, previewConfig(ctx), Date.now()));
     if (visibilityProblem) return visibilityProblem;
     // Finish I/O before reading or mutating plan state. A worker may finish or
     // a todo result may arrive while Git is pending; judge the fresh snapshot.
