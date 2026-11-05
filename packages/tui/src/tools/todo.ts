@@ -2,6 +2,7 @@ import type { ToolRenderer } from "./renderer";
 import {
 	forecastTodoPlan,
 	formatPlanForecastDisplay,
+	isTodoAwaitingReview,
 	formatTaskForecastDisplay,
 	orderTodoScheduleIndices,
 	type TodoSchedule,
@@ -219,8 +220,8 @@ export function todoMatchesAnyDescription(content: string, descriptions: readonl
 /** Whether a todo is settled: completed or deliberately abandoned. Shared so
  *  the collapsed viewport, the HUD progress counters, and the HUD's closed-todo
  *  auto-clear can never disagree about what "done" hides. */
-export function isClosedTodo<T extends { status: TodoStatus }>(task: T): boolean {
-	return task.status === "completed" || task.status === "abandoned";
+export function isClosedTodo<T extends { status: TodoStatus; schedule?: TodoSchedule }>(task: T): boolean {
+	return task.status === "completed" || task.status === "abandoned" || isTodoAwaitingReview(task);
 }
 
 /**
@@ -229,7 +230,10 @@ export function isClosedTodo<T extends { status: TodoStatus }>(task: T): boolean
  * collapsed views (transient tool result + sticky HUD) run this same policy so
  * they can never disagree about what the agent is doing (#5873).
  */
-function isActiveTodo<T extends { status: TodoStatus }>(task: T, isMatched: (task: T) => boolean): boolean {
+function isActiveTodo<T extends { status: TodoStatus; schedule?: TodoSchedule }>(
+	task: T,
+	isMatched: (task: T) => boolean,
+): boolean {
 	return task.status === "in_progress" || (task.status === "pending" && isMatched(task));
 }
 
@@ -257,7 +261,7 @@ const COLLAPSED_CLOSED_CONTEXT = 1;
  * is hidden; otherwise the summary counts all omitted rows when pending work
  * is omitted too.
  */
-function selectWithinCap<T extends { status: TodoStatus }>(
+function selectWithinCap<T extends { status: TodoStatus; schedule?: TodoSchedule }>(
 	base: T[],
 	isMatched: (task: T) => boolean,
 	cap: number,
@@ -311,7 +315,7 @@ function selectWithinCap<T extends { status: TodoStatus }>(
  * `summary` counts the open tasks that did not fit; the closed lead is context,
  * not part of the budget.
  */
-export function selectCollapsedTodos<T extends { status: TodoStatus }>(
+export function selectCollapsedTodos<T extends { status: TodoStatus; schedule?: TodoSchedule }>(
 	tasks: T[],
 	isMatched: (task: T) => boolean,
 	cap: number,
@@ -499,6 +503,7 @@ function formatTodoLine(
 	// `label` is the display-sanitized content (see `forDisplay`); `item.content`
 	// stays raw everywhere else as the identity key and persisted value.
 	const text = label.text;
+	if (isTodoAwaitingReview(item)) return uiTheme.fg("accent", `${prefix}◉ ${text}`);
 	switch (item.status) {
 		case "completed": {
 			const revealCount = completionKeys.has(item.content) ? strikeRevealCount(label, frame) : undefined;

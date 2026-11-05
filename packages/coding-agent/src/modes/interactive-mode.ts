@@ -238,6 +238,7 @@ import {
 } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	formatPlanForecastDisplay,
+	isTodoAwaitingReview,
 	formatTaskForecastDisplay,
 	type TodoPlanForecast,
 	type TodoTaskForecast,
@@ -5353,6 +5354,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#formatPlainTodoLine(todo: TodoItem, prefix: string, matched: boolean, overdue = false): string {
 		const checkbox = theme.checkbox;
+		if (isTodoAwaitingReview(todo)) return theme.fg("accent", `${prefix}◉ ${sanitizeStatusText(todo.content)}`);
 		const marker = formatHudNoteMarker(todo.notes?.length ?? 0);
 		const warning = this.#worktreeWarningForTodo(todo);
 		const warningText = warning ? ` ${theme.fg("warning", `⚠ ${warning.minutes}m no commit`)}` : "";
@@ -5391,7 +5393,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (todo.schedule?.postDeadline)
 			return theme.fg("dim", `${prefix}${sanitizeStatusText(todo.content)} · after deadline`);
 		const row = this.#todoForecastRowsByContent.get(todo.content);
-		const isOverdueOpenTask = row?.overdue && (todo.status === "pending" || todo.status === "in_progress");
+		const isOverdueOpenTask =
+			!isTodoAwaitingReview(todo) && row?.overdue && (todo.status === "pending" || todo.status === "in_progress");
 		let line = this.#formatPlainTodoLine(todo, prefix, matched, isOverdueOpenTask);
 		const history = todo.schedule?.attemptHistory;
 		const executor = todo.schedule?.executor;
@@ -5638,7 +5641,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#syncTodoForecastRefreshTimer(false);
 			if (running.length === 0) return;
 		}
-		const sourcePhases = this.todoPhases;
+		const sourcePhases = this.#todoPhasesOwner?.getTodoPhases() ?? this.todoPhases;
 		const livePhases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
 		const workers = linkTodoWorkers(livePhases, running);
 		if (livePhases.length === 0) {
@@ -5860,17 +5863,18 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const done = phases.reduce((n, phase) => n + phase.tasks.filter(t => t.status === "completed").length, 0);
+		const done = phases.reduce(
+			(n, phase) => n + phase.tasks.filter(t => t.status === "completed" && !isTodoAwaitingReview(t)).length,
+			0,
+		);
 		const dropped = phases.reduce((n, phase) => n + phase.tasks.filter(t => t.status === "abandoned").length, 0);
 		const totalOpen = totalTasks - closedTasks;
 		const overflowRow =
 			hudSelection && hudSelection.hidden > 0
 				? `${formatMoreItems(hudSelection.hidden, "todo")} · /todo expand`
 				: undefined;
-		const counts =
-			!expanded && (done || dropped || phaseSlice.length > 1)
-				? ` ${done} ✓ · ${totalOpen} open${dropped ? ` · ${dropped} ×` : ""}`
-				: "";
+		const awaiting = phases.flatMap(phase => phase.tasks).filter(isTodoAwaitingReview).length;
+		const counts = ` ${awaiting ? `${awaiting} awaiting your review · ` : ""}${done} done · ${totalOpen} open${dropped ? ` · ${dropped} ×` : ""}`;
 		const lines = [...(withChrome ? [""] : []), theme.bold(theme.fg("accent", "TODO")) + theme.fg("dim", counts)];
 		const lineOwners: (string | undefined)[] = lines.map(() => undefined);
 		if (this.#todoForecast) {
@@ -5902,6 +5906,17 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Native: the same stage window as a tree, overall progress as a bar.
 		const describeTask = (todo: TodoItem, id: string): TspTreeNode => {
+			if (isTodoAwaitingReview(todo))
+				return {
+					id,
+					label: [
+						span(
+							`◉ ${todo.content} · ${formatTaskForecastDisplay(this.#todoForecastRowsByContent.get(todo.content)!, now)}`,
+							"accent",
+						),
+					],
+					icon: "circle",
+				};
 			const done = todo.status === "completed";
 			const token =
 				todo.status === "completed"
@@ -6168,7 +6183,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		| undefined {
 		const mode = cfgDisplayPinnedAgents.get(this.settings);
 		if (mode === "off") return undefined;
-		const sourcePhases = this.todoPhases;
+		const sourcePhases = this.#todoPhasesOwner?.getTodoPhases() ?? this.todoPhases;
 		const phases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
 		if (phases.length > 0) return undefined;
 		const sessions = this.#observerRegistry.getSessions();

@@ -90,7 +90,7 @@ test("DC settled executors need restaff or verification; running registry worker
   const run = jobs => decideTodoDispatch({ phases, jobs, isMainSession: true, taskEnabled: true, now }, schedule);
   const d = run({ running: [], recent: [] });
   const reason = idleRedRowsRefusal(d);
-  for (const row of rows) {
+  for (const row of rows.filter(row => d.forecast.rows.find(forecast => forecast.content === row.content)?.status !== "completed")) {
     expect(reason).toContain(JSON.stringify(row.content));
     const completed = row.schedule.executor.outcome === "completed";
     expect(reason).toContain(completed ? "verify the result and close" : "restaff with task");

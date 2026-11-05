@@ -1,5 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import { openReviewPages } from "./todo_review_opener";
+import { openReviewPages, probeReviewPage } from "./todo_review_opener";
 import { PREVIEW_ENTRY_TYPE, refreshPreviewVisibility, overduePreviewRows, previewScheduleRefusal, previewDispatchRefusal, previewPlanProblem, previewReason, type PreviewRecord } from "./todo_preview";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
@@ -19,7 +19,7 @@ import { resolveAgentModelPatterns, resolveModelOverride } from "@oh-my-pi/pi-co
 import { cfgTaskAgentModelOverrides, cfgTaskMaxEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { cfgDefaultThinkingLevel } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { clampThinkingLevelToCeiling, resolveThinkingLevelForModel } from "@oh-my-pi/pi-tui/thinking";
-import { getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -1243,8 +1243,7 @@ function safeText(value: unknown, max = MAX_LABEL): string {
 }
 /** Shared delivery evidence for review closure and the idle decision gate. */
 function isDeliveredReview(task: { status: string; schedule?: unknown }): boolean {
-  const schedule = task.schedule as { review?: unknown; firstDeliveredAt?: unknown; visibleAt?: unknown; reviewSummary?: unknown; attemptHistory?: Array<{ deliverablePaths?: unknown }> } | undefined;
-  return schedule?.review === "user" && (task.status === "completed" || typeof schedule.visibleAt === "number" || typeof schedule.firstDeliveredAt === "number" || nonEmptyString(schedule.reviewSummary) || schedule.attemptHistory?.some((attempt) => Array.isArray(attempt.deliverablePaths) && attempt.deliverablePaths.length > 0)) === true;
+  return isTodoAwaitingReview(task);
 }
 
 /** A review row is closed only when an artifact was actually delivered. */
@@ -1501,10 +1500,11 @@ function updateTodoSchedule(ctx: ExtensionContext, update: (phases: DispatchTodo
 }
 
 function rowReviewNotice(row: Record<string, unknown>): string {
+  if (!row.schedule?.reviewPage) return prompt.render(chatChoiceInstructions, { failed: [{ row: row.content, status: "missing review page" }] }).trim();
   const schedule = row.schedule as { attemptHistory?: Array<{ deliverablePaths?: string[] }>; executor?: { workerId?: string }; reviewSummary?: string } | undefined;
   const paths = schedule?.attemptHistory?.at(-1)?.deliverablePaths?.filter((path): path is string => typeof path === "string") ?? [];
   const reportLocation = schedule?.reviewSummary?.match(/https?:\/\/\S+|(?:^|\s)(?:[\w./-]+\.(?:png|jpe?g|webp|html|md|tsx?|jsx?|css|rs|py)|[0-9a-f]{7,40})(?=$|\s|[),.])/gi)?.map((part) => part.trim()).join(", ");
-  const where = paths.length ? paths.join(", ") : reportLocation ?? (schedule?.executor?.workerId ? `worker ${schedule.executor.workerId}'s diff/commit` : "the row's diff/commit");
+  const where = row.schedule?.reviewPage ?? (paths.length ? paths.join(", ") : reportLocation ?? (schedule?.executor?.workerId ? `worker ${schedule.executor.workerId}'s diff/commit` : "the row's diff/commit"));
   const changed = schedule?.reviewSummary ? `Changed: ${schedule.reviewSummary}. ` : `Changed: completed ${String(row.content)}. `;
   return `Delivered to you: ${JSON.stringify(row.content)} is ready to review. ${changed}Look at ${where}. Show this link to the user once; this is information, no answer is awaited.`;
 }
@@ -4948,6 +4948,19 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("tool_call", async (event, ctx) => {
     // A non-read tool call (a todo change, a task dispatch, an edit, a command) is progress for the absence wake.
     if (!READ_ONLY_TOOLS.has(event.toolName) && !(event.toolName === "todo" && ["view", undefined].includes((event.input as { op?: string } | undefined)?.op))) progressEvents += 1;
+    if (event.toolName === "todo" && isMain(ctx)) {
+      const rows = todoPhases(ctx).flatMap(phase => phase.tasks);
+      const failed = [];
+      for (const update of todoScheduleUpdates(event.input)) {
+        if (update.review !== "user") continue;
+        const row = rows.find(row => row.content === update.task);
+        const url = update.reviewPage ?? row?.schedule?.reviewPage;
+        let status = "missing review page";
+        try { if (typeof url === "string") status = String(await (options.reviewPageProbe ?? probeReviewPage)(url, String(update.task))); } catch { status = "unreachable"; }
+        if (status !== "200") failed.push({ row: update.task, url, status });
+      }
+      if (failed.length) return { block: true, reason: prompt.render(chatChoiceInstructions, { failed }).trim() };
+    }
     if (event.toolName === "wait") {
       const redReason = await redRowsIdleReason(ctx);
       if (redReason) return { block: true, reason: redReason };
@@ -6131,20 +6144,16 @@ export function idleRedRowsRefusal(
   }).trim();
 }
 
-export type ReviewPageProbe = (url: string) => Promise<number>;
+export type ReviewPageProbe = (url: string, row?: string) => Promise<number>;
 
 /** The stop/wait boundary and the session-owned job snapshot establish an idle lead. */
 export async function idleUserReviewRefusal(
   phases: DispatchTodoPhases,
   jobs: Jobs | null | undefined,
   refused: Set<string>,
-  probe: ReviewPageProbe = async (url) => {
-    const response = await fetch(url, { signal: AbortSignal.timeout(5000), redirect: "follow" });
-    await response.body?.cancel();
-    return response.status;
-  },
+  probe: ReviewPageProbe = probeReviewPage,
 ): Promise<string | undefined> {
-  if (!jobs || jobs.running.some((job) => job.status === "running")) return;
+  if (!jobs) return;
   const open = phases.flatMap((phase) => phase.tasks).filter((row) => (row.status === "blocked" && waitsOnUser(row.schedule?.owner, row.blocker)) || (row.status !== "abandoned" && isDeliveredReview(row)));
   if (!open.length) return;
   // Reuse the todo owner/review interpretation. No assistant message is an input.
@@ -6158,7 +6167,7 @@ export async function idleUserReviewRefusal(
       if (typeof url !== "string" || !URL.canParse(url) || !["http:", "https:"].includes(new URL(url).protocol))
         return { row: row.content, url, status: "missing review page" };
       try {
-        return { row: row.content, url, status: await probe(url) };
+        return { row: row.content, url, status: await probe(url, String(row.content)) };
       } catch {
         return { row: row.content, url, status: "unreachable" };
       }
@@ -6169,7 +6178,6 @@ export async function idleUserReviewRefusal(
   const key = createHash("sha256")
     .update(JSON.stringify([open.map((row) => [row.content, row.status, row.schedule, row.blocker]), checks]))
     .digest("hex");
-  if (refused.has(key)) return;
   refused.add(key);
   return prompt.render(chatChoiceInstructions, { missingRow: decisions.length === 0, failed }).trim();
 }
