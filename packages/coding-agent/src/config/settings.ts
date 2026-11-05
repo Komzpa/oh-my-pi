@@ -1252,6 +1252,10 @@ export class Settings {
 	 * Own runtime-override value of `setting` (deep copy; `undefined` when this instance holds none).
 	 * Session-scoped features read it to restore exactly what they displaced.
 	 */
+	isRuntimeSoftPin(setting: AnySetting): boolean {
+		return this.#softPins.has(setting);
+	}
+
 	runtimeOverrideValue(setting: AnySetting): unknown {
 		const value = getByPath(this.#overrides, setting.segments);
 		return value === undefined ? undefined : structuredClone(value);

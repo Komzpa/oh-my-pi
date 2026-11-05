@@ -135,6 +135,24 @@ export class ExtensionUiController {
 	#toolUIContext: ExtensionUIContext | undefined;
 	constructor(private ctx: InteractiveModeContext) {}
 
+	#sessionModelPresetActions(): Pick<
+		ExtensionActions,
+		"applySessionModelPreset" | "clearSessionModelPreset" | "getSessionModelPreset"
+	> {
+		return {
+			...createSessionModelPresetActions(this.ctx.session),
+			applySessionModelPreset: name => {
+				if (this.#rejectGuestExtensionTurn())
+					return Promise.resolve({ kind: "unavailable", reason: "Collab guests cannot change model presets" });
+				return createSessionModelPresetActions(this.ctx.session).applySessionModelPreset(name);
+			},
+			clearSessionModelPreset: () => {
+				if (this.#rejectGuestExtensionTurn()) return undefined;
+				return createSessionModelPresetActions(this.ctx.session).clearSessionModelPreset();
+			},
+		};
+	}
+
 	#syncExtensionComposerShapes(): void {
 		this.disposeComposerShapes();
 		for (const definition of this.ctx.session.extensionRunner?.getComposerShapes() ?? []) {
@@ -253,16 +271,19 @@ export class ExtensionUiController {
 			getAllTools: () => this.ctx.session.getAllToolInfos(),
 			setActiveTools: toolNames => this.ctx.session.setActiveToolsByName(toolNames),
 			setModel: async model => {
+				if (this.#rejectGuestExtensionTurn()) return false;
 				const key = await this.ctx.session.modelRegistry.getApiKey(model);
 				if (!key) return false;
 				await this.ctx.session.setModel(model);
 				return true;
 			},
 			getThinkingLevel: () => this.ctx.session.thinkingLevel,
-			setThinkingLevel: level => this.ctx.session.setThinkingLevel(level),
+			setThinkingLevel: level => {
+				if (!this.#rejectGuestExtensionTurn()) this.ctx.session.setThinkingLevel(level);
+			},
 			getServiceTiers: () => this.ctx.session.serviceTierByFamily,
 			setServiceTier: (family, tier) => this.ctx.session.setServiceTierFamily(family, tier),
-			...createSessionModelPresetActions(this.ctx.session),
+			...this.#sessionModelPresetActions(),
 			getCommands: () => getSessionSlashCommands(this.ctx.session),
 			getSessionName: () => this.ctx.sessionManager.getSessionName(),
 			setSessionName: name => this.#updateSessionName(name),
@@ -488,16 +509,19 @@ export class ExtensionUiController {
 			getAllTools: () => this.ctx.session.getAllToolInfos(),
 			setActiveTools: toolNames => this.ctx.session.setActiveToolsByName(toolNames),
 			setModel: async model => {
+				if (this.#rejectGuestExtensionTurn()) return false;
 				const key = await this.ctx.session.modelRegistry.getApiKey(model);
 				if (!key) return false;
 				await this.ctx.session.setModel(model);
 				return true;
 			},
 			getThinkingLevel: () => this.ctx.session.thinkingLevel,
-			setThinkingLevel: (level, persist) => this.ctx.session.setThinkingLevel(level, persist),
+			setThinkingLevel: (level, persist) => {
+				if (!this.#rejectGuestExtensionTurn()) this.ctx.session.setThinkingLevel(level, persist);
+			},
 			getServiceTiers: () => this.ctx.session.serviceTierByFamily,
 			setServiceTier: (family, tier) => this.ctx.session.setServiceTierFamily(family, tier),
-			...createSessionModelPresetActions(this.ctx.session),
+			...this.#sessionModelPresetActions(),
 			getCommands: () => getSessionSlashCommands(this.ctx.session),
 			getSessionName: () => this.ctx.sessionManager.getSessionName(),
 			setSessionName: name => this.#updateSessionName(name),

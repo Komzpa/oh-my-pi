@@ -51,6 +51,7 @@
 
 ### Fixed
 
+- Session model presets now restore their settings on resume, stay separate across SDK sessions, and reach revived role-based subagents. Clearing a preset preserves protocol defaults and records the cleared state.
 - Live role-based subagents now follow session model preset changes and clears on their next model selection; explicit model pins stay unchanged.
 - An AST Grep capture spanning several lines shows on one `meta:` row of the result card instead of one row per line, so collapsed results no longer show its later lines and a blank line inside it no longer splits the match from its file ([#18105](https://github.com/can1357/oh-my-pi/pull/18105) by [@JustasMasiulis](https://github.com/JustasMasiulis))
 - Extension shortcuts on a reserved chord spelled with a different modifier order (e.g. `ctrl+shift+p`) are now ignored like the reserved spelling ([#17961](https://github.com/can1357/oh-my-pi/pull/17961) by [@materemias](https://github.com/materemias))

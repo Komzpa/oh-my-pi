@@ -241,6 +241,19 @@ describe("AgentSession prompt admission racing abort", () => {
 		expect({ agentEnds, queued: session.agent.hasQueuedMessages() }).toEqual({ agentEnds: 2, queued: false });
 	});
 
+	it("builds image descriptions using the model selected by the live refresh", async () => {
+		const { session } = await createSession([() => ({ content: ["done"] })]);
+		const original = session.model!;
+		session.refreshModelSelection = async () => {
+			session.agent.setModel({ ...original, input: ["text"] });
+			return true;
+		};
+		const spy = spyOn(imageVisionFallback, "describeAttachedImagesForTextModel").mockResolvedValue([]);
+		restores.push(() => spy.mockRestore());
+		await session.prompt("describe this", { images: [IMAGE] });
+		expect(spy).toHaveBeenCalledTimes(1);
+	});
+
 	it("cancels an in-flight vision description on abort and drops the prompt", async () => {
 		const streamCalls: string[] = [];
 		const { session, dropped } = await createSession(

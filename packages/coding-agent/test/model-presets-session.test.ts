@@ -18,6 +18,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { cfgWorkspaceAdditionalDirectories } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { cfgDefaultThinkingLevel, cfgTierOpenai } from "@oh-my-pi/pi-coding-agent/session/settings";
@@ -152,9 +153,10 @@ describe("session-scoped model presets", () => {
 			return { dir, manager };
 		}
 
-		async function resume(dir: TempDir, file: string, settings: Settings) {
+		async function resume(dir: TempDir, file: string, settings: Settings, additionalDirectories?: string[]) {
 			const result = await createAgentSession({
 				cwd: dir.path(),
+				additionalDirectories,
 				agentDir: dir.path(),
 				sessionManager: await SessionManager.open(file),
 				model: bundled(SONNET),
@@ -173,6 +175,59 @@ describe("session-scoped model presets", () => {
 			sessions.push(result.session);
 			return result.session;
 		}
+
+		it("resumed preset initializes secrets before session request transforms", async () => {
+			const { dir, manager } = await persistedManager();
+			await Bun.write(
+				dir.join("secrets.yml"),
+				"- type: plain\n  content: synthetic-private-token\n  friendlyName: token\n  mode: obfuscate\n",
+			);
+			const settings = freshSettings();
+			cfgModelPresets.setEntry(settings, "protected", { modelRoles: {}, settings: { "secrets.enabled": true } });
+			manager.appendCustomEntry("session-model-preset", { name: "protected" });
+			await manager.flush();
+			const session = await resume(dir, manager.getSessionFile()!, settings);
+			expect(session.obfuscator?.hasSecrets()).toBe(true);
+		});
+
+		it("resume replaces configured workspace roots and preserves explicit directory options", async () => {
+			for (const explicit of [false, true]) {
+				const { dir, manager } = await persistedManager();
+				const baseline = dir.join("baseline");
+				const replacement = dir.join("replacement");
+				const chosen = dir.join("chosen");
+				for (const root of [baseline, replacement, chosen]) fs.mkdirSync(root);
+				await manager.setAdditionalDirectories([baseline]);
+				const settings = freshSettings();
+				cfgWorkspaceAdditionalDirectories.override(settings, [baseline]);
+				cfgModelPresets.setEntry(settings, "roots", {
+					modelRoles: {},
+					settings: { "workspace.additionalDirectories": [replacement] },
+				});
+				manager.appendCustomEntry("session-model-preset", { name: "roots" });
+				await manager.flush();
+				const session = await resume(dir, manager.getSessionFile()!, settings, explicit ? [chosen] : undefined);
+				const roots = session.sessionManager.getAdditionalDirectories();
+				expect(roots).toContain(explicit ? chosen : replacement);
+				expect(roots.includes(replacement)).toBe(!explicit);
+				if (!explicit) expect(roots).not.toContain(baseline);
+			}
+		});
+
+		it("SDK sessions sharing settings keep their preset overrides independent", async () => {
+			const first = await persistedManager();
+			const second = await persistedManager();
+			const shared = freshSettings();
+			const a = await resume(first.dir, first.manager.getSessionFile()!, shared);
+			await applyModelPreset(a.settings, a, "brrrr", { scope: "session" });
+			const b = await resume(second.dir, second.manager.getSessionFile()!, shared);
+			expect(getSessionModelPreset(b.settings)).toBeUndefined();
+			expect(b.settings.getModelRole("default")).toBe(SONNET);
+			expect(clearSessionModelPreset(b.settings)).toBeUndefined();
+			expect(getSessionModelPreset(a.settings)).toBe("brrrr");
+			expect(a.settings.getModelRole("default")).toBe(OPUS);
+			expect(shared.getModelRole("default")).toBe(SONNET);
+		});
 
 		it("re-applies the session preset when the same session file is resumed", async () => {
 			const { dir, manager } = await persistedManager();
@@ -199,13 +254,13 @@ describe("session-scoped model presets", () => {
 			// A restart: a new process has fresh settings with no runtime overrides.
 			const restarted = freshSettings();
 			expect(getSessionModelPreset(restarted)).toBeUndefined();
-			await resume(dir, file, restarted);
+			const restored = (await resume(dir, file, restarted)).settings;
 
-			expect(getSessionModelPreset(restarted)).toBe("brrrr");
-			expect({ ...restarted.getModelRoles() }).toEqual({ default: OPUS, smol: SONNET_46 });
-			expect(restarted.getModelRole("default")).toBe(OPUS);
-			expect(cfgTierOpenai.get(restarted)).toBe("priority");
-			expect(cfgDefaultThinkingLevel.get(restarted)).toBe(Effort.Low);
+			expect(getSessionModelPreset(restored)).toBe("brrrr");
+			expect({ ...restored.getModelRoles() }).toEqual({ default: OPUS, smol: SONNET_46 });
+			expect(restored.getModelRole("default")).toBe(OPUS);
+			expect(cfgTierOpenai.get(restored)).toBe("priority");
+			expect(cfgDefaultThinkingLevel.get(restored)).toBe(Effort.Low);
 		});
 
 		it("stays cleared after resume once the preset was cleared", async () => {
@@ -303,6 +358,50 @@ describe("session-scoped model presets", () => {
 		expect(settings.runtimeOverrideValue(cfgDefaultThinkingLevel)).toBeUndefined();
 		expect(getSessionModelPreset(settings)).toBeUndefined();
 		expect(clearSessionModelPreset(settings)).toBeUndefined();
+	});
+
+	it("one-argument clear persists the cleared marker through the apply recorder", async () => {
+		const settings = Settings.isolated({ modelRoles: { default: SONNET } });
+		cfgModelPresets.setEntry(settings, "local", { modelRoles: { default: OPUS } });
+		const session = createSession(settings);
+		await applyModelPreset(settings, session, "local", { scope: "session" });
+		clearSessionModelPreset(settings);
+		const markers = session.sessionManager
+			.getEntries()
+			.filter(entry => entry.type === "custom" && entry.customType === "session-model-preset");
+		expect(markers.at(-1)).toMatchObject({ data: { name: null } });
+	});
+
+	it("retained default alias roles do not make a session switch fail", async () => {
+		const settings = Settings.isolated({ modelRoles: { default: "@slow", slow: SONNET } });
+		cfgModelPresets.setEntry(settings, "local", { modelRoles: { smol: OPUS } });
+		const result = await applyModelPreset(settings, createSession(settings), "local", { scope: "session" });
+		expect(result.kind).toBe("switched");
+		if (result.kind !== "switched") throw new Error("switch failed");
+		expect(result.shadowed).toEqual([]);
+	});
+
+	it("rejects an unavailable retained default before replacing an active session preset", async () => {
+		const settings = Settings.isolated({ modelRoles: { default: "missing/model" } });
+		cfgModelPresets.setEntry(settings, "valid", { modelRoles: { default: OPUS } });
+		cfgModelPresets.setEntry(settings, "invalid", { modelRoles: { smol: SONNET } });
+		const session = createSession(settings);
+		await applyModelPreset(settings, session, "valid", { scope: "session" });
+		const result = await applyModelPreset(settings, session, "invalid", { scope: "session" });
+		expect(result.kind).toBe("unavailable");
+		expect(getSessionModelPreset(settings)).toBe("valid");
+		expect(settings.getModelRole("default")).toBe(OPUS);
+		expect(session.model?.id).toBe(bundled(OPUS).id);
+	});
+
+	it("clearing restores protocol defaults as soft pins", async () => {
+		const settings = Settings.isolated({ modelRoles: { default: SONNET } });
+		cfgTierOpenai.pinDefault(settings);
+		cfgModelPresets.setEntry(settings, "local", { modelRoles: {}, settings: { "tier.openai": "priority" } });
+		await applyModelPreset(settings, createSession(settings), "local", { scope: "session" });
+		clearSessionModelPreset(settings);
+		cfgTierOpenai.set(settings, "flex");
+		expect(cfgTierOpenai.get(settings)).toBe("flex");
 	});
 
 	it("switching session presets keeps the original baseline", async () => {

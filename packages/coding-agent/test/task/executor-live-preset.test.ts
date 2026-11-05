@@ -9,11 +9,13 @@ import { applyModelPreset, clearSessionModelPreset } from "../../src/config/mode
 import { resolveConfiguredModelPatterns } from "../../src/config/model-resolver";
 import { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
+import { AgentLifecycleManager } from "../../src/registry/agent-lifecycle";
 import { AgentRegistry } from "../../src/registry/agent-registry";
 import { AgentSession } from "../../src/session/agent-session";
 import { AuthStorage } from "../../src/session/auth-storage";
+import { getRetryFallbackRole, installRetryFallbackRole } from "../../src/session/retry-fallback-chains";
 import { SessionManager } from "../../src/session/session-manager";
-import { runSubprocess } from "../../src/task/executor";
+import { installLiveModelPresetRefresh, runSubprocess } from "../../src/task/executor";
 
 let runId = 0;
 const cleanups: (() => Promise<void>)[] = [];
@@ -60,7 +62,7 @@ async function fixture() {
 	const apply = async () => {
 		expect((await applyModelPreset(settings, parent, "brrrr", { scope: "session" })).kind).toBe("switched");
 	};
-	const run = async (pin = false) => {
+	const run = async (pin = false, persist = false) => {
 		const id = `PresetChild${++runId}`;
 		cleanups.push(async () => {
 			await AgentRegistry.global().get(id)?.session?.dispose();
@@ -68,6 +70,7 @@ async function fixture() {
 		});
 		const result = await runSubprocess({
 			cwd,
+			artifactsDir: persist ? cwd : undefined,
 			settings,
 			modelRegistry: registry,
 			authStorage: auth,
@@ -96,9 +99,9 @@ async function fixture() {
 		expect(result.exitCode, result.stderr).toBe(0);
 		const session = AgentRegistry.global().get(id)?.session;
 		if (!(session instanceof AgentSession)) throw new Error(`expected an in-process session for ${id}`);
-		return { ...result, entries: session.sessionManager.getEntries() };
+		return { ...result, id, session, entries: session.sessionManager.getEntries() };
 	};
-	return { cwd, settings, models, parent, apply, run };
+	return { cwd, settings, models, parent, registry, apply, run };
 }
 
 it("a live free child uses the new preset on its next failure fallback", async () => {
@@ -177,4 +180,62 @@ it("aborting during a preset refresh never dispatches the cancelled prompt", asy
 	release.resolve();
 	await Promise.all([prompt, abort]);
 	expect(f.models.flatMap(model => model.calls)).toHaveLength(0);
+});
+
+it("same-model preset refresh lets recovery use the fallback chain immediately", async () => {
+	const f = await fixture();
+	f.settings.setModelRole("free", "mock/base, mock/base-tail");
+	f.settings.overrideModelRoles({ default: "mock/base" });
+	installLiveModelPresetRefresh(f.parent, f.settings, f.registry, "Same", "free");
+	await f.apply();
+	// This preset changes the role but selects the already-active model.
+	f.settings.overrideModelRoles({ free: "mock/base, mock/base-tail" });
+	expect(await f.parent.refreshModelSelection?.()).toBe(false);
+});
+
+it("a failed metadata refresh keeps the previous retry primary and chain", async () => {
+	const f = await fixture();
+	installLiveModelPresetRefresh(f.parent, f.settings, f.registry, "Failed", "free");
+	await f.apply();
+	const before = f.parent.settings.getModelRoles();
+	vi.spyOn(f.registry, "refreshSelectedModelMetadata").mockRejectedValue(new Error("metadata unavailable"));
+	await expect(f.parent.refreshModelSelection?.()).rejects.toThrow("metadata unavailable");
+	expect(f.parent.settings.getModelRole("subagent:Failed")).toBe(before["subagent:Failed"]);
+	expect(f.parent.model?.id).toBe("base");
+});
+
+it("a parked role child follows a preset cleared before revival", async () => {
+	const f = await fixture();
+	await f.apply();
+	const child = await f.run(false, true);
+	await AgentLifecycleManager.global().park(child.id);
+	clearSessionModelPreset(f.settings);
+	const revived = await AgentLifecycleManager.global().ensureLive(child.id);
+	await revived.prompt("Answer again.");
+	expect(revived.model?.id).toBe("base");
+	expect(f.models[0]!.calls.length).toBeGreaterThan(0);
+});
+
+it("an installed retry role does not freeze roles inherited by nested workers", () => {
+	const parent = Settings.isolated({ modelRoles: { default: "mock/base", smol: "mock/base" } });
+	const child = parent.overlay({});
+	installRetryFallbackRole(child, "subagent:Own", { primary: "mock/base", chain: [] });
+	parent.overrideModelRoles({ smol: "mock/preset" });
+	expect(child.getModelRole("smol")).toBe("mock/preset");
+	expect(child.getModelRole("subagent:Own")).toBe("mock/base");
+});
+
+it("failure after switching the model retains its newly installed retry chain", async () => {
+	const f = await fixture();
+	installLiveModelPresetRefresh(f.parent, f.settings, f.registry, "After", "free");
+	await f.apply();
+	vi.spyOn(f.parent.sessionManager, "appendModelSelectionChange").mockImplementation(() => {
+		throw new Error("record failed");
+	});
+	await expect(f.parent.refreshModelSelection?.()).rejects.toThrow("record failed");
+	expect(f.parent.model?.id).toBe("preset");
+	expect(getRetryFallbackRole(f.parent.settings, "subagent:After")).toEqual({
+		primary: "mock/preset",
+		chain: ["mock/preset-tail"],
+	});
 });

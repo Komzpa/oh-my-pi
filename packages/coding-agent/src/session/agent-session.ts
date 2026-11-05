@@ -8618,11 +8618,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (normalizedImages?.length) {
 			userContent.push(...normalizedImages);
 		}
-		// Text-only model + image attachment: describe via a vision model and inject the
-		// description as a hidden companion (the image stays in the visible user message).
-		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
-			: undefined;
 
 		// abort() bumps #promptGeneration and can land while normalization and the
 		// vision-description call above are still in flight. #promptWithMessage below
@@ -8657,10 +8652,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				attribution: promptAttribution,
 				prependMessages: prependNotices,
 				rawText: typedText,
-				preprocessed: {
-					images: normalizedImages,
-					descriptionNotice: imageDescriptionNotice,
-				},
 				onPromptAdmitted: options?.onPromptAdmitted,
 				onPromptQueued: options?.onPromptQueued,
 			});
@@ -8715,16 +8706,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				...options,
 				images: normalizedImages,
 				prependMessages:
-					preludeMessages.length > 0 ||
-					keywordNotices.length > 0 ||
-					attachmentSourceNotices.length > 0 ||
-					imageDescriptionNotice
-						? [
-								...preludeMessages,
-								...keywordNotices,
-								...attachmentSourceNotices,
-								...(imageDescriptionNotice ? [imageDescriptionNotice] : []),
-							]
+					preludeMessages.length > 0 || keywordNotices.length > 0 || attachmentSourceNotices.length > 0
+						? [...preludeMessages, ...keywordNotices, ...attachmentSourceNotices]
 						: undefined,
 			});
 		} catch (error) {
@@ -9132,6 +9115,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			const modelSelectionGeneration = this.#promptGeneration;
 			await this.refreshModelSelection();
 			if (modelSelectionGeneration !== this.#promptGeneration || this.#isDisposed) return false;
+		}
+		const descriptionGeneration = this.#promptGeneration;
+		const imageDescriptionNotice = options?.images?.length
+			? await this.#buildImageDescriptionNotice(options.images)
+			: undefined;
+		if (descriptionGeneration !== this.#promptGeneration || this.#isDisposed) return false;
+		if (imageDescriptionNotice) {
+			options = { ...options, prependMessages: [...(options?.prependMessages ?? []), imageDescriptionNotice] };
 		}
 		const inFlightEpoch = this.#beginInFlight();
 		// Client ownership is reserved by #prompt before dispatch preprocessing
@@ -12074,6 +12065,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			thinkingLevel?: ThinkingLevel;
 			persist?: boolean;
 			reason?: string;
+			beforeSwitch?: () => void;
 		},
 	): Promise<{ switched: boolean }> {
 		return this.#models.setModel(model, role, options);

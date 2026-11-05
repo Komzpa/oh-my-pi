@@ -1962,9 +1962,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	registerSshCleanup();
 	registerEvalCleanup();
 
-	const settings = await (options.settings ??
+	const sourceSettings = await (options.settings ??
 		options.settingsManager ??
 		logger.time("settings", Settings.init, { cwd, agentDir }));
+	// Each session owns its runtime writes while configured values remain live.
+	const settings = options.parentTaskPrefix || options.taskDepth ? sourceSettings : sourceSettings.overlay({});
 	// Discovery provider toggles and process-wide setting effects (theme, request limits, …)
 	// follow the newest holder: each top-level session holds both on its settings until disposed,
 	// then hands them back to the previous holder. Subagents and helper sessions never take them,
@@ -2125,13 +2127,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		logger.time("sessionManager", () =>
 			SessionManager.create(cwd, SessionManager.getDefaultSessionDir(cwd, agentDir)),
 		);
+	const baselineDirs = cfgWorkspaceAdditionalDirectories.get(settings);
+	// Restore before startup readers (workspace roots and secrets) consume settings.
+	restoreSessionModelPreset(settings, sessionManager.getBranch(), sessionManager);
 	const configuredDirs = options.additionalDirectories
 		? options.additionalDirectories
 		: cfgWorkspaceAdditionalDirectories.get(settings);
-	if (configuredDirs.length > 0) {
+	if (configuredDirs.length > 0 || baselineDirs.length > 0) {
 		// Merge with any roots restored from the session header (resume/fork), not replace.
 		const existing = sessionManager.getAdditionalDirectories();
-		const merged = [...new Set([...existing, ...configuredDirs])];
+		const retained =
+			options.additionalDirectories === undefined ? existing.filter(dir => !baselineDirs.includes(dir)) : existing;
+		const merged = [...new Set([...retained, ...configuredDirs])];
 		await sessionManager.setAdditionalDirectories(merged);
 	}
 	const providerSessionId = options.providerSessionId ?? sessionManager.getSessionId();
@@ -2226,8 +2233,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			: [];
 	const hasExplicitModel = options.model !== undefined || deferredModelPatterns.length > 0;
 	const modelMatchPreferences = getModelMatchPreferences(settings);
-	// A resumed session gets its session model preset back before the first turn and any task dispatch.
-	restoreSessionModelPreset(settings, sessionManager.getBranch());
 	const defaultRoleValue = settings.getModelRole("default");
 	let explicitDefaultProviders: Set<string> | undefined;
 	if ((cfgEnabledModels.get(settings)?.length ?? 0) === 0) {

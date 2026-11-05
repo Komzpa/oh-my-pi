@@ -12,7 +12,7 @@
  *
  * A preset may also carry a `settings` map (registered setting id → value). With
  * `scope: "session"` the roles, `defaultThinkingLevel` and `settings` are written
- * as runtime overrides of the session {@link Settings} only: nothing is persisted,
+ * as runtime overrides of the session {@link Settings} only: no configuration file is written,
  * subagents spawned afterwards read them through their settings overlay, and
  * {@link clearSessionModelPreset} puts back exactly what the overrides displaced.
  */
@@ -270,6 +270,7 @@ function recordSessionModelPreset(recorder: SessionPresetRecorder | undefined, n
 export function restoreSessionModelPreset(
 	settings: Settings,
 	entries: ReadonlyArray<{ type: string; customType?: string; data?: unknown }>,
+	recorder?: SessionPresetRecorder,
 ): string | undefined {
 	let name: string | null | undefined;
 	for (const entry of entries) {
@@ -280,7 +281,7 @@ export function restoreSessionModelPreset(
 	if (!name) return undefined;
 	const lookup = getModelPreset(settings, name);
 	if (lookup.kind !== "found") return undefined;
-	writeSessionPreset(settings, name, lookup.preset);
+	writeSessionPreset(settings, name, lookup.preset, recorder);
 	return name;
 }
 
@@ -372,7 +373,9 @@ export interface ApplyModelPresetOptions {
 /** A session preset in force: its name and the runtime-override values it displaced, in write order. */
 interface SessionPresetState {
 	name: string;
-	displaced: Array<{ setting: AnySetting; previous: unknown }>;
+	baseRoles: Record<string, string>;
+	recorder?: SessionPresetRecorder;
+	displaced: Array<{ setting: AnySetting; previous: unknown; softPin: boolean }>;
 }
 
 const sessionPresets = new WeakMap<Settings, SessionPresetState>();
@@ -383,7 +386,12 @@ export function getSessionModelPreset(settings: Settings): string | undefined {
 }
 
 function restoreDisplaced(settings: Settings, state: SessionPresetState): void {
-	for (const { setting, previous } of [...state.displaced].reverse()) {
+	for (const { setting, previous, softPin } of [...state.displaced].reverse()) {
+		if (softPin) {
+			setting.clearOverride(settings);
+			setting.pinDefault(settings);
+			continue;
+		}
 		if (previous === undefined) setting.clearOverride(settings);
 		else setting.override(settings, previous);
 	}
@@ -392,7 +400,7 @@ function restoreDisplaced(settings: Settings, state: SessionPresetState): void {
 /**
  * Remove the session preset: every runtime override it wrote goes back to the value (or absence) it had
  * before, including overrides that existed beforehand (`--model`, extension writes). The live model is left
- * alone. Nothing was persisted, so there is nothing else to undo.
+ * alone. A recorded apply is followed by a cleared marker in the session file.
  *
  * @returns the cleared preset's name, or undefined when no session preset was active.
  */
@@ -401,16 +409,34 @@ export function clearSessionModelPreset(settings: Settings, recorder?: SessionPr
 	if (!state) return undefined;
 	sessionPresets.delete(settings);
 	restoreDisplaced(settings, state);
-	recordSessionModelPreset(recorder, null);
+	recordSessionModelPreset(recorder ?? state.recorder, null);
 	return state.name;
 }
 
 /** Write the preset as runtime overrides, first dropping a previous session preset so the baseline stays the original. */
-function writeSessionPreset(settings: Settings, name: string, preset: ModelPreset): void {
+function writeSessionPreset(
+	settings: Settings,
+	name: string,
+	preset: ModelPreset,
+	recorder?: SessionPresetRecorder,
+): void {
 	clearSessionModelPreset(settings);
-	const state: SessionPresetState = { name, displaced: [] };
+	const state: SessionPresetState = {
+		name,
+		recorder,
+		baseRoles: Object.fromEntries(
+			Object.entries(settings.getModelRoles()).filter(
+				(entry): entry is [string, string] => typeof entry[1] === "string",
+			),
+		),
+		displaced: [],
+	};
 	const write = (setting: AnySetting, value: unknown) => {
-		state.displaced.push({ setting, previous: settings.runtimeOverrideValue(setting) });
+		state.displaced.push({
+			setting,
+			previous: settings.runtimeOverrideValue(setting),
+			softPin: settings.isRuntimeSoftPin(setting),
+		});
 		setting.override(settings, value);
 	};
 	try {
@@ -507,36 +533,50 @@ async function applyModelPresetLocked(
 	const { preset } = lookup;
 	const candidates = presetCandidates(session);
 
-	const presetDefault = Object.hasOwn(preset.modelRoles, "default") ? preset.modelRoles.default : undefined;
-	if (presetDefault) {
-		// Resolve against the preset's own roles overlaid on the current ones:
-		// a default written as an alias (`@slow`) must see the state the write
-		// produces, not the current roles.
-		const roleLookup = {
-			getModelRole: (role: string) =>
-				Object.hasOwn(preset.modelRoles, role) ? preset.modelRoles[role] : settings.getModelRole(role),
-		};
-		const resolved = resolveModelRoleValue(presetDefault, candidates, { settings, roleLookup });
-		if (!resolved.model)
-			return { kind: "unavailable", reason: `default model \`${presetDefault}\` is not available` };
-		if (!session.modelRegistry.hasConfiguredAuth(resolved.model)) {
-			return {
-				kind: "unavailable",
-				reason: `no credentials for ${resolved.model.provider}/${resolved.model.id}`,
-			};
+	if (scope === "session") {
+		const preview = settings.overlay({});
+		const previous = sessionPresets.get(settings);
+		if (previous) {
+			restoreDisplaced(preview, previous);
+			cfgModelRoles.override(preview, previous.baseRoles);
 		}
-	} else if (scope === "session" && settings.getModelRole("default")) {
-		// A session preset keeps the configured default; the automatic pick is never reached.
-	} else if (!pickAutomaticDefault(session, candidates)) {
-		// No `default` to apply and nothing to fall back to: refuse before writing.
-		return { kind: "unavailable", reason: "no model with configured credentials is available" };
+		writeSessionPreset(preview, name, preset);
+		const live = resolveLiveDefault(preview, session, candidates, preset);
+		if (typeof live === "string") return { kind: "unavailable", reason: live };
+	}
+
+	if (scope === "global") {
+		const presetDefault = Object.hasOwn(preset.modelRoles, "default") ? preset.modelRoles.default : undefined;
+		if (presetDefault) {
+			// Resolve against the preset's own roles overlaid on the current ones:
+			// a default written as an alias (`@slow`) must see the state the write
+			// produces, not the current roles.
+			const roleLookup = {
+				getModelRole: (role: string) =>
+					Object.hasOwn(preset.modelRoles, role) ? preset.modelRoles[role] : settings.getModelRole(role),
+			};
+			const resolved = resolveModelRoleValue(presetDefault, candidates, { settings, roleLookup });
+			if (!resolved.model)
+				return { kind: "unavailable", reason: `default model \`${presetDefault}\` is not available` };
+			if (!session.modelRegistry.hasConfiguredAuth(resolved.model)) {
+				return {
+					kind: "unavailable",
+					reason: `no credentials for ${resolved.model.provider}/${resolved.model.id}`,
+				};
+			}
+		} else if (!pickAutomaticDefault(session, candidates)) {
+			// No `default` to apply and nothing to fall back to: refuse before writing.
+			return { kind: "unavailable", reason: "no model with configured credentials is available" };
+		}
 	}
 
 	if (scope === "session") {
-		writeSessionPreset(settings, name, preset);
+		writeSessionPreset(settings, name, preset, session.sessionManager);
 		recordSessionModelPreset(session.sessionManager, name);
 	} else writePresetRoles(settings, preset);
-	const shadowed = shadowedRoles(settings, preset);
+	const shadowed = shadowedRoles(settings, preset).filter(
+		entry => scope !== "session" || Object.hasOwn(preset.modelRoles, entry.role),
+	);
 	const thinkingShadow = shadowedThinking(settings, preset);
 
 	const live = resolveLiveDefault(settings, session, candidates, preset);

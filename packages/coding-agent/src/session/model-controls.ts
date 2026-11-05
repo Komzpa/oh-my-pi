@@ -311,6 +311,7 @@ export class ModelControls {
 			thinkingLevel?: ThinkingLevel;
 			persist?: boolean;
 			reason?: string;
+			beforeSwitch?: () => void;
 		},
 	): Promise<{ switched: boolean }> {
 		const previousEditMode = this.#host.resolveActiveEditMode();
@@ -321,6 +322,7 @@ export class ModelControls {
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
 
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
+		options?.beforeSwitch?.();
 		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(targetModel);
 		const modelSelector = `${targetModel.provider}/${targetModel.id}`;
