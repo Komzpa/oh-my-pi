@@ -53,6 +53,9 @@
 
 ### Fixed
 
+- Model role pools keep invalid weights at the fallback tail and draw large finite weights proportionally.
+- Pooled subagents retain their role fallback chain after trying the remaining pool members ([#148](https://github.com/Komzpa/oh-my-pi/pull/148) by [@Komzpa](https://github.com/Komzpa))
+
 - Subagents loading MCP tools (such as Kata's `load_*`) no longer change the main session's tools or system prompt
 - Mounting an MCP tool mid-session on prefix-bound models no longer changes the eval tool description, and the mount notice now reaches the model
 - Worker-thread subagents are faster: switching views on long transcripts no longer lags, `wait` no longer streams full transcripts, and they stall less on a busy main thread
