@@ -9,6 +9,7 @@ import {
 	previewCommits,
 	previewDispatchRefusal,
 	previewReason,
+	previewPlanProblem,
 	previewScheduleRefusal,
 	refreshPreviewVisibility,
 } from "./todo_preview";
@@ -59,12 +60,20 @@ test("rename commit at T+20 remains invisible behind gate at T+30; preview ances
 	expect(overduePreviewRows(phases, records, config, asked + 29 * 60_000)).toEqual([]);
 	const late = overduePreviewRows(phases, records, config, asked + 30 * 60_000);
 	expect(late.map(row => row.content)).toEqual(["Rename Network rooms"]);
-	expect(previewDispatchRefusal({ tasks: [{ agent: "coder", task: "Unrelated change" }] }, late)).toContain(
+	expect(previewDispatchRefusal({ tasks: [{ agent: "gate-runner", task: "Rename Network rooms" }] }, late)).toContain(
 		"Plan problem ignored: preview-not-visible",
 	);
 	expect(
 		previewDispatchRefusal(
-			{ tasks: [{ previewIntegration: { task: "Rename Network rooms", kind: "refresh" } }] },
+			{
+				tasks: [
+					{
+						agent: "gate-runner",
+						task: "Rename Network rooms",
+						previewIntegration: { task: "Rename Network rooms", kind: "refresh" },
+					},
+				],
+			},
 			late,
 		),
 	).toBeUndefined();
@@ -266,9 +275,44 @@ test("no identity has no measured delay and partial visibility remains a plan pr
 	const forecast = forecastTodoPlan(phases, { now: asked + 30 * 60_000 }).rows[0]!;
 	expect(formatTaskForecastDisplay(forecast, asked + 30 * 60_000)).toContain("asked→visible ?m (no commit recorded)");
 	const overdue = overduePreviewRows(phases, [], config, asked + 30 * 60_000);
-	expect(previewDispatchRefusal({}, overdue)).toContain("no commit identity");
+	expect(previewDispatchRefusal({ tasks: [{ agent: "gate-runner", task: row.content }] }, overdue)).toBeUndefined();
+	expect(previewPlanProblem(overdue)).toContain("no commit identity");
 	Object.assign(row.schedule!, { previewIdentityMissing: false, previewPartial: true });
 	expect(
 		formatTaskForecastDisplay(forecastTodoPlan(phases, { now: asked + 30 * 60_000 }).rows[0]!, asked + 30 * 60_000),
 	).toContain("partially visible");
+});
+
+test("invisible rows accept maintenance; explicit gate assignment accepts its documented reason escape", async () => {
+	const phases = plan();
+	const records = await refreshPreviewVisibility(phases, config, [], asked, async () => false);
+	const task = phases[0]!.tasks[0]!.content;
+	const profiles = new Map([["Gate", "gate-runner"]]);
+	for (const update of [
+		{ task, owner: "Coder" },
+		{ task, estimate: { likelySeconds: 100 } },
+		{ task, review: "user", evidence: "delivered", status: "in_progress" },
+	])
+		expect(previewScheduleRefusal({ op: "schedule", updates: [update] }, phases, records, profiles)).toBeUndefined();
+	const input = { op: "schedule", updates: [{ task, owner: "Gate" }] };
+	expect(previewScheduleRefusal(input, phases, records, profiles)).toContain("previewReason={task:");
+	const previewReason = { task, kind: "deferred", detail: "Preview unavailable until landing" };
+	expect(previewScheduleRefusal({ ...input, previewReason }, phases, records, profiles)).toBeUndefined();
+	expect(
+		previewScheduleRefusal(
+			input,
+			phases,
+			records.map(record => ({ ...record, reason: { kind: "deferred" as const, detail: "Deferred" } })),
+			profiles,
+		),
+	).toBeUndefined();
+	expect(previewDispatchRefusal({ tasks: [{ agent: "coder", task }] }, [phases[0]!.tasks[0]!])).toBeUndefined();
+	expect(
+		previewDispatchRefusal({ tasks: [{ agent: "gate-runner", task: "Other gate" }] }, [phases[0]!.tasks[0]!]),
+	).toBeUndefined();
+	phases[0]!.tasks[0]!.schedule!.executor!.gitCommits = [];
+	expect(previewScheduleRefusal(input, phases, [], profiles)).toBeUndefined();
+	expect(
+		previewDispatchRefusal({ tasks: [{ agent: "coder", task: "Another feature" }] }, [phases[0]!.tasks[0]!]),
+	).toBeUndefined();
 });

@@ -114,7 +114,7 @@ async function harness(enabled) {
 	return { git, commit, hooks, ctx, journal, sent, timers, phases: () => phases };
 }
 
-test("runtime rename replay refuses gate scheduling and unrelated dispatch, journals actual preview visibility and clears refusal", async () => {
+test("runtime rename replay refuses gate scheduling and gate dispatch, journals actual preview visibility and clears refusal", async () => {
 	const h = await harness(true);
 	const call = h.hooks.get("tool_call");
 	const scheduleRefusal = await call(
@@ -128,7 +128,7 @@ test("runtime rename replay refuses gate scheduling and unrelated dispatch, jour
 		h.ctx,
 	);
 	expect(scheduleRefusal?.reason).toContain("Refusing todo schedule");
-	const unrelated = { toolName: "task", input: { tasks: [{ agent: "coder", task: "Another feature" }] } };
+	const unrelated = { toolName: "task", input: { tasks: [{ agent: "gate-runner", task: "Rename Racks and rows" }] } };
 	expect((await call(unrelated, h.ctx))?.reason).toContain("preview-not-visible");
 	const integration = await call(
 		{
@@ -184,7 +184,7 @@ test("a failed todo call cannot waive preview dispatch; a successful structured 
 		{ toolName: "todo", content: [], input, isError: true, details: { op: "view" } },
 		h.ctx,
 	);
-	const dispatch = { toolName: "task", input: { tasks: [{ task: "Another feature", agent: "coder" }] } };
+	const dispatch = { toolName: "task", input: { tasks: [{ task: "Rename Racks and rows", agent: "gate-runner" }] } };
 	expect((await call(dispatch, h.ctx))?.reason).toContain("preview-not-visible");
 	await h.hooks.get("tool_result")(
 		{ toolName: "todo", content: [], input, isError: false, details: { op: "view" } },
@@ -303,4 +303,16 @@ test("lead todo git resource journals landed identity; absent identity is never 
 	expect(row.schedule.visibleAt).toBeNumber();
 	expect(row.schedule.previewPending).toBe(false);
 	expect(row.schedule.previewIdentityMissing).toBe(false);
+});
+
+test("the refusal's one-call schedule previewReason escape is admitted and persists", async () => {
+	const h = await harness(true);
+	const input = { op: "schedule", updates: [{ task: "Rename Racks and rows", owner: "Gate" }] };
+	const call = h.hooks.get("tool_call");
+	expect((await call({ toolName: "todo", input }, h.ctx))?.reason).toContain("Refusing todo schedule");
+	input.previewReason = { task: "Rename Racks and rows", kind: "deferred", detail: "Preview offline" };
+	expect((await call({ toolName: "todo", input }, h.ctx))?.reason).toBeUndefined();
+	await h.hooks.get("tool_result")({ toolName: "todo", input, isError: false, details: { op: "schedule" } }, h.ctx);
+	delete input.previewReason;
+	expect((await call({ toolName: "todo", input }, h.ctx))?.reason).toBeUndefined();
 });
