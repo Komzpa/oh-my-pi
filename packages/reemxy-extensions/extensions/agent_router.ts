@@ -892,7 +892,17 @@ export async function recordAsyncResultOutcome(
 	return recordTaskOutcome({ toolName: "wait", details: { jobs: synthetic } }, ctx, state, options);
 }
 
-export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbes) {
+/** The yield gate answers inside this budget, below the host's 30 s extension handler timeout, so
+ * a slow check (git status on a large worktree under load) never turns a finished worker's yield
+ * into a timeout block that discards its completed result. */
+export const YIELD_GATE_BUDGET_MS = 20_000;
+export const SLOW_YIELD_GATE_ENTRY = "agent-router-slow-yield-gate";
+export interface AgentRouterOptions {
+	yieldGateBudgetMs?: number;
+	yieldGate?: typeof workerYieldRefusal;
+}
+
+export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbes, options: AgentRouterOptions = {}) {
 	const state = createRouterState();
 	const announcedGuardSessions = new Set<string>();
 	pi.setLabel?.("Agent Router");
@@ -903,7 +913,31 @@ export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbe
 		const preflight = await workerToolPreflight(event, ctx, probes);
 		if (preflight) return preflight;
 		if (event.toolName === "yield" && ctx.agent?.kind === "sub") {
-			const decision = await workerYieldRefusal(event.input, ctx, continuedWorkers, event.toolCallId);
+			const budgetMs = options.yieldGateBudgetMs ?? YIELD_GATE_BUDGET_MS;
+			const startedAt = Date.now();
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const slow = Symbol("slow-yield-gate");
+			const gate = (options.yieldGate ?? workerYieldRefusal)(event.input, ctx, continuedWorkers, event.toolCallId);
+			const decision = await Promise.race([
+				gate,
+				new Promise<typeof slow>(resolveSlow => {
+					timer = setTimeout(() => resolveSlow(slow), budgetMs);
+					(timer as { unref?: () => void }).unref?.();
+				}),
+			]).finally(() => clearTimeout(timer));
+			if (decision === slow) {
+				// Fail open: the worker's result stands. Record the slow check for diagnosis.
+				gate.catch(() => undefined);
+				pi.appendEntry?.(SLOW_YIELD_GATE_ENTRY, {
+					agent: ctx.agent.name,
+					agentId: ctx.agent.id,
+					toolCallId: event.toolCallId,
+					budgetMs,
+					elapsedMs: Date.now() - startedAt,
+					at: Date.now(),
+				});
+				return undefined;
+			}
 			if (decision) return decision;
 		}
 		return fileToolRefusal(event, ctx);
