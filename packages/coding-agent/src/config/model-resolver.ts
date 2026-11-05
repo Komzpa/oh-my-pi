@@ -554,7 +554,7 @@ export function resolveProviderModelReference(
 			return undefined;
 		}
 		if (fallback !== undefined) {
-			return cloneModelWithRequestedId(fallback, modelId);
+			return modelBlacklistReason(fallback) === undefined ? cloneModelWithRequestedId(fallback, modelId) : undefined;
 		}
 	}
 
@@ -968,13 +968,23 @@ export interface ParsedModelResult {
 }
 
 /** Recognize denied concrete selectors before fuzzy or thinking-suffix fallback. */
-function modelSelectorBlacklistError(pattern: string, availableModels: Model<Api>[]): string | undefined {
+export function modelSelectorBlacklistError(pattern: string, availableModels: Model<Api>[]): string | undefined {
 	const blacklist = readModelBlacklist();
 	if (blacklist.size === 0) return undefined;
 	const visit = (selector: string): string | undefined => {
 		const lower = selector.toLowerCase();
+		const separator = selector.indexOf("/");
+		const provider = separator < 0 ? undefined : selector.slice(0, separator).toLowerCase();
+		// A slash-containing bare ID is only bare when its first segment is not a known provider.
+		const qualified =
+			provider !== undefined &&
+			(availableModels.some(model => model.provider.toLowerCase() === provider) ||
+				[...blacklist.keys()].some(identity => identity.startsWith(`${provider}/`)));
 		for (const [identity, reason] of blacklist) {
-			if (identity.toLowerCase() === lower || identity.slice(identity.indexOf("/") + 1).toLowerCase() === lower) {
+			const boundary = identity.indexOf("/");
+			const exact =
+				provider === identity.slice(0, boundary) && selector.slice(separator + 1) === identity.slice(boundary + 1);
+			if (exact || (!qualified && identity.slice(boundary + 1) === selector)) {
 				return `Model ${identity} is blacklisted: ${reason}`;
 			}
 		}
@@ -1102,7 +1112,7 @@ function matchPatternWithContext(
 	options?: { allowInvalidThinkingSelectorFallback?: boolean },
 ): ParsedModelResult {
 	const direct = parseModelPatternWithContext(pattern, availableModels, context, options);
-	if (direct.model) return direct;
+	if (direct.model || modelSelectorBlacklistError(pattern, availableModels)) return direct;
 
 	// No direct match: a trailing `@upstream` may be a provider-routing selector.
 	// Only honor it when the base resolves to an aggregator model (OpenRouter /

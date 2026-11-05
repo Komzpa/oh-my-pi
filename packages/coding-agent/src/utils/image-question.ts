@@ -8,6 +8,7 @@ import {
 	extractExplicitThinkingSelector,
 	getModelMatchPreferences,
 	resolveModelFromString,
+	modelSelectorBlacklistError,
 } from "../config/model-resolver";
 import imageQuestionSystemPromptTemplate from "../prompts/tools/image-question-system.md" with { type: "text" };
 import { concreteThinkingLevel, resolveThinkingLevelForModel, toReasoningEffort } from "@oh-my-pi/pi-tui/thinking";
@@ -47,6 +48,7 @@ export function resolveImageQuestionModel(session: ToolSession): ResolvedImageQu
 	const resolvePattern = (pattern: string | undefined): Model<Api> | undefined => {
 		if (!pattern) return undefined;
 		const expanded = expandRoleAlias(pattern, session.settings);
+		if (modelSelectorBlacklistError(expanded, availableModels)) return undefined;
 		return resolveModelFromString(expanded, availableModels, matchPreferences);
 	};
 

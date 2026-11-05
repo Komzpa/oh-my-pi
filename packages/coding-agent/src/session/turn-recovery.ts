@@ -27,7 +27,11 @@ import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-cat
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong, sleepUntil } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
+import {
+	formatModelStringWithRouting,
+	resolveModelOverride,
+	modelSelectorBlacklistError,
+} from "../config/model-resolver";
 
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
@@ -2107,6 +2111,7 @@ export class TurnRecovery {
 		for (const role of this.retryFallbackChainKeys(currentSelector, currentModel)) {
 			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
 				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
+				if (modelSelectorBlacklistError(candidate.raw, this.#host.modelRegistry.getAvailable())) continue;
 				const resolved = resolveModelOverride([candidate.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
 				if (!candidateModel || !this.#host.modelRegistry.hasConfiguredAuth(candidateModel)) continue;
@@ -2334,6 +2339,7 @@ export class TurnRecovery {
 				// pair of chains naming each other alternates: each hop is a model the walk
 				// has already been refused on, and the budget no longer stops it.
 				if (options?.refusalWalk && this.#refusalWalkTried.has(formatRetryFallbackBaseSelector(selector))) continue;
+				if (modelSelectorBlacklistError(selector.raw, this.#host.modelRegistry.getAvailable())) continue;
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate) continue;

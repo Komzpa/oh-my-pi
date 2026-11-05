@@ -6,6 +6,7 @@ import * as dirs from "@oh-my-pi/pi-utils";
 import { registerCustomApi, unregisterCustomApis } from "../src/api-registry";
 import { __providerInFlightForTesting, stream, streamSimple } from "../src/stream";
 import type { Api, AssistantMessage, Context, Model } from "../src/types";
+import { transportFetch } from "../src/utils/transport-fetch";
 import { AssistantMessageEventStream } from "../src/utils/event-stream";
 
 const api = "blacklist-test" as Api;
@@ -118,6 +119,20 @@ describe("owner model blacklist at dispatch", () => {
 		});
 		await expect(result.result()).rejects.toThrow("blacklisted");
 		expect(calls).toEqual([]);
+	});
+
+	test("HTTP retries and delayed preparation cannot send a newly banned request", async () => {
+		let httpCalls = 0;
+		const fetch = transportFetch(banned, async () => {
+			httpCalls++;
+			return new Response("ok");
+		});
+		await fetch("http://127.0.0.1/inference", { method: "POST" });
+		ban();
+		await expect(fetch("http://127.0.0.1/inference", { method: "POST" })).rejects.toThrow("blacklisted");
+		expect(httpCalls).toBe(1);
+		const neighboring = transportFetch(allowed, async () => new Response("allowed"));
+		expect(await (await neighboring("http://127.0.0.1/inference")).text()).toBe("allowed");
 	});
 
 	test("a malformed policy fails closed instead of silently restoring access", () => {
