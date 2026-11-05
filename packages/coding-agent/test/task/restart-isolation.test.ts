@@ -160,7 +160,8 @@ describe("restart isolation recovery", () => {
 		const controller = createRestartQueueController({
 			session: rootSession,
 			identity: () => identity,
-			restartIsolationWaitMs: 100,
+			restartIsolationWaitMs: 60_000,
+			restartWorkerAbortGraceMs: 1_000,
 			restartWorkerGraceMs: 1,
 			restart: async () => {
 				restarts++;
@@ -171,6 +172,7 @@ describe("restart isolation recovery", () => {
 			},
 		});
 		try {
+			const started = Date.now();
 			await controller.handle({ identity, op: "request", requestId: "dirty-isolation" });
 			const waiting = await pending.promise;
 			expect(waiting.drainStatus?.isolationPendingReason).toContain("FacilityBlitFix");
@@ -184,6 +186,7 @@ describe("restart isolation recovery", () => {
 			const result = await terminal.promise;
 			expect(result.error).toBeUndefined();
 			expect(result.state).toBe("completed");
+			expect(Date.now() - started).toBeLessThan(3_000);
 			expect(aborts).toBe(1);
 			expect(leases).toBe(1);
 			expect(restarts).toBe(1);

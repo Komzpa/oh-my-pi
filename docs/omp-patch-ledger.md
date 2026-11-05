@@ -45,3 +45,37 @@ sources at baseline 12b20ffcb6, with CARGO_BUILD_JOBS=32 and the explicit
 nightly-2026-08-12 compiler. No live process was restarted or signaled. The smoke
 ancestry includes the launching live terminal's pre-existing ancestors outside
 the disposable script PTY; none was added within that PTY across either restart.
+
+
+## omp-drainzombie, 2026-11-06
+
+User objective: "a graceful restart must never wait forever on dead workers".
+Owner: PR #93, `topic/rt-restart-queue`; original head
+`2ee52c906eeb0dd21e1b5f4e5be05a4f8618a871`, identified with `git log -S`.
+The unbounded notification join before root quiescence prevented the worker
+and abort grace timers from even starting. Children now share a deadline across
+notification, quiescence, abort and journal flush; expiry records abandonment
+and retains durable revival. Jobs/wait's `AgentRegistry.isRunning` determines
+running counts. Capture reads durable transcripts, avoiding dead session methods.
+Status includes stage, start time and elapsed milliseconds.
+
+Proof: the initial seven-file run passed 99 tests. The final five-file run
+passed 62 tests with 323 assertions across restart-worker-settlement, restart-queue,
+restart-recovery, restart-isolation and agent-session-restart-drain.
+The earlier run also covered restart-control and agent-session-restart-queue-roundtrip. The real-tool integration preserves
+the journal result before restart for a cooperative child and abandons an
+uncooperative child. The eight stale children plus one live child complete and
+preserve the live child for revival. A streaming child settling within grace is
+waited for without abort; hung notification and flush promises cannot block.
+Package `bun run check:types` passes (4862 files); changed-file lint/format pass.
+Base replay with the final regression fixture and original production sources:
+five expected failures, including 5-second timeouts on notification, flush and
+nine-child drain. The isolation test also caps a configured one-minute wait,
+snapshots the settled bytes, and completes in under three seconds. Raw outputs:
+`.tmp/regression-base-final.log`, `.tmp/final-boundary.log`,
+`.tmp/final-focused.log` and `.tmp/types-final.log`; no canonical dry-run or updater.
+Native test artifact reused from omp-p146-20261106 with identical `crates` and
+`packages/natives` trees (98ce91fa4807c070414d2fd8adbd357b8543d3bc and
+cdd0e8cd7f2c39385d0a4ddae0d55ff8bf06b624), SHA-256
+438858836421ed5bc97aff5e415582efc7068a4b0c102c58f0c07224911ab380.
+Live sessions and configuration were not modified. Installation belongs to the lead.

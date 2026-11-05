@@ -80,7 +80,7 @@ function makeSession(manager: SessionManager, options: SessionHarnessOptions = {
 		agent: {
 			getPendingModelNewsCount: () => options.queuedInputCount ?? 0,
 		},
-		isStreaming: false,
+		isStreaming: options.wasRunning ?? false,
 		abort: options.abort,
 		beginRestartDrain: () => {
 			drainCount++;
@@ -326,11 +326,11 @@ describe("restart queue controller", () => {
 
 		const snapshot = await controller.handle({ identity, op: "request", requestId: "status-request" });
 
-		expect(snapshot.request?.drainStatus).toEqual({
+		expect(snapshot.request?.drainStatus).toMatchObject({
 			runningWorkers: [{ id: "worker-capture", name: "CaptureWatch", startedAt: 1_000 }],
 			queuedInputCount: 1,
 		});
-		expect(formatRestartRequestStatus(snapshot.request, 721_000)).toBe(
+		expect(formatRestartRequestStatus(snapshot.request, 721_000)).toContain(
 			"Restart waiting for 1 worker: CaptureWatch 12m; 1 queued input.",
 		);
 		expect(
@@ -341,7 +341,7 @@ describe("restart queue controller", () => {
 				},
 				721_000,
 			),
-		).toBe("Restart waiting up to 3.0s for 1 worker to reach a safe point: CaptureWatch 12m; 1 queued input.");
+		).toContain("Restart waiting up to 3.0s for 1 worker to reach a safe point: CaptureWatch 12m; 1 queued input.");
 		controller.dispose();
 	});
 
