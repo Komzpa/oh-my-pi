@@ -171,7 +171,10 @@ export function previewScheduleRefusal(
 		if (
 			(owner &&
 				(profiles.get(owner) === "gate-runner" ||
-					rows.some(candidate => candidate.schedule?.owner === owner && gateRow(candidate)))) ||
+					rows.some(
+						candidate =>
+							candidate.schedule?.owner === owner && candidate.schedule.executor?.agentProfile === "gate-runner",
+					))) ||
 			dependencies.some(dependency =>
 				rows.some(
 					candidate =>
