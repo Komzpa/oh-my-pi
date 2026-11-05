@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Delivery criticism now uses the stakeholder-shadow skill with a cheap worker instead of a dedicated role ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Show delivered TODO rows awaiting your review separately from open and overdue work, with their review links ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Refuse idle waits for rows whose executors have finished, with verification or restaffing actions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

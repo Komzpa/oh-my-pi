@@ -151,7 +151,7 @@ export function queueDeliveryCritic(
 		preview,
 		receipt,
 	});
-	// The role is blocking inside the native task call; the delivery hook never awaits it.
+	// Await the ordinary worker inside the native task call; the delivery hook never awaits it.
 	void (async () => {
 		try {
 			const result = await ctx.runDeliveryCritic?.(task);

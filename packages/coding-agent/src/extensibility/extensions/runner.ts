@@ -778,6 +778,8 @@ export class ExtensionRunner {
 			signal?: AbortSignal;
 			onUpdate?: AgentToolUpdateCallback<TDetails>;
 			depth?: number;
+			/** Await a background-capable native task without changing its profile. */
+			waitForCompletion?: boolean;
 			/**
 			 * The caller tool's own context. Reused for the native call so metadata the native tool
 			 * reads — `toolCall` (write/edit LSP batch flushing) and provider metadata /
@@ -794,7 +796,10 @@ export class ExtensionRunner {
 			throw new Error(`invokeTool: delegation depth exceeded 8 (recursive invokeTool for "${name}"?)`);
 		}
 		const toolCallId = `invoke-${name}-${crypto.randomUUID()}-${depth}`;
-		return (await resolved.tool.execute(
+		const tool = resolved.tool as AgentTool & { executeBlocking?: AgentTool["execute"] };
+		const execute = options?.waitForCompletion && tool.executeBlocking ? tool.executeBlocking : tool.execute;
+		return (await execute.call(
+			tool,
 			toolCallId,
 			params as never,
 			options?.signal,
@@ -1802,7 +1807,11 @@ export class ExtensionRunner {
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
 			runDeliveryCritic: (task, signal) =>
-				this.invokeNativeTool("task", { agent: "user-shadow", task, effort: "lo" }, { signal }),
+				this.invokeNativeTool(
+					"task",
+					{ agent: "gate-runner", task, effort: "lo" },
+					{ signal, waitForCompletion: true },
+				),
 			getTodoPhases: () => this.getTodoPhases?.(),
 			updateTodoSchedule: (task, patch) => this.updateTodoSchedule?.(task, patch) ?? false,
 			setSubagentFastMode: this.#setSubagentFastModeFn,

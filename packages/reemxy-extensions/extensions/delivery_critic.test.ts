@@ -53,7 +53,7 @@ function harness(outcome: "completed" | "failed" = "completed", preview = false)
 		runDeliveryCritic: (brief: string) => {
 			calls++;
 			expect(brief).toContain(row.content);
-			expect(brief).toContain("memory/user-shadow/corpus.jsonl");
+			expect(brief.startsWith("Read skill://stakeholder-shadow to END OF FILE and apply it")).toBe(true);
 			return deferred.promise;
 		},
 	} as unknown as ExtensionContext;
