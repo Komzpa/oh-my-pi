@@ -4,6 +4,7 @@
 
 ### Added
 
+- Model presets can carry a `settings` map and be applied to the current session only with `/modelpreset session <name>` (`off` clears it): roles, thinking level and settings become non-persisted runtime overrides that later subagents inherit, and extensions can call `pi.applySessionModelPreset(name)`, `pi.clearSessionModelPreset()` and `pi.getSessionModelPreset()`. A session preset that omits `default` keeps the configured default model instead of falling back to the first authenticated model; other omitted roles stay hidden for the session. The session preset is recorded in the session file (custom entry `session-model-preset`, also on clear) and re-applied, settings map included, when that session is resumed, before the first turn and any task dispatch; a new session starts without it
 - Bash commands, foreground and background, now show a live execution visualization in Raw or Python-like Pseudo view, with variable values and replay history; disable with `display.shellVisualization` (default on).
 - Added `skills.manualSkills` glob patterns to hide skills from the model catalog while keeping them manually invocable ([#18114](https://github.com/can1357/oh-my-pi/pull/18114) by [@Shadorain](https://github.com/Shadorain))
 - Added Keenable web search (`web/keenable`), using `KEENABLE_API_KEY` or a stored `keenable` credential, or a keyless public endpoint when explicitly selected ([#17953](https://github.com/can1357/oh-my-pi/pull/17953) by [@KGKallasmaa](https://github.com/KGKallasmaa))
@@ -53,6 +54,8 @@
 
 ### Fixed
 
+- Session model presets now restore their settings on resume, stay separate across SDK sessions, and reach revived role-based subagents. Clearing a preset preserves protocol defaults and records the cleared state.
+- Live role-based subagents now follow session model preset changes and clears on their next model selection; explicit model pins stay unchanged.
 - Subagents loading MCP tools (such as Kata's `load_*`) no longer change the main session's tools or system prompt
 - Mounting an MCP tool mid-session on prefix-bound models no longer changes the eval tool description, and the mount notice now reaches the model
 - Worker-thread subagents are faster: switching views on long transcripts no longer lags, `wait` no longer streams full transcripts, and they stall less on a busy main thread

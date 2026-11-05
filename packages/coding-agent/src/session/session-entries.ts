@@ -146,6 +146,8 @@ export interface ThinkingLevelChangeEntry extends SessionEntryBase {
 }
 
 export interface ModelChangeEntry extends SessionEntryBase {
+	/** Why the model was selected, when the switch has an explicit cause. */
+	reason?: string;
 	type: "model_change";
 	/** Model in "provider/modelId" format */
 	model: string;

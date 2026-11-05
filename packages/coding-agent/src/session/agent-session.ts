@@ -2320,6 +2320,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			model: () => this.model,
 			contextFitsModel: (model, excludedMessage) => this.#maintenance.contextFitsModel(model, excludedMessage),
 			textOutputCommitted: () => this.#textOutputCommitted,
+			refreshModelSelection: () => this.refreshModelSelection?.() ?? Promise.resolve(false),
 			thinkingLevel: () => this.thinkingLevel,
 			configuredThinkingLevel: () => this.configuredThinkingLevel(),
 			setThinkingLevel: level => this.#models.setThinkingLevel(level),
@@ -2371,6 +2372,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		});
 		this.agent.prepareQueuedMessages = this.#prepareQueuedUserMessages;
 		this.#detachUsageBeforeModelCall = this.agent.addBeforeModelCallHook(async signal => {
+			await this.refreshModelSelection?.();
 			if (!cfgRetryUsageAwareFallback.get(this.settings)) return;
 			if (this.#usagePreflightReadyForNextModelCall) {
 				const checkedModel = this.#usagePreflightReadyModel;
@@ -8616,11 +8618,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (normalizedImages?.length) {
 			userContent.push(...normalizedImages);
 		}
-		// Text-only model + image attachment: describe via a vision model and inject the
-		// description as a hidden companion (the image stays in the visible user message).
-		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
-			: undefined;
 
 		// abort() bumps #promptGeneration and can land while normalization and the
 		// vision-description call above are still in flight. #promptWithMessage below
@@ -8657,7 +8654,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				rawText: typedText,
 				preprocessed: {
 					images: normalizedImages,
-					descriptionNotice: imageDescriptionNotice,
 				},
 				onPromptAdmitted: options?.onPromptAdmitted,
 				onPromptQueued: options?.onPromptQueued,
@@ -8713,16 +8709,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				...options,
 				images: normalizedImages,
 				prependMessages:
-					preludeMessages.length > 0 ||
-					keywordNotices.length > 0 ||
-					attachmentSourceNotices.length > 0 ||
-					imageDescriptionNotice
-						? [
-								...preludeMessages,
-								...keywordNotices,
-								...attachmentSourceNotices,
-								...(imageDescriptionNotice ? [imageDescriptionNotice] : []),
-							]
+					preludeMessages.length > 0 || keywordNotices.length > 0 || attachmentSourceNotices.length > 0
+						? [...preludeMessages, ...keywordNotices, ...attachmentSourceNotices]
 						: undefined,
 			});
 		} catch (error) {
@@ -9126,6 +9114,19 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// every pre-dispatch bail (generation bump from abort, disposal, usage
 		// preflight denial) exits silently, and prompt() uses the outcome to hand
 		// the typed text back to the host instead of losing it.
+		if (this.refreshModelSelection) {
+			const modelSelectionGeneration = this.#promptGeneration;
+			await this.refreshModelSelection();
+			if (modelSelectionGeneration !== this.#promptGeneration || this.#isDisposed) return false;
+		}
+		const descriptionGeneration = this.#promptGeneration;
+		const imageDescriptionNotice = options?.images?.length
+			? await this.#buildImageDescriptionNotice(options.images)
+			: undefined;
+		if (descriptionGeneration !== this.#promptGeneration || this.#isDisposed) return false;
+		if (imageDescriptionNotice) {
+			options = { ...options, prependMessages: [...(options?.prependMessages ?? []), imageDescriptionNotice] };
+		}
 		const inFlightEpoch = this.#beginInFlight();
 		// Client ownership is reserved by #prompt before dispatch preprocessing
 		// and released when its bracket settles; callers that reach this
@@ -9831,9 +9832,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// branch) until the next deliberate steer/follow-up/prompt, matching the
 		// sendCustomMessage aside path (queueAside), which never touches this flag.
 		if (mode !== "aside") this.#advisors.autoResumeSuppressed = false;
-		// The pre-dispatch re-check in prompt() arrives with normalization and the
-		// vision description already done — reuse them instead of paying a second
-		// vision-model request for the same attachment.
+		// The pre-dispatch re-check in prompt() arrives with normalization done.
+		// Reuse it and describe the images if the caller has not done so yet.
 		const attachmentSourceNotices = this.#createAttachmentSourceNotices(images, timestamp ?? Date.now());
 		const normalizedImages = preprocessed ? preprocessed.images : await this.#normalizeImagesForModel(images);
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -9842,11 +9842,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		// Text-only model + image attachment: describe via a vision model and enqueue the
 		// description as a hidden companion immediately before the user message.
-		const imageDescriptionNotice = preprocessed
-			? preprocessed.descriptionNotice
-			: normalizedImages?.length
-				? await this.#buildImageDescriptionNotice(normalizedImages)
-				: undefined;
+		const imageDescriptionNotice =
+			preprocessed?.descriptionNotice ??
+			(normalizedImages?.length ? await this.#buildImageDescriptionNotice(normalizedImages) : undefined);
 		if (options?.promptGeneration !== undefined && this.#promptGeneration !== options.promptGeneration) {
 			return false;
 		}
@@ -12047,6 +12045,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	// Model Management
 	// =========================================================================
 
+	/** Refresh a role-resolved child at a model selection boundary. Returns whether it switched. */
+	refreshModelSelection?: () => Promise<boolean>;
+
 	/**
 	 * Set model directly.
 	 * Validates that a credential source is configured (synchronously, without
@@ -12063,6 +12064,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			selector?: string;
 			thinkingLevel?: ThinkingLevel;
 			persist?: boolean;
+			reason?: string;
+			beforeSwitch?: () => void;
 		},
 	): Promise<{ switched: boolean }> {
 		return this.#models.setModel(model, role, options);

@@ -310,6 +310,8 @@ export class ModelControls {
 			selector?: string;
 			thinkingLevel?: ThinkingLevel;
 			persist?: boolean;
+			reason?: string;
+			beforeSwitch?: () => void;
 		},
 	): Promise<{ switched: boolean }> {
 		const previousEditMode = this.#host.resolveActiveEditMode();
@@ -320,9 +322,15 @@ export class ModelControls {
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
 
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
+		options?.beforeSwitch?.();
 		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(targetModel);
-		this.#host.sessionManager.appendModelChange(`${targetModel.provider}/${targetModel.id}`, role);
+		const modelSelector = `${targetModel.provider}/${targetModel.id}`;
+		if (options?.reason === undefined) {
+			this.#host.sessionManager.appendModelChange(modelSelector, role);
+		} else {
+			this.#host.sessionManager.appendModelSelectionChange(modelSelector, role, options.reason);
+		}
 		if (options?.persist) {
 			this.#host.settings.setModelRole(
 				role,

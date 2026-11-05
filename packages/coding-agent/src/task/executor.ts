@@ -169,6 +169,7 @@ import {
 	cfgDefaultThinkingLevel,
 } from "../session/settings";
 import { cfgDisabledProviders } from "../config/model-settings";
+import { getSessionModelPreset } from "../config/model-presets";
 import { getRetryFallbackRole, installRetryFallbackRole } from "../session/retry-fallback-chains";
 import {
 	cfgCompactionModelThresholdsEnabled,
@@ -293,7 +294,7 @@ function resolveSubagentRetryFallbackCandidates(
 	const candidates: SubagentRetryFallbackCandidate[] = [];
 	const seen = new Set<string>();
 	const disabledProviders = new Set(cfgDisabledProviders.get(settings));
-	for (const pattern of modelPatterns) {
+	for (const pattern of resolveConfiguredModelPatterns(modelPatterns, settings)) {
 		const resolved = resolveModelOverride([pattern], modelRegistry, settings);
 		if (!resolved.model) continue;
 		if (disabledProviders.has(resolved.model.provider)) continue;
@@ -4202,12 +4203,61 @@ function restoreSubagentSettings(recipe: SubagentSettingsRecipe): Settings {
 	return settings;
 }
 
+/** Install the same live preset behavior for fresh and revived role children. */
+export function installLiveModelPresetRefresh(
+	session: AgentSession,
+	settings: Settings,
+	modelRegistry: ModelRegistry,
+	id: string,
+	liveRole: string,
+	refreshOnFirstTurn = false,
+): void {
+	let preset = getSessionModelPreset(settings);
+	session.refreshModelSelection = async () => {
+		const nextPreset = getSessionModelPreset(settings);
+		if (!refreshOnFirstTurn && nextPreset === preset) return false;
+		const patterns = resolveConfiguredModelPatterns(`@${liveRole}`, settings);
+		const candidates = resolveSubagentRetryFallbackCandidates(patterns, modelRegistry, settings);
+		const selected = candidates.find(candidate => modelRegistry.hasConfiguredAuth(candidate.model));
+		if (!selected) return false;
+		const role = subagentRetryFallbackRole(id);
+		const previousModel = session.model;
+		await session.setModel(selected.model, role, {
+			persist: false,
+			beforeSwitch: () => {
+				installSubagentRetryFallbackChain({
+					settings: session.settings,
+					id,
+					candidates,
+					inheritedFallbackChain:
+						patterns.length === 1
+							? (resolveSubagentInheritedRetryFallbackChain(settings, modelRegistry, liveRole) ?? [])
+							: [],
+					model: selected.model,
+					authFallbackUsed: false,
+				});
+			},
+			reason: nextPreset
+				? `Session model preset "${nextPreset}" applied`
+				: `Session model preset "${preset}" cleared`,
+		});
+		const resolved = resolveModelOverride([selected.selector], modelRegistry, settings);
+		if (resolved.explicitThinkingLevel && resolved.thinkingLevel !== undefined) {
+			session.setThinkingLevel(resolved.thinkingLevel);
+		}
+		preset = nextPreset;
+		refreshOnFirstTurn = false;
+		return previousModel?.provider !== session.model?.provider || previousModel?.id !== session.model?.id;
+	};
+}
+
 /** Everything the lifecycle reviver of a kept-alive subagent needs, captured explicitly. */
 interface WarmReviveCapture {
 	sessionFile: string;
 	spec: SubagentSessionSpec;
 	/** A per-call worker never switches models; its warm revive keeps only the exact saved model. */
 	perCallModel: boolean;
+	liveRole: string | undefined;
 	/** Re-captured whenever the live session is disposed, so a revive restores its latest settings writes. */
 	settings: SubagentSettingsRecipe;
 	parentArtifactManager: ArtifactManagerApi | undefined;
@@ -4339,6 +4389,15 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 				mcpFollower?.dispose();
 				throw error;
 			}
+			if (capture.liveRole)
+				installLiveModelPresetRefresh(
+					revived,
+					capture.settings.parent,
+					revived.modelRegistry,
+					id,
+					capture.liveRole,
+					true,
+				);
 			mcpFollower?.bind(revived);
 			trackSubagentSettings(revived, capture);
 			trackSubagentPendingCandidate(revived, capture);
@@ -5067,6 +5126,10 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				}
 				throw err;
 			}
+			const liveRole = options.perCallModelGrants
+				? undefined
+				: (modelRole ?? resolveExplicitModelRole(modelOverride ?? agent.model, settings));
+			if (liveRole) installLiveModelPresetRefresh(session, settings, modelRegistry, id, liveRole);
 			mcpFollower?.bind(session);
 			// The SDK records a new session's initial model as the default role.
 			// Pin the child's own chain so a parent default sharing that model
@@ -5112,6 +5175,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					sessionFile,
 					spec: sessionSpec,
 					perCallModel: perCallModelGrants !== undefined,
+					liveRole,
 					settings: captureSubagentSettings(settings, subagentSettings),
 					parentArtifactManager: preparedSession ? undefined : options.parentArtifactManager,
 					keepTodo: prewalk !== undefined,
