@@ -4862,6 +4862,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     for (const update of todoScheduleUpdates(input)) {
       if (typeof update.task !== "string") continue;
+      // A customer verdict resolves this wait; it is not another request to keep waiting.
+      if (["accepted", "redo", "drop"].includes(String(update.review))) continue;
       const row = rows.find((candidate) => candidate.task.content === update.task)?.task;
       const schedule = row?.schedule as { owner?: unknown } | undefined;
       const owner = typeof update.owner === "string" ? update.owner : schedule?.owner;

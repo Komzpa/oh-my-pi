@@ -552,3 +552,18 @@ test("drop abandons the reviewed row and releases its dependants", async () => {
   expect(harness.phases()[0].tasks[0].status).toBe("abandoned");
   expect(harness.phases()[0].tasks[1].schedule.dependencies).not.toContain("Delivered UI");
 });
+
+
+test("customer verdicts pass admission on a user-review wait while ordinary wait edits stay refused", async () => {
+  for (const review of ["accepted", "redo", "drop"]) {
+    const phases = reviewPlan();
+    phases[0].tasks[0].schedule.owner = "user-review";
+    phases[0].tasks[0].blocker = "waits for user: accept, redo, or drop";
+    const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
+    const input = { op: "schedule", updates: [{ task: "Delivered UI", review, evidence: "User correction" }] };
+    const verdict = await harness.handlers.get("tool_call")({ toolName: "todo", input }, harness.ctx);
+    expect(verdict?.block).not.toBe(true);
+    const ordinary = await harness.handlers.get("tool_call")({ toolName: "todo", input: { op: "schedule", updates: [{ task: "Delivered UI", evidence: "Still waiting" }] } }, harness.ctx);
+    expect(ordinary).toEqual({ block: true, reason: USER_WAIT_REFUSAL });
+  }
+});
