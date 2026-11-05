@@ -1,3 +1,4 @@
+import { restoreAssistantProviderReplayState } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { customMessageEntryMessage, isUserRequestEntry } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import {
@@ -499,6 +500,8 @@ export function buildSessionContext(
 							),
 						}
 					: originalMessage;
+			if (message.role === "assistant" && entry.assistantProviderReplay)
+				restoreAssistantProviderReplayState(message, entry.assistantProviderReplay);
 			pushMessage(message);
 		} else if (entry.type === "custom_message") {
 			if (

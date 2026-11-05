@@ -19,10 +19,29 @@ export function isAssistantPublicationSettled(message: AssistantMessage): boolea
 
 const gates = new WeakMap<object, AssistantPublicationGate>();
 const gateProviders = new WeakMap<object, () => AssistantPublicationGate | undefined>();
-const providerReplayState = new WeakMap<
-	AssistantMessage,
-	{ thinking: AssistantMessage["content"]; providerPayload?: AssistantMessage["providerPayload"] }
->();
+export interface AssistantProviderReplayState {
+	thinking: AssistantMessage["content"];
+	providerPayload?: AssistantMessage["providerPayload"];
+	settled?: true;
+}
+const providerReplayState = new WeakMap<AssistantMessage, AssistantProviderReplayState>();
+
+/** Session-entry metadata only; never attach this state to the published message. */
+export function getAssistantProviderReplayState(message: AssistantMessage): AssistantProviderReplayState | undefined {
+	const state = providerReplayState.get(message);
+	return state
+		? structuredClone({ ...state, ...(settledAssistantMessages.has(message) ? { settled: true as const } : {}) })
+		: undefined;
+}
+
+export function restoreAssistantProviderReplayState(
+	message: AssistantMessage,
+	state: AssistantProviderReplayState,
+): void {
+	providerReplayState.set(message, structuredClone(state));
+	narrativeReplacedMessages.add(message);
+	if (state.settled) settledAssistantMessages.add(message);
+}
 
 /** Internal bridge for coding-agent; intentionally not re-exported from the SDK entry point. */
 export function setAssistantPublicationGate(owner: object, gate: AssistantPublicationGate | undefined): void {
@@ -48,7 +67,7 @@ export function getAssistantPublicationGate(owner: object): AssistantPublication
 /** Build a provider-only copy for replay; the admitted message stays redacted. */
 export function snapshotAssistantMessageForProviderReplay(message: AssistantMessage): AssistantMessage {
 	const state = providerReplayState.get(message);
-	if (!state || state.thinking.length === 0) return message;
+	if (!state) return message;
 	return {
 		...message,
 		content: [...state.thinking.map(block => ({ ...block })), ...message.content.map(block => ({ ...block }))],
@@ -96,7 +115,7 @@ export function replaceAssistantNarrative(
 	const providerThinking = keepProviderThinking
 		? message.content.filter(block => block.type === "thinking" || block.type === "redactedThinking")
 		: [];
-	if (providerThinking.length > 0) {
+	if (keepProviderThinking && (providerThinking.length > 0 || message.providerPayload !== undefined)) {
 		providerReplayState.set(message, {
 			thinking: providerThinking.map(block => ({ ...block })),
 			...(message.providerPayload !== undefined

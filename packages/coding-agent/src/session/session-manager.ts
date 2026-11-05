@@ -1,3 +1,4 @@
+import { getAssistantProviderReplayState } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -2170,6 +2171,10 @@ export class SessionManager {
 		}
 		if (entry.type === "message" && entry.message.role === "assistant" && normalizeAssistantUsage(entry.message)) {
 			logger.warn("Assistant message recorded with incomplete usage", { id: entry.id });
+		}
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			const replay = getAssistantProviderReplayState(entry.message);
+			if (replay) entry.assistantProviderReplay = replay;
 		}
 		this.#entries.push(entry);
 		this.#index.insert(entry);

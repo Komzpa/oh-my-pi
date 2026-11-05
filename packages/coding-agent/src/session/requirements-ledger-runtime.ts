@@ -534,11 +534,27 @@ export class RequirementsLedgerRuntime {
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const multiple = Array.isArray(input.tasks);
 		const items = multiple ? (input.tasks as unknown[]) : [input];
+		if (
+			items.some(
+				item =>
+					isRecord(item) &&
+					typeof item.taskFile === "string" &&
+					((typeof item.agent === "string" && item.agent.trim() === "qa-auditor") ||
+						(Array.isArray(item.requirementIds) && item.requirementIds.length > 0)),
+			)
+		)
+			throw new Error(
+				formatRequirementActionRefusal(
+					"Read the task file, then retry qa-auditor with inline task text instead of taskFile.",
+					"Requirement audit admission and image enrichment require inline task text before dispatch.",
+				),
+			);
 		const revised = [...items];
 		const assignments: RequirementAuditAssignment[] = [];
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 		let imagesChanged = false;
 		const missingImages = new Set<string>();
+		const verifiedImages = new Set<string>();
 
 		const scopes = items.map(item => {
 			if (!isRecord(item) || item.agent !== "qa-auditor") return [];
@@ -686,8 +702,12 @@ export class RequirementsLedgerRuntime {
 						...(image.artifactPath ? { artifactPath: image.artifactPath } : {}),
 					});
 				}
+				if (source.images?.length && !missingImages.has(source.id)) verifiedImages.add(source.id);
 			}
 			for (const id of ids) {
+				const imageSources = getRequirementAuditSources(requirements, id).filter(source => source.images?.length);
+				if (imageSources.length && imageSources.every(source => verifiedImages.has(source.id)))
+					verifiedImages.add(id);
 				const requirement = requirements.find(candidate => candidate.id === id)!;
 				for (const row of getLinkedRequirementRows(requirement, assignedRows)) {
 					const declaredArtifact = getAuditItemRowArtifact(
@@ -778,7 +798,11 @@ export class RequirementsLedgerRuntime {
 
 		if (assignments.length === 0) return undefined;
 		if (this.#sessionId() !== sessionId) throw new Error("Audit session changed during preparation");
-		if (imagesChanged || missingImages.size) {
+		if (
+			imagesChanged ||
+			missingImages.size ||
+			requirements.some(item => item.imageState && verifiedImages.has(item.id))
+		) {
 			const current = latestRequirementsFromSession(this.#host.sessionManager);
 			appendRequirementsSnapshot(
 				this.#appender(),
@@ -795,7 +819,11 @@ export class RequirementsLedgerRuntime {
 					return {
 						...requirement,
 						images: captured.images,
-						...(missingImages.has(requirement.id) ? { imageState: "needs-user-restatement" as const } : {}),
+						imageState: missingImages.has(requirement.id)
+							? "needs-user-restatement"
+							: verifiedImages.has(requirement.id)
+								? undefined
+								: requirement.imageState,
 					};
 				}),
 			);

@@ -1997,6 +1997,59 @@ describe("real row-scoped auditor receipts", () => {
 });
 
 describe("requirement image audit inputs", () => {
+	it.each([false, true])("refuses file-backed auditors before admission (batch: %s)", async batch => {
+		const { cwd, runtime } = fixture();
+		try {
+			const item = { name: "main", agent: "qa-auditor", requirementIds: ["R1"], taskFile: join(cwd, "audit.md") };
+			await expect(
+				runtime.prepareAuditorTaskCall("task", "file-audit", batch ? { tasks: [item] } : item),
+			).rejects.toThrow("inline task text");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("allows completion after the original missing image bytes recover and a fresh audit passes", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const pixels = Buffer.from("original requirement pixels");
+			const sha256 = createHash("sha256").update(pixels).digest("hex");
+			const sourcePath = join(cwd, "original.png");
+			appendRequirementsSnapshot(
+				{ appendEntry: (type, value) => manager.appendCustomEntry(type, value) },
+				getLatestRequirements(manager.getBranch()).map(item => ({
+					...item,
+					images: [{ index: 1, sourcePath, sha256, mimeType: "image/png" }],
+				})),
+			);
+			const args = { name: "main", agent: "qa-auditor", requirementIds: ["R1"], task: "Audit the original request" };
+			await runtime.prepareAuditorTaskCall("task", "missing-image", args);
+			expect(getLatestRequirements(manager.getBranch())[0]?.imageState).toBe("needs-user-restatement");
+			writeFileSync(sourcePath, "wrong replacement pixels");
+			await runtime.prepareAuditorTaskCall("task", "wrong-image", args);
+			expect(getLatestRequirements(manager.getBranch())[0]?.imageState).toBe("needs-user-restatement");
+			writeFileSync(sourcePath, pixels);
+			const recovered = await runtime.prepareAuditorTaskCall("task", "recovered-image", args);
+			expect(recovered?.images).toMatchObject([{ sha256, sourcePath }]);
+			await auditFixtureArtifact(
+				runtime,
+				"recovered-pass",
+				gitIdentity(cwd, git(cwd, "rev-parse", "HEAD")),
+				"verified recovered original pixels and build",
+			);
+			const requirements = getLatestRequirements(manager.getBranch());
+			expect(requirements[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("pass");
+			const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+			const open = await evaluateRequirementDoneGate(requirements, ["Build artifact"], (row, receipt) =>
+				getRequirementRowArtifact({ cwd, sessionManager: manager, receipt }, row, phases),
+			);
+			expect(open).toEqual([]);
+			expect(requirements[0]?.imageState).toBeUndefined();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("forwards inline requirement pixels when sessions have no artifact directory", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
