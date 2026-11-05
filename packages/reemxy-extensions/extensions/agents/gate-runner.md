@@ -2,7 +2,7 @@
 name: gate-runner
 description: Run one named build, test, browser, or install proof after a frozen artifact.
 tools: read, bash
-model: "@free, @fast"
+model: "codex-lb/gpt-6.1-terra:low, codex-lb/gpt-6-luna"
 thinking-level: low
 spawns: []
 ---

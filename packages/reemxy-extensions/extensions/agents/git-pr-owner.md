@@ -2,7 +2,7 @@
 name: git-pr-owner
 description: Sole narrow owner of one checkout, commit, PR, or sync operation.
 tools: read, grep, glob, find, bash
-model: "@free, @fast"
+model: "codex-lb/gpt-6.1-terra:low, codex-lb/gpt-6-luna"
 thinking-level: low
 spawns: []
 ---

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -101,6 +101,22 @@ describe("rework attempt TODO HUD", () => {
 			{ name: "Ordinary", tasks: [{ content: "new first-dispatch row", status: "pending" }] },
 		] satisfies TodoPhase[];
 
+		const exhaustedRow = {
+			content: "Adaptive layout: heat pipes reach heat plant attempt 3",
+			status: "pending" as const,
+			schedule: {
+				attemptHistory: prior,
+				executor: {
+					workerId: "LandHeatLabels-2",
+					resolvedModel: "abliteration/abliterated-model",
+					thinkingLevel: "medium",
+					startedAt: now - 2000,
+					finishedAt: now,
+				},
+			},
+		};
+		mode.todoPhases[0]!.tasks.push(exhaustedRow);
+		const available = spyOn(registry, "getAvailable").mockReturnValue([]);
 		try {
 			mode.setTodoExpanded(true);
 			const rendered = mode.todoContainer.render(200).join("\n");
@@ -121,7 +137,14 @@ describe("rework attempt TODO HUD", () => {
 			);
 			expect(ordinaryRow).toBeDefined();
 			expect(ordinaryRow).not.toContain("attempt ");
+			expect(rendered.split("\n").find(line => line.includes(exhaustedRow.content))).not.toContain(
+				"abliterated-model",
+			);
+			available.mockReturnValue([{ ...model, provider: "abliteration", id: "abliterated-model" }]);
+			mode.setTodoExpanded(true);
+			expect(mode.todoContainer.render(200).join("\n")).toContain("abliterated-model · medium effort");
 		} finally {
+			available.mockRestore();
 			mode.stop();
 			await session.dispose();
 			auth.close();
