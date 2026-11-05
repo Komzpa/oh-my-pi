@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -12,6 +12,7 @@ import {
 	previewPlanProblem,
 	previewScheduleRefusal,
 	refreshPreviewVisibility,
+	visualPreviewRow,
 } from "./todo_preview";
 
 const roots: string[] = [];
@@ -331,4 +332,42 @@ test("a coder owning a suite row is still eligible to own an invisible feature",
 			new Map([["Coder", "coder"]]),
 		),
 	).toBeUndefined();
+});
+
+// Live DC 2026-11-05: "Refusing idle/wait: preview is overdue for 'Consolidate lane branches into
+// one branch'", a rebaser's git integration with nothing to show.
+describe("preview gate exempts non-visual rows by behaviour", () => {
+	const now = 1_793_900_700_000;
+	const config = { enabled: true, thresholdMinutes: 15, paths: ["/home/kom/proj/sunbim/datacenter-decision-graph"] };
+	const row = (content: string, schedule: Record<string, unknown>) => ({
+		content,
+		status: "in_progress" as const,
+		schedule: { dependencies: [], firstRequirementAt: now - 60 * 60_000, ...schedule },
+	});
+	const consolidate = row("Consolidate lane branches into one branch", {
+		resources: ["/home/kom/proj/sunbim/datacenter-decision-graph/tmp/consolidated-2026-11-05"],
+		executor: { workerId: "ConsolidateBranches-2", agentProfile: "rebaser", startedAt: now - 30_000 },
+	});
+	const transcript = row("Archive 2026-11-05 sync transcript (Max, Aleksandra)", {
+		resources: ["/home/kom/proj/sunbim/datacenter-decision-graph/tmp/followup-pr-2026-11-05/doc/research/transcripts/2026-11-05-xmova-sync.raw.md"],
+	});
+	const uiRow = row("Facility 2D: too much empty space around site", {
+		resources: ["/home/kom/proj/sunbim/datacenter-decision-graph/tmp/facility-empty-space"],
+		executor: { workerId: "BuildingSquare-2", agentProfile: "ui-coder", startedAt: now - 30_000 },
+	});
+	test("a rebaser branch row and a docs-file row are exempt", () => {
+		expect(visualPreviewRow(consolidate, config.paths)).toBe(false);
+		expect(visualPreviewRow(transcript, config.paths)).toBe(false);
+		expect(overduePreviewRows([{ name: "Work", tasks: [consolidate, transcript] }], [], config, now)).toEqual([]);
+	});
+	test("negative control: a UI row's overdue preview still gates", () => {
+		expect(visualPreviewRow(uiRow, config.paths)).toBe(true);
+		expect(overduePreviewRows([{ name: "Work", tasks: [uiRow] }], [], config, now).map(r => r.content)).toEqual([uiRow.content]);
+	});
+	test("neighbour: a non-visual profile touching UI files or the preview checkout is visual", () => {
+		const touchesUi = row("Rebase plan panel", { resources: ["src/ui/PlanPanel.tsx"], executor: { workerId: "R", agentProfile: "rebaser", startedAt: now } });
+		const previewCheckout = row("Land in preview", { resources: [config.paths[0]], executor: { workerId: "G", agentProfile: "git-pr-owner", startedAt: now } });
+		expect(visualPreviewRow(touchesUi, config.paths)).toBe(true);
+		expect(visualPreviewRow(previewCheckout, config.paths)).toBe(true);
+	});
 });

@@ -120,6 +120,45 @@ export async function refreshPreviewVisibility(
 	return next;
 }
 
+/** Profiles whose work never produces a product UI change to preview: branch, CI, install, research and docs work. */
+const NON_VISUAL_PROFILES = new Set([
+	"rebaser",
+	"git-pr-owner",
+	"gate-runner",
+	"install-owner",
+	"researcher",
+	"scribe",
+	"business-analyst",
+	"retro-facilitator",
+	"plan-doctor",
+	"profiler",
+	"security-reviewer",
+	"scout",
+]);
+const UI_FILE = /\.(?:tsx|jsx|vue|svelte|css|scss|sass|less|html?|svg|glsl|wgsl)$/i;
+
+/**
+ * Visual vs non-visual from behaviour, never the row title: a row is visual when its resources or
+ * delivered artifacts touch product UI files or a configured preview checkout. A row whose executor
+ * profile does branch/CI/research/docs work, or whose resources are all non-UI files, is non-visual.
+ * Anything undecided stays visual, so the preview gate keeps covering it.
+ */
+export function visualPreviewRow(row: TodoScheduleInputTask, previewPaths: readonly string[] = []): boolean {
+	const schedule = row.schedule as
+		| (NonNullable<TodoScheduleInputTask["schedule"]> & { resources?: unknown[] })
+		| undefined;
+	const resources = (schedule?.resources ?? []).filter((item): item is string => typeof item === "string");
+	const delivered = (schedule?.attemptHistory ?? []).flatMap(attempt =>
+		(attempt.deliverablePaths ?? []).filter((item): item is string => typeof item === "string"),
+	);
+	const roots = previewPaths.map(root => path.resolve(root));
+	if ([...resources, ...delivered].some(item => UI_FILE.test(item) || roots.includes(path.resolve(item)))) return true;
+	const profile = schedule?.executor?.agentProfile;
+	if (typeof profile === "string" && NON_VISUAL_PROFILES.has(profile)) return false;
+	const files = resources.filter(item => path.extname(item) !== "");
+	return !(resources.length > 0 && files.length === resources.length);
+}
+
 export function overduePreviewRows(
 	phases: TodoScheduleInput,
 	records: PreviewRecord[],
@@ -130,6 +169,7 @@ export function overduePreviewRows(
 	return phases
 		.flatMap(phase => phase.tasks)
 		.filter(row => {
+			if (!visualPreviewRow(row, config.paths)) return false;
 			const asked = row.schedule?.firstRequirementAt ?? row.schedule?.startedAt;
 			if (asked === undefined || now - asked < Math.max(0, config.thresholdMinutes) * 60_000) return false;
 			const observed = records.filter(record => record.task === row.content);
