@@ -6,6 +6,7 @@ interface ModelIdentity {
 	provider: string;
 	id: string;
 	blacklistIdentity?: { provider: string; id: string };
+	blacklistRouteIdentity?: { provider: string; id: string };
 }
 
 /** Owner policy shared by all profiles; role lists and presets cannot override it. */
@@ -43,6 +44,9 @@ export function modelBlacklistReason(model: ModelIdentity, blacklist = readModel
 		blacklist.get(`${model.provider.toLowerCase()}/${model.id}`) ??
 		(model.blacklistIdentity
 			? blacklist.get(`${model.blacklistIdentity.provider.toLowerCase()}/${model.blacklistIdentity.id}`)
+			: undefined) ??
+		(model.blacklistRouteIdentity
+			? blacklist.get(`${model.blacklistRouteIdentity.provider.toLowerCase()}/${model.blacklistRouteIdentity.id}`)
 			: undefined)
 	);
 }

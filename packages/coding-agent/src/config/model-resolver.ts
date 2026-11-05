@@ -353,12 +353,15 @@ function supportsUpstreamRouting(model: Model<Api>): boolean {
 function applyUpstreamRouting(model: Model<Api>, upstream: string): Model<Api> {
 	const aggregatorModel = model as Model<"openai-completions">;
 	const routing = { only: [upstream] };
-	return buildModel({
-		...model,
-		compat: modelMatchesHost(model, "vercelAIGateway")
-			? { ...aggregatorModel.compatConfig, vercelGatewayRouting: routing }
-			: { ...aggregatorModel.compatConfig, openRouterRouting: routing },
-	} as ModelSpec<Api>);
+	return inheritModelBlacklistIdentity(model, {
+		...buildModel({
+			...model,
+			compat: modelMatchesHost(model, "vercelAIGateway")
+				? { ...aggregatorModel.compatConfig, vercelGatewayRouting: routing }
+				: { ...aggregatorModel.compatConfig, openRouterRouting: routing },
+		} as ModelSpec<Api>),
+		blacklistRouteIdentity: { provider: model.provider, id: `${model.id}@${upstream}` },
+	});
 }
 
 const kProviderModelIndex = Symbol("model-resolver.providerIndex");

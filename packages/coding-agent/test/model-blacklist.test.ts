@@ -4,6 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as dirs from "@oh-my-pi/pi-utils";
 import { assertModelNotBlacklisted } from "@oh-my-pi/pi-ai/model-blacklist";
+import { resolveSmolModel } from "../src/commit/model-selection";
+import { createAgentSession } from "../src/sdk";
 import { resolveWidgetModel } from "../src/job-widgets/author";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import {
@@ -339,3 +341,93 @@ test("automatic widget selection keeps an authenticated role when built-in smol 
 		candidates[1].id,
 	);
 });
+
+test("automatic commit selection skips banned built-in smol models and keeps its primary fallback", async () => {
+	fs.writeFileSync(
+		path.join(dir, "model-blacklist.json"),
+		JSON.stringify({ "anthropic/claude-haiku-5-5": "smol ban" }),
+	);
+	const registry = new ModelRegistry(auth, path.join(dir, "missing-models.json"));
+	spyOn(registry, "getAvailable").mockReturnValue(candidates.slice(1));
+	const selected = await resolveSmolModel(Settings.isolated({}), registry, candidates[1], "fallback-key");
+	expect(selected.model.id).toBe(candidates[1].id);
+	expect(selected.apiKey).toBe("fallback-key");
+});
+
+test("startup retry chain skips its banned original and intermediate candidates", async () => {
+	fs.writeFileSync(
+		path.join(dir, "model-blacklist.json"),
+		JSON.stringify({
+			"canary.provider/primary": "primary ban",
+			[bannedSelector]: "intermediate ban",
+		}),
+	);
+	const settings = Settings.isolated({
+		"retry.modelFallback": true,
+		"retry.fallbackChains": { default: [bannedSelector, allowedSelector] },
+		modelRoles: { default: "canary.provider/primary" },
+	});
+	auth.keys.setRuntime("canary.provider", "fixture");
+	const registry = new ModelRegistry(auth, path.join(dir, "missing-models.json"));
+	registry.registerProvider("canary.provider", {
+		api: "openai-completions",
+		baseUrl: "http://127.0.0.1:1",
+		apiKey: "fixture",
+		models: candidates.map(({ id, name, reasoning, input, cost }) => ({
+			id,
+			name,
+			reasoning,
+			input,
+			cost,
+			contextWindow: 8192,
+			maxTokens: 1024,
+		})),
+	});
+	const { session, modelFallbackMessage } = await createAgentSession({
+		cwd: dir,
+		agentDir: dir,
+		authStorage: auth,
+		modelRegistry: registry,
+		settings,
+		sessionManager: SessionManager.inMemory(),
+		disableExtensionDiscovery: true,
+		skills: [],
+		contextFiles: [],
+		promptTemplates: [],
+		slashCommands: [],
+		enableMCP: false,
+		enableLsp: false,
+		skipPythonPreflight: true,
+		rules: [],
+		preloadedCustomToolPaths: [],
+		toolNames: ["read"],
+	});
+	try {
+		expect(session.model?.id).toBe(candidates[1].id);
+		expect(modelFallbackMessage).toBeUndefined();
+	} finally {
+		await session.dispose();
+	}
+});
+
+for (const provider of ["openrouter", "vercel-ai-gateway"]) {
+	test(`${provider} retained routes enforce live route bans while permitting the base and other routes`, () => {
+		const base = { ...candidates[0], provider, id: "lab/model" };
+		const routed = resolveModelFromString(`${provider}/lab/model@host`, [base])!;
+		const otherRoute = resolveModelFromString(`${provider}/lab/model@other`, [base])!;
+		expect(routed.id).toBe("lab/model");
+		fs.writeFileSync(
+			path.join(dir, "model-blacklist.json"),
+			JSON.stringify({ [`${provider}/lab/model@host`]: "live route ban" }),
+		);
+		expect(() => assertModelNotBlacklisted(routed)).toThrow("live route ban");
+		expect(() => assertModelNotBlacklisted(JSON.parse(JSON.stringify(routed)))).toThrow("live route ban");
+		expect(resolveModelFromString(`${provider}/lab/model`, [base])?.id).toBe(base.id);
+		assertModelNotBlacklisted(otherRoute);
+		fs.writeFileSync(
+			path.join(dir, "model-blacklist.json"),
+			JSON.stringify({ [`${provider}/lab/model`]: "base ban" }),
+		);
+		expect(() => assertModelNotBlacklisted(routed)).toThrow("base ban");
+	});
+}

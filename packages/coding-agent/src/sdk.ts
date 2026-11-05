@@ -73,6 +73,7 @@ import {
 	getModelMatchPreferences,
 	type ModelMatchPreferences,
 	parseModelPattern,
+	modelSelectorBlacklistError,
 	pickDefaultAvailableModel,
 	providerModelHint,
 	resolveAllowedModels,
@@ -3557,14 +3558,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				});
 				// A provider-qualified selector resolves within its provider's
 				// catalog; only bare/alias selectors need the full catalog.
-				const originalModel = parsedOriginal
-					? (modelRegistry.find(parsedOriginal.provider, parsedOriginal.id) ??
-						parseModelPattern(
-							originalSelector,
-							modelRegistry.getProviderModels(parsedOriginal.provider),
-							modelMatchPreferences,
-						).model)
-					: parseModelPattern(originalSelector, modelRegistry.getAll(), modelMatchPreferences).model;
+				const originalModel = modelSelectorBlacklistError(originalSelector, fallbackCandidates)
+					? undefined
+					: parsedOriginal
+						? (modelRegistry.find(parsedOriginal.provider, parsedOriginal.id) ??
+							parseModelPattern(
+								originalSelector,
+								modelRegistry.getProviderModels(parsedOriginal.provider),
+								modelMatchPreferences,
+							).model)
+						: parseModelPattern(originalSelector, modelRegistry.getAll(), modelMatchPreferences).model;
 				const chainKey = resolveRetryFallbackChainKey(fallbackContext, originalSelector, originalModel, "default");
 				if (!chainKey) return false;
 				const retryFallback: InitialRetryFallbackState = {
@@ -3586,6 +3589,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					originalModel,
 					{ allowMissingPrimary: true },
 				)) {
+					if (modelSelectorBlacklistError(candidate.raw, fallbackCandidates)) continue;
 					let resolved = parseModelPattern(candidate.raw, fallbackCandidates, modelMatchPreferences);
 					if (!resolved.model && !scopedByEnabledModels && !disabledProviders?.includes(candidate.provider)) {
 						resolved = parseModelPattern(
