@@ -2099,9 +2099,9 @@ export function decideTodoDispatch(
       ? `EXHAUSTED ${JSON.stringify(row.content)}: reestimates=${row.reestimateCount}. Do not reestimate this same row again; record the previous attempt's receipt and failing acceptance check, then split the remaining scope into new rows.`
       : `- ${JSON.stringify(row.content)}: revision=${row.estimateRevision}; reestimates=${row.reestimateCount}`);
   const repeatedEstimates = forecastRows.filter((row) => row.reestimateCount >= 3);
-  const prompt = [
+  const dispatchPrompt = [
     ...(!goalPaused && deadlineRisk
-      ? ["DELIVERY FIRST: the fixed deadline is at risk. Name the exact missing user-visible artifact and its current version; take the shortest safe action that creates or updates it now. Do not re-read the same plan, reforecast, or rerun broad checks without a changed artifact or a specific new diagnostic question. Reconcile workers only to unblock real work; re-plan the critical path with parallel staffing, safe overlap, evidence-based estimates, or visible nice-to-have post-deadline scope triage; the due time belongs to the user. No automatic paid/model escalation."]
+      ? [prompt.render(deadlineMissInstructions, { deliveryFirst: true }).trim()]
       : []),
     staticPrompt,
     `Now=${displayClock(now, deadline?.timezone)}; ETA anchored to recorded estimates/real starts, not redraw time.`,
@@ -2134,7 +2134,7 @@ export function decideTodoDispatch(
   return {
     key,
     staticPrompt,
-    prompt,
+    prompt: dispatchPrompt,
     forecast,
     alarms,
     rawWakeKey,
