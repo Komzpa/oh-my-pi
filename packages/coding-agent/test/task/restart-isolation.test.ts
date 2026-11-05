@@ -1,3 +1,4 @@
+import { isolationHasWork } from "@oh-my-pi/pi-coding-agent/task/restart-isolation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { $ } from "bun";
 import * as fs from "node:fs/promises";
@@ -73,6 +74,25 @@ afterEach(async () => {
 });
 
 describe("restart isolation recovery", () => {
+	it("waits for local commits but releases a clean worker whose HEAD is already upstream", async () => {
+		const cwd = path.join(temp!.path(), "committed-worker");
+		await fs.mkdir(cwd);
+		await $`git init ${cwd}`.quiet();
+		await Bun.write(path.join(cwd, "work.txt"), "baseline");
+		await $`git -C ${cwd} add work.txt`.quiet();
+		await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.com commit -m baseline`.quiet();
+		expect(await isolationHasWork(cwd)).toBe(true);
+		const remote = path.join(temp!.path(), "published.git");
+		await $`git init --bare ${remote}`.quiet();
+		await $`git -C ${cwd} remote add origin ${remote}`.quiet();
+		await $`git -C ${cwd} push -u origin HEAD:published`.quiet();
+		expect(await isolationHasWork(cwd)).toBe(false);
+		await Bun.write(path.join(cwd, "work.txt"), "local commit");
+		await $`git -C ${cwd} add work.txt`.quiet();
+		await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.com commit -m local`.quiet();
+		expect(await isolationHasWork(cwd)).toBe(true);
+	});
+
 	it("waits without draining dirty isolation, snapshots settled bytes on deadline, and reports snapshot-only recovery once", async () => {
 		const cwd = path.join(temp!.path(), "worker");
 		await fs.mkdir(cwd);
