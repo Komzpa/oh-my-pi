@@ -11,6 +11,7 @@ import { getLatestTodoPhasesFromEntries, isTodoPhase } from "../tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
+import { takeTodoMigrationCheckpoint, USER_TODO_EDIT_CUSTOM_TYPE } from "../tools/todo";
 import type { SessionManager } from "./session-manager";
 
 import { cfgTaskBatch, cfgTaskEager } from "../task/settings";
@@ -137,6 +138,10 @@ export class TodoTracker {
 	/** Replaces todo phases with a defensive clone. */
 	setPhases(phases: TodoPhase[]): void {
 		this.#phases = this.#clonePhases(phases);
+		// Legacy restores close accepted rows on load; persist that once so resume replays it.
+		if (takeTodoMigrationCheckpoint(phases)) {
+			this.#host.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: this.#clonePhases(phases) });
+		}
 		this.#planningNudgeSent = false;
 		// Every state write lands here — the native tool, a Cursor sync, or a
 		// bridged call — so the nudge budget re-arms on the progress it

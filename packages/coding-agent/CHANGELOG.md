@@ -11,6 +11,8 @@
 - Agent `bash` commands run with `LANG`/`LC_ALL=C.UTF-8` on every platform instead of the inherited locale, so sort order, number formats and tool messages no longer vary by machine; a locale in the command's `env` or `.envrc` still wins, and `!` commands keep yours
 ### Fixed
 
+- Close previously accepted TODO rows on session load, retaining blocked audit reasons as follow-ups ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Automatically archive older closed TODO rows at 50 closures, retaining review and dependency context with an archive summary ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Delivery criticism now uses the stakeholder-shadow skill with a cheap worker instead of a dedicated role ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
