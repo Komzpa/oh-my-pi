@@ -1179,7 +1179,7 @@ export interface DispatchDecision {
   }>;
   dispatchableReady?: Array<DispatchDecision["readyCandidates"][number]>;
   todoOwnerIds?: string[];
-  ownerRunStates?: Array<{ content: string; owner: string | null; running: boolean; outcome?: string }>;
+  ownerRunStates?: Array<{ content: string; owner: string | null; running: boolean; progressing?: boolean; outcome?: string }>;
   /** In-progress rows whose recorded owner matches no live task job, parked child or external wait. */
   lostOwners?: Array<{ content: string; owner: string }>;
   externallyStaffedCount?: number;
@@ -3894,18 +3894,32 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return undefined;
   };
   const previewIdleNotified = new Set<string>();
-  const redRowsIdleReason = async (ctx: ExtensionContext) => {
+  const redRowsIdleReason = async (ctx: ExtensionContext, action: "wait" | "stop" = "wait") => {
     if (singleWriterLane || !isMain(ctx) || pauseGate?.paused) return;
     const visibility = await pollPreview(ctx);
     const config = previewConfig(ctx);
+    const now = Date.now();
+    const decision = currentDecision(ctx, now, [], false, true);
+    const jobs = ctx.getAsyncJobSnapshot()?.running ?? [];
+    const activity = workerActivity(ctx, jobs, now);
+    const tasks = new Map(todoPhases(ctx).flatMap(phase => phase.tasks).map(task => [task.content, task]));
+    decision.ownerRunStates = decision.ownerRunStates?.map(row => {
+      const job = jobs.find(job => liveJobMatchesOwner(job, row.owner ?? "") ||
+        liveJobMatchesOwner(job, tasks.get(row.content)?.schedule?.executor?.workerId ?? ""));
+      const worker = job && activity.find(worker => worker.name === (job.agentId ?? job.id));
+      return { ...row, progressing: row.running && worker?.lastAt !== undefined && worker.ageMs < SILENT_MS };
+    });
     return idleRedRowsRefusal(
-      currentDecision(ctx, Date.now(), [], false, true),
+      decision,
       overduePreviewRows(todoPhases(ctx), visibility, { ...config, thresholdMinutes: Math.min(15, config.thresholdMinutes) }, Date.now()),
       previewIdleNotified,
+      action,
+      content => pi.sendMessage({ customType: "todo-overdue-status", content, display: true, attribution: "agent" },
+        { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false }),
     );
   };
   pi.on("session_stop", async (_event, ctx) => {
-    const redReason = await redRowsIdleReason(ctx);
+    const redReason = await redRowsIdleReason(ctx, "stop");
     if (redReason) return { decision: "block", reason: redReason };
     const reason = unansweredUserReason(ctx);
     if (reason) return { decision: "block", reason };
@@ -6202,21 +6216,23 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   });
 }
 
-const DEADLINE_REPLAN_GRACE_MS = 15 * 60_000;
 /** Uses the plan's canonical timing and exact live-owner observations at the idle boundary. */
 export function idleRedRowsRefusal(
   decision: DispatchDecision,
   previewRows: TodoScheduleInput[number]["tasks"][number][] = [],
   previewNotified: Set<string> = new Set(),
+  action: "wait" | "stop" = "wait",
+  reportStatus?: (content: string) => void,
 ): string | undefined {
   if (decision.goalPaused) return;
   const running = new Set((decision.ownerRunStates ?? []).filter(row => row.running).map(row => row.content));
   const forecast = decision.forecast;
   const scoped = (forecast?.rows ?? []).filter(row => !row.schedule?.postDeadline && isNonClosedRowStatus(row.status));
   const outcomes = new Map((decision.ownerRunStates ?? []).map(row => [row.content, row.outcome]));
+  const progressing = new Set((decision.ownerRunStates ?? []).filter(row => row.running && row.progressing === true).map(row => row.content));
   const red = scoped.filter(row => !(row.status === "blocked" && row.waitsForUser) &&
-    !(row.schedule?.review === "user" && row.schedule?.reviewPage && typeof row.schedule?.visibleAt === "number") && !running.has(row.content) &&
-    (row.startedAt !== undefined || row.status === "in_progress" || outcomes.get(row.content)));
+    !(row.schedule?.review === "user" && row.schedule?.reviewPage && typeof row.schedule?.visibleAt === "number") && !(row.overdue ? progressing : running).has(row.content) &&
+    (row.overdue || row.startedAt !== undefined || row.status === "in_progress" || outcomes.get(row.content)));
   const actions = red.map(row => ({
     content: JSON.stringify(row.content),
     owner: row.owner ? JSON.stringify(row.owner) : undefined,
@@ -6224,30 +6240,31 @@ export function idleRedRowsRefusal(
     outcome: outcomes.get(row.content) ?? row.schedule?.executor?.outcome ?? "no live executor",
   }));
   const overdue = scoped.filter(row => row.overdue);
-  // The deadline-miss refusal belongs to an active user deadline only. Without one, an overdue row is
-  // an estimate problem: waiting on its live worker is correct, and an unstaffed started row is still
-  // caught by the red-row check below. With a deadline, live workers on every critical/overdue row and
-  // a re-plan within DEADLINE_REPLAN_GRACE_MS also allow waiting.
   const deadlineActive = Boolean(decision.deadline) && !decision.deadline?.paused;
   const deadlineCauses = scoped.filter(row => row.critical || row.overdue || (row.expectedResourceFinish ?? 0) > (forecast?.deadlineAt ?? Infinity));
-  // A re-plan is a revised estimate (revision 2+), not the row's original estimate.
-  const lastReplanAt = Math.max(0, ...deadlineCauses
-    .filter(row => (row.estimateRevision ?? 1) > 1)
-    .map(row => row.estimateUpdatedAt ?? 0));
-  const staffedAndReplanned = deadlineCauses.length > 0 && deadlineCauses.every(row => running.has(row.content)) &&
-    forecast !== null && forecast.now - lastReplanAt <= DEADLINE_REPLAN_GRACE_MS;
-  if (deadlineActive && !staffedAndReplanned && (forecast?.deadlineStatus === "will-miss" || overdue.length)) {
+  const staffed = deadlineCauses.length > 0 && deadlineCauses.every(row => progressing.has(row.content));
+  if (action === "stop" && scoped.some(row => running.has(row.content)))
+    return prompt.render(deadlineMissInstructions, { runningStop: true }).trim();
+  if ((deadlineActive && forecast?.deadlineStatus === "will-miss") || overdue.length) {
     const finish = forecast.expectedResourceFinish ?? Math.max(...scoped.map(row => row.expectedResourceFinish ?? 0));
     const late = Math.max(0, Math.ceil((finish - (forecast.deadlineAt ?? finish)) / 60_000), ...overdue.map(row => Math.ceil((forecast.now - (row.resourceFinish ?? forecast.now)) / 60_000)));
     const causes = scoped.filter(row => row.critical || overdue.includes(row) || (row.expectedResourceFinish ?? 0) > (forecast.deadlineAt ?? Infinity));
-    const revision = `deadline:${forecast.deadlineAt}:${JSON.stringify(scoped.map(row => [row.content, row.status, row.estimateRevision, row.estimateUpdatedAt, row.owner, row.schedule?.dependencies, row.expectedResourceFinish, row.overdue]))}`;
-    if (previewNotified.has(revision)) return [prompt.render(deadlineMissInstructions, { repeated: true }).trim(), actions.length ? prompt.render(idleRedRowsInstructions, { red: actions, first: JSON.stringify(shorten(red[0].content, 24)) }).trim() : ""].filter(Boolean).join("\n");
-    previewNotified.add(revision);
-    return [prompt.render(deadlineMissInstructions, { late, rows: causes.map(row => {
-      const finish = row.expectedResourceFinish ?? row.resourceFinish ?? row.earliestFinish;
-      const deadlineSlack = finish === undefined || forecast.deadlineAt === undefined ? "" : `, deadline slack ${Math.floor((forecast.deadlineAt - finish) / 60_000)}m`;
-      return `${JSON.stringify(row.content)} (slack ${row.totalFloatSeconds === undefined ? "unknown" : `${Math.floor(row.totalFloatSeconds / 60)}m`}${deadlineSlack})`;
-    }).join(", ") }).trim(), actions.length ? prompt.render(idleRedRowsInstructions, { red: actions, first: JSON.stringify(shorten(red[0].content, 24)) }).trim() : ""].filter(Boolean).join("\n");
+    if (staffed) {
+      const status = prompt.render(deadlineMissInstructions, { status: true, late,
+        rows: causes.map(row => `${JSON.stringify(row.content)} (${(decision.ownerRunStates ?? []).find(owner => owner.content === row.content)?.owner ?? row.owner ?? "executor"})`).join(", "),
+      }).trim();
+      const key = `status:${status}`;
+      if (!previewNotified.has(key)) { previewNotified.add(key); reportStatus?.(status); }
+    } else if (deadlineActive) {
+      const revision = `deadline:${forecast.deadlineAt}:${JSON.stringify(scoped.map(row => [row.content, row.status, row.estimateRevision, row.estimateUpdatedAt, row.owner, row.schedule?.dependencies, row.expectedResourceFinish, row.overdue]))}`;
+      if (previewNotified.has(revision)) return [prompt.render(deadlineMissInstructions, { repeated: true }).trim(), actions.length ? prompt.render(idleRedRowsInstructions, { red: actions, first: JSON.stringify(shorten(red[0].content, 24)) }).trim() : ""].filter(Boolean).join("\n");
+      previewNotified.add(revision);
+      return [prompt.render(deadlineMissInstructions, { late, rows: causes.map(row => {
+        const finish = row.expectedResourceFinish ?? row.resourceFinish ?? row.earliestFinish;
+        const deadlineSlack = finish === undefined || forecast.deadlineAt === undefined ? "" : `, deadline slack ${Math.floor((forecast.deadlineAt - finish) / 60_000)}m`;
+        return `${JSON.stringify(row.content)} (slack ${row.totalFloatSeconds === undefined ? "unknown" : `${Math.floor(row.totalFloatSeconds / 60)}m`}${deadlineSlack})`;
+      }).join(", ") }).trim(), actions.length ? prompt.render(idleRedRowsInstructions, { red: actions, first: JSON.stringify(shorten(red[0].content, 24)) }).trim() : ""].filter(Boolean).join("\n");
+    }
   }
 
   const preview = previewRows.filter(row => !row.schedule?.postDeadline && row.status === "in_progress").filter(row => {
