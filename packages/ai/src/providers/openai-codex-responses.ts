@@ -2383,8 +2383,13 @@ class CodexStreamProcessor {
 			return;
 		}
 		this.#steerConnection = connection;
-		this.#steerPump = new CodexSteerPump(source, connection, messages =>
-			toSteerInputItems(convertMessages(this.model, { messages: [...messages] })),
+		this.#steerPump = new CodexSteerPump(
+			source,
+			{
+				steer: (previousResponseId, input) =>
+					connection.steer(previousResponseId, input, () => assertModelNotBlacklisted(this.model)),
+			},
+			messages => toSteerInputItems(convertMessages(this.model, { messages: [...messages] })),
 		);
 		this.#steerPump.start(responseId);
 	}
@@ -3913,7 +3918,7 @@ class CodexWebSocketConnection {
 	}
 
 	/** Submit steering on the current socket, even between response readers. */
-	steer(previousResponseId: string, input: InputItem[]): Promise<CodexSteerAck> {
+	steer(previousResponseId: string, input: InputItem[], beforeDispatch?: () => void): Promise<CodexSteerAck> {
 		if (!this.#channel.isOpen()) {
 			return Promise.reject(new CodexWebSocketTransportError("websocket connection is unavailable"));
 		}
@@ -3921,6 +3926,7 @@ class CodexWebSocketConnection {
 		const waiter: CodexSteerWaiter = { previousResponseId, resolve, reject };
 		this.#steerWaiters.push(waiter);
 		try {
+			beforeDispatch?.();
 			this.#channel.sendControl({ type: "response.steer", previous_response_id: previousResponseId, input });
 		} catch (error) {
 			const index = this.#steerWaiters.indexOf(waiter);

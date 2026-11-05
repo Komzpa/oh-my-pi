@@ -739,3 +739,54 @@ it("sends no WebSocket inference frame when onPayload adds an owner ban", async 
 	expect(creates()).toEqual([]);
 	expect(opts.fetch).not.toHaveBeenCalled();
 });
+
+it("rejects live steering without sending a frame when its claim adds an owner ban", async () => {
+	const model = createGpt6Model();
+	vi.spyOn(piUtils, "getBaseConfigRoot").mockReturnValue(getAgentDir());
+	let activeSocket: ScriptedWebSocket;
+	installSocket((frame, socket) => {
+		activeSocket = socket;
+		if (frame.type === "response.create") {
+			socket.emit({ type: "response.created", response: { id: "resp_1" } });
+		} else if (frame.type === "response.steer") {
+			socket.emit({ type: "response.steer.accepted", steer: { id: "steer_1", previous_response_id: "resp_1" } });
+		}
+	});
+	const steering = oneShotSteering("new input");
+	const originalClaim = steering.source.claim;
+	steering.source.claim = async signal => {
+		const claim = await originalClaim(signal);
+		if (!claim) return undefined;
+		await Bun.write(
+			path.join(getAgentDir(), "model-blacklist.json"),
+			JSON.stringify({ [`${model.provider}/${model.id}`]: "steering ban" }),
+		);
+		const finish = () =>
+			activeSocket.emit(...messageFrames("msg_1", "original response"), {
+				type: "response.completed",
+				response: { id: "resp_1", status: "completed", usage: USAGE },
+			});
+		return {
+			...claim,
+			accept: () => {
+				claim.accept();
+				finish();
+			},
+			reject: () => {
+				claim.reject();
+				finish();
+			},
+		};
+	};
+	const opts = options(new Map(), steering.source);
+	const result = await streamOpenAICodexResponses(
+		model,
+		{ systemPrompt: SYSTEM, messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+		opts,
+	).result();
+	expect(result.stopReason).toBe("stop");
+	expect(steering.settled()).toBe("rejected");
+	expect(steers()).toEqual([]);
+	expect(creates()).toHaveLength(1);
+	expect(opts.fetch).not.toHaveBeenCalled();
+});
