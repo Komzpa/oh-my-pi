@@ -20,7 +20,8 @@ import { TurnRecovery, type TurnRecoveryHost } from "@oh-my-pi/pi-coding-agent/s
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
-import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import * as dirs from "@oh-my-pi/pi-utils";
+import { TempDir, __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 import { createSessionDefaults } from "./helpers/session-defaults";
 
@@ -357,6 +358,51 @@ describe("subagent runtime model resolution", () => {
 		expect(result.resolvedModel).toBe("primary/bad-runtime-model");
 		expect(result.resolvedModelIsFallback).toBeFalsy();
 	});
+
+	for (const inherited of [false, true]) {
+		it(`omits banned subagent fallbacks from ${inherited ? "inherited chains" : "model patterns"}`, async () => {
+			using root = TempDir.createSync("@omp-subagent-blacklist-");
+			vi.spyOn(dirs, "getBaseConfigRoot").mockReturnValue(root.path());
+			await Bun.write(
+				path.join(root.path(), "model-blacklist.json"),
+				JSON.stringify({ "denied/model": "fixture ban" }),
+			);
+			const primary = model("primary", "bad-runtime-model");
+			const fallback = model("fallback", "working-model");
+			let childChain: string[] | undefined;
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+				childChain = options?.settings
+					? cfgRetryFallbackChains.get(options.settings)?.["subagent:banned-fallback"]
+					: undefined;
+				return {
+					session: createYieldingSession("none"),
+					extensionsResult: {},
+					setToolUIContext: () => {},
+				} as never;
+			});
+			const result = await runSubprocess({
+				cwd: root.path(),
+				agent: { name: "task", description: "test", systemPrompt: "test", source: "bundled" },
+				task: "work",
+				index: 0,
+				id: "banned-fallback",
+				modelOverride: inherited
+					? "primary/bad-runtime-model"
+					: ["primary/bad-runtime-model", "denied/model", "fallback/working-model"],
+				settings: Settings.isolated({
+					"retry.fallbackChains": { default: ["denied/model", "fallback/working-model"] },
+				}),
+				modelRegistry: {
+					refresh: async () => {},
+					getAvailable: () => [primary, fallback],
+					getApiKey: async () => "test-key",
+				} as never,
+				enableLsp: false,
+			});
+			expect(result.resolvedModel).toBe("primary/bad-runtime-model");
+			expect(childChain).toEqual(["fallback/working-model"]);
+		});
+	}
 
 	it("inherits an explicitly configured default fallback chain for a single subagent model", async () => {
 		const primary = model("lm-studio", "local-reviewer");

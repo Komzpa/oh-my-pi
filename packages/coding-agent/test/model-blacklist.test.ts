@@ -33,6 +33,8 @@ import { SessionManager } from "../src/session/session-manager";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AuthStorage } from "../src/session/auth-storage";
 
+import { collectOnlineTinyCandidates, expandOnlineTinyModelFallbacks } from "../src/tiny/online-candidates";
+
 let dir: string;
 let auth: AuthStorage;
 let rootSpy: { mockRestore(): void };
@@ -500,3 +502,16 @@ for (const { scenario, contract } of [
 		}
 	});
 }
+
+test("online tiny walks past banned fallbacks and retains the healthy primary", () => {
+	banResolverModel();
+	const primary = candidates[1];
+	const settings = Settings.isolated({
+		modelRoles: { tiny: allowedSelector },
+		"retry.fallbackChains": { tiny: [bannedSelector], [allowedSelector]: [bannedSelector] },
+	});
+	expect(collectOnlineTinyCandidates(["tiny"], settings, candidates).map(entry => entry.model.id)).toEqual([
+		primary.id,
+	]);
+	expect(expandOnlineTinyModelFallbacks(primary, settings, candidates).map(model => model.id)).toEqual([primary.id]);
+});

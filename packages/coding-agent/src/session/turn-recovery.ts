@@ -2597,6 +2597,7 @@ export class TurnRecovery {
 			return false;
 		}
 		if (this.isRetryFallbackSelectorSuppressed(originalSelector)) return false;
+		if (modelSelectorBlacklistError(originalSelector.raw, this.#host.modelRegistry.getAvailable())) return false;
 
 		const resolvedPrimary = resolveModelOverride(
 			[originalSelector.raw],

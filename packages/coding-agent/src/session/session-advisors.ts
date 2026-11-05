@@ -79,6 +79,7 @@ import {
 	formatModelString,
 	formatModelStringWithRouting,
 	resolveAdvisorRoleSelection,
+	modelSelectorBlacklistError,
 	resolveModelOverride,
 } from "../config/model-resolver";
 import { MODEL_ROLES } from "../config/model-roles";
@@ -2052,6 +2053,7 @@ export class SessionAdvisors {
 			return;
 		}
 		if (this.#host.isRetryFallbackSelectorSuppressed(originalSelector)) return;
+		if (modelSelectorBlacklistError(originalSelector.raw, this.#host.modelRegistry.getAvailable())) return;
 
 		const resolvedPrimary = resolveModelOverride(
 			[originalSelector.raw],
@@ -2215,6 +2217,7 @@ export class SessionAdvisors {
 		for (const role of chainKeys) {
 			for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
 				if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
+				if (modelSelectorBlacklistError(selector.raw, this.#host.modelRegistry.getAvailable())) continue;
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate || modelsAreEqual(candidate, currentModel)) continue;

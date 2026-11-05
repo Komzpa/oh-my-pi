@@ -37,6 +37,7 @@ import {
 	resolveAgentPrewalkPattern,
 	resolveConfiguredModelPatterns,
 	resolveExplicitModelRole,
+	modelSelectorBlacklistError,
 	resolveModelOverride,
 	resolveModelOverrideWithAuthFallback,
 } from "../config/model-resolver";
@@ -294,6 +295,7 @@ function resolveSubagentRetryFallbackCandidates(
 	const seen = new Set<string>();
 	const disabledProviders = new Set(cfgDisabledProviders.get(settings));
 	for (const pattern of modelPatterns) {
+		if (modelSelectorBlacklistError(pattern, modelRegistry.getAvailable())) continue;
 		const resolved = resolveModelOverride([pattern], modelRegistry, settings);
 		if (!resolved.model) continue;
 		if (disabledProviders.has(resolved.model.provider)) continue;
@@ -337,6 +339,7 @@ function resolveSubagentInheritedRetryFallbackChain(
 	}
 	const disabledProviders = new Set(cfgDisabledProviders.get(settings));
 	return fallbackChain.filter(entry => {
+		if (modelSelectorBlacklistError(entry, modelRegistry.getAvailable())) return false;
 		const resolved = resolveModelOverride([entry], modelRegistry, settings);
 		return !resolved.model || !disabledProviders.has(resolved.model.provider);
 	});
