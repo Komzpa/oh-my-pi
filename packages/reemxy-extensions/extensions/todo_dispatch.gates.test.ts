@@ -674,7 +674,7 @@ test("kill switch stops demands and refusals but the model still sees its plan a
     writeFileSync(off, "");
     const r = await outcome(state, cwd, null, false, id);
     expect(r.demand?.toolName).toBeUndefined();
-    expect(r.note).toContain("chief of staff");
+    expect(r.note).toContain("skill://chief-of-staff");
     expect((await outcome(state, cwd, CALLS.bashTest!, false, id)).executed).toBe(true);
   } finally {
     rmSync(off, { force: true });
@@ -688,12 +688,9 @@ test("registered admission exposes every open row and persistent failed tail whi
   const cwd = repo("clean");
   try {
     const tail = await outcome({ plan: "hiddenTail", git: "clean", admissionOpen: true, running: 0 }, cwd, null) as { demand?: Demand; note: string; handed?: unknown };
-    expect(tail.note).toContain('#65 [pending] "Repair hidden export tail"');
-    for (let i = 1; i <= 64; i += 1) expect(tail.note).toContain(`#${i} [blocked] "Await approval ${i}"`);
-    expect(tail.note).toContain('estimateRevision=9; reestimateCount=8');
-    expect(tail.note).toContain('"attemptId":"repair:1"');
-    expect(tail.note).toContain('"rejectionReason":"Output omitted required export"');
-    expect(tail.note).toContain('"deliverablePaths":["export.ts"]');
+    expect(tail.note).toContain("Repair hidden export tail");
+    expect(tail.note).toContain("65 open");
+    expect(tail.note.length).toBeLessThan(8192);
     expect(tail.demand?.toolName).toBe("task");
     expect(tail.handed).toBeUndefined(); // advice must not block other legal progress
     expect(tail.demand?.satisfies?.({ name: "task", arguments: { tasks: [{ name: "RepairHiddenExport", agent: "coder", task: "Repair hidden export tail" }] } })).toBe(true);
@@ -1317,7 +1314,7 @@ test("a plan with problems is reported once per problem list, not again while it
     (await tick!());
     (await tick!());
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.deliverAs).toBe("nextTurn");
+    expect(sent[0]!.deliverAs).toBe("steer");
     expect(sent[0]!.content).toContain("have no worker");
     idle = true;
     (await tick!());

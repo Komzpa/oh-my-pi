@@ -38,6 +38,7 @@ import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetadata, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
 import { appendTimedNote } from "./lead_time_notes";
+import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
@@ -2446,9 +2447,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // A plan check is a whole-plan snapshot: the queue keeps only the newest one, so a busy lead
     // never reads a stale "overdue, unstaffed" list after it already fixed the plan.
     const sent = kind === "todo-plan-check" ? { ...((details as Record<string, unknown> | undefined) ?? {}), supersedesQueued: true } : details;
+    const stateNote = kind === "todo-gate-steering" || kind === "todo-plan-check";
+    const options = { deliverAs: stateNote ? "steer" as const : "nextTurn" as const, triggerTurn: false, interruptWait: false, ...delivery, ...(stateNote ? { supersedes: kind } : {}) };
     pi.sendMessage(
       { customType: kind, content, display: false, attribution: "agent", ...(sent === undefined ? {} : { details: sent }) },
-      { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false, ...delivery },
+      options,
     );
     return true;
   };
@@ -3316,7 +3319,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ? `Idle rows are chained behind the running work, with ${capacity} worker slots. Waiting is not the step here. Waiting rows on the chain that sets the ETA, in order:${list}\n${list.includes("queued behind") ? `${RESOURCE_QUEUE}\n` : ""}${WHY_EACH_LINK}\n${SPLIT_EACH} (skill step 7). ${ORDER}`
       : `Idle rows are chained behind the running work, with ${capacity} worker slots. Waiting is not the step here: split the waiting rows into the part that needs the running result and the part that can start now, and dispatch that part (skill step 7). ${ORDER}`;
   };
-  const CHIEF_OF_STAFF = `ROLE: You are the chief of staff for this session, not a worker; your runbook is skill://chief-of-staff. ${ORDER} Put Retro: required or Retro: not requested in the actual received brief (incident briefs require it); intake records missing-required when a brief that requires Retro omits it (cause missing-by-brief), versus present / not-requested, without changing product acceptance and never wakes a worker for a missing Retro. Every checkout preparation or mutation brief names ROOT=<absolute path> in its actual body, matching its assigned resource; a structured resource or assignedroot placeholder does not substitute. Missing or conflicting ROOT stops that item without searching for a replacement checkout. Fetch and merge-tree object writes are Git-metadata mutations: before an authorized preparation command, establish ROOT's Git common directory and isolation; never run them in a checkout whose shared metadata is read-only. For lifecycle work accept a receipt mapping each acceptance clause to its production entry, wiring, and behavior proof through the real consumer; require owner-end proof only when the acceptance explicitly requires it. Helper-only proof does not prove consumer behavior. Rejected reflection preserves unproved criteria, authorized git handoff, and docs; never reset another owner's workspace or cut scope. A read-only diagnostic never invokes a shared installer/upgrader, even labelled --dry-run; compare lane-owned executables by absolute path with isolated install prefix and explicit DB endpoint named. Derive the publication tuple (exact remote URL, full destination ref, old OID) from one fresh forge-head readback and cite it; record the local branch separately — equal OIDs never substitute for matching repo and ref; push only the named ref with the lease bound to that full ref plus OID; rollback is a direct protected update of the same ref expecting the published OID, never delete/recreate.`
   const READ_ONLY_BASH = /^(?:grep|rg|ls|cat|head|tail|wc|pwd|echo|stat|test|\[|sha256sum|sha1sum|md5sum|readlink|realpath|file|cut|uniq|tr|nl|jq|cmp|basename|dirname|date|du|df|free|uptime|ps|pgrep|ss)$/;
   // Live 2026-10-12: the chief was refused `git show … | cat && sed -n '160,170p' ledger | cut -c1-400`,
   // a pure look, so its rows went overdue. sed only as a line-range print, find and sort without write/exec flags.
@@ -3934,7 +3936,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // without starting a turn (sendMessage deliverAs "nextTurn", no triggerTurn: appends to session history, no turn).
   // The canonical post-compaction model context (buildSessionContext) decides: when the newest copy still
   // survives, append nothing so the journal stays append-only without duplicates. The per-request
-  // CHIEF_OF_STAFF one-liner stays in the `context` hook as the cheap pointer; this entry carries the
+  // Time notes retain only a runbook pointer; this entry carries the
   // full text only when the rules are genuinely missing after compaction.
   pi.on("session_compact", (_event, ctx) => {
     if (isMain(ctx)) {
@@ -3951,7 +3953,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (text) {
         pi.sendMessage(
           { customType: CHIEF_RULES_ENTRY_TYPE, content: text, display: false, attribution: "agent" },
-          { deliverAs: "nextTurn" },
+          { deliverAs: "steer", triggerTurn: false, interruptWait: false, supersedes: CHIEF_RULES_ENTRY_TYPE },
         );
       }
       return;
@@ -6078,14 +6080,17 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const notice = isMain(ctx) ? returnNotice : null;
     const content = [
       ...(notice && !notice.shown ? [notice.text] : []),
-      ...(chief ? [CHIEF_OF_STAFF] : []),
+      ...(chief ? [prompt.render(leadTimeSummary, {
+        open: decision.forecast?.rows.filter(row => row.status !== "completed" && row.status !== "abandoned").length ?? 0,
+        running: decision.activeTaskCount ?? 0,
+        ready: decision.readyCandidates.filter(row => row.ownership === "unassigned" || row.ownership === "unverified").length,
+        lost: decision.lostOwners?.length ?? 0,
+        forecast: decision.forecast ? sdk.formatPlanForecast(decision.forecast, now) : null,
+      }).trim()] : []),
       ...(facts ? [facts] : []),
       ...(chief && lastTaskDispatchRefused ? ["The last task dispatch was refused; bounded work is open to you until the ready row can be dispatched."] : []),
       ...(chief && activeDemand ? [`NEXT STEP (advice; no call is skipped or refused for it): ${activeDemand}`] : []),
       ...(retroDue ? [retroDue] : []),
-      ...(decision.prompt
-        ? [`${decision.prompt}${attemptedIdleOwners.length ? `\nFAIL CLOSED: exact idle worker resume already attempted once for ${attemptedIdleOwners.join(", ")}; inspect the exact session/result, do not retry or create a duplicate writer.` : ""}`]
-        : []),
     ].join("\n");
     const workOpen = Boolean(decision.prompt || retroDue || phases.some((phase) => phase.tasks.some((task) => task.status === "pending" || task.status === "in_progress")));
     const semanticKey = JSON.stringify({
@@ -6095,7 +6100,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       refused: chief && lastTaskDispatchRefused,
       activeDemand: chief ? activeDemand : null,
       retroDue,
-      plan: decision.staticPrompt,
+      plan: decision.key,
       alarms: decision.alarms.filter((alarm) => !alarm.startsWith("overdue-todo-minute:")),
       deadline: decision.deadline ?? null,
       attemptedIdleOwners,
