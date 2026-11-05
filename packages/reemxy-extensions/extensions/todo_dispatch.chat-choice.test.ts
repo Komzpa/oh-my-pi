@@ -4,20 +4,16 @@ import { idleUserReviewRefusal } from "./todo_dispatch";
 
 const idle = { running: [], recent: [] };
 const plan = (schedule = {}, content = "Decision") => [
-	{ name: "Work", tasks: [{ content, status: "blocked", schedule }] },
+	{
+		name: "Work",
+		tasks: [{ content, status: "blocked", blocker: "awaiting the user decision", schedule }],
+	},
 ];
 
-test("idle open work without a recorded decision refuses once, independent of wording", async () => {
-	const seen = new Set<string>();
-	const rows = plan({}, "Do / Leave / Other?");
-	expect(await idleUserReviewRefusal(rows, idle, seen)).toContain("Record the decision as a todo row");
-	expect(await idleUserReviewRefusal(rows, idle, seen)).toBeUndefined();
-	expect(await idleUserReviewRefusal(plan({}, "Unremarkable title"), idle, seen)).toContain(
-		"You are waiting on the user",
-	);
-	expect(
-		await idleUserReviewRefusal(rows, { ...idle, running: [{ status: "running", type: "bash" }] }, new Set()),
-	).toBeUndefined();
+test("blocked external work is not mistaken for a user decision", async () => {
+	const rows = plan({ review: "user" }, "Do / Leave / Other?");
+	rows[0].tasks[0].blocker = "CI queue is full";
+	expect(await idleUserReviewRefusal(rows, idle, new Set())).toBeUndefined();
 	expect(await idleUserReviewRefusal([], idle, new Set())).toBeUndefined();
 	expect(await idleUserReviewRefusal(rows, undefined, new Set())).toBeUndefined();
 });
@@ -35,7 +31,12 @@ test("every decision needs a live artifact and state changes permit a fresh refu
 	expect(probes).toBe(2); // Recheck now, even after the same refusal was already delivered.
 	expect(await idleUserReviewRefusal(rows, idle, seen, async () => 404)).toContain("404");
 	expect(await idleUserReviewRefusal(rows, idle, seen, async () => 200)).toBeUndefined();
-	rows[0].tasks.push({ content: "Second", status: "blocked", schedule: { review: "user" } });
+	rows[0].tasks.push({
+		content: "Second",
+		status: "blocked",
+		blocker: "awaiting the user decision",
+		schedule: { review: "user" },
+	});
 	expect(await idleUserReviewRefusal(rows, idle, seen, async () => 200)).toContain("Second");
 });
 
@@ -119,4 +120,14 @@ test("an abandoned result no longer demands a user decision", async () => {
 	const rows = plan({ review: "user", firstDeliveredAt: 123 });
 	rows[0].tasks[0].status = "abandoned";
 	expect(await idleUserReviewRefusal(rows, idle, new Set())).toBeUndefined();
+});
+
+test("running jobs postpone the idle user decision check", async () => {
+	expect(
+		await idleUserReviewRefusal(
+			plan({ review: "user" }),
+			{ ...idle, running: [{ status: "running", type: "bash" }] },
+			new Set(),
+		),
+	).toBeUndefined();
 });
