@@ -1,4 +1,3 @@
-import type { PeerCoordinationState } from "../task/peer-coordination";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -43,6 +42,7 @@ import {
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
 } from "./messages";
+import type { PeerCoordinationState } from "../task/peer-coordination";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import { createInterruptedToolResults, sessionExitFollowsLastMessage } from "./exit-diagnostics";
 import type { RetryFallbackRole } from "./retry-fallback-chains";
