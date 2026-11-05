@@ -431,3 +431,72 @@ for (const provider of ["openrouter", "vercel-ai-gateway"]) {
 		expect(() => assertModelNotBlacklisted(routed)).toThrow("base ban");
 	});
 }
+
+for (const { scenario, contract } of [
+	{ scenario: "later role candidate", contract: "deferred SDK roles ignore a denied later candidate" },
+	{ scenario: "role retry chain", contract: "deferred SDK roles skip denied primaries and retry entries" },
+	{ scenario: "explicit concrete", contract: "deferred SDK explicit concrete requests retain owner-ban rejection" },
+	{ scenario: "auth fallback", contract: "deferred SDK authentication fallback skips a denied selector" },
+] as const) {
+	test(contract, async () => {
+		banResolverModel();
+		const settings = Settings.isolated({
+			"retry.modelFallback": true,
+			modelRoles: { task: scenario === "role retry chain" ? bannedSelector : [allowedSelector, bannedSelector] },
+			"retry.fallbackChains": { task: [bannedSelector, allowedSelector] },
+		});
+		auth.keys.setRuntime("canary.provider", "fixture");
+		const registry = new ModelRegistry(auth, path.join(dir, "missing-models.json"));
+		registry.registerProvider("canary.provider", {
+			api: "openai-completions",
+			baseUrl: "http://127.0.0.1:1",
+			apiKey: "fixture",
+			models: candidates.map(({ id, name, reasoning, input, cost }) => ({
+				id,
+				name,
+				reasoning,
+				input,
+				cost,
+				contextWindow: 8192,
+				maxTokens: 1024,
+			})),
+		});
+		if (scenario === "auth fallback") spyOn(registry, "getApiKey").mockResolvedValue(undefined);
+		const creation = createAgentSession({
+			cwd: dir,
+			agentDir: dir,
+			authStorage: auth,
+			modelRegistry: registry,
+			settings,
+			sessionManager: SessionManager.inMemory(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			rules: [],
+			preloadedCustomToolPaths: [],
+			toolNames: ["read"],
+			modelPattern:
+				scenario === "explicit concrete"
+					? bannedSelector
+					: scenario === "auth fallback"
+						? allowedSelector
+						: "@task",
+			modelPatternAuthFallback: scenario === "auth fallback" ? bannedSelector : undefined,
+		});
+		if (scenario === "explicit concrete") {
+			await expect(creation).rejects.toThrow("fixture safety ban");
+			return;
+		}
+		const { session } = await creation;
+		try {
+			expect(session.model?.id).toBe(candidates[1].id);
+		} finally {
+			await session.dispose();
+		}
+	});
+}
