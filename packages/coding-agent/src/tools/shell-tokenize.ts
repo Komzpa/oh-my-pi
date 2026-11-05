@@ -234,20 +234,35 @@ export function splitEnvCommand(command: string): string[] {
 /** Execution-oriented segments retain quoting and attach stdin to its owning command.
  * Other lexical consumers keep their existing, lossless token stream.
  */
-export function tokenizeShellExecutionSegments(command: string): { words: ShellWordToken[]; pipedStdin: boolean }[] {
-	const segments: { words: ShellWordToken[]; pipedStdin: boolean }[] = [];
+export interface ShellExecutionSegment {
+	words: ShellWordToken[];
+	pipedStdin: boolean;
+	/** Lexical subshell scopes, outermost first; ids are unique within a command. */
+	groupPath: number[];
+}
+
+export function tokenizeShellExecutionSegments(command: string): ShellExecutionSegment[] {
+	const segments: ShellExecutionSegment[] = [];
 	let current: ShellWordToken[] = [];
 	let pipedStdin = false;
+	const groupPath: number[] = [];
+	let nextGroup = 0;
 	for (const token of lexShellCommand(command, true)) {
 		if (token.kind === "word") current.push(token);
-		else if (/[\n;&|()]/.test(token.raw) && current.length > 0) {
-			segments.push({ words: current, pipedStdin });
-			current = [];
-			// Grouping does not disconnect a pipe from its first command.
-			pipedStdin = /^\s*\|&?\s*$/u.test(token.raw.replace(/[()]/gu, ""));
+		else if (/[\n;&|()]/.test(token.raw)) {
+			if (current.length > 0) {
+				segments.push({ words: current, pipedStdin, groupPath: [...groupPath] });
+				current = [];
+				// Grouping does not disconnect a pipe from its first command.
+				pipedStdin = /^\s*\|&?\s*$/u.test(token.raw.replace(/[()]/gu, ""));
+			}
+			for (const operator of token.raw) {
+				if (operator === "(") groupPath.push(nextGroup++);
+				else if (operator === ")") groupPath.pop();
+			}
 		}
 	}
-	if (current.length > 0) segments.push({ words: current, pipedStdin });
+	if (current.length > 0) segments.push({ words: current, pipedStdin, groupPath: [...groupPath] });
 	return segments;
 }
 

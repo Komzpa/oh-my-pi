@@ -516,7 +516,23 @@ function targetsSessionInfrastructure(
 	const segments = tokenizeShellExecutionSegments(command);
 	let pipelineOutput: string | undefined;
 	let stdout: string | undefined = "";
-	for (const [index, { words, pipedStdin }] of segments.entries()) {
+	const rootInput = { value: stdin };
+	const groupInputs = new Map<number, { value: string | undefined }>();
+	for (const [index, { words, pipedStdin, groupPath }] of segments.entries()) {
+		let inheritedInput = rootInput;
+		let openedGroup = false;
+		for (const group of groupPath) {
+			const existing = groupInputs.get(group);
+			if (existing) inheritedInput = existing;
+			else {
+				if (pipedStdin && !openedGroup) inheritedInput = { value: pipelineOutput };
+				groupInputs.set(group, inheritedInput);
+				openedGroup = true;
+			}
+		}
+		// A pipe into a group is inherited by all its commands. An ordinary
+		// pipeline within that group uses a separate descriptor for its stage.
+		const input = pipedStdin && !openedGroup ? { value: pipelineOutput } : inheritedInput;
 		const streams = new Map<string, string>();
 		for (const word of words) {
 			for (const substitution of word.substitutions ?? []) {
@@ -529,11 +545,7 @@ function targetsSessionInfrastructure(
 		const inputSources = new Map<number, string>();
 		// Non-consuming commands (true, echo, etc.) leave the enclosing shell's
 		// inherited descriptor available to later commands, not just the first.
-		if (stdin !== undefined) inputSources.set(0, stdin);
-		if (pipedStdin) {
-			inputSources.delete(0);
-			if (pipelineOutput !== undefined) inputSources.set(0, pipelineOutput);
-		}
+		if (input.value !== undefined) inputSources.set(0, input.value);
 		const executableWords = words.filter((word, i) => {
 			if (word.hereDocument) {
 				inputSources.set(word.hereDocument.fd, word.hereDocument.body);
@@ -719,12 +731,11 @@ function targetsSessionInfrastructure(
 		// These literal consumers drain inherited stdin. Redirected or piped
 		// input is a different descriptor and must not erase the inherited one.
 		if (
-			!pipedStdin &&
-			stdin !== undefined &&
-			stdinPayload === stdin &&
+			input.value !== undefined &&
+			stdinPayload === input.value &&
 			(invocation.stdin || (executable === "cat" && (args.length === 0 || args.includes("-"))))
 		)
-			stdin = undefined;
+			input.value = undefined;
 		pipelineOutput = words.some(word => word.redirection?.fd === 1)
 			? ""
 			: executableWords.some(word => word.dynamic && !streams.has(word.value))

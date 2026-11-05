@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
+import { procmgr } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../src/config/settings";
 import type { ToolSession } from "../../src/tools";
 import { BashTool } from "../../src/tools/bash";
+
+const TEST_SHELL = process.platform === "win32" ? procmgr.resolveWindowsShell() : "/bin/sh";
 
 const refusal = "Session infrastructure is off-limits: report the anomaly to the lead; do not repair the host.";
 
@@ -18,7 +21,7 @@ function bashTool(): BashTool {
 			"bash.allowCompoundCommands": true,
 			"bash.autoBackground.enabled": false,
 			"worktree.clone": false,
-			shellPath: "/bin/sh",
+			shellPath: TEST_SHELL,
 		}),
 	} as unknown as ToolSession);
 }
@@ -288,6 +291,24 @@ const allowed = [
 ];
 
 describe("bash session infrastructure default denies", () => {
+	it("retains group pipe input until a command consumes it", () => {
+		for (const command of [
+			"printf 'killall plasmashell\\n' | (true; sh)",
+			"printf 'killall plasmashell\\n' | ((true; sh))",
+			"printf 'killall plasmashell\\n' | (cat </dev/null; sh)",
+		]) {
+			expect(bashTool().approval({ command })).toMatchObject({ policy: "deny" });
+		}
+		for (const command of [
+			"printf 'killall plasmashell\\n' | (cat; sh)",
+			"printf 'killall plasmashell\\n' | (true; sh </dev/null)",
+			"printf 'killall plasmashell\\n' | true; sh",
+			"printf 'killall plasmashell\\n' | (true); sh",
+		]) {
+			const decision = bashTool().approval({ command });
+			expect(typeof decision === "object" && decision.policy === "deny").toBe(false);
+		}
+	});
 	it("refuses protected scripts assembled by sequential nested stdout", () => {
 		for (const command of [
 			`sh -c "printf 'killall '; printf plasmashell" | sh`,

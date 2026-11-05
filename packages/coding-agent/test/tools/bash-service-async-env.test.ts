@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { setProcessName, TempDir } from "@oh-my-pi/pi-utils";
+import { procmgr, setProcessName, TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../src/config/settings";
 import { AsyncJobManager } from "../../src/async/job-manager";
 import { startDaemonBrokerFromEnvironment } from "../../src/launch/broker";
@@ -10,6 +10,8 @@ import * as daemonClient from "../../src/launch/client";
 import { DAEMON_IDLE_GRACE_ENV, DAEMON_PROJECT_DIR_ENV, DAEMON_RUNTIME_DIR_ENV } from "../../src/launch/protocol";
 import { BashTool } from "../../src/tools/bash";
 import type { ToolSession } from "../../src/tools";
+
+const TEST_SHELL = process.platform === "win32" ? procmgr.resolveWindowsShell() : "/bin/sh";
 
 function startBroker(projectDir: string, runtimeDir: string): Promise<void> {
 	const previous = [
@@ -43,7 +45,7 @@ function toolSession(cwd: string, manager?: AsyncJobManager): ToolSession {
 			"bash.autoBackground.thresholdMs": 60_000,
 			"bashInterceptor.enabled": false,
 			"worktree.clone": false,
-			shellPath: "/bin/sh",
+			shellPath: TEST_SHELL,
 		}),
 	} as unknown as ToolSession;
 }
@@ -117,7 +119,7 @@ describe("bash env parameter", () => {
 				"bashInterceptor.enabled": false,
 				"worktree.clone": false,
 				"bash.direnv": "off",
-				shellPath: "/bin/sh",
+				shellPath: TEST_SHELL,
 			}),
 		} as unknown as ToolSession;
 		try {
@@ -147,7 +149,7 @@ describe("bash env parameter", () => {
 				"bashInterceptor.enabled": false,
 				"worktree.clone": false,
 				"bash.direnv": "off",
-				shellPath: "/bin/sh",
+				shellPath: TEST_SHELL,
 			}),
 		} as unknown as ToolSession;
 		try {
