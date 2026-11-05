@@ -27,7 +27,6 @@ import {
 	appendRequirementsSnapshot,
 	createRequirementCandidates,
 	getLatestRequirements,
-	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
@@ -101,6 +100,7 @@ describe("assistant publication bridge", () => {
 			tools: new Map(),
 			assistantTextRenderers: [],
 			assistantThinkingRenderers: [],
+			transcriptPresenters: [],
 			linkSchemes: [],
 			fileWriteFallbackHandlers: [],
 			fileDeleteFallbackHandlers: [],
