@@ -579,6 +579,39 @@ describe("InteractiveMode goal mode integration", () => {
 		await resumed.inputPromise;
 	});
 
+	it("interrupt stops interactive continuation until the user resumes the active goal", async () => {
+		vi.spyOn(vcs, "repo").mockReturnValue(null);
+		vi.spyOn(vcs, "git").mockReturnValue(null);
+		await harness.mode.init({ suppressWelcomeIntro: true });
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		vi.useFakeTimers();
+		const waiter = await armInputWaiter(harness.mode);
+		await harness.session.abort();
+		expect(harness.session.getGoalModeState()?.enabled).toBe(true);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()).toBeUndefined();
+		await harness.mode.handleGoalModeCommand("resume");
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()?.customType).toBe("goal-continuation");
+		await waiter.inputPromise;
+	});
+
+	it("internal abort preserves interactive continuation", async () => {
+		vi.spyOn(vcs, "repo").mockReturnValue(null);
+		vi.spyOn(vcs, "git").mockReturnValue(null);
+		await harness.mode.init({ suppressWelcomeIntro: true });
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.session.abort({ goalReason: "internal" });
+		vi.useFakeTimers();
+		const waiter = await armInputWaiter(harness.mode);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()?.customType).toBe("goal-continuation");
+		await waiter.inputPromise;
+	});
+
 	it("continues an active goal when actionable work remains alongside blocked work", async () => {
 		await harness.mode.handleGoalModeCommand("Ship the release");
 		harness.session.setTodoPhases([

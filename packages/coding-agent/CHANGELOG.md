@@ -576,7 +576,7 @@
 - `tools.xdevNotices: false` hides the `xd://: mounted …` notices shown as MCP servers connect, without turning on `startup.quiet` ([#17263](https://github.com/can1357/oh-my-pi/pull/17263) by [@MaisonnatM](https://github.com/MaisonnatM))
 ### Fixed
 
-- Interrupted goals retain elapsed time across restart, and RPC hosts can resume their continuation ([#157](https://github.com/Komzpa/oh-my-pi/pull/157) by [@Komzpa](https://github.com/Komzpa)).
+- Interrupted goals retain elapsed time across restart, stay stopped until user input, and can resume with deferred context ([#157](https://github.com/Komzpa/oh-my-pi/pull/157) by [@Komzpa](https://github.com/Komzpa)).
 
 ### Changed
 
