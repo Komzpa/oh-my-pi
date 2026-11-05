@@ -2368,7 +2368,7 @@ export class EventController {
 		if (syntheticFailureCard) this.#syntheticFailureCards.set(event.toolCallId, syntheticFailureCard);
 		if (event.toolName === "todo" && !event.isError) {
 			const details = event.result.details as { op?: string; phases?: TodoPhase[] } | undefined;
-			if (details?.op !== "view" && details?.phases) this.ctx.setTodos(details.phases);
+			if (details?.op !== "view" && details?.phases) this.ctx.setTodos(this.ctx.viewSession.getTodoPhases());
 		}
 		if (event.toolName === "eval" && hasNestedTodo(event.result.details)) {
 			this.ctx.setTodos(this.ctx.viewSession.getTodoPhases());
