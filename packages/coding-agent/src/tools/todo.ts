@@ -603,6 +603,13 @@ export function createTodoHudStateData(
 	return { ...snapshot, visibility };
 }
 
+const todoPhasesNeedingCheckpoint = new WeakSet<TodoPhase[]>();
+
+/** True once for phases the loader migrated; the owner persists them as one checkpoint. */
+export function takeTodoMigrationCheckpoint(phases: TodoPhase[]): boolean {
+	return todoPhasesNeedingCheckpoint.delete(phases);
+}
+
 export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
 	// A full snapshot supersedes every earlier replay operation. Only its compact tail can change the live plan.
 	let latest: TodoPhase[] | undefined;
@@ -671,6 +678,45 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 			missingTimes.delete(key);
 		}
 	}
+	// Legacy Accept snapshots predate reviewClosures. Close through the same derivation,
+	// then let the owning loader persist one checkpoint rather than rewriting history.
+	let migrated = false;
+	const now = Date.now();
+	for (const phase of restored) {
+		for (const task of phase.tasks) {
+			if (task.schedule?.review !== "accepted" || task.status === "completed" || task.status === "abandoned")
+				continue;
+			let acceptedAt: number | undefined;
+			for (let index = entries.length - 1; index >= 0; index--) {
+				const entry = entries[index]!;
+				const edit = compactTodoEditFromEntry(entry);
+				const params = edit?.kind === "op" ? resolveTodoParams(edit.params, true) : undefined;
+				if (edit?.kind === "op" && params && typeof params !== "string" && params.op === "schedule") {
+					const update = params.updates?.find(update => update.task === task.content);
+					if (update?.review === "accepted") {
+						acceptedAt = edit.at;
+						break;
+					}
+					if (update?.review !== undefined) break;
+				}
+				const snapshot = canonicalTodoPhases(entry, false);
+				if (!snapshot) continue;
+				const row = snapshot
+					.find(candidate => candidate.name === phase.name)
+					?.tasks.find(row => row.content === task.content);
+				if (row?.schedule?.review !== "accepted") break;
+				const at = Date.parse(entry.timestamp);
+				if (Number.isFinite(at)) acceptedAt = at;
+			}
+			applyReviewClosures(
+				restored,
+				[{ task: task.content, reason: task.schedule.reviewClosingBlocked }],
+				acceptedAt ?? now,
+			);
+			migrated = true;
+		}
+	}
+	if (migrated) todoPhasesNeedingCheckpoint.add(restored);
 	return restored;
 }
 
