@@ -2232,10 +2232,8 @@ export function resolveCliModel(options: CliModelOptions): ResolveCliModelResult
 
 	const scoped = { ...options, cliModel };
 	const scope: CliModelScope = {
-		all: modelRegistry.getAll().filter(model => !isProviderExhausted(model.provider)),
-		available: (preferredModels ?? modelRegistry.getAvailable()).filter(
-			model => !isProviderExhausted(model.provider),
-		),
+		all: modelRegistry.getAll(),
+		available: preferredModels ?? modelRegistry.getAvailable(),
 	};
 	const disabled = disabledProviderIds(settings);
 	if (disabled.size === 0) return resolveCliModelInScope(scoped, scope);
@@ -2272,7 +2270,8 @@ function resolveCliModelInScope(
 		...mergeModelMatchPreferences(settings, options.preferences),
 		isKnownProvider: id => modelRegistry.hasProvider?.(id) ?? false,
 	};
-	const { all: allModels, available: availableModels } = scope;
+	const allModels = scope.all.filter(model => !isProviderExhausted(model.provider));
+	const availableModels = scope.available.filter(model => !isProviderExhausted(model.provider));
 	if (allModels.length === 0) {
 		return {
 			model: undefined,
@@ -2488,13 +2487,14 @@ export async function findInitialModel(options: {
 	const {
 		cliProvider,
 		cliModel,
-		scopedModels,
+		scopedModels: configuredScopedModels,
 		isContinuing,
 		defaultProvider,
 		defaultModelId,
 		defaultThinkingSelector,
 		modelRegistry,
 	} = options;
+	const scopedModels = configuredScopedModels.filter(scoped => !isProviderExhausted(scoped.model.provider));
 
 	let model: Model<Api> | undefined;
 	let thinkingLevel: Effort | undefined;
@@ -2510,9 +2510,8 @@ export async function findInitialModel(options: {
 	}
 
 	// 2. Use first model from scoped models (skip if continuing/resuming)
-	const availableScoped = scopedModels.filter(scoped => !isProviderExhausted(scoped.model.provider));
-	if (availableScoped.length > 0 && !isContinuing) {
-		const scoped = availableScoped[0];
+	if (scopedModels.length > 0 && !isContinuing) {
+		const scoped = scopedModels[0];
 		const scopedThinkingSelector =
 			scoped.thinkingLevel === ThinkingLevel.Inherit
 				? defaultThinkingSelector
@@ -2528,9 +2527,9 @@ export async function findInitialModel(options: {
 	}
 
 	// 3. Try saved default from settings
-	if (defaultProvider && defaultModelId) {
+	if (defaultProvider && defaultModelId && !isProviderExhausted(defaultProvider)) {
 		const found = modelRegistry.find(defaultProvider, defaultModelId);
-		if (found && !isProviderExhausted(found.provider)) {
+		if (found) {
 			model = found;
 			thinkingLevel = clampThinkingLevelForModel(found, defaultThinkingSelector);
 			return { model, thinkingLevel, fallbackMessage: undefined };
