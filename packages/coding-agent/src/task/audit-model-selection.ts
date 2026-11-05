@@ -223,10 +223,7 @@ export async function selectRowAuditModel(
 		});
 	};
 	const override = request.perCallModel ?? request.model;
-	const pool = resolve(
-		override !== undefined ? resolveConfiguredModelPatterns(override, settings) : (policy.modelOverride ?? []),
-		override !== undefined ? undefined : policy.modelRole,
-	);
+	const pool = resolve(policy.modelOverride ?? [], override !== undefined ? undefined : policy.modelRole);
 	const escalation = ["strong", "judgment"]
 		.flatMap(role => configuredRoleCandidates(role, settings, resolve))
 		.filter(candidate => {

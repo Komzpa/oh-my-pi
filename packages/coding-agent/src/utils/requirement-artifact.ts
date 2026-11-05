@@ -773,13 +773,14 @@ export async function checkRequirementIdentity(
 		if (!head) fail(`${identity.repo}: checkout has no HEAD commit`);
 		// Untracked files are not committed content: HEAD fully identifies the tree. Only
 		// staged/unstaged changes to tracked files make the committed identity unprovable.
-		const statusBefore = await currentRequirementGitStatus(repo, signal);
-		const [headAfter, statusAfter] = await Promise.all([
-			repo.headSha(signal),
-			currentRequirementGitStatus(repo, signal),
-		]);
+		const epochBefore = vcs.statusEpoch(repo);
+		const statusBefore = await repo.statusPorcelain({ untracked: "no", nulTerminated: true }, signal);
+		const headAfter = await repo.headSha(signal);
 		if (headAfter !== head) fail(`${identity.repo}: HEAD changed during identity probe`);
-		if (statusAfter !== statusBefore) fail(`${identity.repo}: checkout changed during identity probe`);
+		// A coordinated snapshot is reusable until index/ref metadata or a file-writing
+		// tool invalidates its epoch; a second fresh scan would consume another 10s slot.
+		if (epochBefore === null || JSON.stringify(vcs.statusEpoch(repo)) !== JSON.stringify(epochBefore))
+			fail(`${identity.repo}: checkout changed during identity probe`);
 		const observed = resolved.toLowerCase() === identity.commit ? await repo.resolveRef("HEAD^{tree}", signal) : head;
 		if (observed?.toLowerCase() !== identity.commit)
 			return { state: "stale", kind: "git", location, expected: identity.commit, observed: observed ?? "(missing)" };

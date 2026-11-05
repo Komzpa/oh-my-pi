@@ -221,9 +221,20 @@ it("visual audits exclude text-only large abliteration from pool and escalation"
 it("dispatch preserves explicit override and records same-vendor fallback", async () => {
 	const { request, policy, manager } = await fixture();
 	request.perCallModel = luna.selector;
+	policy.modelOverride = [luna.selector];
 	expect((await selectRowAuditModel(request, policy)).modelOverride).toEqual([luna.selector]);
 	expect(manager.getBranch().at(-1)).toMatchObject({
 		data: { explicit: true, sameVendor: true, identicalModel: true, rule: "fallback" },
+	});
+});
+
+it("dispatch preserves extension-routed policy over the original explicit audit model", async () => {
+	const { request, policy, manager } = await fixture();
+	request.perCallModel = luna.selector;
+	policy.modelOverride = [opus.selector];
+	expect((await selectRowAuditModel(request, policy)).modelOverride).toEqual([opus.selector]);
+	expect(manager.getBranch().at(-1)).toMatchObject({
+		data: { auditorModel: opus.selector, explicit: true, rule: "cross_vendor" },
 	});
 });
 
