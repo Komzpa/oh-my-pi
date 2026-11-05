@@ -5460,12 +5460,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const completedTasks = phases.reduce(
-			(sum, phase) => sum + phase.tasks.filter(task => task.status === "completed").length,
-			0,
-		);
-		const rowSummary = `rows ${totalTasks}: ${completedTasks} done · ${totalTasks - closedTasks} open · ${closedTasks - completedTasks} dropped`;
-		const lines = ["", theme.bold(theme.fg("accent", "TODO")) + theme.fg("dim", ` · ${rowSummary}`)];
+		const lines = ["", theme.bold(theme.fg("accent", "TODO"))];
 		for (let i = 0; i < contentLines.length; i++) {
 			lines.push(` ${theme.fg(i < filled ? "accent" : "dim", spineGlyphs[i]!)}${contentLines[i]}`);
 		}
@@ -5521,7 +5516,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			[
 				row(
 					[
-						text([span("TODO", "accent strong"), span(` · ${rowSummary}`, "dim")]),
+						text([span("TODO", "accent strong")]),
 						node("progress", { value: closedTasks / totalTasks, label: `${closedTasks}/${totalTasks}` }),
 					],
 					{ gap: "sm", align: "center" },
@@ -10047,6 +10042,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#extensionUiController.showToolError(toolName, error);
 	}
 
+	#todoRowHudSummary(): string {
+		const tasks = this.todoPhases.flatMap(phase => phase.tasks);
+		if (tasks.length === 0) return "";
+		const done = tasks.filter(task => task.status === "completed").length;
+		const dropped = tasks.filter(task => task.status === "abandoned").length;
+		return ` · rows ${tasks.length}: ${done} done · ${tasks.length - done - dropped} open · ${dropped} dropped`;
+	}
+
 	requirementHudSegment = "";
 
 	/**
@@ -10063,6 +10066,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				` · requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed`,
 				"dim",
 			),
+			span(this.#todoRowHudSummary(), "dim"),
 		]);
 	}
 
@@ -10103,7 +10107,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const title = theme.bold(theme.fg("accent", "TODO"));
 		const requirementSummary = theme.fg(
 			"dim",
-			` · requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed`,
+			` · requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed${this.#todoRowHudSummary()}`,
 		);
 		if (lines.length === 0) return ["", truncateToWidth(`${title}${requirementSummary}`, width)];
 
@@ -10113,10 +10117,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const titleIndex = line.indexOf(title);
 			if (titleIndex < 0) return truncateToWidth(line, width);
 			inserted = true;
-			return truncateToWidth(
-				`${line.slice(0, titleIndex)}${title}${requirementSummary}${line.slice(titleIndex + title.length)}`,
-				width,
-			);
+			return truncateToWidth(`${line.slice(0, titleIndex)}${title}${requirementSummary}`, width);
 		});
 		return inserted ? rendered : [truncateToWidth(`${title}${requirementSummary}`, width), ...rendered];
 	}

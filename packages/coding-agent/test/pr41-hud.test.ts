@@ -146,7 +146,14 @@ describe("pr41-hud", () => {
 		const rendered = Bun.stripANSI(
 			mode
 				.renderRequirementHudSegment(
-					width => mode.todoContainer.children.flatMap(child => child.render(width)),
+					width =>
+						mode.todoContainer.children.flatMap(child =>
+							child
+								.render(width)
+								.map(line =>
+									Bun.stripANSI(line).trim().startsWith("TODO") ? `${line} 1 ✓ · 2 open · 1 ×` : line,
+								),
+						),
 					250,
 				)
 				.join("\n"),
@@ -155,6 +162,8 @@ describe("pr41-hud", () => {
 		expect(rendered).toContain("rows 4: 1 done · 2 open · 1 dropped");
 		expect(rendered.match(/requirements 1:/g)).toHaveLength(1);
 		expect(rendered.match(/rows 4:/g)).toHaveLength(1);
+		expect(rendered).not.toContain("1 ✓ · 2 open · 1 ×");
+		expect(JSON.stringify(mode.describeRequirementHudSummary())).toContain("rows 4: 1 done · 2 open · 1 dropped");
 		session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements: [] });
 		expect(mode.renderRequirementHudSegment(() => ["base TODO rows"], 100)).toEqual(["base TODO rows"]);
 	});
