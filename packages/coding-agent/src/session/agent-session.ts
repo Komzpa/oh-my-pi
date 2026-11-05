@@ -8550,8 +8550,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		);
 		if (phases.length === 0 && !archiveSummary) return undefined;
 
-		let total = 0;
-		let closed = 0;
+		let total = archiveSummary?.count ?? 0;
+		let closed = archiveSummary?.count ?? 0;
 		let open = 0;
 		const promptPhases = phases.map(phase => ({
 			name: this.#sanitizeGoalTodoText(phase.name),
