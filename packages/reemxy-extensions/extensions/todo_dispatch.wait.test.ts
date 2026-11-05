@@ -2008,3 +2008,39 @@ test("idle stop and wait require a recorded decision and live page without class
 		h.shutdown();
 	}
 });
+
+// Live DC 2026-11-05: "Investigate lost asks (blocked) needs unblock: Audited PASS" sat as a block
+// although its researcher had delivered; the only remaining action was the lead's.
+test("a blocked row whose worker delivered counts as ready work for the idle gate", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const row = phases[0]!.tasks[0]!;
+	row.content = "Investigate lost asks: site yard to inputs, floor count";
+	row.status = "blocked";
+	row.blocker = "Audited PASS (AuditLostAsksTrace); done gate demands UI screenshot pair for a research answer (tool bug reported)";
+	row.schedule.owner = "AuditLostAsksTrace";
+	row.schedule.executor = { workerId: "TraceLostSiteYardFloorsAsks", agentProfile: "researcher", startedAt: now - 600_000, finishedAt: now - 590_000, outcome: "completed" };
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	try {
+		await h.handlers.get("session_stop")!({}, h.ctx);
+		const demand = h.notices.find(notice => notice.customType === "todo-idle-plan-demand");
+		expect(demand?.content).toContain(`Ready: ${JSON.stringify(row.content)}`);
+		expect(demand?.content).not.toContain("No work is currently ready");
+	} finally { h.shutdown(); }
+});
+
+test("negative control: a blocked row without a delivered result is not ready work", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	const row = phases[0]!.tasks[0]!;
+	row.status = "blocked";
+	row.blocker = "Provider quota exhausted until Nov 7";
+	row.schedule.owner = undefined;
+	row.schedule.executor = { workerId: "w", startedAt: now - 600_000, finishedAt: now - 590_000, outcome: "failed" };
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	try {
+		await h.handlers.get("session_stop")!({}, h.ctx);
+		const demand = h.notices.find(notice => notice.customType === "todo-idle-plan-demand");
+		expect(demand?.content).toContain("No work is currently ready");
+	} finally { h.shutdown(); }
+});

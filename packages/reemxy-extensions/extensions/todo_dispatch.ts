@@ -1276,6 +1276,26 @@ function isOpenRowStatus(status: string): boolean {
 function isNonClosedRowStatus(status: string): boolean {
   return status === "pending" || status === "in_progress" || status === "blocked";
 }
+/** A row whose worker already delivered and that waits on nobody outside the lead: the only
+ * remaining action (push, close, hand off) is the lead's own, so it is ready work, not a block.
+ * Decided from row state (executor outcome, attempt deliverables, owner), never the reason prose. */
+export function leadActionPending(row: { blocker?: unknown; schedule?: unknown }, runningOwners: ReadonlySet<string> = new Set()): boolean {
+  const schedule = (row.schedule ?? {}) as {
+    owner?: unknown; review?: unknown; missionCritical?: unknown;
+    executor?: { outcome?: unknown; finishedAt?: unknown };
+    attemptHistory?: Array<{ terminalStatus?: unknown; deliverablePaths?: unknown[]; gitCommits?: unknown[] }>;
+  };
+  if (schedule.review === "user" || schedule.review === "accepted" || nonEmptyString(schedule.missionCritical)) return false;
+  if (typeof schedule.owner === "string" && (runningOwners.has(schedule.owner) || parseExternalWait(schedule.owner) !== null)) return false;
+  if (waitsOnUser(schedule.owner, row.blocker)) return false;
+  const executor = schedule.executor;
+  if (executor?.outcome === "completed" && typeof executor.finishedAt === "number") return true;
+  const last = schedule.attemptHistory?.at(-1);
+  return last?.terminalStatus === "completed" && Boolean(last.deliverablePaths?.length || last.gitCommits?.length);
+}
+export function leadActionBlockRefusal(rows: readonly string[]): string {
+  return `Refusing block: ${rows.map((row) => JSON.stringify(row)).join(", ")} already has a delivered worker result and waits on nobody else; the remaining action is yours. Do it now: push the commit, close the row with todo op="done", or hand it to the user with todo op="schedule", updates=[{task, review:"user"}]. block is only for waiting on someone outside this session.`;
+}
 function undeliveredUserWait(row: TodoTaskForecast): boolean {
   return row.status === "blocked" && !row.awaitingPrerequisite && (
     row.schedule?.review === "user" || waitsOnUser(row.owner, row.blocker) || row.waitsForUser !== undefined
@@ -3728,6 +3748,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     sprintState = { ...sprintState, idleContinuationDemands: 0, idleContinuationKey: undefined };
     persistSprintState();
   };
+  const runningOwnerNames = (ctx: ExtensionContext): Set<string> => new Set((ctx.getAsyncJobSnapshot()?.running ?? [])
+    .flatMap((job) => [job.id, job.agentId, job.label].filter((name): name is string => typeof name === "string")));
   const demandIdlePlanContinuation = (ctx: ExtensionContext, advance = true): string | undefined => {
     if (singleWriterLane || !isMain(ctx) || gateSwitchedOff(ctx) || pauseGate?.paused) return;
     const now = Date.now();
@@ -3764,7 +3786,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const uncovered = new Set(uncoveredRows.map((row) => row.content));
     const overdueRows = decision.forecast.rows.filter((row) => row.overdue && row.ready && uncovered.has(row.content) && isOpenRowStatus(row.status)).map((row) => row.content);
-    const readyRows = decision.forecast.rows.filter((row) => row.ready && uncovered.has(row.content)).map((row) => row.content);
+    const forecastReady = decision.forecast.rows.filter((row) => row.ready && uncovered.has(row.content)).map((row) => row.content);
+    // A row blocked only on the lead's own push/close/hand-off is ready work, not a block.
+    const owners = runningOwnerNames(ctx);
+    const leadActionRows = uncoveredRows.filter((row) => row.status === "blocked" && leadActionPending(row, owners)).map((row) => row.content);
+    const readyRows = [...new Set([...forecastReady, ...leadActionRows])];
     const rowList = (rows: string[]) => rows.length ? rows.slice(0, MAX_ROWS).map((row) => JSON.stringify(shorten(row))).join(", ") : "none";
     const openList = rowList(uncoveredRows.map((row) => row.content));
     if (readyRows.length === 0 && overdueRows.length === 0) {
@@ -5079,6 +5105,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName === "todo") {
       const userWait = refuseUserWait(event.input, ctx);
       if (userWait) return { block: true, reason: userWait };
+      const blockCall = event.input as { op?: unknown; task?: unknown; phase?: unknown; reason?: unknown } | undefined;
+      if (blockCall?.op === "block") {
+        const owners = runningOwnerNames(ctx);
+        const selfBlocked = todoPhases(ctx)
+          .flatMap((phase) => phase.tasks.filter((task) => (typeof blockCall.task === "string" ? task.content === blockCall.task : typeof blockCall.phase === "string" && phase.name === blockCall.phase)))
+          .filter((task) => isNonClosedRowStatus(String(task.status)) && leadActionPending({ ...task, blocker: blockCall.reason }, owners))
+          .map((task) => String(task.content));
+        if (selfBlocked.length) return { block: true, reason: leadActionBlockRefusal(selfBlocked) };
+      }
       // Naming retro in a todo call no longer clears it ("Retro skipped per <rule>" let the same
       // failure be retried all day); only a retro-facilitator task does.
       const gate = applyTodoOverride(event.input, ctx, false);
