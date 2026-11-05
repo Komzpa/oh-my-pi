@@ -39,6 +39,8 @@ async function seedStore(): Promise<void> {
 	for (const [provider, key] of Object.entries(KEYS)) {
 		await store.replaceAuthCredentials(provider, [{ type: "api_key", key }]);
 	}
+	await store.replaceAuthCredentials("disabled", [{ type: "api_key", key: "sk-disabled" }]);
+	await store.deleteAuthCredentials("disabled", "user-disabled");
 	const db = new Database(dbPath);
 	// Grow the file so tail pages exist, then fold the WAL into the main file.
 	db.run("BEGIN");
@@ -81,18 +83,57 @@ describe("quarantine salvages stored credentials", () => {
 	test("credentials survive a store whose header page count is torn", async () => {
 		await seedStore();
 		tearHeader(dbPath);
-		expect(() => new Database(dbPath).query("SELECT count(*) FROM auth_credentials").get()).toThrow();
+		const probe = new Database(dbPath);
 		try {
-			new Database(dbPath).query("SELECT count(*) FROM auth_credentials").get();
-		} catch (error) {
-			expect(isSqliteCorruptionError(error)).toBe(true);
+			let thrown: unknown;
+			try {
+				probe.query("SELECT count(*) FROM auth_credentials").get();
+			} catch (error) {
+				thrown = error;
+			}
+			expect(isSqliteCorruptionError(thrown)).toBe(true);
+		} finally {
+			probe.close();
 		}
 		const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
 		const store = await SqliteAuthCredentialStore.open(dbPath);
 		try {
 			expect(storedKeys(store)).toEqual(KEYS);
+			expect((await store.listDisabledCredentials()).map(row => row.cause)).toEqual(["user-disabled"]);
 			expect(fs.readdirSync(dir).some(name => name.startsWith("agent.db.corrupt-"))).toBe(true);
 			expect(warn.mock.calls.some(call => String(call[0]).includes("Restored credentials"))).toBe(true);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("legacy disabled credentials stay disabled after torn-header recovery", async () => {
+		const db = new Database(dbPath);
+		try {
+			db.run(
+				"CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT, credential_type TEXT, data TEXT, disabled INTEGER)",
+			);
+			for (const [id, provider, disabled] of [
+				[1, "active", 0],
+				[2, "disabled", 1],
+			] as const) {
+				db.run("INSERT INTO auth_credentials VALUES (?, ?, 'api_key', ?, ?)", [
+					id,
+					provider,
+					JSON.stringify({ key: `sk-${provider}` }),
+					disabled,
+				]);
+			}
+		} finally {
+			db.close();
+		}
+		tearHeader(dbPath);
+		const store = await SqliteAuthCredentialStore.open(dbPath);
+		try {
+			expect(storedKeys(store)).toEqual({ active: "sk-active" });
+			expect(
+				(await store.listDisabledCredentials()).map(row => ({ provider: row.provider, cause: row.cause })),
+			).toEqual([{ provider: "disabled", cause: "disabled" }]);
 		} finally {
 			store.close();
 		}
