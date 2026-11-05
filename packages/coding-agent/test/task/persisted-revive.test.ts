@@ -43,6 +43,7 @@ import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import { PerCallModelError, PerCallModelUnavailableError } from "@oh-my-pi/pi-coding-agent/task/model-approval";
 import { cfgTaskMaxEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
+import * as extensionRootsModule from "@oh-my-pi/pi-coding-agent/discovery/omp-extension-roots";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { buildWakeRelayBody } from "@oh-my-pi/pi-coding-agent/task/executor";
@@ -224,6 +225,7 @@ async function createPersistedSession(
 
 interface ReviveOwnerOptions {
 	extensionRoots?: () => EffectiveExtensionRoots;
+	functionRoots?: boolean;
 	preparedExtensions?: readonly PreparedExtension[];
 	authStorage?: AuthStorage;
 	modelRegistry?: ModelRegistry;
@@ -241,14 +243,14 @@ function createFactory(cwd: string, eventBus?: EventBus, owner: ReviveOwnerOptio
 			return path.join(cwd, "parent.jsonl");
 		},
 		get effectiveExtensionRoots() {
-			return (
+			const roots = (): EffectiveExtensionRoots =>
 				owner.extensionRoots?.() ?? {
 					explicit: [],
 					mode: "merge",
 					configured: [],
 					configuredLevel: "user",
-				}
-			);
+				};
+			return owner.functionRoots ? roots : roots();
 		},
 		get preparedExtensions() {
 			return owner.preparedExtensions;
@@ -295,7 +297,8 @@ describe("persisted subagent revival", () => {
 		expect(emit).toHaveBeenCalledWith({ type: "session_start" });
 	});
 
-	it("loads only extensions allowed by the live owner's root policy", async () => {
+	it.each([false, true])("revives with live roots (provider=%s)", async function (functionRoots) {
+		const rootsDiscovery = vi.spyOn(extensionRootsModule, "listOmpExtensionRoots");
 		const cwd = makeTempDir("@pi-revive-owner-roots-");
 		const sessionFile = await createPersistedSession(cwd, false, "default");
 		const ownerExtension = path.join(cwd, "owner-extension.ts");
@@ -327,6 +330,7 @@ describe("persisted subagent revival", () => {
 		const ref = AgentRegistry.global().register(createRef(sessionFile));
 		const reviver = await createFactory(cwd, undefined, {
 			extensionRoots: () => extensionRoots,
+			functionRoots,
 			authStorage,
 			modelRegistry,
 		})(ref);
@@ -343,6 +347,9 @@ describe("persisted subagent revival", () => {
 		let revived: AgentSession | undefined;
 		try {
 			revived = localSession(await reviver(ref));
+			expect(rootsDiscovery).toHaveBeenCalledWith(
+				expect.objectContaining({ extensionRoots: expect.objectContaining({ explicit: [ownerExtension] }) }),
+			);
 			const read = revived.getToolByName("read");
 			if (!read) throw new Error("Missing revived read tool");
 			await expect(read.execute("denied", { path: blockedPath })).rejects.toThrow("Owner policy denied the read");

@@ -23,6 +23,8 @@ import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-r
 import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionHandle } from "../session/agent-session-handle";
+import type { EffectiveExtensionRoots } from "../capability/types";
+import type { ToolSession } from "../tools";
 import type { ArtifactManagerApi } from "../session/artifacts";
 import type { CostGateApi } from "../session/cost-gate";
 import { installRetryFallbackRole } from "../session/retry-fallback-chains";
@@ -59,6 +61,20 @@ import { type RestoredSeanceSession, restoreSeanceSession } from "./seance";
 import { seanceIsolationOptions } from "./seance-policy";
 import type { AgentDefinition } from "./types";
 
+type ReviveExtensionRoots =
+	| AgentSessionHandle["effectiveExtensionRoots"]
+	| NonNullable<ToolSession["effectiveExtensionRoots"]>;
+
+/** Root handles expose a value; tool-session adapters expose a live provider. */
+type PersistedReviveRoot = Omit<AgentSessionHandle, "effectiveExtensionRoots"> & {
+	readonly effectiveExtensionRoots: ReviveExtensionRoots;
+};
+
+function reviveExtensionRoots(root: Pick<PersistedReviveRoot, "effectiveExtensionRoots">): EffectiveExtensionRoots {
+	const roots = root.effectiveExtensionRoots;
+	return typeof roots === "function" ? roots.call(root) : roots;
+}
+
 /**
  * Ambient context the reviver needs at revive time. The top-level session is
  * kept LIVE (cwd / artifact manager read on demand) so a later `/new` or cwd
@@ -66,7 +82,7 @@ import type { AgentDefinition } from "./types";
  * process-stable and captured by reference.
  */
 export interface PersistedSubagentReviveContext {
-	session: AgentSession;
+	session: Omit<AgentSession, "effectiveExtensionRoots"> & Pick<PersistedReviveRoot, "effectiveExtensionRoots">;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
 	settings: Settings;
@@ -97,7 +113,7 @@ export interface PersistedReviveSpec {
 	/** The consulted source of a persisted seance session. */
 	readonly restoredSeance: RestoredSeanceSession | undefined;
 	/** The live top-level session revived agents join (cwd, extension roots, parent grants). */
-	readonly root: AgentSessionHandle;
+	readonly root: PersistedReviveRoot;
 	/** Registry id of {@link root}. */
 	readonly rootAgentId: string;
 	readonly costGate: CostGateApi;
@@ -302,7 +318,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 								await discoverAgents(
 									discoverySession.sessionManager.getCwd(),
 									undefined,
-									discoverySession.effectiveExtensionRoots,
+									reviveExtensionRoots(discoverySession),
 								)
 							).agents,
 							...(parentSession?.getSessionAgents() ?? []),
@@ -479,7 +495,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			requireYieldTool: structured,
 			systemPrompt: () => [...init.systemPrompt],
 			// Inherit current owner policy, never extension authority from a transcript.
-			extensionRoots: () => spec.root.effectiveExtensionRoots,
+			extensionRoots: () => reviveExtensionRoots(spec.root),
 			preloadedPreparedExtensions: spec.preparedExtensions,
 			// Old files predate persisted spawns: deny re-spawning rather than let
 			// createAgentSession default to wildcard ("*").
