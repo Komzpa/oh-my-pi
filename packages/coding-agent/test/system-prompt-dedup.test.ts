@@ -142,7 +142,7 @@ describe("SYSTEM.md prompt assembly", () => {
 		fs.mkdirSync(path.join(projectDir, ".omp"), { recursive: true });
 		fs.writeFileSync(path.join(projectDir, ".omp", "SYSTEM.md"), "Discovered project SYSTEM prompt");
 
-		const { systemPrompt } = await buildSystemPrompt({
+		const { systemPrompt, conversationContext } = await buildSystemPrompt({
 			cwd: projectDir,
 			resolvedCustomPrompt: "CLI custom prompt",
 			resolvedAppendSystemPrompt: appendPrompt,
@@ -165,7 +165,8 @@ describe("SYSTEM.md prompt assembly", () => {
 		const appendMatches = promptText.match(new RegExp(escapeRegExp(appendPrompt), "g")) ?? [];
 		expect(systemPrompt).toHaveLength(2);
 		expect(promptText).toContain("CLI custom prompt");
-		expect(promptText).toContain("<workspace-tree>");
+		expect(promptText).not.toContain("<workspace-tree>");
+		expect(conversationContext).toContain("<workspace-tree>");
 		expect(promptText).toContain("<dir-context>");
 		// The project/environment footer survives even though the date/cwd line was
 		// relocated out of it; <workstation> is rendered only by that footer.

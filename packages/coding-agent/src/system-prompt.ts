@@ -36,6 +36,7 @@ import defaultPersonality from "./prompts/system/personalities/default.md" with 
 import friendlyPersonality from "./prompts/system/personalities/friendly.md" with { type: "text" };
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
+import workspaceContextTemplate from "./prompts/system/workspace-context.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
 import userAppendPromptTemplate from "./prompts/system/user-append.md" with { type: "text" };
 import { normalizeConcurrencyLimit } from "./task/parallel";
@@ -625,6 +626,8 @@ export interface BuildSystemPromptOptions {
 export interface BuildSystemPromptResult {
 	/** Ordered system prompt blocks. Providers should preserve entries as distinct messages/blocks. */
 	systemPrompt: string[];
+	/** Mutable workspace snapshot for the first conversation turn. */
+	conversationContext?: string;
 	/**
 	 * Names of `xd://` devices whose catalog/protocol section this prompt renders.
 	 * Empty/undefined when no catalog was emitted (no mounted devices, or a custom
@@ -1088,5 +1091,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		!resolvedCustomPrompt && xdevTools.length > 0 && rendered.includes("xd://")
 			? xdevTools.map(mounted => mounted.name)
 			: undefined;
-	return { systemPrompt, xdevCatalogNames };
+	return {
+		systemPrompt,
+		xdevCatalogNames,
+		conversationContext: prompt.render(workspaceContextTemplate, data).trim() || undefined,
+	};
 }
