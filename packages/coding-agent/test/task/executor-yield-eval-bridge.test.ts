@@ -11,6 +11,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
+import { buildWorkPoolOutputSchema } from "@oh-my-pi/pi-coding-agent/task/workpool-yield";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { callSessionTool } from "@oh-my-pi/pi-coding-agent/eval/js/tool-bridge";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
@@ -229,6 +237,86 @@ describe("terminal yield through the eval bridge", () => {
 		AgentRegistry.resetGlobalForTests();
 		IrcBus.resetGlobalForTests();
 	});
+
+	for (const rejectFirst of [false, true]) {
+		it(`waits for wrapped workpool acceptance before completing (reject first=${rejectFirst})`, async () => {
+			using root = TempDir.createSync("@omp-workpool-acceptance-");
+			const auth = createInMemoryAuthStorage();
+			const items = [
+				{ id: "review#1", index: 1 },
+				{ id: "review#2", index: 2 },
+			];
+			const harness = createHarness({ toolSession: { getWorkPoolYieldItems: () => items } });
+			const runner = new ExtensionRunner(
+				[],
+				new ExtensionRuntime(),
+				root.path(),
+				SessionManager.inMemory(root.path()),
+				new ModelRegistry(auth),
+			);
+			const releaseFirst = Promise.withResolvers<void>();
+			const firstInExtension = Promise.withResolvers<void>();
+			vi.spyOn(runner, "hasHandlers").mockImplementation(event => event === "tool_result");
+			vi.spyOn(runner, "emitToolResult").mockImplementation(async event => {
+				if (event.toolCallId !== "first") return undefined;
+				firstInExtension.resolve();
+				await releaseFirst.promise;
+				return rejectFirst ? { content: [{ type: "text", text: "revise" }], isError: true } : undefined;
+			});
+			const wrapped = new ExtensionToolWrapper(harness.yieldTool, runner);
+			vi.spyOn(harness.session, "getToolByName").mockImplementation(name =>
+				name === "yield" ? wrapped : undefined,
+			);
+			mockCreateAgentSession(harness.session);
+			registerRunning(harness.session);
+			let completedWhileFirstPending = false;
+			harness.runBridgedYield = async () => {
+				const first = wrapped.execute("first", { key: 1, data: "one" });
+				await firstInExtension.promise;
+				let secondSettled = false;
+				const second = wrapped.execute("second", { key: 2, data: "two" }).then(result => {
+					secondSettled = true;
+					return result;
+				});
+				try {
+					// Let runnable wrapper work finish; the first extension is still gated.
+					await Bun.sleep(0);
+					completedWhileFirstPending = secondSettled;
+				} finally {
+					releaseFirst.resolve();
+				}
+				const [firstResult, secondResult] = await Promise.all([first, second]);
+				if (rejectFirst) {
+					expect(firstResult.isError).toBe(true);
+					expect(secondResult.details?.complete).not.toBe(true);
+					return wrapped.execute("retry-first", { key: 1, data: "corrected" });
+				}
+				expect(secondResult.details?.complete).toBe(true);
+				return secondResult;
+			};
+			try {
+				const result = await runSubprocess({
+					cwd: root.path(),
+					agent: baseAgent,
+					task: "process both items",
+					index: 0,
+					id: AGENT_ID,
+					workPoolYieldItems: items,
+					outputSchema: buildWorkPoolOutputSchema(items),
+				});
+				expect(completedWhileFirstPending).toBe(false);
+				expect(result.exitCode).toBe(0);
+				expect(JSON.parse(result.output)).toEqual({
+					"review#1": rejectFirst ? "corrected" : "one",
+					"review#2": "two",
+				});
+				expect(result.extractedToolData?.yield).toHaveLength(2);
+			} finally {
+				releaseFirst.resolve();
+				auth.close();
+			}
+		});
+	}
 
 	it("an eval-bridged accepted terminal yield ends the job and delivers exactly one parent completion", async () => {
 		const harness = createHarness();

@@ -18,7 +18,7 @@ import {
 	sanitizeSchemaForStrictMode,
 	tryEnforceStrictSchema,
 } from "@oh-my-pi/pi-ai/utils/schema";
-import { isRecord, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt, sanitizeText, untilAborted } from "@oh-my-pi/pi-utils";
 import { TERMINAL_STATES } from "@oh-my-pi/pi-tui/apps/ps-data";
 import { formatDuration, PREVIEW_LIMITS, previewLine } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { AbandonedJob } from "@oh-my-pi/pi-tui/tools/task";
@@ -391,7 +391,14 @@ interface DeferredYieldAcceptance {
 	listeners?: YieldAcceptedListener[];
 	details?: YieldDetails;
 	claimedTerminal?: boolean;
-	itemIds?: string[];
+}
+
+interface WorkPoolReservation {
+	itemId: string;
+	generation: number;
+	batchKey: string;
+	promise: Promise<void>;
+	resolve: () => void;
 }
 
 export class YieldTool implements AgentTool<TSchema, YieldDetails> {
@@ -427,7 +434,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	readonly #session: ToolSession;
 	readonly #parameters: TSchema;
 	#workPoolBatchKey = "";
-	readonly #submittedWorkPoolItems = new Set<string>();
+	readonly #acceptedWorkPoolItems = new Set<string>();
+	readonly #workPoolReservations = new Map<string, WorkPoolReservation>();
 	readonly #warnedRunningJobs = new Set<string>();
 	readonly #acceptedResultListeners = new Set<YieldAcceptedListener>();
 	readonly #deferredAcceptances = new Map<string, DeferredYieldAcceptance>();
@@ -559,6 +567,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// generation before awaiting #checkRunningJobs must not mutate or notify
 		// the new run when it finally returns.
 		this.#turnStateGeneration++;
+		for (const id of this.#workPoolReservations.keys()) this.#releaseWorkPoolReservation(id);
 	}
 
 	/** The driver's last reminder makes an incremental result terminal too. */
@@ -591,22 +600,47 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		return result => {
 			if (--pending.depth > 0) return;
 			this.#deferredAcceptances.delete(toolCallId);
-			if (pending.generation !== this.#turnStateGeneration || !pending.details) return;
-			const details = result?.details as YieldDetails | undefined;
-			const accepted = result?.isError !== true && (details?.status === "success" || details?.status === "aborted");
-			const terminal =
-				accepted && (details.status === "aborted" || !Array.isArray(details.type) || details.complete);
-			if (!terminal && pending.claimedTerminal) this.#terminalResultCallId = undefined;
-			if (!accepted) {
-				this.#incrementalSections.delete(toolCallId);
-				for (const id of pending.itemIds ?? []) this.#submittedWorkPoolItems.delete(id);
-				return;
-			}
-			if (!terminal) this.#incrementalSections.add(toolCallId);
-			for (const listener of pending.listeners ?? []) {
-				if (this.#acceptedResultListeners.has(listener)) listener(toolCallId, details);
+			try {
+				if (pending.generation !== this.#turnStateGeneration || !pending.details) return;
+				const details = result?.details as YieldDetails | undefined;
+				const accepted =
+					result?.isError !== true && (details?.status === "success" || details?.status === "aborted");
+				const terminal =
+					accepted && (details.status === "aborted" || !Array.isArray(details.type) || details.complete);
+				if (!terminal && pending.claimedTerminal) this.#terminalResultCallId = undefined;
+				if (!accepted) {
+					this.#incrementalSections.delete(toolCallId);
+					return;
+				}
+				this.#acceptWorkPoolItem(toolCallId, details);
+				if (!terminal) this.#incrementalSections.add(toolCallId);
+				for (const listener of pending.listeners ?? []) {
+					if (this.#acceptedResultListeners.has(listener)) listener(toolCallId, details);
+				}
+			} finally {
+				this.#releaseWorkPoolReservation(toolCallId);
 			}
 		};
+	}
+
+	#acceptWorkPoolItem(toolCallId: string, details: YieldDetails): void {
+		const reservation = this.#workPoolReservations.get(toolCallId);
+		if (
+			reservation &&
+			reservation.generation === this.#turnStateGeneration &&
+			reservation.batchKey === this.#workPoolBatchKey &&
+			details.status === "success" &&
+			Array.isArray(details.type) &&
+			details.type.includes(reservation.itemId)
+		) {
+			this.#acceptedWorkPoolItems.add(reservation.itemId);
+		}
+	}
+
+	#releaseWorkPoolReservation(toolCallId: string): void {
+		const reservation = this.#workPoolReservations.get(toolCallId);
+		this.#workPoolReservations.delete(toolCallId);
+		reservation?.resolve();
 	}
 
 	/**
@@ -726,7 +760,8 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		const key = items.map(item => `${item.index}:${item.id}`).join("\0");
 		if (key !== this.#workPoolBatchKey) {
 			this.#workPoolBatchKey = key;
-			this.#submittedWorkPoolItems.clear();
+			this.#acceptedWorkPoolItems.clear();
+			for (const id of this.#workPoolReservations.keys()) this.#releaseWorkPoolReservation(id);
 		}
 		return items;
 	}
@@ -744,7 +779,6 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// mutate the new run's accumulators nor notify its listeners on return.
 		const runGeneration = this.#turnStateGeneration;
 		const acceptedListeners = [...this.#acceptedResultListeners];
-		const submittedItems = new Set(this.#submittedWorkPoolItems);
 		const result = await this.#execute(toolCallId, params, runGeneration, _signal, _context);
 		const deferred = this.#deferredAcceptances.get(toolCallId);
 		if (deferred) {
@@ -752,17 +786,17 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			deferred.listeners = acceptedListeners;
 			deferred.details = result.details;
 			deferred.claimedTerminal = this.#terminalResultCallId === toolCallId;
-			deferred.itemIds = Array.isArray(result.details?.type)
-				? result.details.type.filter(id => this.#submittedWorkPoolItems.has(id) && !submittedItems.has(id))
-				: [];
 			return result;
 		}
-		if (runGeneration === this.#turnStateGeneration && result.details !== undefined) {
-			// Only still-active listeners from this invocation can observe acceptance.
-			// Propagate canonical monitor failures instead of silently losing completion.
-			for (const listener of acceptedListeners) {
-				if (this.#acceptedResultListeners.has(listener)) listener(toolCallId, result.details);
+		try {
+			if (runGeneration === this.#turnStateGeneration && result.details !== undefined) {
+				this.#acceptWorkPoolItem(toolCallId, result.details);
+				for (const listener of acceptedListeners) {
+					if (this.#acceptedResultListeners.has(listener)) listener(toolCallId, result.details);
+				}
 			}
+		} finally {
+			this.#releaseWorkPoolReservation(toolCallId);
 		}
 		return result;
 	}
@@ -788,7 +822,10 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		if (workPoolItems.length > 0) {
 			const item = resolveWorkPoolYieldItem(workPoolItems, raw.key);
 			workPoolItemId = item.id;
-			if (this.#submittedWorkPoolItems.has(item.id)) {
+			if (
+				this.#acceptedWorkPoolItems.has(item.id) ||
+				[...this.#workPoolReservations.values()].some(reservation => reservation.itemId === item.id)
+			) {
 				throw new Error(`workpool item ${item.index} was already submitted`);
 			}
 			if (data !== undefined && errorMessage !== undefined) {
@@ -1079,14 +1116,25 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			}
 		}
 
-		// Reserve the workpool key before an awaited job check, just like the
-		// terminal latch. A refused check releases only this batch's reservation.
+		// Reserve keys until the outermost result wrapper accepts or rejects them.
+		// Earlier accepted notifications must land before a sibling can complete the batch.
 		const batchKey = this.#workPoolBatchKey;
-		if (status === "success" && workPoolItemId !== undefined) this.#submittedWorkPoolItems.add(workPoolItemId);
-		const completesWorkPool =
-			workPoolItemId !== undefined && workPoolItems.every(item => this.#submittedWorkPoolItems.has(item.id));
+		const predecessors = [...this.#workPoolReservations.values()];
+		if (workPoolItemId !== undefined) {
+			this.#workPoolReservations.set(toolCallId, {
+				itemId: workPoolItemId,
+				generation: runGeneration,
+				batchKey,
+				...Promise.withResolvers<void>(),
+			});
+		}
 		let abandonedJobs: AbandonedJob[] | undefined;
 		try {
+			if (workPoolItemId !== undefined)
+				await untilAborted(_signal, Promise.all(predecessors.map(reservation => reservation.promise)));
+			const completesWorkPool =
+				workPoolItemId !== undefined &&
+				workPoolItems.every(item => item.id === workPoolItemId || this.#acceptedWorkPoolItems.has(item.id));
 			if (
 				(!isIncremental || completesWorkPool || status === "aborted" || this.#finalResultForced) &&
 				context?.toolCall?.toolCalls.some(call => call.id !== toolCallId && call.name !== "yield")
@@ -1100,13 +1148,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 						? await this.#checkRunningJobs(runGeneration, _signal)
 						: undefined;
 		} catch (error) {
-			if (
-				runGeneration === this.#turnStateGeneration &&
-				batchKey === this.#workPoolBatchKey &&
-				workPoolItemId !== undefined
-			) {
-				this.#submittedWorkPoolItems.delete(workPoolItemId);
-			}
+			this.#releaseWorkPoolReservation(toolCallId);
 			throw error;
 		}
 		// A stale execution from a detached run must not mutate the new run's
@@ -1119,8 +1161,9 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		let remainingWorkPoolItems: readonly WorkPoolYieldItem[] = [];
 		if (workPoolItemId !== undefined) {
 			submittedWorkPoolItem = workPoolItems.find(item => item.id === workPoolItemId);
-			if (!staleAcceptedResult) this.#submittedWorkPoolItems.add(workPoolItemId);
-			remainingWorkPoolItems = workPoolItems.filter(item => !this.#submittedWorkPoolItems.has(item.id));
+			remainingWorkPoolItems = workPoolItems.filter(
+				item => item.id !== workPoolItemId && !this.#acceptedWorkPoolItems.has(item.id),
+			);
 			workPoolComplete = remainingWorkPoolItems.length === 0;
 		}
 		const responseText =

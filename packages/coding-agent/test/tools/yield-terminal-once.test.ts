@@ -155,6 +155,47 @@ describe("YieldTool terminal result latch", () => {
 		expect(result?.status === "fulfilled" && result.value.details).toMatchObject({ data: "retry", complete: true });
 	});
 
+	it("releases an aborted sibling reservation without losing the accepted predecessor", async () => {
+		const tool = new YieldTool(
+			createSession({
+				getWorkPoolYieldItems: () => [
+					{ id: "one", index: 1 },
+					{ id: "two", index: 2 },
+				],
+			}),
+		);
+		const acceptFirst = tool.deferResultAcceptance("first");
+		const first = await tool.execute("first", { key: 1, data: "one" });
+		const controller = new AbortController();
+		const second = tool.execute("second", { key: 2, data: "two" }, controller.signal);
+		controller.abort();
+		await expect(second).rejects.toThrow();
+		acceptFirst(first);
+		const retry = await tool.execute("retry", { key: 2, data: "two" });
+		expect(retry.details).toMatchObject({ data: "two", complete: true });
+	});
+
+	it("does not let pending old wrappers mark the next run's workpool keys accepted", async () => {
+		const tool = new YieldTool(
+			createSession({
+				getWorkPoolYieldItems: () => [
+					{ id: "one", index: 1 },
+					{ id: "two", index: 2 },
+				],
+			}),
+		);
+		const acceptOld = tool.deferResultAcceptance("old-first");
+		const oldFirst = await tool.execute("old-first", { key: 1, data: "old one" });
+		const oldSecond = tool.execute("old-second", { key: 2, data: "old two" });
+		tool.resetTurnState();
+		await oldSecond;
+		acceptOld(oldFirst);
+		const first = await tool.execute("new-first", { key: 1, data: "new one" });
+		expect(first.details?.complete).not.toBe(true);
+		const second = await tool.execute("new-second", { key: 2, data: "new two" });
+		expect(second.details).toMatchObject({ data: "new two", complete: true });
+	});
+
 	it("submits a workpool item error without aborting the batch and fences final acceptance behind running jobs", async () => {
 		let running = true;
 		const tool = new YieldTool(
