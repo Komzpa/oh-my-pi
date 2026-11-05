@@ -206,7 +206,9 @@ describe("rework attempt TODO HUD", () => {
 			expect(plain).toContain("awaiting your review → http://localhost:8767/review/dc/");
 			const awaitingLine = reviewHud.split("\n").find(line => line.includes("◉ Facility"))!;
 			expect(awaitingLine).toContain(theme.fg("accent", "◉ Facility 2D: too much empty space around site"));
-			const lateLine = reviewHud.split("\n").find(line => line.includes("Adaptive Facility: WebGL blit errors and tenant panes"))!;
+			const lateLine = reviewHud
+				.split("\n")
+				.find(line => line.includes("Adaptive Facility: WebGL blit errors and tenant panes"))!;
 			expect(lateLine).toContain(
 				theme.fg("error", `${theme.checkbox.unchecked} Adaptive Facility: WebGL blit errors and tenant panes`),
 			);
