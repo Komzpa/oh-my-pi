@@ -73,12 +73,10 @@ export function formatTaskResultSummary(
 	const resumable = result.aborted && !result.isolated && isResumable(AgentRegistry.global().get(result.id));
 	// Abandonment must be visible on a successful run too: `stderr` is not
 	// shown for completed results, so it rides in the envelope itself.
-	const abandonedWarning = result.abandonedJobs?.length
-		? `Terminal yield abandoned running processes: ${result.abandonedJobs.map(job => job.id).join(", ")}. Task cleanup cancels unfinished owner jobs.`
-		: undefined;
+	const abandonedJobIds = result.abandonedJobs?.map(job => escapeHarnessTags(job.id)).join(", ");
 	const render = (truncated: boolean): string =>
 		prompt.render(taskSummaryTemplate, {
-			abandonedWarning: abandonedWarning === undefined ? undefined : escapeHarnessTags(abandonedWarning),
+			abandonedJobIds,
 			agentName: result.agent,
 			id: result.id,
 			status,
