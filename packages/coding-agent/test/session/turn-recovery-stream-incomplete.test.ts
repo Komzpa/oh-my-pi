@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { TurnRecovery, type TurnRecoveryHost } from "@oh-my-pi/pi-coding-agent/session/turn-recovery";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -158,6 +159,25 @@ describe("TurnRecovery stream_incomplete after committed text", () => {
 			});
 		}
 	}
+
+	it.each(["errorMessage", "errorClassificationMessage"] as const)(
+		"does not bypass quota recovery when %s mentions a stream drop after committed text",
+		diagnosticField => {
+			const calls: RecoveryCalls = { appended: [], continued: [] };
+			const subject = recovery({ textOutputCommitted: true, calls });
+			const message = assistant({
+				content: [...textOnly],
+				errorId: AIError.create(AIError.Flag.UsageLimit),
+				errorStatus: 429,
+				errorMessage: "Usage limit reached; retry after quota reset",
+				[diagnosticField]: STREAM_INCOMPLETE_MESSAGE,
+			});
+			expect(subject.isRetryableError(message)).toBe(false);
+			expect(subject.handleCommittedTextStreamStall(message)).toBe(false);
+			expect(calls.continued).toEqual([]);
+			expect(calls.appended).toEqual([]);
+		},
+	);
 
 	it("does not continue a turn that carries a tool call", () => {
 		const subject = recovery({ textOutputCommitted: true, calls: { appended: [], continued: [] } });
