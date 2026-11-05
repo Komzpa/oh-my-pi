@@ -1308,10 +1308,16 @@ function applyReviewClosures(
 	for (const closure of closures) {
 		const row = findTaskByContent(phases, closure.task)?.task;
 		if (!row || row.schedule?.review !== "accepted") continue;
-		row.schedule.reviewClosingBlocked = closure.reason;
-		row.status = closure.reason ? "blocked" : "completed";
-		row.blocker = closure.reason;
-		if (!closure.reason) row.schedule.finishedAt ??= now;
+		// The user's Accept on the delivered result is the acceptance: an internal
+		// completion gate (for example a requirement re-audit whose auditor is out of
+		// budget) never keeps the row open, blocked or red. Its reason stays on the row
+		// as a background follow-up; a real defect it finds later becomes a new row.
+		delete row.schedule.reviewClosingBlocked;
+		if (closure.reason) row.schedule.acceptedAuditFollowUp = closure.reason;
+		else delete row.schedule.acceptedAuditFollowUp;
+		delete row.blocker;
+		row.status = "completed";
+		row.schedule.finishedAt ??= now;
 	}
 }
 
@@ -2161,7 +2167,10 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 							: []),
 						...reviewClosures
 							.filter(row => row.reason)
-							.map(row => `${JSON.stringify(row.task)}: accepted by user, closing blocked: ${row.reason}`),
+							.map(
+								row =>
+									`${JSON.stringify(row.task)}: accepted by user, closed; background requirement audit still open (never blocks this row): ${row.reason}`,
+							),
 					].join("\n"),
 				},
 			],

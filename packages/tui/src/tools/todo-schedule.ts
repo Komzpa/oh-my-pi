@@ -82,6 +82,8 @@ export interface TodoSchedule {
 	/** User review state for a delivered implementation result. */
 	review?: "user" | "accepted" | "redo" | "drop";
 	reviewClosingBlocked?: string;
+	/** Completion-gate reason recorded when the user's Accept closed the row anyway. */
+	acceptedAuditFollowUp?: string;
 	/** A row whose work is speculative until the named review is accepted. */
 	speculativeOn?: string;
 	/** Observed Task worker that actually executed this row, independent of forecast ownership. */
