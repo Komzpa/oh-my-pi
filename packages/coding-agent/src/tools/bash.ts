@@ -485,6 +485,7 @@ function shellLiteralOutput(
 	stdin: string | undefined,
 	streams: Map<string, string>,
 ): string | undefined {
+	if (executable === "true" || executable === "false" || executable === ":") return "";
 	if (executable === "cat") {
 		const parts = (args.length ? args : ["-"]).map(arg => (arg === "-" ? stdin : streams.get(arg)));
 		return parts.every(part => part !== undefined) ? parts.join("") : undefined;

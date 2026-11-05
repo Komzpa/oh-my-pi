@@ -249,7 +249,7 @@ export function splitEnvCommand(command: string): string[] {
 export interface ShellExecutionSegment {
 	words: ShellWordToken[];
 	pipedStdin: boolean;
-	/** Lexical subshell scopes, outermost first; ids are unique within a command. */
+	/** Lexical subshell/brace-group scopes, outermost first; ids are unique within a command. */
 	groupPath: number[];
 }
 
@@ -260,13 +260,20 @@ export function tokenizeShellExecutionSegments(command: string): ShellExecutionS
 	const groupPath: number[] = [];
 	let nextGroup = 0;
 	for (const token of lexShellCommand(command, true)) {
-		if (token.kind === "word") current.push(token);
-		else if (/[\n;&|()]/.test(token.raw)) {
+		if (token.kind === "word") {
+			// Braces are reserved words only at command position, never in argv or quotes.
+			if (current.length === 0 && token.raw === "{") groupPath.push(nextGroup++);
+			else if (current.length === 0 && token.raw === "}") groupPath.pop();
+			else current.push(token);
+		} else if (/[\n;&|()]/.test(token.raw)) {
 			if (current.length > 0) {
 				segments.push({ words: current, pipedStdin, groupPath: [...groupPath] });
 				current = [];
 				// Grouping does not disconnect a pipe from its first command.
 				pipedStdin = /^\s*\|&?\s*$/u.test(token.raw.replace(/[()]/gu, ""));
+			} else if (/^\s*\|&?\s*$/u.test(token.raw)) {
+				// A closing brace is a separate word after its terminating semicolon.
+				pipedStdin = true;
 			}
 			for (const operator of token.raw) {
 				if (operator === "(") groupPath.push(nextGroup++);

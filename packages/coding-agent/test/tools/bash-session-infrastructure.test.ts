@@ -305,6 +305,48 @@ const allowed = [
 ];
 
 describe("bash session infrastructure default denies", () => {
+	it("preserves pipeline stdin through brace groups without treating brace arguments as scopes", async () => {
+		for (const command of [
+			"printf 'killall plasmashell\\n' | { true; sh; }",
+			"printf 'killall plasmashell\\n' | { { true; sh; }; }",
+			"printf 'killall plasmashell\\n' | { cat </dev/null; sh; }",
+			"printf 'killall plasmashell\\n' | { cat; } | sh",
+		]) {
+			expect(bashTool().approval({ command }), command).toMatchObject({ policy: "deny" });
+		}
+		for (const command of [
+			"printf 'killall plasmashell\\n' | { cat; sh; }",
+			"printf 'killall plasmashell\\n' | { true; sh </dev/null; }",
+			"printf 'killall plasmashell\\n' | { true; }; sh",
+			"echo { plasmashell }",
+			"printf '%s' '{' plasmashell '}'",
+		]) {
+			const decision = bashTool().approval({ command });
+			expect(typeof decision === "object" && decision.policy === "deny", command).toBe(false);
+		}
+		const result = await bashTool().execute("brace-safe", {
+			command: "printf 'printf brace-stdin' | { true; sh; }",
+		});
+		expect(result.content).toEqual(expect.arrayContaining([expect.objectContaining({ text: "brace-stdin" })]));
+	});
+
+	it("retains literal nested stdout across silent shell builtins", () => {
+		for (const command of [
+			`sh -c "true; printf 'killall plasmashell'" | sh`,
+			`sh -c ":; printf 'killall plasmashell'" | sh`,
+			`sh -c "false; printf 'killall plasmashell'" | sh`,
+		]) {
+			expect(bashTool().approval({ command }), command).toMatchObject({ policy: "deny" });
+		}
+		for (const command of [
+			`sh -c "true; printf 'echo plasmashell'" | sh`,
+			`sh -c ":; printf 'killall plasmashell'" | cat`,
+		]) {
+			const decision = bashTool().approval({ command });
+			expect(typeof decision === "object" && decision.policy === "deny", command).toBe(false);
+		}
+	});
+
 	it("inspects reconstructed substitution output at shell stdin without treating data as execution", async () => {
 		const denied = [
 			`sh <<< "$(printf 'killall plasmashell')"`,
