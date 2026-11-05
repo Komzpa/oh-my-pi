@@ -771,3 +771,55 @@ describe("live schedule admission", () => {
 		expect(sequential.isError).not.toBe(true);
 	});
 });
+
+it("rejects lead due-time changes atomically and persists reversible post-deadline triage", async () => {
+	const h = createHarness(initialPlan);
+	for (const change of [
+		{ deadlineAt: Date.now() + 3600000 },
+		{ deadlineRenegotiation: { deadlineAt: Date.now() + 3600000, reason: "I told the user" } },
+	]) {
+		const result = await h.tool.execute("lead-due", {
+			op: "schedule",
+			updates: [{ task: "Build parser", postDeadline: true, ...change }],
+		} as never);
+		expect(result.isError).toBe(true);
+		expect(result.content).toEqual([
+			{
+				type: "text",
+				text: "The deadline belongs to the user. Todo operations cannot change the due time. Re-plan the work to fit the existing deadline.",
+			},
+		]);
+		expect(h.phases()).toEqual(initialPlan);
+	}
+	for (const postDeadline of [true, false]) {
+		const result = await h.tool.execute("triage", {
+			op: "schedule",
+			updates: [{ task: "Build parser", postDeadline, evidence: "Optional polish; parser contract retained" }],
+		});
+		expect(result.isError).not.toBe(true);
+		expect(markdownToPhases(phasesToMarkdown(h.phases())).phases[0].tasks[1].schedule?.postDeadline).toBe(
+			postDeadline,
+		);
+	}
+});
+
+it("cannot cut a prerequisite still needed by a must-have row", async () => {
+	const input = structuredClone(initialPlan);
+	input[0].tasks[2].schedule = { dependencies: ["Build parser"] };
+	const h = createHarness(input);
+	const rejected = await h.tool.execute("cut-prerequisite", {
+		op: "schedule",
+		updates: [{ task: "Build parser", postDeadline: true }],
+	});
+	expect(rejected.isError).toBe(true);
+	expect(h.phases()).toEqual(input);
+	const accepted = await h.tool.execute("cut-chain", {
+		op: "schedule",
+		updates: [
+			{ task: "Build parser", postDeadline: true },
+			{ task: "Add parser regression", postDeadline: true },
+		],
+	});
+	expect(accepted.isError).not.toBe(true);
+	expect(h.phases()[0].tasks[2].schedule?.postDeadline).toBe(true);
+});

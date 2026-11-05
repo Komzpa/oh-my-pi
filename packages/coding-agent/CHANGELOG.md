@@ -11,6 +11,8 @@
 - Agent `bash` commands run with `LANG`/`LC_ALL=C.UTF-8` on every platform instead of the inherited locale, so sort order, number formats and tool messages no longer vary by machine; a locale in the command's `env` or `.envrc` still wins, and `!` commands keep yours
 ### Fixed
 
+- Keep user due times immutable in todo operations and persist reversible post-deadline scope triage ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Unavailable providers no longer appear as the model for the next rework attempt.
 
 ### Added

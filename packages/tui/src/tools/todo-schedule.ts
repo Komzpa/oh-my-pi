@@ -17,6 +17,8 @@ export interface TodoEstimate {
 
 /** Forecast metadata belongs to the exact task content; there are deliberately no generated IDs. */
 export interface TodoSchedule {
+	/** Explicit scope cut, retained as a visible follow-up. */
+	postDeadline?: boolean;
 	/** `undefined` means unknown; `[]` explicitly means independent. References are exact task content. */
 	dependencies?: string[];
 	/** Exclusive while this task is running. */
@@ -155,7 +157,7 @@ export interface TodoTaskForecast {
 	attemptDurationMs?: number;
 }
 
-export type TodoDeadlineStatus = "overdue" | "at-risk" | "on-track" | "unknown";
+export type TodoDeadlineStatus = "overdue" | "will-miss" | "at-risk" | "on-track" | "unknown";
 
 export interface TodoPlanForecast {
 	rows: TodoTaskForecast[];
@@ -181,7 +183,7 @@ export interface TodoPlanForecast {
 	resourceConfidence?: TodoForecastConfidence;
 	resourceAssumptions?: string[];
 	deadlineStatus?: TodoDeadlineStatus;
-	/** True only after the absolute deadline has passed; predicted lateness is `at-risk`. */
+	/** True only after the absolute deadline has passed; predicted expected lateness is `will-miss`. */
 	deadlineMissed?: boolean;
 	deadlineSlackSeconds?: number;
 	issues: string[];
@@ -1085,7 +1087,9 @@ function componentData(validNodes: PlanNode[]): { nodes: PlanNode[]; complete: b
 /** Compute PERT-mean CPM and path-aware P95 resource forecasts with optimistic/pessimistic scenarios. */
 export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecastOptions): TodoPlanForecast {
 	const now = options.now;
-	const analysis = analyzeDependencies(phases);
+	const deferred = phases.flatMap(phase => phase.tasks).filter(row => row.schedule?.postDeadline);
+	const scoped = phases.map(phase => ({ ...phase, tasks: phase.tasks.filter(row => !row.schedule?.postDeadline) }));
+	const analysis = analyzeDependencies(scoped);
 	const planningIssues = collectTodoPlanningIssues(phases, analysis);
 	const issues: string[] = [];
 	const deadlineAt = finiteTimestamp(options.deadlineAt) ? options.deadlineAt : undefined;
@@ -1308,12 +1312,23 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		deadlineMissed = deadlineAt < now;
 		if (deadlineMissed) deadlineStatus = "overdue";
 		else if (unresolvedCount > 0 || !allResourceScenariosComplete) {
-			deadlineStatus = knownWorkFinish !== undefined && knownWorkFinish > deadlineAt ? "at-risk" : "unknown";
+			deadlineStatus =
+				knownExpectedFinish !== undefined && knownExpectedFinish > deadlineAt
+					? "will-miss"
+					: knownWorkFinish !== undefined && knownWorkFinish > deadlineAt
+						? "at-risk"
+						: "unknown";
 		} else if (globalForecastKnown && resourceFinish !== undefined) {
 			deadlineSlackSeconds = (deadlineAt - resourceFinish) / 1000;
-			deadlineStatus = resourceFinish > deadlineAt ? "at-risk" : "on-track";
+			deadlineStatus =
+				expectedResourceFinish !== undefined && expectedResourceFinish > deadlineAt
+					? "will-miss"
+					: resourceFinish > deadlineAt || (range?.latest ?? 0) > deadlineAt
+						? "at-risk"
+						: "on-track";
 		} else deadlineStatus = "unknown";
 		if (deadlineStatus === "overdue") issues.push("Deadline is overdue as of forecast time");
+		else if (deadlineStatus === "will-miss") issues.push("Expected work misses the deadline");
 		else if (deadlineStatus === "at-risk") issues.push("Forecast risks missing the deadline");
 	}
 	const planningIssuesByTask = new Map<string, TodoPlanningIssue[]>();
@@ -1441,6 +1456,19 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		};
 	});
 
+	for (const row of deferred)
+		rows.push({
+			...row,
+			critical: false,
+			ready: false,
+			estimateRequired: false,
+			stale: false,
+			overdue: false,
+			estimateRevision: row.schedule?.estimateRevision ?? 0,
+			reestimateCount: row.schedule?.reestimateCount ?? 0,
+			confidence: "unknown",
+			issues: [],
+		});
 	for (const row of rows) for (const issue of row.issues) issues.push(issue);
 	for (const issue of analysis.issues) {
 		if (issue.code === "duplicate-task" && !issues.includes(issue.message)) issues.push(issue.message);
@@ -1727,7 +1755,7 @@ export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): 
 	else parts.push("Resource ETA unavailable");
 	if (plan.deadlineAt !== undefined)
 		parts.push(
-			`due ${displayTimestamp(plan.deadlineAt, now)}${plan.deadlineAt < now ? ` (overdue ${Math.floor((now - plan.deadlineAt) / 3_600_000)}h${Math.floor(((now - plan.deadlineAt) % 3_600_000) / 60_000)}m)` : plan.deadlineStatus === "at-risk" ? " (at risk)" : ""}`,
+			`due ${displayTimestamp(plan.deadlineAt, now)}${plan.deadlineAt < now ? ` (overdue ${Math.floor((now - plan.deadlineAt) / 3_600_000)}h${Math.floor(((now - plan.deadlineAt) % 3_600_000) / 60_000)}m)` : plan.deadlineStatus === "will-miss" ? ` · MISSES ${displayTimestamp(plan.deadlineAt, now)} by ${Math.ceil(((plan.expectedResourceFinish ?? Math.max(...plan.rows.map(row => row.expectedResourceFinish ?? 0))) - plan.deadlineAt) / 60_000)}m` : plan.deadlineStatus === "at-risk" ? " (at risk)" : ""}`,
 		);
 	if (plan.planningIssues.length) parts.push(`plan required: ${plan.planningIssues.length} repairs`);
 	const overdue = plan.rows.filter(row => row.overdue).length;

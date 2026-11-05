@@ -534,6 +534,7 @@ function formatTodoLineWithForecast(
 	expanded: boolean,
 	matched = false,
 ): string {
+	if (item.schedule?.postDeadline) return uiTheme.fg("dim", `${prefix}${forDisplay(item.content)} · after deadline`);
 	const isOverdueOpenTask =
 		item.schedule?.review !== "accepted" &&
 		row?.overdue &&
@@ -854,7 +855,8 @@ export const todoToolRenderer = {
 			}
 			if (forecast) {
 				const summary = forDisplay(formatPlanForecastDisplay(forecast, now)).replace(/[\r\n]+/g, " ");
-				if (summary) bodyLines.push(`  ${uiTheme.fg("dim", summary)}`);
+				if (summary)
+					bodyLines.push(`  ${uiTheme.fg(forecast.deadlineStatus === "will-miss" ? "error" : "dim", summary)}`);
 			}
 			if (!showSnapshot) {
 				return {

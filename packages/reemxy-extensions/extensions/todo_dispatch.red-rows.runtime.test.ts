@@ -6,6 +6,7 @@ import * as path from "node:path";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch from "./todo_dispatch";
+import { STATE_ENTRY } from "./deadlines";
 
 const roots = [];
 afterEach(async () => {
@@ -103,7 +104,7 @@ async function harness({ worker = false, lane = false, autoOpen, preview = false
 }
 
 for (const boundary of ["wait", "session_stop"]) {
-	test(`${boundary}: unrelated background work cannot hide overdue Brag and Finance; exact live owners clear refusal`, async () => {
+	test(`${boundary}: unrelated background work cannot hide overdue Brag and Finance; live owners alone cannot clear refusal`, async () => {
 		const h = await harness();
 		h.setJobs([{ id: "bg_6", label: "unrelated background job", type: "bash", status: "running" }]);
 		const run = () =>
@@ -111,7 +112,7 @@ for (const boundary of ["wait", "session_stop"]) {
 				? h.hooks.get("tool_call")({ toolName: "wait", input: {} }, h.ctx)
 				: h.hooks.get("session_stop")({}, h.ctx);
 		const refused = await run();
-		expect(refused?.reason).toContain("open rows need a live owner");
+		expect(refused?.reason).toContain("WAIT/STOP REFUSED");
 		for (const row of h.phases[0].tasks) expect(refused.reason).toContain(row.content);
 		h.setJobs(
 			h.phases[0].tasks.map(row => ({
@@ -122,13 +123,19 @@ for (const boundary of ["wait", "session_stop"]) {
 				status: "running",
 			})),
 		);
-		expect((await run())?.reason ?? "").not.toContain("open rows need a live owner");
+		expect((await run())?.reason).toContain("WAIT/STOP REFUSED");
+		for (const row of h.phases[0].tasks) row.schedule.postDeadline = true;
+		expect((await run())?.reason ?? "").not.toContain("WAIT/STOP REFUSED");
 	});
 }
 
 test("wait preview gap is refused once per revision even with live owners", async () => {
 	const h = await harness({ preview: true, thresholdMinutes: 30 });
-	for (const row of h.phases[0].tasks) row.schedule.firstRequirementAt = Date.now() - 16 * 60_000;
+	for (const row of h.phases[0].tasks) {
+  row.schedule.firstRequirementAt = Date.now() - 16 * 60_000;
+  row.schedule.startedAt = Date.now();
+  row.schedule.estimate.updatedAt = Date.now();
+ }
 	h.setJobs(
 		h.phases[0].tasks.map(row => ({
 			id: row.schedule.owner,
@@ -166,3 +173,50 @@ for (const mode of [{ worker: true }, { lane: true }, { autoOpen: false }]) {
 		expect(h.opened).toEqual([]);
 	});
 }
+
+for (const boundary of ["wait", "session_stop"]) {
+ test(`${boundary}: 11:04 versus 10:00 refuses; visible triage, crashing and safe overlap repair the fixed deadline`, async () => {
+  for (const remedy of ["triage", "crash", "overlap"]) {
+   const h = await harness();
+   const now = Date.now();
+   const due = Math.floor((now + 13 * 60_000) / 1000) * 1000;
+   const start = due - 13 * 60_000;
+   const row = (content, minutes, owner, dependencies = []) => ({ content, status: "pending", schedule: { owner, dependencies, resources: [], estimate: { optimisticSeconds: minutes * 60, likelySeconds: minutes * 60, pessimisticSeconds: minutes * 60, confidence: "high", basis: "Live 09:47 / 10:00 / 11:04 plan", updatedAt: start } } });
+   h.phases[0].tasks = [row("Fix Adaptive 60 MW callout leaders", 8, "worker"), row("PDU B callout", 69, "worker", [])];
+   // The canonical user constraint, not a todo operation, owns the due time.
+   h.ctx.sessionManager.getBranch().push({ type: "custom", customType: STATE_ENTRY, data: { version: 1, goalId: "dc", goalStartedAt: start / 1000, timezone: "Asia/Tbilisi", active: true, baselineDeadlineAt: due / 1000, stages: [], userConstraint: { messageId: "user-due", quote: "by 10:00", recordedAt: start / 1000 } } });
+   const run = () => boundary === "wait" ? h.hooks.get("tool_call")({ toolName: "wait", input: {} }, h.ctx) : h.hooks.get("session_stop")({}, h.ctx);
+   expect((await run())?.reason).toContain("64m");
+   expect((await run())?.reason).toContain("still required");
+   if (remedy === "triage") h.phases[0].tasks[1].schedule.postDeadline = true;
+   else if (remedy === "crash") {
+    // Nine independently staffed regions retain all 69 minutes of callout work.
+    h.phases[0].tasks.splice(1, 1, ...Array.from({ length: 9 }, (_, i) => row(`PDU B region ${i}`, 69 / 9, `worker-${i}`)));
+   } else {
+    // Evidence-based decomposition leaves two eight-minute dependent deliverables.
+    h.phases[0].tasks[1].schedule.estimate = row("", 8, "").schedule.estimate;
+    h.phases[0].tasks[1].schedule.owner = "second-worker";
+    h.phases[0].tasks[1].schedule.dependencies = ["Fix Adaptive 60 MW callout leaders"];
+    expect(schedule.forecastTodoPlan(h.phases, { now, deadlineAt: due }).deadlineStatus).toBe("will-miss");
+    h.phases[0].tasks[1].schedule.dependencies = [];
+    h.phases[0].tasks[1].schedule.progress = { at: now, evidence: "Independent callout inputs measured; overlap is safe" };
+   }
+   const repaired = await run();
+   expect(repaired?.reason ?? "").not.toContain("WAIT/STOP REFUSED");
+   expect(schedule.forecastTodoPlan(h.phases, { now, deadlineAt: due }).deadlineStatus).toBe("on-track");
+  }
+ });
+}
+
+test("P95-only deadline risk permits wait", async () => {
+ const h = await harness();
+ const now = Date.now();
+ h.phases[0].tasks.splice(1);
+ const row = h.phases[0].tasks[0];
+ row.schedule.startedAt = now;
+ row.schedule.estimate = { optimisticSeconds: 60, likelySeconds: 600, pessimisticSeconds: 1800, confidence: "medium", basis: "Measured range", updatedAt: now };
+ const due = Math.floor((now + 13 * 60_000) / 1000);
+ h.ctx.sessionManager.getBranch().push({ type: "custom", customType: STATE_ENTRY, data: { version: 1, goalId: "dc", goalStartedAt: Math.floor(now / 1000), timezone: "UTC", active: true, baselineDeadlineAt: due, stages: [], userConstraint: { messageId: "user", quote: "fixed deadline", recordedAt: Math.floor(now / 1000) } } });
+ expect(schedule.forecastTodoPlan(h.phases, { now, deadlineAt: due * 1000 }).deadlineStatus).toBe("at-risk");
+ expect((await h.hooks.get("tool_call")({ toolName: "wait", input: {} }, h.ctx))?.reason ?? "").not.toContain("WAIT/STOP REFUSED");
+});
