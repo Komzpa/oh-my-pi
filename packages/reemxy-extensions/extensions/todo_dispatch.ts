@@ -1851,8 +1851,10 @@ export function decideTodoDispatch(
     );
   const ownerRunStates = open.map(({ task }) => {
     const owner = typeof task.schedule?.owner === "string" ? task.schedule.owner : null;
-    const settled = owner === null ? undefined : jobs?.recent.find(job => liveJobMatchesOwner(job, owner) && job.status !== "running");
-    return { content: task.content, owner, running: owner !== null && ((jobs?.running ?? []).some((job) => job.status === "running" && liveJobMatchesOwner(job, owner)) || externalOwners.get(owner) === true), outcome: settled?.status ?? task.schedule?.executor?.outcome };
+    const executorId = task.schedule?.executor?.workerId;
+    const identities = [owner, executorId].filter((id): id is string => typeof id === "string" && id.length > 0);
+    const settled = jobs?.recent.find(job => identities.some(id => liveJobMatchesOwner(job, id)) && job.status !== "running");
+    return { content: task.content, owner, running: (jobs?.running ?? []).some(job => job.status === "running" && identities.some(id => liveJobMatchesOwner(job, id))) || (owner !== null && externalOwners.get(owner) === true), outcome: settled?.status ?? task.schedule?.executor?.outcome };
   });
   const runningOwnedContents = new Set(
     open
