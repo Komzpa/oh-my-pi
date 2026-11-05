@@ -1929,6 +1929,7 @@ export async function resolveModelOverrideWithAuthFallback(
 	// The ordered override list is the caller's own fallback chain: an
 	// authenticated later entry beats the parent's model.
 	for (const pattern of resolveConfiguredModelPatterns(modelPatterns, settings)) {
+		if (modelSelectorBlacklistError(pattern, lookupRegistry.getAvailable())) continue;
 		const candidate = resolveModelOverride([pattern], lookupRegistry, settings);
 		if (!candidate.model || modelsAreEqual(candidate.model, primary.model)) continue;
 		const candidateKey = await modelRegistry.getApiKey(candidate.model, sessionId);
@@ -1937,6 +1938,9 @@ export async function resolveModelOverrideWithAuthFallback(
 		}
 	}
 
+	if (modelSelectorBlacklistError(parentActiveModelPattern, lookupRegistry.getAvailable())) {
+		return { ...primary, authFallbackUsed: false };
+	}
 	const fallback = resolveModelOverride([parentActiveModelPattern], lookupRegistry, settings);
 	if (!fallback.model) {
 		return { ...primary, authFallbackUsed: false };

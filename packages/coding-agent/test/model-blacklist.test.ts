@@ -16,6 +16,7 @@ import {
 	resolveModelFromSettings,
 	resolveModelFromString,
 	resolveModelOverride,
+	resolveModelOverrideWithAuthFallback,
 	resolveModelRoleValue,
 	resolveModelScope,
 	resolveRoleChain,
@@ -515,3 +516,41 @@ test("online tiny walks past banned fallbacks and retains the healthy primary", 
 	]);
 	expect(expandOnlineTinyModelFallbacks(primary, settings, candidates).map(model => model.id)).toEqual([primary.id]);
 });
+
+for (const scenario of ["later role candidate", "parent fallback", "banned parent"] as const) {
+	test(`subagent authentication fallback skips bans with ${scenario}`, async () => {
+		banResolverModel();
+		const primary = candidates[1];
+		const fallback = { ...primary, id: "permitted-fallback", name: "permitted fallback" };
+		const fallbackSelector = `${fallback.provider}/${fallback.id}`;
+		const authRequests: string[] = [];
+		const registry = {
+			getAvailable: () => [primary, fallback],
+			getApiKey: async (model: typeof primary) => {
+				authRequests.push(model.id);
+				return model.id === fallback.id ? "fixture-key" : undefined;
+			},
+		};
+		const settings = Settings.isolated({
+			modelRoles: {
+				task: [
+					allowedSelector,
+					...(scenario === "banned parent" ? [] : [bannedSelector]),
+					...(scenario === "later role candidate" ? [fallbackSelector] : []),
+				],
+			},
+		});
+		const result = await resolveModelOverrideWithAuthFallback(
+			["@task"],
+			scenario === "banned parent" ? bannedSelector : fallbackSelector,
+			registry,
+			settings,
+		);
+		expect(result.model?.id).toBe(scenario === "banned parent" ? primary.id : fallback.id);
+		expect(result.authFallbackUsed).toBe(scenario === "parent fallback");
+		expect(authRequests).not.toContain(candidates[0].id);
+		await expect(
+			resolveModelOverrideWithAuthFallback([bannedSelector], fallbackSelector, registry, settings),
+		).rejects.toThrow("fixture safety ban");
+	});
+}
