@@ -176,6 +176,25 @@ describe("goal runtime", () => {
 		});
 	});
 
+	it("persists wall-clock-only usage when interrupted without token usage", async () => {
+		const harness = createHarness({
+			state: { enabled: true, mode: "active", goal: createGoal() },
+		});
+
+		harness.runtime.onTurnStart("turn-1", createUsage());
+		harness.advance(2_500);
+		await harness.runtime.onTaskAborted({ reason: "interrupted" });
+
+		expect(harness.getState()?.enabled).toBe(true);
+		expect(harness.getState()?.goal.status).toBe("active");
+		expect(harness.getState()?.goal.timeUsedSeconds).toBe(2);
+		expect(harness.persists).toHaveLength(1);
+		expect(harness.persists[0]).toMatchObject({
+			mode: "goal",
+			state: { goal: { timeUsedSeconds: 2 } },
+		});
+	});
+
 	it("resets wall-clock baseline when preserving an active goal after a no-goal switch", async () => {
 		const goal = createGoal();
 		const harness = createHarness({

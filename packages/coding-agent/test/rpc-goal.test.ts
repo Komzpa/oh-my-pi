@@ -562,6 +562,21 @@ describe("RpcGoalController continuation gate", () => {
 		expect(admitted).toEqual(["goal-continuation"]);
 	});
 
+	test("explicit resume re-arms an active goal stopped by host abort", async () => {
+		const admitted: string[] = [];
+		const { controller } = fakeSession(async customType => {
+			admitted.push(customType);
+			return true;
+		});
+		controller.stopForHostAbort();
+		controller.observe(agentEnd);
+		await nextMacrotask();
+		expect(admitted).toEqual([]);
+		await controller.handle({ op: "resume" });
+		await nextMacrotask();
+		expect(admitted).toEqual(["goal-continuation"]);
+	});
+
 	test("a host abort of a continuation turn that ran a tool admits no further continuation", async () => {
 		const admitted: string[] = [];
 		const { controller } = fakeSession(async customType => {
