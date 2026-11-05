@@ -119,7 +119,7 @@ return null;`,
 		});
 	});
 
-	it("clears known quota reset but retains unknown quota until a successful probe", async () => {
+	it("clears known quota reset and expires unknown quota after a bounded TTL", async () => {
 		const result = await run(
 			fixture(),
 			`
@@ -127,7 +127,26 @@ state.recordProviderFailure("known", { code: "quota_exceeded", resetAt: 3000 }, 
 state.recordProviderFailure("unknown", { code: "quota_exceeded" }, 1000);
 return [state.isProviderExhausted("known", 3000), state.isProviderExhausted("unknown", 99999999)];`,
 		);
-		expect(result).toEqual([false, true]);
+		expect(result).toEqual([false, false]);
+	});
+
+	it("shares the live abliterated billing failure until its reset, without banning transient failures", async () => {
+		const directory = fixture();
+		await run(
+			directory,
+			`
+state.recordProviderFailure("abliteration", { status: 402, type: "billing_error", code: "insufficient_credits", resetAt: 5000 }, 1000);
+state.recordProviderFailure("transient", { status: 503 }, 1000);
+state.recordProviderFailure("images", { status: 400, type: "media_error", code: "media_count_exceeded" }, 1000);
+return null;`,
+		);
+		expect(
+			await run(
+				directory,
+				`return [state.isProviderExhausted("abliteration", 4999), state.isProviderExhausted("transient", 1001), state.isProviderExhausted("images", 1001)];`,
+			),
+		).toEqual([true, false, false]);
+		expect(await run(directory, `return state.isProviderExhausted("abliteration", 5000);`)).toBe(false);
 	});
 
 	it("deduplicates unavailable/recovered notices and recovers every process by probe", async () => {

@@ -294,15 +294,14 @@ function persistProviderFailure(provider: string, evidence: ProviderFailureEvide
 			type: normalized.type,
 			code: normalized.code,
 			resetAt:
-				classification === "quota"
-					? (normalized.resetAt ?? (previous?.class === "quota" ? previous.resetAt : undefined))
+				classification === "quota" || classification === "balance" || classification === "entitlement"
+					? (normalized.resetAt ?? (previous?.class === classification ? previous.resetAt : undefined))
 					: undefined,
 			credentialVersion: normalized.credentialVersion ?? previous?.credentialVersion,
 			revision: crypto.randomUUID(),
 			nextProbeAt: classification === "quota" ? (normalized.resetAt ?? now + PROBE_MIN_MS) : now + PROBE_MIN_MS,
 			probeAttempts: 0,
-			until:
-				classification === "quota" && normalized.resetAt !== undefined ? normalized.resetAt : now + PROBE_MIN_MS,
+			until: normalized.resetAt ?? now + PROVIDER_EXHAUSTION_COOLDOWN_MS,
 		};
 		records.set(key, record);
 		return changed ? record : undefined;
@@ -325,7 +324,8 @@ export function coolDownExhaustedProvider(
 
 export function providerExhaustionRecord(provider: string, now = Date.now()): ProviderExhaustionRecord | undefined {
 	const record = readPersisted().get(provider.toLowerCase());
-	if (record?.class !== "quota" || record.resetAt === undefined || record.resetAt > now) return record;
+	if (!record || record.class === "auth" || record.class === "discovery") return record;
+	if ((record.resetAt ?? record.recordedAt + PROVIDER_EXHAUSTION_COOLDOWN_MS) > now) return record;
 	const cleared = mutate(records => {
 		const current = records.get(provider.toLowerCase());
 		if (current?.revision !== record.revision) return undefined;
@@ -378,7 +378,7 @@ export async function probeUnavailableProviders(
 	const now = options.now ?? Date.now();
 	const owner = options.owner ?? `${process.pid}:${crypto.randomUUID()}`;
 	for (const snapshot of readPersisted().values()) {
-		if (snapshot.class === "quota" && snapshot.resetAt !== undefined) {
+		if (snapshot.resetAt !== undefined) {
 			providerExhaustionRecord(snapshot.provider, now);
 			continue;
 		}

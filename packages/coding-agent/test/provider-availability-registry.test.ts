@@ -2,7 +2,12 @@ import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as path from "node:path";
 import * as streams from "@oh-my-pi/pi-ai/stream";
 import { ModelRegistry } from "../src/config/model-registry";
-import { resolveModelOverride } from "../src/config/model-resolver";
+import {
+	findInitialModel,
+	restoreModelFromSession,
+	resolveCliModel,
+	resolveModelOverride,
+} from "../src/config/model-resolver";
 import { Settings } from "../src/config/settings";
 import { validateRetryFallbackChains } from "../src/session/retry-fallback-chains";
 import { AuthStorage } from "../src/session/auth-storage";
@@ -37,6 +42,42 @@ describe("registry provider availability", () => {
 		expect(resolveModelOverride(["openai/gpt-5-mini"], registry).model).toBeUndefined();
 		blocked.mockReturnValue(false);
 		expect(resolveModelOverride(["openai/gpt-5-mini"], registry).model?.id).toBe("gpt-5-mini");
+	});
+
+	test("CLI roles, saved defaults, scoped rows and resume cannot revive an exhausted catalog entry", async () => {
+		const { registry } = await fixture();
+		const blocked = spyOn(availability, "isProviderExhausted").mockImplementation(provider => provider === "openai");
+		cleanup.push(() => blocked.mockRestore());
+		const model = registry.find("openai", "gpt-5-mini")!;
+		const settings = Settings.isolated({ modelRoles: { auditor: "openai/gpt-5-mini" } });
+		for (const selector of ["openai/gpt-5-mini", "@auditor"]) {
+			expect(resolveCliModel({ cliModel: selector, modelRegistry: registry, settings }).model).toBeUndefined();
+		}
+		expect(
+			(
+				await findInitialModel({
+					scopedModels: [{ model, explicitThinkingLevel: false }],
+					isContinuing: false,
+					defaultProvider: "openai",
+					defaultModelId: model.id,
+					modelRegistry: registry,
+				})
+			).model,
+		).toBeUndefined();
+		expect((await restoreModelFromSession("openai", model.id, model, false, registry)).model).toBeUndefined();
+		blocked.mockReturnValue(false);
+		expect(resolveCliModel({ cliModel: "@auditor", modelRegistry: registry, settings }).model?.id).toBe(model.id);
+		expect(
+			(
+				await findInitialModel({
+					scopedModels: [],
+					isContinuing: false,
+					defaultProvider: "openai",
+					defaultModelId: model.id,
+					modelRegistry: registry,
+				})
+			).model?.id,
+		).toBe(model.id);
 	});
 
 	test("recovery inference bypasses unavailable enumeration and rejects failed completion", async () => {
