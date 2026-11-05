@@ -911,23 +911,35 @@ function isRestartPendingQueues(value: unknown): value is RestartPendingQueues {
 	);
 }
 
-function restartQueueFingerprintMessage(message: AgentMessage): Record<string, unknown> {
-	const normalized = { ...(message as unknown as Record<string, unknown>) };
+// Queue entries are immutable after admission. Compare their identities, rather than
+// walking and stringifying their (potentially megabyte-sized) contents on every poll.
+const restartQueueMessageIds = new WeakMap<AgentMessage, string>();
+let nextRestartQueueMessageId = 0;
+function restartQueueMessageId(message: AgentMessage): string {
+	let id = restartQueueMessageIds.get(message);
+	if (id !== undefined) return id;
 	if (
 		message.role === "custom" &&
 		(message.customType === "goal-continuation" || message.customType === "restart-queued")
 	) {
+		const normalized = { ...(message as unknown as Record<string, unknown>) };
 		delete normalized.timestamp;
+		id = `notice:${Bun.hash(JSON.stringify(normalized))}`;
+	} else {
+		id = `message:${++nextRestartQueueMessageId}`;
 	}
-	return normalized;
+	restartQueueMessageIds.set(message, id);
+	return id;
 }
 
 function restartPendingQueuesSignature(queues: RestartPendingQueues): string {
-	return JSON.stringify({
-		steering: queues.steering.map(restartQueueFingerprintMessage),
-		followUp: queues.followUp.map(restartQueueFingerprintMessage),
-		pendingNextTurn: queues.pendingNextTurn.map(restartQueueFingerprintMessage),
-	});
+	return [queues.steering, queues.followUp, queues.pendingNextTurn]
+		.map(queue => queue.map(restartQueueMessageId).join(","))
+		.join(";");
+}
+
+function customMessageSupersedes(message: CustomMessage): string | undefined {
+	return (message as CustomMessage & { supersedes?: string }).supersedes;
 }
 
 type PendingNextTurnDelivery = {
@@ -7693,7 +7705,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#restartDrainQuiescence = undefined;
 			this.#restartDrainStoppedRun = false;
 			this.#restartDrainNeedsResume = false;
-			this.#lastRestartPendingQueuesSignature = undefined;
 		}
 		const generation = this.#restartDrainGeneration;
 		const wasRunning = this.isStreaming;
@@ -7832,7 +7843,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			...queues,
 			pendingNextTurn,
 		};
-		const signature = restartPendingQueuesSignature(checkpoint);
+		const signature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(checkpoint)}`;
 		if (signature === this.#lastRestartPendingQueuesSignature) return;
 		this.#lastRestartPendingQueuesSignature = signature;
 		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, checkpoint);
@@ -7862,7 +7873,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			...this.agent.snapshotPendingQueues(),
 			pendingNextTurn: [...this.#pendingNextTurnMessages],
 		};
-		const signature = restartPendingQueuesSignature(checkpoint);
+		const signature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(checkpoint)}`;
 		if (signature === this.#lastRestartPendingQueuesSignature) return;
 		this.#lastRestartPendingQueuesSignature = signature;
 		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, checkpoint);
@@ -7920,6 +7931,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				message.role !== "custom" || keepRestartNotice(message);
 			this.agent.replaceQueues(entry.data.steering.filter(keepMessage), entry.data.followUp.filter(keepMessage));
 			this.#pendingNextTurnMessages = entry.data.pendingNextTurn.filter(keepRestartNotice);
+			this.#lastRestartPendingQueuesSignature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(entry.data)}`;
 			this.#restartPendingQueuesCheckpointActive = true;
 			return;
 		}
@@ -11009,6 +11021,20 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return last?.role === "assistant" || last?.role === "toolResult";
 	}
 
+	/** A caller-provided key also identifies legacy custom messages by customType. */
+	#supersedePendingCustomMessages(key: string): void {
+		const keep = (message: AgentMessage): boolean =>
+			message.role !== "custom" ||
+			isUserAuthoredMessage(message) ||
+			(customMessageSupersedes(message) ?? message.customType) !== key;
+		this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(keep);
+		for (const queue of ["steering", "followUp"] as const) {
+			const pending = queue === "steering" ? this.agent.peekSteeringQueue() : this.agent.peekFollowUpQueue();
+			const retained = pending.filter(keep);
+			if (retained.length !== pending.length) this.agent.replaceQueue(queue, retained);
+		}
+	}
+
 	queueDeferredMessage(message: CustomMessage): void {
 		this.#queueHiddenNextTurnMessage(message, true);
 	}
@@ -11025,6 +11051,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	#queueHiddenNextTurnMessage(message: CustomMessage, triggerTurn: boolean): void {
 		this.#pendingNextTurnMessages.push(message);
+		this.#supersedeRestartCheckpoint();
 		if (!triggerTurn) return;
 		const generation = this.#promptGeneration;
 		if (this.#scheduledHiddenNextTurnGeneration === generation) {
@@ -11246,6 +11273,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
 			/** False keeps an aside behind the whole tool batch, including interruptible waits. */
 			interruptWait?: boolean;
+			supersedes?: string;
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -11262,6 +11290,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
 			/** False keeps an aside behind the whole tool batch, including interruptible waits. */
 			interruptWait?: boolean;
+			supersedes?: string;
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -11290,6 +11319,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
 					/** False keeps an aside behind the whole tool batch, including interruptible waits. */
 					interruptWait?: boolean;
+					supersedes?: string;
 					queueChipText?: string;
 					acceptTerminalEmptyStop?: boolean;
 			  }
@@ -11343,6 +11373,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			timestamp: Date.now(),
 		};
 		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
+		if (options?.supersedes) {
+			Object.assign(normalizedAppMessage, { supersedes: options.supersedes });
+			this.#supersedePendingCustomMessages(options.supersedes);
+		}
 		if (this.#restartDrainLeaseCount > 0 && (options?.deliverAs !== "nextTurn" || options.triggerTurn === true)) {
 			await this.#queueRestartMessage(normalizedAppMessage);
 			return false;
@@ -11370,6 +11404,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			} else {
 				this.agent.steer(normalizedAppMessage);
 			}
+			this.#supersedeRestartCheckpoint();
 			this.#scheduleIdleQueueDrain();
 			return false;
 		}
