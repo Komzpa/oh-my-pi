@@ -177,6 +177,7 @@ const todoSchema = type({
 		task: "string",
 		kind: '"deferred" | "not-applicable" | "external-blocker"',
 		detail: "string",
+		"deferUntil?": "number",
 	}),
 	"items?": type("string")
 		.describe("task content")
@@ -951,6 +952,7 @@ function validateScheduleDependencyGraph(
 	renamedTasks: Map<TodoItem, string>,
 	errors: string[],
 	archived: TodoPhase[],
+	checkOwners = true,
 ): void {
 	const candidatePhases = phases.map(phase => ({
 		name: phase.name,
@@ -964,6 +966,9 @@ function validateScheduleDependencyGraph(
 			};
 		}),
 	}));
+	for (const issue of getTodoPlanningIssues(candidatePhases)) {
+		if (checkOwners && issue.code === "owner-overlap") errors.push(issue.message);
+	}
 	for (const issue of validateTodoDependencies(withArchivedPrerequisites(candidatePhases, archived))) {
 		if (
 			issue.code === "dependencies-unknown" ||
@@ -1155,7 +1160,7 @@ function applyScheduleUpdates(
 			}
 		}
 	}
-	validateScheduleDependencyGraph(phases, candidates, renamedTasks, errors, archived);
+	validateScheduleDependencyGraph(phases, candidates, renamedTasks, errors, archived, !options.replay);
 	if (errors.length > initialErrorCount) return phases;
 	for (const [task, schedule] of candidates) task.schedule = schedule;
 	for (const [task, content] of renamedTasks) task.content = content;

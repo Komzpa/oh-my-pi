@@ -1,4 +1,9 @@
-import { cfgTodoPreviewEnabled, cfgTodoPreviewPaths, cfgTodoPreviewThresholdMinutes } from "../../tools/settings";
+import {
+	cfgTodoReviewOpen,
+	cfgTodoPreviewEnabled,
+	cfgTodoPreviewPaths,
+	cfgTodoPreviewThresholdMinutes,
+} from "../../tools/settings";
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
@@ -1863,9 +1868,10 @@ export class ExtensionRunner {
 			mode: this.#mode,
 			getContextUsage: () => this.#getContextUsageFn(),
 			getTodoPreviewConfig: () => ({
+				openReviewPages: this.settings ? cfgTodoReviewOpen.get(this.settings) : true,
 				enabled: this.settings ? cfgTodoPreviewEnabled.get(this.settings) : false,
 				paths: this.settings ? cfgTodoPreviewPaths.get(this.settings) : [],
-				thresholdMinutes: this.settings ? cfgTodoPreviewThresholdMinutes.get(this.settings) : 30,
+				thresholdMinutes: this.settings ? cfgTodoPreviewThresholdMinutes.get(this.settings) : 15,
 			}),
 			getTaskMaxConcurrency: () => (this.settings ? cfgTaskMaxConcurrency.get(this.settings) : undefined),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),

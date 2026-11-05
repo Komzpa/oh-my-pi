@@ -274,7 +274,7 @@ test("lead todo git resource journals landed identity; absent identity is never 
 			schedule.forecastTodoPlan(h.phases(), { now: Date.now() }).rows[0],
 			Date.now(),
 		),
-	).toContain("?m (no commit recorded)");
+	).toContain("asked→visible: no commit");
 	// One landed worker patch cannot clear a row with another unresolved commit.
 	h.git("merge", "--ff-only", h.commit);
 	row.schedule.executor = {
@@ -311,7 +311,7 @@ test("the refusal's one-call schedule previewReason escape is admitted and persi
 	const input = { op: "schedule", updates: [{ task: "Rename Racks and rows", owner: "Gate" }] };
 	const call = h.hooks.get("tool_call");
 	expect((await call({ toolName: "todo", input }, h.ctx))?.reason).toContain("Refusing todo schedule");
-	input.previewReason = { task: "Rename Racks and rows", kind: "deferred", detail: "Preview offline" };
+	input.previewReason = { task: "Rename Racks and rows", kind: "deferred", deferUntil: Date.now() + 60_000, detail: "Preview offline" };
 	expect((await call({ toolName: "todo", input }, h.ctx))?.reason).toBeUndefined();
 	await h.hooks.get("tool_result")({ toolName: "todo", input, isError: false, details: { op: "schedule" } }, h.ctx);
 	delete input.previewReason;
@@ -328,6 +328,7 @@ test("live empty-updates deferral executes successfully and unblocks preview dis
 		previewReason: {
 			task,
 			kind: "deferred",
+			deferUntil: Date.now() + 60_000,
 			detail:
 				"Review checkout fast-forwards to the pushed SHA after CI PID 647137 and rack fix land; preview refresh happens once then.",
 		},
@@ -350,6 +351,7 @@ test("live empty-updates deferral executes successfully and unblocks preview dis
 	expect((await call(dispatch, h.ctx))?.reason ?? "").not.toContain("preview-not-visible");
 	expect(h.journal.filter(entry => entry.customType === PREVIEW_ENTRY_TYPE).at(-1).data.records[0].reason).toEqual({
 		kind: input.previewReason.kind,
+		deferUntil: input.previewReason.deferUntil,
 		detail: input.previewReason.detail,
 	});
 });

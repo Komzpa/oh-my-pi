@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { openReviewPages } from "./todo_review_opener";
 import { PREVIEW_ENTRY_TYPE, refreshPreviewVisibility, overduePreviewRows, previewScheduleRefusal, previewDispatchRefusal, previewPlanProblem, previewReason, type PreviewRecord } from "./todo_preview";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
@@ -2224,15 +2225,18 @@ export function syncCriticalFast(
   for (const id of [...fastByWorker.keys()]) if (!want.has(id)) fastByWorker.delete(id);
 }
 
-export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe } = {}): Promise<void> {
+export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe; reviewPageOpener?: (url: string) => void } = {}): Promise<void> {
   const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
-  const previewConfig = (ctx: ExtensionContext) => ctx.getTodoPreviewConfig?.() ?? { enabled: false, paths: [], thresholdMinutes: 30 };
+  const previewConfig = (ctx: ExtensionContext) => ctx.getTodoPreviewConfig?.() ?? { enabled: false, paths: [], thresholdMinutes: 15 };
   let previewPoll: Promise<PreviewRecord[]> | undefined;
   const previewRecords = (ctx: ExtensionContext): PreviewRecord[] => {
     const entry = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === PREVIEW_ENTRY_TYPE);
     return Array.isArray(entry?.data?.records) ? entry.data.records : [];
   };
+  const openedReviewPages = new Set<string>();
   const pollPreview = async (ctx: ExtensionContext): Promise<PreviewRecord[]> => {
+    if (!singleWriterLane && isMain(ctx) && ctx.getTodoPreviewConfig?.().openReviewPages !== false)
+      await openReviewPages(todoPhases(ctx), openedReviewPages, options.reviewPageProbe, options.reviewPageOpener);
     const config = previewConfig(ctx);
     if (!config.enabled) {
       for (const row of (ctx.getTodoPhases?.() ?? []).flatMap(phase => phase.tasks))
@@ -2252,7 +2256,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const visible = observed.filter(record => record.visibleAt !== undefined);
         const visibleAt = observed.length > 0 && visible.length === observed.length ? Math.max(...visible.map(record => record.visibleAt!)) : undefined;
         const pending = visibleAt === undefined;
-        const previewIdentityMissing = observed.length === 0;
+        const previewIdentityMissing = !observed.some(record => record.commit);
         const previewPartial = visible.length > 0 && pending;
         if (row.schedule.previewTracked !== true || row.schedule.previewPending !== pending || row.schedule.visibleAt !== visibleAt || row.schedule.previewIdentityMissing !== previewIdentityMissing || row.schedule.previewPartial !== previewPartial)
           ctx.updateTodoSchedule?.(row.content, { previewTracked: true, previewPending: pending, previewIdentityMissing, previewPartial, visibleAt });
@@ -3767,7 +3771,19 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // canonical history yet, but its visible text already answers the user.
     return undefined;
   };
+  const previewIdleNotified = new Set<string>();
+  const redRowsIdleReason = async (ctx: ExtensionContext) => {
+    if (singleWriterLane || !isMain(ctx) || pauseGate?.paused) return;
+    const visibility = await pollPreview(ctx);
+    return idleRedRowsRefusal(
+      currentDecision(ctx, Date.now(), [], false, true),
+      overduePreviewRows(todoPhases(ctx), visibility, previewConfig(ctx), Date.now()),
+      previewIdleNotified,
+    );
+  };
   pi.on("session_stop", async (_event, ctx) => {
+    const redReason = await redRowsIdleReason(ctx);
+    if (redReason) return { decision: "block", reason: redReason };
     const reason = unansweredUserReason(ctx);
     if (reason) return { decision: "block", reason };
     const choiceReason = await chatChoiceReason(ctx);
@@ -4882,6 +4898,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // A non-read tool call (a todo change, a task dispatch, an edit, a command) is progress for the absence wake.
     if (!READ_ONLY_TOOLS.has(event.toolName) && !(event.toolName === "todo" && ["view", undefined].includes((event.input as { op?: string } | undefined)?.op))) progressEvents += 1;
     if (event.toolName === "wait") {
+      const redReason = await redRowsIdleReason(ctx);
+      if (redReason) return { block: true, reason: redReason };
       const reason = unansweredUserReasonWithDraft(ctx);
       if (reason) return { block: true, reason };
       const choiceReason = await chatChoiceReason(ctx);
@@ -4997,17 +5015,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const row = rows.find((candidate) => typeof candidate.content === "string" && brief.includes(candidate.content));
         if (!row) continue;
         const schedule = row.schedule as { dependencies?: string[]; speculativeOn?: string; attemptHistory?: unknown[]; review?: string; progress?: { evidence?: string } } | undefined;
-        // A pending customer answer never blocks another implementation attempt.
-        // Record the retry as speculative on the delivered row before dispatch.
-        if (schedule?.review === "user") {
-          schedule.speculativeOn = String(row.content);
-          updateTodoSchedule(ctx, (current) => current.map((phase) => ({
-            ...phase,
-            tasks: phase.tasks.map((task) => task.content === row.content
-              ? { ...task, schedule: { ...task.schedule, speculativeOn: row.content } }
-              : task),
-          })));
-        }
+        // Retrying this row does not create a dependency on itself.
         const dependentReview = missingSpeculativeReview(item, phases);
         if (dependentReview && schedule?.speculativeOn !== dependentReview) {
           return { block: true, reason: `Schedule ${JSON.stringify(String(row.content))} as speculative on ${JSON.stringify(dependentReview)} first. Exactly: todo schedule this row with speculativeOn set to that review; use a separate worktree/branch or commit series and do not publish until accepted.` };
@@ -5015,8 +5023,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         if ((schedule?.attemptHistory?.length ?? 0) >= 1 && !schedule?.review && !pending.some((candidate) => candidate.content === row.content)) {
           return { block: true, reason: `Hand attempt ${(schedule?.attemptHistory?.length ?? 0)}'s result to the user first (it can stay speculative): ${rowReviewNotice(row)}. Then redo may proceed speculatively. After showing the link, record the handoff with: todo op="schedule" updates=[{task:${JSON.stringify(String(row.content))}, review:"user"}]` };
         }
-        if (schedule?.speculativeOn && pendingContents.has(schedule.speculativeOn)) {
-          item.task = `${brief}\n\n${prompt.render(gateNoticeInstructions, { speculative: true, reviewRow: schedule.speculativeOn }).trim()}`;
+        const reviewTarget = schedule?.speculativeOn ?? (schedule?.review === "user" ? String(row.content) : undefined);
+        if (reviewTarget && pendingContents.has(reviewTarget)) {
+          item.task = `${brief}\n\n${prompt.render(gateNoticeInstructions, { speculative: true, reviewRow: reviewTarget }).trim()}`;
         }
         if (schedule?.review === "redo" && schedule.progress?.evidence) {
           item.task = `${item.task}\n\n${prompt.render(gateNoticeInstructions, { customerCorrection: true, correction: schedule.progress.evidence }).trim()}`;
@@ -5685,6 +5694,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         if (exception) {
           const before = previewRecords(ctx);
           const records = before.map(record => record.task === exception.task ? { ...record, reason: exception.reason } : record);
+          if (!records.some(record => record.task === exception.task)) records.push({ task: exception.task, commit: "", reason: exception.reason });
           if (JSON.stringify(records) !== JSON.stringify(before)) pi.appendEntry(PREVIEW_ENTRY_TYPE, { records });
         }
       }
@@ -5764,9 +5774,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const hints = scheduleCalibrationHints(event, ctx, pendingTodo);
       const hintPart = hints.length ? [{ type: "text" as const, text: hints.join("\n") }] : [];
       const check = await planCheck(ctx, pendingTodo);
-      if (!check) return hintPart.length ? { content: [...event.content, ...hintPart] } : undefined;
+      if (!check) return hintPart.length ? { content: [...(event.content ?? []), ...hintPart] } : undefined;
       markSizingNotices();
-      return { content: [...event.content, ...hintPart, { type: "text" as const, text: check }] };
+      return { content: [...(event.content ?? []), ...hintPart, { type: "text" as const, text: check }] };
     }
     if (event.toolName !== "task") return;
     lastTaskDispatchRefused = Boolean(event.isError);
@@ -6008,6 +6018,32 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     dispatchedAgents.clear();
     armIdleCheck(ctx, decision);
   });
+}
+
+/** Uses the plan's canonical timing and exact live-owner observations at the idle boundary. */
+export function idleRedRowsRefusal(
+  decision: DispatchDecision,
+  previewRows: TodoScheduleInput[number]["tasks"][number][] = [],
+  previewNotified: Set<string> = new Set(),
+): string | undefined {
+  if (decision.goalPaused) return;
+  const running = new Set((decision.ownerRunStates ?? []).filter(row => row.running).map(row => row.content));
+  const risk = ["at-risk", "overdue"].includes(decision.forecast?.deadlineStatus ?? "") || decision.alarms.some(alarm => alarm.startsWith("deadline-risk-"));
+  const red = (decision.forecast?.rows ?? []).filter(row =>
+    isNonClosedRowStatus(row.status) && !row.waitsForUser && !running.has(row.content) &&
+    (row.overdue || (risk && row.critical) || (!row.owner && row.startedAt !== undefined)),
+  );
+  const preview = previewRows.filter(row => row.status === "in_progress").filter(row => {
+    const key = `${row.content}\0${row.schedule?.estimateRevision ?? 0}`;
+    if (previewNotified.has(key)) return false;
+    previewNotified.add(key);
+    return true;
+  });
+  if (!red.length && !preview.length) return;
+  return [
+    red.length ? `Refusing idle/wait: open rows need a live owner: ${red.map(row => JSON.stringify(row.content)).join(", ")}. In one call, staff it with task; re-plan it with todo schedule and a new estimate/date; hand it to the user with an explicit user-blocked schedule; or drop it with todo abandon.` : "",
+    preview.length ? `Refusing idle/wait: preview is overdue for ${preview.map(row => JSON.stringify(row.content)).join(", ")}. Land the partial change in the preview checkout now, or record todo previewReason kind=deferred with a reason and deferUntil=<future Unix milliseconds>.` : "",
+  ].filter(Boolean).join("\n");
 }
 
 export type ReviewPageProbe = (url: string) => Promise<number>;

@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Refuse idle leads with unstaffed red rows or overdue previews, open reachable review pages once, and prevent self dependencies and overlapping worker assignments ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Require review pages only for delivered results or blocked review decisions, and accept preview deferrals without schedule updates ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Close accepted review rows through the completion gate, show closing refusals, reopen redo requests and abandon dropped work ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

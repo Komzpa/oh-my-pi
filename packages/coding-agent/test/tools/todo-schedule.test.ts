@@ -708,3 +708,66 @@ it("accepts the live previewReason-only schedule but rejects a truly empty sched
 		expect.objectContaining({ text: expect.stringContaining("schedule requires a non-empty updates array") }),
 	);
 });
+
+describe("live schedule admission", () => {
+	it("refuses speculative self/cycles atomically, accepting a real review target", async () => {
+		const initial: TodoPhase[] = [
+			{
+				name: "delivery",
+				tasks: [
+					{ content: "Brag video inventory", status: "pending", schedule: { dependencies: [] } },
+					{ content: "Finance manifest drift", status: "pending", schedule: { dependencies: [], review: "user" } },
+				],
+			},
+		];
+		const harness = createHarness(initial);
+		for (const updates of [
+			[{ task: "Brag video inventory", speculativeOn: "Brag video inventory" }],
+			[
+				{ task: "Brag video inventory", speculativeOn: "Finance manifest drift" },
+				{ task: "Finance manifest drift", dependencies: ["Brag video inventory"] },
+			],
+		]) {
+			const result = await harness.tool.execute("bad-speculation", { op: "schedule", updates });
+			expect(result.isError).toBe(true);
+			expect(harness.phases()).toEqual(initial);
+		}
+		expect(
+			(
+				await harness.tool.execute("valid-speculation", {
+					op: "schedule",
+					updates: [{ task: "Brag video inventory", speculativeOn: "Finance manifest drift" }],
+				})
+			).isError,
+		).not.toBe(true);
+	});
+
+	it("refuses concurrent shared ownership but admits a sequential second Rack row", async () => {
+		const harness = createHarness([
+			{
+				name: "layout",
+				tasks: [
+					{
+						content: "Rack tiles fit 1568",
+						status: "pending",
+						schedule: { owner: "RackInputHeight-2", dependencies: [] },
+					},
+					{ content: "Rack conflict at 1462x900", status: "pending", schedule: { dependencies: [] } },
+				],
+			},
+		]);
+		const result = await harness.tool.execute("overlap", {
+			op: "schedule",
+			updates: [{ task: "Rack conflict at 1462x900", owner: "RackInputHeight-2" }],
+		});
+		expect(result.isError).toBe(true);
+		expect(harness.phases()[0]!.tasks[1]!.schedule!.owner).toBeUndefined();
+		const sequential = await harness.tool.execute("sequential", {
+			op: "schedule",
+			updates: [
+				{ task: "Rack conflict at 1462x900", owner: "RackInputHeight-2", dependencies: ["Rack tiles fit 1568"] },
+			],
+		});
+		expect(sequential.isError).not.toBe(true);
+	});
+});

@@ -672,3 +672,58 @@ describe("todo schedule forecast", () => {
 		expect(formatTaskForecastDisplay(row, NOW)).toContain("on proposal");
 	});
 });
+
+describe("live plan dependency and ownership admission", () => {
+	it("rejects a self speculative Brag row and a two-row speculative cycle, allowing a real review edge", () => {
+		const brag = task("Brag video inventory", 60);
+		brag.schedule!.speculativeOn = brag.content;
+		expect(validateTodoDependencies(phases(brag)).some(issue => issue.code === "self-dependency")).toBe(true);
+		const finance = task("Finance manifest drift", 90);
+		brag.schedule!.speculativeOn = finance.content;
+		finance.schedule!.speculativeOn = brag.content;
+		finance.schedule!.review = "user";
+		expect(validateTodoDependencies(phases(brag, finance)).some(issue => issue.code === "dependency-cycle")).toBe(
+			true,
+		);
+		delete finance.schedule!.speculativeOn;
+		expect(validateTodoDependencies(phases(brag, finance))).toEqual([]);
+	});
+
+	it("warns about RackInputHeight-2 owning concurrent rows and forecasts its time serially", () => {
+		const first = task("Rack tiles fit 1568", 60, { owner: "RackInputHeight-2" });
+		const second = task("Rack conflict at 1462x900", 90, { owner: "RackInputHeight-2" });
+		const plan = forecastTodoPlan(phases(first, second), { now: NOW });
+		expect(plan.planningIssues.some(issue => issue.code === "owner-overlap")).toBe(true);
+		expect(plan.resourceFinish).toBe(NOW + 150_000);
+		second.schedule!.dependencies = [first.content];
+		expect(
+			forecastTodoPlan(phases(first, second), { now: NOW }).planningIssues.some(
+				issue => issue.code === "owner-overlap",
+			),
+		).toBe(false);
+		second.schedule!.dependencies = [];
+		second.schedule!.owner = "ReleaseTierRepair-2";
+		expect(forecastTodoPlan(phases(first, second), { now: NOW }).resourceFinish).toBe(NOW + 90_000);
+	});
+
+	it("shows one missing-commit label while retaining not-visible and elapsed labels", () => {
+		const row = forecastTodoPlan(phases(task("Adaptive layout heat pipes", 60)), { now: NOW }).rows[0]!;
+		row.schedule = {
+			...row.schedule,
+			previewTracked: true,
+			previewPending: true,
+			previewIdentityMissing: true,
+			firstRequirementAt: NOW - 1_200_000,
+		};
+		for (const format of [formatTaskForecast, formatTaskForecastDisplay]) {
+			const text = format(row, NOW);
+			expect(text).toContain("asked→visible: no commit");
+			expect(text).not.toContain("no commit identity");
+			expect(text).not.toContain("no commit recorded");
+			row.schedule.previewIdentityMissing = false;
+			expect(format(row, NOW)).toContain("asked→visible 20m");
+			expect(format(row, NOW)).toContain("commit not visible");
+			row.schedule.previewIdentityMissing = true;
+		}
+	});
+});
