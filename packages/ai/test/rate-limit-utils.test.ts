@@ -1171,6 +1171,12 @@ describe("is402BillingCapBody", () => {
 		}
 	});
 
+	it("does not rotate subscription-required responses mentioning unchanged credits", () => {
+		const body = "A subscription is required for this endpoint; your credits are unchanged";
+		expect(isUsageLimitOutcome(402, body)).toBe(false);
+		expect(isUsageLimit(new ProviderHttpError(body, 402))).toBe(false);
+	});
+
 	it("returns false for non-quota informative bodies", () => {
 		expect(is402BillingCapBody("A subscription is required for this endpoint")).toBe(false);
 		expect(is402BillingCapBody("Rate limit exceeded, too many requests")).toBe(false);

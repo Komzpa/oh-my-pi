@@ -413,7 +413,7 @@ export function isUsageLimitStatus(status: number | undefined): boolean {
 	return status === 429 || status === 402;
 }
 const STATUS_402_QUOTA_PATTERN =
-	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?(?:balance|credits?|account.?funds)|credits?|can only afford)\b/i;
+	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?(?:balance|credits?|account.?funds)|requires?\s+more\s+credits|billing[-_.\s]*(?:verification|error|issue)|can only afford)\b/i;
 
 // Machine fields survive provider parsing even when the human detail is generic.
 const BILLING_ERROR_CODE_PATTERN = /^billing_(?:error|not_configured)$/i;
