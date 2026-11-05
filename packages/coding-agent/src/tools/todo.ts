@@ -1859,6 +1859,7 @@ function attachLiveTodoDetails(
 // =============================================================================
 
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
+	#validatingReviewClosure = false;
 	readonly name = "todo";
 	readonly approval = "read" as const;
 	readonly label = "Todo";
@@ -1882,7 +1883,6 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
-		commit = true,
 	): Promise<AgentToolResult<TodoToolDetails>> {
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
@@ -1911,14 +1911,19 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		if (op === "schedule" && errors.length === 0) {
 			for (const update of entry.updates ?? []) {
 				if (update.review !== "accepted") continue;
-				const result = await this.execute(
-					_toolCallId,
-					{ op: "done", task: update.task },
-					_signal,
-					undefined,
-					_context,
-					false,
-				);
+				let result: AgentToolResult<TodoToolDetails>;
+				this.#validatingReviewClosure = true;
+				try {
+					result = await this.execute(
+						_toolCallId,
+						{ op: "done", task: update.task },
+						_signal,
+						undefined,
+						_context,
+					);
+				} finally {
+					this.#validatingReviewClosure = false;
+				}
 				const reason = result.isError
 					? result.content
 							.filter(part => part.type === "text")
@@ -1941,7 +1946,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			readOnly || failed || (op === "schedule" && !reviewClosures.length)
 				? []
 				: getCompletionTransitions(previousPhases, updated);
-		if (archived && commit) this.session.setTodoPhases?.(effective);
+		if (archived && !this.#validatingReviewClosure) this.session.setTodoPhases?.(effective);
 		const operation = !readOnly && !failed ? buildTodoOpPersistedEdit(op, entry, now) : undefined;
 		if (operation && reviewClosures.length) operation.reviewClosures = reviewClosures;
 		const archiveEdit: TodoArchivePersistedEdit | undefined =
