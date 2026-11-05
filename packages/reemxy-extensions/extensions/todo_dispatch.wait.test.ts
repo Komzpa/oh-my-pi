@@ -1983,7 +1983,7 @@ test("no user-absent wake while workers run or while the lead is busy", async ()
 
 test("idle stop and wait require a recorded decision and live page without classifying reply text", async () => {
 	const phases = [
-		{ name: "Review", tasks: [{ content: "Decision", status: "blocked", schedule: { review: "user" } }] },
+		{ name: "Review", tasks: [{ content: "Decision", status: "blocked", schedule: { review: "user", firstDeliveredAt: Date.now() } }] },
 	];
 	const h = await noticeHarness(phases, Date.now() + 3600_000);
 	h.ctx.getTodoPhases = () => phases;
