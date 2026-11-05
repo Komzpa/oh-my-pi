@@ -484,16 +484,19 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			requireYieldTool: structured,
 			systemPrompt: () => [...init.systemPrompt],
 			// Inherit current owner policy, never extension authority from a transcript.
-			...(spec.discoveryOptions ?? {
-				extensionRoots: () => spec.root.effectiveExtensionRoots,
-				preloadedPreparedExtensions: spec.preparedExtensions,
-			}),
+			extensionRoots: () => spec.root.effectiveExtensionRoots,
+			preloadedPreparedExtensions: spec.preparedExtensions,
 			cacheWarming: false,
 			// Old files predate persisted spawns: deny re-spawning rather than let
 			// createAgentSession default to wildcard ("*").
 			spawns: init.spawns ?? "",
 			hasUI: false,
 			enableLsp: restrictToolNames ? false : spec.enableLsp,
+			...(spec.discoveryOptions && {
+				extensionRoots: undefined,
+				preloadedPreparedExtensions: undefined,
+				...spec.discoveryOptions,
+			}),
 			...(restrictToolNames
 				? {
 						enableIrc: false,
