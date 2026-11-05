@@ -8,9 +8,14 @@ import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { createStatusCoordinator, statusCoordinator } from "../../../natives/native/status-coordinator.js";
 import {
 	checkRequirementIdentity,
+	type RequirementGitStatusSnapshots,
 	currentRequirementIdentity,
 	currentRequirementGitStatus,
+	formatRequirementIdentity,
 } from "../../src/utils/requirement-artifact";
+
+import { getRequirementRowArtifact } from "../../src/tools/todo";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 useFastGitStatusCoordinator();
 
@@ -120,7 +125,7 @@ describe("native Git worktree identity", () => {
 		expect((await checkRequirementIdentity(current.identity)).state).not.toBe("fresh");
 	}, 30_000);
 
-	it("reuses one coordinated scan for repeated typed receipts on an unchanged checkout", async () => {
+	it("refreshes external worktree edits at each gate while sharing one scan across its rows", async () => {
 		const { root, head } = await fixture({ "artifact.txt": "audited\n" });
 		let clock = 0;
 		const coordinator = createStatusCoordinator({
@@ -146,11 +151,43 @@ describe("native Git worktree identity", () => {
 			),
 		);
 		try {
-			for (let row = 0; row < 2; row++)
-				expect(await checkRequirementIdentity({ kind: "git", repo: root, commit: head })).toEqual({
-					state: "fresh",
-				});
-			expect(scans).toBe(1);
+			// Prime the production display cache, then start a separate foreground gate.
+			await vcs.requireGit(root).statusPorcelain({ untracked: "no", nulTerminated: true });
+			const phases: TodoPhase[] = [
+				{
+					name: "Plan",
+					tasks: [0, 1].map(row => ({
+						content: `row ${row}`,
+						status: "pending",
+						schedule: { resources: [root] },
+					})),
+				},
+			];
+			const receipt = (row: string): string =>
+				`row ${JSON.stringify(row)} @ ${formatRequirementIdentity({ kind: "git", repo: root, commit: head })}`;
+			const gate: RequirementGitStatusSnapshots = new Map();
+			for (const task of phases[0]!.tasks) {
+				const artifact = await getRequirementRowArtifact(
+					{ cwd: root, receipt: receipt(task.content), gitStatusSnapshots: gate },
+					task.content,
+					phases,
+				);
+				expect(artifact.dirty).toBe(false);
+				expect(artifact.identityCheck?.reason).toBeUndefined();
+			}
+			const scansAfterFirstGate = scans;
+			// External editors do not invalidate the native coordinator's epoch.
+			fs.writeFileSync(path.join(root, "artifact.txt"), "external edit\n");
+			const nextGate: RequirementGitStatusSnapshots = new Map();
+			const changed = await getRequirementRowArtifact(
+				{ cwd: root, receipt: receipt("row 0"), gitStatusSnapshots: nextGate },
+				"row 0",
+				phases,
+			);
+			expect(changed.dirty).toBe(true);
+			expect(changed.identityCheck?.reason).toContain("artifact.txt");
+			expect(scansAfterFirstGate).toBe(2);
+			expect(scans).toBe(3);
 		} finally {
 			queue.mockRestore();
 		}

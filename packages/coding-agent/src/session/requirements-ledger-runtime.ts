@@ -103,6 +103,7 @@ import {
 	formatRequirementIdentity,
 	requirementIdentityKey,
 	type RequirementIdentity,
+	type RequirementGitStatusSnapshots,
 } from "../utils/requirement-artifact";
 import auditInputTemplate from "../prompts/session/requirements-ledger-audit-input.md" with { type: "text" };
 import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
@@ -1113,12 +1114,19 @@ export class RequirementsLedgerRuntime {
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const changes = getTodoRowChanges(branch);
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
+		const gitStatusSnapshots: RequirementGitStatusSnapshots = new Map();
 		const open = await evaluateRequirementDoneGate(
 			requirements,
 			[...new Set(requirements.filter(item => item.classification === "linked").flatMap(item => item.rows))],
 			async (row, receipt) => ({
 				...(await getRequirementRowArtifact(
-					{ cwd: this.#host.cwd(), sessionManager: this.#host.sessionManager, signal, receipt },
+					{
+						cwd: this.#host.cwd(),
+						sessionManager: this.#host.sessionManager,
+						signal,
+						receipt,
+						gitStatusSnapshots,
+					},
 					row,
 					phases,
 					checkoutCache,
