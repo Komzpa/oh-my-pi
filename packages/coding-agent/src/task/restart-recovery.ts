@@ -1,3 +1,6 @@
+import { readRestartIsolation } from "./restart-isolation";
+import { prompt } from "@oh-my-pi/pi-utils";
+import isolationRecoveryPrompt from "../prompts/restart-isolation-recovery.md" with { type: "text" };
 import { selectRestartBranchEntries } from "./restart-branch-selection";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -293,7 +296,12 @@ async function validateRunningChild(ref: AgentRef): Promise<void> {
 	if (!stat?.isFile()) throw new Error("has no readable durable session transcript");
 	const peek = await SessionManager.peekSessionInit(sessionFile);
 	if (!peek?.init) throw new Error("has no persisted session_init contract and cannot be revived safely");
-	if (peek.init.isolated) throw new Error("was launched in isolation and is not revivable");
+	if (peek.init.isolated) {
+		const retained = await readRestartIsolation(sessionFile, ref.id);
+		if (retained?.id !== ref.id || retained.cwd !== peek.cwd)
+			throw new Error("isolation workspace has no restart recovery marker");
+		if (retained.snapshotPath) return;
+	}
 	try {
 		await fs.stat(peek.cwd);
 	} catch {
@@ -748,6 +756,38 @@ export async function restoreSubagentsAfterRestart(
 	const saved = latestHandoff(rootEntries, identity, options?.requestId);
 	if (!saved) return report;
 	const { handoff, entryId } = saved;
+	const snapshotOnly = new Set<string>();
+	const snapshotWorkers = [];
+	for (const child of handoff.children) {
+		const retained = await readRestartIsolation(child.sessionFile, child.id);
+		if (!retained || retained.id !== child.id || !retained.snapshotPath) continue;
+		try {
+			await fs.stat(retained.cwd);
+		} catch {
+			snapshotOnly.add(child.id);
+			snapshotWorkers.push(retained);
+		}
+	}
+	const snapshotNoticeType = "restart-isolation-snapshots";
+	if (
+		snapshotWorkers.length &&
+		!rootSession.sessionManager
+			.getEntries()
+			.some(
+				entry =>
+					entry.type === "custom_message" &&
+					entry.customType === snapshotNoticeType &&
+					(entry.details as { handoffId?: string } | undefined)?.handoffId === entryId,
+			)
+	) {
+		await rootSession.sendRestartNotice({
+			customType: snapshotNoticeType,
+			content: prompt.render(isolationRecoveryPrompt, { workers: snapshotWorkers }),
+			display: true,
+			details: { handoffId: entryId },
+		});
+		await rootSession.sessionManager.flush();
+	}
 	for (const omitted of handoff.omittedChildren ?? []) report.failures.push(omitted);
 	const registry = AgentRegistry.global();
 	try {
@@ -782,7 +822,7 @@ export async function restoreSubagentsAfterRestart(
 		})
 		.slice(0, MAX_RESTART_SUBAGENTS);
 	for (const child of handoff.children) {
-		if (child.status === "parked") continue;
+		if (child.status === "parked" || snapshotOnly.has(child.id)) continue;
 		if (!childrenToRestore.includes(child)) {
 			report.failures.push({
 				id: child.id,
@@ -791,6 +831,10 @@ export async function restoreSubagentsAfterRestart(
 		}
 	}
 	const restoreChild = async (child: RestartChildSnapshot): Promise<void> => {
+		if (snapshotOnly.has(child.id)) {
+			report.parked.push(child.id);
+			return;
+		}
 		const priorReceipt = receipts.get(child.id);
 		try {
 			if (await isTombstoned(child.sessionFile)) {
