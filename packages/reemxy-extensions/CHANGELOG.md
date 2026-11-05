@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Require review pages only for delivered results or blocked review decisions, and accept preview deferrals without schedule updates ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Close accepted review rows through the completion gate, show closing refusals, reopen redo requests and abandon dropped work ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Recognize preview patches landed with new SHAs, show partial visibility, and distinguish missing commit identities ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
