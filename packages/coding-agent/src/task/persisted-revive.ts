@@ -75,6 +75,20 @@ function reviveExtensionRoots(root: Pick<PersistedReviveRoot, "effectiveExtensio
 	return typeof roots === "function" ? roots.call(root) : roots;
 }
 
+/** Only restart retention authorizes reopening an isolated workspace. */
+async function restartIsolationCwd(sessionFile: string, id: string, cwd: string): Promise<string | undefined> {
+	try {
+		const marker: unknown = await Bun.file(
+			path.join(path.dirname(sessionFile), `${id}.restart-isolation.json`),
+		).json();
+		if (typeof marker !== "object" || marker === null || !("id" in marker) || !("cwd" in marker)) return undefined;
+		if (marker.id !== id || marker.cwd !== cwd) return undefined;
+		return (await fs.stat(cwd)).isDirectory() ? cwd : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Ambient context the reviver needs at revive time. The top-level session is
  * kept LIVE (cwd / artifact manager read on demand) so a later `/new` or cwd
@@ -113,6 +127,8 @@ export interface PersistedReviveSpec {
 	readonly displayName: string;
 	readonly parentId: string | undefined;
 	readonly sessionFile: string;
+	/** Exact workspace retained by restart, never the live parent cwd. */
+	readonly isolatedCwd: string | undefined;
 	/** Depth derived from the persisted parent chain (drives capability gating). */
 	readonly taskDepth: number;
 	/** The consulted source of a persisted seance session. */
@@ -211,13 +227,9 @@ export function createPersistedSubagentReviverFactory(
 			}
 			if (!restoredSeance) return undefined;
 		}
-		// Isolated runs are never resumable: their worktree is merged + cleaned,
-		// and the parent was told messaging is impossible. A retained workspace
-		// (capture/persist failure) still exists on disk and would pass the cwd
-		// probe below, so gate on the stamped contract instead — otherwise a
-		// restart + peer message revives the agent outside isolation, in the
-		// parent cwd, contradicting the delivery notice.
-		if (peek.init.isolated) return undefined;
+		// Completed isolation stays transcript-only; a restart marker explicitly retains it.
+		const isolatedCwd = peek.init.isolated ? await restartIsolationCwd(sessionFile, ref.id, peek.cwd) : undefined;
+		if (peek.init.isolated && !isolatedCwd) return undefined;
 		try {
 			await fs.stat(restoredSeance?.cwd ?? peek.cwd);
 		} catch {
@@ -241,6 +253,7 @@ export function createPersistedSubagentReviverFactory(
 				displayName: ref.displayName,
 				parentId: ref.parentId,
 				sessionFile,
+				isolatedCwd,
 				taskDepth,
 				restoredSeance,
 				root: ctx.session,
@@ -288,6 +301,16 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no persisted session contract. The agent was not revived.`,
 		);
 	}
+	if (
+		init.isolated &&
+		(!spec.isolatedCwd ||
+			reopened.getCwd() !== spec.isolatedCwd ||
+			!(await restartIsolationCwd(sessionFile, ref.id, spec.isolatedCwd)))
+	) {
+		await reopened.close();
+		throw new Error(`Cannot revive isolated subagent "${ref.id}": its restart workspace is no longer retained.`);
+	}
+
 	if (!hasConversationalHistory(entries)) {
 		await reopened.close();
 		throw new Error(
@@ -455,7 +478,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 	let session: AgentSession;
 	try {
 		({ session } = await createAgentSession({
-			cwd: restoredSeance?.cwd ?? spec.root.sessionManager.getCwd(),
+			cwd: spec.isolatedCwd ?? restoredSeance?.cwd ?? spec.root.sessionManager.getCwd(),
 			costGate: spec.costGate,
 			authStorage: spec.authStorage,
 			// Revived agents join the root session tree, so their observability

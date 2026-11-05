@@ -565,19 +565,55 @@ describe("persisted subagent revival", () => {
 		expect(capturedOptions?.customTools).toBeUndefined();
 	});
 
-	it("leaves isolated sessions transcript-only even when the workspace still exists", async () => {
-		// Isolated runs are never resumable: the worktree is merged + cleaned,
-		// and the parent is told messaging is impossible. A retained workspace
-		// (capture/persist failure) still passes the cwd probe, so the stamped
-		// contract — not directory existence — must gate revival. Otherwise a
-		// restart + Hub message revives the agent in the parent cwd, outside
-		// isolation.
+	it("leaves completed isolated sessions transcript-only even when the workspace still exists", async () => {
+		// Directory existence alone must not revive completed isolation.
 		const cwd = makeTempDir("@pi-isolated-revive-");
 		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, { isolated: true });
 
 		const ref = createRef(sessionFile);
 		const reviver = await createFactory(cwd)(ref);
 		expect(reviver).toBeUndefined();
+	});
+
+	it("revives restart-retained isolation in its exact workspace while ordinary revival follows the parent", async () => {
+		const cwd = makeTempDir("@pi-retained-revive-");
+		const parentCwd = makeTempDir("@pi-retained-parent-");
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+		for (const isolated of [true, false]) {
+			const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, { isolated });
+			const ref = createRef(sessionFile);
+			await Bun.write(
+				path.join(path.dirname(sessionFile), `${ref.id}.restart-isolation.json`),
+				JSON.stringify({ id: ref.id, cwd }),
+			);
+			const reviver = await createFactory(parentCwd)(ref);
+			if (!reviver) throw new Error("Expected restart revival");
+			await reviver(ref);
+			expect(capturedOptions?.cwd).toBe(isolated ? cwd : parentCwd);
+		}
+	});
+
+	it("refuses mismatched restart markers and rechecks retention before opening isolation", async () => {
+		const cwd = makeTempDir("@pi-retained-mismatch-");
+		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, { isolated: true });
+		const ref = createRef(sessionFile);
+		const marker = path.join(path.dirname(sessionFile), `${ref.id}.restart-isolation.json`);
+		for (const value of [
+			{ id: "other", cwd },
+			{ id: ref.id, cwd: path.dirname(cwd) },
+		]) {
+			await Bun.write(marker, JSON.stringify(value));
+			expect(await createFactory(cwd)(ref)).toBeUndefined();
+		}
+		await Bun.write(marker, JSON.stringify({ id: ref.id, cwd }));
+		const reviver = await createFactory(cwd)(ref);
+		if (!reviver) throw new Error("Expected restart revival");
+		await fs.promises.rm(marker);
+		await expect(reviver(ref)).rejects.toThrow(/no longer retained/);
 	});
 
 	it("restores the persisted agent definition name on cold revival so agent-scoped rules keep matching", async () => {
