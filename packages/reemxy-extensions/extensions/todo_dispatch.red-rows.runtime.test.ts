@@ -130,7 +130,7 @@ for (const boundary of ["wait", "session_stop"]) {
 		// With an active user deadline and no recent re-plan, live owners alone do not clear it.
 		const at = Math.floor(Date.now() / 1_000);
 		h.ctx.sessionManager.getBranch().push({ type: "custom", customType: STATE_ENTRY, data: { version: 1, goalId: "user", goalStartedAt: at - 7_200, timezone: "UTC", active: true, stages: [], baselineDeadlineAt: at + 600, userConstraint: { messageId: "m", quote: "by 22:00", recordedAt: at - 7_200 } } });
-		expect((await run())?.reason).toContain("WAIT/STOP REFUSED");
+		expect((await run())?.reason).toContain(boundary === "wait" ? "WAIT/STOP REFUSED" : "STOP REFUSED");
 		for (const row of h.phases[0].tasks) row.schedule.postDeadline = true;
 		expect((await run())?.reason ?? "").not.toContain("WAIT/STOP REFUSED");
 	});

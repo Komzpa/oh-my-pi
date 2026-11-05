@@ -1,4 +1,8 @@
-{{#if deliveryFirst}}
+{{#if status}}
+Overdue {{late}}m · {{rows}}
+{{else if runningStop}}
+STOP REFUSED: running work still has live executors. Wait for their results before ending the session.
+{{else if deliveryFirst}}
 DELIVERY FIRST: the fixed deadline is at risk. Name the exact missing user-visible artifact and its current version; take the shortest safe action that creates or updates it now. Do not re-read the same plan, reforecast, or rerun broad checks without a changed artifact or a specific new diagnostic question. Reconcile workers only to unblock real work; re-plan the critical path with parallel staffing, safe overlap, evidence-based estimates, or visible nice-to-have post-deadline scope triage; the due time belongs to the user. No automatic paid/model escalation.
 {{else if repeated}}
 WAIT/STOP REFUSED: deadline re-plan still required; see the critical path and remedies already reported for this forecast revision.
@@ -9,6 +13,6 @@ The deadline belongs to the user. Re-plan the work in todo state until expected 
 - Fast-tracking: overlap dependent work only where safe; record the revised dependencies and evidence with todo {op:"schedule",updates:[{task:"exact row",dependencies:[],evidence:"why overlap is safe"}]}.
 - Re-estimation: todo {op:"schedule",updates:[{task:"exact row",estimate:{...},evidence:"measured basis"}]}.
 - Scope triage against the user's goal: retain must-haves; move only nice-to-haves to the visible, reversible after-deadline set with todo {op:"schedule",updates:[{task:"exact row",postDeadline:true,evidence:"why this is optional for the stated goal"}]}. Use postDeadline:false to restore.
-Prose alone does not repair the plan. Live owners clear overdue rows only after a re-plan within the last 15 minutes. Complete them, triage them visibly, or record an evidence-based re-plan.
+Prose alone does not repair the plan. Waiting is allowed while every overdue or critical-path row has a live executor with recent activity. Complete them, triage them visibly, or record an evidence-based re-plan.
 Only if no re-plan fits, send the user one message with concrete scope trade-offs for their decision. Keep the due time unchanged until the user acts; a lead tool call cannot change it.
 {{/if}}

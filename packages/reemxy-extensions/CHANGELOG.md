@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Allow waiting on overdue rows while every affected executor is live and active; keep the miss visible and refuse stopping with running work ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Critique completed deliveries before batching handoffs, automatically redo evidenced defects, and release handoffs after 15 minutes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep worker dispatch moving while result handoffs await a batch page; retry failed attempts without a handoff ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

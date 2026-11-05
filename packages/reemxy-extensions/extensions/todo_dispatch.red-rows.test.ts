@@ -1,8 +1,11 @@
 // @ts-nocheck -- extension runtime fixtures follow the host's forecast contract.
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import storedRows from "./fixtures/settled-dc-rows.json";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { decideTodoDispatch, idleRedRowsRefusal } from "./todo_dispatch";
+import todoDispatch, { decideTodoDispatch, idleRedRowsRefusal } from "./todo_dispatch";
 import { overduePreviewRows } from "./todo_preview";
 
 const brag = "Brag video inventory";
@@ -23,7 +26,7 @@ function liveAdaptiveDecision(deadline, { running = true, replannedAgoMs = 60 * 
     startedAt: index === 0 ? now - 80 * 60_000 : undefined, overdue: true, critical: true, totalFloatSeconds: 0,
     estimateUpdatedAt: now - replannedAgoMs, estimateRevision: 3, resourceFinish: now - 21 * 60_000,
   }));
-  return { alarms: [], deadline, ownerRunStates: running ? liveAdaptive.map(content => ({ content, running: true })) : [], forecast: { now, rows, deadlineStatus, deadlineAt: deadline?.deadlineAt } };
+  return { alarms: [], deadline, ownerRunStates: running ? liveAdaptive.map(content => ({ content, running: true, progressing: true })) : [], forecast: { now, rows, deadlineStatus, deadlineAt: deadline?.deadlineAt } };
 }
 
 test("no active deadline: overdue rows with live workers allow waiting", () => {
@@ -43,13 +46,12 @@ test("negative control: an active will-miss deadline with unstaffed critical row
   expect(reason).toContain("WAIT/STOP REFUSED: expected deadline miss");
 });
 
-test("active deadline: live workers on every critical row allow waiting only after a recent re-plan", () => {
-  expect(idleRedRowsRefusal(liveAdaptiveDecision(activeDeadline, { deadlineStatus: "will-miss", replannedAgoMs: 5 * 60_000 }))).toBeUndefined();
-  expect(idleRedRowsRefusal(liveAdaptiveDecision(activeDeadline, { deadlineStatus: "will-miss", replannedAgoMs: 60 * 60_000 }))).toContain("WAIT/STOP REFUSED");
-  // An original estimate (revision 1) is not a re-plan, however recent.
-  const original = liveAdaptiveDecision(activeDeadline, { deadlineStatus: "will-miss", replannedAgoMs: 5 * 60_000 });
-  for (const row of original.forecast.rows) row.estimateRevision = 1;
-  expect(idleRedRowsRefusal(original)).toContain("WAIT/STOP REFUSED");
+test("active deadline: progressing executors allow waiting without revising the estimate", () => {
+  for (const replannedAgoMs of [5 * 60_000, 60 * 60_000]) {
+    const d = liveAdaptiveDecision(activeDeadline, { deadlineStatus: "will-miss", replannedAgoMs });
+    for (const row of d.forecast.rows) row.estimateRevision = 1;
+    expect(idleRedRowsRefusal(d)).toBeUndefined();
+  }
 });
 
 test("an overdue Brag/Finance model label and attempt do not permit waiting on unrelated jobs", () => {
@@ -61,7 +63,7 @@ test("an overdue Brag/Finance model label and attempt do not permit waiting on u
   expect(reason).toContain("schedule");
   expect(reason).toContain("user");
   expect(reason).toContain("postDeadline:true");
-  expect(idleRedRowsRefusal(decision(rows, rows.map(row => ({ content: row.content, running: true }))))).toContain("WAIT/STOP REFUSED");
+  expect(idleRedRowsRefusal(decision(rows, rows.map(row => ({ content: row.content, running: true, progressing: true }))))).toBeUndefined();
 });
 
 test("an ownerless clock refuses idle; P95-only risk permits waiting", () => {
@@ -137,10 +139,12 @@ test("DC settled executors need restaff or verification; running registry worker
   }
   const staffed = run({ running: rows.map(row => ({ id: row.schedule.executor.workerId, label: row.content, type: "task", status: "running" })), recent: [] });
   staffed.forecast.rows.forEach(row => row.overdue = false);
+  staffed.ownerRunStates.forEach(row => row.progressing = true);
   expect(idleRedRowsRefusal(staffed)).toBeUndefined();
   rows.forEach(row => row.schedule.owner = `job:${process.pid}`);
   const external = run({ running: [], recent: [] });
   external.forecast.rows.forEach(row => row.overdue = false);
+  external.ownerRunStates.forEach(row => row.progressing = true);
   expect(external.ownerRunStates.every(row => row.running)).toBe(true);
   expect(idleRedRowsRefusal(external)).toBeUndefined();
 });
@@ -151,4 +155,67 @@ test("completed executor can hand off a visible user preview; review label alone
   expect(idleRedRowsRefusal(d)).toBeUndefined();
   delete row.schedule.reviewPage;
   expect(idleRedRowsRefusal(d)).toContain("verify the result and close");
+});
+
+// Replay the 2026-11-06 DC wait boundary, including session-file liveness.
+test("DC lead waits on both overdue executors, refuses missing or stalled workers, and cannot stop", async () => {
+  const cwd = mkdtempSync(join(process.cwd(), ".tmp", "waitgate-"));
+  const now = Date.now();
+  const session = join(cwd, "lead.jsonl");
+  const childDir = join(cwd, "lead");
+  mkdirSync(childDir);
+  const owners = ["UnionGate-3", "CleanupRigor"];
+  const titles = ["Use grid: row opens explainer panel, small inline toggle", "Repo cleanup round 2: rigorous keep/remove rule"];
+  const phases = [{ name: "DC", tasks: titles.map((content, i) => ({ content, status: "in_progress", schedule: {
+    owner: owners[i], executor: { workerId: owners[i], startedAt: now - 30 * 60_000 },
+    startedAt: now - 30 * 60_000, dependencies: [], estimateRevision: 1,
+    estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "high", basis: "remaining DC gate steps", updatedAt: now - 30 * 60_000 },
+  } })) }];
+  const deadline = { goalId: "dc", deadlineAt: now - 3 * 60_000, timezone: "Asia/Tbilisi" };
+  const originalDeadline = structuredClone(deadline);
+  const allJobs = owners.map(id => ({ id, label: id, agentId: id, type: "task", status: "running", startTime: now - 30 * 60_000 }));
+  let jobs = { running: allJobs, recent: [] };
+  const handlers = new Map();
+  const notices = [];
+  const branch = [];
+  const api = {
+    on: (name, handler) => handlers.set(name, handler),
+    getActiveTools: () => ["task", "todo", "wait"],
+    pi: { ...schedule, getLatestTodoPhasesFromEntries, readGoalDeadline: () => deadline },
+    registerSoftToolRequirementProvider: () => undefined, appendEntry: () => undefined,
+    sendMessage: (message, options) => notices.push({ message, options }),
+  };
+  const ctx = {
+    cwd, getTodoPhases: () => phases,
+    sessionManager: { getHeader: () => ({ id: "waitgate-dc" }), getSessionFile: () => session,
+      getBranch: () => branch, getBranchMatching: () => [], getLatestBranchMatching: () => undefined },
+    getAsyncJobSnapshot: () => jobs, getTaskMaxConcurrency: () => 2,
+    isIdle: () => true, hasPendingMessages: () => false, setTimeout: () => ({}), clearTimer: () => undefined,
+  };
+  try {
+    for (const id of owners) writeFileSync(join(childDir, `${id}.jsonl`), '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash"}]}}\n');
+    await todoDispatch(api);
+    const wait = () => handlers.get("tool_call")({ toolName: "wait", input: {} }, ctx);
+    expect((await wait())?.block).not.toBe(true);
+    const status = notices.find(item => item.message.customType === "todo-overdue-status");
+    expect(status.message.display).toBe(true);
+    expect(status.message.content).toContain("Overdue");
+    for (const text of [...owners, ...titles]) expect(status.message.content).toContain(text);
+    expect(status.message.content.split("\n")).toHaveLength(1);
+    expect(status.options).toMatchObject({ triggerTurn: false, interruptWait: false });
+    expect((await handlers.get("session_stop")({}, ctx))?.decision).toBe("block");
+    jobs = { running: [allJobs[0]], recent: [] };
+    expect((await wait())?.block).toBe(true);
+    jobs = { running: allJobs, recent: [] };
+    const stale = new Date(now - 16 * 60_000);
+    utimesSync(join(childDir, "CleanupRigor.jsonl"), stale, stale);
+    expect((await wait())?.block).toBe(true);
+    const fresh = new Date();
+    utimesSync(join(childDir, "CleanupRigor.jsonl"), fresh, fresh);
+    expect((await wait())?.block).not.toBe(true);
+    expect(deadline).toEqual(originalDeadline);
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });
