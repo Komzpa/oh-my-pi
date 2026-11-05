@@ -1060,7 +1060,8 @@ const cacheSegment: StatusLineSegment = {
 export function currentWorkTitle(session: StatusLineSession): string | undefined {
 	const phases = session.getTodoPhases?.() ?? [];
 	const active = phases.find(phase => phase.tasks.some(task => task.status === "in_progress"));
-	if (active) return active.name;
+	const activeName = active ? sanitizeStatusText(active.name) : "";
+	if (activeName) return activeName;
 	const goal = session.getGoalModeState?.()?.goal;
 	if (goal?.status === "active" && goal.objective) return goal.objective;
 	return session.sessionManager?.getSessionName();
