@@ -1635,6 +1635,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * focus attach.
 	 */
 	#todoPhasesOwner?: AgentViewSession;
+	#todoLivePhasesKey: string | undefined;
 	#todoForecast: TodoPlanForecast | undefined;
 	#todoForecastRowsByContent = new Map<string, TodoTaskForecast>();
 	#todoForecastCacheKey:
@@ -5607,8 +5608,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (running.length === 0) return;
 		}
 		const liveSnapshot = this.#todoPhasesOwner?.getTodoPhases();
-		if (liveSnapshot && JSON.stringify(liveSnapshot) !== JSON.stringify(this.todoPhases))
+		const liveKey = JSON.stringify(liveSnapshot);
+		if (liveSnapshot && liveKey !== this.#todoLivePhasesKey) {
 			this.todoPhases = liveSnapshot;
+			this.#todoLivePhasesKey = liveKey;
+		}
 		const sourcePhases = this.todoPhases;
 		const livePhases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
 		const workers = linkTodoWorkers(livePhases, running);
@@ -5842,7 +5846,11 @@ export class InteractiveMode implements InteractiveModeContext {
 				? `${formatMoreItems(hudSelection.hidden, "todo")} · /todo expand`
 				: undefined;
 		const awaiting = phases.flatMap(phase => phase.tasks).filter(isTodoAwaitingReview).length;
-		const counts = ` ${awaiting ? `${awaiting} awaiting your review · ` : ""}${done} done · ${totalOpen} open${dropped ? ` · ${dropped} ×` : ""}`;
+		const counts =
+			(awaiting ? ` ${awaiting} awaiting your review ·` : "") +
+			(awaiting || (!expanded && (done || dropped || phaseSlice.length > 1))
+				? ` ${done} ✓ · ${totalOpen} open${dropped ? ` · ${dropped} ×` : ""}`
+				: "");
 		const lines = [...(withChrome ? [""] : []), theme.bold(theme.fg("accent", "TODO")) + theme.fg("dim", counts)];
 		const lineOwners: (string | undefined)[] = lines.map(() => undefined);
 		if (this.#todoForecast) {
@@ -6061,6 +6069,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 		this.todoPhases = source.getTodoPhases();
 		this.#todoPhasesOwner = source;
+		this.#todoLivePhasesKey = JSON.stringify(source.getTodoPhases());
 		this.#syncTodoHudState(source);
 		this.#renderTodoList();
 	}
@@ -10376,6 +10385,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			];
 		}
 		this.#todoPhasesOwner = this.viewSession;
+		this.#todoLivePhasesKey = JSON.stringify(this.viewSession.getTodoPhases());
 		this.#syncTodoHudState(this.viewSession);
 		this.#renderTodoList();
 		this.ui.requestRender();
