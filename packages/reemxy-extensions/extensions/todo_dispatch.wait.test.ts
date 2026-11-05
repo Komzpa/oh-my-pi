@@ -1987,13 +1987,13 @@ test("idle stop and wait require a recorded decision and live page without class
 	];
 	const h = await noticeHarness(phases, Date.now() + 3600_000);
 	h.ctx.getTodoPhases = () => phases;
-	const server = Bun.serve({ port: 0, fetch: () => new Response("card") });
+	const probe = vi.spyOn(globalThis, "fetch").mockImplementation(async input => String(input).endsWith("cards.json") ? Response.json({ cards: [{ disposition: { kind: "delivered-change" }, landed: "Row: Decision" }] }) : new Response("card"));
 	try {
 		const stop = await h.handlers.get("session_stop")!({}, h.ctx);
 		expect(stop?.decision).toBe("block");
 		expect(stop.reason).toContain("missing review page");
-		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).not.toBe(true);
-		phases[0].tasks[0].schedule.reviewPage = `${server.url}review/decision`;
+		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
+		phases[0].tasks[0].schedule.reviewPage = "http://localhost:8767/review/decision/";
 		expect((await h.handlers.get("session_stop")!({}, h.ctx))?.decision).not.toBe("block");
 		await h.handlers.get("message_update")!(
 			{ message: { role: "assistant", content: [{ type: "text", text: "Do / Leave / Other?" }] } },
@@ -2004,7 +2004,7 @@ test("idle stop and wait require a recorded decision and live page without class
 		phases[0].tasks[0].content = "Another decision";
 		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
 	} finally {
-		await server.stop(true);
+		probe.mockRestore();
 		h.shutdown();
 	}
 });

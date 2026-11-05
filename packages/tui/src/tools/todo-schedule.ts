@@ -5,6 +5,19 @@ import { truncateToWidth } from "../utils";
 
 export type TodoConfidence = "low" | "medium" | "high";
 export type TodoForecastConfidence = TodoConfidence | "unknown";
+/** Delivered legacy rows can retain an open raw status; all consumers use the same state. */
+export function isTodoAwaitingReview(task: { status: string; schedule?: TodoSchedule }): boolean {
+	return (
+		task.status !== "abandoned" &&
+		task.schedule?.review === "user" &&
+		(task.status === "completed" ||
+			task.schedule.visibleAt !== undefined ||
+			task.schedule.firstDeliveredAt !== undefined ||
+			!!task.schedule.reviewSummary?.trim() ||
+			task.schedule.attemptHistory?.some(attempt => attempt.deliverablePaths.length > 0) === true)
+	);
+}
+
 export type TodoScheduleStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
 /** A qualitative, user-maintained estimate. All durations are seconds; `updatedAt` is Unix milliseconds. */
@@ -347,7 +360,7 @@ function analyzeDependencies(
 			nodes.push({
 				index: nodes.length,
 				content: task.content,
-				status: task.status,
+				status: isTodoAwaitingReview(task) ? "completed" : task.status,
 				schedule: task.schedule,
 				estimate: task.schedule?.estimate,
 				predecessors: [],
@@ -1753,6 +1766,8 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 /** Bounded plan summary; consumers needing task details use `plan.rows` and `plan.issues`. */
 export function formatPlanForecast(plan: TodoPlanForecast, _now: number): string {
 	const parts: string[] = [];
+	const awaiting = plan.rows.filter(isTodoAwaitingReview).length;
+	if (awaiting) parts.push(`${awaiting} awaiting your review`);
 	if (plan.risk)
 		parts.push(
 			`${plan.risk.onTimeProbability === undefined ? "" : `P(on time) ${Math.round(plan.risk.onTimeProbability * 100)}% · `}P80 ${displayTimestamp(plan.risk.p80Finish, plan.now)}`,
@@ -1794,6 +1809,10 @@ function displayTimestamp(value: number | undefined, now: number): string {
 }
 
 export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, expanded = false): string {
+	if (isTodoAwaitingReview(row))
+		return row.schedule?.reviewPage
+			? `awaiting your review → ${safeText(row.schedule.reviewPage)}`
+			: `handoff pending → skill://review-questions-page${row.schedule?.resources?.[0] ? ` · ${safeText(row.schedule.resources[0])}` : ""}`;
 	if (row.schedule?.review === "accepted" && row.status !== "completed" && row.status !== "abandoned")
 		return `accepted by user, closing${row.schedule.reviewClosingBlocked ? ` blocked: ${safeText(row.schedule.reviewClosingBlocked)}` : ""}`;
 	const terminal = row.status === "completed" || row.status === "abandoned";
@@ -1874,6 +1893,8 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 
 export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): string {
 	const parts: string[] = [];
+	const awaiting = plan.rows.filter(isTodoAwaitingReview).length;
+	if (awaiting) parts.push(`${awaiting} awaiting your review`);
 	if (plan.risk)
 		parts.push(
 			`${plan.risk.onTimeProbability === undefined ? "" : `P(on time) ${Math.round(plan.risk.onTimeProbability * 100)}% · `}P80 ${displayTimestamp(plan.risk.p80Finish, plan.now)}`,

@@ -1,5 +1,5 @@
 // @ts-nocheck -- runtime job fixtures exercise admission state.
-import { expect, test } from "bun:test";
+import { expect, test, spyOn } from "bun:test";
 import { idleUserReviewRefusal } from "./todo_dispatch";
 
 const idle = { running: [], recent: [] };
@@ -27,7 +27,7 @@ test("every decision needs a live artifact and state changes permit a fresh refu
 		return 503;
 	};
 	expect(await idleUserReviewRefusal(rows, idle, seen, down)).toContain("503");
-	expect(await idleUserReviewRefusal(rows, idle, seen, down)).toBeUndefined();
+	expect(await idleUserReviewRefusal(rows, idle, seen, down)).toContain("503");
 	expect(probes).toBe(2); // Recheck now, even after the same refusal was already delivered.
 	expect(await idleUserReviewRefusal(rows, idle, seen, async () => 404)).toContain("404");
 	expect(await idleUserReviewRefusal(rows, idle, seen, async () => 200)).toBeUndefined();
@@ -54,17 +54,16 @@ test("owner decision uses todo ownership, and a prose URL cannot substitute for 
 	).toContain("missing review page");
 });
 
-test("default HTTP probe admits 200 and refuses a page that has gone away", async () => {
+test("default probe requires a matching delivered card on the publisher port", async () => {
 	let status = 200;
-	const server = Bun.serve({ port: 0, fetch: () => new Response("card", { status }) });
+	const fetch = spyOn(globalThis, "fetch").mockImplementation(async input =>
+		String(input).endsWith("cards.json") ? Response.json({ cards: [{ disposition: { kind: "delivered-change" }, landed: "Commit abc — row: Decision" }] }) : new Response("page", { status }));
 	try {
-		const rows = plan({ review: "user", reviewPage: `${server.url}review/a` });
+		const rows = plan({ review: "user", reviewPage: "http://localhost:8767/review/a/" });
 		expect(await idleUserReviewRefusal(rows, idle, new Set())).toBeUndefined();
 		status = 404;
 		expect(await idleUserReviewRefusal(rows, idle, new Set())).toContain("404");
-	} finally {
-		await server.stop(true);
-	}
+	} finally { fetch.mockRestore(); }
 });
 
 test("live unfinished review rows do not demand decision pages before delivery", async () => {
@@ -122,12 +121,12 @@ test("an abandoned result no longer demands a user decision", async () => {
 	expect(await idleUserReviewRefusal(rows, idle, new Set())).toBeUndefined();
 });
 
-test("running jobs postpone the idle user decision check", async () => {
+test("running CI cannot postpone a missing handoff", async () => {
 	expect(
 		await idleUserReviewRefusal(
 			plan({ review: "user" }),
 			{ ...idle, running: [{ status: "running", type: "bash" }] },
 			new Set(),
 		),
-	).toBeUndefined();
+	).toContain("Handoff pending");
 });
