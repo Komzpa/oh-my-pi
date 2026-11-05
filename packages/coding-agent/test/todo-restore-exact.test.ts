@@ -114,6 +114,86 @@ describe("exact todo restoration", () => {
 		}
 	}
 
+	it("closes the seven legacy DC Accept rows once on load and preserves unaccepted and closed neighbours", async () => {
+		// Frozen from the named DC session's 2026-11-05T22:55:51.678Z snapshot.
+		const fixture = (await Bun.file(
+			path.join(import.meta.dir, "fixtures/todo-legacy-accepted.json"),
+		).json()) as TodoPhase[];
+		const rows = fixture[0]!.tasks;
+		expect(rows).toHaveLength(7);
+		const waiting: TodoItem = { content: "No Accept yet", status: "in_progress", schedule: { review: "user" } };
+		const closed: TodoItem = {
+			...structuredClone(rows[0]!),
+			content: "Already completed",
+			status: "completed",
+			schedule: { ...rows[0]!.schedule, finishedAt: 123 },
+		};
+		const dropped: TodoItem = { ...structuredClone(rows[0]!), content: "Already abandoned", status: "abandoned" };
+		const directory = await fs.mkdtemp(path.join(import.meta.dir, "../../../.tmp/accept-migrate-"));
+		directories.push(directory);
+		const manager = SessionManager.create(directory, directory);
+		managers.push(manager);
+		manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			phases: [{ ...fixture[0]!, tasks: [...rows, waiting, closed, dropped] }],
+		});
+		const acceptedAt = Date.parse(manager.getBranch().at(-1)!.timestamp);
+		const tracker = new TodoTracker({ sessionManager: manager } as TodoTrackerHost);
+		const before = manager.getBranch().length;
+		tracker.syncFromBranch();
+		const restored = tracker.phases[0]!.tasks;
+		for (let i = 0; i < 7; i++) {
+			expect(restored[i]!.status).toBe("completed");
+			expect(restored[i]!.blocker).toBeUndefined();
+			expect(restored[i]!.schedule?.acceptedAuditFollowUp).toBe(rows[i]!.schedule?.reviewClosingBlocked);
+			expect(restored[i]!.schedule?.reviewClosingBlocked).toBeUndefined();
+			expect(restored[i]!.schedule?.finishedAt).toBe(acceptedAt);
+		}
+		expect(restored.slice(7)).toEqual([waiting, closed, dropped]);
+		expect(manager.getBranch()).toHaveLength(before + 1);
+		tracker.syncFromBranch();
+		expect(tracker.phases[0]!.tasks).toEqual(restored);
+		expect(manager.getBranch()).toHaveLength(before + 1);
+		expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]!.tasks).toEqual(restored);
+		await manager.ensureOnDisk();
+		await manager.close();
+		const reopened = await SessionManager.open(manager.getSessionFile()!);
+		managers.push(reopened);
+		const resumed = new TodoTracker({ sessionManager: reopened } as TodoTrackerHost);
+		resumed.syncFromBranch();
+		expect(resumed.phases[0]!.tasks).toEqual(restored);
+		expect(reopened.getBranch()).toHaveLength(before + 1);
+	});
+
+	it("uses the recorded compact Accept time and falls back to now only when none is recorded", () => {
+		const row: TodoPhase[] = [
+			{ name: "Work", tasks: [{ content: "Accepted", status: "in_progress", schedule: { review: "accepted" } }] },
+		];
+		const snapshot = {
+			type: "custom",
+			customType: USER_TODO_EDIT_CUSTOM_TYPE,
+			data: { phases: row },
+		} as SessionEntry;
+		const at = 1_791_200_000_000;
+		const edit = {
+			type: "custom",
+			customType: USER_TODO_EDIT_CUSTOM_TYPE,
+			data: {
+				edit: {
+					v: 1,
+					kind: "op",
+					at,
+					op: "schedule",
+					params: { op: "schedule", updates: [{ task: "Accepted", review: "accepted" }] },
+				},
+			},
+		} as SessionEntry;
+		expect(getLatestTodoPhasesFromEntries([snapshot, edit])[0]!.tasks[0]!.schedule?.finishedAt).toBe(at);
+		const before = Date.now();
+		const finished = getLatestTodoPhasesFromEntries([snapshot])[0]!.tasks[0]!.schedule!.finishedAt!;
+		expect(finished).toBeGreaterThanOrEqual(before);
+		expect(finished).toBeLessThanOrEqual(Date.now());
+	});
+
 	it("replays the /todo view over the full branch of a session reopened from disk", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-todo-view-"));
 		directories.push(directory);
