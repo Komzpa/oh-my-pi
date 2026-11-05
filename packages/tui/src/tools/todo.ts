@@ -91,6 +91,8 @@ export interface TodoOperationPersistedEdit {
 	params: unknown;
 	/** This operation already reported and committed legacy self-edge repair. */
 	healedSelfEdges?: true;
+	/** This operation committed repair of stored missing/dropped targets. */
+	healedDanglingEdges?: true;
 	reviewClosures?: Array<{ task: string; reason?: string }>;
 }
 

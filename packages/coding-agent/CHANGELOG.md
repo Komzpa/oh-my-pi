@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Refuse idle waits for rows whose executors have finished, with verification or restaffing actions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
+- Heal todo edges to missing or dropped rows, and report removed inbound edges when dropping a row ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Repair stored self dependencies without blocking staffing updates, and allow clearing speculative targets ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep user due times immutable in todo operations and persist reversible post-deadline scope triage ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

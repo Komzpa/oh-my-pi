@@ -1175,7 +1175,7 @@ export interface DispatchDecision {
   }>;
   dispatchableReady?: Array<DispatchDecision["readyCandidates"][number]>;
   todoOwnerIds?: string[];
-  ownerRunStates?: Array<{ content: string; owner: string | null; running: boolean }>;
+  ownerRunStates?: Array<{ content: string; owner: string | null; running: boolean; outcome?: string }>;
   /** In-progress rows whose recorded owner matches no live task job, parked child or external wait. */
   lostOwners?: Array<{ content: string; owner: string }>;
   externallyStaffedCount?: number;
@@ -1851,7 +1851,8 @@ export function decideTodoDispatch(
     );
   const ownerRunStates = open.map(({ task }) => {
     const owner = typeof task.schedule?.owner === "string" ? task.schedule.owner : null;
-    return { content: task.content, owner, running: owner !== null && (activeTaskJobs.some((job) => liveJobMatchesOwner(job, owner)) || externalOwners.get(owner) === true) };
+    const settled = owner === null ? undefined : jobs?.recent.find(job => liveJobMatchesOwner(job, owner) && job.status !== "running");
+    return { content: task.content, owner, running: owner !== null && ((jobs?.running ?? []).some((job) => job.status === "running" && liveJobMatchesOwner(job, owner)) || externalOwners.get(owner) === true), outcome: settled?.status ?? task.schedule?.executor?.outcome };
   });
   const runningOwnedContents = new Set(
     open
@@ -6089,21 +6090,31 @@ export function idleRedRowsRefusal(
   const running = new Set((decision.ownerRunStates ?? []).filter(row => row.running).map(row => row.content));
   const forecast = decision.forecast;
   const scoped = (forecast?.rows ?? []).filter(row => !row.schedule?.postDeadline && isNonClosedRowStatus(row.status));
+  const outcomes = new Map((decision.ownerRunStates ?? []).map(row => [row.content, row.outcome]));
+  const red = scoped.filter(row => !(row.status === "blocked" && row.waitsForUser) &&
+    !(row.schedule?.review === "user" && row.schedule?.reviewPage && typeof row.schedule?.visibleAt === "number") && !running.has(row.content) &&
+    (row.startedAt !== undefined || row.status === "in_progress" || outcomes.get(row.content)));
+  const actions = red.map(row => ({
+    content: JSON.stringify(row.content),
+    owner: row.owner ? JSON.stringify(row.owner) : undefined,
+    completed: (outcomes.get(row.content) ?? row.schedule?.executor?.outcome) === "completed",
+    outcome: outcomes.get(row.content) ?? row.schedule?.executor?.outcome ?? "no live executor",
+  }));
   const overdue = scoped.filter(row => row.overdue);
   if (forecast?.deadlineStatus === "will-miss" || overdue.length) {
     const finish = forecast.expectedResourceFinish ?? Math.max(...scoped.map(row => row.expectedResourceFinish ?? 0));
     const late = Math.max(0, Math.ceil((finish - (forecast.deadlineAt ?? finish)) / 60_000), ...overdue.map(row => Math.ceil((forecast.now - (row.resourceFinish ?? forecast.now)) / 60_000)));
     const causes = scoped.filter(row => row.critical || overdue.includes(row) || (row.expectedResourceFinish ?? 0) > (forecast.deadlineAt ?? Infinity));
     const revision = `deadline:${forecast.deadlineAt}:${JSON.stringify(scoped.map(row => [row.content, row.status, row.estimateRevision, row.estimateUpdatedAt, row.owner, row.schedule?.dependencies, row.expectedResourceFinish, row.overdue]))}`;
-    if (previewNotified.has(revision)) return prompt.render(deadlineMissInstructions, { repeated: true }).trim();
+    if (previewNotified.has(revision)) return [prompt.render(deadlineMissInstructions, { repeated: true }).trim(), actions.length ? prompt.render(idleRedRowsInstructions, { red: actions, first: JSON.stringify(shorten(red[0].content, 24)) }).trim() : ""].filter(Boolean).join("\n");
     previewNotified.add(revision);
-    return prompt.render(deadlineMissInstructions, { late, rows: causes.map(row => `${JSON.stringify(row.content)} (slack ${row.totalFloatSeconds === undefined ? "unknown" : `${Math.floor(row.totalFloatSeconds / 60)}m`}, deadline slack ${row.expectedResourceFinish === undefined || forecast.deadlineAt === undefined ? "unknown" : `${Math.floor((forecast.deadlineAt - row.expectedResourceFinish) / 60_000)}m`})`).join(", ") }).trim();
+    return [prompt.render(deadlineMissInstructions, { late, rows: causes.map(row => {
+      const finish = row.expectedResourceFinish ?? row.resourceFinish ?? row.earliestFinish;
+      const deadlineSlack = finish === undefined || forecast.deadlineAt === undefined ? "" : `, deadline slack ${Math.floor((forecast.deadlineAt - finish) / 60_000)}m`;
+      return `${JSON.stringify(row.content)} (slack ${row.totalFloatSeconds === undefined ? "unknown" : `${Math.floor(row.totalFloatSeconds / 60)}m`}${deadlineSlack})`;
+    }).join(", ") }).trim(), actions.length ? prompt.render(idleRedRowsInstructions, { red: actions, first: JSON.stringify(shorten(red[0].content, 24)) }).trim() : ""].filter(Boolean).join("\n");
   }
 
-  const red = (decision.forecast?.rows ?? []).filter(row =>
-    isNonClosedRowStatus(row.status) && !row.waitsForUser && !running.has(row.content) &&
-    (!row.schedule?.postDeadline && !row.owner && row.startedAt !== undefined),
-  );
   const preview = previewRows.filter(row => !row.schedule?.postDeadline && row.status === "in_progress").filter(row => {
     const key = `${row.content}\0${row.schedule?.estimateRevision ?? 0}`;
     if (previewNotified.has(key)) return false;
@@ -6112,7 +6123,8 @@ export function idleRedRowsRefusal(
   });
   if (!red.length && !preview.length) return;
   return prompt.render(idleRedRowsInstructions, {
-    red: red.map(row => JSON.stringify(row.content)).join(", "),
+    red: actions,
+    first: red.length ? JSON.stringify(shorten(red[0].content, 24)) : undefined,
     preview: preview.map(row => JSON.stringify(row.content)).join(", "),
   }).trim();
 }
