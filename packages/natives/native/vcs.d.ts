@@ -110,3 +110,6 @@ export declare function watch(repo: VcsRepo, onChange: () => void, intervalMs?: 
 
 /** Whether commit is an ancestor of descendant (HEAD by default). */
 export declare function isAncestor(dir: string, commit: string, descendant?: string): Promise<boolean>;
+
+/** Stable patch identities from a bounded reachable walk (milliseconds since epoch). */
+export declare function commitPatchIds(dir: string, revision: string, since?: number, limit?: number): Promise<{ patchId: string; commit: string }[]>;

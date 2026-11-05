@@ -36,6 +36,8 @@ export interface TodoSchedule {
 	visibleAt?: number;
 	previewPending?: boolean;
 	previewTracked?: boolean;
+	previewIdentityMissing?: boolean;
+	previewPartial?: boolean;
 	/** First usable result was handed to the user at this time. */
 	firstDeliveredAt?: number;
 	/** Short final worker report retained for the user's review handoff. */
@@ -1479,9 +1481,18 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 	if (row.schedule?.previewTracked && finiteTimestamp(row.schedule.firstRequirementAt)) {
 		const end = row.schedule.visibleAt ?? now;
 		parts.push(
-			`asked→visible ${Math.floor(Math.max(0, end - row.schedule.firstRequirementAt) / 60_000)}m${row.schedule.visibleAt === undefined ? " (live)" : ""}`,
+			row.schedule.previewIdentityMissing
+				? "asked→visible ?m (no commit recorded)"
+				: `asked→visible ${Math.floor(Math.max(0, end - row.schedule.firstRequirementAt) / 60_000)}m${row.schedule.visibleAt === undefined ? " (live)" : ""}`,
 		);
-		if (row.schedule.previewPending) parts.push("commit not visible");
+		if (row.schedule.previewPending)
+			parts.push(
+				row.schedule.previewPartial
+					? "partially visible"
+					: row.schedule.previewIdentityMissing
+						? "no commit identity"
+						: "commit not visible",
+			);
 	}
 	if (row.schedule?.review === "user") parts.push("review: user");
 	if (row.schedule?.speculativeOn) parts.push(`speculative on ${safeText(row.schedule.speculativeOn)}`);
@@ -1594,9 +1605,18 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 	if (row.schedule?.previewTracked && finiteTimestamp(row.schedule.firstRequirementAt)) {
 		const end = row.schedule.visibleAt ?? now;
 		parts.push(
-			`asked→visible ${Math.floor(Math.max(0, end - row.schedule.firstRequirementAt) / 60_000)}m${row.schedule.visibleAt === undefined ? " (live)" : ""}`,
+			row.schedule.previewIdentityMissing
+				? "asked→visible ?m (no commit recorded)"
+				: `asked→visible ${Math.floor(Math.max(0, end - row.schedule.firstRequirementAt) / 60_000)}m${row.schedule.visibleAt === undefined ? " (live)" : ""}`,
 		);
-		if (row.schedule.previewPending) parts.push("commit not visible");
+		if (row.schedule.previewPending)
+			parts.push(
+				row.schedule.previewPartial
+					? "partially visible"
+					: row.schedule.previewIdentityMissing
+						? "no commit identity"
+						: "commit not visible",
+			);
 	}
 	if (row.schedule?.review === "user") parts.push("review: user");
 	if (row.schedule?.speculativeOn)

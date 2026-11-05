@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Recognize preview patches landed with new SHAs, show partial visibility, and distinguish missing commit identities ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Route actual image reads and screenshot results from text-only models through the lead to ui-coder ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Require live review-page artifacts on idle user-decision rows instead of interpreting chat questions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

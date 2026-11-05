@@ -1485,7 +1485,7 @@ function updateTodoSchedule(ctx: ExtensionContext, update: (phases: DispatchTodo
     const previous = before.flatMap((entry) => entry.tasks).find((candidate) => candidate.content === row.content);
     if (!previous || JSON.stringify(previous.schedule) === JSON.stringify(row.schedule)) continue;
     const patch = {} as Record<string, unknown>;
-    for (const key of ["review", "reviewSummary", "firstRequirementAt", "firstDeliveredAt", "speculativeOn", "visibleAt", "previewPending", "previewTracked"]) {
+    for (const key of ["review", "reviewSummary", "firstRequirementAt", "firstDeliveredAt", "speculativeOn", "visibleAt", "previewPending", "previewTracked", "previewIdentityMissing", "previewPartial"]) {
       if (row.schedule?.[key] !== previous.schedule?.[key]) patch[key] = row.schedule?.[key];
     }
     ctx.updateTodoSchedule(String(row.content), patch);
@@ -2247,10 +2247,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       for (const row of phases.flatMap(phase => phase.tasks)) {
         if (row.schedule?.firstRequirementAt === undefined) continue;
         const observed = records.filter(record => record.task === row.content);
-        const visibleAt = observed.filter(record => record.visibleAt !== undefined).map(record => record.visibleAt).sort((a,b) => a-b)[0];
-        const pending = observed.length > 0 && visibleAt === undefined;
-        if (row.schedule.previewTracked !== true || row.schedule.previewPending !== pending || row.schedule.visibleAt !== visibleAt)
-          ctx.updateTodoSchedule?.(row.content, { previewTracked: true, previewPending: pending, ...(visibleAt === undefined ? {} : { visibleAt }) });
+        const visible = observed.filter(record => record.visibleAt !== undefined);
+        const visibleAt = observed.length > 0 && visible.length === observed.length ? Math.max(...visible.map(record => record.visibleAt!)) : undefined;
+        const pending = visibleAt === undefined;
+        const previewIdentityMissing = observed.length === 0;
+        const previewPartial = visible.length > 0 && pending;
+        if (row.schedule.previewTracked !== true || row.schedule.previewPending !== pending || row.schedule.visibleAt !== visibleAt || row.schedule.previewIdentityMissing !== previewIdentityMissing || row.schedule.previewPartial !== previewPartial)
+          ctx.updateTodoSchedule?.(row.content, { previewTracked: true, previewPending: pending, previewIdentityMissing, previewPartial, visibleAt });
       }
       return records;
     })();

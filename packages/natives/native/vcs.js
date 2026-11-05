@@ -219,3 +219,21 @@ export async function isAncestor(dir, commit, descendant = "HEAD") {
 	if (code === 1) return false;
 	throw vcsError("Cli", stderr || `git ancestry probe exited ${code}`);
 }
+
+/** Stable patch identities from the shared object store; no worktree files are read. */
+export async function commitPatchIds(dir, revision, since, limit = 2048) {
+	const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" };
+	const show = Bun.spawn(["git", "log", "--no-ext-diff", "--no-textconv", "--format=commit %H", "-p", "--no-merges",
+		`--max-count=${limit}`, ...(since === undefined ? [] : [`--since=${new Date(since).toISOString()}`]), revision, "--"], {
+		cwd: dir, stdout: "pipe", stderr: "ignore", timeout: 10_000, env,
+	});
+	const ids = Bun.spawn(["git", "patch-id", "--stable"], {
+		cwd: dir, stdin: show.stdout, stdout: "pipe", stderr: "ignore", timeout: 10_000, env,
+	});
+	const [output, showCode, idsCode] = await Promise.all([new Response(ids.stdout).text(), show.exited, ids.exited]);
+	if (showCode !== 0 || idsCode !== 0) throw vcsError("Cli", "git patch identity probe failed");
+	return output.trim().split("\n").filter(Boolean).map(line => {
+		const [patchId, commit] = line.split(/\s+/);
+		return { patchId, commit };
+	});
+}
