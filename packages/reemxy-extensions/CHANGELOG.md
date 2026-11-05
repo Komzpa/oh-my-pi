@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep worker dispatch moving while result handoffs await a batch page; retry failed attempts without a handoff ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Require a published matching result card for user review handoffs and keep waits gated until publication ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Let read-only audits dispatch without speculative approval and bind dependency checks to every assigned row ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

@@ -26,3 +26,5 @@ Main wait will be refused until {{#if recoveryCap}}proc://{{owner}}/kill succeed
 {{#if idleAction}}
 REQUIRED STATE CHANGE: the same actionable TODO state has survived repeated idle turns. Ready: {{readyRows}}. Another status message or wait cannot finish this turn. Execute a ready row, assign and start a distinct worker for it, or record a genuine external blocker or terminal outcome in TODO with evidence. Read/history/status calls alone do not count as progress. Preserve user-deferred work.
 {{/if}}
+
+{{#if renamedRow}}Row "{{renamedRow}}" continues "{{predecessor}}" on the same resources. Prior attempts remain recorded on the predecessor; handoff state is retained; dropping and renaming work does not bypass handoff.{{/if}}
