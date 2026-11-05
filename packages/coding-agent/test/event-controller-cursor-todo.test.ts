@@ -1,3 +1,4 @@
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
@@ -161,6 +162,7 @@ describe("EventController + Cursor todo bridge", () => {
 		// animating for the rest of the session.
 		const f = createFixture();
 		const phases = [{ name: "Tasks", tasks: [{ content: "step one", status: "completed" }] }];
+		f.ctx.viewSession.getTodoPhases = () => phases as TodoPhase[];
 
 		await f.controller.handleEvent(todoEnd("cursor-call-1", phases));
 		// Completion held: nothing rendered yet, nothing pending.
@@ -269,6 +271,7 @@ describe("EventController + Cursor todo bridge", () => {
 	it("refreshes the panel exactly once when a successful completion is replayed", async () => {
 		const f = createFixture();
 		const phases = [{ name: "Tasks", tasks: [{ content: "step one", status: "completed" }] }];
+		f.ctx.viewSession.getTodoPhases = () => phases as TodoPhase[];
 
 		await f.controller.handleEvent(todoEnd("cursor-call-1", phases));
 		await f.controller.handleEvent(streamedTodoBlock("cursor-call-1"));
@@ -283,6 +286,7 @@ describe("EventController + Cursor todo bridge", () => {
 		// creation guard and spawn a second, forever-pending card.
 		const f = createFixture();
 		const phases = [{ name: "Tasks", tasks: [{ content: "step one", status: "completed" }] }];
+		f.ctx.viewSession.getTodoPhases = () => phases as TodoPhase[];
 
 		await f.controller.handleEvent(todoEnd("cursor-call-1", phases));
 		await f.controller.handleEvent(streamedTodoBlock("cursor-call-1"));
@@ -298,6 +302,7 @@ describe("EventController + Cursor todo bridge", () => {
 		// orphan path only exists for the packed-chunk race.
 		const f = createFixture();
 		const phases = [{ name: "Tasks", tasks: [{ content: "step one", status: "completed" }] }];
+		f.ctx.viewSession.getTodoPhases = () => phases as TodoPhase[];
 
 		await f.controller.handleEvent(streamedTodoBlock("cursor-call-1"));
 		expect(f.ctx.pendingTools.size).toBe(1);
