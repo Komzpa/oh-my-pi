@@ -1209,6 +1209,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		let snapshotDigest: string | undefined;
 		try {
 			const speculativeSession = Object.create(this.session) as ToolSession;
+			Object.defineProperty(speculativeSession, "recordInstructionFile", { value: undefined });
 			Object.defineProperty(speculativeSession, "editStore", {
 				value: undefined,
 				writable: true,
@@ -1286,6 +1287,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				if (snapshotText !== null) {
 					const seenLines = staged.store.seenLines(staged.absolutePath, staged.snapshotHash);
 					getEditStore(this.session).recordSnapshot(staged.absolutePath, snapshotText, seenLines);
+					if (isInstructionFilePath(staged.absolutePath)) {
+						await this.session.recordInstructionFile?.(staged.absolutePath, snapshotText);
+					}
 				}
 			}
 			appendRepeatReadHint(this.session, staged?.path ?? (context.args as ReadParams).path, result);
@@ -1672,6 +1676,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (bridgePromise !== undefined) {
 			try {
 				const bridgeText = await bridgePromise;
+				if (isInstructionFilePath(absolutePath) && Buffer.byteLength(bridgeText) <= SNAPSHOT_MAX_BYTES) {
+					await this.session.recordInstructionFile?.(absolutePath, bridgeText);
+				}
 				const bridgeResult = await buildInMemoryMultiRangeResult(this.session, bridgeText, ranges, {
 					details: markMarkdownContentType(
 						this.session,
@@ -2334,7 +2341,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		// unbuffered files keep one centralized 256KB peek regardless of
 		// extension, since only magic bytes — never the name — decide.
 		const wholeFileBytes = fileSize <= SNAPSHOT_MAX_BYTES ? await readWholeFile(absolutePath) : undefined;
-		if (this.session.recordInstructionFile && isInstructionFilePath(absolutePath)) {
+		if (wholeFileBytes && this.session.recordInstructionFile && isInstructionFilePath(absolutePath)) {
 			await this.session.recordInstructionFile(absolutePath, wholeFileBytes?.toString("utf8"));
 		}
 		const imageHeader =
@@ -2608,6 +2615,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					if (bridgePromise !== undefined) {
 						try {
 							const bridgeText = await bridgePromise;
+							if (isInstructionFilePath(absolutePath) && Buffer.byteLength(bridgeText) <= SNAPSHOT_MAX_BYTES) {
+								await this.session.recordInstructionFile?.(absolutePath, bridgeText);
+							}
 							const bridgeResult = await buildInMemoryTextResult(this.session, bridgeText, offset, limit, {
 								details: markMarkdownContentType(
 									this.session,
