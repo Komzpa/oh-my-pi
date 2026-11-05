@@ -2,54 +2,47 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { parseRowRiskFile, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import type { ModelRegistry } from "../config/model-registry";
-import {
-	normalizeModelPatternList,
-	resolveConfiguredModelPatterns,
-	resolveExplicitModelRole,
-	resolveModelRoleValue,
-} from "../config/model-resolver";
+import { resolveConfiguredModelPatterns, resolveModelRoleValue } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import { discoverAgents } from "./discovery";
 import { cfgTaskAgentModelOverrides } from "./settings";
 import type { AgentDefinition } from "./types";
 
-/** Settings owns pool policy; older standalone builds simply have ordered role chains. */
-type PoolSettings = Settings & { getModelRolePool?(role: string): Readonly<Record<string, number>> | undefined };
+/** The same seeded expansion used by spawn owns nested roles, effort suffixes and pool weights. */
+type PatternResolver = (value: string | string[] | undefined, settings?: Settings, seed?: string) => string[];
 export function workerRiskPools(
 	settings: Settings,
 	registry: Pick<ModelRegistry, "getAvailable" | "isSelectorSuppressed">,
 	agents: readonly Pick<AgentDefinition, "name" | "model">[],
+	resolvePatterns: PatternResolver = resolveConfiguredModelPatterns,
 ): RowRiskOptions["pools"] {
 	const available = registry
 		.getAvailable()
 		.filter(model => !registry.isSelectorSuppressed(`${model.provider}/${model.id}`));
 	const overrides = cfgTaskAgentModelOverrides.get(settings);
 	const pools: RowRiskOptions["pools"] = {};
+	const resolved = new Map<string, string | undefined>();
 	for (const agent of agents) {
-		const sources = normalizeModelPatternList(overrides[agent.name] ?? agent.model ?? "@task");
-		for (const source of sources) {
-			const role = resolveExplicitModelRole(source, settings);
-			const weights = role ? (settings as PoolSettings).getModelRolePool?.(role) : undefined;
-			const members = resolveConfiguredModelPatterns(source, settings);
-			const resolved = members.flatMap(member => {
-				const model = resolveModelRoleValue(member, available, { settings }).model;
-				if (!model) return [];
-				const weight = weights ? (weights[member] ?? 1) : 1;
-				return [
-					{ model: `${model.provider}/${model.id}`, weight: Number.isFinite(weight) && weight > 0 ? weight : 0 },
-				];
-			});
-			const positive = resolved.filter(candidate => candidate.weight > 0);
-			const candidates = positive.length
-				? positive
-				: resolved.slice(0, 1).map(candidate => ({ ...candidate, weight: 1 }));
-			if (candidates.length) {
-				// A non-pool chain selects its first available entry, rather than drawing uniformly.
-				pools[agent.name] = weights ? candidates : candidates.slice(0, 1);
+		const counts = new Map<string, number>();
+		for (let sample = 0; sample < 2000; sample++) {
+			const patterns = resolvePatterns(
+				overrides[agent.name] ?? agent.model ?? "@task",
+				settings,
+				`row-risk-${sample}`,
+			);
+			for (const pattern of patterns) {
+				if (!resolved.has(pattern)) {
+					const model = resolveModelRoleValue(pattern, available, { settings }).model;
+					resolved.set(pattern, model ? `${model.provider}/${model.id}` : undefined);
+				}
+				const model = resolved.get(pattern);
+				if (!model) continue;
+				counts.set(model, (counts.get(model) ?? 0) + 1);
 				break;
 			}
 		}
+		pools[agent.name] = [...counts].map(([model, weight]) => ({ model, weight }));
 	}
 	return pools;
 }

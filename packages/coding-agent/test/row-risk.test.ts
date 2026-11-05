@@ -13,19 +13,26 @@ test("profile pool weights refresh and suppressed models leave the forecast mixt
 	const first = `${a.provider}/${a.id}`,
 		second = `${b.provider}/${b.id}`;
 	const settings = Settings.isolated({ modelRoles: { code: `${first},${second}` } });
-	let weights = { [first]: 1, [second]: 3 };
-	Object.assign(settings, { getModelRolePool: () => weights });
-	const suppressed = new Set<string>();
-	const registry = { getAvailable: () => [a, b], isSelectorSuppressed: (key: string) => suppressed.has(key) };
-	const agents = [{ name: "coder", model: ["@code"] }];
-	expect(workerRiskPools(settings, registry, agents).coder).toEqual([
-		{ model: first, weight: 1 },
-		{ model: second, weight: 3 },
+	let availableFirst = true;
+	let flipped = false;
+	const registry = {
+		getAvailable: () => [a, b],
+		isSelectorSuppressed: (key: string) => key === first && !availableFirst,
+	};
+	const agents = [{ name: "coder", model: ["@outer:high"] }];
+	// Resolver output fixture: three of every four spawn seeds select the second model.
+	const resolver = (_value: string | string[] | undefined, _settings?: Settings, seed = "") => {
+		const chooseFirst = Number(seed.slice("row-risk-".length)) % 4 === 0;
+		return chooseFirst !== flipped ? [first, second] : [second, first];
+	};
+	expect(workerRiskPools(settings, registry, agents, resolver).coder).toEqual([
+		{ model: first, weight: 500 },
+		{ model: second, weight: 1500 },
 	]);
-	weights = { [first]: 4, [second]: 1 };
-	expect(workerRiskPools(settings, registry, agents).coder[0].weight).toBe(4);
-	suppressed.add(first);
-	expect(workerRiskPools(settings, registry, agents).coder).toEqual([{ model: second, weight: 1 }]);
+	flipped = true;
+	expect(workerRiskPools(settings, registry, agents, resolver).coder.find(c => c.model === first)?.weight).toBe(1500);
+	availableFirst = false;
+	expect(workerRiskPools(settings, registry, agents, resolver).coder).toEqual([{ model: second, weight: 2000 }]);
 });
 
 test("missing and invalid component files return the single-attempt fallback", async () => {
