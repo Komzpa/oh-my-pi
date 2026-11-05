@@ -5471,7 +5471,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#todoHudHidden = persisted === "dismissed";
 		if (persisted || phases.length === 0) return;
 		const tasks = phases.flatMap(phase => phase.tasks);
-		if (tasks.length === 0 || tasks.some(task => !isClosedTodo(task))) return;
+		if (tasks.length === 0 || tasks.some(task => !isClosedTodo(task) || isTodoAwaitingReview(task))) return;
 		const delaySeconds = cfgTasksTodoClearDelay.get(owner.settings);
 		if (!Number.isFinite(delaySeconds) || delaySeconds < 0) return;
 		const generation = this.#todoAutoClearGeneration;
@@ -5641,7 +5641,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#syncTodoForecastRefreshTimer(false);
 			if (running.length === 0) return;
 		}
-		const sourcePhases = this.#todoPhasesOwner?.getTodoPhases() ?? this.todoPhases;
+		const liveSnapshot = this.#todoPhasesOwner?.getTodoPhases();
+		if (liveSnapshot && JSON.stringify(liveSnapshot) !== JSON.stringify(this.todoPhases))
+			this.todoPhases = liveSnapshot;
+		const sourcePhases = this.todoPhases;
 		const livePhases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
 		const workers = linkTodoWorkers(livePhases, running);
 		if (livePhases.length === 0) {
@@ -6183,7 +6186,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		| undefined {
 		const mode = cfgDisplayPinnedAgents.get(this.settings);
 		if (mode === "off") return undefined;
-		const sourcePhases = this.#todoPhasesOwner?.getTodoPhases() ?? this.todoPhases;
+		const sourcePhases = this.todoPhases;
 		const phases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
 		if (phases.length > 0) return undefined;
 		const sessions = this.#observerRegistry.getSessions();
