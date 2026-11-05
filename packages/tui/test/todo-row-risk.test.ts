@@ -161,3 +161,13 @@ test("running third attempt retains first dispatch scale after reestimate", () =
 	expect(retried.risk!.p80Finish).toBeGreaterThan(initial.risk!.p80Finish);
 	expect(retried.risk!.criticalRows[0].redoRisk).toBe(0.8);
 });
+
+test("unchanged plan reuses its forecast minute and refreshes when time advances", () => {
+	const r = risk();
+	r.pools.coder = [{ model: "a/m", weight: 1 }];
+	const first = forecastTodoPlan(phases(), { now, risk: r }).risk!;
+	const keypress = forecastTodoPlan(phases(), { now: now + 1000, risk: r }).risk!;
+	expect(keypress).toEqual(first);
+	const later = forecastTodoPlan(phases(), { now: now + 60000, risk: r }).risk!;
+	expect(later.p80Finish).toBe(first.p80Finish + 60000);
+});
