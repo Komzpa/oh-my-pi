@@ -261,3 +261,46 @@ test("ordinary completed worker's resource checkout attributes one commit to bot
 			.every(row => typeof row.schedule.visibleAt === "number"),
 	).toBe(true);
 });
+
+test("lead todo git resource journals landed identity; absent identity is never a measured live delay", async () => {
+	const h = await harness(true);
+	const row = h.phases()[0].tasks[0];
+	delete row.schedule.executor;
+	await h.hooks.get("tool_result")({ toolName: "todo", content: [], input: { op: "view" }, isError: false }, h.ctx);
+	expect(row.schedule.previewIdentityMissing).toBe(true);
+	expect(
+		schedule.formatTaskForecastDisplay(
+			schedule.forecastTodoPlan(h.phases(), { now: Date.now() }).rows[0],
+			Date.now(),
+		),
+	).toContain("?m (no commit recorded)");
+	// One landed worker patch cannot clear a row with another unresolved commit.
+	h.git("merge", "--ff-only", h.commit);
+	row.schedule.executor = {
+		workerId: "Rename",
+		startedAt: row.schedule.firstRequirementAt,
+		gitCommits: [
+			{ commit: h.commit, repoPath: h.ctx.cwd },
+			{ commit: "f".repeat(40), repoPath: h.ctx.cwd },
+		],
+	};
+	await h.hooks.get("tool_result")({ toolName: "todo", content: [], input: { op: "view" }, isError: false }, h.ctx);
+	expect(row.schedule.previewPartial).toBe(true);
+	expect(row.schedule.visibleAt).toBeUndefined();
+	// The lead reports a machine identity through the existing schedule resources field.
+	row.schedule.resources = [`git:${h.ctx.cwd}@${h.commit}`];
+	await h.hooks.get("tool_result")(
+		{
+			toolName: "todo",
+			content: [],
+			input: { op: "schedule", updates: [{ task: row.content, resources: row.schedule.resources }] },
+			isError: false,
+		},
+		h.ctx,
+	);
+	const records = h.journal.filter(entry => entry.customType === PREVIEW_ENTRY_TYPE).at(-1).data.records;
+	expect(records.map(record => record.commit)).toEqual([h.commit]);
+	expect(row.schedule.visibleAt).toBeNumber();
+	expect(row.schedule.previewPending).toBe(false);
+	expect(row.schedule.previewIdentityMissing).toBe(false);
+});
