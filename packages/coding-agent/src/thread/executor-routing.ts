@@ -29,6 +29,7 @@ import { type AgentDefinition, TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "../task/t
 import { type EventBus, emitSubagentFrame } from "../utils/event-bus";
 import { isMainThread, type ThreadId } from "./identity";
 import type { WorkerThreadLink } from "./protocol";
+import { rpcSync } from "./rpc";
 import { RemoteAgentSession } from "./remote-agent-session";
 import { bridgeExtensionRootOptions, bridgeIntegrationOptions } from "./services/integrations";
 import { existingSubagentWorkerPool, type SubagentWorker, type SubagentWorkerPool } from "./subagent-worker";
@@ -217,9 +218,15 @@ export async function revivePersistedPlaced<
 		if (!placement.worker) return await reviveHere(spec, expected);
 		// Discovery overrides can carry the owner's live provider just like fresh
 		// launches. Unmarked RPC callbacks return Promises in the worker.
-		const bridged = spec.discoveryOptions
-			? { ...spec, discoveryOptions: bridgeExtensionRootOptions(spec.discoveryOptions) }
-			: spec;
+		const roots = spec.root.effectiveExtensionRoots;
+		const bridged = {
+			...spec,
+			root:
+				typeof roots === "function"
+					? { ...spec.root, effectiveExtensionRoots: rpcSync(() => roots.call(spec.root)) }
+					: spec.root,
+			...(spec.discoveryOptions ? { discoveryOptions: bridgeExtensionRootOptions(spec.discoveryOptions) } : {}),
+		};
 		return await placement.worker.link.call("revivePersisted", bridged, expected);
 	} finally {
 		// A worker-homed revived session's open mirror retains its worker from here on.

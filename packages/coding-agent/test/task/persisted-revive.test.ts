@@ -13,7 +13,7 @@ import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capabili
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { parseModelPattern } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { cfgCompaction } from "@oh-my-pi/pi-coding-agent/session/context-settings";
+import { cfgWorkspaceAdditionalDirectories, cfgCompaction } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import type { PreparedExtension } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import { RpcSubagentRegistry } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
@@ -595,10 +595,14 @@ describe("persisted subagent revival", () => {
 				path.join(path.dirname(sessionFile), `${ref.id}.restart-isolation.json`),
 				JSON.stringify({ id: ref.id, cwd }),
 			);
-			const reviver = await createFactory(parentCwd)(ref);
+			const reviver = await createFactory(parentCwd, undefined, {
+				settings: Settings.isolated({ "workspace.additionalDirectories": [parentCwd] }),
+			})(ref);
 			if (!reviver) throw new Error("Expected restart revival");
 			await reviver(ref);
 			expect(capturedOptions?.cwd).toBe(isolated ? cwd : parentCwd);
+			expect(capturedOptions?.additionalDirectories).toEqual(isolated ? [] : undefined);
+			expect(cfgWorkspaceAdditionalDirectories.get(capturedOptions!.settings!)).toEqual(isolated ? [] : [parentCwd]);
 		}
 	});
 
@@ -738,7 +742,7 @@ describe("persisted subagent revival", () => {
 				perCallThinkingLevel: Effort.Low,
 			});
 			const ref = createRef(sessionFile);
-			const reviver = await createFactory(cwd, undefined, { settings, modelRegistry })(ref);
+			const reviver = await createFactory(cwd, undefined, { settings, modelRegistry, functionRoots: true })(ref);
 			if (!reviver) throw new Error("Expected a persisted reviver");
 			await reviver(ref);
 			const check = options?.assertDispatchModel;
@@ -750,6 +754,12 @@ describe("persisted subagent revival", () => {
 
 		// The spawn approved the model through the agent's frontmatter; revival keeps that grant.
 		expect((await revive(Settings.isolated()))(own)).toBeUndefined();
+		expect(discover.mock.calls[0]?.[2]).toEqual({
+			explicit: [],
+			mode: "merge",
+			configured: [],
+			configuredLevel: "user",
+		});
 		// A disabled, removed or project-sourced agent no longer grants its model.
 		await expect(revive(Settings.isolated({ "task.disabledAgents": ["reviewer"] }))).rejects.toThrow(/not approved/);
 		discover.mockResolvedValue({ agents: [{ ...reviewer, source: "project" }], projectAgentsDir: null });

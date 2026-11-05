@@ -326,9 +326,16 @@ it("cold-revive placement keeps discoveryOptions roots synchronous in the worker
 				link: {
 					call: async (
 						_method: string,
-						spec: { discoveryOptions: { extensionRoots: () => EffectiveExtensionRoots } },
+						spec: {
+							discoveryOptions: { extensionRoots: () => EffectiveExtensionRoots };
+							root: { effectiveExtensionRoots: () => EffectiveExtensionRoots };
+						},
 					) => {
 						observed = await link.call("discoverReviveRoots", cwd, spec.discoveryOptions.extensionRoots);
+						expect(await link.call("discoverReviveRoots", cwd, spec.root.effectiveExtensionRoots)).toEqual({
+							paths: [cwd],
+							synchronous: true,
+						});
 						return {} as AgentSessionHandle;
 					},
 				},
@@ -336,7 +343,10 @@ it("cold-revive placement keeps discoveryOptions roots synchronous in the worker
 			release: () => {},
 		}),
 	} as unknown as SubagentWorkerPool;
-	const spec = { discoveryOptions: { extensionRoots: () => roots } } as PersistedReviveSpec & {
+	const spec = {
+		root: { effectiveExtensionRoots: () => roots },
+		discoveryOptions: { extensionRoots: () => roots },
+	} as PersistedReviveSpec & {
 		discoveryOptions: { extensionRoots: () => EffectiveExtensionRoots };
 	};
 	try {

@@ -412,6 +412,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 	// in files written before that. Absent = unadvised (the
 	// createSubagentSettings default).
 	const subagentSettings = createSubagentSettings(spec.settings, {
+		...(spec.isolatedCwd !== undefined ? { "workspace.additionalDirectories": [] } : {}),
 		...(init.readSummarize === false ? { "read.summarize.enabled": false } : undefined),
 		...(init.advisor
 			? {
@@ -479,6 +480,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 	try {
 		({ session } = await createAgentSession({
 			cwd: spec.isolatedCwd ?? restoredSeance?.cwd ?? spec.root.sessionManager.getCwd(),
+			...(spec.isolatedCwd !== undefined ? { additionalDirectories: [] } : {}),
 			costGate: spec.costGate,
 			authStorage: spec.authStorage,
 			// Revived agents join the root session tree, so their observability
