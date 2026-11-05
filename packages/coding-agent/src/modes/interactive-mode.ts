@@ -5335,7 +5335,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				);
 			case "abandoned":
 				return (
-					theme.fg("error", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`) +
+					theme.fg("dim", `${prefix}${checkbox.unchecked} ${chalk.strikethrough(todo.content)}`) +
 					marker +
 					warningText
 				);
@@ -5898,7 +5898,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				todo.status === "completed"
 					? "success del"
 					: todo.status === "abandoned"
-						? "error del"
+						? "dim del"
 						: todo.status === "blocked"
 							? "warning"
 							: todo.status === "in_progress" || isMatched(todo)
