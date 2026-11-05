@@ -1631,12 +1631,23 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 	}
 
+	/** Internal callers can await an ordinary worker while their own hook stays detached. */
+	async executeBlocking(
+		toolCallId: string,
+		rawParams: unknown,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
+	): Promise<AgentToolResult<TaskToolDetails>> {
+		return this.#dispatch(toolCallId, rawParams, undefined, signal, onUpdate, true);
+	}
+
 	async #dispatch(
 		toolCallId: string,
 		rawParams: unknown,
 		launchSession: TaskLaunchSession | undefined,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
+		waitForCompletion = false,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		// Schema defaults fill `agent` for model calls, but internal callers
 		// and stale transcripts can bypass arktype. `spawnParamsFor` resolves each
@@ -1730,7 +1741,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				`Rework preparation failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
+		const itemBlocking = policies.map(policy => waitForCompletion || policy.effectiveAgent.blocking === true);
 
 		// Execution mode is per item: an item whose agent type declares
 		// `blocking: true` runs inline on this turn (the parent waits on its

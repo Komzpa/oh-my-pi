@@ -13,7 +13,8 @@
 		"directory": "packages/reemxy-extensions"
 	},
 	"files": [
-		"extensions"
+		"extensions",
+		"skills"
 	],
 	"exports": {
 		"./goal_deadlines": {

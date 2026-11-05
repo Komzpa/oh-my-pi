@@ -5219,8 +5219,24 @@ describe("ExtensionRunner", () => {
 			const native = { ...nativeProbe(seen), name: "task" };
 			const runner = await runnerWithNative(native);
 			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
-			expect(seen.params).toEqual({ agent: "user-shadow", task: "Review completed rack controls", effort: "lo" });
+			expect(seen.params).toEqual({ agent: "gate-runner", task: "Review completed rack controls", effort: "lo" });
 			expect(result?.content).toEqual([{ type: "text", text: "native ran" }]);
+		});
+
+		it("delivery critic awaits a generic background-capable worker without detaching its verdict", async () => {
+			const seen: { params?: unknown } = {};
+			const native = {
+				...nativeProbe(seen),
+				name: "task",
+				executeBlocking: async (_id: string, params: unknown) => {
+					seen.params = params;
+					return { content: [{ type: "text" as const, text: "final verdict" }], details: {} };
+				},
+			};
+			const runner = await runnerWithNative(native);
+			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
+			expect(seen.params).toEqual({ agent: "gate-runner", task: "Review completed rack controls", effort: "lo" });
+			expect(result?.content).toEqual([{ type: "text", text: "final verdict" }]);
 		});
 
 		it("inherits the wrapper call's signal and onUpdate for a bare invokeTool", async () => {

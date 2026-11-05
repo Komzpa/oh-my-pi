@@ -10,7 +10,7 @@ The gate is off by default. Enable it in `config.yml`:
 ask:
   gate:
     enabled: true
-    agent: user-shadow
+    agent: gate-runner
     recentSeconds: 300
 ```
 
