@@ -1729,6 +1729,7 @@ export class TurnRecovery {
 	 */
 	#isMidStreamTransportFailure(message: AssistantMessage, id: number): boolean {
 		if (message.stopReason !== "error" || !AIError.retriable(id)) return false;
+		if (AIError.is(id, AIError.Flag.UsageLimit) || AIError.is(id, AIError.Flag.AuthFailed)) return false;
 		const errorMessage = message.errorMessage ?? "";
 		if (STREAM_STALL_ERROR_RE.test(errorMessage)) return true;
 		if (this.#host.abortInProgress() || this.#host.isDisposed() || this.#host.streamingEditAbortTriggered()) {
