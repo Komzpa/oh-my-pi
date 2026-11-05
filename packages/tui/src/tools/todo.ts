@@ -781,7 +781,7 @@ export const todoToolRenderer = {
 			{
 				iconOverride: uiTheme.styledSymbol("tool.todo", "accent"),
 				title: "Todo",
-				meta: [`${allTasks.length} tasks`],
+				meta: [`${allTasks.length + (result.details?.archiveSummary?.count ?? 0)} tasks`],
 			},
 			uiTheme,
 		);
@@ -867,11 +867,12 @@ export const todoToolRenderer = {
 			if (result.details?.archiveSummary)
 				bodyLines.push(`  ${uiTheme.fg("dim", formatTodoArchiveSummary(result.details.archiveSummary))}`);
 			if (!showSnapshot) {
-				const closedTasks = allTasks.filter(
-					task => task.status === "completed" || task.status === "abandoned",
-				).length;
+				const archivedCount = result.details?.archiveSummary?.count ?? 0;
+				const closedTasks =
+					archivedCount +
+					allTasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
 				bodyLines.push(
-					`  ${uiTheme.fg("accent", forDisplay(operation ?? "updated"))} ${uiTheme.fg("dim", `· ${closedTasks}/${allTasks.length} complete`)}`,
+					`  ${uiTheme.fg("accent", forDisplay(operation ?? "updated"))} ${uiTheme.fg("dim", `· ${closedTasks}/${allTasks.length + archivedCount} complete`)}`,
 				);
 			}
 			if (forecast) {

@@ -5828,19 +5828,28 @@ export class InteractiveMode implements InteractiveModeContext {
 		// order: down the spine, around the bend, out along the tail.
 		// Clamp so partial progress lights at least one cell; a closed plan fills
 		// the entire path until the configured auto-clear removes the HUD.
-		const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
-		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
+		const archivedSummary = getTodoArchiveSummaryFromEntries(
+			selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
+		);
+		const totalTasks = (archivedSummary?.count ?? 0) + phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
+		const closedTasks =
+			(archivedSummary?.count ?? 0) +
+			phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
 		const withChrome = expanded || contentLines.length + 3 + (this.#todoForecast ? 1 : 0) <= panelRows;
 		const pathLen = contentLines.length + (withChrome ? tailLen : 0);
 		let filled = Math.round((closedTasks / totalTasks) * pathLen);
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const done = phases.reduce(
-			(n, phase) => n + phase.tasks.filter(t => t.status === "completed" && !isTodoAwaitingReview(t)).length,
-			0,
-		);
-		const dropped = phases.reduce((n, phase) => n + phase.tasks.filter(t => t.status === "abandoned").length, 0);
+		const done =
+			(archivedSummary?.done ?? 0) +
+			phases.reduce(
+				(n, phase) => n + phase.tasks.filter(t => t.status === "completed" && !isTodoAwaitingReview(t)).length,
+				0,
+			);
+		const dropped =
+			(archivedSummary?.dropped ?? 0) +
+			phases.reduce((n, phase) => n + phase.tasks.filter(t => t.status === "abandoned").length, 0);
 		const totalOpen = totalTasks - closedTasks;
 		const overflowRow =
 			hudSelection && hudSelection.hidden > 0
@@ -5853,9 +5862,6 @@ export class InteractiveMode implements InteractiveModeContext {
 				? ` ${done} ✓ · ${totalOpen} open${dropped ? ` · ${dropped} ×` : ""}`
 				: "");
 		const lines = [...(withChrome ? [""] : []), theme.bold(theme.fg("accent", "TODO")) + theme.fg("dim", counts)];
-		const archivedSummary = getTodoArchiveSummaryFromEntries(
-			selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
-		);
 		if (archivedSummary) lines.push(theme.fg("dim", formatTodoArchiveSummary(archivedSummary)));
 		const lineOwners: (string | undefined)[] = lines.map(() => undefined);
 		if (this.#todoForecast) {
@@ -6006,8 +6012,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		const isMatched = (todo: TodoItem): boolean =>
 			activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
 
-		const totalTasks = phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
-		const closedTasks = phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
+		const owner = this.#todoPhasesOwner ?? this.viewSession;
+		const archivedSummary = getTodoArchiveSummaryFromEntries(
+			selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
+		);
+		const totalTasks = (archivedSummary?.count ?? 0) + phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
+		const closedTasks =
+			(archivedSummary?.count ?? 0) +
+			phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
 		const activeTask = nextActionableTask(phases);
 
 		const header = `${theme.bold(theme.fg("accent", "TODO"))} ${theme.fg("dim", `${closedTasks}/${totalTasks}`)}`;

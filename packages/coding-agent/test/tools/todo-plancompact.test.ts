@@ -127,6 +127,12 @@ describe("DC plan compaction", () => {
 		expect(closed.content[0]).toMatchObject({ text: expect.stringContaining("closed rows archived (done ") });
 		expect(getLatestTodoPhasesFromEntries(entries)).toEqual(live);
 		const archived = getLatestTodoArchiveFromEntries(entries).flatMap(phase => phase.tasks)[0]!;
+		const ordinary = await tool.execute("totals", { op: "view" });
+		const total = phases.flatMap(phase => phase.tasks).length;
+		const closedCount = total - open(phases).length + 1;
+		expect(ordinary.content[0]).toMatchObject({
+			text: expect.stringContaining(`Overall: ${closedCount}/${total} done`),
+		});
 		const found = await tool.execute("get", { op: "view", task: archived.content });
 		expect(found.content[0]).toMatchObject({ text: expect.stringContaining(archived.content) });
 		const accepted = await tool.execute("accept", {
