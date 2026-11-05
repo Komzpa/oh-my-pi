@@ -1537,7 +1537,8 @@ function simulateRowRisk(
 		nodes.map(node => [node.content, node.status, node.schedule]),
 		capacity,
 		risk,
-		options.now,
+		// The HUD displays minute precision; keypress renders must reuse this simulation.
+		Math.floor(options.now / 60_000),
 		options.deadlineAt,
 	]);
 	const cached = riskCache.get(key);
