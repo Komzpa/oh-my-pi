@@ -22,7 +22,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type * as natives from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { prompt } from "@oh-my-pi/pi-utils";
+import { isEnoent, prompt } from "@oh-my-pi/pi-utils";
 import isolationErrorTemplate from "../prompts/tools/isolation-error.md" with { type: "text" };
 import isolationSummaryTemplate from "../prompts/tools/isolation-summary.md" with { type: "text" };
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
@@ -436,23 +436,41 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 		baseReleasePromise ??= opts.baseOptions.onRelease?.() ?? Promise.resolve();
 		return baseReleasePromise;
 	};
+	// The restart checkpoint owns this workspace until its revived worker takes over.
+	// Match both identity and path so a stale marker cannot retain a different run.
+	const preserveForRestart = async (): Promise<boolean> => {
+		if (!workspace) return false;
+		try {
+			const marker: { id?: string; cwd?: string } = await Bun.file(
+				path.join(opts.artifactsDir, `${opts.agentId}.restart-isolation.json`),
+			).json();
+			if (marker.id !== opts.agentId || marker.cwd !== workspace.dir) return false;
+			retainWorkspace = true;
+			return true;
+		} catch (err) {
+			if (isEnoent(err)) return false;
+			throw err;
+		}
+	};
 	const cleanupHandle = (): Promise<void> => {
 		cleanupPromise ??= (async () => {
 			await releaseBase();
-			if (workspace && !retainWorkspace) await workspace.cleanup();
+			if (workspace && !retainWorkspace && !(await preserveForRestart())) await workspace.cleanup();
 		})();
 		return cleanupPromise;
 	};
 	const retainAfterRunFailure = async (): Promise<RetainedWorkspace> => {
 		// The adopted session and its reviver still use their original effectiveCwd.
 		// Keep that path usable and let lifecycle release capture any follow-up work.
-		const keepInPlace = opts.baseOptions.keepAlive !== false && AgentLifecycleManager.global().has(opts.agentId);
+		const keepInPlace =
+			(await preserveForRestart()) ||
+			(opts.baseOptions.keepAlive !== false && AgentLifecycleManager.global().has(opts.agentId));
 		if (!keepInPlace) retainWorkspace = true;
 		return workspace!.retain(!keepInPlace);
 	};
 	const releaseIsolation = (): Promise<void> => {
 		releasePromise ??= (async () => {
-			if (!workspace || !taskBaseline || retainWorkspace) {
+			if (!workspace || !taskBaseline || retainWorkspace || (await preserveForRestart())) {
 				await cleanupHandle();
 				return;
 			}

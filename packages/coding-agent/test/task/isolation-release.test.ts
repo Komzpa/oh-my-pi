@@ -51,6 +51,7 @@ async function commitsAcrossRelease(
 	runEndPatch: string,
 	releasePatch: string,
 	failInitialCapture = false,
+	restartMarker?: "matching" | "other-workspace",
 ): Promise<number> {
 	const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-isolation-release-"));
 	tempRoots.push(artifactsDir);
@@ -69,7 +70,9 @@ async function commitsAcrossRelease(
 		fallbackReason: null,
 	});
 	vi.spyOn(worktreeModule, "captureIsolationBaseline").mockResolvedValue(baseline);
-	vi.spyOn(worktreeModule, "cleanupIsolation").mockResolvedValue();
+	vi.spyOn(worktreeModule, "cleanupIsolation").mockImplementation(async handle => {
+		await fs.rm(handle.mergedDir, { recursive: true, force: true });
+	});
 	vi.spyOn(worktreeModule, "captureDeltaPatch").mockResolvedValue({ rootPatch: releasePatch, nestedPatches: [] });
 	const commitSpy = vi.spyOn(worktreeModule, "commitToBranch").mockImplementation(async () => {
 		events.push("commit");
@@ -133,7 +136,19 @@ async function commitsAcrossRelease(
 		expect(await Bun.file(taskFile).exists()).toBe(true);
 		await Bun.write(taskFile, releasePatch);
 	}
+	if (restartMarker) {
+		await Bun.write(
+			path.join(artifactsDir, `${id}.restart-isolation.json`),
+			JSON.stringify({ id, cwd: restartMarker === "matching" ? workspace : `${workspace}-other` }),
+		);
+	}
 	await AgentLifecycleManager.global().release(id);
+	if (restartMarker === "matching") {
+		expect(await Bun.file(taskFile).text()).toBe(runEndPatch);
+		expect(worktreeModule.cleanupIsolation).not.toHaveBeenCalled();
+	} else {
+		expect(await Bun.file(taskFile).exists()).toBe(false);
+	}
 	if (failInitialCapture) {
 		const finalPatch = runResult.patchPath;
 		expect(finalPatch).toBeDefined();
@@ -145,6 +160,62 @@ async function commitsAcrossRelease(
 
 describe("isolated agent release", () => {
 	const patch = "diff --git a/task.txt b/task.txt\n+work\n";
+
+	it("preserves checkpointed work when aborted execution reaches finally", async () => {
+		const id = "RestartAborted";
+		const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-isolation-abort-"));
+		tempRoots.push(artifactsDir);
+		const workspace = path.join(artifactsDir, "workspace");
+		const taskFile = path.join(workspace, "task.txt");
+		await Bun.write(taskFile, "unfinished work");
+		vi.spyOn(worktreeModule, "ensureIsolation").mockResolvedValue({
+			mergedDir: workspace,
+			backend: natives.IsoBackendKind.Rcopy,
+			fellBack: false,
+			fallbackReason: null,
+		});
+		vi.spyOn(worktreeModule, "captureIsolationBaseline").mockResolvedValue({
+			root: { repoRoot: "/repo", headCommit: "base", staged: "", unstaged: "", untracked: [], untrackedPatch: "" },
+			nested: [],
+		});
+		vi.spyOn(worktreeModule, "cleanupIsolation").mockImplementation(async handle => {
+			await fs.rm(handle.mergedDir, { recursive: true, force: true });
+		});
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async () => {
+			await Bun.write(
+				path.join(artifactsDir, `${id}.restart-isolation.json`),
+				JSON.stringify({ id, cwd: workspace }),
+			);
+			throw new Error("restart abort");
+		});
+		const runResult = await runIsolatedSubprocess({
+			baseOptions: {
+				cwd: "/repo",
+				agent: { name: "task", description: "Task agent", systemPrompt: "test", source: "bundled" },
+				task: "Do work",
+				index: 0,
+				id,
+				keepAlive: false,
+			},
+			context: { repoRoot: "/repo" },
+			openWorkspace: nativeWorkspace(undefined),
+			agentId: id,
+			mergeMode: "branch",
+			artifactsDir,
+			buildFailureResult: error => ({ ...result(id), exitCode: 1, error: String(error) }),
+		});
+		expect(runResult.error).toContain("restart abort");
+		expect(await Bun.file(taskFile).text()).toBe("unfinished work");
+		expect(worktreeModule.cleanupIsolation).not.toHaveBeenCalled();
+	});
+
+	it("keeps restart-checkpointed work at its original path without release capture", async () => {
+		expect(await commitsAcrossRelease("RestartPreserved", patch, `${patch}+follow-up\n`, false, "matching")).toBe(1);
+	});
+
+	it("cleans ordinary releases when a stale restart marker names another workspace", async () => {
+		expect(await commitsAcrossRelease("RestartStale", patch, patch, false, "other-workspace")).toBe(1);
+	});
 
 	it("keeps a failed branch-capture workspace usable until release and captures follow-up work", async () => {
 		expect(await commitsAcrossRelease("ReleaseCaptureFailure", patch, `${patch}+follow-up\n`, true)).toBe(2);
@@ -228,7 +299,7 @@ describe("isolated agent release", () => {
 				id,
 			},
 			context: { repoRoot: "/repo" },
-			preferredBackend: undefined,
+			openWorkspace: nativeWorkspace(undefined),
 			agentId: id,
 			mergeMode: "branch",
 			artifactsDir,
