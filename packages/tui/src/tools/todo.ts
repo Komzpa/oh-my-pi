@@ -638,7 +638,11 @@ const CHECKLIST_STATUS: Record<TodoStatus, TspChecklistItem["status"]> = {
 /** Checklist item for one todo; a pending todo an in-flight subagent executes reads as active. */
 function checklistItem(task: TodoItem, id: string, matched = false): TspChecklistItem {
 	const status = task.status === "pending" && matched ? "active" : CHECKLIST_STATUS[task.status];
-	const note = task.status === "blocked" && task.blocker ? forDisplay(task.blocker) : undefined;
+	const note = task.schedule?.postDeadline
+		? "after deadline"
+		: task.status === "blocked" && task.blocker
+			? forDisplay(task.blocker)
+			: undefined;
 	return note === undefined
 		? { id, text: forDisplay(task.content), status }
 		: { id, text: forDisplay(task.content), status, note };

@@ -5351,6 +5351,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		now: number,
 		worker?: ObservableSession,
 	): string {
+		if (todo.schedule?.postDeadline)
+			return theme.fg("dim", `${prefix}${sanitizeStatusText(todo.content)} · after deadline`);
 		const row = this.#todoForecastRowsByContent.get(todo.content);
 		const isOverdueOpenTask = row?.overdue && (todo.status === "pending" || todo.status === "in_progress");
 		let line = this.#formatPlainTodoLine(todo, prefix, matched, isOverdueOpenTask);
@@ -5822,7 +5824,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		const lineOwners: (string | undefined)[] = lines.map(() => undefined);
 		if (this.#todoForecast) {
 			const summary = sanitizeStatusText(formatPlanForecastDisplay(this.#todoForecast, this.#todoForecast.now));
-			lines.push(` ${theme.fg("dim", `${summary}${deadline?.paused ? " · goal paused" : ""}`)}`);
+			lines.push(
+				` ${theme.fg(this.#todoForecast.deadlineStatus === "will-miss" ? "error" : "dim", `${summary}${deadline?.paused ? " · goal paused" : ""}`)}`,
+			);
 			lineOwners.push(undefined);
 		}
 		for (let i = 0; i < contentLines.length; i++) {
@@ -6006,7 +6010,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		const leadingLines = childLines.length > 1 ? childLines.slice(0, -1) : [""];
 		if (!this.#todoForecast) return [...leadingLines, combinedLine];
 		const summary = sanitizeStatusText(formatPlanForecastDisplay(this.#todoForecast, this.#todoForecast.now));
-		const scheduleLine = truncateToWidth(` ${theme.fg("dim", `ETA ${summary}`)}`, width, "");
+		const scheduleLine = truncateToWidth(
+			` ${theme.fg(this.#todoForecast.deadlineStatus === "will-miss" ? "error" : "dim", `ETA ${summary}`)}`,
+			width,
+			"",
+		);
 		return [...leadingLines, scheduleLine, combinedLine];
 	}
 
