@@ -13,6 +13,8 @@ import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
+import liveReviewRows from "../../reemxy-extensions/extensions/fixtures/reviewdisplay-dc-live.json";
+
 beforeAll(() => initTheme());
 afterEach(() => resetSettingsForTest());
 
@@ -189,6 +191,25 @@ describe("rework attempt TODO HUD", () => {
 			const deferred = mode.todoContainer.render(300).join("\n");
 			expect(Bun.stripANSI(deferred)).toContain("PDU B callout · after deadline");
 			expect(Bun.stripANSI(deferred)).not.toContain("MISSES");
+			const live = structuredClone(liveReviewRows) as TodoPhase[];
+			live[0]!.tasks[1]!.schedule!.postDeadline = false;
+			live[0]!.tasks[0]!.schedule!.reviewPage = "http://localhost:8767/review/dc/";
+			mode.setTodos([{ name: "Stale", tasks: [{ content: "old snapshot", status: "pending" }] }]);
+			session.setTodoPhases(live);
+			mode.setTodoExpanded(true);
+			const reviewHud = mode.todoContainer.render(500).join("\n");
+			const plain = Bun.stripANSI(reviewHud);
+			expect(plain).not.toContain("old snapshot");
+			expect(plain).toContain("1 awaiting your review");
+			expect(plain).toContain("1 open");
+			expect(plain).toContain("◉ Facility 2D");
+			expect(plain).toContain("awaiting your review → http://localhost:8767/review/dc/");
+			const awaitingLine = reviewHud.split("\n").find(line => line.includes("◉ Facility"))!;
+			expect(awaitingLine).toContain(theme.fg("accent", "◉ Facility 2D: too much empty space around site"));
+			const lateLine = reviewHud.split("\n").find(line => line.includes("Adaptive Facility: WebGL blit errors and tenant panes"))!;
+			expect(lateLine).toContain(
+				theme.fg("error", `${theme.checkbox.unchecked} Adaptive Facility: WebGL blit errors and tenant panes`),
+			);
 		} finally {
 			available.mockRestore();
 			mode.stop();

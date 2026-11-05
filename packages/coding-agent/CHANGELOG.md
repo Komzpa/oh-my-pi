@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Show delivered TODO rows awaiting your review separately from open and overdue work, with their review links ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Refuse idle waits for rows whose executors have finished, with verification or restaffing actions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Heal todo edges to missing or dropped rows, and report removed inbound edges when dropping a row ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
