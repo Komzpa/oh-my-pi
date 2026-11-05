@@ -1,3 +1,11 @@
+import * as fs from "node:fs/promises";
+import {
+	isolationHasWork,
+	preserveRestartIsolation,
+	restartIsolation,
+	snapshotRestartIsolation,
+	type RestartIsolation,
+} from "./restart-isolation";
 import { selectRestartBranchEntries } from "./restart-branch-selection";
 import { formatDuration, logger, withTimeout } from "@oh-my-pi/pi-utils";
 import restartQueuedPrompt from "../prompts/restart-queued.md" with { type: "text" };
@@ -81,6 +89,7 @@ export interface RestartDrainStatus {
 	runningWorkers: RestartDrainWorkerStatus[];
 	queuedInputCount: number;
 	workerGraceDeadlineAt?: number;
+	isolationPendingReason?: string;
 }
 
 export interface RestartControlSnapshot {
@@ -117,6 +126,8 @@ export interface RestartQueueControllerOptions {
 	restorePendingAsk?: (onAnswered: (answered?: boolean) => void) => boolean;
 	restoreGoalMode?: (snapshot: { goalId: string }, resumeWork: boolean) => Promise<void>;
 	restartWorkerGraceMs?: number;
+	/** Maximum wait for isolated workers before quiescing and snapshotting them. */
+	restartIsolationWaitMs?: number;
 	restartWorkerAbortGraceMs?: number;
 }
 
@@ -147,6 +158,7 @@ interface ActiveRestartDrain {
 	resolveCancel(): void;
 	leases: Map<AgentSessionHandle, RestartDrainLease>;
 	children: Map<string, AgentSessionHandle>;
+	isolations: Map<string, RestartIsolation>;
 	runningAgentIds: Set<string>;
 	workerGraceDeadlineAt?: number;
 	notifications: Promise<void>[];
@@ -220,6 +232,9 @@ function parseDrainStatus(value: unknown): RestartDrainStatus | undefined {
 	return {
 		runningWorkers,
 		queuedInputCount: value.queuedInputCount,
+		...(typeof value.isolationPendingReason === "string"
+			? { isolationPendingReason: value.isolationPendingReason }
+			: {}),
 		...(typeof value.workerGraceDeadlineAt === "number" && Number.isFinite(value.workerGraceDeadlineAt)
 			? { workerGraceDeadlineAt: value.workerGraceDeadlineAt }
 			: {}),
@@ -329,6 +344,7 @@ export function formatRestartRequestStatus(record: RestartRequestRecord | null, 
 		return `Restart ${record.state} (${record.requestId}).`;
 	}
 	const status = record.drainStatus;
+	if (status?.isolationPendingReason) return status.isolationPendingReason;
 	const workers = status?.runningWorkers ?? [];
 	const queuedInputCount = status?.queuedInputCount ?? 0;
 	const queued = `${queuedInputCount} queued ${plural(queuedInputCount, "input")}`;
@@ -395,6 +411,7 @@ function makeRun(identity: RestartControlIdentity, record: RestartRequestRecord)
 		resolveCancel: resolve,
 		leases: new Map(),
 		children: new Map(),
+		isolations: new Map(),
 		runningAgentIds: new Set(),
 		notifications: [],
 		notifiedSessions: new Map(),
@@ -415,12 +432,17 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	readonly #restartWorkerAbortGraceMs: number;
 	readonly #restoreGoalMode: RestartQueueControllerOptions["restoreGoalMode"];
 	readonly #restartWorkerGraceMs: number;
+	readonly #restartIsolationWaitMs: number;
 	#serial: Promise<void> = Promise.resolve();
 	#run: ActiveRestartDrain | undefined;
 	#restorePromise: Promise<void> | undefined;
 	#disposed = false;
 
 	constructor(options: RestartQueueControllerOptions) {
+		this.#restartIsolationWaitMs =
+			options.restartIsolationWaitMs ?? Number(process.env.OMP_RESTART_ISOLATION_WAIT_MS ?? 1_800_000);
+		if (!Number.isFinite(this.#restartIsolationWaitMs) || this.#restartIsolationWaitMs < 0)
+			throw new Error("Invalid isolated restart wait");
 		this.#session = options.session;
 		this.#identity = options.identity;
 		this.#restart = options.restart;
@@ -442,7 +464,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	snapshot(): RestartControlSnapshot {
 		const identity = this.#identity();
 		const journal = this.#readJournal(identity.sessionId);
-		return this.#makeSnapshot(identity, journal.latest?.record ?? null);
+		return this.#makeSnapshot(identity, this.#run?.record ?? journal.latest?.record ?? null);
 	}
 
 	async handle(request: RestartControlRequest): Promise<RestartControlSnapshot> {
@@ -454,7 +476,12 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			const selected = request.requestId
 				? journal.byId.get(request.requestId)?.record
 				: (journal.active?.record ?? journal.latest?.record);
-			return Promise.resolve(this.#makeSnapshot(identity, selected ?? null));
+			return Promise.resolve(
+				this.#makeSnapshot(
+					identity,
+					this.#run && this.#run.record.requestId === selected?.requestId ? this.#run.record : (selected ?? null),
+				),
+			);
 		}
 		if (request.op === "request") return this.#requestRestart(request, identity);
 		if (request.op === "cancel") return this.#cancelRestart(request, identity);
@@ -604,7 +631,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		if (!run || run.irreversible || run.callbackStarted) return;
 		run.cancelled = true;
 		run.resolveCancel();
-		this.#releaseLeases(run);
+		void this.#releaseLeases(run);
 	}
 
 	#requestRestart(request: RestartControlRequest, identity: RestartControlIdentity): Promise<RestartControlSnapshot> {
@@ -643,7 +670,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		this.#run = run;
 		const ack = this.#serialize(async () => {
 			try {
-				this.#prepareInitialDrain(run);
+				await this.#prepareInitialDrain(run);
 				await this.#persistRecord(identity, run.record);
 				if (run.cancelled) {
 					run.record = await this.#persistStateUnserialized(identity, run.record, "cancelled");
@@ -652,7 +679,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				void this.#drain(run).catch(error => this.#reportBackgroundFailure(run, error));
 				return this.#makeSnapshot(identity, run.record);
 			} catch (error) {
-				this.#releaseLeases(run);
+				await this.#releaseLeases(run);
 				if (this.#run === run) this.#run = undefined;
 				throw error;
 			}
@@ -721,7 +748,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 					throw new Error(blocker);
 				}
 				pendingRun.cancelNoticeDelivered = true;
-				this.#releaseLeases(pendingRun);
+				await this.#releaseLeases(pendingRun);
 				if (this.#run === pendingRun) this.#run = undefined;
 			}
 			await this.#restoreGoalModeFor(cancelled);
@@ -729,13 +756,19 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		});
 	}
 
-	#prepareInitialDrain(run: ActiveRestartDrain): void {
+	async #prepareInitialDrain(run: ActiveRestartDrain): Promise<void> {
 		const rootWasStreaming = this.#session.isStreaming;
 		this.#notifySession(run, this.#session);
 		const rootLease = this.#takeLease(run, this.#session);
 		run.record = { ...run.record, rootWasRunning: rootLease.wasRunning || rootWasStreaming };
-		for (const child of getLiveSubagentsForRestart(this.#session))
-			this.#prepareChild(run, child.id, child.status, child.session);
+		for (const child of getLiveSubagentsForRestart(this.#session)) {
+			const isolated = await restartIsolation(child);
+			if (isolated) {
+				await preserveRestartIsolation(isolated);
+				run.isolations.set(child.id, isolated);
+				if (child.status === "running" || child.session.isStreaming) run.runningAgentIds.add(child.id);
+			} else this.#prepareChild(run, child.id, child.status, child.session);
+		}
 		run.record = this.#withDrainStatus({ ...run.record, runningWorkerCount: run.runningAgentIds.size }, run);
 	}
 
@@ -798,6 +831,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			drainStatus: {
 				runningWorkers,
 				queuedInputCount,
+				...(record.drainStatus?.isolationPendingReason
+					? { isolationPendingReason: record.drainStatus.isolationPendingReason }
+					: {}),
 				...(run.workerGraceDeadlineAt !== undefined ? { workerGraceDeadlineAt: run.workerGraceDeadlineAt } : {}),
 			},
 		};
@@ -815,8 +851,13 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		try {
 			if (run.cancelled) return;
 			run.record = await this.#transition(run, "draining");
+			await this.#waitForIsolatedWork(run);
+			if (run.cancelled || this.#disposed) return;
+			for (const child of getLiveSubagentsForRestart(this.#session))
+				this.#prepareChild(run, child.id, child.status, child.session);
 			const safe = await this.#settleAndFlush(run);
 			if (!safe || run.cancelled || this.#disposed) return;
+			for (const isolated of run.isolations.values()) await snapshotRestartIsolation(isolated);
 			await this.#measureStage(run.record, "capture_children", () =>
 				captureSubagentsForRestart(this.#session, {
 					runningAgentIds: run.runningAgentIds,
@@ -849,9 +890,43 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (!run.cancelled && !this.#disposed) await this.#recordDrainFailure(run, error);
 		} finally {
 			if (run.cancelled ? run.cancelNoticeDelivered : !run.callbackStarted || run.record.state === "failed")
-				this.#releaseLeases(run);
+				await this.#releaseLeases(run);
 			if (this.#run === run && (!run.cancelled || run.cancelNoticeDelivered)) this.#run = undefined;
 		}
+	}
+
+	async #waitForIsolatedWork(run: ActiveRestartDrain): Promise<void> {
+		const deadline = Date.now() + this.#restartIsolationWaitMs;
+		while (!run.cancelled && !this.#disposed) {
+			const pending: RestartIsolation[] = [];
+			for (const child of getLiveSubagentsForRestart(this.#session)) {
+				let item = run.isolations.get(child.id);
+				if (!item) {
+					item = await restartIsolation(child);
+					if (item) {
+						await preserveRestartIsolation(item);
+						run.isolations.set(child.id, item);
+					}
+				}
+				if (item && (child.status === "running" || child.session.isStreaming) && (await isolationHasWork(item.cwd)))
+					pending.push(item);
+			}
+			if (pending.length === 0 || Date.now() >= deadline) break;
+			run.record = this.#withDrainStatus(
+				{
+					...run.record,
+					drainStatus: {
+						runningWorkers: [],
+						queuedInputCount: 0,
+						isolationPendingReason: `Waiting for isolated workers with uncommitted or unpushed work: ${pending.map(item => `${item.name} (${item.id})`).join(", ")}; snapshot deadline ${new Date(deadline).toISOString()}`,
+					},
+				},
+				run,
+			);
+			this.#onStateChange?.(run.record);
+			await Promise.race([Bun.sleep(Math.min(1000, Math.max(1, deadline - Date.now()))), run.cancelSignal]);
+		}
+		if (run.record.drainStatus) delete run.record.drainStatus.isolationPendingReason;
 	}
 
 	async #settleAndFlush(run: ActiveRestartDrain): Promise<boolean> {
@@ -1120,7 +1195,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		return pending;
 	}
 
-	#releaseLeases(run: ActiveRestartDrain): void {
+	async #releaseLeases(run: ActiveRestartDrain): Promise<void> {
 		for (const lease of run.leases.values()) {
 			try {
 				lease.release();
@@ -1129,6 +1204,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			}
 		}
 		run.leases.clear();
+		for (const item of run.isolations.values())
+			await fs
+				.rm(item.marker, { force: true })
+				.catch(error => logger.warn("Cannot remove restart isolation marker", { error }));
 	}
 
 	#reportBackgroundFailure(run: ActiveRestartDrain, error: unknown): void {

@@ -1,3 +1,0 @@
-ancestorEntries = ["packages/coding-agent/src/task/persisted-revive.ts"]
-ourEntries = ["packages/coding-agent/src/task/persisted-revive.ts"]
-theirEntries = ["packages/coding-agent/src/task/persisted-revive.ts"]

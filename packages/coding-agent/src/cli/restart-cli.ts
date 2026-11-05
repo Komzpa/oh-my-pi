@@ -30,7 +30,7 @@ function printList(snapshots: RestartControlSnapshot[]): void {
 		const request = snapshot.request;
 		const state = request ? `${request.state} (${request.requestId})` : "idle";
 		process.stdout.write(
-			`${snapshot.identity.instanceId}\t${snapshot.pid}\t${snapshot.identity.sessionId}\t${snapshot.identity.generation}\t${state}\t${snapshot.cwd}\n`,
+			`${snapshot.identity.instanceId}\t${snapshot.pid}\t${snapshot.identity.sessionId}\t${snapshot.identity.generation}\t${state}\t${snapshot.cwd}\t${formatRestartRequestStatus(request)}\n`,
 		);
 	}
 }
