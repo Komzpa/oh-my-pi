@@ -1,3 +1,4 @@
+import type { Agent } from "@oh-my-pi/pi-agent-core";
 import { prompt } from "@oh-my-pi/pi-utils";
 import elapsedNoteTemplate from "../prompts/tools/subagent-elapsed-note.md" with { type: "text" };
 import type { Message } from "@oh-my-pi/pi-ai";
@@ -38,6 +39,14 @@ export class SubagentElapsedSignal {
 		this.#lastNoteAt = options.lastNoteAt;
 		this.#appendMessage = options.appendMessage;
 		this.#now = options.now ?? Date.now;
+	}
+
+	/** Retain due checkpoints in the active tool loop as well as the persisted transcript. */
+	attach(agent: Agent): void {
+		agent.addBeforeModelCallHook((_signal, context) => {
+			const note = this.appendIfDue();
+			if (note) context.messages.push(note);
+		});
 	}
 
 	/** Add the attempt's initial note, or keep the existing note when reviving it. */

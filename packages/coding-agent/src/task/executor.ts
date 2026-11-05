@@ -4254,19 +4254,19 @@ function createSessionElapsedSignal(
 	attemptStartedAt: number,
 	lastNoteAt?: number,
 ): SubagentElapsedSignal {
-	return new SubagentElapsedSignal({
+	const canAppend =
+		typeof session.agent.appendMessage === "function" && typeof session.sessionManager.appendMessage === "function";
+	const signal = new SubagentElapsedSignal({
 		attemptStartedAt,
 		lastNoteAt,
 		appendMessage: message => {
-			if (
-				typeof session.agent.appendMessage !== "function" ||
-				typeof session.sessionManager.appendMessage !== "function"
-			)
-				return;
+			if (!canAppend) return;
 			session.agent.appendMessage(message);
 			session.sessionManager.appendMessage(message);
 		},
 	});
+	if (canAppend) signal.attach(session.agent);
+	return signal;
 }
 
 /** Everything the lifecycle reviver of a kept-alive subagent needs, captured explicitly. */
@@ -4358,7 +4358,6 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 			? followMCPTools(mcpManager, { scope: reopened.getSessionId() }, explicitSubagentToolNames(capture.spec))
 			: undefined;
 		let revived: AgentSession;
-		let elapsedSignal: SubagentElapsedSignal | undefined;
 		const savedAttemptStart = extractSessionInit(reopened.getEntries())?.attemptStartedAt;
 		const attemptStartedAt =
 			typeof savedAttemptStart === "number" && Number.isFinite(savedAttemptStart) ? savedAttemptStart : Date.now();
@@ -4390,10 +4389,6 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 				);
 				({ session: revived } = await createAgentSession({
 					...options,
-					transformProviderContext: context => {
-						const note = elapsedSignal?.appendIfDue();
-						return note ? { ...context, messages: [...context.messages, note] } : context;
-					},
 					...(sessionLocalModel
 						? {
 								model: undefined,
@@ -4418,7 +4413,7 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 				mcpFollower?.dispose();
 				throw error;
 			}
-			elapsedSignal = createSessionElapsedSignal(revived, attemptStartedAt, lastNoteAt);
+			createSessionElapsedSignal(revived, attemptStartedAt, lastNoteAt);
 			mcpFollower?.bind(revived);
 			trackSubagentSettings(revived, capture);
 			trackSubagentPendingCandidate(revived, capture);
@@ -4674,7 +4669,6 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 	let reviveSession: AgentReviver | null = null;
 	let pendingSessionManager: Promise<SessionManager> | undefined;
 	let openedSessionManager: SessionManager | undefined;
-	let elapsedSignal: SubagentElapsedSignal | undefined;
 	let untrackedSession: AgentSession | undefined;
 	let pendingSessionDisposal: Promise<void> | undefined;
 	const wakeOptions: IrcWakeTurnMonitorOptions = {
@@ -5063,10 +5057,6 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					customTools: options.customTools,
 					localProtocolOptions: options.localProtocolOptions,
 					telemetry: subagentTelemetry,
-					transformProviderContext: context => {
-						const note = elapsedSignal?.appendIfDue();
-						return note ? { ...context, messages: [...context.messages, note] } : context;
-					},
 					// Seance isolation overrides every inherited field above in one place.
 					...(preparedSession ? seanceIsolationOptions(effectiveCwd) : {}),
 				},
@@ -5196,8 +5186,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			if (sessionFile !== null) {
 				const reviveCapture: WarmReviveCapture = {
 					sessionFile,
-					// A provider transform owns the live session. Never retain it in the parked recipe.
-					spec: { ...sessionSpec, options: { ...sessionSpec.options, transformProviderContext: undefined } },
+					spec: sessionSpec,
 					perCallModel: perCallModelGrants !== undefined,
 					settings: captureSubagentSettings(settings, subagentSettings),
 					parentArtifactManager: preparedSession ? undefined : options.parentArtifactManager,
@@ -5280,8 +5269,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				// even when the workspace was retained for recovery.
 				isolated: worktree !== undefined || undefined,
 			});
-			elapsedSignal = createSessionElapsedSignal(session, startTime);
-			elapsedSignal.start();
+			createSessionElapsedSignal(session, startTime).start();
 
 			abortSignal.addEventListener(
 				"abort",

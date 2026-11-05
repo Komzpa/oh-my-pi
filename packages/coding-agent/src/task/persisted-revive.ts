@@ -433,8 +433,6 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 	const mcpProxyTools = mcpFollower?.proxyTools() ?? [];
 
 	let session: AgentSession;
-	// oxlint-disable-next-line prefer-const -- read by transformProviderContext before assignment
-	let elapsedSignal: SubagentElapsedSignal | undefined;
 	const attemptStartedAt =
 		typeof init.attemptStartedAt === "number" && Number.isFinite(init.attemptStartedAt)
 			? init.attemptStartedAt
@@ -496,10 +494,6 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			// Old files predate persisted spawns: deny re-spawning rather than let
 			// createAgentSession default to wildcard ("*").
 			spawns: init.spawns ?? "",
-			transformProviderContext: context => {
-				const note = elapsedSignal?.appendIfDue();
-				return note ? { ...context, messages: [...context.messages, note] } : context;
-			},
 			hasUI: false,
 			enableLsp: restrictToolNames ? false : spec.enableLsp,
 			...(restrictToolNames
@@ -539,7 +533,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			throw error;
 		}
 	}
-	elapsedSignal = new SubagentElapsedSignal({
+	const elapsedSignal = new SubagentElapsedSignal({
 		attemptStartedAt,
 		lastNoteAt,
 		appendMessage: message => {
@@ -548,6 +542,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			reopened.appendMessage(message);
 		},
 	});
+	elapsedSignal.attach(session.agent);
 	// Let interrupted-turn recovery inspect the untouched transcript before the first provider request.
 	mcpFollower?.bind(session);
 	// Clamp the active set to the persisted list: createAgentSession's
