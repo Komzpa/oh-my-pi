@@ -19,6 +19,25 @@ function poolSettings(pools: Record<string, Record<string, number>>): Settings {
 }
 
 describe("modelRolePools", () => {
+	it("keeps invalid YAML weights behind positive and unlisted members", () => {
+		const settings = Settings.isolated({
+			modelRoles: { pool: "a, b, c, d" },
+			modelRolePools: { pool: { a: "0", b: null, c: 1 } },
+		});
+		for (let i = 0; i < 20; i++) {
+			expect(resolveConfiguredModelPatterns("@pool", settings, `seed-${i}`).slice(2)).toEqual(["a", "b"]);
+		}
+	});
+
+	it("draws huge finite weights like proportional small weights without overflow", () => {
+		for (let i = 0; i < 20; i++) {
+			const seed = `seed-${i}`;
+			expect(drawPoolOrder(["a", "b", "c"], { a: 1e308, b: 1e308, c: 0 }, seed)).toEqual(
+				drawPoolOrder(["a", "b", "c"], { a: 1, b: 1, c: 0 }, seed),
+			);
+		}
+	});
+
 	it("draws members in proportion to their weights", () => {
 		const settings = poolSettings({ free: { "or/free-a": 3, "or/free-b": 1 } });
 		const firsts = new Map<string, number>();

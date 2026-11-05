@@ -307,12 +307,12 @@ describe("subagent runtime model resolution", () => {
 			modelRolePools: { pool: { "pool/a": 1, "pool/b": 1, "pool/c": 1 } },
 		});
 		// Find a seed whose draw differs from the configured order.
-		let seed = 0;
-		let drawn = resolveAgentModelSelection({ agentModel: "@pool", settings, seed: `s${seed}` }).patterns;
-		while (drawn.join() === "pool/a,pool/b,pool/c") {
-			seed++;
+		let drawn: string[] = [];
+		for (let seed = 0; seed < 100; seed++) {
 			drawn = resolveAgentModelSelection({ agentModel: "@pool", settings, seed: `s${seed}` }).patterns;
+			if (drawn.join() !== "pool/a,pool/b,pool/c") break;
 		}
+		expect(drawn.join()).not.toBe("pool/a,pool/b,pool/c");
 		await runSubprocess({
 			cwd: "/tmp",
 			agent: { name: "task", description: "test", systemPrompt: "test", source: "bundled" },
