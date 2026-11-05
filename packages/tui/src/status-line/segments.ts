@@ -1056,11 +1056,20 @@ const cacheSegment: StatusLineSegment = {
 	},
 };
 
+/** Display current structured work without rewriting the persisted session name. */
+export function currentWorkTitle(session: StatusLineSession): string | undefined {
+	const phases = session.getTodoPhases?.() ?? [];
+	const active = phases.find(phase => phase.tasks.some(task => task.status === "in_progress"));
+	if (active) return active.name;
+	const goal = session.getGoalModeState?.()?.goal;
+	if (goal?.status === "active" && goal.objective) return goal.objective;
+	return session.sessionManager?.getSessionName();
+}
+
 const sessionNameSegment: StatusLineSegment = {
 	id: "session_name",
 	render(ctx) {
-		const sessionManager = ctx.session.sessionManager;
-		const name = sessionManager?.getSessionName() || ctx.previewTitle;
+		const name = currentWorkTitle(ctx.session) || ctx.previewTitle;
 		if (!name) return { content: "", visible: false };
 
 		const title = sanitizeStatusText(name);
@@ -1068,7 +1077,7 @@ const sessionNameSegment: StatusLineSegment = {
 		return { content: accentFg(ctx, "accent", content), visible: true };
 	},
 	describe(ctx) {
-		const name = ctx.session.sessionManager?.getSessionName() || ctx.previewTitle;
+		const name = currentWorkTitle(ctx.session) || ctx.previewTitle;
 		const content = name ? sanitizeStatusText(name) : "";
 		// Plain: the terminal styles the title by its role.
 		return content ? segView([span(content)], ctx.isPinned ? "pin" : undefined) : null;
