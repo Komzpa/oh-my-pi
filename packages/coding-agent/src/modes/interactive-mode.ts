@@ -230,6 +230,7 @@ import {
 	formatPhaseDisplayName,
 	isClosedTodo,
 	orderTodoTasksForDisplay,
+	formatTodoArchiveSummary,
 	selectCollapsedTodos,
 	setActiveTodoDescriptionsProvider,
 	todoMatchesAnyDescription,
@@ -5852,6 +5853,10 @@ export class InteractiveMode implements InteractiveModeContext {
 				? ` ${done} ✓ · ${totalOpen} open${dropped ? ` · ${dropped} ×` : ""}`
 				: "");
 		const lines = [...(withChrome ? [""] : []), theme.bold(theme.fg("accent", "TODO")) + theme.fg("dim", counts)];
+		const archivedSummary = getTodoArchiveSummaryFromEntries(
+			selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
+		);
+		if (archivedSummary) lines.push(theme.fg("dim", formatTodoArchiveSummary(archivedSummary)));
 		const lineOwners: (string | undefined)[] = lines.map(() => undefined);
 		if (this.#todoForecast) {
 			const summary = sanitizeStatusText(formatPlanForecastDisplay(this.#todoForecast, this.#todoForecast.now));

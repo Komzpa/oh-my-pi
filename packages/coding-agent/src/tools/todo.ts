@@ -6,6 +6,7 @@ import type {
 	TodoReworkAttemptPersistedEdit,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import {
+	formatTodoArchiveSummary,
 	type TodoStatus,
 	type TodoOperation,
 	type TodoItem,
@@ -80,57 +81,47 @@ export function committedTodoEdit(result: AgentToolResult): TodoPersistedEdit | 
 
 export const TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL = 100;
 
-export const TODO_ARCHIVE_GRACE_MS = 10 * 60 * 1000;
+export const TODO_CLOSED_COMPACTION_THRESHOLD = 50;
 export const TODO_LIVE_CLOSED_TAIL = 10;
 
-/** Move aged closed phases and excess closed context out of the live plan. */
+/** Compact closed history at a row closure, retaining actionable review and dependency context. */
 export function archiveTodoPhases(
 	phases: TodoPhase[],
-	now: number,
+	_now: number,
 ): { phases: TodoPhase[]; archivedPhases: TodoPhase[] } {
 	const isClosed = (task: TodoItem): boolean => task.status === "completed" || task.status === "abandoned";
-	const whollyClosed = new Set<TodoPhase>();
-	const expired = new Set<TodoPhase>();
-	for (const phase of phases) {
-		if (phase.tasks.length === 0 || !phase.tasks.every(isClosed)) continue;
-		whollyClosed.add(phase);
-		const timestamps = phase.tasks.map(task => task.schedule?.finishedAt);
-		if (
-			timestamps.every(at => typeof at === "number" && Number.isFinite(at)) &&
-			now - Math.max(...(timestamps as number[])) >= TODO_ARCHIVE_GRACE_MS
-		)
-			expired.add(phase);
-	}
-	const closedRows = phases
-		.filter(phase => !whollyClosed.has(phase))
-		.flatMap(phase => phase.tasks.map(task => ({ phase, task })))
-		.filter(row => isClosed(row.task));
-	// Unknown terminal times are never evidence that a row is old enough to discard.
-	const known = closedRows.filter(row => Number.isFinite(row.task.schedule?.finishedAt));
-	known.sort((a, b) => b.task.schedule!.finishedAt! - a.task.schedule!.finishedAt!);
-	const retained = new Set(
-		closedRows.filter(row => !Number.isFinite(row.task.schedule?.finishedAt)).map(row => row.task),
+	const tasks = phases.flatMap(phase => phase.tasks);
+	const closed = tasks.filter(isClosed);
+	if (closed.length < TODO_CLOSED_COMPACTION_THRESHOLD) return { phases, archivedPhases: [] };
+	const dependencies = new Set(
+		tasks
+			.filter(task => !isClosed(task))
+			.flatMap(task => [
+				...(task.schedule?.dependencies ?? []),
+				...(task.schedule?.speculativeOn ? [task.schedule.speculativeOn] : []),
+			]),
 	);
-	for (const row of known.slice(0, Math.max(0, TODO_LIVE_CLOSED_TAIL - retained.size))) retained.add(row.task);
-	const archivedPhases: TodoPhase[] = [];
+	// Legacy rows lack finish times: their stable list order supplies the recent tail.
+	const recent = [...closed].sort((a, b) => (a.schedule?.finishedAt ?? 0) - (b.schedule?.finishedAt ?? 0));
+	const retained = new Set(recent.slice(-TODO_LIVE_CLOSED_TAIL));
 	const live: TodoPhase[] = [];
+	const archivedPhases: TodoPhase[] = [];
 	for (const phase of phases) {
-		if (expired.has(phase)) {
-			archivedPhases.push({ name: phase.name, tasks: structuredClone(phase.tasks) });
-			continue;
-		}
-		if (whollyClosed.has(phase)) {
-			live.push(phase);
-			continue;
-		}
-		const tasks: TodoItem[] = [];
-		const removed: TodoItem[] = [];
+		const keep: TodoItem[] = [];
+		const remove: TodoItem[] = [];
 		for (const task of phase.tasks) {
-			if (isClosed(task) && !retained.has(task)) removed.push(structuredClone(task));
-			else tasks.push(task);
+			const schedule = task.schedule;
+			const protectedRow =
+				dependencies.has(task.content) ||
+				schedule?.review === "user" ||
+				schedule?.review === "redo" ||
+				schedule?.handoffPending ||
+				schedule?.reviewPagePending;
+			if (isClosed(task) && !retained.has(task) && !protectedRow) remove.push(cloneTask(task));
+			else keep.push(task);
 		}
-		if (tasks.length > 0) live.push({ name: phase.name, tasks });
-		if (removed.length > 0) archivedPhases.push({ name: phase.name, tasks: removed });
+		if (keep.length) live.push({ ...phase, tasks: keep });
+		if (remove.length) archivedPhases.push({ ...phase, tasks: remove });
 	}
 	return { phases: live, archivedPhases };
 }
@@ -549,7 +540,7 @@ export function getLatestTodoSnapshotIdentity(entries: SessionEntry[]): TodoSnap
 	let latest: TodoPhase[] | undefined;
 	let mutable = false;
 	let sourceEntryId: string | undefined;
-	const archived = getLatestTodoArchiveFromEntries(entries);
+	const archived = getLatestTodoArchiveFromEntries(entries, { includeRestored: true });
 	for (const entry of entries) {
 		const phases = canonicalTodoPhases(entry);
 		const edit = phases ? undefined : compactTodoEditFromEntry(entry);
@@ -624,7 +615,7 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 		break;
 	}
 	let mutable = false;
-	const archived = getLatestTodoArchiveFromEntries(entries);
+	const archived = getLatestTodoArchiveFromEntries(entries, { includeRestored: true });
 	for (let index = snapshotIndex + 1; index < entries.length; index++) {
 		const edit = compactTodoEditFromEntry(entries[index]!);
 		const replayed: TodoReplayResult | undefined = edit
@@ -684,12 +675,27 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 }
 
 /** Recover archived rows from durable archive edits without changing the active live phases. */
-export function getLatestTodoArchiveFromEntries(entries: SessionEntry[]): TodoPhase[] {
+export function getLatestTodoArchiveFromEntries(
+	entries: SessionEntry[],
+	options: { includeRestored?: boolean } = {},
+): TodoPhase[] {
 	const archived = new Map<string, Map<string, TodoItem>>();
 	for (const entry of entries) {
 		const edit = compactTodoEditFromEntry(entry);
 		if ((edit?.kind === "op" && edit.op === "init") || (edit?.kind === "archive" && edit.operation?.op === "init"))
 			archived.clear();
+		const operation = edit?.kind === "archive" ? edit.operation : edit?.kind === "op" ? edit : undefined;
+		if (!options.includeRestored && operation && isRecord(operation.params)) {
+			const params = operation.params;
+			const targets =
+				operation.op === "schedule" && Array.isArray(params.updates)
+					? params.updates.filter(isRecord).map(update => update.task)
+					: [params.task, ...(Array.isArray(params.items) ? params.items : [])];
+			for (const tasks of archived.values())
+				for (const target of targets) {
+					if (typeof target === "string") tasks.delete(target);
+				}
+		}
 		if (!edit || edit.kind !== "archive") continue;
 		for (const phase of edit.archivedPhases) {
 			let tasks = archived.get(phase.name);
@@ -707,27 +713,38 @@ export function getTodoArchiveSummaryFromEntries(
 	entries: SessionEntry[],
 	additional?: TodoArchivePersistedEdit,
 ): TodoArchiveSummary | undefined {
-	let count = 0;
+	const allEntries = additional
+		? [
+				...entries,
+				{
+					type: "custom",
+					customType: USER_TODO_EDIT_CUSTOM_TYPE,
+					data: { edit: additional },
+				} as SessionEntry,
+			]
+		: entries;
+	const tasks = getLatestTodoArchiveFromEntries(allEntries).flatMap(phase => phase.tasks);
 	let fromAt = Number.POSITIVE_INFINITY;
 	let toAt = Number.NEGATIVE_INFINITY;
-	for (const entry of entries) {
+	for (const entry of allEntries) {
 		const edit = compactTodoEditFromEntry(entry);
-		if ((edit?.kind === "op" && edit.op === "init") || (edit?.kind === "archive" && edit.operation?.op === "init")) {
-			count = 0;
+		if (edit?.kind === "op" && edit.op === "init") {
 			fromAt = Number.POSITIVE_INFINITY;
 			toAt = Number.NEGATIVE_INFINITY;
 		}
-		if (!edit || edit.kind !== "archive") continue;
-		count += edit.archivedPhases.reduce((sum, phase) => sum + phase.tasks.length, 0);
+		if (edit?.kind !== "archive") continue;
 		fromAt = Math.min(fromAt, edit.at);
 		toAt = Math.max(toAt, edit.at);
 	}
-	if (additional) {
-		count += additional.archivedPhases.reduce((sum, phase) => sum + phase.tasks.length, 0);
-		fromAt = Math.min(fromAt, additional.at);
-		toAt = Math.max(toAt, additional.at);
-	}
-	return count > 0 ? { count, fromAt, toAt } : undefined;
+	return tasks.length
+		? {
+				count: tasks.length,
+				done: tasks.filter(task => task.status === "completed").length,
+				dropped: tasks.filter(task => task.status === "abandoned").length,
+				fromAt,
+				toAt,
+			}
+		: undefined;
 }
 
 /** Archived completions remain dependency evidence, not live forecast rows. */
@@ -745,13 +762,26 @@ function withArchivedPrerequisites(phases: TodoPhase[], archived: TodoPhase[]): 
 	return evidence.length > 0 ? [...phases, ...evidence] : phases;
 }
 
+/** Complete ledger for accounting consumers; live rows override reopened archived identities. */
+export function withTodoArchive(phases: TodoPhase[], archived: TodoPhase[]): TodoPhase[] {
+	const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
+	const last = new Map(archived.flatMap(phase => phase.tasks.map(task => [task.content, task] as const)));
+	return [
+		...phases,
+		...archived.map(phase => ({
+			...phase,
+			tasks: phase.tasks.filter(task => !liveContents.has(task.content) && last.get(task.content) === task),
+		})),
+	];
+}
+
 export function forecastTodoLivePlan(
 	phases: TodoPhase[],
 	archived: TodoPhase[],
 	options: { now: number; capacity?: number; deadlineAt?: number; risk?: RowRiskOptions },
 ): TodoPlanForecast {
 	const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
-	const forecast = forecastTodoPlan(withArchivedPrerequisites(phases, archived), options);
+	const forecast = forecastTodoPlan(withTodoArchive(phases, archived), options);
 	forecast.rows = forecast.rows.filter(row => liveContents.has(row.content));
 	return forecast;
 }
@@ -1329,6 +1359,15 @@ function applyEntry(
 	archived: TodoPhase[] = [],
 	options: { replay?: boolean } = {},
 ): TodoPhase[] {
+	if (entry.op === "schedule" || entry.op === "done" || entry.op === "drop" || entry.op === "start") {
+		const targets =
+			entry.op === "schedule"
+				? (entry.updates ?? []).map(update => update.task)
+				: [entry.task, ...(entry.items ?? [])];
+		for (const target of targets) {
+			if (target && !findTaskByContent(phases, target)) restoreArchivedTask(phases, archived, target);
+		}
+	}
 	switch (entry.op) {
 		case "init":
 			return initPhases(entry, errors);
@@ -1581,6 +1620,17 @@ export function formatTodoView(
 	});
 	const rows = new Map(forecast.rows.map(row => [row.content, row]));
 	const lines = [formatPlanForecastDisplay(forecast, now)];
+	const archivedTasks = (options.archivedPhases ?? []).flatMap(phase => phase.tasks);
+	if (archivedTasks.length)
+		lines.push(
+			formatTodoArchiveSummary({
+				count: archivedTasks.length,
+				done: archivedTasks.filter(task => task.status === "completed").length,
+				dropped: archivedTasks.filter(task => task.status === "abandoned").length,
+				fromAt: now,
+				toAt: now,
+			}),
+		);
 	let hidden = 0;
 	const finished: string[] = [];
 	for (const phase of phases) {
@@ -2077,7 +2127,14 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		}
 		// An unsuccessful batch must neither commit an operation nor age out existing rows.
 		const failed = errors.length > 0;
-		const archived = !readOnly && !failed ? archiveTodoPhases(updated, now) : undefined;
+		const closesRow = updated.some(phase =>
+			phase.tasks.some(
+				task =>
+					(task.status === "completed" || task.status === "abandoned") &&
+					findTaskByContent(previousPhases, task.content)?.task.status !== task.status,
+			),
+		);
+		const archived = !readOnly && !failed && closesRow ? archiveTodoPhases(updated, now) : undefined;
 		const effective = archived?.phases ?? (failed ? previousPhases : updated);
 		const archivedPhases = op === "init" && !failed ? [] : getLatestTodoArchiveFromEntries(todoEntries);
 		const newArchive = archived?.archivedPhases ?? [];
@@ -2087,7 +2144,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			readOnly || failed || (op === "schedule" && !reviewClosures.length)
 				? []
 				: getCompletionTransitions(previousPhases, updated);
-		if ((archived || healedRows.length || healedEdges.length) && !this.#validatingReviewClosure)
+		if (((!readOnly && !failed) || healedRows.length || healedEdges.length) && !this.#validatingReviewClosure)
 			this.session.setTodoPhases?.(effective);
 		const operation = !readOnly && !failed ? buildTodoOpPersistedEdit(op, entry, now) : undefined;
 		if (operation && healedRows.length) operation.healedSelfEdges = true;
@@ -2127,7 +2184,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
 		const matchingTasks =
 			readOnly && entry.task
-				? [...effective, ...(entry.archive ? archivedPhases : [])].flatMap(phase =>
+				? [...effective, ...archivedPhases].flatMap(phase =>
 						phase.tasks.filter(task => task.content === entry.task).map(task => ({ phase: phase.name, task })),
 					)
 				: undefined;
@@ -2139,7 +2196,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 				? formatTodoView(effective, { now, all: true, archive: true, archivedPhases })
 				: op === "init" || readOnly
 					? formatSummary(effective, errors, forecast, readOnly, now, readOnly ? entry.phase : undefined)
-					: formatMutationSummary(op, previousPhases, effective, errors, forecast, now);
+					: formatMutationSummary(op, previousPhases, updated, errors, forecast, now);
 		const droppedEdges =
 			op === "drop" && !failed
 				? healStoredDanglingEdges(
@@ -2160,6 +2217,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 					type: "text",
 					text: [
 						summary,
+						...(archiveSummary ? [formatTodoArchiveSummary(archiveSummary)] : []),
 						...(healedEdges.length ? [`Healed stored dangling edges: ${healedEdges.join("; ")}`] : []),
 						...(droppedEdges.length ? [`Removed inbound edges: ${droppedEdges.join("; ")}`] : []),
 						...(healedRows.length

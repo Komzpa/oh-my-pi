@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Automatically archive older closed TODO rows at 50 closures, retaining review and dependency context with an archive summary ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Delivery criticism now uses the stakeholder-shadow skill with a cheap worker instead of a dedicated role ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Show delivered TODO rows awaiting your review separately from open and overdue work, with their review links ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

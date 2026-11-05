@@ -59,3 +59,5 @@ User gives multi-step plan—phased todo, numbered/bulleted checklist, or "N bug
 </critical>
 
 For a user decision, use `schedule` with `review: "user"` and `reviewPage: "http://..."` on the decision row. Publish one review card per decision (accept/redo/drop). An idle lead probes the URL for HTTP 200 before waiting. `reviewPage: null` clears the artifact.
+
+At 50 closed rows, a row closure automatically archives older closed history. The last ten closed rows, open-row prerequisites and pending review/handoff rows stay live. Use `view` with `archive: true` to list the archive, or `view` with `task` to retrieve any row by its exact content. Archived rows remain addressable for review acceptance and reopening.

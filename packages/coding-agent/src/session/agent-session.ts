@@ -275,7 +275,7 @@ import {
 	getTodoArchiveSummaryFromEntries,
 	isTodoSelectionEntryMetadata,
 } from "../tools/todo";
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { formatTodoArchiveSummary, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { currentThreadId, isMainThread } from "../thread/identity";
 import { registerLocalSession } from "../thread/session-directory";
@@ -8327,9 +8327,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				return { content: this.#sanitizeGoalTodoText(task.content), status: task.status };
 			}),
 		}));
-		const archiveSummaryLine = archiveSummary
-			? `\nArchive summary: ${archiveSummary.count} archived task${archiveSummary.count === 1 ? "" : "s"} (${new Date(archiveSummary.fromAt).toISOString()} to ${new Date(archiveSummary.toAt).toISOString()}).`
-			: "";
+		const archiveSummaryLine = archiveSummary ? `\n${formatTodoArchiveSummary(archiveSummary)}` : "";
 
 		return prompt.render(goalTodoContextPrompt, {
 			canCallTodoTool,

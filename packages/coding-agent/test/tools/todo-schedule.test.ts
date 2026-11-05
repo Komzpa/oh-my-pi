@@ -236,8 +236,11 @@ describe("native todo schedule operation", () => {
 					data: { edit: secondDone.details?.edit },
 				} as unknown as SessionEntry,
 			]);
-			expect(archived[0]?.tasks[0]?.schedule?.finishedAt).toBe(1_800_000_000_000);
-			expect(archived[0]?.tasks[0]?.status).toBe("completed");
+			expect(archived).toEqual([]);
+			expect(harness.phases()[0].tasks[0]).toMatchObject({
+				status: "completed",
+				schedule: { finishedAt: 1_800_000_000_000 },
+			});
 
 			const timestamp = "2026-09-23T17:13:21.867Z";
 			const legacy = [{ name: "Work", tasks: [{ content: "legacy", status: "completed" as const }] }];

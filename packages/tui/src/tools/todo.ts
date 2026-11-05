@@ -135,8 +135,14 @@ export type TodoPersistedEdit =
 /** One-line archive summary included in ordinary live-plan snapshots. */
 export interface TodoArchiveSummary {
 	count: number;
+	done?: number;
+	dropped?: number;
 	fromAt: number;
 	toAt: number;
+}
+
+export function formatTodoArchiveSummary(summary: TodoArchiveSummary): string {
+	return `${summary.count} closed rows archived${summary.done === undefined ? "" : ` (done ${summary.done}, dropped ${summary.dropped ?? 0})`}`;
 }
 
 /** Todo snapshot and transitions displayed after an operation. */
@@ -858,6 +864,8 @@ export const todoToolRenderer = {
 				return matched;
 			};
 			const bodyLines: string[] = [];
+			if (result.details?.archiveSummary)
+				bodyLines.push(`  ${uiTheme.fg("dim", formatTodoArchiveSummary(result.details.archiveSummary))}`);
 			if (!showSnapshot) {
 				const closedTasks = allTasks.filter(
 					task => task.status === "completed" || task.status === "abandoned",

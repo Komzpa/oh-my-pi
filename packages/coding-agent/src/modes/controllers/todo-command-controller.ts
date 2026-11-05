@@ -1,5 +1,5 @@
 import { selectBranchEntries } from "../../session/branch-selection";
-import { formatTodoView, isTodoSelectionEntryMetadata } from "../../tools/todo";
+import { formatTodoView, getLatestTodoArchiveFromEntries, isTodoSelectionEntryMetadata } from "../../tools/todo";
 import * as fs from "node:fs/promises";
 import {
 	applyOpsToPhases,
@@ -213,7 +213,15 @@ export class TodoCommandController {
 			return;
 		}
 		const capacity = this.ctx.session.settings ? cfgTaskMaxConcurrency.get(this.ctx.session.settings) : undefined;
-		this.ctx.showStatus(formatTodoView(phases, { all, ...(typeof capacity === "number" ? { capacity } : {}) }));
+		this.ctx.showStatus(
+			formatTodoView(phases, {
+				all,
+				archivedPhases: getLatestTodoArchiveFromEntries(
+					selectBranchEntries(this.ctx.sessionManager, isTodoSelectionEntryMetadata),
+				),
+				...(typeof capacity === "number" ? { capacity } : {}),
+			}),
+		);
 	}
 
 	#copyMarkdown(): void {
