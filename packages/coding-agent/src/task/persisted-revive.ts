@@ -301,6 +301,12 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no persisted session contract. The agent was not revived.`,
 		);
 	}
+	if (!hasConversationalHistory(entries)) {
+		await reopened.close();
+		throw new Error(
+			`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no message history (truncated to header/session_init). The agent was not revived.`,
+		);
+	}
 	if (
 		init.isolated &&
 		(!spec.isolatedCwd ||
@@ -311,12 +317,6 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 		throw new Error(`Cannot revive isolated subagent "${ref.id}": its restart workspace is no longer retained.`);
 	}
 
-	if (!hasConversationalHistory(entries)) {
-		await reopened.close();
-		throw new Error(
-			`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no message history (truncated to header/session_init). The agent was not revived.`,
-		);
-	}
 	const resolveParentSession = () =>
 		ref.parentId === spec.rootAgentId ? spec.root : registry.get(ref.parentId ?? "")?.session;
 	const parentSession = resolveParentSession();

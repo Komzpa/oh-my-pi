@@ -565,8 +565,13 @@ describe("persisted subagent revival", () => {
 		expect(capturedOptions?.customTools).toBeUndefined();
 	});
 
-	it("leaves completed isolated sessions transcript-only even when the workspace still exists", async () => {
-		// Directory existence alone must not revive completed isolation.
+	it("leaves isolated sessions transcript-only even when the workspace still exists", async () => {
+		// Isolated runs are never resumable: the worktree is merged + cleaned,
+		// and the parent is told messaging is impossible. A retained workspace
+		// (capture/persist failure) still passes the cwd probe, so the stamped
+		// contract — not directory existence — must gate revival. Otherwise a
+		// restart + Hub message revives the agent in the parent cwd, outside
+		// isolation.
 		const cwd = makeTempDir("@pi-isolated-revive-");
 		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, { isolated: true });
 
