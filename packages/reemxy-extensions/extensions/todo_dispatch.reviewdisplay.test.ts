@@ -3,7 +3,7 @@ import { expect, test, spyOn } from "bun:test";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import * as todos from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch, { idleUserReviewRefusal } from "./todo_dispatch";
-import { openReviewPages, probeReviewPage } from "./todo_review_opener";
+import { probeReviewPage } from "./todo_review_opener";
 import {
 	forecastTodoPlan,
 	formatPlanForecastDisplay,
@@ -51,13 +51,38 @@ test("admission and opener require the published matching result card, then open
 	);
 	try {
 		const handlers = new Map();
-		await todoDispatch({
-			on: (name, fn) => handlers.set(name, fn),
-			getActiveTools: () => ["todo", "task"],
-			registerSoftToolRequirementProvider: () => {},
-			pi: { ...schedule, ...todos },
-		});
-		const ctx = { getTodoPhases: () => live, sessionManager: { getHeader: () => ({ id: "review-test" }) } };
+		const opened = [];
+		let current = live;
+		await todoDispatch(
+			{
+				on: (name, fn) => handlers.set(name, fn),
+				getActiveTools: () => ["todo"],
+				appendEntry: () => {},
+				sendMessage: () => {},
+				registerSoftToolRequirementProvider: () => {},
+				pi: { ...schedule, ...todos },
+			},
+			{ reviewPageOpener: value => opened.push(value) },
+		);
+		const ctx = {
+			cwd: process.cwd(),
+			getTodoPhases: () => current,
+			sessionManager: {
+				getHeader: () => ({ id: "review-test" }),
+				getBranch: () => [],
+				getBranchMatching: () => [],
+				getLatestBranchMatching: () => undefined,
+			},
+			getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+			getTaskMaxConcurrency: () => 20,
+			getLastAssistantText: () => "",
+			isIdle: () => false,
+			hasPendingMessages: () => false,
+			setTimeout: () => ({}),
+			clearTimer: () => {},
+			setInterval: () => ({}),
+			clearInterval: () => {},
+		};
 		const event = {
 			toolName: "todo",
 			input: { op: "schedule", updates: [{ task: row.content, review: "user", reviewPage: url }] },
@@ -85,14 +110,13 @@ test("admission and opener require the published matching result card, then open
 		expect(await probeReviewPage("http://localhost:8800/review/dc/", row.content)).toBe(400);
 		landed = `Commit abc — row: ${row.content}`;
 		expect(await probeReviewPage(url, row.content)).toBe(200);
-		// Non-main hooks continue beyond admission; a rejected page above stopped at the admission boundary.
-		const opened = [];
-		const seen = new Set();
-		const phases = [{ name: "Review", tasks: [{ ...row, schedule: { ...row.schedule, reviewPage: url } }] }];
-		await openReviewPages(phases, seen, probeReviewPage, value => opened.push(value));
-		await openReviewPages(phases, seen, probeReviewPage, value => opened.push(value));
+		current = [
+			{ name: "Review", tasks: [{ ...row, status: "completed", schedule: { ...row.schedule, reviewPage: url } }] },
+		];
+		expect((await handlers.get("tool_call")(event, ctx))?.block).not.toBe(true);
+		expect((await handlers.get("tool_call")(event, ctx))?.block).not.toBe(true);
 		expect(opened).toEqual([url]);
-		expect(await idleUserReviewRefusal(phases, { running: [], recent: [] }, new Set())).toBeUndefined();
+		expect(await idleUserReviewRefusal(current, { running: [], recent: [] }, new Set())).toBeUndefined();
 	} finally {
 		fetch.mockRestore();
 	}
