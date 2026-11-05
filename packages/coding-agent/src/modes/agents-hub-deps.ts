@@ -15,6 +15,7 @@ import {
 	resolveAgentPrewalkPattern,
 	resolveConfiguredModelPatterns,
 	resolveModelOverride,
+	modelSelectorBlacklistError,
 } from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import agentCreationArchitectPrompt from "../prompts/system/agent-creation-architect.md" with { type: "text" };
@@ -93,8 +94,10 @@ export function createAgentsHubDeps(
 			}),
 		resolvePatterns: patterns => {
 			if (patterns.length === 0) return undefined;
+			const available = modelRegistry.getAvailable();
+			const permitted = patterns.filter(pattern => !modelSelectorBlacklistError(pattern, available));
 			const { model, thinkingLevel, explicitThinkingLevel } = resolveModelOverride(
-				patterns,
+				permitted,
 				modelRegistry,
 				settings,
 			);

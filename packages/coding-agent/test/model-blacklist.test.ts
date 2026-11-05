@@ -34,6 +34,7 @@ import { SessionManager } from "../src/session/session-manager";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AuthStorage } from "../src/session/auth-storage";
 
+import { createAgentsHubDeps } from "../src/modes/agents-hub-deps";
 import { collectOnlineTinyCandidates, expandOnlineTinyModelFallbacks } from "../src/tiny/online-candidates";
 
 let dir: string;
@@ -554,3 +555,21 @@ for (const scenario of ["later role candidate", "parent fallback", "banned paren
 		).rejects.toThrow("fixture safety ban");
 	});
 }
+
+test("agents hub previews stale banned selectors as unavailable and keeps allowed alternatives inspectable", () => {
+	banResolverModel();
+	const registry = new ModelRegistry(auth, path.join(dir, "missing-models.json"));
+	spyOn(registry, "getAvailable").mockReturnValue(candidates.slice(1));
+	const deps = createAgentsHubDeps(
+		dir,
+		Settings.isolated({ modelRoles: { task: [bannedSelector, allowedSelector] } }),
+		registry,
+		() => {
+			throw new Error("Preview must not discover extensions");
+		},
+	);
+	expect(deps.resolvePatterns([bannedSelector])).toBeUndefined();
+	expect(deps.resolvePatterns([bannedSelector, allowedSelector])).toBe(allowedSelector);
+	expect(deps.resolvePatterns(["@task"])).toBe(allowedSelector);
+	expect(() => resolveModelOverride([bannedSelector], registry)).toThrow("fixture safety ban");
+});
