@@ -1,4 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
+import selfEdgeReplay from "./fixtures/stored-self-edge-dc.json";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	TodoTool,
@@ -710,6 +711,95 @@ it("accepts the live previewReason-only schedule but rejects a truly empty sched
 });
 
 describe("live schedule admission", () => {
+	it("replays the live restaffing call and heals stored self speculation once", async () => {
+		const h = createHarness(selfEdgeReplay.phases as TodoPhase[]);
+		const result = await h.tool.execute("live-self-edge-repro", selfEdgeReplay.arguments as never);
+		expect(result.isError).not.toBe(true);
+		const text = result.content
+			.filter(c => c.type === "text")
+			.map(c => c.text)
+			.join("\n");
+		for (const name of [
+			"Adaptive Facility: no crash, callout leaders clear of hall",
+			"Land crash and Guide fixes on PR #109, push",
+		]) {
+			expect(text).toContain(name);
+			expect(
+				h
+					.phases()
+					.flatMap(p => p.tasks)
+					.find(t => t.content === name)?.schedule?.speculativeOn,
+			).toBeUndefined();
+		}
+		const row = h
+			.phases()
+			.flatMap(p => p.tasks)
+			.find(t => t.content === "Facility 2D: too much empty space around site")!;
+		expect(row.schedule?.speculativeOn).toBe("Land crash and Guide fixes on PR #109, push");
+		expect(row.schedule?.owner).toBe("BuildingSquare-2");
+		const next = await h.tool.execute("view-after-heal", { op: "view" });
+		expect(
+			next.content
+				.filter(c => c.type === "text")
+				.map(c => c.text)
+				.join("\n"),
+		).not.toContain("Healed stored self-edges");
+	});
+	it("clears speculative targets with null or empty text", async () => {
+		for (const clear of [null, ""]) {
+			const h = createHarness([
+				{
+					name: "W",
+					tasks: [
+						{ content: "A", status: "pending", schedule: { dependencies: [], speculativeOn: "B" } },
+						{ content: "B", status: "pending" },
+					],
+				},
+			]);
+			const r = await h.tool.execute("clear", { op: "schedule", updates: [{ task: "A", speculativeOn: clear }] });
+			expect(r.isError).not.toBe(true);
+			expect(h.phases()[0]!.tasks[0]!.schedule?.speculativeOn).toBeUndefined();
+		}
+	});
+	it("rejects newly introduced self edges and two-row cycles atomically", async () => {
+		for (const updates of [
+			[{ task: "A", dependencies: ["A"] }],
+			[{ task: "A", speculativeOn: "A" }],
+			[
+				{ task: "A", dependencies: ["B"] },
+				{ task: "B", dependencies: ["A"] },
+			],
+		]) {
+			const initial: TodoPhase[] = [
+				{
+					name: "W",
+					tasks: [
+						{ content: "A", status: "pending", schedule: { dependencies: [] } },
+						{ content: "B", status: "pending", schedule: { dependencies: [] } },
+					],
+				},
+			];
+			const h = createHarness(initial);
+			const r = await h.tool.execute("reject-edge", { op: "schedule", updates } as never);
+			expect(r.isError).toBe(true);
+			expect(h.phases()).toEqual(initial);
+		}
+	});
+	it("allows staffing when an unrelated stored cycle exists", async () => {
+		const h = createHarness([
+			{
+				name: "W",
+				tasks: [
+					{ content: "A", status: "pending", schedule: { dependencies: ["B"] } },
+					{ content: "B", status: "pending", schedule: { dependencies: ["A"] } },
+					{ content: "Staff this", status: "pending", schedule: { dependencies: [] } },
+				],
+			},
+		]);
+		const r = await h.tool.execute("staff", { op: "schedule", updates: [{ task: "Staff this", owner: "worker" }] });
+		expect(r.isError).not.toBe(true);
+		expect(h.phases()[0]!.tasks[2]!.schedule?.owner).toBe("worker");
+	});
 	it("refuses speculative self/cycles atomically, accepting a real review target", async () => {
 		const initial: TodoPhase[] = [
 			{
