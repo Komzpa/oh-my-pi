@@ -750,6 +750,58 @@ describe("live schedule admission", () => {
 				.join("\n"),
 		).not.toContain("Healed stored self-edges");
 	});
+	it("reports legacy self-edge healing once after replaying an unrelated stored operation", async () => {
+		const initial: TodoPhase[] = [
+			{
+				name: "W",
+				tasks: [{ content: "A", status: "pending", schedule: { speculativeOn: "A" } }],
+			},
+		];
+		const entries = [
+			{ type: "custom", customType: "user_todo_edit", data: { phases: initial } },
+			{
+				type: "custom",
+				customType: "user_todo_edit",
+				data: {
+					edit: {
+						v: 1,
+						kind: "op",
+						at: Date.now(),
+						op: "schedule",
+						params: { op: "schedule", updates: [{ task: "A", owner: "Worker" }] },
+					},
+				},
+			},
+		] as SessionEntry[];
+		const h = createHarness(getLatestTodoPhasesFromEntries(entries)!);
+		const result = await h.tool.execute("heal-after-resume", {
+			op: "schedule",
+			updates: [{ task: "A", owner: "NewWorker" }],
+		});
+		expect(result.isError).not.toBe(true);
+		expect(result.content).toContainEqual(
+			expect.objectContaining({
+				text: expect.stringContaining('Healed stored self-edges: "A"'),
+			}),
+		);
+		entries.push({
+			type: "message",
+			message: {
+				role: "toolResult",
+				toolName: "todo",
+				...JSON.parse(JSON.stringify(result)),
+			},
+		} as SessionEntry);
+		const restored = getLatestTodoPhasesFromEntries(entries)!;
+		expect(restored[0].tasks[0].schedule?.speculativeOn).toBeUndefined();
+		expect(restored[0].tasks[0].schedule?.owner).toBe("NewWorker");
+		const next = await createHarness(restored).tool.execute("already-healed", { op: "view" });
+		expect(next.content).not.toContainEqual(
+			expect.objectContaining({
+				text: expect.stringContaining("Healed stored self-edges"),
+			}),
+		);
+	});
 	it("clears speculative targets with null or empty text", async () => {
 		for (const clear of [null, ""]) {
 			const h = createHarness([
