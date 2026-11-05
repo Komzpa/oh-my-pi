@@ -183,6 +183,7 @@ describe("rework attempt TODO HUD", () => {
 			expect(Bun.stripANSI(missed)).toContain("by 64m");
 			const summaryLine = missed.split("\n").find(line => line.includes("MISSES"))!;
 			expect(summaryLine).toContain(theme.fg("error", Bun.stripANSI(summaryLine).trim()));
+			mode.todoPhases = structuredClone(mode.todoPhases);
 			mode.todoPhases[0]!.tasks[0]!.schedule!.postDeadline = true;
 			mode.setTodoExpanded(true);
 			const deferred = mode.todoContainer.render(300).join("\n");
