@@ -1039,7 +1039,9 @@ export class RequirementsLedgerRuntime {
 		const total = requirements.filter(
 			item => item.classification === "candidate" || item.classification === "linked",
 		).length;
-		this.#host.setAuditStatus?.(total ? `audit ${open.length}/${total} open` : undefined);
+		this.#host.setAuditStatus?.(
+			total ? `requirement audits: ${open.length} of ${total} need verification` : undefined,
+		);
 		if (open.length === 0) {
 			this.#noticeState = "";
 			return;

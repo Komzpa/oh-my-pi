@@ -5460,7 +5460,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (closedTasks > 0) filled = Math.max(filled, 1);
 		if (closedTasks < totalTasks) filled = Math.min(filled, pathLen - 1);
 
-		const lines = ["", theme.bold(theme.fg("accent", "TODO"))];
+		const completedTasks = phases.reduce(
+			(sum, phase) => sum + phase.tasks.filter(task => task.status === "completed").length,
+			0,
+		);
+		const rowSummary = `rows ${totalTasks}: ${completedTasks} done · ${totalTasks - closedTasks} open · ${closedTasks - completedTasks} dropped`;
+		const lines = ["", theme.bold(theme.fg("accent", "TODO")) + theme.fg("dim", ` · ${rowSummary}`)];
 		for (let i = 0; i < contentLines.length; i++) {
 			lines.push(` ${theme.fg(i < filled ? "accent" : "dim", spineGlyphs[i]!)}${contentLines[i]}`);
 		}
@@ -5516,7 +5521,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			[
 				row(
 					[
-						text([span("TODO", "accent strong")]),
+						text([span("TODO", "accent strong"), span(` · ${rowSummary}`, "dim")]),
 						node("progress", { value: closedTasks / totalTasks, label: `${closedTasks}/${totalTasks}` }),
 					],
 					{ gap: "sm", align: "center" },
@@ -10054,7 +10059,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (counts.total === 0) return undefined;
 		return text([
 			span("TODO", "accent strong"),
-			span(` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`, "dim"),
+			span(
+				` · requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed`,
+				"dim",
+			),
 		]);
 	}
 
@@ -10068,7 +10076,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		if (showRequirements) {
 			const title = theme.bold(theme.fg("accent", "TODO"));
-			const requirementText = `req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`;
+			const requirementText = `requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed`;
 			const requirementSummary = theme.fg("dim", ` · ${requirementText}`);
 			if (compact) {
 				const hasVisibleTasks = !wasHidden && this.todoPhases.some(phase => phase.tasks.length > 0);
@@ -10095,7 +10103,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const title = theme.bold(theme.fg("accent", "TODO"));
 		const requirementSummary = theme.fg(
 			"dim",
-			` · req ${counts.total} · ${counts.passed} ✓ · ${counts.open} open · ${counts.failed} ✗`,
+			` · requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed`,
 		);
 		if (lines.length === 0) return ["", truncateToWidth(`${title}${requirementSummary}`, width)];
 

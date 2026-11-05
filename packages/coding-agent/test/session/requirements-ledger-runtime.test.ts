@@ -1367,9 +1367,9 @@ describe("completed row history publication replay", () => {
 			git(cwd, "commit", "-m", "later work");
 			const message = { content: [{ type: "text", text: "Status" }], stopReason: "stop" } as never;
 			await gate()?.(message, new AbortController().signal);
-			expect(auditStatuses.at(-1)).toBe(`audit ${open}/1 open`);
+			expect(auditStatuses.at(-1)).toBe(`requirement audits: ${open} of 1 need verification`);
 			await gate()?.(message, new AbortController().signal);
-			expect(auditStatuses.at(-1)).toBe(`audit ${open}/1 open`);
+			expect(auditStatuses.at(-1)).toBe(`requirement audits: ${open} of 1 need verification`);
 			if (open)
 				expect(getLatestRequirements(manager.getBranch())[0]!.rowVerdicts![task.content]!.status).toBe(
 					"unverifiable",
@@ -1460,7 +1460,7 @@ describe("audit publication status", () => {
 				const message = { content: [{ type: "text", text }], stopReason: "stop" };
 				const signal = new AbortController().signal;
 				expect(await gate()?.(message as never, signal)).toBeUndefined();
-				expect(auditStatuses.at(-1)).toBe("audit 1/1 open");
+				expect(auditStatuses.at(-1)).toBe("requirement audits: 1 of 1 need verification");
 				expect(await gate()?.(message as never, signal)).toBeUndefined();
 				expect(notices).toHaveLength(1);
 				expect(message).toEqual({ content: [{ type: "text", text }], stopReason: "stop" });
@@ -1481,7 +1481,7 @@ describe("audit publication status", () => {
 			const message = { content: [{ type: "text", text: "Done" }], stopReason: "stop" } as never;
 			const signal = new AbortController().signal;
 			expect(await gate()?.(message, signal)).toBeUndefined();
-			expect(auditStatuses.at(-1)).toBe("audit 1/1 open");
+			expect(auditStatuses.at(-1)).toBe("requirement audits: 1 of 1 need verification");
 			await auditFixtureArtifact(
 				runtime,
 				"qa-status",
@@ -1489,7 +1489,7 @@ describe("audit publication status", () => {
 				"artifact exercised",
 			);
 			expect(await gate()?.(message, signal)).toBeUndefined();
-			expect(auditStatuses.at(-1)).toBe("audit 0/1 open");
+			expect(auditStatuses.at(-1)).toBe("requirement audits: 0 of 1 need verification");
 			appendRequirementsSnapshot({ appendEntry: (type, data) => manager.appendCustomEntry(type, data) }, []);
 			expect(await gate()?.(message, signal)).toBeUndefined();
 			expect(auditStatuses.at(-1)).toBeUndefined();
@@ -2161,7 +2161,7 @@ describe("compact ledger publication notice", () => {
 			const first = await gate()?.(message as never, signal);
 			expect(first).toBeUndefined();
 			expect(message.content).toEqual([{ type: "text", text: original }]);
-			expect(auditStatuses.at(-1)).toBe("audit 40/40 open");
+			expect(auditStatuses.at(-1)).toBe("requirement audits: 40 of 40 need verification");
 			expect(notices).toHaveLength(1);
 			expect(Buffer.byteLength(notices[0]!)).toBeLessThanOrEqual(1500);
 			expect(notices[0]).not.toContain("RAW USER QUOTE");
