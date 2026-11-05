@@ -287,9 +287,9 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	const tool = getTool(options.session, name);
 	// Wire aliases share every guard, status and bookkeeping path with the canonical tool.
 	name = tool.name;
-	if (!isEvalBridgeToolCallable(tool)) {
-		// The session recognizes checkpoint/rewind only as direct toolResult
-		// messages; a bridged call would report success without taking effect.
+	if (!isEvalBridgeToolCallable(tool, args)) {
+		// Session changes and requirement audit admission/intake need direct
+		// agent-loop events; a bridged call cannot commit their canonical state.
 		throw new ToolError(`\`${name}\` cannot run through the eval bridge; call the direct \`${name}\` tool.`);
 	}
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;

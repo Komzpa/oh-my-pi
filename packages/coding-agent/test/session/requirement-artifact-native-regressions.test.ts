@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
-import { statusCoordinator } from "../../../natives/native/status-coordinator.js";
+import { createStatusCoordinator, statusCoordinator } from "../../../natives/native/status-coordinator.js";
 import {
 	checkRequirementIdentity,
 	currentRequirementIdentity,
@@ -119,6 +119,42 @@ describe("native Git worktree identity", () => {
 		vcs.invalidateStatus(root);
 		expect((await checkRequirementIdentity(current.identity)).state).not.toBe("fresh");
 	}, 30_000);
+
+	it("reuses one coordinated scan for repeated typed receipts on an unchanged checkout", async () => {
+		const { root, head } = await fixture({ "artifact.txt": "audited\n" });
+		let clock = 0;
+		const coordinator = createStatusCoordinator({
+			now: () => clock,
+			setTimer: (callback, delay) =>
+				setTimeout(() => {
+					clock += delay ?? 0;
+					callback();
+				}, 0),
+		});
+		let scans = 0;
+		const queue = spyOn(statusCoordinator, "request").mockImplementation((key, snapshot, meta, run, signal, fresh) =>
+			coordinator.request(
+				key,
+				snapshot,
+				meta,
+				() => {
+					scans++;
+					return run();
+				},
+				signal,
+				fresh,
+			),
+		);
+		try {
+			for (let row = 0; row < 2; row++)
+				expect(await checkRequirementIdentity({ kind: "git", repo: root, commit: head })).toEqual({
+					state: "fresh",
+				});
+			expect(scans).toBe(1);
+		} finally {
+			queue.mockRestore();
+		}
+	});
 
 	it("rejects a session write while confirming HEAD stayed fixed", async () => {
 		const { root, head } = await fixture({ "src/a.ts": "export const a = 1;\n" });
