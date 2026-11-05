@@ -540,6 +540,11 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			spawns: init.spawns ?? "",
 			hasUI: false,
 			enableLsp: restrictToolNames ? false : spec.enableLsp,
+			...(spec.discoveryOptions && {
+				extensionRoots: undefined,
+				preloadedPreparedExtensions: undefined,
+				...spec.discoveryOptions,
+			}),
 			...(restrictToolNames
 				? {
 						enableIrc: false,
