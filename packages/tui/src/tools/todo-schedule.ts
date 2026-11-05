@@ -1756,7 +1756,7 @@ export function formatPlanForecast(plan: TodoPlanForecast, _now: number): string
 		parts.push(
 			`${plan.risk.onTimeProbability === undefined ? "" : `P(on time) ${Math.round(plan.risk.onTimeProbability * 100)}% · `}P80 ${displayTimestamp(plan.risk.p80Finish, plan.now)}`,
 		);
-	else if (plan.riskModelUnavailable) parts.push("risk model unavailable");
+
 	if (plan.risk) {
 		if (plan.deadlineAt !== undefined) parts.push(`due ${displayTimestamp(plan.deadlineAt, plan.now)}`);
 		if (plan.deadlineStatus) parts.push(plan.deadlineStatus);
@@ -1779,6 +1779,7 @@ export function formatPlanForecast(plan: TodoPlanForecast, _now: number): string
 	if (plan.issues.length) parts.push(`issues: ${plan.issues.length}`);
 	if (plan.planningIssues.length) parts.push(`plan required: ${plan.planningIssues.length} repairs`);
 	if (plan.resourceAssumptions?.length) parts.push(`resource assumptions: ${plan.resourceAssumptions.length}`);
+	if (plan.riskModelUnavailable) parts.push("risk model unavailable");
 	return parts.join(" | ");
 }
 
@@ -1876,7 +1877,7 @@ export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): 
 		parts.push(
 			`${plan.risk.onTimeProbability === undefined ? "" : `P(on time) ${Math.round(plan.risk.onTimeProbability * 100)}% · `}P80 ${displayTimestamp(plan.risk.p80Finish, plan.now)}`,
 		);
-	else if (plan.riskModelUnavailable) parts.push("risk model unavailable");
+
 	if (plan.risk) {
 		if (plan.deadlineAt !== undefined) parts.push(`due ${displayTimestamp(plan.deadlineAt, plan.now)}`);
 		if (plan.deadlineStatus) parts.push(plan.deadlineStatus);
@@ -1895,5 +1896,6 @@ export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): 
 	if (plan.planningIssues.length) parts.push(`plan required: ${plan.planningIssues.length} repairs`);
 	const overdue = plan.rows.filter(row => row.overdue).length;
 	if (overdue) parts.push(`${overdue} overdue`);
+	if (plan.riskModelUnavailable) parts.push("risk model unavailable");
 	return parts.join(" · ");
 }
