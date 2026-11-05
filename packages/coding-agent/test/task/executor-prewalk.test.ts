@@ -5,9 +5,9 @@
  * model it resolves to, and when the hand-off is skipped (override off,
  * target identical to the starting model).
  */
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as dirs from "@oh-my-pi/pi-utils";
 import { TempDir } from "@oh-my-pi/pi-utils";
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
