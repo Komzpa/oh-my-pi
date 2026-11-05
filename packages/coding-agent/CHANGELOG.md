@@ -11,6 +11,8 @@
 - Agent `bash` commands run with `LANG`/`LC_ALL=C.UTF-8` on every platform instead of the inherited locale, so sort order, number formats and tool messages no longer vary by machine; a locale in the command's `env` or `.envrc` still wins, and `!` commands keep yours
 ### Fixed
 
+- Delivery criticism now uses the stakeholder-shadow skill with a cheap worker instead of a dedicated role ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Show delivered TODO rows awaiting your review separately from open and overdue work, with their review links ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Refuse idle waits for rows whose executors have finished, with verification or restaffing actions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

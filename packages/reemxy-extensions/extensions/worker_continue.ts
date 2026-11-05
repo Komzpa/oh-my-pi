@@ -11,7 +11,6 @@ const READ_ONLY_ROLES = new Set([
 	"reviewer",
 	"visual-qa",
 	"adversary",
-	"user-shadow",
 	"qa-auditor",
 	"security-reviewer",
 	"architect",

@@ -5,7 +5,6 @@ import { resolveModelOverride } from "@oh-my-pi/pi-coding-agent/config/model-res
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { parseAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import gateRunner from "./agents/gate-runner.md" with { type: "text" };
-import userShadow from "./agents/user-shadow.md" with { type: "text" };
 import gitOwner from "./agents/git-pr-owner.md" with { type: "text" };
 
 const model = (provider: string, id: string) =>
@@ -29,7 +28,6 @@ const opus = model("anthropic", "claude-opus-5-5");
 describe("mechanical worker routing", () => {
 	for (const [name, content] of [
 		["gate-runner", gateRunner],
-		["user-shadow", userShadow],
 		["git-pr-owner", gitOwner],
 	]) {
 		test(`${name} avoids the brrrr Opus pool and falls back to Luna when Terra is unavailable`, () => {

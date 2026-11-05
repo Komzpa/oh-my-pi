@@ -12,7 +12,7 @@ function extensionProfiles() {
 }
 
 /** Role groups are defined by the owner in config.yml; a missing role falls back to `default` in core. */
-const CHEAP_PROFILES = new Set(["gate-runner", "git-pr-owner", "user-shadow"]);
+const CHEAP_PROFILES = new Set(["gate-runner", "git-pr-owner"]);
 const GROUPS: Record<string, string[]> = {
 	scout: ["@free", "@fast"],
 	scribe: ["@free", "@fast"],
@@ -37,7 +37,6 @@ const GROUPS: Record<string, string[]> = {
 	profiler: ["@strong"],
 	"visual-qa": ["@vision-code"],
 	rebaser: ["@code"],
-	"user-shadow": ["@judgment"],
 };
 
 // Fixed per-type effort so the auto effort judge never picks a worker's level
@@ -66,15 +65,17 @@ const LEVELS: Record<string, string> = {
 	profiler: "medium",
 	"visual-qa": "medium",
 	rebaser: "medium",
-	"user-shadow": "low",
 };
 
 describe("Reemxy extension agent model chains", () => {
-	test("all 19 shared preambles escalate brief mismatches to the lead and follow the answer", () => {
+	test("removed user-shadow role is absent from the extension inventory", () => {
+		expect(extensionProfiles().map(profile => profile.name)).not.toContain("user-shadow");
+	});
+	test("all 18 shared preambles escalate brief mismatches to the lead and follow the answer", () => {
 		const profiles = extensionProfiles().filter(profile =>
 			profile.systemPrompt.includes("Before starting, verify the brief gives the goal"),
 		);
-		expect(profiles).toHaveLength(19);
+		expect(profiles).toHaveLength(18);
 		const line =
 			"ask your lead before acting on it: send exactly one message with `write` to `agent://Main`";
 		for (const profile of profiles) {
@@ -119,7 +120,6 @@ describe("Reemxy extension agent model chains", () => {
 					"profiler",
 					"visual-qa",
 					"rebaser",
-					"user-shadow",
 				].includes(profile.name)
 			)
 				expect(profile.model, profile.name).not.toContain("@free");
