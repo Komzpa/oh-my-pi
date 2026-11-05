@@ -41,28 +41,34 @@ export class SubagentElapsedSignal {
 		this.#now = options.now ?? Date.now;
 	}
 
-	/** Retain due checkpoints in the active tool loop as well as the persisted transcript. */
+	/** Let the loop persist checkpoints in the same order as pending follow-up input. */
 	attach(agent: Agent): void {
-		agent.addBeforeModelCallHook((_signal, context) => {
-			const note = this.appendIfDue();
-			if (note) context.messages.push(note);
+		agent.addBeforeModelCallHook(() => {
+			const note = this.#takeIfDue();
+			return note ? [note] : undefined;
 		});
 	}
 
 	/** Add the attempt's initial note, or keep the existing note when reviving it. */
 	start(): void {
 		if (this.#lastNoteAt !== undefined) return;
-		this.#appendAt(this.#attemptStartedAt);
+		this.#appendMessage(this.#createAt(this.#attemptStartedAt));
 	}
 
 	/** Add a note at a request boundary once five minutes have passed since the last note. */
 	appendIfDue(): Message | undefined {
-		const now = this.#now();
-		if (this.#lastNoteAt !== undefined && now - this.#lastNoteAt < SUBAGENT_ELAPSED_NOTE_CADENCE_MS) return undefined;
-		return this.#appendAt(now);
+		const message = this.#takeIfDue();
+		if (message) this.#appendMessage(message);
+		return message;
 	}
 
-	#appendAt(timestamp: number): Message {
+	#takeIfDue(): Message | undefined {
+		const now = this.#now();
+		if (this.#lastNoteAt !== undefined && now - this.#lastNoteAt < SUBAGENT_ELAPSED_NOTE_CADENCE_MS) return undefined;
+		return this.#createAt(now);
+	}
+
+	#createAt(timestamp: number): Message {
 		const elapsedMinutes = Math.floor(Math.max(0, timestamp - this.#attemptStartedAt) / 60_000);
 		const date = new Date(timestamp);
 		const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
@@ -71,7 +77,6 @@ export class SubagentElapsedSignal {
 			content: prompt.render(elapsedNoteTemplate, { time, elapsedMinutes }).trim(),
 			timestamp,
 		};
-		this.#appendMessage(message);
 		this.#lastNoteAt = timestamp;
 		return message;
 	}

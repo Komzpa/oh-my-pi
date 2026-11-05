@@ -423,9 +423,13 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 *
 	 * Runs after pending messages are folded in and before provider conversion.
 	 * Mutate the agent context here; use `beforeModelCall` to inspect the
-	 * provider-bound context.
+	 * provider-bound context. Returned messages are appended through the same
+	 * ordered message events as pending input, after that input.
 	 */
-	syncContextBeforeModelCall?: (context: AgentContext, signal?: AbortSignal) => void | Promise<void>;
+	syncContextBeforeModelCall?: (
+		context: AgentContext,
+		signal?: AbortSignal,
+	) => AgentMessage[] | void | Promise<AgentMessage[] | void>;
 
 	/**
 	 * Asked after the complete provider context has been built, including
