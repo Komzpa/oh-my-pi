@@ -1337,6 +1337,13 @@ function inferTodoOp(args: Record<string, unknown>, hasExistingPhases: boolean):
  * for a normal model retry.
  */
 function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntryValue | string {
+	// Tool arguments cannot establish user authority over the goal deadline.
+	if (isRecord(raw)) {
+		const updates = Array.isArray(raw.updates) ? raw.updates : [];
+		const deadlineKeys = ["deadlineAt", "due", "dueAt", "deadlineRenegotiation"];
+		if ([raw, ...updates].some(value => isRecord(value) && deadlineKeys.some(key => key in value)))
+			return "The deadline belongs to the user. Todo operations cannot change the due time. Re-plan the work to fit the existing deadline.";
+	}
 	const direct = todoSchema(raw);
 	if (!(direct instanceof type.errors)) return direct;
 	if (isRecord(raw) && raw.op === undefined) {
@@ -1909,24 +1916,6 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	): Promise<AgentToolResult<TodoToolDetails>> {
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
-		// Tool calls cannot establish user authority over a goal deadline.
-		const deadlineKeys = ["deadlineAt", "due", "dueAt", "deadlineRenegotiation"];
-		const raw = params as unknown as Record<string, unknown>;
-		const updates = Array.isArray(raw.updates) ? raw.updates : [];
-		if (
-			[raw, ...updates].some(value => value && typeof value === "object" && deadlineKeys.some(key => key in value))
-		) {
-			return {
-				content: [
-					{
-						type: "text",
-						text: "The deadline belongs to the user. Todo operations cannot change the due time. Re-plan the work to fit the existing deadline.",
-					},
-				],
-				isError: true,
-				details: { phases: previousPhases, storage },
-			};
-		}
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
 		if (typeof resolved === "string") {
 			return {
