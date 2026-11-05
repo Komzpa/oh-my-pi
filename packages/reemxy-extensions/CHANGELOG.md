@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Gate and git workers prefer Terra at low effort, with Luna as fallback.
+
 ### Added
 
 - Track asked-to-visible preview latency and require preview integration before delayed work waits behind suite gates, opt-in via `todo.preview` ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
