@@ -1747,11 +1747,11 @@ test("overdue follow-through re-arms by minute and dispatches only actionable, r
       | { block?: boolean; reason?: string }
       | undefined;
     expect(refused?.block).toBe(true);
-    expect(refused?.reason).toContain("Stop waiting");
+    expect(refused?.reason).toContain("WAIT/STOP REFUSED");
     expect(refused?.reason).toContain("Repair export");
-    expect(refused?.reason).toContain("past the deadline");
-    // One order at a time: ready rows mean the task tool next, not a replan in the same breath.
-    expect(refused?.reason).toContain("skill://chief-of-staff");
+    expect(refused?.reason).toContain("overdue");
+    // Overdue work requires a recorded re-plan even while dispatch remains actionable.
+    expect(refused?.reason).toContain("Crashing");
     expect(refused?.reason).not.toContain("todo tool");
 
     // A real Task result must reconcile to an exact live owner before another batch is offered.
@@ -1765,8 +1765,7 @@ test("overdue follow-through re-arms by minute and dispatches only actionable, r
       | { block?: boolean; reason?: string }
       | undefined;
     expect(late?.block).toBe(true);
-    expect(late?.reason).toContain("Repair retrieval");
-    expect(late?.reason).toContain("skill://chief-of-staff");
+    expect(late?.reason).toContain("still required");
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
     (await handlers.get("agent_end")!({}, ctx));
     expect(requirement()?.toolName).toBe("task");
@@ -1787,8 +1786,8 @@ test("overdue follow-through re-arms by minute and dispatches only actionable, r
     (await handlers.get("agent_end")!({}, ctx));
     expect(requirement()).toBeUndefined();
     expect(timers[0]?.delay).toBeGreaterThan(0);
-    // Every open row staffed: waiting for the workers is legitimate.
-    expect((await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "call-wait-staffed" }, ctx))).toBeUndefined();
+    // Staffing alone cannot clear recorded overdue work.
+    expect((await handlers.get("tool_call")!({ toolName: "wait", toolCallId: "call-wait-staffed" }, ctx)) as { block: boolean }).toMatchObject({ block: true });
 
     // Once both rows have exact live owners, recurring overdue minutes do not create a paid loop.
     setSystemTime(new Date(liveNow + 120_000));
