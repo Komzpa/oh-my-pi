@@ -151,17 +151,23 @@ export function previewScheduleRefusal(
 	const call = input as { op?: string; updates?: Array<{ task?: string; owner?: string; dependencies?: string[] }> };
 	if (call?.op !== "schedule") return;
 	const rows = phases.flatMap(phase => phase.tasks);
+	const exception = previewReason(input);
 	for (const update of call.updates ?? []) {
 		const row = rows.find(candidate => candidate.content === update.task);
 		if (
 			!row ||
 			row.schedule?.firstRequirementAt === undefined ||
+			(previewCommits(row).length === 0 && !records.some(record => record.task === row.content)) ||
+			exception?.task === row.content ||
 			(records.some(record => record.task === row.content) &&
-				records.filter(record => record.task === row.content).every(record => record.visibleAt !== undefined))
+				records
+					.filter(record => record.task === row.content)
+					.every(record => record.visibleAt !== undefined || record.reason !== undefined))
 		)
 			continue;
-		const owner = update.owner ?? row.schedule?.owner;
-		const dependencies = update.dependencies ?? row.schedule?.dependencies ?? [];
+		// Only an explicit gate assignment creates a visibility prerequisite.
+		const owner = update.owner;
+		const dependencies = update.dependencies ?? [];
 		if (
 			(owner &&
 				(profiles.get(owner) === "gate-runner" ||
@@ -176,29 +182,36 @@ export function previewScheduleRefusal(
 				),
 			)
 		) {
-			return `Refusing todo schedule: refresh the preview for ${JSON.stringify(row.content)} first; let the whole-suite or landing gate batch afterwards.`;
+			return `Refusing todo schedule: refresh the preview for ${JSON.stringify(row.content)} first; let the whole-suite or landing gate batch afterwards. To defer in this same call, set previewReason={task:${JSON.stringify(row.content)},kind:"deferred",detail:<reason>}.`;
 		}
 	}
 }
 
 export function previewDispatchRefusal(input: unknown, rows: TodoScheduleInputTask[]): string | undefined {
+	rows = rows.filter(row => !(row.schedule?.previewIdentityMissing ?? previewCommits(row).length === 0));
 	if (!rows.length) return;
 	const call = input as {
-		tasks?: Array<{ previewIntegration?: { task?: string; kind?: string } }>;
+		tasks?: Array<{ agent?: string; task?: string; previewIntegration?: { task?: string; kind?: string } }>;
+		agent?: string;
+		task?: string;
 		previewIntegration?: { task?: string; kind?: string };
 	};
-	const items = call?.tasks ?? (call?.previewIntegration ? [call] : []);
-	if (
-		items.length &&
-		items.every(item =>
-			rows.some(
-				row =>
+	for (const item of call?.tasks ?? [call]) {
+		if (item?.agent !== "gate-runner") continue;
+		const blocked = rows.filter(
+			row =>
+				item.task?.includes(row.content) &&
+				!(
 					item.previewIntegration?.task === row.content &&
-					["refresh", "integration"].includes(item.previewIntegration.kind ?? ""),
-			),
-		)
-	)
-		return;
+					["refresh", "integration"].includes(item.previewIntegration.kind ?? "")
+				),
+		);
+		if (blocked.length) return previewPlanProblem(blocked);
+	}
+}
+
+export function previewPlanProblem(rows: TodoScheduleInputTask[]): string | undefined {
+	if (!rows.length) return;
 	return `Plan problem ignored: preview-not-visible. Next dispatch must refresh/integrate the preview for ${rows.map(row => `${JSON.stringify(row.content)}${(row.schedule?.previewIdentityMissing ?? previewCommits(row).length === 0) ? " (no commit identity)" : ""}`).join(", ")}. Set each task item's previewIntegration={task:<exact row>,kind:"refresh"|"integration"}, or record todo.previewReason={task,kind:"deferred"|"not-applicable"|"external-blocker",detail:<reason>}.`;
 }
 
