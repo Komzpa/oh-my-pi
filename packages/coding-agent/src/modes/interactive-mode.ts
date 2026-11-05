@@ -225,6 +225,7 @@ import {
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	type TodoHudStateEntryData,
 } from "../tools/todo";
+import { readTodoDisplayLedger } from "../tools/todo-plan-display";
 import { todoMatchesObservedWorker } from "../tools/todo-executor";
 import {
 	formatPhaseDisplayName,
@@ -236,10 +237,12 @@ import {
 	todoMatchesAnyDescription,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import {
+	renderTodoPlanDisplay,
 	formatPlanForecastDisplay,
 	isTodoAwaitingReview,
 	formatTaskForecastDisplay,
 	type TodoPlanForecast,
+	type TodoDisplayWorker,
 	type TodoTaskForecast,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { readGoalDeadlineFromManager } from "../goals/deadlines";
@@ -5703,6 +5706,45 @@ export class InteractiveMode implements InteractiveModeContext {
 				: workers;
 		activeDescs.splice(0, activeDescs.length, ...[...activeTodoWorkers.byTask.keys()].map(todo => todo.content));
 		const expanded = this.todoExpanded;
+		if (!expanded) {
+			const sessions = this.#observerRegistry.getSessions().filter(isHudSubagent);
+			const liveWorkers: TodoDisplayWorker[] = sessions.map(worker => ({
+				id: worker.id,
+				agent: worker.agent ?? worker.progress?.agent,
+				startedAt:
+					worker.progressAt !== undefined && worker.progress
+						? worker.progressAt - worker.progress.durationMs
+						: worker.lastUpdate,
+			}));
+			for (const job of owner.getAsyncJobSnapshot()?.running ?? []) {
+				if (!liveWorkers.some(worker => worker.id === job.id))
+					liveWorkers.push({ id: job.id, startedAt: job.startTime });
+			}
+			const owners = new Map<string, TodoDisplayWorker>();
+			const runningWorkerIds = new Set(liveWorkers.map(worker => worker.id));
+			for (const task of livePhases.flatMap(phase => phase.tasks)) {
+				const worker = liveWorkers.find(worker =>
+					todoMatchesObservedWorker(task, { workerId: worker.id, runningWorkerIds }),
+				);
+				if (worker) owners.set(task.content, worker);
+			}
+			const entries = owner.sessionManager.getBranch();
+			const ledger = readTodoDisplayLedger(entries, runningWorkerIds);
+			const display = renderTodoPlanDisplay(
+				phases,
+				{ workers: liveWorkers, owners, ...ledger },
+				{
+					now,
+					width: Math.max(0, width - 2),
+					forecast: this.#todoForecast,
+					archived: getTodoArchiveSummaryFromEntries(entries)?.count,
+					paint: (tone, text) => theme.fg(tone, text),
+				},
+			);
+			const lines = display.lines.map(line => truncateToWidth(replaceTabs(line), Math.max(0, width - 2), ""));
+			this.todoContainer.addChild(new SubagentHudComponent(lines, [], undefined, display.owners));
+			return;
+		}
 		const multiPhase = phases.length > 1;
 		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
 		// Fixed budgets keep the HUD bounded regardless of plan size / progress.

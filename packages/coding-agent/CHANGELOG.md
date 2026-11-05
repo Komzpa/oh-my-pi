@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Show one TODO progress summary with live work, grouped dependencies, audits and user review states ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 ### Fixed
 
 - Close previously accepted TODO rows on session load, retaining blocked audit reasons as follow-ups ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
