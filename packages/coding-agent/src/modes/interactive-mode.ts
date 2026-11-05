@@ -5391,7 +5391,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		let line = this.#formatPlainTodoLine(todo, prefix, matched, isOverdueOpenTask);
 		const history = todo.schedule?.attemptHistory;
 		const executor = todo.schedule?.executor;
-		if (history && history.length > 0 && executor?.resolvedModel && executor.thinkingLevel) {
+		const executorAvailable =
+			!executor?.finishedAt ||
+			this.session.modelRegistry
+				.getAvailable()
+				.some(model => `${model.provider}/${model.id}` === executor.resolvedModel);
+		if (history && history.length > 0 && executor?.resolvedModel && executor.thinkingLevel && executorAvailable) {
 			const model = formatTodoModelBadge(executor.resolvedModel, executor.thinkingLevel);
 			if (model) {
 				const badge = sanitizeStatusText(`attempt ${history.length + 1} · ${model}`);
