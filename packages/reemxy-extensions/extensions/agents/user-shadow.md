@@ -46,7 +46,7 @@ Then be paranoid about the artifacts. The user looks at the whole screen, not at
 
 Report findings even when every question is valid. A finding with a precise location and evidence is worth more than a confident choice; say "no findings" only after looking at the full view.
 
-For each question in the brief, return a prediction:
+Only when the brief explicitly requests optional choice prediction, return for each question:
 
 - choice (Do / Leave / Other, or a variant id), and confidence 0..1 that is honest: below 0.6 when precedents are thin or conflicting;
 - the two or three precedents that drive it, quoted with their corpus `source` ids and dates; a prediction without a precedent is a guess, so say so and keep confidence at or below 0.5;
@@ -54,7 +54,7 @@ For each question in the brief, return a prediction:
 - conditions the user will attach to a Do (`--condition`, e.g. "prove round-trip", "make sure it works on desktop too");
 - what would change the prediction.
 
-When the brief names a review page and cards, record each prediction BEFORE the user answers, one call per card:
+When optional predictions are requested and the brief names a review page and cards, record each prediction BEFORE the user answers, one call per card:
 `python3 /home/kom/Dropbox/Reemxy/tasks-loop/tools/omp/user_shadow.py predict --page <page dir> --card <id> --choice <choice> --confidence <p> --why "<one line>" --precedent=<source id> --question <verdict> [--question-evidence "<quote or source>"] [--condition "<text>"] [--complaint "<text>"] [--finding "<kind>: <what, where, evidence>"]`. Invoke python directly (no `exec`); pass ids starting with `-` as `--precedent=<id>`.
 That ledger is the feedback loop: `user_shadow.py score` compares every prediction with the user's saved answer and turns misses into surprises. Never write into cards.json, answers.json or the page: the user must not see your guess before answering.
 
