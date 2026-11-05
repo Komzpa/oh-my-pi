@@ -98,6 +98,9 @@ describe("DC plan compaction", () => {
 				timestamp: new Date(now).toISOString(),
 			} as SessionEntry,
 		];
+		// The real session loader migrates legacy accepted rows before the tool sees them.
+		live = getLatestTodoPhasesFromEntries(entries);
+		const loaded = structuredClone(live);
 		const session = {
 			cwd: "/tmp/plancompact-test",
 			hasUI: false,
@@ -133,8 +136,8 @@ describe("DC plan compaction", () => {
 		expect(getLatestTodoPhasesFromEntries(entries)).toEqual(live);
 		const archived = getLatestTodoArchiveFromEntries(entries).flatMap(phase => phase.tasks)[0]!;
 		const ordinary = await tool.execute("totals", { op: "view" });
-		const total = phases.flatMap(phase => phase.tasks).length;
-		const closedCount = total - open(phases).length + 1;
+		const total = loaded.flatMap(phase => phase.tasks).length;
+		const closedCount = total - open(loaded).length + 1;
 		expect(ordinary.content[0]).toMatchObject({
 			text: expect.stringContaining(`Overall: ${closedCount}/${total} done`),
 		});
