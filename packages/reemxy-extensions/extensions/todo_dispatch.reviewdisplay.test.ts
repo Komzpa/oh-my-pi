@@ -52,7 +52,9 @@ test("admission and opener require the published matching result card, then open
 	try {
 		const handlers = new Map();
 		const opened = [];
-		let current = live;
+		let current = structuredClone(live);
+		current[0].tasks[0].status = "completed";
+		delete current[0].tasks[0].schedule.review;
 		await todoDispatch(
 			{
 				on: (name, fn) => handlers.set(name, fn),
@@ -67,6 +69,12 @@ test("admission and opener require the published matching result card, then open
 		const ctx = {
 			cwd: process.cwd(),
 			getTodoPhases: () => current,
+			updateTodoSchedule: (task, patch) => {
+				const target = current.flatMap(phase => phase.tasks).find(row => row.content === task);
+				if (!target) return false;
+				Object.assign(target.schedule, patch);
+				return true;
+			},
 			sessionManager: {
 				getHeader: () => ({ id: "review-test" }),
 				getBranch: () => [],
@@ -87,6 +95,13 @@ test("admission and opener require the published matching result card, then open
 			toolName: "todo",
 			input: { op: "schedule", updates: [{ task: row.content, review: "user", reviewPage: url }] },
 		};
+		const missing = { toolName: "todo", input: { op: "schedule", updates: [{ task: row.content, review: "user" }] } };
+		expect((await handlers.get("tool_call")(missing, ctx)).block).toBe(true);
+		expect(current[0].tasks[0].schedule.reviewPagePending).toBe(true);
+		expect((await handlers.get("tool_call")({ toolName: "wait", input: {} }, ctx)).reason).toContain(
+			"Handoff pending",
+		);
+		expect(formatTaskForecastDisplay(forecastTodoPlan(current, { now }).rows[0], now)).toContain("handoff pending");
 		expect((await handlers.get("tool_call")(event, ctx)).reason).toContain("422");
 		expect(
 			(
@@ -111,11 +126,17 @@ test("admission and opener require the published matching result card, then open
 		landed = `Commit abc — row: ${row.content}`;
 		expect(await probeReviewPage(url, row.content)).toBe(200);
 		current = [
-			{ name: "Review", tasks: [{ ...row, status: "completed", schedule: { ...row.schedule, reviewPage: url } }] },
+			{
+				name: "Review",
+				tasks: [
+					{ ...row, status: "completed", schedule: { ...row.schedule, reviewPage: url, reviewPagePending: true } },
+				],
+			},
 		];
 		expect((await handlers.get("tool_call")(event, ctx))?.block).not.toBe(true);
 		expect((await handlers.get("tool_call")(event, ctx))?.block).not.toBe(true);
 		expect(opened).toEqual([url]);
+		expect(current[0].tasks[0].schedule.reviewPagePending).toBeUndefined();
 		expect(await idleUserReviewRefusal(current, { running: [], recent: [] }, new Set())).toBeUndefined();
 	} finally {
 		fetch.mockRestore();

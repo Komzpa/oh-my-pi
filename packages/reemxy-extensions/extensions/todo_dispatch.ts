@@ -2264,8 +2264,17 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   const openedReviewPages = new Set<string>();
   const pollPreview = async (ctx: ExtensionContext): Promise<PreviewRecord[]> => {
-    if (!singleWriterLane && isMain(ctx) && ctx.getTodoPreviewConfig?.().openReviewPages !== false)
-      await openReviewPages(todoPhases(ctx), openedReviewPages, options.reviewPageProbe, options.reviewPageOpener);
+    if (!singleWriterLane && isMain(ctx)) {
+      for (const row of todoPhases(ctx).flatMap(phase => phase.tasks)) {
+        if (!row.schedule?.reviewPagePending || !row.schedule.reviewPage) continue;
+        try {
+          if (await (options.reviewPageProbe ?? probeReviewPage)(row.schedule.reviewPage, String(row.content)) === 200)
+            ctx.updateTodoSchedule?.(String(row.content), { reviewPagePending: undefined });
+        } catch {}
+      }
+      if (ctx.getTodoPreviewConfig?.().openReviewPages !== false)
+        await openReviewPages(todoPhases(ctx), openedReviewPages, options.reviewPageProbe, options.reviewPageOpener);
+    }
     const config = previewConfig(ctx);
     if (!config.enabled) {
       for (const row of (ctx.getTodoPhases?.() ?? []).flatMap(phase => phase.tasks))
@@ -4960,7 +4969,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const url = "reviewPage" in patch ? patch.reviewPage : row?.schedule?.reviewPage;
         let status = "missing review page";
         try { if (typeof url === "string") status = String(await (options.reviewPageProbe ?? probeReviewPage)(url, String(task))); } catch { status = "unreachable"; }
-        if (status !== "200") failed.push({ row: task, url, status });
+        if (status !== "200") {
+          failed.push({ row: task, url, status });
+          if (row && row.status !== "abandoned")
+            ctx.updateTodoSchedule?.(String(task), { review: "user", reviewPagePending: true });
+        }
       }
       if (failed.length) return { block: true, reason: prompt.render(chatChoiceInstructions, { failed }).trim() };
     }

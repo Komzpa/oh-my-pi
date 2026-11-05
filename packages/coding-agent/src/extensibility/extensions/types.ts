@@ -803,6 +803,7 @@ export interface ExtensionContext {
 			TodoSchedule,
 			| "review"
 			| "reviewSummary"
+			| "reviewPagePending"
 			| "firstRequirementAt"
 			| "firstDeliveredAt"
 			| "speculativeOn"
