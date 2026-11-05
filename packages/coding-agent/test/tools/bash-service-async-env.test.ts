@@ -53,7 +53,9 @@ function toolSession(cwd: string, manager?: AsyncJobManager): ToolSession {
 const textOf = (result: { content: Array<{ type: string; text?: string }> }): string =>
 	result.content.map(part => (part.type === "text" ? (part.text ?? "") : "")).join("");
 
-describe("bash env parameter", () => {
+// These fixtures require POSIX printf, sleep, and variable expansion.
+// Windows without Git Bash/sh skips instead of silently running cmd.exe.
+describe.skipIf(!procmgr.isPosixShell(TEST_SHELL))("bash env parameter", () => {
 	it("passes env through to a service command", async () => {
 		using temp = TempDir.createSync("@omp-bash-service-env-");
 		const cwd = path.join(temp.path(), "project");
@@ -115,7 +117,7 @@ describe("bash env parameter", () => {
 				"launch.enabled": false,
 				"async.enabled": false,
 				"bash.autoBackground.enabled": true,
-				"bash.autoBackground.thresholdMs": 60_000,
+				"bash.autoBackground.thresholdMs": 0,
 				"bashInterceptor.enabled": false,
 				"worktree.clone": false,
 				"bash.direnv": "off",
@@ -130,7 +132,10 @@ describe("bash env parameter", () => {
 				timeout: 30,
 				pty: false,
 			});
-			expect(textOf(result)).toContain("autobg-ok");
+			const jobId = result.details?.async?.jobId;
+			expect(jobId).toBeDefined();
+			await autoBgManager.waitForAll();
+			expect(autoBgManager.getJob(jobId!)?.resultText).toContain("autobg-ok");
 		} finally {
 			await autoBgManager.dispose({ timeoutMs: 1_000 });
 		}

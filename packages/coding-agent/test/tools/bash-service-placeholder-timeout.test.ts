@@ -53,7 +53,9 @@ function toolSession(cwd: string, manager?: AsyncJobManager): ToolSession {
 const textOf = (result: { content: Array<{ type: string; text?: string }> }): string =>
 	result.content.map(part => (part.type === "text" ? (part.text ?? "") : "")).join("");
 
-describe("bash service placeholder arguments", () => {
+// These fixtures require POSIX printf, sleep, and variable expansion.
+// Windows without Git Bash/sh skips instead of silently running cmd.exe.
+describe.skipIf(!procmgr.isPosixShell(TEST_SHELL))("bash service placeholder arguments", () => {
 	it("starts a service call with no async or timeout arguments", async () => {
 		using temp = TempDir.createSync("@omp-bash-service-env-");
 		const cwd = path.join(temp.path(), "project");

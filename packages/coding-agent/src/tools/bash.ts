@@ -747,6 +747,15 @@ function targetsSessionInfrastructure(
 		}
 		const executable = tokens[start]?.split("/").pop();
 		const args = tokens.slice(start + 1);
+		// Launching a protected executable can replace the current session too.
+		if (
+			executable !== undefined &&
+			SESSION_PROCESS_TARGET.test(executable) &&
+			!args.some(arg => arg === "--help" || arg === "--version")
+		)
+			return true;
+		if (executable && /^k(?:quitapp|start)\d*$/u.test(executable) && SESSION_PROCESS_TARGET.test(args.join(" ")))
+			return true;
 		if (executable === "kill" || executable === "pkill" || executable === "killall") {
 			if (SESSION_PROCESS_TARGET.test(args.join(" "))) return true;
 		}
@@ -770,7 +779,21 @@ function targetsSessionInfrastructure(
 		if (
 			executable === "systemctl" &&
 			args.includes("--user") &&
-			args.some(arg => arg === "stop" || arg === "restart" || arg === "kill") &&
+			args.some(arg =>
+				[
+					"stop",
+					"restart",
+					"kill",
+					"try-restart",
+					"reload-or-restart",
+					"try-reload-or-restart",
+					"reload",
+					"isolate",
+					"mask",
+					"disable",
+					"start",
+				].includes(arg),
+			) &&
 			args.some(arg => arg.startsWith("dbus") || SESSION_PROCESS_TARGET.test(arg))
 		) {
 			return true;

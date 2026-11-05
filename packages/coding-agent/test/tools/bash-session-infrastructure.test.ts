@@ -41,6 +41,14 @@ const incidents = [
 let deeplyNested = "true";
 for (let i = 0; i < 6; i++) deeplyNested = `sh -c '${deeplyNested.replaceAll("'", `'\\''`)}'`;
 const dangerous = [
+	"plasmashell --replace &",
+	"kwin_wayland --replace &",
+	"kquitapp6 plasmashell && kstart plasmashell",
+	"kstart5 plasmashell",
+	"systemctl --user try-restart plasma-plasmashell.service",
+	"systemctl --user reload-or-restart plasma-kwin_wayland.service",
+	"systemctl --user try-reload-or-restart dbus.service",
+	"dbus-daemon --session --address=unix:path=/run/user/1000/bus --fork",
 	"systemctl --user stop plasma-kwin_wayland.service",
 	"systemctl --user kill plasma-plasmashell@session.service",
 	"pkill -f plasma-kwin_wayland",
@@ -190,6 +198,12 @@ for (const target of [
 }
 
 const allowed = [
+	"plasmashell --help",
+	"kwin_wayland --version",
+	"dbus-daemon --help",
+	"echo plasmashell --replace",
+	"kstart my-worker",
+	"systemctl --user reload-or-restart my-worker.service",
 	"systemctl --user restart ordinary.service",
 	"systemctl --user restart ordinary-plasmashell-helper.service",
 	"echo plasma-plasmashell.service",
@@ -391,7 +405,7 @@ describe("bash session infrastructure default denies", () => {
 		for (const command of [
 			`sh -c "printf 'killall '; printf plasmashell" | cat`,
 			`sh -c "printf 'echo '; printf plasmashell" | sh`,
-			`sh -c "printf 'killall ' | cat >/dev/null; printf plasmashell" | sh`,
+			`sh -c "printf 'killall ' | cat >/dev/null; printf 'echo plasmashell'" | sh`,
 		]) {
 			const decision = bashTool().approval({ command });
 			expect(typeof decision === "object" && decision.policy === "deny").toBe(false);
