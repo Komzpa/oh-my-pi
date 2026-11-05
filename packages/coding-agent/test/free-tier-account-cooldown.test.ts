@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, vi, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
@@ -93,6 +93,40 @@ describe("account-wide free-tier daily limit", () => {
 		expect(modelRegistry.isSelectorSuppressed("openrouter/some/never-seen-model:free")).toBe(true);
 		expect(modelRegistry.isSelectorSuppressed("openrouter/anthropic/claude-haiku-5-5")).toBe(false);
 		expect(modelRegistry.isSelectorSuppressed(`${paid.provider}/${paid.id}`)).toBe(false);
+	});
+
+	it("preserves account cooldown across refresh until the recorded deadline", async () => {
+		const deadline = Date.now() + 60_000;
+		modelRegistry.suppressFreeTier("openrouter/example/first:free", deadline);
+		await modelRegistry.refresh("offline");
+		expect(modelRegistry.isSelectorSuppressed("openrouter/example/sibling:free")).toBe(true);
+		vi.spyOn(Date, "now").mockReturnValue(deadline + 1);
+		try {
+			expect(modelRegistry.isSelectorSuppressed("openrouter/example/sibling:free")).toBe(false);
+		} finally {
+			vi.restoreAllMocks();
+		}
+	}, 30_000);
+
+	it("never shortens an existing account cooldown", () => {
+		let now = Date.now();
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			modelRegistry.suppressFreeTier("openrouter/example/first:free", now + 60_000);
+			modelRegistry.suppressFreeTier("openrouter/example/sibling:free", now + 1_000);
+			now += 2_000;
+			expect(modelRegistry.isSelectorSuppressed("openrouter/example/first:free")).toBe(true);
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
+
+	it("suppresses routed free siblings while keeping routed paid selectors eligible", async () => {
+		await hitDailyLimitOn(drawn, [`${paid.provider}/${paid.id}`]);
+		expect(modelRegistry.isSelectorSuppressed("openrouter/example/sibling:free@google-ai-studio/priority")).toBe(
+			true,
+		);
+		expect(modelRegistry.isSelectorSuppressed("openrouter/example/paid@google-ai-studio/priority")).toBe(false);
 	});
 
 	it("draws the next chain entry for a new task and for a redispatch of the same row", async () => {

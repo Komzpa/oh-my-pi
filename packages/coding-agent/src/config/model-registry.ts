@@ -1,4 +1,5 @@
 import * as path from "node:path";
+import { splitUpstreamRouting } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import type { ApiKeyResolver, FetchImpl, ResolvedApiKey, UsageProvider } from "@oh-my-pi/pi-ai";
 import { type AuthApiKeyOptions, type AuthPeekOptions, oauthAccountKey } from "@oh-my-pi/pi-ai/auth-storage";
 import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
@@ -562,7 +563,6 @@ export class ModelRegistry {
 		// as a background reconcile, and must not spawn `!command` helpers.
 		this.#reloadStaticModelsForRefresh(options);
 		this.#suppressedSelectors.clear();
-		this.#suppressedFreeTiers.clear();
 		await this.#refreshRuntimeDiscoveries(strategy);
 	}
 
@@ -3763,7 +3763,9 @@ export class ModelRegistry {
 	 */
 	suppressFreeTier(selector: string, untilMs: number): void {
 		const normalized = normalizeSuppressedSelector(selector, (p, id) => this.find(p, id) !== undefined);
-		this.#suppressedFreeTiers.set(normalized.split("/")[0], untilMs);
+		const provider = normalized.split("/")[0];
+		const existingUntilMs = this.#suppressedFreeTiers.get(provider) ?? 0;
+		this.#suppressedFreeTiers.set(provider, Math.max(existingUntilMs, untilMs));
 	}
 
 	/**
@@ -3785,8 +3787,11 @@ export class ModelRegistry {
 	}
 
 	#isFreeTierSuppressed(normalizedSelector: string): boolean {
-		if (!normalizedSelector.endsWith(":free")) return false;
-		const provider = normalizedSelector.split("/")[0];
+		// :free is a deployment tier on the selector, not model lineage: it also
+		// applies to undiscovered siblings and must not depend on catalog membership.
+		const selector = splitUpstreamRouting(normalizedSelector)?.base ?? normalizedSelector;
+		if (!selector.endsWith(":free")) return false;
+		const provider = selector.split("/")[0];
 		const suppressedUntil = this.#suppressedFreeTiers.get(provider);
 		if (!suppressedUntil) return false;
 		if (suppressedUntil <= Date.now()) {
