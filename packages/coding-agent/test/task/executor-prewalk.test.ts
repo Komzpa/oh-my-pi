@@ -5,6 +5,8 @@
  * model it resolves to, and when the hand-off is skipped (override off,
  * target identical to the starting model).
  */
+import * as dirs from "@oh-my-pi/pi-utils";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -136,6 +138,30 @@ describe("runSubprocess per-agent prewalk", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+	});
+
+	it("spawns the permitted primary without a banned optional prewalk target", async () => {
+		using root = TempDir.createSync("@prewalk-blacklist-");
+		vi.spyOn(dirs, "getBaseConfigRoot").mockReturnValue(root.path());
+		await Bun.write(
+			root.join("model-blacklist.json"),
+			JSON.stringify({ [`${target.provider}/${target.id}`]: "fixture ban" }),
+		);
+		const spy = vi
+			.spyOn(sdkModule, "createAgentSession")
+			.mockResolvedValue(createSessionResult(yieldEmittingSession()));
+		const result = await runSubprocess({
+			...baseOptions("banned-prewalk", Settings.isolated()),
+			cwd: root.path(),
+			agent: {
+				...baseAgent,
+				model: [`${primary.provider}/${primary.id}`],
+				prewalk: `${target.provider}/${target.id}`,
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.model?.id).toBe(primary.id);
+		expect(spy.mock.calls[0]?.[0]?.prewalk).toBeUndefined();
 	});
 
 	it("resolves a frontmatter prewalk pattern to a target for the spawned session", async () => {

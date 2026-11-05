@@ -1961,6 +1961,7 @@ export class TurnRecovery {
 		if (!role || !currentModel) return undefined;
 		const configured = this.#host.settings.getModelRole(role);
 		if (!configured) return undefined;
+		if (modelSelectorBlacklistError(configured, this.#host.modelRegistry.getAvailable())) return undefined;
 		const resolved = resolveModelOverride([configured], this.#host.modelRegistry, this.#host.settings);
 		return resolved.model && modelsAreEqual(resolved.model, currentModel) ? role : undefined;
 	}

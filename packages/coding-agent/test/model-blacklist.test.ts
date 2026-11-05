@@ -5,11 +5,15 @@ import * as path from "node:path";
 import * as dirs from "@oh-my-pi/pi-utils";
 import { assertModelNotBlacklisted } from "@oh-my-pi/pi-ai/model-blacklist";
 import { resolveSmolModel } from "../src/commit/model-selection";
+import * as sdkModule from "../src/sdk";
+import { TurnRecovery, type TurnRecoveryHost } from "../src/session/turn-recovery";
 import { createAgentSession } from "../src/sdk";
 import { resolveWidgetModel } from "../src/job-widgets/author";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import {
 	findInitialModel,
+	findSmolModel,
+	findSlowModel,
 	parseModelPattern,
 	pickDefaultAvailableModel,
 	resolveCliModel,
@@ -572,4 +576,109 @@ test("agents hub previews stale banned selectors as unavailable and keeps allowe
 	expect(deps.resolvePatterns([bannedSelector, allowedSelector])).toBe(allowedSelector);
 	expect(deps.resolvePatterns(["@task"])).toBe(allowedSelector);
 	expect(() => resolveModelOverride([bannedSelector], registry)).toThrow("fixture safety ban");
+});
+
+test("a banned advisor roster entry stays unavailable without disabling the permitted advisor or primary", async () => {
+	banResolverModel();
+	const primary = createMockModel({ handler: { content: ["primary complete"] } });
+	const advisor = createMockModel({ handler: { content: ["advisor complete"] } });
+	const requested: string[] = [];
+	const registry = new ModelRegistry(auth, path.join(dir, "missing-models.json"));
+	spyOn(registry, "getAvailable").mockReturnValue(candidates.slice(1));
+	spyOn(registry, "getApiKey").mockResolvedValue("fixture-key");
+	const session = new AgentSession({
+		agent: new Agent({
+			initialState: { model: candidates[1], systemPrompt: ["fixture"], tools: [], messages: [] },
+			streamFn: primary.stream,
+		}),
+		sessionManager: SessionManager.inMemory(),
+		modelRegistry: registry,
+		settings: Settings.isolated({ "advisor.enabled": true, "advisor.syncBacklog": "1", "compaction.enabled": false }),
+		advisorConfigs: [
+			{ name: "Denied", model: bannedSelector },
+			{ name: "Permitted", model: allowedSelector },
+		],
+		advisorTools: [],
+		advisorStreamFn: (model, context, options) => {
+			requested.push(model.id);
+			return advisor.stream(model, context, options);
+		},
+	});
+	try {
+		expect(session.getAdvisorStatusOverview().advisors.map(({ name, status }) => ({ name, status }))).toEqual([
+			{ name: "Denied", status: "no_model" },
+			{ name: "Permitted", status: "running" },
+		]);
+		await session.prompt("work");
+		await session.waitForIdle();
+		expect(await session.waitForAdvisorCatchup(5000)).toBe(true);
+		expect(requested).toEqual([candidates[1].id]);
+		expect(session.state.messages.some(message => message.role === "assistant")).toBe(true);
+	} finally {
+		await session.dispose();
+	}
+});
+
+for (const resolve of [findSmolModel, findSlowModel]) {
+	test(`${resolve.name} skips a banned saved model and keeps the permitted automatic candidate`, async () => {
+		banResolverModel();
+		const registry = { getAvailable: () => candidates };
+		expect((await resolve(registry, bannedSelector))?.id).toBe(candidates[1].id);
+		expect((await resolve(registry, allowedSelector))?.id).toBe(candidates[1].id);
+	});
+}
+
+test("retry chain lookup ignores a stale banned live role assignment", () => {
+	banResolverModel();
+	const registry = new ModelRegistry(auth, path.join(dir, "missing-models.json"));
+	const settings = Settings.isolated({
+		modelRoles: { task: bannedSelector },
+		"retry.fallbackChains": { default: [allowedSelector] },
+	});
+	const recovery = new TurnRecovery(
+		{
+			model: () => candidates[1],
+			settings,
+			modelRegistry: registry,
+			sessionManager: { getLastModelChangeRole: () => "task" },
+		} as unknown as TurnRecoveryHost,
+		{ deferFallbackChainValidation: true },
+	);
+	expect(recovery.resolveRetryFallbackRole(allowedSelector)).toBe("default");
+});
+
+test("agent generation skips a banned configured default and uses an available model", async () => {
+	banResolverModel();
+	const registry = new ModelRegistry(auth, path.join(dir, "missing-models.json"));
+	spyOn(registry, "refresh").mockResolvedValue();
+	spyOn(registry, "getApiKey").mockResolvedValue("fixture-key");
+	spyOn(registry, "getAvailable").mockReturnValue(candidates.slice(1));
+	const mock = createMockModel({ handler: { content: ["generated specification"] } });
+	const session = new AgentSession({
+		agent: new Agent({
+			initialState: { model: candidates[1], systemPrompt: ["fixture"], tools: [], messages: [] },
+			streamFn: mock.stream,
+		}),
+		sessionManager: SessionManager.inMemory(),
+		settings: Settings.isolated({ "compaction.enabled": false }),
+		modelRegistry: registry,
+	});
+	const creation = spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+		expect(options?.model?.id).toBe(candidates[1].id);
+		return { session } as never;
+	});
+	const deps = createAgentsHubDeps(
+		dir,
+		Settings.isolated({ modelRoles: { default: bannedSelector } }),
+		registry,
+		() => {
+			throw new Error("No discovery");
+		},
+	);
+	try {
+		expect(await deps.generateAgent("fixture", () => {})).toBe("generated specification");
+	} finally {
+		creation.mockRestore();
+		await session.dispose();
+	}
 });

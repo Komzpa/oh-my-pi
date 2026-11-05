@@ -1165,10 +1165,12 @@ export class SessionAdvisors {
 			// then tracks whatever the primary turn's classifier resolved to.
 			let autoThinking = false;
 			if (config.model) {
-				const resolved = resolveModelOverride([config.model], this.#host.modelRegistry, this.#host.settings);
-				model = resolved.model;
-				autoThinking = resolved.thinkingLevel === AUTO_THINKING;
-				thinkingLevel = concreteThinkingLevel(resolved.thinkingLevel);
+				const resolved = modelSelectorBlacklistError(config.model, this.#host.modelRegistry.getAvailable())
+					? undefined
+					: resolveModelOverride([config.model], this.#host.modelRegistry, this.#host.settings);
+				model = resolved?.model;
+				autoThinking = resolved?.thinkingLevel === AUTO_THINKING;
+				thinkingLevel = concreteThinkingLevel(resolved?.thinkingLevel);
 				if (!model) {
 					this.#advisorStatuses.set(slug, { name: config.name, status: "no_model" });
 					if (emitWarnings) {

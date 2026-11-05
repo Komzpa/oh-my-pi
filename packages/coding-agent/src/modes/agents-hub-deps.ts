@@ -148,8 +148,10 @@ export function createAgentsHubDeps(
 				activeModelPattern ?? defaultModelPattern ?? settings.getModelRole("default"),
 				settings,
 			);
-			const { model } = resolveModelOverride(patterns, modelRegistry, settings);
-			const selectedModel = model ?? modelRegistry.getAvailable()[0];
+			const available = modelRegistry.getAvailable();
+			const permitted = patterns.filter(pattern => !modelSelectorBlacklistError(pattern, available));
+			const { model } = resolveModelOverride(permitted, modelRegistry, settings);
+			const selectedModel = model ?? available[0];
 			if (!selectedModel) throw new Error("No available model to generate agent specification.");
 			const { session } = await createAgentSession({
 				cwd,

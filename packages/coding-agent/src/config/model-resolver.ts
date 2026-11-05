@@ -2690,17 +2690,18 @@ export async function findSmolModel(
 	modelRegistry: ModelLookupRegistry,
 	savedModel?: string,
 ): Promise<Model<Api> | undefined> {
-	const availableModels = modelRegistry.getAvailable();
+	const availableModels = filterBlacklistedModels(modelRegistry.getAvailable());
 	if (availableModels.length === 0) return undefined;
 
 	// 1. Try saved model from settings
-	if (savedModel) {
+	if (savedModel && !modelSelectorBlacklistError(savedModel, availableModels)) {
 		const match = resolveModelFromString(savedModel, availableModels, undefined);
 		if (match) return match;
 	}
 
 	// 2. Try priority chain
 	for (const pattern of roleDefaultModels().smol) {
+		if (modelSelectorBlacklistError(pattern, availableModels)) continue;
 		// Try exact match with provider prefix
 		const providerMatch = availableModels.find(m => `${m.provider}/${m.id}`.toLowerCase() === pattern);
 		if (providerMatch) return providerMatch;
@@ -2730,17 +2731,18 @@ export async function findSlowModel(
 	modelRegistry: ModelLookupRegistry,
 	savedModel?: string,
 ): Promise<Model<Api> | undefined> {
-	const availableModels = modelRegistry.getAvailable();
+	const availableModels = filterBlacklistedModels(modelRegistry.getAvailable());
 	if (availableModels.length === 0) return undefined;
 
 	// 1. Try saved model from settings
-	if (savedModel) {
+	if (savedModel && !modelSelectorBlacklistError(savedModel, availableModels)) {
 		const match = resolveModelFromString(savedModel, availableModels, undefined);
 		if (match) return match;
 	}
 
 	// 2. Try priority chain
 	for (const pattern of roleDefaultModels().slow) {
+		if (modelSelectorBlacklistError(pattern, availableModels)) continue;
 		// Try exact match first
 		const exactMatch = parseModelPattern(pattern, availableModels, undefined).model;
 		if (exactMatch) return exactMatch;
