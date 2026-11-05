@@ -513,7 +513,7 @@ function formatTodoLine(
 		case "in_progress":
 			return uiTheme.fg(overdue ? "error" : "accent", `${prefix}${checkbox.unchecked} ${label.text}`);
 		case "abandoned":
-			return uiTheme.fg("error", `${prefix}${checkbox.unchecked} ${strikethroughText(text)}`);
+			return uiTheme.fg("dim", `${prefix}${checkbox.unchecked} ${strikethroughText(text)}`);
 		case "blocked": {
 			const reason = item.blocker?.trim();
 			const displayReason = reason ? forDisplay(reason).replace(/[\r\n]+/g, " ") : undefined;
