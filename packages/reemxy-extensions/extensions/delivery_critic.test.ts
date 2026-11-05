@@ -126,9 +126,10 @@ test("failed attempt and completed report without commit or preview never spawn 
 	expect(report.calls()).toBe(0);
 });
 test("thin input, unevidenced defects and contradictory clean verdicts cannot send a row to redo", () => {
-	expect(
-		parseDeliveryVerdict({ verdict: "defects", findings: [{ kind: "thin_input", evidence: "crop" }] }),
-	).toBeUndefined();
+	expect(parseDeliveryVerdict({ verdict: "defects", findings: [{ kind: "thin_input", evidence: "crop" }] })).toEqual({
+		verdict: "clean",
+		findings: [],
+	});
 	expect(
 		parseDeliveryVerdict({ verdict: "defects", findings: [{ kind: "requirement_violation", evidence: "" }] }),
 	).toBeUndefined();
