@@ -2,6 +2,7 @@
 import { expect, test, spyOn } from "bun:test";
 import { decideTodoDispatch, deliveredRowsClosed, USER_WAIT_REFUSAL, waitsOnUser, acceptedSpeculativeMergeDemand, estimateFloorRefusal, firstDeliveryCutRequired, missedEtaRowsText, missingSpeculativeReview, SPRINT_STATE_ENTRY_TYPE, successfulDurationFloors, userUnblockAskDue, workerPastForecast } from "./todo_dispatch";
 import todoDispatch from "./todo_dispatch";
+import speculativeReplay from "./fixtures/speculative-dc-replay.json";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { formatPlanForecast, formatTaskForecast, formatTaskForecastDisplay, forecastTodoPlan, getTodoPlanningIssues } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -566,4 +567,48 @@ test("customer verdicts pass admission on a user-review wait while ordinary wait
     const ordinary = await harness.handlers.get("tool_call")({ toolName: "todo", input: { op: "schedule", updates: [{ task: "Delivered UI", evidence: "Still waiting" }] } }, harness.ctx);
     expect(ordinary).toEqual({ block: true, reason: USER_WAIT_REFUSAL });
   }
+});
+
+// Captured DC calls 73631–73694, 2026-11-05T05:25–05:26Z, against c532dce8c.
+
+test("DC audit dispatch survives all five refused calls and the intervening remedies", async () => {
+  for (const capture of speculativeReplay) {
+    const harness = await reviewHookHarness(capture.phases, { running: [], recent: [], nonJobAgents: [] });
+    const result = await harness.handlers.get("tool_call")({ toolName: "task", input: structuredClone(capture.input) }, harness.ctx);
+    expect(result?.block).not.toBe(true);
+    for (const item of capture.input.tasks) expect(missingSpeculativeReview(item, capture.phases)).toBeUndefined();
+  }
+});
+
+test("coder checks each bound row; the exact prescribed remedy clears only its own refusal", async () => {
+  const phases = reviewPlan();
+  const call = { name: "Verifier", agent: "coder", task: "Delivered UI and Verify UI" };
+  expect(missingSpeculativeReview(call, phases)).toBe("Delivered UI");
+  const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
+  const dispatch = () => harness.handlers.get("tool_call")({ toolName: "task", input: { tasks: [structuredClone(call)] } }, harness.ctx);
+  expect((await dispatch())?.reason).toContain('Schedule "Verify UI"');
+  harness.phases()[0].tasks[1].schedule.speculativeOn = "Delivered UI";
+  expect((await dispatch())?.block).not.toBe(true);
+  expect(missingSpeculativeReview({ task: "Verify UI" }, harness.phases())).toBeUndefined();
+  delete harness.phases()[0].tasks[1].schedule.speculativeOn;
+  harness.phases()[0].tasks[0].status = "completed";
+  expect(missingSpeculativeReview(call, harness.phases())).toBeUndefined();
+});
+
+test("structured row binding ignores other titles in a multi-row brief", () => {
+  const phases = reviewPlan();
+  const item = { agent: "coder", previewIntegration: { task: "Independent docs", kind: "refresh" }, task: "Verify UI depends on Delivered UI; Independent docs is this assignment" };
+  expect(missingSpeculativeReview(item, phases)).toBeUndefined();
+  delete item.previewIntegration;
+  item.task = "Verify UI";
+  expect(missingSpeculativeReview(item, phases)).toBe("Delivered UI");
+  for (const agent of ["qa-auditor", "reviewer", "gate-runner"]) expect(missingSpeculativeReview({ ...item, agent }, phases)).toBeUndefined();
+});
+
+
+test("a coder multi-row brief cannot hide an unaccepted dependency behind the first row", () => {
+  const phases = reviewPlan();
+  expect(missingSpeculativeReview({ agent: "coder", task: "Independent docs and Verify UI" }, phases)).toBe("Delivered UI");
+  phases[0].tasks[1].schedule.speculativeOn = "Delivered UI";
+  expect(missingSpeculativeReview({ agent: "coder", task: "Independent docs and Verify UI" }, phases)).toBeUndefined();
 });
