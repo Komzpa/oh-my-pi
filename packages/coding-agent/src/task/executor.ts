@@ -4924,6 +4924,10 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					spawnEffortCeiling,
 					cfgTaskAgentMaxEffort.get(settings),
 				);
+				const targetThinkingLevel =
+					resolvedPrewalk.thinkingLevel === AUTO_THINKING
+						? AUTO_THINKING
+						: clampThinkingLevelToCeiling(target, resolvedPrewalk.thinkingLevel, targetCeiling);
 				if (!target || !modelRegistry.hasConfiguredAuth(target)) {
 					logger.warn("Subagent prewalk target unavailable; skipping prewalk", {
 						agent: agent.name,
@@ -4946,7 +4950,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 							cfgTaskAgentMaxEffort.get(settings),
 						),
 						target,
-						resolvedPrewalk.thinkingLevel,
+						targetThinkingLevel,
 					)
 				) {
 					// Same model AND same effective thinking level: switching would only
@@ -4957,7 +4961,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 						pattern: prewalkPattern,
 					});
 				} else {
-					prewalk = { target, thinkingLevel: resolvedPrewalk.thinkingLevel };
+					prewalk = { target, thinkingLevel: targetThinkingLevel };
 				}
 			}
 

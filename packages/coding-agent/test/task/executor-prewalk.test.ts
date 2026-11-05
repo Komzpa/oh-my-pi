@@ -212,6 +212,34 @@ describe("runSubprocess per-agent prewalk", () => {
 		}
 	});
 
+	it.each([true, false])("compares and stores capped prewalk effort when same model is %s", async sameModel => {
+		const start = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!start) throw new Error("Expected bundled Sol fixture");
+		const next = sameModel ? start : target;
+		const settings = Settings.isolated();
+		const session = yieldEmittingSession(["read", "todo", "yield"]);
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const result = await runSubprocess({
+			...baseOptions(`subagent-prewalk-effective-${sameModel}`, settings),
+			modelRegistry: createModelRegistry([start, target]),
+			agent: {
+				...baseAgent,
+				name: "workhorse",
+				model: [`${start.provider}/${start.id}:high`],
+				prewalk: `${next.provider}/${next.id}:high`,
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		if (sameModel) {
+			expect(spy.mock.calls[0]?.[0]?.prewalk).toBeUndefined();
+			expect(session.getActiveToolNames()).not.toContain("todo");
+		} else {
+			expect(spy.mock.calls[0]?.[0]?.prewalk?.target.id).toBe(next.id);
+			expect(spy.mock.calls[0]?.[0]?.prewalk?.thinkingLevel).toBe(ThinkingLevel.Low);
+			expect(session.getActiveToolNames()).toContain("todo");
+		}
+	});
+
 	it("waits for background discovery before resolving a configured prewalk target", async () => {
 		const models = [primary];
 		const registry = createModelRegistry(models);
