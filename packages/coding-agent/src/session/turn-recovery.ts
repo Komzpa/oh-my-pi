@@ -26,8 +26,8 @@ import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong, sleepUntil } from "@oh-my-pi/pi-utils";
-import type { ModelRegistry } from "../config/model-registry";
 import { modelSelectorBlacklistError } from "../config/model-resolver";
+import type { ModelRegistry } from "../config/model-registry";
 import { formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
 
 import type { Settings } from "../config/settings";
@@ -1976,7 +1976,7 @@ export class TurnRecovery {
 			currentSelector,
 			currentModel,
 			options,
-		);
+		).filter(candidate => !modelSelectorBlacklistError(candidate.raw, this.#host.modelRegistry.getAvailable()));
 	}
 
 	async #maybeApplyUsageAwareFallback(signal: AbortSignal, confirmer?: UsageFallbackConfirmer): Promise<boolean> {
@@ -2108,7 +2108,6 @@ export class TurnRecovery {
 		const ceiling = this.#host.thinkingLevelCeiling();
 		for (const role of this.retryFallbackChainKeys(currentSelector, currentModel)) {
 			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
-				if (modelSelectorBlacklistError(candidate.raw, this.#host.modelRegistry.getAvailable())) continue;
 				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
 				const resolved = resolveModelOverride([candidate.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
