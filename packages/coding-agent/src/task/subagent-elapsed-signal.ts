@@ -1,3 +1,5 @@
+import { prompt } from "@oh-my-pi/pi-utils";
+import elapsedNoteTemplate from "../prompts/tools/subagent-elapsed-note.md" with { type: "text" };
 import type { Message } from "@oh-my-pi/pi-ai";
 import { isPersistedSubagentElapsedNote } from "@oh-my-pi/pi-ai/utils/subagent-elapsed-note";
 
@@ -47,7 +49,7 @@ export class SubagentElapsedSignal {
 	/** Add a note at a request boundary once five minutes have passed since the last note. */
 	appendIfDue(): Message | undefined {
 		const now = this.#now();
-		if (this.#lastNoteAt === undefined || now - this.#lastNoteAt < SUBAGENT_ELAPSED_NOTE_CADENCE_MS) return undefined;
+		if (this.#lastNoteAt !== undefined && now - this.#lastNoteAt < SUBAGENT_ELAPSED_NOTE_CADENCE_MS) return undefined;
 		return this.#appendAt(now);
 	}
 
@@ -57,7 +59,7 @@ export class SubagentElapsedSignal {
 		const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 		const message: Message = {
 			role: "developer",
-			content: `${time} · elapsed ${elapsedMinutes}m in this attempt. Your role's time budget applies: past it, stop at the next checkable point and return what is done with its receipt.`,
+			content: prompt.render(elapsedNoteTemplate, { time, elapsedMinutes }).trim(),
 			timestamp,
 		};
 		this.#appendMessage(message);

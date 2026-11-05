@@ -416,7 +416,10 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 	let session: AgentSession;
 	// oxlint-disable-next-line prefer-const -- read by transformProviderContext before assignment
 	let elapsedSignal: SubagentElapsedSignal | undefined;
-	const attemptStartedAt = init.attemptStartedAt ?? Date.now();
+	const attemptStartedAt =
+		typeof init.attemptStartedAt === "number" && Number.isFinite(init.attemptStartedAt)
+			? init.attemptStartedAt
+			: Date.now();
 	const elapsedMessages = reopened
 		.getBranch()
 		.flatMap(entry => (entry.type === "message" && entry.message.role === "developer" ? [entry.message] : []));
@@ -434,6 +437,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
 			modelPatternAuthFallback: restoredSeance || init.perCallModel ? undefined : init.resolvedModel,
 			settings: subagentSettings,
+			noContextFiles: init.noContextFiles,
 			sessionManager: reopened,
 			agentId: ref.id,
 			agentDisplayName: ref.displayName,
@@ -540,7 +544,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			reopened.appendMessage(message);
 		},
 	});
-	elapsedSignal.start();
+	// Let interrupted-turn recovery inspect the untouched transcript before the first provider request.
 	mcpFollower?.bind(session);
 	// Clamp the active set to the persisted list: createAgentSession's
 	// `alwaysInclude` can re-add non-defaultInactive extension/custom tools

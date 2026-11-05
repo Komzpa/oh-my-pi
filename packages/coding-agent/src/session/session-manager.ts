@@ -3686,6 +3686,7 @@ export class SessionManager {
 		task: string;
 		/** Original assignment start time in epoch milliseconds; absent on legacy sessions. */
 		assignmentStartedAt?: number;
+		noContextFiles?: boolean;
 		/** Start time of the current worker attempt; lifecycle revival keeps this clock. */
 		attemptStartedAt?: number;
 		tools: string[];
@@ -4731,6 +4732,7 @@ export interface PersistedSessionInit {
 	systemPrompt: string[];
 	task: string;
 	assignmentStartedAt?: number;
+	noContextFiles?: boolean;
 	attemptStartedAt?: number;
 	tools: string[];
 	mountedTools?: string[];
@@ -4765,6 +4767,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			systemPrompt: typeof entry.systemPrompt === "string" ? [entry.systemPrompt] : entry.systemPrompt,
 			task: entry.task,
 			assignmentStartedAt: entry.assignmentStartedAt,
+			noContextFiles: entry.noContextFiles,
 			attemptStartedAt: entry.attemptStartedAt,
 			tools: entry.tools,
 			mountedTools: entry.mountedTools,

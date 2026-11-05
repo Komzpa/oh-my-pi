@@ -26,7 +26,11 @@ export function isLegacySubagentElapsedNote(message: Message | null | undefined)
 	);
 }
 
-/** True only for a persisted transcript note in the current format. */
+/**
+ * Persisted checkpoints are ordinary history, emitted at most once per five minutes.
+ * Keep them in provider chains: replaying to remove checkpoints would discard warm
+ * continuation state, while these notes intentionally remain in the transcript.
+ */
 export function isPersistedSubagentElapsedNote(message: Message | null | undefined): boolean {
 	return (
 		message?.role === "developer" &&
