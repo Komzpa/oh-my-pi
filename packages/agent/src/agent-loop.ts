@@ -1360,7 +1360,12 @@ async function runLoopBody(
 				let gateResult: AgentPreModelCallResult;
 				try {
 					if (config.syncContextBeforeModelCall) {
-						await config.syncContextBeforeModelCall(currentContext, signal);
+						const injected = await config.syncContextBeforeModelCall(currentContext, signal);
+						if (injected) {
+							currentContext.messages.push(...injected);
+							newMessages.push(...injected);
+							turnMessages.push(...injected);
+						}
 					}
 
 					if (!directiveResolvedForTurn) {

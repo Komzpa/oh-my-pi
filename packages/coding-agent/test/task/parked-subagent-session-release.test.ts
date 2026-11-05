@@ -240,20 +240,26 @@ it("retains a five-minute checkpoint as a stable prefix across later tool reques
 					)
 					.map(message => ({ content: message.content, timestamp: message.timestamp }));
 			expect(notes(session.messages)).toEqual(notes(requests[2]!));
+			const order = (messages: readonly AgentMessage[]) =>
+				messages.flatMap(message =>
+					message.role === "developer" && isPersistedSubagentElapsedNote(message)
+						? [`checkpoint:${message.timestamp}`]
+						: message.role === "user"
+							? ["user"]
+							: [],
+				);
+			expect(order(session.messages)).toEqual(order(requests[2]!));
 			const transcript = session.sessionManager
 				.getBranch()
-				.flatMap(entry =>
-					entry.type === "message" &&
-					entry.message.role === "developer" &&
-					isPersistedSubagentElapsedNote(entry.message)
-						? [entry.message]
-						: [],
-				);
+				.flatMap(entry => (entry.type === "message" ? [entry.message] : []));
 			expect(notes(transcript)).toEqual(notes(requests[2]!));
+			expect(order(transcript)).toEqual(order(requests[2]!));
 		};
 		assertRetained();
 		await AgentLifecycleManager.global().park(AGENT_ID);
 		requests.length = 0;
+		// Expire the cadence before the follow-up is folded into the live loop.
+		now += 5 * 60_000;
 		const result = await runSubagentFollowUpTurn({
 			id: AGENT_ID,
 			agent: { name: "task", description: "test", systemPrompt: "test", tools: ["read"], source: "bundled" },
