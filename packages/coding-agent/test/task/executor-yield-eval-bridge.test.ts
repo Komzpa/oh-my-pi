@@ -251,14 +251,23 @@ describe("terminal yield through the eval bridge", () => {
 			const harness = createHarness({ toolSession: { outputSchema } });
 			const events = new EventBus();
 			const firstInExtension = Promise.withResolvers<void>();
+			const lateInExtension = Promise.withResolvers<void>();
 			events.on("first-pending", () => firstInExtension.resolve());
+			events.on("late-pending", () => lateInExtension.resolve());
 			const extensionPath = path.join(root.path(), "delayed-result.ts");
 			await Bun.write(
 				extensionPath,
 				`export default function(pi) {
 				const released = Promise.withResolvers();
+				const lateReleased = Promise.withResolvers();
 				pi.events.on("release-first", () => released.resolve());
+				pi.events.on("release-late", () => lateReleased.resolve());
 				pi.on("tool_result", async event => {
+					if (event.toolCallId === "late") {
+						pi.events.emit("late-pending", undefined);
+						await lateReleased.promise;
+						return;
+					}
 					if (event.toolCallId !== "first") return;
 					pi.events.emit("first-pending", undefined);
 					await released.promise;
@@ -282,6 +291,7 @@ describe("terminal yield through the eval bridge", () => {
 			mockCreateAgentSession(harness.session);
 			registerRunning(harness.session);
 			let completedWhileFirstPending = false;
+			let completedWhileLatePending = false;
 			harness.runBridgedYield = async () => {
 				const first = wrapped.execute("first", { type: ["findings"], data: "one" });
 				await firstInExtension.promise;
@@ -293,12 +303,19 @@ describe("terminal yield through the eval bridge", () => {
 						return result;
 					})
 					.catch(error => ({ isError: true, error }));
+				const late = rejectFirst ? undefined : wrapped.execute("late", { type: ["findings"], data: "two" });
+				if (late) await lateInExtension.promise;
 				try {
 					await Bun.sleep(0);
 					completedWhileFirstPending = terminalSettled;
 				} finally {
 					events.emit("release-first", undefined);
 				}
+				await first;
+				await Bun.sleep(0);
+				completedWhileLatePending = terminalSettled;
+				events.emit("release-late", undefined);
+				await late;
 				const [firstResult, terminalResult] = await Promise.all([first, terminal]);
 				if (rejectFirst) {
 					expect(firstResult.isError).toBe(true);
@@ -319,11 +336,13 @@ describe("terminal yield through the eval bridge", () => {
 					outputSchema,
 				});
 				expect(completedWhileFirstPending).toBe(false);
+				if (!rejectFirst) expect(completedWhileLatePending).toBe(false);
 				expect(result.exitCode).toBe(0);
-				expect(JSON.parse(result.output)).toEqual({ findings: [rejectFirst ? "corrected" : "one"] });
-				expect(result.extractedToolData?.yield).toHaveLength(2);
+				expect(JSON.parse(result.output)).toEqual({ findings: rejectFirst ? ["corrected"] : ["one", "two"] });
+				expect(result.extractedToolData?.yield).toHaveLength(rejectFirst ? 2 : 3);
 			} finally {
 				events.emit("release-first", undefined);
+				events.emit("release-late", undefined);
 				events.clear();
 				auth.close();
 			}

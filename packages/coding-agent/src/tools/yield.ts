@@ -387,6 +387,7 @@ const MAX_EMPTY_RESULT_RETRIES = 3;
 
 interface DeferredYieldAcceptance {
 	depth: number;
+	incremental?: boolean;
 	promise: Promise<void>;
 	resolve: () => void;
 	generation?: number;
@@ -848,18 +849,27 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// is validated as a whole at finalization (executor finalizeSubprocessOutput).
 		const isIncremental = Array.isArray(yieldType) && yieldType.length > 0;
 
-		// A terminal close must observe accepted sections, not sections whose
-		// asynchronous result extensions can still reject them. Wait before the
-		// data-less/schema guards decide whether the incremental flow can close.
+		const deferred = this.#deferredAcceptances.get(toolCallId);
+		if (deferred) deferred.incremental = isIncremental && errorMessage === undefined;
+		// Drain sections admitted while a previous result extension was pending too.
+		// Later terminal calls remain excluded so sibling closes cannot wait on each other.
 		if (workPoolItems.length === 0 && (!isIncremental || errorMessage !== undefined || this.#finalResultForced)) {
-			const predecessors: Promise<void>[] = [];
-			for (const [id, pending] of this.#deferredAcceptances) {
-				if (id === toolCallId) break;
-				if (pending.generation === runGeneration) predecessors.push(pending.promise);
-			}
-			if (predecessors.length > 0) await untilAborted(_signal, Promise.all(predecessors));
-			if (runGeneration !== this.#turnStateGeneration || this.#terminalResultSubmitted) {
-				throw new Error(yieldAlreadySubmittedMessage.trim());
+			for (;;) {
+				const predecessors: Promise<void>[] = [];
+				let later = false;
+				for (const [id, pending] of this.#deferredAcceptances) {
+					if (id === toolCallId) {
+						later = true;
+						continue;
+					}
+					if (pending.generation === runGeneration && (!later || pending.incremental))
+						predecessors.push(pending.promise);
+				}
+				if (predecessors.length === 0) break;
+				await untilAborted(_signal, Promise.all(predecessors));
+				if (runGeneration !== this.#turnStateGeneration || this.#terminalResultSubmitted) {
+					throw new Error(yieldAlreadySubmittedMessage.trim());
+				}
 			}
 		}
 

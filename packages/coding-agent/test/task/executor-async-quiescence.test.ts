@@ -597,13 +597,10 @@ describe("real executor terminal yield with worker-owned bash", () => {
 						PREVIEW_LIMITS.RUNNING_COMMAND_WIDTH,
 					);
 					jobStartedAt = job.startTime;
+					expect(job.ownerId).toBe(id);
 					expect(
-						JSON.stringify(
-							session.messages.find(
-								message => message.role === "toolResult" && message.toolCallId === "start-job",
-							),
-						),
-					).toContain("still running and owned by this worker");
+						manager.getRunningJobs({ ownerId: id }, { includeForeground: true }).map(job => job.id),
+					).toContain(jobId);
 					// Watched delivery is suppressed, like the incident's
 					// bg_113 row: the guard must still see the running job.
 					if (options.finish === undefined) manager.watchJobs([jobId]);
