@@ -2082,7 +2082,7 @@ export class Settings {
 		if (!isRecord(pool)) return undefined;
 		const weights: Record<string, number> = {};
 		for (const [selector, weight] of Object.entries(pool)) {
-			if (typeof weight === "number") weights[selector] = weight;
+			weights[selector] = typeof weight === "number" ? weight : 0;
 		}
 		return weights;
 	}

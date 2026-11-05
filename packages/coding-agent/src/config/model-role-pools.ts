@@ -44,13 +44,16 @@ export function drawPoolOrder(members: readonly string[], pool: ModelRolePool, s
 	const remaining = members.map(member => ({ member, weight: weightOf(pool, member) }));
 	const drawn: string[] = [];
 	for (;;) {
+		// Scale each draw to avoid overflow without losing small fallback weights.
+		let largest = 0;
+		for (const entry of remaining) largest = Math.max(largest, entry.weight);
+		if (largest <= 0) break;
 		let total = 0;
-		for (const entry of remaining) total += entry.weight;
-		if (total <= 0) break;
+		for (const entry of remaining) total += entry.weight / largest;
 		let target = random() * total;
 		let pick = remaining.findIndex(entry => {
 			if (entry.weight <= 0) return false;
-			target -= entry.weight;
+			target -= entry.weight / largest;
 			return target < 0;
 		});
 		// Floating-point slack can leave `target` at 0 after the last positive entry.
