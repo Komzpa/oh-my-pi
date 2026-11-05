@@ -9920,24 +9920,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				this.#planReferenceSent = true;
 			}
 			try {
-				const onAdmitted = () => {
-					this.#wakeDispatchLiveWaiters();
-					options?.followUpBatch?.release();
-					try {
-						options?.onPromptAdmitted?.();
-					} catch (error) {
-						logger.warn("Prompt admission callback failed after dispatch", { error });
-					}
-				};
-				const dispatch = preparedCandidate
-					? this.#promptWithCandidateAdmission(
-							messages,
-							agentPromptOptions,
-							preparedCandidate,
-							onAdmitted,
-						)
-					: this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions, onAdmitted);
-				await dispatch;
+				await this.#recovery.promptAgentWithIdleRetry(
+					messages,
+					agentPromptOptions,
+					() => {
+						this.#wakeDispatchLiveWaiters();
+						options?.followUpBatch?.release();
+					},
+					() => {
+						if (preparedCandidate) {
+							const commit = this.#requirementsLedger.commitCandidate(preparedCandidate);
+							if (!commit.committed)
+								throw new Error("Requirement candidate session changed during prompt admission");
+							this.#announceCandidateCommit(commit);
+						}
+						try {
+							options?.onPromptAdmitted?.();
+						} catch (error) {
+							logger.warn("Prompt admission callback failed after dispatch", { error });
+						}
+					},
+				);
 			} finally {
 				this.#stats.setPendingSnapshot(undefined);
 			}
@@ -16659,43 +16662,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 	async #captureRawRequirementCandidate(rawText: string, images?: readonly ImageContent[]): Promise<void> {
 		if (this.getActiveToolNames().includes("todo")) await this.#requirementsLedger.captureCandidate(rawText, images);
-	}
-
-	async #promptWithCandidateAdmission(
-		messages: AgentMessage[],
-		options: { toolChoice?: ToolChoice } | undefined,
-		prepared: PreparedRequirementCandidate,
-		onPromptAdmitted?: () => void,
-	): Promise<void> {
-		const deadline = Date.now() + 30_000;
-		for (;;) {
-			const wasStreaming = this.agent.state.isStreaming;
-			const dispatch = this.agent.prompt(messages, options);
-			const accepted = !wasStreaming && this.agent.state.isStreaming;
-			if (accepted) {
-				const commit = this.#requirementsLedger.commitCandidate(prepared);
-				if (!commit.committed) {
-					this.agent.abort();
-					throw new Error("Requirement candidate session changed during prompt admission");
-				}
-				this.#announceCandidateCommit(commit);
-				this.#wakeDispatchLiveWaiters();
-				try {
-					onPromptAdmitted?.();
-				} catch (error) {
-					logger.warn("Prompt admission callback failed after dispatch", { error });
-				}
-			}
-			try {
-				await dispatch;
-				return;
-			} catch (error) {
-				if (!(error instanceof AgentBusyError) || accepted) throw error;
-				if (Date.now() >= deadline)
-					throw new Error("Timed out waiting for prior agent run to finish before prompting.");
-				await this.agent.waitForIdle();
-			}
-		}
 	}
 
 	#announceCandidateCommit(commit: RequirementCandidateCommit | undefined): void {

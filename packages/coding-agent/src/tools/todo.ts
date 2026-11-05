@@ -32,6 +32,7 @@ import {
 	describeGitCheckoutState,
 	parseRequirementIdentity,
 	type RequirementIdentity,
+	type RequirementGitStatusSnapshots,
 	type RequirementIdentityTarget,
 	resolveResourceArtifact,
 	sameIdentity,
@@ -166,6 +167,7 @@ export interface RequirementRowArtifactContext {
 	executionCheckout?: { owner: string; cwd: string };
 	/** Saved receipt artifact to authenticate by kind before any owner or checkout lookup. */
 	receipt?: string;
+	gitStatusSnapshots?: RequirementGitStatusSnapshots;
 }
 
 const ABSOLUTE_ARTIFACT_PATH = /\/(?:home|srv|tmp|var|mnt|workspaces|Users)\/[^\s"'`),;]+/g;
@@ -348,14 +350,16 @@ async function resolveTypedRequirementArtifact(
 		const identities: RequirementIdentity[] = [];
 		const errors: string[] = [];
 		for (const target of resolvedTargets) {
-			const resolved = await currentRequirementIdentity(target, ctx.signal);
+			const resolved = await currentRequirementIdentity(target, ctx.signal, ctx.gitStatusSnapshots);
 			if ("error" in resolved) errors.push(resolved.error);
 			else identities.push(resolved.identity);
 		}
 		if (errors.length) {
 			const gitTarget = resolvedTargets.find(target => target.kind === "git");
 			const state =
-				gitTarget?.kind === "git" ? await describeGitCheckoutState(gitTarget.repo, ctx.signal) : undefined;
+				gitTarget?.kind === "git"
+					? await describeGitCheckoutState(gitTarget.repo, ctx.signal, ctx.gitStatusSnapshots)
+					: undefined;
 			return {
 				cwd: location,
 				head: state?.head ?? null,
@@ -416,7 +420,7 @@ async function resolveTypedRequirementArtifact(
 	);
 	if (coverageIssue) return reject(coverageIssue);
 	for (const identity of receiptIdentities.identities) {
-		const check = await checkRequirementIdentity(identity, ctx.signal);
+		const check = await checkRequirementIdentity(identity, ctx.signal, ctx.gitStatusSnapshots);
 		if (check.state === "stale")
 			return reject(`stale ${check.kind} ${check.location}: expected ${check.expected}, observed ${check.observed}`);
 		if (check.state === "unverifiable")
@@ -1823,6 +1827,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 			);
 			const changes = getTodoRowChanges(branch);
 			const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
+			const gitStatusSnapshots: RequirementGitStatusSnapshots = new Map();
 			const requirements = getLatestRequirements(branch);
 			const requirementSnapshot = JSON.stringify(requirements);
 			const open = await evaluateRequirementDoneGate(
@@ -1830,7 +1835,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				targets.map(target => target.content),
 				async (row, receipt) => ({
 					...(await getRequirementRowArtifact(
-						{ cwd: this.session.cwd, sessionManager, signal, receipt },
+						{ cwd: this.session.cwd, sessionManager, signal, receipt, gitStatusSnapshots },
 						row,
 						previousPhases,
 						checkoutCache,

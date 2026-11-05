@@ -23,13 +23,27 @@ export type RequirementIdentityCheck =
 	| { state: "stale"; kind: RequirementIdentity["kind"]; location: string; expected: string; observed: string }
 	| { state: "unverifiable"; kind: RequirementIdentity["kind"]; location: string; expected: string; reason: string };
 
+/** One foreground gate shares fresh coordinated scans across its rows, never across gates. */
+export type RequirementGitStatusSnapshots = Map<string, { epoch: string; status: Promise<string> }>;
+
 /** Foreground checks bypass stale snapshots through the shared status queue. */
 export function currentRequirementGitStatus(
 	repo: VcsGitRepo,
 	signal?: AbortSignal,
 	includeUntracked = false,
+	gitStatusSnapshots?: RequirementGitStatusSnapshots,
 ): Promise<string> {
-	return vcs.statusPorcelainFresh(repo, { untracked: includeUntracked ? "all" : "no", nulTerminated: true }, signal);
+	const key = `${repo.info().repoRoot}:${includeUntracked}`;
+	const epoch = JSON.stringify(vcs.statusEpoch(repo));
+	const cached = gitStatusSnapshots?.get(key);
+	if (cached?.epoch === epoch) return cached.status;
+	const status = vcs.statusPorcelainFresh(
+		repo,
+		{ untracked: includeUntracked ? "all" : "no", nulTerminated: true },
+		signal,
+	);
+	gitStatusSnapshots?.set(key, { epoch, status });
+	return status;
 }
 
 function trackedRequirementChangePaths(status: string): string[] {
@@ -725,6 +739,7 @@ async function checkGitNamedPaths(
 export async function checkRequirementIdentity(
 	identity: RequirementIdentity,
 	signal?: AbortSignal,
+	gitStatusSnapshots?: RequirementGitStatusSnapshots,
 ): Promise<RequirementIdentityCheck> {
 	const location =
 		identity.kind === "git" ? identity.repo : identity.kind === "file" ? identity.path : identity.target;
@@ -774,11 +789,11 @@ export async function checkRequirementIdentity(
 		// Untracked files are not committed content: HEAD fully identifies the tree. Only
 		// staged/unstaged changes to tracked files make the committed identity unprovable.
 		const epochBefore = vcs.statusEpoch(repo);
-		const statusBefore = await repo.statusPorcelain({ untracked: "no", nulTerminated: true }, signal);
+		const statusBefore = await currentRequirementGitStatus(repo, signal, false, gitStatusSnapshots);
 		const headAfter = await repo.headSha(signal);
 		if (headAfter !== head) fail(`${identity.repo}: HEAD changed during identity probe`);
-		// A coordinated snapshot is reusable until index/ref metadata or a file-writing
-		// tool invalidates its epoch; a second fresh scan would consume another 10s slot.
+		// A gate-local fresh snapshot is reusable until Git metadata or a writing
+		// tool invalidates it. A later gate must also observe external worktree edits.
 		if (epochBefore === null || JSON.stringify(vcs.statusEpoch(repo)) !== JSON.stringify(epochBefore))
 			fail(`${identity.repo}: checkout changed during identity probe`);
 		const observed = resolved.toLowerCase() === identity.commit ? await repo.resolveRef("HEAD^{tree}", signal) : head;
@@ -810,11 +825,12 @@ export async function checkRequirementIdentity(
 export async function describeGitCheckoutState(
 	root: string,
 	signal?: AbortSignal,
+	gitStatusSnapshots?: RequirementGitStatusSnapshots,
 ): Promise<{ head: string | null; dirty: boolean } | undefined> {
 	try {
 		const repo = await identityGitRepo(root);
 		const head = (await repo.headSha(signal)) ?? null;
-		const status = await currentRequirementGitStatus(repo, signal);
+		const status = await currentRequirementGitStatus(repo, signal, false, gitStatusSnapshots);
 		return { head, dirty: status.length > 0 };
 	} catch {
 		return undefined;
@@ -824,6 +840,7 @@ export async function describeGitCheckoutState(
 export async function currentRequirementIdentity(
 	target: RequirementIdentityTarget,
 	signal?: AbortSignal,
+	gitStatusSnapshots?: RequirementGitStatusSnapshots,
 ): Promise<{ identity: RequirementIdentity } | { error: string }> {
 	try {
 		signal?.throwIfAborted();
@@ -874,7 +891,7 @@ export async function currentRequirementIdentity(
 		};
 		const check = target.paths
 			? await checkGitNamedPaths(repo, target.repo, identity.commit, target.paths, signal)
-			: await checkRequirementIdentity(identity, signal);
+			: await checkRequirementIdentity(identity, signal, gitStatusSnapshots);
 		if (check.state !== "fresh")
 			fail(
 				check.state === "unverifiable"

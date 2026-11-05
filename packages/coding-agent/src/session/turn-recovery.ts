@@ -873,13 +873,15 @@ export class TurnRecovery {
 
 	/** Prompts after transient overlap with a prior agent run. `onClaimed` fires synchronously
 	 *  right after a successful `agent.prompt` claim (before the run is awaited), letting the
-	 *  caller mark the exact moment its own run went live. */
+	 *  caller mark the exact moment its own run went live. `onAdmitted` fires before
+	 *  the first suspension, so candidate persistence precedes prompt consumers. */
 	promptAgentWithIdleRetry(
 		messages: AgentMessage[],
 		options?: { toolChoice?: ToolChoice },
 		onClaimed?: () => void,
+		onAdmitted?: () => void,
 	): Promise<void> {
-		return this.#promptAgentWithIdleRetry(messages, options, onClaimed);
+		return this.#promptAgentWithIdleRetry(messages, options, onClaimed, onAdmitted);
 	}
 
 	/** Parses provider retry and rate-limit reset hints into a delay. */
@@ -3365,6 +3367,7 @@ export class TurnRecovery {
 		messages: AgentMessage[],
 		options?: { toolChoice?: ToolChoice },
 		onClaimed?: () => void,
+		onAdmitted?: () => void,
 	): Promise<void> {
 		const deadline = Date.now() + 30_000;
 		for (;;) {
@@ -3375,11 +3378,23 @@ export class TurnRecovery {
 			// going live. The rejection handler rethrows, so the error
 			// still surfaces at the await below.
 			let claimFailed = false;
+			let admitted = false;
 			try {
+				const wasStreaming = this.#host.agent.state.isStreaming;
 				const claim = this.#host.agent.prompt(messages, options).then(undefined, error => {
 					claimFailed = true;
 					throw error;
 				});
+				admitted = !wasStreaming && this.#host.agent.state.isStreaming;
+				if (admitted && onAdmitted) {
+					try {
+						onAdmitted();
+					} catch (error) {
+						this.#host.agent.abort();
+						await claim.catch(() => {});
+						throw error;
+					}
+				}
 				// One microtask turn: an already-rejected promise's reaction
 				// job is queued ahead of this await's continuation, so
 				// `claimFailed` is settled by the time we resume.
@@ -3388,7 +3403,7 @@ export class TurnRecovery {
 				await claim;
 				return;
 			} catch (err) {
-				if (!(err instanceof AgentBusyError)) {
+				if (!(err instanceof AgentBusyError) || admitted) {
 					throw err;
 				}
 				if (Date.now() >= deadline) {
