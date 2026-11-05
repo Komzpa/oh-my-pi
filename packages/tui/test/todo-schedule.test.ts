@@ -591,7 +591,7 @@ describe("todo schedule forecast", () => {
 		expect(generous.knownWorkFinish).toBe(NOW + 30_000);
 		expect(generous.unresolvedCount).toBe(2);
 		expect(generous.deadlineStatus).toBe("unknown");
-		expect(tight.deadlineStatus).toBe("at-risk");
+		expect(tight.deadlineStatus).toBe("will-miss");
 		expect(generous.rows[1].estimateRequired).toBe(true);
 		expect(generous.rows[2].estimateRequired).toBe(false);
 		expect(generous.rows[1].resourceFinish).toBeUndefined();
@@ -726,4 +726,25 @@ describe("live plan dependency and ownership admission", () => {
 			row.schedule.previewIdentityMissing = true;
 		}
 	});
+});
+
+it("separates a certain 64 minute miss from P95 risk and keeps scope triage visible and reversible", () => {
+	const due = new Date(2026, 10, 5, 10, 0).getTime();
+	const now = due - 13 * 60_000;
+	const late = task("PDU B callout", 77 * 60, { updatedAt: now });
+	const must = task("Rack tiles", 5 * 60, { updatedAt: now });
+	const input = phases(must, late);
+	const miss = forecastTodoPlan(input, { now, deadlineAt: due });
+	expect(miss.deadlineStatus).toBe("will-miss");
+	expect(formatPlanForecastDisplay(miss, now)).toContain("MISSES 10:00 by 64m");
+	late.schedule!.postDeadline = true;
+	const cut = forecastTodoPlan(input, { now, deadlineAt: due });
+	expect(cut.deadlineStatus).toBe("on-track");
+	expect(cut.rows.find(row => row.content === late.content)?.schedule?.postDeadline).toBe(true);
+	late.schedule!.postDeadline = false;
+	expect(forecastTodoPlan(input, { now, deadlineAt: due }).deadlineStatus).toBe("will-miss");
+	const uncertain = task("Callout review", 600, { updatedAt: now, optimisticSeconds: 60, pessimisticSeconds: 1800 });
+	const risk = forecastTodoPlan(phases(uncertain), { now, deadlineAt: due });
+	expect(risk.expectedResourceFinish).toBeLessThanOrEqual(due);
+	expect(risk.deadlineStatus).toBe("at-risk");
 });

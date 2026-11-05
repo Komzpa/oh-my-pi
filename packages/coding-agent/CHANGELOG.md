@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep user due times immutable in todo operations and persist reversible post-deadline scope triage ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Unavailable providers no longer appear as the model for the next rework attempt.
 
 ### Added

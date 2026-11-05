@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Refuse lead wait and stop on expected deadline misses or overdue rows until the recorded plan is repaired ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Gate and git workers prefer Terra at low effort, with Luna as fallback.
 
 ### Added

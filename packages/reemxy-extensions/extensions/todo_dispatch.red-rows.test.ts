@@ -18,19 +18,19 @@ test("an overdue Brag/Finance model label and attempt do not permit waiting on u
   expect(reason).toContain("task");
   expect(reason).toContain("schedule");
   expect(reason).toContain("user");
-  expect(reason).toContain('op="drop"');
-  expect(idleRedRowsRefusal(decision(rows, rows.map(row => ({ content: row.content, running: true }))))).toBeUndefined();
+  expect(reason).toContain("postDeadline:true");
+  expect(idleRedRowsRefusal(decision(rows, rows.map(row => ({ content: row.content, running: true }))))).toContain("WAIT/STOP REFUSED");
 });
 
-test("an ownerless clock and an unstaffed at-risk critical path refuse idle; pending healthy neighbours do not", () => {
+test("an ownerless clock refuses idle; P95-only risk permits waiting", () => {
   const clock = { content: adaptive, status: "in_progress", startedAt: 1 };
   expect(idleRedRowsRefusal(decision([clock]))).toContain(adaptive);
   const critical = { content: "Final full gate", status: "pending", critical: true };
-  expect(idleRedRowsRefusal(decision([critical], [], true))).toContain(critical.content);
+  expect(idleRedRowsRefusal(decision([critical], [], true))).toBeUndefined();
   expect(idleRedRowsRefusal(decision([critical]))).toBeUndefined();
   expect(idleRedRowsRefusal(decision([{ ...critical, critical: false }], [], true))).toBeUndefined();
   expect(idleRedRowsRefusal(decision([{ ...clock, status: "completed" }]))).toBeUndefined();
-  expect(idleRedRowsRefusal(decision([{ ...clock, status: "blocked", overdue: true, waitsForUser: { question: "Approve?" } }]))).toBeUndefined();
+  expect(idleRedRowsRefusal(decision([{ ...clock, status: "blocked", overdue: true, waitsForUser: { question: "Approve?" } }]))).toContain("WAIT/STOP REFUSED");
 });
 
 test("15-minute preview gap refuses missing and unlanded identities once per row revision", () => {
