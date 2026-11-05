@@ -1741,13 +1741,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				`Rework preparation failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		const itemBlocking = policies.map(policy => waitForCompletion || policy.effectiveAgent.blocking === true);
+		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
 
 		// Execution mode is per item: an item whose agent type declares
 		// `blocking: true` runs inline on this turn (the parent waits on its
 		// result); every other item becomes a background job when async
 		// execution is available.
-		const asyncEnabled = cfgAsyncEnabled.get(this.session.settings);
+		const asyncEnabled = cfgAsyncEnabled.get(this.session.settings) && !waitForCompletion;
 		const manager = asyncEnabled ? this.session.asyncJobManager : undefined;
 		const asyncItems = manager ? spawnItems.filter((_, index) => !itemBlocking[index]) : [];
 		// Runs started while the call streamed. An item runs detached iff it
