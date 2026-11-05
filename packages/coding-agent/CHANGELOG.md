@@ -60,6 +60,8 @@
 ## [18.17.0] - 2026-11-06
 ### Fixed
 
+- Sustained CPU warnings notify once per scope until a material increase or a quiet interval, despite PID churn ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa)).
+
 - Spawned browser applications remain in their transcript's native scope on Linux instead of Chrome moving itself into the user manager's app slice; borrowed browsers are unchanged. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
 - Session release now reports creation failures from launches already admitted when release began, while retaining failed daemon history without poisoning later releases. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
 - Disposed sessions release CPU-monitor callbacks even when stopping their systemd slice fails; failed-stop markers and exit cleanup backstops remain armed without retaining the session or its settings ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))

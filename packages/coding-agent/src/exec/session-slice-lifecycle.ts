@@ -151,8 +151,7 @@ export class SessionSliceLifecycle {
 	#polling = false;
 	#previous = new Map<string, number>();
 	#previousAt = 0;
-	#hotSamples = 0;
-	#lastPicture = "";
+	#cpuEpisodes = new Map<string, { lastHotAt: number; notifiedCores: number; hotSamples: number }>();
 	#cancelExit?: () => void;
 	#exitSync: () => void;
 
@@ -224,7 +223,7 @@ export class SessionSliceLifecycle {
 		this.#released = true;
 		clearInterval(this.#timer);
 		this.#timer = undefined;
-		this.#hotSamples = 0;
+		for (const episode of this.#cpuEpisodes.values()) episode.hotSamples = 0;
 	}
 
 	/** The transcript returned to this session id. */
@@ -271,40 +270,50 @@ export class SessionSliceLifecycle {
 		this.#polling = true;
 		try {
 			const groups = await this.#groupsFn(this.slice);
-			const total = groups[0];
-			if (!total) return;
 			const elapsed = (now - this.#previousAt) / 1_000;
-			const delta = total.usage - (this.#previous.get(this.slice) ?? total.usage);
-			const candidates = groups.filter(group => group.pids.length > 0);
-			candidates.sort(
-				(a, b) =>
-					b.usage - (this.#previous.get(b.name) ?? b.usage) - (a.usage - (this.#previous.get(a.name) ?? a.usage)),
-			);
+			const previous = this.#previous;
 			this.#previous = new Map(groups.map(group => [group.name, group.usage]));
 			this.#previousAt = now;
-			// Two 15s windows at >= half a core ignore startup bursts but catch a forgotten busy loop in ~30s.
-			const cores = elapsed > 0 ? delta / 1_000_000 / elapsed : 0;
-			if (!host.isIdleOrWaiting() || elapsed < 10 || cores < 0.5) {
-				this.#hotSamples = 0;
-				return;
+			for (const group of groups) {
+				const before = previous.get(group.name);
+				const cores = elapsed > 0 && before !== undefined ? (group.usage - before) / 1_000_000 / elapsed : 0;
+				let episode = this.#cpuEpisodes.get(group.name);
+				// Two 15s windows at half a core catch idle busy loops, including 65%.
+				if (group.pids.length === 0 || elapsed < 10 || cores < 0.5) {
+					if (episode) episode.hotSamples = 0;
+					continue;
+				}
+				if (!episode) {
+					episode = { lastHotAt: now, notifiedCores: 0, hotSamples: 0 };
+					this.#cpuEpisodes.set(group.name, episode);
+				}
+				episode.lastHotAt = now;
+				if (!host.isIdleOrWaiting()) {
+					episode.hotSamples = 0;
+					continue;
+				}
+				if (++episode.hotSamples < 2) continue;
+				// PID churn is not a new episode. A 50% relative rise, at least
+				// half a core, is material; ordinary 165–192% fluctuations are not.
+				if (episode.notifiedCores && cores < Math.max(episode.notifiedCores * 1.5, episode.notifiedCores + 0.5))
+					continue;
+				if (this.#stopped) return;
+				const kept = await this.keptMembers();
+				await host.sendNotice(
+					prompt.render(cpuNoticeTemplate, {
+						slice: this.slice,
+						top: group.name,
+						pid: group.pids[0],
+						seconds: (group.usage / 1_000_000).toFixed(1),
+						kept: kept.length ? kept.join(", ") : "none",
+					}),
+				);
+				await host.sendUserLine?.(formatHogUserLine(group.name, cores));
+				episode.notifiedCores = cores;
 			}
-			if (++this.#hotSamples < 2) return;
-			const top = candidates[0] ?? total;
-			const kept = await this.keptMembers();
-			// CPU seconds monotonically increase; they must NOT be part of the dedupe key.
-			const picture = JSON.stringify([top.name, top.pids, cores < 4 ? "ordinary" : "many", kept]);
-			if (picture === this.#lastPicture || this.#stopped) return;
-			await host.sendNotice(
-				prompt.render(cpuNoticeTemplate, {
-					slice: this.slice,
-					top: top.name,
-					pid: top.pids[0],
-					seconds: (top.usage / 1_000_000).toFixed(1),
-					kept: kept.length ? kept.join(", ") : "none",
-				}),
-			);
-			await host.sendUserLine?.(formatHogUserLine(top.name, cores));
-			this.#lastPicture = picture;
+			for (const [name, episode] of this.#cpuEpisodes) {
+				if (now - episode.lastHotAt >= 30_000) this.#cpuEpisodes.delete(name);
+			}
 		} finally {
 			this.#polling = false;
 		}
