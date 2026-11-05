@@ -3,6 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as dirs from "@oh-my-pi/pi-utils";
+import { assertModelNotBlacklisted } from "@oh-my-pi/pi-ai/model-blacklist";
+import { resolveWidgetModel } from "../src/job-widgets/author";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import {
 	findInitialModel,
@@ -226,12 +228,15 @@ test("registry route aliases cannot restore a banned catalog model", () => {
 		}),
 	);
 	const registry = new ModelRegistry(auth, file);
-	expect(registry.find("openrouter", "lab/example:nitro")?.id).toBe("lab/example:nitro");
+	const alias = registry.find("openrouter", "lab/example:nitro")!;
+	expect(alias.id).toBe("lab/example:nitro");
 	fs.writeFileSync(
 		path.join(dir, "model-blacklist.json"),
 		JSON.stringify({ "openrouter/lab/example": "catalog ban" }),
 	);
 	expect(registry.find("openrouter", "lab/example:nitro")).toBeUndefined();
+	expect(() => assertModelNotBlacklisted(alias)).toThrow("catalog ban");
+	expect(() => assertModelNotBlacklisted(JSON.parse(JSON.stringify(alias)))).toThrow("catalog ban");
 });
 
 test("automatic image questions skip a banned vision role and use the permitted default", () => {
@@ -318,4 +323,19 @@ test("automatic retry walks past a banned concrete chain entry", async () => {
 	} finally {
 		await session.dispose();
 	}
+});
+
+test("automatic widget selection keeps an authenticated role when built-in smol defaults are banned", async () => {
+	fs.writeFileSync(
+		path.join(dir, "model-blacklist.json"),
+		JSON.stringify({ "anthropic/claude-haiku-5-5": "default ban" }),
+	);
+	const settings = Settings.isolated({ modelRoles: { widget: allowedSelector } });
+	const registry = {
+		getAvailable: () => candidates.slice(1),
+		getApiKey: async () => "fixture",
+	} as unknown as ModelRegistry;
+	expect((await resolveWidgetModel(settings, registry, undefined, new AbortController().signal))?.id).toBe(
+		candidates[1].id,
+	);
 });

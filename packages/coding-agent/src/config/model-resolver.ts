@@ -27,6 +27,7 @@ import type { ModelRoleLookup } from "@oh-my-pi/pi-tui/overlays/model-browser";
 import type { Api, Effort, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import {
 	assertModelNotBlacklisted,
+	inheritModelBlacklistIdentity,
 	filterBlacklistedModels,
 	modelBlacklistReason,
 	readModelBlacklist,
@@ -285,11 +286,11 @@ function getOpenRouterFallbackModelIds(modelId: string): string[] {
 }
 
 function cloneModelWithRequestedId(model: Model<Api>, requestedId: string): Model<Api> {
-	return {
+	return inheritModelBlacklistIdentity(model, {
 		...model,
 		id: requestedId,
 		...(model.name === model.id ? { name: requestedId } : {}),
-	};
+	});
 }
 
 const AMAZON_BEDROCK_PROVIDER = "amazon-bedrock";

@@ -1,3 +1,4 @@
+import { assertModelNotBlacklisted } from "../model-blacklist";
 import { resolveCatalogPolicy } from "@oh-my-pi/pi-catalog/compat/catalog-policy";
 import { resolveResponsesWebSocketPreference } from "@oh-my-pi/pi-catalog/compat/responses-websocket";
 import type { Effort } from "@oh-my-pi/pi-catalog/effort";
@@ -998,6 +999,7 @@ const streamOpenAIResponsesOnce = (
 							supportsImageDetailOriginal: model.compat.supportsImageDetailOriginal,
 							onSseEvent: rawSseObserver,
 							onChainResult: accepted => lease.recordChainResult(accepted),
+							beforeDispatch: () => assertModelNotBlacklisted(model),
 						});
 					}
 					const headersWithTimeout = { ...headers };

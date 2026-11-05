@@ -5,6 +5,7 @@ import { getBaseConfigRoot, isEnoent } from "@oh-my-pi/pi-utils";
 interface ModelIdentity {
 	provider: string;
 	id: string;
+	blacklistIdentity?: { provider: string; id: string };
 }
 
 /** Owner policy shared by all profiles; role lists and presets cannot override it. */
@@ -38,7 +39,12 @@ export function readModelBlacklist(): ReadonlyMap<string, string> {
 }
 
 export function modelBlacklistReason(model: ModelIdentity, blacklist = readModelBlacklist()): string | undefined {
-	return blacklist.get(`${model.provider.toLowerCase()}/${model.id}`);
+	return (
+		blacklist.get(`${model.provider.toLowerCase()}/${model.id}`) ??
+		(model.blacklistIdentity
+			? blacklist.get(`${model.blacklistIdentity.provider.toLowerCase()}/${model.blacklistIdentity.id}`)
+			: undefined)
+	);
 }
 
 /** Re-read at dispatch so an already selected or resumed model cannot bypass a new ban. */
@@ -50,4 +56,9 @@ export function assertModelNotBlacklisted(model: ModelIdentity): void {
 export function filterBlacklistedModels<T extends ModelIdentity>(models: T[]): T[] {
 	const blacklist = readModelBlacklist();
 	return blacklist.size ? models.filter(model => modelBlacklistReason(model, blacklist) === undefined) : models;
+}
+
+/** Preserve the catalog identity across route clones and serialized session snapshots. */
+export function inheritModelBlacklistIdentity<T extends ModelIdentity>(source: ModelIdentity, alias: T): T {
+	return { ...alias, blacklistIdentity: source.blacklistIdentity ?? { provider: source.provider, id: source.id } };
 }

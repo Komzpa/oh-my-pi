@@ -1,3 +1,4 @@
+import { assertModelNotBlacklisted } from "../model-blacklist";
 import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
@@ -1701,6 +1702,7 @@ async function openCodexWebSocketTransport(
 	// so it is only consumed once this request takes it (see `onOwned` below).
 	const steered = websocketState.acceptedSteering;
 	const onOwned = () => {
+		assertModelNotBlacklisted(model);
 		if (websocketState.acceptedSteering === steered) websocketState.acceptedSteering = undefined;
 	};
 	let websocketConnection = await getOrCreateCodexWebSocketConnection(
@@ -1749,6 +1751,7 @@ async function openCodexWebSocketTransport(
 						onSseEvent,
 						onOwned,
 						releaseReservation,
+						() => assertModelNotBlacklisted(model),
 					),
 					requestBodyForState: cloneJsonTree(requestContext.transformedBody),
 					transport: "websocket",
@@ -1843,6 +1846,7 @@ async function openCodexWebSocketTransport(
 			onSseEvent,
 			onOwned,
 			releaseReservation,
+			() => assertModelNotBlacklisted(model),
 		);
 		return {
 			eventStream,
@@ -3875,6 +3879,7 @@ class CodexWebSocketConnection {
 		onSseEvent?: (event: RawSseEvent) => void,
 		onOwned?: () => void,
 		releaseReservation?: () => void,
+		beforeDispatch?: () => void,
 	): AsyncGenerator<Record<string, unknown>> {
 		releaseReservation?.();
 		let owned = false;
@@ -3894,6 +3899,7 @@ class CodexWebSocketConnection {
 						}
 					}
 				},
+				beforeDispatch,
 			);
 		} catch (error) {
 			CODEX_DEBUG &&

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as path from "node:path";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { planSteeredRequest } from "@oh-my-pi/pi-ai/providers/openai-codex/live-steering";
 import {
@@ -713,4 +714,28 @@ describe("planSteeredRequest", () => {
 		// The chain broke, so the server's continuation point is unusable.
 		expect(planSteeredRequest(undefined, [steer])).toEqual({ kind: "discard" });
 	});
+});
+
+it("sends no WebSocket inference frame when onPayload adds an owner ban", async () => {
+	installSocket(() => {});
+	const model = createGpt6Model();
+	vi.spyOn(piUtils, "getBaseConfigRoot").mockReturnValue(getAgentDir());
+	const opts = options(new Map());
+	const result = await streamOpenAICodexResponses(
+		model,
+		{ systemPrompt: SYSTEM, messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+		{
+			...opts,
+			onPayload: async () => {
+				await Bun.write(
+					path.join(getAgentDir(), "model-blacklist.json"),
+					JSON.stringify({ [`${model.provider}/${model.id}`]: "late owner ban" }),
+				);
+			},
+		},
+	).result();
+	expect(result.stopReason).toBe("error");
+	expect(result.errorMessage).toContain("late owner ban");
+	expect(creates()).toEqual([]);
+	expect(opts.fetch).not.toHaveBeenCalled();
 });

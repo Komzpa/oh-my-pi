@@ -390,6 +390,7 @@ export class ResponsesWebSocketConnection {
 		signal?: AbortSignal,
 		observer?: (event: RawSseEvent) => void,
 		onOwned?: () => void,
+		beforeDispatch?: () => void,
 	): AsyncGenerator<Record<string, unknown>> {
 		if (!this.isOpen())
 			throw new ResponsesWebSocketTransportError("unavailable", "stream", "websocket connection is unavailable");
@@ -424,6 +425,7 @@ export class ResponsesWebSocketConnection {
 				this.#debugResponseLog = debugSession
 					? await debugSession.openResponseLog("WebSocket 101 Switching Protocols", this.#handshakeHeaders)
 					: undefined;
+				beforeDispatch?.();
 				this.sendControl(exchange.send);
 			}
 			let sawFirstEvent = false;
