@@ -4113,6 +4113,26 @@ function trackSubagentIrcRoster(session: AgentSession, inputs: SubagentPromptInp
 	});
 }
 
+function createSessionElapsedSignal(
+	session: AgentSession,
+	attemptStartedAt: number,
+	lastNoteAt?: number,
+): SubagentElapsedSignal {
+	const canAppend =
+		typeof session.agent.appendMessage === "function" && typeof session.sessionManager.appendMessage === "function";
+	const signal = new SubagentElapsedSignal({
+		attemptStartedAt,
+		lastNoteAt,
+		appendMessage: message => {
+			if (!canAppend) return;
+			session.agent.appendMessage(message);
+			session.sessionManager.appendMessage(message);
+		},
+	});
+	if (canAppend) signal.attach(session.agent);
+	return signal;
+}
+
 /** Re-resolves the IRC roster root a subagent's prompt scopes its peer rows to. */
 async function refreshSubagentIrcRoot(
 	inputs: SubagentPromptInputs,
@@ -4145,26 +4165,6 @@ function restoreSubagentSettings(recipe: SubagentSettingsRecipe): Settings {
 	const settings: SubagentChainSettings = recipe.parent.restoreOverlay(recipe.layers);
 	settings[kRootCompactionThresholds] = recipe.rootThresholds;
 	return settings;
-}
-
-function createSessionElapsedSignal(
-	session: AgentSession,
-	attemptStartedAt: number,
-	lastNoteAt?: number,
-): SubagentElapsedSignal {
-	const canAppend =
-		typeof session.agent.appendMessage === "function" && typeof session.sessionManager.appendMessage === "function";
-	const signal = new SubagentElapsedSignal({
-		attemptStartedAt,
-		lastNoteAt,
-		appendMessage: message => {
-			if (!canAppend) return;
-			session.agent.appendMessage(message);
-			session.sessionManager.appendMessage(message);
-		},
-	});
-	if (canAppend) signal.attach(session.agent);
-	return signal;
 }
 
 /** Everything the lifecycle reviver of a kept-alive subagent needs, captured explicitly. */
@@ -4307,7 +4307,6 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 				mcpFollower?.dispose();
 				throw error;
 			}
-			createSessionElapsedSignal(revived, attemptStartedAt, lastNoteAt);
 			mcpFollower?.bind(revived);
 			trackSubagentSettings(revived, capture);
 			trackSubagentPendingCandidate(revived, capture);
@@ -4317,6 +4316,7 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 			// Strip what the spawn stripped, before extensions start: the rebuilt session enables its defaults again.
 			const revivedToolNames = revived.getEnabledToolNames();
 			const subagentToolNames = withoutParentOwnedTools(revivedToolNames);
+			createSessionElapsedSignal(revived, attemptStartedAt, lastNoteAt);
 			if (subagentToolNames.length !== revivedToolNames.length) {
 				await revived.setActiveToolsByName(subagentToolNames);
 			}
