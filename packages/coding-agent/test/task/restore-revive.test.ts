@@ -88,7 +88,11 @@ const thinking = { mode: "effort", efforts: [Effort.Medium, Effort.High] } as co
  * `fallback` follows that handoff with a retry fallback hop back to the spawn model.
  */
 async function restoreInterruptedChild(
-	options: { transcript?: "handoff" | "fallback"; checkpoints?: { requests: Message[][]; advanceClock(): void } } = {},
+	options: {
+		transcript?: "handoff" | "fallback";
+		attemptStartedAt?: number;
+		checkpoints?: { requests: Message[][]; advanceClock(): void };
+	} = {},
 ) {
 	const cwd = path.join(root, "home", "work");
 	await fs.mkdir(cwd, { recursive: true });
@@ -116,6 +120,7 @@ async function restoreInterruptedChild(
 		tools: ["read"],
 		agent: "task",
 		resolvedModel: `mock/${SPAWN_MODEL}`,
+		attemptStartedAt: options.attemptStartedAt,
 	});
 	child.appendMessage({ role: "user", content: "report what notes.txt says", timestamp: Date.now() });
 	if (options.transcript) {
@@ -244,6 +249,7 @@ it("keeps cold-revived checkpoints in the prefix of subsequent tool requests", a
 	const requests: Message[][] = [];
 	try {
 		const { delivered } = await restoreInterruptedChild({
+			attemptStartedAt: now - 6 * 60_000,
 			checkpoints: {
 				requests,
 				advanceClock: () => {
@@ -253,6 +259,10 @@ it("keeps cold-revived checkpoints in the prefix of subsequent tool requests", a
 		});
 		expect(delivered).toContain(`restored: 42 (${SPAWN_MODEL})`);
 		expect(requests).toHaveLength(3);
+		expect(requests[0]!.filter(isPersistedSubagentElapsedNote).at(-1)).toMatchObject({
+			role: "developer",
+			content: expect.stringMatching(/ · elapsed 6m in this attempt\./),
+		});
 		expect(requests[1]!.filter(isPersistedSubagentElapsedNote).at(-1)?.timestamp).toBe(now);
 		expect(requests[2]!.slice(0, requests[1]!.length)).toEqual(requests[1]);
 	} finally {
