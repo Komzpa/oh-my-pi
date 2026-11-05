@@ -815,6 +815,7 @@ export interface ExtensionContext {
 			| "visibleAt"
 			| "previewPending"
 			| "previewTracked"
+			| "postDeadline"
 		>,
 	): boolean;
 	/** UI methods for user interaction */

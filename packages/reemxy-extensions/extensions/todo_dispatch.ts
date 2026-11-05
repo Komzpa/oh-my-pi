@@ -1478,6 +1478,7 @@ function taskDetails(task: TaskRow, timeZone?: string): string {
 
 const USER_REVIEW_CUSTOM_TYPE = "todo-user-review";
 const USER_UNBLOCK_CUSTOM_TYPE = "todo-user-unblock";
+const POST_DEADLINE_RELEASED_CUSTOM_TYPE = "todo-post-deadline-released";
 
 type DispatchTodoPhases = Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
 
@@ -2745,6 +2746,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 	// The refresh already coalesces requests and handles failures internally.
 	void refreshLiveWorkerModels(ctx);
     refreshRowRisk(ctx);
+    releaseLapsedPostDeadline(ctx);
     announceGates(ctx);
   };
   pi.on("session_start", loadAndRefresh);
@@ -3591,6 +3593,30 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const isMain = (ctx: ExtensionContext) => {
     const header = ctx.sessionManager.getHeader();
     return header !== null && !header.parentSession;
+  };
+  // An after-deadline set exists only for its deadline. Once that deadline is inactive or removed,
+  // every postDeadline flag is cleared so the rows return to the normal queue, with one visible note.
+  const releaseLapsedPostDeadline = (ctx: ExtensionContext): string[] => {
+    if (!isMain(ctx) || typeof ctx.updateTodoSchedule !== "function") return [];
+    const rows = todoPhases(ctx).flatMap((phase) => phase.tasks)
+      .filter((row) => (row.schedule as { postDeadline?: unknown } | undefined)?.postDeadline === true)
+      .map((row) => String(row.content));
+    if (!rows.length) return [];
+    if (sdk.readGoalDeadline(dispatchStateEntries(ctx), ctx.cwd, { includePaused: true })) return [];
+    const released = rows.filter((row) => ctx.updateTodoSchedule!(row, { postDeadline: false }));
+    if (released.length && typeof pi.sendMessage === "function") {
+      pi.sendMessage(
+        {
+          customType: POST_DEADLINE_RELEASED_CUSTOM_TYPE,
+          content: `Deadline no longer active: ${released.length} after-deadline row(s) returned to the normal queue: ${released.map((row) => JSON.stringify(row)).join(", ")}.`,
+          display: true,
+          attribution: "agent",
+          details: { rows: released, at: Date.now() },
+        },
+        { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false },
+      );
+    }
+    return released;
   };
   const announceHuman = (ctx: ExtensionContext, user: { at: number; text: string }) => {
     if (singleWriterLane || !isMain(ctx) || typeof pi.sendMessage !== "function" || typeof pi.appendEntry !== "function") return;
@@ -6036,6 +6062,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
 
   pi.on("turn_end", async (_event, ctx) => {
+    releaseLapsedPostDeadline(ctx);
     checkDeliveries(ctx);
     announceGates(ctx);
     if (isMain(ctx)) {
