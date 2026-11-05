@@ -5211,7 +5211,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // forcing those produced review rows instead of product progress (live mail 2026-10-28: 8 of 10
     // rows closed in 6 h were reviews).
     const retroDemand = sprintState.retroDueReason && BLOCKING_RETRO_REASONS.has(sprintState.retroDueReason) && !retroFacilitatorRunning ? ["retro"] : [];
+    const acceptedClosingProblems = phasesNow.flatMap(phase => phase.tasks)
+      .filter(row => isNonClosedRowStatus(row.status) && row.schedule?.review === "accepted")
+      .map(row => `user accepted ${JSON.stringify(row.content)}; close it or fix: ${row.schedule.reviewClosingBlocked ?? "retry todo done through the completion gate"}`);
     if (!decision.forecast) {
+      if (acceptedClosingProblems.length) return `PLAN CHECK: ${acceptedClosingProblems.length} problem(s). ${acceptedClosingProblems.join("; ")}`;
       // A plan with no open rows has no plan problems: decay every other demand here too, or an
       // escalated one (e.g. unread-receipts after the last row closed) would block forever.
       trackDemands(retroDemand, false);
@@ -5471,6 +5475,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const problems = [
       retroLine,
+      ...acceptedClosingProblems,
       ...(acceptedMergeDemand ? [acceptedMergeDemand] : []),
       ...(userUnblockDue.length ? userUnblockDue.map(({ row, question }) => `Ask the user now: ${row} — ${question}`) : []),
       ...staleWorkers,
