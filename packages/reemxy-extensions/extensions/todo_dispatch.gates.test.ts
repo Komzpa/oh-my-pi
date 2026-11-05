@@ -1138,7 +1138,8 @@ test("just-finished rows are not re-staffed; critical rows parked behind running
     // row is an unread result, not re-staffed; nothing waits behind Fix #116, so no split demand.
     const done = await setup(finishedPair, { running: [taskJob("Fix116", "running")], recent: [taskJob("Fix115Countdown", "completed")], nonJobAgents: [] });
     expect(done.decision.dispatchableReady).toEqual([]);
-    expect(done.wait).toBeUndefined();
+    expect(done.wait?.block).toBe(true);
+    expect(done.wait?.reason).toContain("verify the result and close");
     expect(done.bash).toBeUndefined();
     // Case B: the owner failed → the row still needs a worker and the wait gate still says so.
     const failed = await setup(finishedPair, { running: [taskJob("Fix116", "running")], recent: [taskJob("Fix115Countdown", "failed")], nonJobAgents: [] });

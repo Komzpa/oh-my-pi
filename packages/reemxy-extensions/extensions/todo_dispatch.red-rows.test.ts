@@ -1,6 +1,8 @@
 // @ts-nocheck -- extension runtime fixtures follow the host's forecast contract.
 import { expect, test } from "bun:test";
-import { idleRedRowsRefusal } from "./todo_dispatch";
+import storedRows from "./fixtures/settled-dc-rows.json";
+import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { decideTodoDispatch, idleRedRowsRefusal } from "./todo_dispatch";
 import { overduePreviewRows } from "./todo_preview";
 
 const brag = "Brag video inventory";
@@ -65,4 +67,50 @@ test("a missing commit can be deferred only until its recorded time; an expired 
   expect(overduePreviewRows(phases, [record], config, now + 60_001)).toEqual([row]);
   delete record.reason.deferUntil;
   expect(overduePreviewRows(phases, [record], config, now)).toEqual([row]);
+});
+
+test("deadline slack uses the resource finish when expected finish is absent, and omits it without a due time", () => {
+  const row = { content: adaptive, status: "in_progress", critical: true, resourceFinish: 120_000 };
+  const d = decision([row]);
+  d.forecast.deadlineStatus = "will-miss";
+  d.forecast.deadlineAt = 60_000;
+  d.forecast.now = 0;
+  expect(idleRedRowsRefusal(d)).toContain("deadline slack -1m");
+  delete d.forecast.deadlineAt;
+  expect(idleRedRowsRefusal(d)).not.toContain("deadline slack");
+});
+
+
+test("DC settled executors need restaff or verification; running registry workers and a live job pid permit wait", () => {
+  const phases = structuredClone(storedRows.phases);
+  const rows = phases.flatMap(phase => phase.tasks);
+  // Replay after restoring deferred scope to the active plan.
+  rows.forEach(row => row.schedule.postDeadline = false);
+  const now = Date.parse(storedRows.timestamp);
+  const run = jobs => decideTodoDispatch({ phases, jobs, isMainSession: true, taskEnabled: true, now }, schedule);
+  const d = run({ running: [], recent: [] });
+  const reason = idleRedRowsRefusal(d);
+  for (const row of rows) {
+    expect(reason).toContain(JSON.stringify(row.content));
+    const completed = row.schedule.executor.outcome === "completed";
+    expect(reason).toContain(completed ? "verify the result and close" : "restaff with task");
+  }
+  // Facility has no owner in the last snapshot: a live executor must be linked explicitly.
+  for (const row of rows) row.schedule.owner = row.schedule.executor.workerId;
+  const staffed = run({ running: rows.map(row => ({ id: row.schedule.owner, label: row.content, type: "task", status: "running" })), recent: [] });
+  staffed.forecast.rows.forEach(row => row.overdue = false);
+  expect(idleRedRowsRefusal(staffed)).toBeUndefined();
+  rows.forEach(row => row.schedule.owner = `job:${process.pid}`);
+  const external = run({ running: [], recent: [] });
+  external.forecast.rows.forEach(row => row.overdue = false);
+  expect(external.ownerRunStates.every(row => row.running)).toBe(true);
+  expect(idleRedRowsRefusal(external)).toBeUndefined();
+});
+
+test("completed executor can hand off a visible user preview; review label alone still needs action", () => {
+  const row = { content: adaptive, status: "in_progress", startedAt: 1, schedule: { review: "user", visibleAt: 1, reviewPage: "http://localhost:3000/review" } };
+  const d = decision([row], [{ content: adaptive, running: false, outcome: "completed" }]);
+  expect(idleRedRowsRefusal(d)).toBeUndefined();
+  delete row.schedule.reviewPage;
+  expect(idleRedRowsRefusal(d)).toContain("verify the result and close");
 });

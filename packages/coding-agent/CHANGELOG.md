@@ -11,6 +11,10 @@
 - Agent `bash` commands run with `LANG`/`LC_ALL=C.UTF-8` on every platform instead of the inherited locale, so sort order, number formats and tool messages no longer vary by machine; a locale in the command's `env` or `.envrc` still wins, and `!` commands keep yours
 ### Fixed
 
+- Refuse idle waits for rows whose executors have finished, with verification or restaffing actions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
+- Heal todo edges to missing or dropped rows, and report removed inbound edges when dropping a row ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Repair stored self dependencies without blocking staffing updates, and allow clearing speculative targets ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep user due times immutable in todo operations and persist reversible post-deadline scope triage ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
