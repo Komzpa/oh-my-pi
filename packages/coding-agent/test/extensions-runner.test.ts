@@ -4917,6 +4917,15 @@ describe("ExtensionRunner", () => {
 			return runner;
 		};
 
+		it("delivery critic launches through the native task implementation at low effort", async () => {
+			const seen: { params?: unknown } = {};
+			const native = { ...nativeProbe(seen), name: "task" };
+			const runner = await runnerWithNative(native);
+			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
+			expect(seen.params).toEqual({ agent: "user-shadow", task: "Review completed rack controls", effort: "lo" });
+			expect(result?.content).toEqual([{ type: "text", text: "native ran" }]);
+		});
+
 		it("inherits the wrapper call's signal and onUpdate for a bare invokeTool", async () => {
 			const seen: { signal?: AbortSignal; onUpdate?: unknown; params?: unknown } = {};
 			const runner = await runnerWithNative(nativeProbe(seen));
