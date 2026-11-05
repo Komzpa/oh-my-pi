@@ -7,6 +7,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import { truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
 import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
@@ -1550,15 +1551,34 @@ export function acceptedSpeculativeMergeDemand(phases: DispatchTodoPhases): stri
   return demands.length ? demands.join("; ") : undefined;
 }
 
-export function missingSpeculativeReview(item: Record<string, unknown>, phases: DispatchTodoPhases): string | undefined {
-  const brief = String(item.task ?? "");
+/** Match explicit dispatch metadata before worker ownership, then all named rows. */
+export function speculativeTaskRows(item: Record<string, unknown>, phases: DispatchTodoPhases): Array<Record<string, unknown>> {
   const rows = phases.flatMap((phase) => phase.tasks);
-  const row = rows.find((candidate) => typeof candidate.content === "string" && brief.includes(candidate.content));
-  if (!row) return;
-  const schedule = row.schedule as { dependencies?: string[]; speculativeOn?: string } | undefined;
-  const reviews = new Set(pendingReview(phases).map((candidate) => String(candidate.content)));
-  const pending = schedule?.dependencies?.find((dependency) => reviews.has(dependency));
-  return pending && schedule?.speculativeOn !== pending ? pending : undefined;
+  const preview = item.previewIntegration as { task?: string } | undefined;
+  if (typeof preview?.task === "string") return rows.filter((row) => row.content === preview.task);
+  if (typeof item.name === "string") {
+    const owned = rows.filter((row) => todoMatchesObservedWorker(row, { workerId: item.name }));
+    if (owned.length) return owned;
+  }
+  const brief = String(item.task ?? "").trim();
+  const exact = rows.filter((row) => row.content === brief);
+  if (exact.length) return exact;
+  return rows.filter((row) => typeof row.content === "string" && row.content.trim().length > 0 && brief.includes(row.content));
+}
+
+function readOnlyAudit(item: Record<string, unknown>): boolean {
+  return ["qa-auditor", "reviewer", "gate-runner"].includes(String(item.agent ?? "").toLowerCase());
+}
+
+export function missingSpeculativeReview(item: Record<string, unknown>, phases: DispatchTodoPhases, boundRow?: Record<string, unknown>): string | undefined {
+  if (readOnlyAudit(item)) return;
+  const rows = boundRow ? [boundRow] : speculativeTaskRows(item, phases);
+  for (const row of rows) {
+    const schedule = row.schedule as { dependencies?: string[]; speculativeOn?: string } | undefined;
+    const pending = schedule?.dependencies?.find((dependency) => phases.some((phase) => phase.tasks.some((candidate) => candidate.content === dependency && candidate.status !== "completed" && candidate.status !== "abandoned" && candidate.schedule?.review === "user")));
+    if (pending && schedule?.speculativeOn !== pending) return pending;
+  }
+  return;
 }
 
 function buildStaticPrompt(
@@ -2228,6 +2248,7 @@ export function syncCriticalFast(
 }
 
 export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe; reviewPageOpener?: (url: string) => void } = {}): Promise<void> {
+  const speculativeRefusals = new Map<string, string>();
   const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
   const previewConfig = (ctx: ExtensionContext) => ctx.getTodoPreviewConfig?.() ?? { enabled: false, paths: [], thresholdMinutes: 15 };
   let previewPoll: Promise<PreviewRecord[]> | undefined;
@@ -4015,7 +4036,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // diagnosed from ~/.local/state/omp-todo-dispatch/<session>.gate.jsonl without a debugger.
   let lastGateReason = "";
   const gateTrace = (ctx: ExtensionContext, reason: string, detail: Record<string, unknown> = {}) => {
-    if (reason === lastGateReason) return;
+    if (reason === lastGateReason && reason !== "speculative-review-checked") return;
     lastGateReason = reason;
     try {
       const dir = TODO_DISPATCH_STATE_DIR;
@@ -5015,23 +5036,34 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const pendingContents = new Set(pending.map((row) => String(row.content)));
       for (const item of taskItems(event.input)) {
         const brief = String(item.task ?? "");
-        const row = rows.find((candidate) => typeof candidate.content === "string" && brief.includes(candidate.content));
-        if (!row) continue;
-        const schedule = row.schedule as { dependencies?: string[]; speculativeOn?: string; attemptHistory?: unknown[]; review?: string; progress?: { evidence?: string } } | undefined;
-        // Retrying this row does not create a dependency on itself.
-        const dependentReview = missingSpeculativeReview(item, phases);
-        if (dependentReview && schedule?.speculativeOn !== dependentReview) {
-          return { block: true, reason: `Schedule ${JSON.stringify(String(row.content))} as speculative on ${JSON.stringify(dependentReview)} first. Exactly: todo schedule this row with speculativeOn set to that review; use a separate worktree/branch or commit series and do not publish until accepted.` };
-        }
-        if ((schedule?.attemptHistory?.length ?? 0) >= 1 && !schedule?.review && !pending.some((candidate) => candidate.content === row.content)) {
-          return { block: true, reason: `Hand attempt ${(schedule?.attemptHistory?.length ?? 0)}'s result to the user first (it can stay speculative): ${rowReviewNotice(row)}. Then redo may proceed speculatively. After showing the link, record the handoff with: todo op="schedule" updates=[{task:${JSON.stringify(String(row.content))}, review:"user"}]` };
-        }
-        const reviewTarget = schedule?.speculativeOn ?? (schedule?.review === "user" ? String(row.content) : undefined);
-        if (reviewTarget && pendingContents.has(reviewTarget)) {
-          item.task = `${brief}\n\n${prompt.render(gateNoticeInstructions, { speculative: true, reviewRow: reviewTarget }).trim()}`;
-        }
-        if (schedule?.review === "redo" && schedule.progress?.evidence) {
-          item.task = `${item.task}\n\n${prompt.render(gateNoticeInstructions, { customerCorrection: true, correction: schedule.progress.evidence }).trim()}`;
+        const boundRows = speculativeTaskRows(item, phases);
+        for (const row of boundRows) {
+          gateTrace(ctx, "speculative-review-checked", { row: row.content, agent: item.agent, readOnly: readOnlyAudit(item), speculativeOn: row.schedule?.speculativeOn, dependencies: (row.schedule?.dependencies ?? []).map((content) => { const target = rows.find((candidate) => candidate.content === content); return { content, status: target?.status, review: target?.schedule?.review }; }) });
+          const previousTarget = speculativeRefusals.get(String(row.content));
+          const previousReview = rows.find((candidate) => candidate.content === previousTarget);
+          const remedyApplied = previousTarget !== undefined && (row.schedule?.speculativeOn === previousTarget || !previousReview || previousReview.status === "completed" || previousReview.status === "abandoned" || previousReview.schedule?.review !== "user");
+          if (remedyApplied) {
+            speculativeRefusals.delete(String(row.content));
+            gateTrace(ctx, "speculative-refusal-remedy-applied", { row: row.content, target: previousTarget, speculativeOn: row.schedule?.speculativeOn, targetStatus: previousReview?.status, targetReview: previousReview?.schedule?.review });
+          }
+          if (readOnlyAudit(item)) continue;
+          const schedule = row.schedule as { dependencies?: string[]; speculativeOn?: string; attemptHistory?: unknown[]; review?: string; progress?: { evidence?: string } } | undefined;
+          // Retrying this row does not create a dependency on itself.
+          const dependentReview = missingSpeculativeReview(item, phases, row);
+          if (dependentReview && schedule?.speculativeOn !== dependentReview && !(remedyApplied && dependentReview === previousTarget)) {
+            speculativeRefusals.set(String(row.content), dependentReview);
+            return { block: true, reason: `Schedule ${JSON.stringify(String(row.content))} as speculative on ${JSON.stringify(dependentReview)} first. Checked row=${JSON.stringify(row.content)}, speculativeOn=${JSON.stringify(schedule?.speculativeOn ?? null)}, dependency review=user. Exactly: todo schedule this row with speculativeOn set to that review; use a separate worktree/branch or commit series and do not publish until accepted.` };
+          }
+          if ((schedule?.attemptHistory?.length ?? 0) >= 1 && !schedule?.review && !pending.some((candidate) => candidate.content === row.content)) {
+            return { block: true, reason: `Hand attempt ${(schedule?.attemptHistory?.length ?? 0)}'s result to the user first (it can stay speculative): ${rowReviewNotice(row)}. Then redo may proceed speculatively. After showing the link, record the handoff with: todo op="schedule" updates=[{task:${JSON.stringify(String(row.content))}, review:"user"}]` };
+          }
+          const reviewTarget = schedule?.speculativeOn ?? (schedule?.review === "user" ? String(row.content) : undefined);
+          if (reviewTarget && pendingContents.has(reviewTarget)) {
+            item.task = `${brief}\n\n${prompt.render(gateNoticeInstructions, { speculative: true, reviewRow: reviewTarget }).trim()}`;
+          }
+          if (schedule?.review === "redo" && schedule.progress?.evidence) {
+            item.task = `${item.task}\n\n${prompt.render(gateNoticeInstructions, { customerCorrection: true, correction: schedule.progress.evidence }).trim()}`;
+          }
         }
       }
     }
