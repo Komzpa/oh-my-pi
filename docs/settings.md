@@ -678,6 +678,8 @@ Computer settings and the active model's coordinate-safe image limits are read f
 
 ### Shell, eval, and LSP
 
+Set `display.shellVisualization: false` to show bash commands as plain shell text instead of the interactive execution visualization. The setting applies to streaming calls and saved transcripts; execution traces are still recorded for replay if visualization is re-enabled.
+
 ```yaml
 bash:
    enabled: true
@@ -1108,7 +1110,7 @@ Every schema path not individually tabulated in this catalog is explicitly defer
 
 - Agent behavior and safety: `ask.*`, `dev.*`, `eval.*`, `features.*`, `goal.*`, `loop.*`, `model.loopGuard.*`, `model.toolCallLoopGuard.*`, `prewalk.*`, `recap.*`, `sharpshooter.*`, `task.*`, `tools.*`, and `vault.*`.
 - Execution and content: `commit.*`, `completion.*`, `edit.*`, `error.*`, `extensionHandlers.*`, `generate_image.*`, `git.*`, `images.*`, `live.*`, `paste.*`, `power.*`, `read.*`, `shellMinimizer.*`, `speech.*`, `terminal.*`, and `title.*`.
-- Interface and startup: `composer.*`, `display.*`, `extensionRenderers.*`, `input.*`, `marketplace.*`, `spelling.*`, `statusLine.*`, `startup.*`, `stt.*`, `tui.*`, `ttsr.*`, and `update.*`. `extensionRenderers.assistantText` (default `false`) enables [assistant text renderers](./extensions.md#assistant-text-renderer) and [extension link schemes](./extensions.md#extension-link-schemes).
+- Interface and startup: `composer.*`, `display.*`, `extensionRenderers.*`, `input.*`, `marketplace.*`, `spelling.*`, `statusLine.*`, `startup.*`, `stt.*`, `tui.*`, `ttsr.*`, and `update.*`. `extensionRenderers.assistantText` (default `false`) enables [assistant text renderers](./extensions.md#assistant-text-renderer) and [extension link schemes](./extensions.md#extension-link-schemes); `extensionRenderers.transcriptPresenters` (default `false`) enables [transcript presenters](./extensions.md#transcript-presenter).
 - Discovery, sharing, and auth: `auth.*`, `browser.*`, `claudeResets.*`, `codexResets.*`, `collab.*`, `commands.*`, `contextFiles.*`, `gc.*`, `ida.*`, `mcp.*`, `share.*`, `skills.*`, `stream.*`, and `telemetry.*`. `contextFiles.extra` is documented in [Context files](./context-files.md#extra-filenames).
 - Ungrouped keys: `setupVersion`, `proseOnlyThinking`, `omitThinking`, `externalThinking`, `includeWorkspaceTree`, `autocompleteMaxVisible`, `emojiAutocomplete`, `disabledExtensions`, `inlineToolDescriptors`, and `treeFilterMode`.
 

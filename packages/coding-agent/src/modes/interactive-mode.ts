@@ -16,6 +16,7 @@ import type {
 	KeyId,
 	LoaderMessageColorFn,
 	OverlayHandle,
+	RenderTimer,
 	SlashCommand,
 } from "@oh-my-pi/pi-tui";
 import {
@@ -26,6 +27,7 @@ import {
 	getWidthConfigEpoch,
 	Loader,
 	Markdown,
+	minFrameIntervalMs,
 	Spacer,
 	setTerminalTextSizing,
 	setTuiTight,
@@ -231,7 +233,15 @@ import {
 	setExtensionLinkPicking,
 	setExtensionLinks,
 } from "@oh-my-pi/pi-tui/render/extension-links";
-import { onNativeRenderingChange } from "@oh-my-pi/pi-tui/native/state";
+import { isNativeRendering, onNativeRenderingChange } from "@oh-my-pi/pi-tui/native/state";
+import {
+	isTranscriptPresentable,
+	messageBlock,
+	onTranscriptPresentationRedrawn,
+	onTranscriptPresentersChanged,
+	PresentedBlock,
+	setTranscriptPresenters,
+} from "@oh-my-pi/pi-tui/chat/transcript-presentation";
 import { renderTreeList } from "@oh-my-pi/pi-tui/render/tree-list";
 import { formatStartupChangelogSummary, type StartupChangelogSelection } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
@@ -296,6 +306,7 @@ import { hasSpotlightOriginal, SpotlightSheet } from "@oh-my-pi/pi-tui/overlays/
 import type { SpotlightDetails } from "@oh-my-pi/pi-tui/chat/spotlight";
 import { readArtifactText } from "../spotlight/sink";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
+import { frameTelemetry } from "@oh-my-pi/pi-tui/frame-telemetry";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "./status-line-host";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
@@ -397,6 +408,7 @@ import {
 	cfgDisplayCollapseCompacted,
 	cfgDisplayHideToolActivity,
 	cfgDisplayPinnedAgents,
+	cfgDisplayShellVisualization,
 	cfgDisplayShowTokenUsage,
 	cfgDisplayShowTurnTime,
 	cfgDisplaySubagentLivePreview,
@@ -420,12 +432,14 @@ import {
 	cfgStatusLineSegmentOptions,
 	cfgStatusLineSeparator,
 	cfgStatusLineSessionAccent,
+	cfgStatusLineShowFpsMeter,
 	cfgStatusLineShowHookStatus,
 	cfgStatusLineTransparent,
 	cfgSymbolPreset,
 	cfgTerminalProgramStatus,
 	cfgTerminalShowImages,
 	cfgTuiHyperlinks,
+	cfgTuiFrameDropThresholdMs,
 	cfgTuiImeSafeCursor,
 	cfgTuiMaxInlineImages,
 	cfgTuiAutoGraph,
@@ -455,7 +469,7 @@ import { cfgStreamRedactPatterns } from "../stream/settings";
 import { cfgSttEnabled } from "../stt/settings";
 import { combine, type SettingValueOf } from "../config/registry";
 import { cfgAdvisorEnabled, cfgAdvisorMaxNotesPerUpdate } from "../advisor/settings";
-import { cfgExtensionAssistantTextRenderers } from "../extensibility/settings";
+import { cfgExtensionAssistantTextRenderers, cfgExtensionTranscriptPresenters } from "../extensibility/settings";
 import { cfgTierAdvisor } from "../session/settings";
 import {
 	cfgCompactionEnabled,
@@ -494,6 +508,7 @@ const cfgLiveUiSettings = combine({
 	"compaction.enabled": cfgCompactionEnabled,
 	"compaction.methodOrder": cfgCompactionMethodOrder,
 	"display.hideToolActivity": cfgDisplayHideToolActivity,
+	"display.shellVisualization": cfgDisplayShellVisualization,
 	"terminal.showImages": cfgTerminalShowImages,
 	"terminal.programStatus": cfgTerminalProgramStatus,
 	hideThinkingBlock: cfgHideThinkingBlock,
@@ -507,6 +522,7 @@ const cfgLiveUiSettings = combine({
 	"tui.renderMermaid": cfgTuiRenderMermaid,
 	"tui.renderSvg": cfgTuiRenderSvg,
 	"extensionRenderers.assistantText": cfgExtensionAssistantTextRenderers,
+	"extensionRenderers.transcriptPresenters": cfgExtensionTranscriptPresenters,
 	"tui.autoGraph": cfgTuiAutoGraph,
 	"tui.textSizing": cfgTuiTextSizing,
 	"tui.tight": cfgTuiTight,
@@ -519,11 +535,13 @@ const cfgLiveUiSettings = combine({
 	"statusLine.rightSegments": cfgStatusLineRightSegments,
 	"statusLine.separator": cfgStatusLineSeparator,
 	"statusLine.showHookStatus": cfgStatusLineShowHookStatus,
+	"statusLine.showFpsMeter": cfgStatusLineShowFpsMeter,
 	"statusLine.sessionAccent": cfgStatusLineSessionAccent,
 	"statusLine.transparent": cfgStatusLineTransparent,
 	"statusLine.segmentOptions": cfgStatusLineSegmentOptions,
 	"statusLine.compactThinkingLevel": cfgStatusLineCompactThinkingLevel,
 	"statusLine.contextLine": cfgStatusLineContextLine,
+	"tui.frameDropThresholdMs": cfgTuiFrameDropThresholdMs,
 	"git.enabled": cfgGitEnabled,
 	"advisor.enabled": cfgAdvisorEnabled,
 	"advisor.maxNotesPerUpdate": cfgAdvisorMaxNotesPerUpdate,
@@ -1444,6 +1462,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		| ((tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) => CustomEditor)
 		| undefined;
 	#composerStatusPersistTimer: NodeJS.Timeout | undefined;
+	#fpsTelemetryUnsubscribe: (() => void) | undefined;
 	readonly #judgmentBatchProgressHud = new JudgmentBatchProgressHud();
 	readonly #downloadActivityHud = new DownloadActivityHud(() => this.ui.requestRender());
 	readonly #judgmentBatchProgressClearTimers = new Map<string, NodeJS.Timeout>();
@@ -1490,9 +1509,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	compactionQueueOrigin: ConversationPosition | undefined = undefined;
 	pendingTools = new Map<string, ToolExecutionHandle>();
 	transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
-	pendingBashComponents: BashExecutionComponent[] = [];
+	pendingBashComponents: PresentedBlock<BashExecutionComponent>[] = [];
 	bashComponent: BashExecutionComponent | undefined = undefined;
-	pendingPythonComponents: EvalExecutionComponent[] = [];
+	pendingPythonComponents: PresentedBlock<EvalExecutionComponent>[] = [];
 	pythonComponent: EvalExecutionComponent | undefined = undefined;
 	isPythonMode = false;
 	streamingComponent: AssistantMessageComponent | undefined = undefined;
@@ -1740,7 +1759,20 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly collabController: CollabController;
 	/** Owned room; use {@link collabController}.host for current-session reuse and links. */
 	collabHost?: CollabHost;
-	collabGuest?: CollabGuestLink;
+	#collabGuest: CollabGuestLink | undefined;
+	/** Set with {@link setCollabGuest}. */
+	get collabGuest(): CollabGuestLink | undefined {
+		return this.#collabGuest;
+	}
+	/**
+	 * A guest's transcript is the host's and draws stock cards. Joining replays the host's next, so
+	 * the local blocks are left as drawn; leaving restored the local transcript while the guest still
+	 * held it, so its blocks are asked again.
+	 */
+	setCollabGuest(guest: CollabGuestLink | undefined): void {
+		this.#collabGuest = guest;
+		if (this.#applyTranscriptPresenters() && !guest) this.refreshTranscriptPresentation();
+	}
 	#streamPublisher: StreamPublisher | undefined;
 	#recorder: SessionRecorder | undefined;
 	#recorderStarting = false;
@@ -2024,6 +2056,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		| undefined;
 	/** A rebuild of the transcript's terminal scrollback held back until the link browser closes. */
 	#scrollbackRebuildPending = false;
+	/**
+	 * The scrollback replay queued for retired blocks that drew another presentation: one per
+	 * frame, however many late results land before it. Any replay in between replaces it.
+	 */
+	#redrawReplay: RenderTimer | undefined;
+	/** A scrollback replay is rendering. */
+	#replaying = false;
 	#observerUiSyncTimer?: NodeJS.Timeout;
 	/** Repaints the subagent HUD so live-preview elapsed markers advance between progress events. */
 	#subagentPreviewTickTimer?: NodeJS.Timeout;
@@ -2269,6 +2308,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// A TSP terminal has no status strip: the tab title carries the PR.
 		this.statusLine.onNativePullRequest = pr => setTerminalTitlePullRequest(pr?.number);
 		this.statusLine.setAutoCompactEnabled(session.autoCompactionEnabled);
+
 		this.#codexResetFireworksController = new CodexResetFireworksController(this);
 		this.statusLine.setCodexResetFireworksHandler(event => {
 			this.#codexResetFireworksController.show(event);
@@ -2408,6 +2448,15 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.#pendingLoopIterations > 0);
 		this.#idleMaintenanceActivity.presentRecap = recap => this.#eventController.presentIdleRecap(recap);
 		this.syncIdleMaintenanceView();
+
+		frameTelemetry.setThresholdMs(cfgTuiFrameDropThresholdMs.get(this.settings));
+		this.statusLine.setFpsText(frameTelemetry.statusText);
+		this.#fpsTelemetryUnsubscribe?.();
+		this.#fpsTelemetryUnsubscribe = frameTelemetry.onStatusTextChange(text => {
+			this.statusLine.setFpsText(text);
+			if (!cfgStatusLineShowFpsMeter.get(this.settings)) return;
+			this.ui.requestComponentRender(this.statusLine);
+		});
 
 		// Fresh dialog lifetime: a previous stop (if this mode is ever
 		// re-initialized) left the old controller aborted, and approvals queued
@@ -2773,9 +2822,33 @@ export class InteractiveMode implements InteractiveModeContext {
 				extensionRunner.onSuspensionChange(() => {
 					this.#applyExtensionLinks();
 					this.#redrawExtensionLinks();
+					this.#syncTranscriptPresenters();
 				}),
 			);
 		}
+		this.#eventBusUnsubscribers.push(
+			// Process-wide: another session's runner (a subagent's) registering a presenter leaves the
+			// main set unchanged, and the transcript is not asked again.
+			onTranscriptPresentersChanged(() => this.#syncTranscriptPresenters()),
+			// A block with rows already in scrollback drew another presentation (a late result while
+			// it was partly retired): those rows are stale, so replay once by the next frame.
+			onTranscriptPresentationRedrawn(block => {
+				// A replay redraws every block from scratch: what it draws is what scrollback now holds.
+				// One already owed (queued, or held back until the link browser closes) covers this block.
+				if (this.#redrawReplay || this.#scrollbackRebuildPending || this.#replaying || isNativeRendering()) return;
+				if (!this.chatContainer.children.includes(block) || this.chatContainer.canRemoveBlock(block)) return;
+				this.#queueRedrawReplay();
+			}),
+			// A replay that came due while the TUI was stopped (an external editor) was skipped.
+			this.ui.addStartListener(() => {
+				if (this.#redrawReplay) this.#queueRedrawReplay();
+			}),
+		);
+		this.#applyTranscriptPresenters();
+		this.#eventBusUnsubscribers.push(() => {
+			this.#redrawReplay?.cancel();
+			this.#redrawReplay = undefined;
+		});
 
 		// Restore mode from session (e.g. plan mode on resume)
 		this.session.setSessionBeforeSwitchReconciler?.(async () => {
@@ -3887,7 +3960,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		// instead of settling and retiring into immutable scrollback mid-preflight
 		// where reconcile could no longer swap it out (issue #11217).
 		for (const component of this.#optimisticSkillMessageComponents) {
-			if (component instanceof SkillMessageComponent) component.markTranscriptBlockPending();
+			const card = component instanceof PresentedBlock ? component.inner : component;
+			if (card instanceof SkillMessageComponent) card.markTranscriptBlockPending();
 		}
 		this.ensureLoadingAnimation();
 		this.ui.requestRender();
@@ -3913,7 +3987,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		const present = components.filter(component => this.chatContainer.children.includes(component));
 		if (present.length > 0 && present.every(component => !this.chatContainer.canRemoveBlock(component))) {
 			for (const component of present) {
-				if (component instanceof SkillMessageComponent) component.markTranscriptBlockFinalized();
+				const card = component instanceof PresentedBlock ? component.inner : component;
+				if (card instanceof SkillMessageComponent) card.markTranscriptBlockFinalized();
+				// Presenters see, and refresh by, the recorded message, as the resumed transcript does.
+				if (component instanceof PresentedBlock && message.role === "custom") {
+					component.setBlock(messageBlock(message));
+				}
 			}
 			return;
 		}
@@ -4271,6 +4350,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (
 			any(
 				"display.advisorCollapsedLines",
+				"display.shellVisualization",
 				"display.cacheMissMarker",
 				"display.collapseCompacted",
 				"display.showTokenUsage",
@@ -4296,6 +4376,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#eventController.applyAssistantTextRenderers();
 			rebuildChat = true;
 		}
+		if (any("extensionRenderers.transcriptPresenters")) this.#syncTranscriptPresenters();
 		if (any("tui.autoGraph")) {
 			this.#applyAutoGraphSetting();
 			rebuildChat = true;
@@ -4328,6 +4409,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				"statusLine.rightSegments",
 				"statusLine.separator",
 				"statusLine.showHookStatus",
+				"statusLine.showFpsMeter",
 				"statusLine.sessionAccent",
 				"statusLine.transparent",
 				"statusLine.segmentOptions",
@@ -4338,6 +4420,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		) {
 			this.#syncStatusLineSettings();
 			this.ui.requestRender();
+		}
+		if (any("tui.frameDropThresholdMs")) {
+			frameTelemetry.setThresholdMs(cfgTuiFrameDropThresholdMs.get(settings));
 		}
 		if (any("statusLine.sessionAccent")) this.#handleSessionAccentInputsChanged();
 		// Advisor runtime start/stop has no session event; repaint its status segment.
@@ -4357,6 +4442,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			rightSegments: cfgStatusLineRightSegments.get(settings),
 			separator: cfgStatusLineSeparator.get(settings),
 			showHookStatus: cfgStatusLineShowHookStatus.get(settings),
+			showFpsMeter: cfgStatusLineShowFpsMeter.get(settings),
 			sessionAccent: cfgStatusLineSessionAccent.get(settings),
 			transparent: cfgStatusLineTransparent.get(settings),
 			segmentOptions: cfgStatusLineSegmentOptions.get(settings),
@@ -4568,12 +4654,63 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	rebuildTranscriptScrollback(): void {
+		// This replay (or the one deferred to the link browser's close) covers a queued one.
+		this.#redrawReplay?.cancel();
+		this.#redrawReplay = undefined;
 		// The browser covers the screen: rebuild once, when it closes, rather than under it.
 		this.#scrollbackRebuildPending = this.#linkBrowser !== undefined;
 		if (this.#scrollbackRebuildPending) return;
-		this.chatContainer.resetStableEmission();
-		this.ui.resetDisplay();
+		// The replay renders synchronously; the blocks it redraws report changes it already wrote.
+		this.#replaying = true;
+		try {
+			this.chatContainer.resetStableEmission();
+			this.ui.resetDisplay();
+		} finally {
+			this.#replaying = false;
+		}
 	}
+
+	/** Replay the scrollback by the next frame: once, however many blocks ask before it. */
+	#queueRedrawReplay(): void {
+		this.#redrawReplay?.cancel();
+		this.#redrawReplay = this.ui.scheduleAfter(minFrameIntervalMs(), () => this.rebuildTranscriptScrollback());
+	}
+
+	/**
+	 * Install the main session's transcript presenters (what its runner leaves active); true when
+	 * they changed. A focused subagent's transcript and a collab guest's draw stock cards instead.
+	 */
+	#applyTranscriptPresenters(): boolean {
+		const runner = this.viewSession === this.session && !this.collabGuest ? this.session.extensionRunner : undefined;
+		return setTranscriptPresenters(runner?.getTranscriptPresenters() ?? []);
+	}
+
+	#syncTranscriptPresenters(): void {
+		if (this.#applyTranscriptPresenters()) this.refreshTranscriptPresentation();
+	}
+
+	refreshTranscriptPresentation(ids?: ReadonlySet<string>): void {
+		const refresh = (block: Component) => isTranscriptPresentable(block) && block.refreshTranscriptPresentation(ids);
+		this.redrawTranscriptBlocks(this.chatContainer.children, refresh);
+		// `!`/`$` runs queued while the agent streams wait outside the transcript, always live.
+		let pendingChanged = false;
+		for (const block of this.pendingShellContainer.children) pendingChanged = refresh(block) || pendingChanged;
+		if (pendingChanged) this.ui.requestRender();
+	}
+
+	redrawTranscriptBlocks(blocks: readonly Component[], redraw: (block: Component) => boolean): void {
+		const native = isNativeRendering();
+		let changed = false;
+		let retired = false;
+		for (const block of blocks) {
+			if (!redraw(block)) continue;
+			changed = true;
+			retired ||= !native && !this.chatContainer.canRemoveBlock(block);
+		}
+		if (retired) this.rebuildTranscriptScrollback();
+		else if (changed) this.ui.requestRender();
+	}
+
 	/** Coalesce status-cache writes; `stop()` flushes a pending one synchronously. */
 	#scheduleComposerStatusPersist(): void {
 		if (this.#composerStatusPersistTimer) return;
@@ -8071,6 +8208,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#agentRegistrySubscriptionTarget = undefined;
 		this.#eventController.dispose();
 		this.#codexResetFireworksController.dispose();
+		this.#fpsTelemetryUnsubscribe?.();
+		this.#fpsTelemetryUnsubscribe = undefined;
 		this.statusLine.dispose();
 		if (this.#resizeHandler) {
 			process.stdout.removeListener("resize", this.#resizeHandler);
@@ -8093,10 +8232,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.stop();
 			this.#ownsStartedUi = false;
 		}
-		// The markdown renderer's extension-link state is process-wide; release this session's schemes
-		// only after the TUI's final history flush, which still strips their markers.
+		// The markdown renderer's extension-link state and the transcript presenters are process-wide;
+		// release this session's only after the TUI's final history flush, which still draws with them.
 		setExtensionLinks([]);
 		setExtensionLinkPicking(undefined);
+		setTranscriptPresenters([]);
 		this.isInitialized = false;
 	}
 
@@ -8971,6 +9111,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}): Promise<void> {
 		// A focus switch replays another session's transcript: claim that session's link schemes first.
 		this.#applyExtensionLinks();
+		this.#applyTranscriptPresenters();
 		await this.#uiHelpers.renderInitialMessages(options);
 		this.syncRetryHintRow();
 		// A switch or tree move that replays the transcript strands a `/compact` queued for the old position.

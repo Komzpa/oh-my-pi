@@ -18,6 +18,7 @@ import { setEmojiAutocompleteEnabled } from "@oh-my-pi/pi-tui/prompt/prompt-acti
 import { WORD_COMPLETION_METHODS } from "@oh-my-pi/pi-tui/prompt/word-completion";
 import { applyHyperlinkSetting } from "@oh-my-pi/pi-tui/render/hyperlink";
 import { setInlineImageMaxColumns, setInlineImageMaxRows } from "@oh-my-pi/pi-tui/render/render-utils";
+import { DEFAULT_FRAME_DROP_THRESHOLD_MS } from "@oh-my-pi/pi-tui/frame-telemetry";
 import { setShimmerMode } from "@oh-my-pi/pi-tui/theme/shimmer";
 import { setAutoThemeMapping, setColorBlindMode, setSymbolPreset } from "@oh-my-pi/pi-tui/theme/theme";
 import { DEFAULT_MAX_FPS, parseMaxFps, setMaxFps } from "@oh-my-pi/pi-tui/frame-rate";
@@ -279,6 +280,18 @@ export const cfgStatusLineShowHookStatus = register({
 	},
 });
 
+export const cfgStatusLineShowFpsMeter = register({
+	id: "statusLine.showFpsMeter",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "appearance",
+		group: "Status Line",
+		label: "Show FPS Meter",
+		description: "Display TUI frame rate, p95 render time, and event-loop lag in the status line",
+	},
+});
+
 export const cfgStatusLineLeftSegments = register({
 	id: "statusLine.leftSegments",
 	type: "array",
@@ -403,6 +416,18 @@ export const cfgTuiCompleteScrollback = register({
 		label: "Complete Scrollback",
 		description:
 			"Send transcript rows pushed off screen by a growing HUD or dialog straight to scrollback; when it shrinks, blank rows sit between the transcript and the input until new output fills them",
+	},
+});
+
+export const cfgTuiFrameDropThresholdMs = register({
+	id: "tui.frameDropThresholdMs",
+	type: "number",
+	default: DEFAULT_FRAME_DROP_THRESHOLD_MS,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Frame Drop Threshold (ms)",
+		description: "Log a structured ui.frame-drop entry when a frame gap or event-loop block exceeds this duration",
 	},
 });
 
@@ -804,6 +829,18 @@ export const cfgDisplayCacheMissMarker = register({
 	},
 });
 
+export const cfgDisplayShellVisualization = register({
+	id: "display.shellVisualization",
+	type: "boolean",
+	default: true,
+	ui: {
+		tab: "appearance",
+		group: "Display",
+		label: "Shell Visualization",
+		description: "Show bash commands as an interactive execution visualization instead of plain shell commands",
+	},
+});
+
 export const cfgDisplayAdvisorCollapsedLines = register({
 	id: "display.advisorCollapsedLines",
 	type: "number",
@@ -826,6 +863,7 @@ export const cfgDisplayAdvisorCollapsedLines = register({
 effect(
 	combine({
 		hideToolActivity: cfgDisplayHideToolActivity,
+		shellVisualization: cfgDisplayShellVisualization,
 		readToolResultPreview: cfgReadToolResultPreview,
 		showImages: cfgTerminalShowImages,
 		cacheMissMarker: cfgDisplayCacheMissMarker,
