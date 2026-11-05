@@ -927,6 +927,8 @@
 
 ### Fixed
 
+- Graceful restart bounds dead-worker waits, preserves workers for revival, and reports the current drain stage and elapsed time ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
+
 - Graceful restart waits up to 30 minutes for isolated workers and saves recovery snapshots before teardown; `OMP_RESTART_ISOLATION_WAIT_MS` overrides the wait.
 
 - An AST Grep capture spanning several lines shows on one `meta:` row of the result card instead of one row per line, so collapsed results no longer show its later lines and a blank line inside it no longer splits the match from its file ([#18105](https://github.com/can1357/oh-my-pi/pull/18105) by [@JustasMasiulis](https://github.com/JustasMasiulis))
