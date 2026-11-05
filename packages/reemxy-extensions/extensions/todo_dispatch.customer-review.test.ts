@@ -315,13 +315,13 @@ test("negated review words do not authorize publication or abandon dependent wor
 
 test("handed-off attempt can continue speculatively while the customer is absent", async () => {
   const phases = reviewPlan();
-  phases[0].tasks[0].schedule.speculativeOn = "Delivered UI";
   phases[0].tasks[0].schedule.attemptHistory = [{ attemptId: "1", terminalStatus: "completed" }];
   const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
   const call = { tasks: [{ agent: "Coder", task: "Delivered UI" }] };
   const result = await harness.handlers.get("tool_call")({ toolName: "task", input: call }, harness.ctx);
   expect(result?.block).not.toBe(true);
   expect(call.tasks[0].task).toContain("SPECULATIVE");
+  expect(harness.phases()[0].tasks[0].schedule.speculativeOn).toBeUndefined();
 });
 
 async function recordReview(harness, verdict, evidence = "Customer decision recorded from the conversation", task = "Delivered UI") {
