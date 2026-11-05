@@ -1975,7 +1975,6 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
-		const healedRows = healStoredSelfEdges(previousPhases);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
 		if (typeof resolved === "string") {
@@ -1989,6 +1988,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const op = entry.op;
 		const now = Date.now();
 		const todoEntries = getTodoBranchEntries(this.session.sessionManager);
+		const healedRows = healStoredSelfEdges(previousPhases);
 		const manager = this.session.sessionManager;
 		const deadline = manager
 			? readGoalDeadlineFromManager(manager, this.session.cwd, { includePaused: true })
