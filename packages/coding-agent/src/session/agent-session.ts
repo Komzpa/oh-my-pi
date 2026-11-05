@@ -5021,6 +5021,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 						"Fix the todo payload and call todo again before continuing.",
 						"</system-reminder>",
 					].join("\n");
+					const reminderDelivery = {
+						deliverAs: "nextTurn" as const,
+						triggerTurn: false,
+						supersedes: "todo-error-reminder",
+					};
 					await this.sendCustomMessage(
 						{
 							customType: "todo-error-reminder",
@@ -5035,7 +5040,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 									(attemptedArgs && stringProperty(attemptedArgs, "op")),
 							},
 						},
-						{ deliverAs: "nextTurn" },
+						reminderDelivery,
 					);
 				}
 				if (semanticResult?.toolName === "checkpoint" && !isError) {
