@@ -372,3 +372,71 @@ it.skipIf(!live).each(["switch", "restart"] as const)(
 	},
 	30_000,
 );
+
+it("DC CPU scopes ignore PID churn, escalate materially, and notify again after quiet", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+	const hidden: string[] = [];
+	const visible: string[] = [];
+	const scope = "omp-tool-call-omp-tool-28398dda168b-call-1007576-19-1.scope";
+	let usage = 0;
+	let pid = 4242;
+	let secondUsage = 0;
+	const secondScope = "omp-tool-call-omp-tool-28398dda168b-call-1007576-3-0.scope";
+	let clock = Date.now();
+	const lifecycle = new SessionSliceLifecycle(
+		{
+			sessionId: crypto.randomUUID(),
+			isIdleOrWaiting: () => true,
+			sendNotice: async content => {
+				hidden.push(content);
+			},
+			sendUserLine: line => {
+				visible.push(line);
+			},
+		},
+		root,
+		{
+			groups: async slice => [
+				{ name: slice, usage, pids: [] },
+				{ name: scope, usage, pids: [pid++] },
+				{ name: secondScope, usage: secondUsage, pids: [5151] },
+			],
+		},
+	);
+	try {
+		await lifecycle.ready;
+		const sample = async (cores: number) => {
+			usage += cores * 15_000_000;
+			clock += 15_000;
+			await lifecycle.poll(clock);
+		};
+		await sample(1.92);
+		await sample(1.92);
+		for (const cores of [1.72, 1.72, 1.72, 1.72, 1.91, 1.65, 1.79]) await sample(cores);
+		expect(visible).toHaveLength(1);
+		expect(hidden).toHaveLength(1);
+		await sample(3);
+		expect(visible).toHaveLength(2);
+		await sample(0);
+		await sample(0);
+		await sample(0.65);
+		await sample(0.65);
+		expect(visible).toHaveLength(3);
+		expect(visible[2]).toBe(formatHogUserLine(scope, 0.65));
+		await sample(0);
+		await sample(0);
+		await sample(0.49);
+		await sample(0.49);
+		expect(visible).toHaveLength(3);
+		expect(hidden).toHaveLength(3);
+		secondUsage += 0.65 * 15_000_000;
+		await sample(0);
+		secondUsage += 0.65 * 15_000_000;
+		await sample(0);
+		expect(hidden).toHaveLength(4);
+		expect(visible[3]).toBe(formatHogUserLine(secondScope, 0.65));
+	} finally {
+		await lifecycle.stop().catch(() => {});
+		await fs.rm(root, { recursive: true, force: true });
+	}
+});
