@@ -82,7 +82,7 @@ function reviveExtensionRoots(root: Pick<PersistedReviveRoot, "effectiveExtensio
  * process-stable and captured by reference.
  */
 export interface PersistedSubagentReviveContext {
-	session: Omit<AgentSession, "effectiveExtensionRoots"> & Pick<PersistedReviveRoot, "effectiveExtensionRoots">;
+	session: AgentSession;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
 	settings: Settings;
@@ -97,6 +97,11 @@ export interface PersistedSubagentReviveContext {
 	/** Root-scoped observability bus the revived run's frames also publish to. */
 	subagentEventBus?: EventBus;
 }
+
+/** Factory inputs also support adapters exposing the tool-session root provider. */
+type PersistedSubagentReviveInput = Omit<PersistedSubagentReviveContext, "session"> & {
+	session: Omit<AgentSession, "effectiveExtensionRoots"> & Pick<PersistedReviveRoot, "effectiveExtensionRoots">;
+};
 
 /**
  * Everything one cold revive of a persisted subagent needs, built on main per revive and
@@ -178,7 +183,7 @@ export function persistedAgentDefinition(displayName: string, init: PersistedSes
  * yield-required, active-tool clamp, registry status sync).
  */
 export function createPersistedSubagentReviverFactory(
-	ctx: PersistedSubagentReviveContext,
+	ctx: PersistedSubagentReviveInput,
 ): PersistedSubagentReviverFactory {
 	const registry = AgentRegistry.global();
 	return async ref => {
