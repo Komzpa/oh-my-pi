@@ -2725,9 +2725,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			sessionManager: this.sessionManager,
 			onSettledAssistantMessage: message => markAssistantPublicationSettled(message),
 			queueModelNotice: async content => {
+				const delivery = { deliverAs: "steer" as const, triggerTurn: false, supersedes: "requirements-gate-notice" };
 				await this.sendCustomMessage(
 					{ customType: "requirements-gate-notice", content, display: false, attribution: "agent" },
-					{ deliverAs: "nextTurn" },
+					delivery,
 				);
 			},
 			setAuditStatus: text => this.#extensionRunner?.getUIContext().setStatus("requirements-audit", text),
