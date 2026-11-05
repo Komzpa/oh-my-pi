@@ -3776,9 +3776,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const redRowsIdleReason = async (ctx: ExtensionContext) => {
     if (singleWriterLane || !isMain(ctx) || pauseGate?.paused) return;
     const visibility = await pollPreview(ctx);
+    const config = previewConfig(ctx);
     return idleRedRowsRefusal(
       currentDecision(ctx, Date.now(), [], false, true),
-      overduePreviewRows(todoPhases(ctx), visibility, previewConfig(ctx), Date.now()),
+      overduePreviewRows(todoPhases(ctx), visibility, { ...config, thresholdMinutes: Math.min(15, config.thresholdMinutes) }, Date.now()),
       previewIdleNotified,
     );
   };

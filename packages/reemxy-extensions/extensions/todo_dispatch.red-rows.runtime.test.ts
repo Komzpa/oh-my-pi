@@ -11,7 +11,7 @@ const roots = [];
 afterEach(async () => {
 	for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true });
 });
-async function harness({ worker = false, lane = false, autoOpen, preview = false } = {}) {
+async function harness({ worker = false, lane = false, autoOpen, preview = false, thresholdMinutes = 15 } = {}) {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-red-row-hooks-"));
 	roots.push(cwd);
 	const asked = Date.now() - 30 * 60_000;
@@ -65,7 +65,7 @@ async function harness({ worker = false, lane = false, autoOpen, preview = false
 		getTodoPreviewConfig: () => ({
 			enabled: preview,
 			paths: [],
-			thresholdMinutes: 15,
+			thresholdMinutes,
 			...(autoOpen === undefined ? {} : { openReviewPages: autoOpen }),
 		}),
 		sessionManager: {
@@ -127,7 +127,8 @@ for (const boundary of ["wait", "session_stop"]) {
 }
 
 test("wait preview gap is refused once per revision even with live owners", async () => {
-	const h = await harness({ preview: true });
+	const h = await harness({ preview: true, thresholdMinutes: 30 });
+	for (const row of h.phases[0].tasks) row.schedule.firstRequirementAt = Date.now() - 16 * 60_000;
 	h.setJobs(
 		h.phases[0].tasks.map(row => ({
 			id: row.schedule.owner,
