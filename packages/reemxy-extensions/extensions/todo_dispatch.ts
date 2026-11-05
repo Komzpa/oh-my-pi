@@ -4038,7 +4038,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const deadline = decision.deadline ?? sdk.readGoalDeadline(dispatchStateEntries(ctx), ctx.cwd, { includePaused: true });
     const deadlineAt = deadline?.deadlineAt ?? decision.forecast.deadlineAt;
     const overDeadline = open.length > 0 && deadlineAt !== undefined && now < deadlineAt && (
-      (planFinish !== undefined && planFinish > deadlineAt) || (decision.forecast.deadlineStatus === "will-miss" || decision.forecast.deadlineStatus === "at-risk")
+      (planFinish !== undefined && planFinish > deadlineAt) || decision.forecast.deadlineStatus === "will-miss"
     );
     const estimateSignature = (row: TodoTaskForecast) => `${row.estimateRevision}:${row.estimateUpdatedAt ?? ""}:${JSON.stringify(row.estimateRangeSeconds ?? null)}`;
     const estimatesRevised = forecastReplanBaseline !== null && open.every((row) =>
@@ -6043,7 +6043,7 @@ export function idleRedRowsRefusal(
     previewNotified.add(revision);
     return prompt.render(deadlineMissInstructions, { late, rows: causes.map(row => `${JSON.stringify(row.content)} (slack ${row.totalFloatSeconds === undefined ? "unknown" : `${Math.floor(row.totalFloatSeconds / 60)}m`}, deadline slack ${row.expectedResourceFinish === undefined || forecast.deadlineAt === undefined ? "unknown" : `${Math.floor((forecast.deadlineAt - row.expectedResourceFinish) / 60_000)}m`})`).join(", ") }).trim();
   }
-  
+
   const red = (decision.forecast?.rows ?? []).filter(row =>
     isNonClosedRowStatus(row.status) && !row.waitsForUser && !running.has(row.content) &&
     (!row.schedule?.postDeadline && !row.owner && row.startedAt !== undefined),

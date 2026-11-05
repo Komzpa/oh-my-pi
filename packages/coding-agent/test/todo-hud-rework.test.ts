@@ -9,7 +9,7 @@ import { formatTodoModelBadge, InteractiveMode } from "@oh-my-pi/pi-coding-agent
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
@@ -143,6 +143,51 @@ describe("rework attempt TODO HUD", () => {
 			available.mockReturnValue([{ ...model, provider: "abliteration", id: "abliterated-model" }]);
 			mode.setTodoExpanded(true);
 			expect(mode.todoContainer.render(200).join("\n")).toContain("abliterated-model · medium effort");
+			const due = Math.floor((now + 13 * 60_000) / 1000);
+			manager.appendCustomEntry("reemxy-goal-deadlines", {
+				version: 1,
+				goalId: "dc",
+				goalStartedAt: Math.floor(now / 1000),
+				timezone: "UTC",
+				active: true,
+				baselineDeadlineAt: due,
+				stages: [],
+				userConstraint: { messageId: "user", quote: "fixed due", recordedAt: Math.floor(now / 1000) },
+			});
+			mode.todoPhases = [
+				{
+					name: "Deadline",
+					tasks: [
+						{
+							content: "PDU B callout",
+							status: "pending",
+							schedule: {
+								dependencies: [],
+								resources: [],
+								owner: "worker",
+								estimate: {
+									optimisticSeconds: 4620,
+									likelySeconds: 4620,
+									pessimisticSeconds: 4620,
+									confidence: "high",
+									basis: "Live 77-minute remaining path",
+									updatedAt: due * 1000 - 13 * 60_000,
+								},
+							},
+						},
+					],
+				},
+			];
+			mode.setTodoExpanded(true);
+			const missed = mode.todoContainer.render(300).join("\n");
+			expect(Bun.stripANSI(missed)).toContain("by 64m");
+			const summaryLine = missed.split("\n").find(line => line.includes("MISSES"))!;
+			expect(summaryLine).toContain(theme.fg("error", Bun.stripANSI(summaryLine).trim()));
+			mode.todoPhases[0]!.tasks[0]!.schedule!.postDeadline = true;
+			mode.setTodoExpanded(true);
+			const deferred = mode.todoContainer.render(300).join("\n");
+			expect(Bun.stripANSI(deferred)).toContain("PDU B callout · after deadline");
+			expect(Bun.stripANSI(deferred)).not.toContain("MISSES");
 		} finally {
 			available.mockRestore();
 			mode.stop();
