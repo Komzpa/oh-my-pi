@@ -2,6 +2,7 @@
 import { expect, test, spyOn } from "bun:test";
 import { decideTodoDispatch, deliveredRowsClosed, USER_WAIT_REFUSAL, waitsOnUser, acceptedSpeculativeMergeDemand, estimateFloorRefusal, firstDeliveryCutRequired, missedEtaRowsText, missingSpeculativeReview, SPRINT_STATE_ENTRY_TYPE, successfulDurationFloors, userUnblockAskDue, workerPastForecast } from "./todo_dispatch";
 import todoDispatch from "./todo_dispatch";
+import handoffReplay from "./fixtures/handoff-dc-refusals.json";
 import speculativeReplay from "./fixtures/speculative-dc-replay.json";
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -165,7 +166,7 @@ test("structured redo and drop preserve dependent work and attempt history", asy
   }
 });
 
-test("attempt two is held until its first result is handed off, then replays the customer's correction", async () => {
+test("attempt two dispatches speculatively with a queued handoff, then honors correction", async () => {
   const phases = [{ name: "Work", tasks: [{
     content: "Implement header navigation",
     status: "pending",
@@ -174,8 +175,9 @@ test("attempt two is held until its first result is handed off, then replays the
   const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
   const beforeHandoff = { tasks: [{ agent: "Coder", task: "Implement header navigation" }] };
   const refused = await harness.handlers.get("tool_call")!({ toolName: "task", input: beforeHandoff }, harness.ctx) as { reason?: string };
-  expect(refused.reason).toContain("Hand attempt 1's result to the user first");
-  expect(refused.reason).toEndWith('todo op="schedule" updates=[{task:"Implement header navigation", review:"user"}]');
+  expect(refused?.block).not.toBe(true);
+  expect(harness.phases()[0].tasks[0].schedule.reviewPagePending).toBe(true);
+  expect(harness.phases()[0].tasks[0].schedule.speculativeOn).toBe("Implement header navigation");
   harness.phases()[0].tasks[0].schedule.review = "user";
   harness.phases()[0].tasks[0].status = "blocked";
   await recordReview(harness, "redo", "redo Implement header navigation with the buttons left aligned", "Implement header navigation");
@@ -322,7 +324,7 @@ test("handed-off attempt can continue speculatively while the customer is absent
   const result = await harness.handlers.get("tool_call")({ toolName: "task", input: call }, harness.ctx);
   expect(result?.block).not.toBe(true);
   expect(call.tasks[0].task).toContain("SPECULATIVE");
-  expect(harness.phases()[0].tasks[0].schedule.speculativeOn).toBeUndefined();
+  expect(harness.phases()[0].tasks[0].schedule.speculativeOn).toBe("Delivered UI");
 });
 
 async function recordReview(harness, verdict, evidence = "Customer decision recorded from the conversation", task = "Delivered UI") {
@@ -580,14 +582,14 @@ test("DC audit dispatch survives all five refused calls and the intervening reme
   }
 });
 
-test("coder checks each bound row; the exact prescribed remedy clears only its own refusal", async () => {
+test("coder marks each bound row speculative automatically", async () => {
   const phases = reviewPlan();
   const call = { name: "Verifier", agent: "coder", task: "Delivered UI and Verify UI" };
   expect(missingSpeculativeReview(call, phases)).toBe("Delivered UI");
   const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
   const dispatch = () => harness.handlers.get("tool_call")({ toolName: "task", input: { tasks: [structuredClone(call)] } }, harness.ctx);
-  expect((await dispatch())?.reason).toContain('Schedule "Verify UI"');
-  harness.phases()[0].tasks[1].schedule.speculativeOn = "Delivered UI";
+  expect((await dispatch())?.block).not.toBe(true);
+  expect(harness.phases()[0].tasks[1].schedule.speculativeOn).toBe("Delivered UI");
   expect((await dispatch())?.block).not.toBe(true);
   expect(missingSpeculativeReview({ task: "Verify UI" }, harness.phases())).toBeUndefined();
   delete harness.phases()[0].tasks[1].schedule.speculativeOn;
@@ -611,4 +613,56 @@ test("a coder multi-row brief cannot hide an unaccepted dependency behind the fi
   expect(missingSpeculativeReview({ agent: "coder", task: "Independent docs and Verify UI" }, phases)).toBe("Delivered UI");
   phases[0].tasks[1].schedule.speculativeOn = "Delivered UI";
   expect(missingSpeculativeReview({ agent: "coder", task: "Independent docs and Verify UI" }, phases)).toBeUndefined();
+});
+
+// DC session 01a1921c, 2026-11-05 16:16–16:35Z: exact refused calls and available row snapshots.
+test("DC handoff refusals admit product workers without a review-page round trip", async () => {
+  for (const capture of handoffReplay) {
+    const harness = await reviewHookHarness([{ name: "Work", tasks: [capture.row] }], { running: [], recent: [], nonJobAgents: [] });
+    const result = await harness.handlers.get("tool_call")({ toolName: "task", input: structuredClone(capture.call) }, harness.ctx);
+    expect(result?.block).not.toBe(true);
+  }
+});
+
+test("aborted and failed workers with only a report path retry without handoff", async () => {
+  for (const terminalStatus of ["aborted", "failed"]) {
+    const row = { content: "Move closer frames a single rack large enough (12)", status: "pending", schedule: {
+      dependencies: [], attemptHistory: [{ attemptId: "FrameSingleRackOnMoveCloser:1793895220647", terminalStatus,
+        deliverablePaths: ["/home/kom/.omp/agent/sessions/dc/FrameSingleRackOnMoveCloser.md"] }],
+    } };
+    const harness = await reviewHookHarness([{ name: "Work", tasks: [row] }], { running: [], recent: [], nonJobAgents: [] });
+    expect((await harness.handlers.get("tool_call")({ toolName: "task", input: { tasks: [{ agent: "ui-coder", task: row.content }] } }, harness.ctx))?.block).not.toBe(true);
+    expect(harness.phases()[0].tasks[0].schedule.review).toBeUndefined();
+    expect(harness.phases()[0].tasks[0].schedule.reviewPagePending).toBeUndefined();
+  }
+});
+
+test("renamed rack work retains its predecessor's handoff and does not taint independent resources", async () => {
+  const old = { content: "Move closer frames a single rack large enough (12)", status: "abandoned", schedule: {
+    resources: ["/dc/tmp/do-12-rack-zoom"], review: "user", reviewPagePending: true, firstDeliveredAt: now - 16 * 60_000,
+    attemptHistory: [{ attemptId: "one", terminalStatus: "completed" }],
+  } };
+  const renamed = { content: "Rack close-up: Move closer fills 40% of view (12)", status: "pending", schedule: { resources: [...old.schedule.resources] } };
+  const independent = { content: "Site posture moves to Inputs", status: "pending", schedule: { resources: ["/dc/tmp/site-posture"] } };
+  const harness = await reviewHookHarness([{ name: "Work", tasks: [old, renamed, independent] }], { running: [], recent: [], nonJobAgents: [] });
+  const input = { tasks: [{ agent: "ui-coder", task: renamed.content }, { agent: "ui-coder", task: independent.content }] };
+  expect((await harness.handlers.get("tool_call")({ toolName: "task", input }, harness.ctx))?.block).not.toBe(true);
+  expect(harness.phases()[0].tasks[1].schedule.reviewPagePending).toBe(true);
+  expect(harness.phases()[0].tasks[1].schedule.firstDeliveredAt).toBe(old.schedule.firstDeliveredAt);
+  expect(harness.phases()[0].tasks[0].schedule.attemptHistory).toEqual(old.schedule.attemptHistory);
+  expect(harness.phases()[0].tasks[2].schedule.review).toBeUndefined();
+  expect(harness.sent.some(message => String(message.content).includes(old.content))).toBe(true);
+  const wait = await harness.handlers.get("tool_call")({ toolName: "wait", input: {} }, harness.ctx);
+  expect(wait?.block).toBe(true);
+  expect(wait?.reason).toContain("Handoff pending");
+});
+
+test("published user-review row dispatches a speculative redo", async () => {
+  const row = { content: "Delivered UI", status: "pending", schedule: { review: "user", reviewPage: "http://127.0.0.1:8767/review/batch/", dependencies: [] } };
+  const harness = await reviewHookHarness([{ name: "Work", tasks: [row] }], { running: [], recent: [], nonJobAgents: [] });
+  harness.ctx.getTodoPreviewConfig = () => ({ enabled: false, paths: [], thresholdMinutes: 15, openReviewPages: false });
+  const input = { tasks: [{ agent: "coder", task: row.content }] };
+  expect((await harness.handlers.get("tool_call")({ toolName: "task", input }, harness.ctx))?.block).not.toBe(true);
+  expect(input.tasks[0].task).toContain("SPECULATIVE");
+  expect(harness.phases()[0].tasks[0].schedule.speculativeOn).toBe(row.content);
 });
