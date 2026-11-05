@@ -58,10 +58,37 @@ describe("YieldTool terminal result latch", () => {
 		const settleSection = tool.deferResultAcceptance("section");
 		const section = tool.execute("section", { type: ["notes"], data: "draft" });
 		const terminal = tool.execute("terminal", { data: "retained" });
-		const [sectionResult, terminalResult] = await Promise.all([section, terminal]);
+		const sectionResult = await section;
 		settleSection({ ...sectionResult, isError: true });
+		const terminalResult = await terminal;
 		expect(terminalResult.details?.data).toBe("retained");
 		await expect(tool.execute("replacement", { data: "changed" })).rejects.toThrow("already submitted");
+	});
+
+	it("allows a terminal retry after aborting its wait for an incremental wrapper", async () => {
+		const tool = new YieldTool(createSession());
+		const acceptSection = tool.deferResultAcceptance("section");
+		const section = await tool.execute("section", { type: ["notes"], data: "retained" });
+		const controller = new AbortController();
+		const terminal = tool.execute("terminal", { type: "result" }, controller.signal);
+		controller.abort();
+		await expect(terminal).rejects.toThrow();
+		acceptSection(section);
+		const retry = await tool.execute("retry", { type: "result" });
+		expect(retry.details).toMatchObject({ status: "success", useLastTurn: true });
+	});
+
+	it("releases old incremental waits on reset without closing the new run", async () => {
+		const tool = new YieldTool(createSession());
+		const acceptSection = tool.deferResultAcceptance("old-section");
+		const section = await tool.execute("old-section", { type: ["notes"], data: "stale" });
+		const terminal = tool.execute("old-terminal", { type: "result" });
+		tool.resetTurnState();
+		await expect(terminal).rejects.toThrow("already submitted");
+		acceptSection(section);
+		await expect(tool.execute("empty-new-terminal", { type: "result" })).rejects.toThrow("result needs data");
+		const result = await tool.execute("new-terminal", { data: "fresh" });
+		expect(result.details).toMatchObject({ status: "success", data: "fresh" });
 	});
 
 	it("accepts only one of two concurrent sibling terminal yields", async () => {

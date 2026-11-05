@@ -387,6 +387,8 @@ const MAX_EMPTY_RESULT_RETRIES = 3;
 
 interface DeferredYieldAcceptance {
 	depth: number;
+	promise: Promise<void>;
+	resolve: () => void;
 	generation?: number;
 	listeners?: YieldAcceptedListener[];
 	details?: YieldDetails;
@@ -567,6 +569,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// generation before awaiting #checkRunningJobs must not mutate or notify
 		// the new run when it finally returns.
 		this.#turnStateGeneration++;
+		for (const pending of this.#deferredAcceptances.values()) pending.resolve();
 		for (const id of this.#workPoolReservations.keys()) this.#releaseWorkPoolReservation(id);
 	}
 
@@ -593,7 +596,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	deferResultAcceptance(toolCallId: string): (result?: AgentToolResult<unknown>) => void {
 		let pending = this.#deferredAcceptances.get(toolCallId);
 		if (!pending) {
-			pending = { depth: 0 };
+			pending = { depth: 0, generation: this.#turnStateGeneration, ...Promise.withResolvers<void>() };
 			this.#deferredAcceptances.set(toolCallId, pending);
 		}
 		pending.depth++;
@@ -619,6 +622,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				}
 			} finally {
 				this.#releaseWorkPoolReservation(toolCallId);
+				pending.resolve();
 			}
 		};
 	}
@@ -843,6 +847,21 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		// field) that cannot satisfy the full output schema; the assembled result
 		// is validated as a whole at finalization (executor finalizeSubprocessOutput).
 		const isIncremental = Array.isArray(yieldType) && yieldType.length > 0;
+
+		// A terminal close must observe accepted sections, not sections whose
+		// asynchronous result extensions can still reject them. Wait before the
+		// data-less/schema guards decide whether the incremental flow can close.
+		if (workPoolItems.length === 0 && (!isIncremental || errorMessage !== undefined || this.#finalResultForced)) {
+			const predecessors: Promise<void>[] = [];
+			for (const [id, pending] of this.#deferredAcceptances) {
+				if (id === toolCallId) break;
+				if (pending.generation === runGeneration) predecessors.push(pending.promise);
+			}
+			if (predecessors.length > 0) await untilAborted(_signal, Promise.all(predecessors));
+			if (runGeneration !== this.#turnStateGeneration || this.#terminalResultSubmitted) {
+				throw new Error(yieldAlreadySubmittedMessage.trim());
+			}
+		}
 
 		if (errorMessage !== undefined && data !== undefined) {
 			throw new Error(renderDataErrorConflictMessage(errorMessage, yieldType));

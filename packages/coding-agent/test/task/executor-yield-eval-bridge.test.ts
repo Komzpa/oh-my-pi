@@ -8,11 +8,12 @@
  * latch controls live in `executor-result-acceptance.test.ts` and
  * `yield-terminal-once.test.ts`.
  */
+import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import { ExtensionRuntime, loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -237,6 +238,97 @@ describe("terminal yield through the eval bridge", () => {
 		AgentRegistry.resetGlobalForTests();
 		IrcBus.resetGlobalForTests();
 	});
+
+	for (const rejectFirst of [false, true]) {
+		it(`waits for loaded incremental acceptance before terminal close (reject first=${rejectFirst})`, async () => {
+			using root = TempDir.createSync("@omp-incremental-acceptance-");
+			const auth = createInMemoryAuthStorage();
+			const outputSchema = {
+				type: "object",
+				properties: { findings: { type: "array", items: { type: "string" } } },
+				required: ["findings"],
+			};
+			const harness = createHarness({ toolSession: { outputSchema } });
+			const events = new EventBus();
+			const firstInExtension = Promise.withResolvers<void>();
+			events.on("first-pending", () => firstInExtension.resolve());
+			const extensionPath = path.join(root.path(), "delayed-result.ts");
+			await Bun.write(
+				extensionPath,
+				`export default function(pi) {
+				const released = Promise.withResolvers();
+				pi.events.on("release-first", () => released.resolve());
+				pi.on("tool_result", async event => {
+					if (event.toolCallId !== "first") return;
+					pi.events.emit("first-pending", undefined);
+					await released.promise;
+					return ${rejectFirst} ? { isError: true } : undefined;
+				});
+			}`,
+			);
+			const loaded = await loadExtensions([extensionPath], root.path(), events);
+			expect(loaded.errors).toEqual([]);
+			const runner = new ExtensionRunner(
+				loaded.extensions,
+				loaded.runtime,
+				root.path(),
+				SessionManager.inMemory(root.path()),
+				new ModelRegistry(auth),
+			);
+			const wrapped = new ExtensionToolWrapper(harness.yieldTool, runner);
+			vi.spyOn(harness.session, "getToolByName").mockImplementation(name =>
+				name === "yield" ? wrapped : undefined,
+			);
+			mockCreateAgentSession(harness.session);
+			registerRunning(harness.session);
+			let completedWhileFirstPending = false;
+			harness.runBridgedYield = async () => {
+				const first = wrapped.execute("first", { type: ["findings"], data: "one" });
+				await firstInExtension.promise;
+				let terminalSettled = false;
+				const terminal = wrapped
+					.execute("terminal", { type: "result" })
+					.then(result => {
+						terminalSettled = true;
+						return result;
+					})
+					.catch(error => ({ isError: true, error }));
+				try {
+					await Bun.sleep(0);
+					completedWhileFirstPending = terminalSettled;
+				} finally {
+					events.emit("release-first", undefined);
+				}
+				const [firstResult, terminalResult] = await Promise.all([first, terminal]);
+				if (rejectFirst) {
+					expect(firstResult.isError).toBe(true);
+					expect(terminalResult.isError).toBe(true);
+					await wrapped.execute("retry-section", { type: ["findings"], data: "corrected" });
+					return wrapped.execute("retry-terminal", { type: "result" });
+				}
+				expect(terminalResult.isError).not.toBe(true);
+				return terminalResult;
+			};
+			try {
+				const result = await runSubprocess({
+					cwd: root.path(),
+					agent: baseAgent,
+					task: "collect findings",
+					index: 0,
+					id: AGENT_ID,
+					outputSchema,
+				});
+				expect(completedWhileFirstPending).toBe(false);
+				expect(result.exitCode).toBe(0);
+				expect(JSON.parse(result.output)).toEqual({ findings: [rejectFirst ? "corrected" : "one"] });
+				expect(result.extractedToolData?.yield).toHaveLength(2);
+			} finally {
+				events.emit("release-first", undefined);
+				events.clear();
+				auth.close();
+			}
+		});
+	}
 
 	for (const rejectFirst of [false, true]) {
 		it(`waits for wrapped workpool acceptance before completing (reject first=${rejectFirst})`, async () => {
