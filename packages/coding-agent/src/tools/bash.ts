@@ -1087,6 +1087,8 @@ export class BashTool implements AgentTool<BashToolSchema, BashToolDetails> {
 		if (interception) {
 			return { tier: "exec", override: true, policy: "deny", reason: interception.replace(/^Blocked:\s*/u, "") };
 		}
+		// Approval patterns describe shell command text, not resolved executable identity.
+		// PATH can also come from the shell itself; an env overlay does not change this policy.
 		const rawPatterns = cfgBashPatterns.get(this.session.settings);
 		const patternRules = getBashApprovalPatternRules(rawPatterns);
 		const shell = cfgBashAllowCompoundCommands.get(this.session.settings)
