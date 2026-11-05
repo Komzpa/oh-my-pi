@@ -89,6 +89,7 @@ export interface TodoOperationPersistedEdit {
 	at: number;
 	op: TodoOperation;
 	params: unknown;
+	reviewClosures?: Array<{ task: string; reason?: string }>;
 }
 
 /** Append-only durable attempt record scoped to one exact todo row. */
@@ -533,7 +534,10 @@ function formatTodoLineWithForecast(
 	expanded: boolean,
 	matched = false,
 ): string {
-	const isOverdueOpenTask = row?.overdue && (item.status === "pending" || item.status === "in_progress");
+	const isOverdueOpenTask =
+		item.schedule?.review !== "accepted" &&
+		row?.overdue &&
+		(item.status === "pending" || item.status === "in_progress");
 	const line = formatTodoLine(
 		item,
 		{ text: forDisplay(item.content) },

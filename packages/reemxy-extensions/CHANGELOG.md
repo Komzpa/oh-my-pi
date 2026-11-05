@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Close accepted review rows through the completion gate, show closing refusals, reopen redo requests and abandon dropped work ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Recognize preview patches landed with new SHAs, show partial visibility, and distinguish missing commit identities ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Route actual image reads and screenshot results from text-only models through the lead to ui-coder ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

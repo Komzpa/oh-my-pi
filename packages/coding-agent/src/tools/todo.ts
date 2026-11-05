@@ -510,6 +510,7 @@ function replayTodoEdit(
 		const errors: string[] = [];
 		const next = applyEntry(current, resolved, errors, edit.at, options.archived, { replay: true });
 		if (errors.length > 0) return undefined;
+		applyReviewClosures(next, edit.reviewClosures ?? [], edit.at);
 		return { phases: next, mutable: true };
 	}
 	const applied = applyParams(current, resolved, edit.at, options.archived);
@@ -1050,6 +1051,8 @@ function applyScheduleUpdates(
 			continue;
 		}
 		seenUpdates.add(update.task);
+		if (!options.replay && update.review === "redo" && !update.evidence?.trim())
+			errors.push(`Redo for task "${update.task}" requires the user's correction in evidence`);
 
 		const targets = tasksByContent.get(update.task);
 		if (!targets) {
@@ -1155,7 +1158,37 @@ function applyScheduleUpdates(
 	if (errors.length > initialErrorCount) return phases;
 	for (const [task, schedule] of candidates) task.schedule = schedule;
 	for (const [task, content] of renamedTasks) task.content = content;
+	for (const update of updates) {
+		const row = findTaskByContent(phases, update.content ?? update.task)?.task;
+		if (!row || (update.review !== "redo" && update.review !== "drop")) continue;
+		delete row.blocker;
+		delete row.schedule!.reviewClosingBlocked;
+		if (update.review === "drop") {
+			applyEntry(phases, { op: "drop", task: row.content }, errors, now, archived);
+			row.schedule!.finishedAt = now;
+		} else {
+			row.status = "in_progress";
+			delete row.schedule!.finishedAt;
+			delete row.schedule!.executor;
+			row.schedule!.startedAt = now;
+		}
+	}
 	return phases;
+}
+
+function applyReviewClosures(
+	phases: TodoPhase[],
+	closures: Array<{ task: string; reason?: string }>,
+	now: number,
+): void {
+	for (const closure of closures) {
+		const row = findTaskByContent(phases, closure.task)?.task;
+		if (!row || row.schedule?.review !== "accepted") continue;
+		row.schedule.reviewClosingBlocked = closure.reason;
+		row.status = closure.reason ? "blocked" : "completed";
+		row.blocker = closure.reason;
+		if (!closure.reason) row.schedule.finishedAt ??= now;
+	}
 }
 
 function applyEntry(
@@ -1485,6 +1518,8 @@ function hasExecutorResult(task: TodoItem): boolean {
 }
 
 function formatOpenTaskState(task: TodoItem, forecast: string): string {
+	if (task.schedule?.review === "accepted" && task.status !== "completed" && task.status !== "abandoned")
+		return `accepted by user, closing${task.schedule.reviewClosingBlocked ? ` blocked: ${task.schedule.reviewClosingBlocked}` : ""}`;
 	return hasExecutorResult(task) ? "result arrived: review" : forecast;
 }
 
@@ -1847,6 +1882,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
+		commit = true,
 	): Promise<AgentToolResult<TodoToolDetails>> {
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
@@ -1870,6 +1906,29 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
 			: applyParams(clonePhases(previousPhases), entry, now, getLatestTodoArchiveFromEntries(todoEntries));
+		// Use the ordinary done operation so every native completion gate still runs.
+		const reviewClosures: Array<{ task: string; reason?: string }> = [];
+		if (op === "schedule" && errors.length === 0) {
+			for (const update of entry.updates ?? []) {
+				if (update.review !== "accepted") continue;
+				const result = await this.execute(
+					_toolCallId,
+					{ op: "done", task: update.task },
+					_signal,
+					undefined,
+					_context,
+					false,
+				);
+				const reason = result.isError
+					? result.content
+							.filter(part => part.type === "text")
+							.map(part => part.text)
+							.join("\n") || "Completion gate refused without a text reason"
+					: undefined;
+				reviewClosures.push({ task: update.content ?? update.task, ...(reason ? { reason } : {}) });
+			}
+			applyReviewClosures(updated, reviewClosures, now);
+		}
 		// An unsuccessful batch must neither commit an operation nor age out existing rows.
 		const failed = errors.length > 0;
 		const archived = !readOnly && !failed ? archiveTodoPhases(updated, now) : undefined;
@@ -1879,9 +1938,12 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		// A schedule rename changes titles, not statuses: content-keyed completion
 		// diffing must not report renamed closed rows as newly completed.
 		const completedTasks =
-			readOnly || failed || op === "schedule" ? [] : getCompletionTransitions(previousPhases, updated);
-		if (archived) this.session.setTodoPhases?.(effective);
+			readOnly || failed || (op === "schedule" && !reviewClosures.length)
+				? []
+				: getCompletionTransitions(previousPhases, updated);
+		if (archived && commit) this.session.setTodoPhases?.(effective);
 		const operation = !readOnly && !failed ? buildTodoOpPersistedEdit(op, entry, now) : undefined;
+		if (operation && reviewClosures.length) operation.reviewClosures = reviewClosures;
 		const archiveEdit: TodoArchivePersistedEdit | undefined =
 			newArchive.length > 0 ? { v: 1, kind: "archive", at: now, operation, archivedPhases: newArchive } : undefined;
 		const forecast = forecastTodoLivePlan(effective, [...archivedPhases, ...newArchive], {
@@ -1923,7 +1985,17 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 					? formatSummary(effective, errors, forecast, readOnly, now, readOnly ? entry.phase : undefined)
 					: formatMutationSummary(op, previousPhases, effective, errors, forecast, now);
 		return {
-			content: [{ type: "text", text: summary }],
+			content: [
+				{
+					type: "text",
+					text: [
+						summary,
+						...reviewClosures
+							.filter(row => row.reason)
+							.map(row => `${JSON.stringify(row.task)}: accepted by user, closing blocked: ${row.reason}`),
+					].join("\n"),
+				},
+			],
 			details,
 			isError: errors.length > 0 ? true : undefined,
 		};
