@@ -4952,12 +4952,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const rows = todoPhases(ctx).flatMap(phase => phase.tasks);
       const failed = [];
       for (const update of todoScheduleUpdates(event.input)) {
-        if (update.review !== "user") continue;
-        const row = rows.find(row => row.content === update.task);
-        const url = update.reviewPage ?? row?.schedule?.reviewPage;
+        const patch = update.schedule ?? update;
+        const task = update.task ?? update.content;
+        const row = rows.find(row => row.content === task);
+        const review = patch.review ?? row?.schedule?.review;
+        if (review !== "user" || (patch.review === undefined && !("reviewPage" in patch))) continue;
+        const url = "reviewPage" in patch ? patch.reviewPage : row?.schedule?.reviewPage;
         let status = "missing review page";
-        try { if (typeof url === "string") status = String(await (options.reviewPageProbe ?? probeReviewPage)(url, String(update.task))); } catch { status = "unreachable"; }
-        if (status !== "200") failed.push({ row: update.task, url, status });
+        try { if (typeof url === "string") status = String(await (options.reviewPageProbe ?? probeReviewPage)(url, String(task))); } catch { status = "unreachable"; }
+        if (status !== "200") failed.push({ row: task, url, status });
       }
       if (failed.length) return { block: true, reason: prompt.render(chatChoiceInstructions, { failed }).trim() };
     }
