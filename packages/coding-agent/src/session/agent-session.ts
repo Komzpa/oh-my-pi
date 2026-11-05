@@ -12078,6 +12078,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// queued matches the entry to them by it.
 			normalizedAppMessage.timestamp,
 		);
+		if (options?.supersedes) this.#supersedeRestartCheckpoint();
 		if (normalizedAppMessage.display === true) {
 			// Idle display append with no turn: notify session listeners so the interactive
 			// transcript paints it now instead of on the next rebuild. The entry is persisted
