@@ -197,3 +197,78 @@ test("a journaled terminal receipt is still probed when the row no longer retain
 	);
 	expect(records[0]?.visibleAt).toBe(asked + 35 * 60_000);
 });
+
+test("am/cherry-picked patches survive deleted worker worktrees and require every row commit", async () => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-preview-patches-"));
+	roots.push(root);
+	const git = (...args: string[]) => {
+		const result = Bun.spawnSync(["git", "-C", root, ...args], {
+			env: {
+				...process.env,
+				GIT_AUTHOR_NAME: "Test",
+				GIT_AUTHOR_EMAIL: "test@example.com",
+				GIT_COMMITTER_NAME: "Test",
+				GIT_COMMITTER_EMAIL: "test@example.com",
+			},
+		});
+		if (result.exitCode) throw new Error(result.stderr.toString());
+		return result.stdout.toString().trim();
+	};
+	git("init", "-q");
+	git("commit", "--allow-empty", "-qm", "base");
+	const base = git("rev-parse", "HEAD");
+	const worker = path.join(root, "worker");
+	git("worktree", "add", "-qb", "worker", worker);
+	await Bun.write(path.join(worker, "one"), "first patch\n");
+	git("-C", worker, "add", "one");
+	git("-C", worker, "commit", "-qm", "one");
+	const one = git("-C", worker, "rev-parse", "HEAD");
+	await Bun.write(path.join(worker, "two"), "second patch\n");
+	git("-C", worker, "add", "two");
+	git("-C", worker, "commit", "-qm", "two");
+	const two = git("-C", worker, "rev-parse", "HEAD");
+	git("worktree", "remove", worker);
+	git("commit", "--allow-empty", "-qm", "lead unrelated");
+	git("cherry-pick", one);
+	expect(git("rev-parse", "HEAD")).not.toBe(one);
+	const phases = plan(one);
+	const row = phases[0]!.tasks[0]!;
+	row.schedule!.firstRequirementAt = Date.now() - 60_000;
+	row.schedule!.executor!.gitCommits = [
+		{ commit: one, repoPath: worker },
+		{ commit: two, repoPath: worker },
+	];
+	const cfg = { ...config, paths: [root] };
+	const partial = await refreshPreviewVisibility(phases, cfg, [], Date.now());
+	expect(partial.map(record => record.visibleAt !== undefined)).toEqual([true, false]);
+	expect(overduePreviewRows(phases, partial, { ...cfg, thresholdMinutes: 0 }, Date.now())).toEqual([row]);
+	await Bun.write(path.join(root, "second.patch"), git("format-patch", "-1", "--stdout", two) + "\n");
+	git("am", path.join(root, "second.patch"));
+	const complete = await refreshPreviewVisibility(phases, cfg, partial, Date.now());
+	expect(complete.every(record => record.visibleAt !== undefined)).toBe(true);
+	// A squash does not have either individual patch identity; an explicit lead receipt proves it.
+	git("reset", "--soft", base);
+	git("commit", "-qm", "squashed landing");
+	const squash = git("rev-parse", "HEAD");
+	const unmatched = await refreshPreviewVisibility(phases, cfg, [], Date.now());
+	expect(unmatched.some(record => record.visibleAt !== undefined)).toBe(false);
+	row.schedule!.resources = [`git:${root}@${squash}`];
+	const landed = await refreshPreviewVisibility(phases, cfg, unmatched, Date.now());
+	expect(landed.map(record => record.commit)).toEqual([squash]);
+	expect(landed[0]?.visibleAt).toBeDefined();
+});
+
+test("no identity has no measured delay and partial visibility remains a plan problem", () => {
+	const phases = plan();
+	const row = phases[0]!.tasks[0]!;
+	row.schedule!.executor!.gitCommits = [];
+	Object.assign(row.schedule!, { previewTracked: true, previewPending: true, previewIdentityMissing: true });
+	const forecast = forecastTodoPlan(phases, { now: asked + 30 * 60_000 }).rows[0]!;
+	expect(formatTaskForecastDisplay(forecast, asked + 30 * 60_000)).toContain("asked→visible ?m (no commit recorded)");
+	const overdue = overduePreviewRows(phases, [], config, asked + 30 * 60_000);
+	expect(previewDispatchRefusal({}, overdue)).toContain("no commit identity");
+	Object.assign(row.schedule!, { previewIdentityMissing: false, previewPartial: true });
+	expect(
+		formatTaskForecastDisplay(forecastTodoPlan(phases, { now: asked + 30 * 60_000 }).rows[0]!, asked + 30 * 60_000),
+	).toContain("partially visible");
+});

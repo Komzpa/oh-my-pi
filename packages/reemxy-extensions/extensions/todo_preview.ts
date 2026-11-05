@@ -22,14 +22,28 @@ export interface PreviewRecord {
 export type PreviewAncestryProbe = (dir: string, commit: string) => Promise<boolean>;
 const COMMIT = /^[0-9a-f]{40,64}$/i;
 
+const patchCache = new Map<string, Promise<Set<string>>>();
 const ancestryCache = new Map<string, boolean>();
-async function measuredAncestry(dir: string, commit: string): Promise<boolean> {
+async function measuredAncestry(dir: string, commit: string, since?: number): Promise<boolean> {
 	const head = await vcs.git(dir)?.headSha();
 	if (!head) return false;
-	const key = `${dir}\0${head}\0${commit}`;
+	const key = `${dir}\0${head}\0${commit}\0${since}`;
 	const cached = ancestryCache.get(key);
 	if (cached !== undefined) return cached;
-	const result = await vcs.isAncestor(dir, commit, head);
+	let result = await vcs.isAncestor(dir, commit, head);
+	if (!result && since !== undefined) {
+		const key = `${dir}\0${head}\0${since}`;
+		let patches = patchCache.get(key);
+		if (!patches) {
+			if (patchCache.size >= 64) patchCache.clear();
+			patches = vcs.commitPatchIds(dir, head, since).then(rows => new Set(rows.map(row => row.patchId)));
+			patchCache.set(key, patches);
+			patches.catch(() => patchCache.delete(key));
+		}
+		const worker = await vcs.commitPatchIds(dir, commit, undefined, 1);
+		const landed = await patches;
+		result = worker.some(row => row.commit === commit && landed.has(row.patchId));
+	}
 	if (ancestryCache.size >= 2048) ancestryCache.clear();
 	ancestryCache.set(key, result);
 	return result;
@@ -59,14 +73,24 @@ export async function refreshPreviewVisibility(
 	isAncestor: PreviewAncestryProbe = measuredAncestry,
 ): Promise<PreviewRecord[]> {
 	if (!config.enabled) return records;
-	const next = [...records];
+	let next = [...records];
 	const probes = new Map<string, Promise<boolean>>();
 	for (const row of phases.flatMap(phase => phase.tasks)) {
 		if (row.schedule?.firstRequirementAt === undefined) continue;
-		for (const commit of new Set([
-			...previewCommits(row),
-			...records.filter(record => record.task === row.content).map(record => record.commit),
-		])) {
+		// A structured git resource in the preview checkout is the lead's landed receipt.
+		// It replaces the worker identities (including a squash with a different patch).
+		const landed = (row.schedule.resources ?? []).flatMap(resource => {
+			const match = /^git:(\/.*)@([0-9a-f]{40,64})$/i.exec(resource);
+			return match && config.paths.includes(match[1]!) ? [match[2]!] : [];
+		});
+		const commits = landed.length
+			? landed
+			: [
+					...previewCommits(row),
+					...records.filter(record => record.task === row.content).map(record => record.commit),
+				];
+		if (landed.length) next = next.filter(record => record.task !== row.content || landed.includes(record.commit));
+		for (const commit of new Set(commits)) {
 			let index = next.findIndex(record => record.task === row.content && record.commit === commit);
 			if (index < 0) {
 				index = next.length;
@@ -74,10 +98,14 @@ export async function refreshPreviewVisibility(
 			}
 			if (next[index]!.visibleAt !== undefined) continue;
 			for (const dir of config.paths.filter(value => path.isAbsolute(value))) {
-				const key = `${dir}\0${commit}`;
+				const key = `${dir}\0${commit}\0${row.schedule.firstRequirementAt}`;
 				let probe = probes.get(key);
 				if (!probe) {
-					probe = isAncestor(dir, commit).catch(() => false);
+					probe = (
+						isAncestor === measuredAncestry
+							? measuredAncestry(dir, commit, row.schedule.firstRequirementAt)
+							: isAncestor(dir, commit)
+					).catch(() => false);
 					probes.set(key, probe);
 				}
 				if (await probe) {
@@ -103,11 +131,7 @@ export function overduePreviewRows(
 			const asked = row.schedule?.firstRequirementAt;
 			if (asked === undefined || now - asked < Math.max(0, config.thresholdMinutes) * 60_000) return false;
 			const observed = records.filter(record => record.task === row.content);
-			return (
-				observed.length > 0 &&
-				!observed.some(record => record.visibleAt !== undefined) &&
-				observed.some(record => !record.reason)
-			);
+			return observed.length === 0 || observed.some(record => record.visibleAt === undefined && !record.reason);
 		});
 }
 
@@ -132,7 +156,8 @@ export function previewScheduleRefusal(
 		if (
 			!row ||
 			row.schedule?.firstRequirementAt === undefined ||
-			records.some(record => record.task === row.content && record.visibleAt !== undefined)
+			(records.some(record => record.task === row.content) &&
+				records.filter(record => record.task === row.content).every(record => record.visibleAt !== undefined))
 		)
 			continue;
 		const owner = update.owner ?? row.schedule?.owner;
@@ -174,7 +199,7 @@ export function previewDispatchRefusal(input: unknown, rows: TodoScheduleInputTa
 		)
 	)
 		return;
-	return `Plan problem ignored: preview-not-visible. Next dispatch must refresh/integrate the preview for ${rows.map(row => JSON.stringify(row.content)).join(", ")}. Set each task item's previewIntegration={task:<exact row>,kind:"refresh"|"integration"}, or record todo.previewReason={task,kind:"deferred"|"not-applicable"|"external-blocker",detail:<reason>}.`;
+	return `Plan problem ignored: preview-not-visible. Next dispatch must refresh/integrate the preview for ${rows.map(row => `${JSON.stringify(row.content)}${(row.schedule?.previewIdentityMissing ?? previewCommits(row).length === 0) ? " (no commit identity)" : ""}`).join(", ")}. Set each task item's previewIntegration={task:<exact row>,kind:"refresh"|"integration"}, or record todo.previewReason={task,kind:"deferred"|"not-applicable"|"external-blocker",detail:<reason>}.`;
 }
 
 export function previewReason(input: unknown): { task: string; reason: PreviewReason } | undefined {
