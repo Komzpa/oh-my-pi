@@ -241,7 +241,7 @@ export class GoalRuntime {
 		this.#turnSnapshot = undefined;
 	}
 
-	async onTaskAborted(options?: { reason?: "interrupted" | "internal" }): Promise<void> {
+	async onTaskAborted(_options?: { reason?: "interrupted" | "internal" }): Promise<void> {
 		const state = this.#host.getState();
 		const needsAccounting = state?.enabled && isAccountingStatus(state.goal);
 		if (!needsAccounting) {
@@ -249,7 +249,7 @@ export class GoalRuntime {
 			return;
 		}
 		await this.#withAccounting(async () => {
-			await this.#flushUsageLocked("suppressed", undefined, options?.reason === "internal");
+			await this.#flushUsageLocked("suppressed", undefined, true);
 			this.#turnSnapshot = undefined;
 		});
 	}

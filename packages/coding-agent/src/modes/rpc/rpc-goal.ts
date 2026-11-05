@@ -112,8 +112,8 @@ export class RpcGoalController {
 	/**
 	 * The host interrupted the session (`abort`). Stop automatic continuation until
 	 * the host acts again. Called before the abort starts, so the aborted run's own
-	 * `agent_end` cannot schedule another goal turn. The runtime separately pauses the
-	 * interrupted goal, so in practice only `goal resume`/`create` restarts it.
+	 * `agent_end` cannot schedule another goal turn. The goal stays active; explicit
+	 * host input or `goal resume` re-arms continuation.
 	 */
 	stopForHostAbort(): void {
 		this.#hostStopped = true;
@@ -258,7 +258,11 @@ export class RpcGoalController {
 	async #resume(): Promise<RpcGoalResult> {
 		this.#assertCanEnter();
 		const current = this.#session.getGoalModeState();
-		if (current?.enabled) return this.#state;
+		if (current?.enabled) {
+			this.#resetContinuation();
+			this.#scheduleContinuation();
+			return this.#state;
+		}
 		if (current?.goal.status !== "paused") throw new Error("No paused goal to resume.");
 		await this.#enter(() => this.#session.goalRuntime.resumeGoal());
 		return this.#state;
