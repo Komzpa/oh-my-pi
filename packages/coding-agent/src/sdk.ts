@@ -368,7 +368,11 @@ import {
 	cfgToolsXdevInlineDevices,
 	cfgSessionToolGates,
 } from "./tools/settings";
-import { cfgToolsFormat, cfgInstructionRefreshEnabled } from "./session/context-settings";
+import {
+	cfgToolsFormat,
+	cfgInstructionRefreshEnabled,
+	cfgInstructionRefreshMaxBytes,
+} from "./session/context-settings";
 import { cfgAutolearnEnabled } from "./autolearn/settings";
 import { cfgBrowserEnabled } from "./tools/browser/settings";
 import {
@@ -2470,8 +2474,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorConfigsPromise,
 		]);
 	let contextFiles = initialContextFiles;
-	const instructionFiles = new InstructionFiles(sessionManager);
-	if (cfgInstructionRefreshEnabled.get(settings)) {
+	const instructionFiles = new InstructionFiles(sessionManager, text => obfuscator?.obfuscate(text) ?? text);
+	// Enroll delivered context even while refresh is disabled, so later opt-in sees edits.
+	if (options.systemPrompt === undefined || typeof options.systemPrompt === "function") {
 		for (const file of contextFiles ?? []) {
 			for (const source of (file as ContextFileSnapshot).sources ?? [file]) {
 				await instructionFiles.loaded(source.path, source.content, true);
@@ -2631,7 +2636,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			contextFiles,
 			get recordInstructionFile() {
 				return cfgInstructionRefreshEnabled.get(settings)
-					? (filePath: string, body?: string) => instructionFiles.loadedInstruction(filePath, body)
+					? (filePath: string, body?: string) =>
+							instructionFiles.loadedInstruction(filePath, body, cfgInstructionRefreshMaxBytes.get(settings))
 					: undefined;
 			},
 			noContextFiles: options.noContextFiles,
@@ -5049,6 +5055,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// (defaulting to read/grep/glob).
 		const advisorToolSession: ToolSession = {
 			...toolSession,
+			// Advisor reads are not delivered to the primary.
+			recordInstructionFile: undefined,
 			// The primary may carry a dormant xd:// write transport. Advisors use
 			// their own configured tool slate, so a selected write is always full.
 			deviceOnlyWrite: undefined,

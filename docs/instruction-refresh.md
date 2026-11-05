@@ -7,10 +7,11 @@ External programs that open files themselves bypass the embedded shell filesyste
 
 Before every model request, OMP compares modification time and size, hashing only
 changed files. A changed version adds a system instruction that supersedes the old
-copy. Up to 16 KiB is sent as full text; larger files use a unified diff against the
-loaded version. Further diffs retain the earlier patches needed to interpret them.
-Unchanged content produces no new notice. The journal stores loaded text and hashes
-so restart/resume compares against the session's loaded versions.
+copy. Up to 16 KiB is sent as expanded full text; larger files receive a short
+notice requiring a complete re-read. Only the latest notice per file is retained.
+This remains usable after compaction without an earlier diff baseline.
+Unchanged content produces no new notice. The journal stores hashes and
+secret-obfuscated notices, never raw loaded bodies, across restart/resume.
 
 The feature is enabled by default. Configuration in `config.yml`:
 

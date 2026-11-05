@@ -1,21 +1,11 @@
 import * as path from "node:path";
-import { structuredPatchHunks } from "@oh-my-pi/pi-natives";
+import { expandAtImports } from "../discovery/at-imports";
+import rereadTemplate from "../prompts/system/instruction-file-reread.md" with { type: "text" };
 import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import changedTemplate from "../prompts/system/instruction-file-changed.md" with { type: "text" };
 import type { SessionManager } from "./session-manager";
 
 const ENTRY_TYPE = "instruction-file-version";
-
-function instructionPatch(filePath: string, before: string, after: string): string {
-	const hunks = structuredPatchHunks(before, after, 4);
-	const body = hunks
-		.map(
-			hunk =>
-				`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@\n${hunk.lines.join("\n")}`,
-		)
-		.join("\n");
-	return `--- ${filePath}\n+++ ${filePath}\n${body}\n`;
-}
 
 export function isInstructionFilePath(filePath: string): boolean {
 	const name = path.basename(filePath).toLowerCase();
@@ -24,7 +14,6 @@ export function isInstructionFilePath(filePath: string): boolean {
 
 interface InstructionVersion {
 	path: string;
-	body: string;
 	hash: string;
 	mtimeMs?: number;
 	size?: number;
@@ -35,54 +24,63 @@ interface InstructionVersion {
 export class InstructionFiles {
 	#versions = new Map<string, InstructionVersion>();
 	#sessionId = "";
-	constructor(readonly manager: SessionManager) {}
+	#leafId: string | null = null;
+	constructor(
+		readonly manager: SessionManager,
+		readonly obfuscate: (text: string) => string = text => text,
+	) {}
 
 	#sync(): void {
 		const id = this.manager.getSessionId();
-		if (id === this.#sessionId) return;
+		const leaf = this.manager.getLeafId();
+		if (id === this.#sessionId && leaf === this.#leafId) return;
+		this.#leafId = leaf;
 		this.#sessionId = id;
 		this.#versions.clear();
 		for (const entry of this.manager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
 			const version = entry.data as InstructionVersion;
-			if (
-				typeof version?.path === "string" &&
-				typeof version.body === "string" &&
-				typeof version.hash === "string"
-			) {
+			if (typeof version?.path === "string" && typeof version.hash === "string") {
 				// A restarted process must stat/hash again, even if timestamps were preserved.
-				this.#versions.set(version.path, { ...version, mtimeMs: undefined });
+				this.#versions.set(version.path, {
+					path: version.path,
+					hash: version.hash,
+					notices: version.notices,
+					mtimeMs: undefined,
+				});
 			}
 		}
 	}
 
 	/** Record bytes actually loaded, never skill catalog descriptions. */
-	async loaded(filePath: string, body?: string, onlyIfAbsent = false): Promise<void> {
+	async loaded(filePath: string, body?: string, onlyIfAbsent = false, maxBytes = 16384): Promise<void> {
 		this.#sync();
 		const absolute = path.resolve(this.manager.getCwd(), filePath);
 		if (onlyIfAbsent && this.#versions.has(absolute)) return;
 		try {
 			const file = Bun.file(absolute);
 			const stat = await file.stat();
+			if (!stat.isFile()) return;
 			const text = body ?? (await file.text());
 			const version: InstructionVersion = {
 				path: absolute,
-				body: text,
 				hash: Bun.SHA256.hash(text, "hex"),
 				// Provided text may have been read before stat; force the first comparison.
 				mtimeMs: body === undefined ? stat.mtimeMs : undefined,
 				size: stat.size,
 			};
-			if (this.#versions.get(absolute)?.hash === version.hash) return;
-			this.manager.appendCustomEntry(ENTRY_TYPE, version);
+			const previous = this.#versions.get(absolute);
+			if (previous?.hash === version.hash) return;
+			if (previous) version.notices = [await this.#notice(absolute, text, maxBytes)];
+			this.#persist(version);
 			this.#versions.set(absolute, version);
 		} catch (error) {
 			if (!isEnoent(error)) logger.warn("Instruction file tracking failed", { path: absolute, error });
 		}
 	}
 
-	async loadedInstruction(filePath: string, body?: string): Promise<void> {
-		if (isInstructionFilePath(filePath)) await this.loaded(filePath, body);
+	async loadedInstruction(filePath: string, body?: string, maxBytes = 16384): Promise<void> {
+		if (isInstructionFilePath(filePath)) await this.loaded(filePath, body, false, maxBytes);
 	}
 
 	/** Commit one notice per content transition. Stat-only when the file has not changed. */
@@ -93,6 +91,7 @@ export class InstructionFiles {
 			try {
 				const file = Bun.file(filePath);
 				const stat = await file.stat();
+				if (!stat.isFile()) continue;
 				if (previous.mtimeMs === stat.mtimeMs && previous.size === stat.size) continue;
 				const body = await file.text();
 				const hash = Bun.SHA256.hash(body, "hex");
@@ -101,19 +100,15 @@ export class InstructionFiles {
 					previous.size = stat.size;
 					continue;
 				}
-				const notice = prompt.compile(changedTemplate)({
-					path: filePath,
-					body: Buffer.byteLength(body) <= maxBytes ? body : instructionPatch(filePath, previous.body, body),
-				});
+				const notice = await this.#notice(filePath, body, maxBytes);
 				const version: InstructionVersion = {
 					path: filePath,
-					body,
 					hash,
 					mtimeMs: stat.mtimeMs,
 					size: stat.size,
-					notices: [...(Buffer.byteLength(body) > maxBytes ? (previous.notices ?? []) : []), notice],
+					notices: [notice],
 				};
-				this.manager.appendCustomEntry(ENTRY_TYPE, version);
+				this.#persist(version);
 				this.#versions.set(filePath, version);
 				notices.push(notice);
 			} catch (error) {
@@ -121,6 +116,24 @@ export class InstructionFiles {
 			}
 		}
 		return notices;
+	}
+
+	#persist(version: InstructionVersion): void {
+		this.manager.appendCustomEntry(ENTRY_TYPE, {
+			...version,
+			notices: version.notices?.map(text => this.obfuscate(text)),
+		});
+		this.#leafId = this.manager.getLeafId();
+	}
+
+	async #notice(filePath: string, body: string, maxBytes: number): Promise<string> {
+		const loadedFiles = new Map<string, string>();
+		const expanded = await expandAtImports(body, filePath, { loadedFiles });
+		for (const [importPath, text] of loadedFiles) await this.loaded(importPath, text, true);
+		// A diff baseline may have left the request through compaction. Never depend on it.
+		return Buffer.byteLength(expanded) <= maxBytes
+			? prompt.compile(changedTemplate)({ path: filePath, body: expanded })
+			: prompt.compile(rereadTemplate)({ path: filePath });
 	}
 
 	/** Latest superseding instructions remain in the system prompt across rebuilds/resume. */

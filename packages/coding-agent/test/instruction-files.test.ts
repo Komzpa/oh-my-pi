@@ -27,24 +27,45 @@ describe("loaded instruction refresh", () => {
 		expect(await tracker.refresh(16384)).toEqual([]);
 	});
 
-	it("sends a usable unified diff for an oversized file against the loaded bytes", async () => {
+	it("bounds successive oversized changes to one re-read notice across reopen", async () => {
 		using dir = TempDir.createSync("@instruction-diff-");
 		const file = dir.join("AGENTS.md");
-		const before = "unchanged\n".repeat(4000) + "old rule\n";
-		const after = "unchanged\n".repeat(4000) + "new rule\n";
-		await Bun.write(file, before);
-		const tracker = new InstructionFiles(SessionManager.inMemory(dir.path()));
+		const manager = SessionManager.create(dir.path(), dir.join("sessions"));
+		manager.appendMessage({ role: "user", content: "start", timestamp: Date.now() });
+		const tracker = new InstructionFiles(manager);
+		await Bun.write(file, "old".repeat(200000));
 		await tracker.loadedInstruction(file);
-		await Bun.write(file, after);
-		await fs.utimes(file, new Date(), new Date(Date.now() + 2000));
-		const updates = await tracker.refresh(16384);
-		expect(updates).toHaveLength(1);
-		const patch = updates[0].slice(updates[0].indexOf("--- "));
-		await Bun.write(file, before);
-		await $`patch ${file} < ${new Blob([patch])}`.quiet();
-		expect(await Bun.file(file).text()).toBe(after);
-		expect(updates[0]).toContain(file);
-		expect(updates[0]).not.toContain(after);
+		let tick = 2000;
+		for (const word of ["new", "third"]) {
+			await Bun.write(file, word.repeat(200000));
+			await fs.utimes(file, new Date(), new Date(Date.now() + tick));
+			tick += 2000;
+			expect((await tracker.refresh(1000))[0]).toContain("Read the complete file");
+			expect(tracker.systemNotices()).toHaveLength(1);
+			expect(Buffer.byteLength(tracker.systemNotices()[0])).toBeLessThan(1000);
+		}
+		manager.appendMessage(createAssistantMessage("ready"));
+		await manager.flush();
+		const restored = new InstructionFiles(await SessionManager.open(manager.getSessionFile()!));
+		expect(restored.systemNotices()).toEqual(tracker.systemNotices());
+		await Bun.write(file, "small current rule");
+		expect((await restored.refresh(1000))[0]).toContain("small current rule");
+		expect(restored.systemNotices()).toHaveLength(1);
+	});
+
+	it("read updates supersede previous notices and imported instructions stay tracked", async () => {
+		using dir = TempDir.createSync("@instruction-import-");
+		const file = dir.join("AGENTS.md");
+		const imported = dir.join("rules.md");
+		await Bun.write(file, "old");
+		await Bun.write(imported, "imported rule");
+		const tracker = new InstructionFiles(SessionManager.inMemory(dir.path()));
+		await tracker.loaded(file);
+		await Bun.write(file, "@./rules.md");
+		await tracker.loaded(file, "@./rules.md");
+		expect(tracker.systemNotices()[0]).toContain("imported rule");
+		await Bun.write(imported, "changed imported rule");
+		expect((await tracker.refresh(16384))[0]).toContain("changed imported rule");
 	});
 
 	it("restores the loaded version from the journal rather than accepting changed disk bytes on resume", async () => {
@@ -68,6 +89,42 @@ describe("loaded instruction refresh", () => {
 		expect(await reopened.refresh(16384)).toEqual([]);
 		expect(reopened.systemNotices()[0]).toContain("changed while stopped\n");
 	});
+
+	it("drops abandoned branch notices and persists only obfuscated notices without raw bodies", async () => {
+		using dir = TempDir.createSync("@instruction-branch-");
+		const file = dir.join("AGENTS.md");
+		await Bun.write(file, "initial secret-value");
+		const manager = SessionManager.inMemory(dir.path());
+		const tracker = new InstructionFiles(manager, text => text.replaceAll("secret-value", () => "$$MASK$$"));
+		await tracker.loaded(file);
+		const originalLeaf = manager.getLeafId()!;
+		await Bun.write(file, "updated secret-value");
+		await fs.utimes(file, new Date(), new Date(Date.now() + 2000));
+		await tracker.refresh(16384);
+		expect(tracker.systemNotices()[0]).toContain("updated secret-value");
+		const persisted = JSON.stringify(manager.getBranch());
+		expect(persisted).not.toContain("secret-value");
+		expect(persisted).toContain("$$MASK$$");
+		manager.branch(originalLeaf);
+		expect(tracker.systemNotices()).toEqual([]);
+		expect((await tracker.refresh(16384))[0]).toContain("updated secret-value");
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"ignores an instruction replaced by a FIFO without blocking the request",
+		async () => {
+			using dir = TempDir.createSync("@instruction-fifo-");
+			const file = dir.join("AGENTS.md");
+			await Bun.write(file, "original rule");
+			const tracker = new InstructionFiles(SessionManager.inMemory(dir.path()));
+			await tracker.loaded(file);
+			await fs.unlink(file);
+			await $`mkfifo ${file}`.quiet();
+			expect(await tracker.refresh(16384)).toEqual([]);
+			expect(tracker.systemNotices()).toEqual([]);
+		},
+		2000,
+	);
 
 	it("ignores unrelated tool reads and retains explicit custom context files", async () => {
 		using dir = TempDir.createSync("@instruction-selection-");

@@ -2771,24 +2771,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		});
 		// Keep loaded instructions current before every request, including tool continuations.
 		this.#instructionFiles = config.instructionFiles;
-		this.agent.addBeforeModelCallHook(async () => {
-			if (!this.#instructionFiles) return;
-			const enabled = cfgInstructionRefreshEnabled.get(this.settings);
-			const started = Date.parse(this.sessionManager.getHeader()?.timestamp ?? "");
-			if (
-				enabled &&
-				(this.#agentKind === "main" ||
-					Date.now() - started >= cfgInstructionRefreshSubagentMinAgeMs.get(this.settings))
-			) {
-				await this.#instructionFiles.refresh(cfgInstructionRefreshMaxBytes.get(this.settings));
-			}
-			const blocks = enabled ? this.#instructionFiles.systemNotices() : [];
-			this.agent.setSystemPrompt([
-				...this.agent.state.systemPrompt.filter(block => !this.#instructionNoticeBlocks.has(block)),
-				...blocks,
-			]);
-			this.#instructionNoticeBlocks = new Set(blocks);
-		});
+		this.agent.addBeforeModelCallHook(() => this.#refreshInstructionFiles());
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
 		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
 		// Pre-scheduling tool_call wiring: extension handlers run at arg-prep
@@ -11411,10 +11394,33 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#tools.promptSkills;
 	}
 
+	async #refreshInstructionFiles(): Promise<void> {
+		if (!this.#instructionFiles) return;
+		const enabled = cfgInstructionRefreshEnabled.get(this.settings);
+		const started = Date.parse(this.sessionManager.getHeader()?.timestamp ?? "");
+		if (
+			enabled &&
+			(this.#agentKind === "main" ||
+				Date.now() - started >= cfgInstructionRefreshSubagentMinAgeMs.get(this.settings))
+		) {
+			await this.#instructionFiles.refresh(cfgInstructionRefreshMaxBytes.get(this.settings));
+		}
+		const blocks = enabled ? this.#instructionFiles.systemNotices() : [];
+		this.agent.setSystemPrompt([
+			...this.agent.state.systemPrompt.filter(block => !this.#instructionNoticeBlocks.has(block)),
+			...blocks,
+		]);
+		this.#instructionNoticeBlocks = new Set(blocks);
+	}
+
 	/** Records a skill body read by an invocation or tool. */
 	async recordInstructionFile(filePath: string, body?: string): Promise<void> {
 		if (cfgInstructionRefreshEnabled.get(this.settings))
-			await this.#instructionFiles?.loadedInstruction(filePath, body);
+			await this.#instructionFiles?.loadedInstruction(
+				filePath,
+				body,
+				cfgInstructionRefreshMaxBytes.get(this.settings),
+			);
 	}
 
 	/**
@@ -13698,6 +13704,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		);
 		const llmMessages = await this.convertMessagesToLlm(snapshot, args.signal);
 		assertEphemeralTurnReady();
+		await this.#refreshInstructionFiles();
 		const sideContext = await this.agent.buildSideRequestContext(llmMessages);
 		const toolHistory = sideContext.messages.some(
 			message =>
