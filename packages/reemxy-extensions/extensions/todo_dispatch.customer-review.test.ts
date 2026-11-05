@@ -239,15 +239,15 @@ async function reviewHookHarness(initialPhases: unknown, jobs: unknown, branchEn
   return { handlers, sent, phases: () => phases, ctx };
 }
 
-test("completed worker result becomes review:user and turn_end persists a user handoff", async () => {
+test("completed worker result without a page requests publication before user handoff", async () => {
   const harness = await reviewHookHarness(
     [{ name: "Work", tasks: [{ content: "Implement header navigation", status: "in_progress", schedule: { owner: "NavWorker", dependencies: [], startedAt: now - 5_000 } }] }],
     { running: [], recent: [{ id: "NavWorker", agentId: "NavWorker", type: "task", status: "completed", label: "Implement header navigation" }], nonJobAgents: [] },
   );
   await harness.handlers.get("tool_result")!({ toolName: "task", toolCallId: "done", isError: false, details: { results: [{ id: "NavWorker", status: "completed", output: "Implemented the header controls.\n\nUpdated src/reader-header.ts and commit abcdef123456." }] } }, harness.ctx);
   expect(harness.phases()[0].tasks[0].schedule.review).toBe("user");
-  expect(harness.sent.some((message) => message.display === true && String(message.content).includes("Changed: Updated src/reader-header.ts and commit abcdef123456."))).toBe(true);
-  expect(harness.sent.some((message) => String(message.content).includes("Look at src/reader-header.ts, abcdef123456"))).toBe(true);
+  expect(harness.sent.some((message) => message.display === true && String(message.content).includes("Handoff pending"))).toBe(true);
+  expect(harness.sent.some((message) => String(message.content).includes("Delivered to you:"))).toBe(false);
   await harness.handlers.get("turn_end")!({ toolResults: [] }, harness.ctx);
   expect(harness.sent.some((message) => String(message.content).startsWith("Handoff required:"))).toBe(true);
 });

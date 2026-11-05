@@ -14,7 +14,9 @@ export function isTodoAwaitingReview(task: { status: string; schedule?: TodoSche
 			task.schedule.visibleAt !== undefined ||
 			task.schedule.firstDeliveredAt !== undefined ||
 			!!task.schedule.reviewSummary?.trim() ||
-			task.schedule.attemptHistory?.some(attempt => attempt.deliverablePaths.length > 0) === true)
+			task.schedule.attemptHistory?.some(
+				attempt => Array.isArray(attempt.deliverablePaths) && attempt.deliverablePaths.length > 0,
+			) === true)
 	);
 }
 
