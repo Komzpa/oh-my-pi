@@ -478,6 +478,7 @@ function replayTodoEdit(
 		return undefined;
 	const current = phases ? (options.mutable ? phases : copyTodoData(phases)) : [];
 	if (edit.kind === "op" && edit.healedSelfEdges) healStoredSelfEdges(current);
+	if (edit.kind === "op" && edit.healedDanglingEdges) healStoredDanglingEdges(current, options.archived);
 	if (edit.kind === "executor") {
 		const updated = applyTodoExecutorObservation(current, {
 			...edit.observation,
@@ -968,6 +969,28 @@ function healStoredSelfEdges(phases: TodoPhase[]): string[] {
 	return healed;
 }
 
+/** Repair persisted edges without forgiving invalid edges submitted by this operation. */
+function healStoredDanglingEdges(phases: TodoPhase[], archived: TodoPhase[] = []): string[] {
+	const targets = new Map(
+		[...archived, ...phases].flatMap(phase => phase.tasks.map(row => [row.content, row] as const)),
+	);
+	const removed: string[] = [];
+	for (const row of phases.flatMap(phase => phase.tasks)) {
+		const schedule = row.schedule;
+		if (!schedule) continue;
+		const dangling = (target: string): boolean => !targets.has(target) || targets.get(target)?.status === "abandoned";
+		for (const target of schedule.dependencies ?? []) {
+			if (dangling(target)) removed.push(`${JSON.stringify(row.content)} dependencies → ${JSON.stringify(target)}`);
+		}
+		if (schedule.dependencies) schedule.dependencies = schedule.dependencies.filter(target => !dangling(target));
+		if (schedule.speculativeOn && dangling(schedule.speculativeOn)) {
+			removed.push(`${JSON.stringify(row.content)} speculativeOn → ${JSON.stringify(schedule.speculativeOn)}`);
+			delete schedule.speculativeOn;
+		}
+	}
+	return removed;
+}
+
 /** Reuse the shared graph validator; unknown prerequisites remain forecast issues. */
 function validateScheduleDependencyGraph(
 	phases: TodoPhase[],
@@ -1016,6 +1039,18 @@ function validateScheduleDependencyGraph(
 		);
 		for (const dependency of graph.get(name) ?? []) {
 			if (previous.has(dependency)) continue;
+			const target = [...candidatePhases, ...archived]
+				.flatMap(phase => phase.tasks)
+				.find(row => row.content === dependency);
+			if (!target || target.status === "abandoned") {
+				const schedule = scheduleOverrides.get(row) ?? row.schedule;
+				const field = schedule?.speculativeOn === dependency ? "speculativeOn" : "dependencies";
+				const clear = field === "speculativeOn" ? { speculativeOn: null } : { dependencies: [] };
+				errors.push(
+					`Invalid ${field} target ${JSON.stringify(dependency)} for task ${JSON.stringify(name)}: target is missing or dropped. Clear with ${JSON.stringify({ op: "schedule", updates: [{ task: name, ...clear }] })}`,
+				);
+				continue;
+			}
 			const pending = [dependency];
 			const visited = new Set<string>();
 			while (pending.length) {
@@ -1036,6 +1071,7 @@ function validateScheduleDependencyGraph(
 	}
 	for (const issue of validateTodoDependencies(withArchivedPrerequisites(candidatePhases, archived))) {
 		if (
+			issue.code === "missing-dependency" ||
 			issue.code === "self-dependency" ||
 			issue.code === "dependency-cycle" ||
 			issue.code === "dependencies-unknown" ||
@@ -1329,6 +1365,8 @@ function applyEntry(
 						if (droppedTitles.has(task.content)) continue;
 						const deps = task.schedule?.dependencies;
 						if (Array.isArray(deps)) task.schedule!.dependencies = deps.filter(dep => !droppedTitles.has(dep));
+						if (task.schedule?.speculativeOn && droppedTitles.has(task.schedule.speculativeOn))
+							delete task.schedule.speculativeOn;
 					}
 				}
 			}
@@ -1999,6 +2037,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const now = Date.now();
 		const todoEntries = getTodoBranchEntries(this.session.sessionManager);
 		const healedRows = healStoredSelfEdges(previousPhases);
+		const healedEdges = healStoredDanglingEdges(previousPhases, getLatestTodoArchiveFromEntries(todoEntries));
 		const manager = this.session.sessionManager;
 		const deadline = manager
 			? readGoalDeadlineFromManager(manager, this.session.cwd, { includePaused: true })
@@ -2047,9 +2086,11 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			readOnly || failed || (op === "schedule" && !reviewClosures.length)
 				? []
 				: getCompletionTransitions(previousPhases, updated);
-		if ((archived || healedRows.length) && !this.#validatingReviewClosure) this.session.setTodoPhases?.(effective);
+		if ((archived || healedRows.length || healedEdges.length) && !this.#validatingReviewClosure)
+			this.session.setTodoPhases?.(effective);
 		const operation = !readOnly && !failed ? buildTodoOpPersistedEdit(op, entry, now) : undefined;
 		if (operation && healedRows.length) operation.healedSelfEdges = true;
+		if (operation && healedEdges.length) operation.healedDanglingEdges = true;
 		if (operation && reviewClosures.length) operation.reviewClosures = reviewClosures;
 		const archiveEdit: TodoArchivePersistedEdit | undefined =
 			newArchive.length > 0 ? { v: 1, kind: "archive", at: now, operation, archivedPhases: newArchive } : undefined;
@@ -2098,12 +2139,28 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 				: op === "init" || readOnly
 					? formatSummary(effective, errors, forecast, readOnly, now, readOnly ? entry.phase : undefined)
 					: formatMutationSummary(op, previousPhases, effective, errors, forecast, now);
+		const droppedEdges =
+			op === "drop" && !failed
+				? healStoredDanglingEdges(
+						clonePhases(previousPhases).map(phase => ({
+							...phase,
+							tasks: phase.tasks.map(row => ({
+								...row,
+								status:
+									effective.flatMap(p => p.tasks).find(t => t.content === row.content)?.status ?? row.status,
+							})),
+						})),
+						archivedPhases,
+					)
+				: [];
 		return {
 			content: [
 				{
 					type: "text",
 					text: [
 						summary,
+						...(healedEdges.length ? [`Healed stored dangling edges: ${healedEdges.join("; ")}`] : []),
+						...(droppedEdges.length ? [`Removed inbound edges: ${droppedEdges.join("; ")}`] : []),
 						...(healedRows.length
 							? [`Healed stored self-edges: ${healedRows.map(row => JSON.stringify(row)).join("; ")}`]
 							: []),

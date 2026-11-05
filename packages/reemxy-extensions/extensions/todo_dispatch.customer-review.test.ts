@@ -159,7 +159,7 @@ test("structured redo and drop preserve dependent work and attempt history", asy
     await recordReview(harness, verdict, "Move buttons to the left; preserve the output.");
     expect(harness.phases()[0].tasks[0].schedule.review).toBe(verdict);
     expect(harness.phases()[0].tasks[1].status).toBe(before.status);
-    expect(harness.phases()[0].tasks[1].schedule.speculativeOn).toBe(before.schedule.speculativeOn);
+    expect(harness.phases()[0].tasks[1].schedule.speculativeOn).toBe(verdict === "drop" ? undefined : before.schedule.speculativeOn);
     expect(harness.phases()[0].tasks[1].schedule.attemptHistory).toEqual(before.schedule.attemptHistory);
     expect(acceptedSpeculativeMergeDemand(harness.phases())).toBeUndefined();
   }

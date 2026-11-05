@@ -766,7 +766,7 @@ test("a dead scheduled owner prompts conditional owner repair", async () => {
 	expect(result?.reason).toContain('owner="AuthorReviewManifest"');
 	expect(result?.reason).toContain("not running");
 	expect(result?.reason).toContain("todo schedule");
-	expect(result?.reason).toContain("otherwise start");
+	expect(result?.reason).toContain("restaff with task");
 });
 test("wait sees a row completed in the same batch", async () => {
 	const result = await waitOnReadyRowWithStaleOwner(true);
@@ -1599,7 +1599,7 @@ test("stuck wait requires a fresh successful yield or completed result, never ol
 		expect((await call())?.block).toBe(true);
 		recent[0].endTime = Date.now() + 1;
 		h.running.splice(0);
-		expect((await call())?.block).not.toBe(true);
+		expect((await call())?.reason).toContain("verify the result and close");
 	} finally { h.cleanup(); }
 }, 60_000);
 

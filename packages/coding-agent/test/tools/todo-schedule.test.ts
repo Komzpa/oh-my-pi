@@ -1,4 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
+import danglingReplay from "./fixtures/stored-dangling-edge-dc.json";
 import selfEdgeReplay from "./fixtures/stored-self-edge-dc.json";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
@@ -859,7 +860,7 @@ describe("live schedule admission", () => {
 		expect(r.isError).not.toBe(true);
 		expect(h.phases()[0].tasks[1].schedule!.dependencies).toEqual(["Renamed A"]);
 	});
-	it("rejects a rename that turns an unresolved target into a self dependency", async () => {
+	it("heals an unresolved stored target before renaming its source row", async () => {
 		const initial: TodoPhase[] = [
 			{ name: "W", tasks: [{ content: "A", status: "pending", schedule: { dependencies: ["Renamed A"] } }] },
 		];
@@ -868,8 +869,9 @@ describe("live schedule admission", () => {
 			op: "schedule",
 			updates: [{ task: "A", content: "Renamed A" }],
 		});
-		expect(r.isError).toBe(true);
-		expect(h.phases()).toEqual(initial);
+		expect(r.isError).not.toBe(true);
+		expect(h.phases()[0].tasks[0].content).toBe("Renamed A");
+		expect(h.phases()[0].tasks[0].schedule?.dependencies).toEqual([]);
 	});
 	it("allows staffing when an unrelated stored cycle exists", async () => {
 		const h = createHarness([
@@ -998,4 +1000,146 @@ it("cannot cut a prerequisite still needed by a must-have row", async () => {
 	});
 	expect(accepted.isError).not.toBe(true);
 	expect(h.phases()[0].tasks[2].schedule?.postDeadline).toBe(true);
+});
+
+it("replays the DC dangling speculative edge and the exact failed schedule batch", async () => {
+	const h = createHarness(danglingReplay.phases as TodoPhase[]);
+	const result = await h.tool.execute("dc-dangling", danglingReplay.arguments as never);
+	expect(result.isError).not.toBe(true);
+	expect(result.content).toContainEqual(
+		expect.objectContaining({ text: expect.stringContaining("Healed stored dangling edges:") }),
+	);
+	expect(result.content).toContainEqual(
+		expect.objectContaining({
+			text: expect.stringContaining('speculativeOn → "Land crash and Guide fixes on PR #109, push"'),
+		}),
+	);
+	const restored = getLatestTodoPhasesFromEntries([
+		{ type: "custom", customType: "user_todo_edit", data: { phases: danglingReplay.phases } },
+		{ type: "message", message: { role: "toolResult", toolName: "todo", ...JSON.parse(JSON.stringify(result)) } },
+	] as SessionEntry[]);
+	expect(restored).toEqual(h.phases());
+	const next = await createHarness(restored!).tool.execute("after-resume", { op: "view" });
+	expect(next.content).not.toContainEqual(
+		expect.objectContaining({ text: expect.stringContaining("Healed stored dangling edges:") }),
+	);
+});
+
+it("heals missing and dropped dependencies but preserves dependencies on done rows", async () => {
+	const h = createHarness([
+		{
+			name: "DC",
+			tasks: [
+				{
+					content: "Facility 2D: too much empty space around site",
+					status: "pending",
+					schedule: { dependencies: ["missing", "dropped", "done"], speculativeOn: "missing" },
+				},
+				{ content: "dropped", status: "abandoned" },
+				{ content: "done", status: "completed", schedule: { finishedAt: Date.now() } },
+			],
+		},
+	]);
+	const result = await h.tool.execute("heal", {
+		op: "schedule",
+		updates: [{ task: "Facility 2D: too much empty space around site", owner: "Main" }],
+	});
+	expect(result.isError).not.toBe(true);
+	expect(h.phases()[0].tasks[0].schedule?.dependencies).toEqual(["done"]);
+	expect(h.phases()[0].tasks[0].schedule?.speculativeOn).toBeUndefined();
+});
+
+it("rejects new missing edges atomically with field-specific clearing calls", async () => {
+	for (const edge of [{ dependencies: ["nonexistent"] }, { speculativeOn: "nonexistent" }]) {
+		const h = createHarness([
+			{
+				name: "DC",
+				tasks: [
+					{
+						content: "Facility 2D: too much empty space around site",
+						status: "pending",
+						schedule: { dependencies: [] },
+					},
+				],
+			},
+		]);
+		const before = structuredClone(h.phases());
+		const result = await h.tool.execute("new-missing", {
+			op: "schedule",
+			updates: [{ task: before[0].tasks[0].content, ...edge }],
+		});
+		expect(result.isError).toBe(true);
+		expect(h.phases()).toEqual(before);
+		expect(result.content).toContainEqual(
+			expect.objectContaining({ text: expect.stringContaining(`Invalid ${Object.keys(edge)[0]} target`) }),
+		);
+		if ("speculativeOn" in edge)
+			expect(result.content).toContainEqual(
+				expect.objectContaining({ text: expect.stringContaining('"speculativeOn":null') }),
+			);
+	}
+});
+
+it("dropping the live speculation target clears and reports both inbound edge fields", async () => {
+	const target = "Land crash and Guide fixes on PR #109, push";
+	const h = createHarness([
+		{
+			name: "DC",
+			tasks: [
+				{
+					content: "Facility 2D: too much empty space around site",
+					status: "pending",
+					schedule: { dependencies: [target], speculativeOn: target },
+				},
+				{ content: target, status: "pending" },
+			],
+		},
+	]);
+	const result = await h.tool.execute("drop-live-target", { op: "drop", task: target });
+	expect(result.isError).not.toBe(true);
+	expect(h.phases()[0].tasks[0].schedule?.dependencies).toEqual([]);
+	expect(h.phases()[0].tasks[0].schedule?.speculativeOn).toBeUndefined();
+	for (const field of ["dependencies", "speculativeOn"])
+		expect(result.content).toContainEqual(
+			expect.objectContaining({ text: expect.stringContaining(`${field} → "${target}"`) }),
+		);
+});
+
+it("replays the 18:11 speculativeOn null clear, persists it and removes the display annotation", async () => {
+	const task = "Facility 2D: too much empty space around site";
+	const target = "Land crash and Guide fixes on PR #109, push";
+	const initial: TodoPhase[] = [
+		{
+			name: "DC",
+			tasks: [
+				{ content: task, status: "in_progress", schedule: { dependencies: [], speculativeOn: target } },
+				{ content: target, status: "pending" },
+				{ content: "Push camera and label fixes to PR #111", status: "in_progress" },
+			],
+		},
+	];
+	const h = createHarness(initial);
+	const result = await h.tool.execute("18:11", {
+		op: "schedule",
+		updates: [
+			{
+				task,
+				speculativeOn: null,
+				evidence: "speculation target row was dropped; Facility 2D proceeds on its own base",
+			},
+			{ task: "Push camera and label fixes to PR #111", owner: "PipelineWatch1291" },
+		],
+	});
+	expect(result.isError).not.toBe(true);
+	expect(h.phases()[0].tasks[0].schedule?.speculativeOn).toBeUndefined();
+	const restored = getLatestTodoPhasesFromEntries([
+		{ type: "custom", customType: "user_todo_edit", data: { phases: initial } },
+		{ type: "message", message: { role: "toolResult", toolName: "todo", ...JSON.parse(JSON.stringify(result)) } },
+	] as SessionEntry[]);
+	expect(restored?.[0].tasks[0].schedule?.speculativeOn).toBeUndefined();
+	const view = await createHarness(restored!).tool.execute("view", { op: "view" });
+	expect(JSON.stringify(view.content)).not.toContain("speculative on");
+	const keep = createHarness(initial);
+	await keep.tool.execute("evidence-only", { op: "schedule", updates: [{ task, evidence: "still working" }] });
+	expect(keep.phases()[0].tasks[0].schedule?.speculativeOn).toBe(target);
 });
