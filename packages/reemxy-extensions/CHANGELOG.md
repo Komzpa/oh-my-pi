@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep lead time notes brief and replace stale state notices at the next tool boundary ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Allow waiting on overdue rows while every affected executor is live and active; keep the miss visible and refuse stopping with running work ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Critique completed deliveries before batching handoffs, automatically redo evidenced defects, and release handoffs after 15 minutes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

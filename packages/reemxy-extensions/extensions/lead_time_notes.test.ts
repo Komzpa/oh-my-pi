@@ -29,7 +29,16 @@ test("lead reminders append once, stay quiet between turns, then repeat after fi
 		display: false,
 		attribution: "agent",
 	});
-	expect(sent[0]?.options).toEqual({ deliverAs: "nextTurn" });
+	expect(sent[0]?.options).toEqual({ deliverAs: "steer", triggerTurn: false, interruptWait: false, supersedes: "lead-note" });
 	expect(await append(start + LEAD_NOTE_INTERVAL_MS)).toBe(true);
 	expect(sent).toHaveLength(2);
+});
+
+
+test("large plan identities do not duplicate the plan in persisted note details", async () => {
+	let sent: { details?: { semanticKey: string } } | undefined;
+	const pi = { sendMessage: async (message: typeof sent) => { sent = message; } } as never;
+	const ctx = { sessionManager: { getBranch: () => [] } } as never;
+	await appendTimedNote(pi, ctx, "todo-dispatch-time-note", "30 open, 5 running", "plan row with blocker".repeat(6000), "03:14", true);
+	expect(sent?.details?.semanticKey.length).toBeLessThanOrEqual(16);
 });

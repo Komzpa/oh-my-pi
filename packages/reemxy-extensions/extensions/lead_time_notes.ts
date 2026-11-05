@@ -46,16 +46,18 @@ export async function appendTimedNote(
 	now = Date.now(),
 ): Promise<boolean> {
 	if (!content.trim()) return false;
-	if (!shouldAppendTimedNote(latestIdentity(ctx, customType), semanticKey, now, workOpen)) return false;
+	const identity = Bun.hash(semanticKey).toString(16);
+	if (!shouldAppendTimedNote(latestIdentity(ctx, customType), identity, now, workOpen)) return false;
+	const delivery = { deliverAs: "steer" as const, triggerTurn: false, interruptWait: false, supersedes: customType };
 	await pi.sendMessage(
 		{
 			customType,
 			content: `${localClock} · ${content}`,
 			display: false,
-			details: { semanticKey, emittedAt: now },
+			details: { semanticKey: identity, emittedAt: now },
 			attribution: "agent",
 		},
-		{ deliverAs: "nextTurn" },
+		delivery,
 	);
 	return true;
 }

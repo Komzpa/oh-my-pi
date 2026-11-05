@@ -2083,7 +2083,8 @@ test("the main session is chief of staff: worker tools are refused while worker 
     const roleResult = await handlers.get("context")!({ type: "context", messages: roleMessages }, ctx) as { messages: unknown[] };
     expect(roleResult.messages).toBe(roleMessages);
     await handlers.get("turn_end")!({ toolResults: [] }, ctx);
-    expect(sent.findLast(message => message.customType === "todo-dispatch-time-note")?.content).toContain("ROLE: You are the chief of staff");
+    expect(sent.findLast(message => message.customType === "todo-dispatch-time-note")?.content).toContain("TODO status:");
+    expect(JSON.stringify(sent.findLast(message => message.customType === "todo-dispatch-time-note")).length).toBeLessThan(8192);
     expect(sent.findLast(message => message.customType === "todo-dispatch-time-note")?.content).toContain("skill://chief-of-staff");
     const refused = (await call("bash", { command: "bun test" }));
     expect(refused?.block).toBe(true);
@@ -2262,7 +2263,7 @@ test("session_compact re-persists the full chief rules exactly once for a main s
   await compact();
   expect(sent).toHaveLength(1);
   expect(sent[0]?.[0]).toMatchObject({ customType: "chief-rules-after-compaction", content: fullText, display: false });
-  expect(sent[0]?.[1]).toMatchObject({ deliverAs: "nextTurn" });
+  expect(sent[0]?.[1]).toMatchObject({ deliverAs: "steer", triggerTurn: false, supersedes: "chief-rules-after-compaction" });
   rmSync(dir, { recursive: true, force: true });
 });
 
