@@ -1763,7 +1763,7 @@ test.each([
   { name: "operator requires gate-runner strong route", profile: "gate-runner", modelOverride: "@judgment:high", warns: true },
   { name: "low operator effort ceiling", model: "capable-model", maxEffort: "low", warns: false },
   { name: "high operator effort ceiling", model: "capable-model", maxEffort: "high", warns: true },
-  { name: "free alias resolves to paid model", profile: "gate-runner", freeRole: "test-provider/capable-model:high", effort: "high", warns: true },
+  { name: "free alias resolves to paid model", profile: "gate-runner", projectPolicy: restaffPolicy("gate-runner", "@free"), freeRole: "test-provider/capable-model:high", effort: "high", warns: true },
   { name: "compliant mixed-effort free fallback", modelOverride: "test-provider/capable-model:high,test-provider/nvidia/nemotron-3.5-lightning:free:low", warns: false },
   { name: "truly under-effort free fallback", modelOverride: "test-provider/capable-model:high,test-provider/nvidia/nemotron-3.5-lightning:free:high", warns: true },
   { name: "absent role effort inherits default", profile: "custom-check", projectPolicy: restaffPolicy("custom-check", "@judgment", ""), model: "capable-model", warns: true },
