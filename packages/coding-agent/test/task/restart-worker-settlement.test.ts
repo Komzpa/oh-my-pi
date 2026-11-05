@@ -57,6 +57,10 @@ async function makeController(options: {
 	restart: () => Promise<void>;
 	onStateChange?: (record: RestartRequestRecord) => void;
 	abortGraceMs?: number;
+	notice?: () => Promise<void>;
+	flush?: () => Promise<void>;
+	deadChildren?: number;
+	graceMs?: number;
 }): Promise<{ controller: RestartQueueController; identity: RestartControlIdentity }> {
 	const cwd = temp!.path();
 	const root = track(SessionManager.create(cwd, path.join(cwd, "sessions")));
@@ -80,6 +84,8 @@ async function makeController(options: {
 		quiescence: options.workerQuiescence,
 		abort: options.abort,
 	});
+	if (options.notice) workerSession.sendRestartNotice = options.notice;
+	if (options.flush) workerSession.flushRestartJournal = options.flush;
 	const registry = AgentRegistry.global();
 	registry.register({
 		id: MAIN_AGENT_ID,
@@ -98,13 +104,36 @@ async function makeController(options: {
 		sessionFile: childFile,
 		status: "running",
 	});
+	for (let i = 0; i < (options.deadChildren ?? 0); i++) {
+		const dead = track(SessionManager.create(cwd, rootFile.slice(0, -".jsonl".length)));
+		dead.appendSessionInit({
+			systemPrompt: ["Persisted dead worker"],
+			task: "Unfinished assignment",
+			tools: ["read"],
+		});
+		dead.appendMessage({ role: "user", content: "Continue", timestamp: Date.now() });
+		await dead.ensureOnDisk();
+		const deadSession = session(dead, { quiescence: Promise.withResolvers<void>().promise });
+		deadSession.sendRestartNotice = () => Promise.withResolvers<void>().promise;
+		deadSession.getRestartBranchEntries = () => Promise.withResolvers<never>().promise;
+		registry.register({
+			id: dead.getSessionId(),
+			displayName: `dead-${i}`,
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: deadSession,
+			sessionFile: dead.getSessionFile()!,
+			status: "running",
+		});
+	}
+
 	const identity = { instanceId: "worker-settlement", sessionId: root.getSessionId(), generation: 1 };
 	return {
 		identity,
 		controller: createRestartQueueController({
 			session: rootSession,
 			identity: () => identity,
-			restartWorkerGraceMs: 5,
+			restartWorkerGraceMs: options.graceMs ?? 5,
 			restartWorkerAbortGraceMs: options.abortGraceMs,
 			restart: options.restart,
 			onStateChange: options.onStateChange,
@@ -194,7 +223,7 @@ describe("restart worker settlement", () => {
 	}, 15_000);
 
 	it.each(["abort", "quiescence"] as const)(
-		"fails a restart when worker %s ignores the abort deadline",
+		"abandons and preserves a worker whose %s ignores the abort deadline",
 		async hung => {
 			const never = Promise.withResolvers<void>();
 			const terminal = Promise.withResolvers<RestartRequestRecord>();
@@ -204,7 +233,7 @@ describe("restart worker settlement", () => {
 				abort: async () => {
 					if (hung === "abort") await never.promise;
 				},
-				abortGraceMs: 20,
+				abortGraceMs: 1_000,
 				restart: async () => {
 					restarts++;
 				},
@@ -215,15 +244,128 @@ describe("restart worker settlement", () => {
 			try {
 				await controller.handle({ identity, op: "request", requestId: `hung-${hung}` });
 				const result = await terminal.promise;
-				expect(result.state).toBe("failed");
-				expect(result.error).toContain("did not settle after abort grace period");
-				expect(restarts).toBe(0);
+				expect(result.state).toBe("completed");
+				expect(result.drainStatus?.abandoned).toHaveLength(1);
+				expect(restarts).toBe(1);
 			} finally {
 				controller.dispose();
 			}
 		},
-		1_000,
+		5_000,
 	);
+
+	it.each(["notification", "journal flush"] as const)(
+		"completes when a child %s never resolves",
+		async hung => {
+			const terminal = Promise.withResolvers<RestartRequestRecord>();
+			let restarts = 0;
+			const { controller, identity } = await makeController({
+				workerQuiescence: Promise.resolve(),
+				abort: async () => {},
+				abortGraceMs: 1_000,
+				notice: hung === "notification" ? () => Promise.withResolvers<void>().promise : undefined,
+				flush: hung === "journal flush" ? () => Promise.withResolvers<void>().promise : undefined,
+				restart: async () => {
+					restarts++;
+				},
+				onStateChange: record => {
+					if (record.state === "completed" || record.state === "failed") terminal.resolve(record);
+				},
+			});
+			try {
+				await controller.handle({ identity, op: "request", requestId: "hung-notice" });
+				const result = await terminal.promise;
+				expect(result.state).toBe("completed");
+				expect(result.drainStatus?.abandoned).toHaveLength(1);
+				expect(restarts).toBe(1);
+			} finally {
+				controller.dispose();
+			}
+		},
+		5_000,
+	);
+
+	it("drains eight dead registry children and preserves the live child for revive", async () => {
+		const terminal = Promise.withResolvers<RestartRequestRecord>();
+		let restarts = 0;
+		let liveCount: number | undefined;
+		const { controller, identity } = await makeController({
+			deadChildren: 8,
+			workerQuiescence: Promise.withResolvers<void>().promise,
+			abort: () => Promise.withResolvers<void>().promise,
+			abortGraceMs: 1_000,
+			restart: async () => {
+				restarts++;
+			},
+			onStateChange: record => {
+				if (record.state === "draining" && liveCount === undefined) liveCount = record.runningWorkerCount;
+				if (record.state === "completed" || record.state === "failed") terminal.resolve(record);
+			},
+		});
+		try {
+			const started = Date.now();
+			await controller.handle({ identity, op: "request", requestId: "dc-live-shape" });
+			const result = await terminal.promise;
+			expect(result.state).toBe("completed");
+			expect(Date.now() - started).toBeLessThan(5_000);
+			expect(liveCount).toBe(1);
+			expect(result.drainStatus?.abandoned).toHaveLength(9);
+			expect(restarts).toBe(1);
+			const root = AgentRegistry.global().get(MAIN_AGENT_ID)!.session!;
+			const handoff = (await root.getRestartBranchEntries()).find(
+				entry => entry.type === "custom" && entry.customType === "subagent_restart_handoff",
+			);
+			expect(JSON.parse(JSON.stringify(handoff))).toMatchObject({
+				data: {
+					children: expect.arrayContaining([
+						expect.objectContaining({ displayName: "worker", status: "running" }),
+					]),
+				},
+			});
+			expect(JSON.parse(JSON.stringify(handoff))).toMatchObject({
+				data: {
+					children: expect.arrayContaining([
+						expect.objectContaining({ displayName: "dead-0", status: "running" }),
+					]),
+				},
+			});
+		} finally {
+			controller.dispose();
+		}
+	}, 5_000);
+
+	it("waits for a live streaming child that settles within worker grace without aborting it", async () => {
+		const terminal = Promise.withResolvers<RestartRequestRecord>();
+		const quiescence = Promise.withResolvers<void>();
+		let aborted = false;
+		let restarted = false;
+		const { controller, identity } = await makeController({
+			workerQuiescence: quiescence.promise,
+			graceMs: 2_000,
+			abortGraceMs: 1_000,
+			abort: async () => {
+				aborted = true;
+			},
+			restart: async () => {
+				restarted = true;
+			},
+			onStateChange: record => {
+				if (record.state === "completed" || record.state === "failed") terminal.resolve(record);
+			},
+		});
+		try {
+			await controller.handle({ identity, op: "request", requestId: "streaming-control" });
+			await Bun.sleep(20);
+			expect(restarted).toBe(false);
+			expect(controller.snapshot().request?.drainStatus?.stage).toBe("worker_grace");
+			expect(controller.snapshot().request?.drainStatus?.stageElapsedMs).toBeGreaterThanOrEqual(10);
+			quiescence.resolve();
+			expect((await terminal.promise).state).toBe("completed");
+			expect(aborted).toBe(false);
+		} finally {
+			controller.dispose();
+		}
+	}, 5_000);
 
 	it("cancels a restart while worker abort is hung and accepts a new request", async () => {
 		const never = Promise.withResolvers<void>();

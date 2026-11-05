@@ -684,7 +684,8 @@ export async function captureSubagentsForRestart(
 			ref.lifecycle?.acceptedAt === undefined
 		) {
 			try {
-				await validateRunningChild(ref);
+				// Drain has flushed cooperative children; abandoned handles cannot answer reads.
+				await validateRunningChild({ ...ref, session: null });
 			} catch (error) {
 				const currentRef = registry.get(ref.id);
 				if (!currentRef || currentRef !== ref || currentRef.status === "aborted") continue;

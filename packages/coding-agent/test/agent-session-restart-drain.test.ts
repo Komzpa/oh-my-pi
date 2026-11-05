@@ -430,7 +430,7 @@ describe("AgentSession restart drain", () => {
 				session,
 				identity: () => identity,
 				restartWorkerGraceMs: 0,
-				restartWorkerAbortGraceMs: 200,
+				restartWorkerAbortGraceMs: 2_000,
 				restart: async () => {
 					expect(
 						childManager
@@ -441,7 +441,7 @@ describe("AgentSession restart drain", () => {
 									entry.message.role === "toolResult" &&
 									entry.message.toolCallId === "held-effect",
 							),
-					).toBe(true);
+					).toBe(cooperates);
 					restarts++;
 				},
 				onStateChange: record => {
@@ -451,10 +451,12 @@ describe("AgentSession restart drain", () => {
 			try {
 				await controller.handle({ identity, op: "request", requestId: "real-worker" });
 				await aborted.promise;
-				expect(await terminal.promise).toBe(cooperates ? "completed" : "failed");
-				expect(restarts).toBe(cooperates ? 1 : 0);
+				expect(await terminal.promise).toBe("completed");
+				expect(restarts).toBe(1);
 				if (!cooperates)
-					expect(controller.snapshot().request?.error).toContain("did not settle after abort grace period");
+					expect(controller.snapshot().request?.drainStatus?.abandoned?.map(worker => worker.id)).toContain(
+						"RealChild",
+					);
 			} finally {
 				release.resolve();
 				controller.dispose();
@@ -463,7 +465,7 @@ describe("AgentSession restart drain", () => {
 				registry.unregister("Main");
 			}
 		},
-		2_000,
+		15_000,
 	);
 
 	it.each([false, true])("completes restart after child disposal (quiescence started: %s)", async started => {
