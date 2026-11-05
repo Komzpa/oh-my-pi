@@ -397,3 +397,32 @@ it("does not steal a row owned by another still-running bump", () => {
 		}),
 	).toEqual([]);
 });
+
+it("keeps empirical attempt ratios tied to the first dispatch estimate after a redo", () => {
+	const phases: TodoPhase[] = [
+		{
+			name: "Work",
+			tasks: [
+				{
+					content: "Crash layout",
+					status: "pending",
+					schedule: {
+						owner: "Coder",
+						estimate: {
+							optimisticSeconds: 30,
+							likelySeconds: 60,
+							pessimisticSeconds: 90,
+							confidence: "high",
+							basis: "initial scope",
+							updatedAt: 1,
+						},
+					},
+				},
+			],
+		},
+	];
+	const first = applyTodoExecutorObservation(phases, { workerId: "Coder", startedAt: 1000 })!;
+	first[0].tasks[0].schedule!.estimate!.likelySeconds = 600;
+	const redo = applyTodoExecutorObservation(first, { workerId: "Coder", startedAt: 2000 })!;
+	expect(redo[0].tasks[0].schedule!.riskEstimateMeanSeconds).toBe(60);
+});

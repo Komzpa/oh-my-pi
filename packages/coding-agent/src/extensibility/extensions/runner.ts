@@ -1813,7 +1813,7 @@ export class ExtensionRunner {
 			get model() {
 				return getModel();
 			},
-			models: createExtensionModelQuery(this.modelRegistry, this.settings, getModel),
+			models: createExtensionModelQuery(this.modelRegistry, this.settings, getModel, this.cwd),
 			isIdle: () => this.#isIdleFn(),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),

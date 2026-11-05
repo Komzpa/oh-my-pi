@@ -1,3 +1,5 @@
+import { loadRowRisk } from "../task/row-risk";
+import type { RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { isTodoSelectionEntryMetadata } from "../tools/todo";
 import { selectBranchEntries } from "../session/branch-selection";
 /**
@@ -5398,14 +5400,23 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	#todoRowRisk?: RowRiskOptions;
 	#syncTodoForecastRefreshTimer(enabled: boolean): void {
 		if (this.#todoForecastRefreshTimer) {
 			clearTimeout(this.#todoForecastRefreshTimer);
 			this.#todoForecastRefreshTimer = undefined;
 		}
 		if (!enabled) return;
-		this.#todoForecastRefreshTimer = setTimeout(() => {
+		this.#todoForecastRefreshTimer = setTimeout(async () => {
 			this.#todoForecastRefreshTimer = undefined;
+			const owner = this.#todoPhasesOwner ?? this.viewSession;
+			this.#todoRowRisk = await loadRowRisk(
+				owner.settings,
+				owner.modelRegistry,
+				owner.sessionManager.getCwd(),
+				owner.effectiveExtensionRoots,
+			);
+			this.#todoForecastCacheKey = undefined;
 			this.#renderTodoList();
 			this.ui.requestRender();
 		}, TODO_FORECAST_REFRESH_MS);
@@ -5645,7 +5656,12 @@ export class InteractiveMode implements InteractiveModeContext {
 				const archived = getLatestTodoArchiveFromEntries(
 					selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
 				);
-				this.#todoForecast = forecastTodoLivePlan(livePhases, archived, { now, capacity, deadlineAt });
+				this.#todoForecast = forecastTodoLivePlan(livePhases, archived, {
+					now,
+					capacity,
+					deadlineAt,
+					risk: this.#todoRowRisk,
+				});
 				this.#todoForecastCacheKey = {
 					phases: sourcePhases,
 					deadlineAt,
@@ -6019,6 +6035,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async #loadTodoList(source: AgentViewSession = this.session): Promise<void> {
+		this.#todoRowRisk = await loadRowRisk(
+			source.settings,
+			source.modelRegistry,
+			source.sessionManager.getCwd(),
+			source.effectiveExtensionRoots,
+		);
 		this.todoPhases = source.getTodoPhases();
 		this.#todoPhasesOwner = source;
 		this.#syncTodoHudState(source);

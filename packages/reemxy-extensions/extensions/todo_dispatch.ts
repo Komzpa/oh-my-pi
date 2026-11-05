@@ -19,7 +19,7 @@ import { resolveAgentModelPatterns, resolveModelOverride } from "@oh-my-pi/pi-co
 import { cfgTaskAgentModelOverrides, cfgTaskMaxEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { cfgDefaultThinkingLevel } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { clampThinkingLevelToCeiling, resolveThinkingLevelForModel } from "@oh-my-pi/pi-tui/thinking";
-import { getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -30,6 +30,7 @@ import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDea
 import unansweredUserInstructions from "./unanswered-user-reply.md" with { type: "text" };
 import gateNoticeInstructions from "./gate-notices.md" with { type: "text" };
 import chatChoiceInstructions from "./chat-choice-gate.md" with { type: "text" };
+import riskReplanInstructions from "./risk-replan.md" with { type: "text" };
 import deadlineMissInstructions from "./deadline-miss.md" with { type: "text" };
 import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
@@ -1134,6 +1135,7 @@ function markdownCell(value: string): string {
 }
 
 export interface DispatchInput {
+  risk?: RowRiskOptions;
   phases: TodoScheduleInput;
   jobs: Jobs | null;
   externalOwnerProbe?: ExternalOwnerProbe;
@@ -1772,6 +1774,7 @@ export function decideTodoDispatch(
   const parkedContent = new Set(parking.parked.map((row) => row.content));
   const userWaits = userWaitRows(phases);
   const forecast = sdk.forecastTodoPlan(parking.phases, {
+    risk: input.risk,
     now,
     deadlineAt: deadline?.deadlineAt,
     ...(capacity === undefined ? {} : { capacity }),
@@ -2653,6 +2656,16 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let healPlanTicker: (ctx: ExtensionContext) => void = () => {};
   let disarmPlanTicker = () => {};
   let writeCurrentPlanSnapshot: (ctx: ExtensionContext, decision: ReturnType<typeof decideTodoDispatch>, now: number, phases: TodoScheduleInput) => void = () => {};
+  let risk: RowRiskOptions | undefined;
+  let riskCheckedAt = 0;
+  let riskRefreshing = false;
+  const refreshRowRisk = (ctx: ExtensionContext) => {
+    if (riskRefreshing || Date.now() - riskCheckedAt < 15_000 || !ctx.models?.rowRisk) return;
+    riskRefreshing = true;
+    void ctx.models.rowRisk().then((next) => { risk = next; cachedDecision = null; })
+      .catch(() => { risk = undefined; })
+      .finally(() => { riskCheckedAt = Date.now(); riskRefreshing = false; });
+  };
   let liveWorkerModelCount = 0;
   let liveWorkerModelCheckedAt = 0;
   let liveWorkerModelSession = "";
@@ -2685,7 +2698,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return promise;
   };
   const load = (ctx: ExtensionContext) => {
+    speculativeRefusals.clear();
     flushSprintState();
+    risk = undefined; riskCheckedAt = 0;
     reset();
     for (const phase of todoPhases(ctx)) for (const task of phase.tasks) if (typeof task.content === "string") requirementRowsSeen.add(task.content);
     const roster = selectLatestBranchEntry(ctx.sessionManager, (metadata) => metadata.type === "custom" && metadata.customType === ROSTER_ENTRY_TYPE);
@@ -2704,6 +2719,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 	// Quota discovery may wait on providers; restoring the session must not.
 	// The refresh already coalesces requests and handles failures internally.
 	void refreshLiveWorkerModels(ctx);
+    refreshRowRisk(ctx);
     announceGates(ctx);
   };
   pi.on("session_start", loadAndRefresh);
@@ -2713,6 +2729,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("session_shutdown", (_event, ctx) => {
     persistRoster(ctx);
     flushSprintState();
+    risk = undefined; riskCheckedAt = 0;
     reset();
     disarmPlanTicker();
   });
@@ -2770,6 +2787,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       taskMaxConcurrency >= 0
         ? taskMaxConcurrency
         : undefined;
+    refreshRowRisk(ctx);
     const startableCapacity = workerCapacity(ctx);
     const jobs = ctx.getAsyncJobSnapshot();
     const phases = sdk.getLatestTodoPhasesFromEntries(branch);
@@ -2786,6 +2804,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return cachedDecision.decision;
     }
     const decisionInput = {
+      risk,
       phases,
       jobs,
       externalOwnerProbe: options.externalOwnerProbe,
@@ -4054,12 +4073,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const open = (decision.forecast.rows ?? []).filter((row) => isOpenRowStatus(row.status) || undeliveredUserWait(row));
     const unresolved = unresolvedForecastRows(decision.forecast);
     const overdueRows = open.filter((row) => row.overdue || decision.alarms?.some((alarm) => alarm.startsWith(`missed-eta:${JSON.stringify(row.content)}:`)));
-    const planFinish = decision.forecast.fixedPathP95Finish ?? decision.forecast.resourceFinish;
+    const planFinish = decision.forecast.risk?.p80Finish ?? decision.forecast.fixedPathP95Finish ?? decision.forecast.resourceFinish;
     const forecastPassed = open.length > 0 && planFinish !== undefined && planFinish <= now;
     const deadline = decision.deadline ?? sdk.readGoalDeadline(dispatchStateEntries(ctx), ctx.cwd, { includePaused: true });
     const deadlineAt = deadline?.deadlineAt ?? decision.forecast.deadlineAt;
     const overDeadline = open.length > 0 && deadlineAt !== undefined && now < deadlineAt && (
-      (planFinish !== undefined && planFinish > deadlineAt) || decision.forecast.deadlineStatus === "will-miss"
+      decision.forecast.risk ? decision.forecast.deadlineStatus === "will-miss" : (planFinish !== undefined && planFinish > deadlineAt) || decision.forecast.deadlineStatus === "will-miss"
     );
     const estimateSignature = (row: TodoTaskForecast) => `${row.estimateRevision}:${row.estimateUpdatedAt ?? ""}:${JSON.stringify(row.estimateRangeSeconds ?? null)}`;
     const estimatesRevised = forecastReplanBaseline !== null && open.every((row) =>
@@ -4084,7 +4103,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         ...overdueRows.map((row) => row.content),
         ...(forecastPassed || overDeadline || autoDeadlineMissed ? open.map((row) => row.content) : []),
       ])];
-      const rowList = offendingRows.map((content) => JSON.stringify(shorten(content))).join(", ");
+      const riskRows = decision.forecast.risk?.criticalRows.filter(row => row.lastFinishProbability > 0).slice(0, 5);
+      const rowList = riskRows?.length
+        ? riskRows.map(row => `${JSON.stringify(shorten(row.content))} (${row.workerType}, redo ${Math.round(row.redoRisk * 100)}%, last finish ${Math.round(row.lastFinishProbability * 100)}%)`).join(", ")
+        : offendingRows.map((content) => JSON.stringify(shorten(content))).join(", ");
       const tz = deadline?.timezone;
       const deadlineClock = deadlineAt === undefined ? undefined : formatLocalClock(deadlineAt, tz);
       const lateBy = pendingAutoForecastMissAt !== null
@@ -4092,7 +4114,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           : decision.autoForecastMissedByMinutes ?? (planFinish !== undefined && planFinish <= now
             ? Math.max(0, Math.floor((now - planFinish) / 60_000))
             : undefined);
-      const reason = overDeadline
+      const reason = overDeadline && decision.forecast.risk
+        ? prompt.render(riskReplanInstructions, { probability: Math.round(decision.forecast.risk.onTimeProbability! * 100), p80: formatLocalClock(planFinish!, tz), deadline: deadlineClock }).trim()
+        : overDeadline
         ? `P95 ${formatLocalClock(planFinish!, tz)} is after the delivery deadline ${deadlineClock}. Cut the plan to what can ship by ${deadlineClock}; move the rest to a follow-up.`
         : autoDeadlineMissed
           ? `The automatic TODO forecast deadline ${deadlineClock} passed with requested work still open.`
