@@ -95,9 +95,7 @@ test("DC settled executors need restaff or verification; running registry worker
     const completed = row.schedule.executor.outcome === "completed";
     expect(reason).toContain(completed ? "verify the result and close" : "restaff with task");
   }
-  // Facility has no owner in the last snapshot: a live executor must be linked explicitly.
-  for (const row of rows) row.schedule.owner = row.schedule.executor.workerId;
-  const staffed = run({ running: rows.map(row => ({ id: row.schedule.owner, label: row.content, type: "task", status: "running" })), recent: [] });
+  const staffed = run({ running: rows.map(row => ({ id: row.schedule.executor.workerId, label: row.content, type: "task", status: "running" })), recent: [] });
   staffed.forecast.rows.forEach(row => row.overdue = false);
   expect(idleRedRowsRefusal(staffed)).toBeUndefined();
   rows.forEach(row => row.schedule.owner = `job:${process.pid}`);
