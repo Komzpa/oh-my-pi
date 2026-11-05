@@ -254,7 +254,11 @@ describe("PR 41 todo artifact regressions", () => {
 			});
 			const manager = SessionManager.inMemory();
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: canonical });
-			let tracker = phasesFor(row, { schedule: { owner: "worker-a" } });
+			let tracker = phasesFor(row, {
+				artifactCwd: "/stale-main",
+				artifactOwner: "main",
+				schedule: { owner: "worker-a" },
+			});
 			const session: ToolSession = {
 				cwd: root,
 				hasUI: false,
@@ -311,6 +315,17 @@ describe("PR 41 todo artifact regressions", () => {
 			"in_progress",
 		);
 		expect((await tool.execute("done", { op: "done", task: row } as never)).isError).toBe(true);
+	});
+
+	it("keeps an owner check visible after a blocked row is started", async () => {
+		const row = "Inspect saved artifact";
+		const phases = phasesFor(row, {
+			status: "in_progress",
+			awaitingUser: { action: "Check the delivered output", ids: ["card-1"] },
+		});
+		const manager = SessionManager.inMemory();
+		const artifact = await getRequirementRowArtifact({ cwd: process.cwd(), sessionManager: manager }, row, phases);
+		expect(artifact.awaitingUser).toEqual({ action: "Check the delivered output", ids: ["card-1"] });
 	});
 
 	it("composes the model-facing todo guidance from static prompt files", () => {

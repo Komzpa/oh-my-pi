@@ -678,6 +678,57 @@ describe("requirements ledger auditor binding", () => {
 		}
 	});
 
+	it("persists one rejection snapshot for a batch and removes every completed auditor", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const workers = ["batch-first", "batch-second"];
+			for (const worker of workers) {
+				await runtime.prepareAuditorTaskCall("task", worker, {
+					name: "main",
+					agent: "qa-auditor",
+					task: "Audit R1 in background",
+				});
+				await runtime.afterToolCall({
+					toolCall: { id: worker, name: "task" },
+					result: { content: [], details: { progress: [{ index: 0, agent: "qa-auditor", id: worker }] } },
+					isError: false,
+				} as never);
+			}
+			const before = manager.getBranch().length;
+			await runtime.consumeAsyncResult({
+				role: "custom",
+				customType: ASYNC_RESULT_MESSAGE_TYPE,
+				attribution: "agent",
+				content: "",
+				details: {
+					jobs: workers.map(worker => ({
+						type: "task",
+						jobId: worker,
+						agentId: worker,
+						result: `<task-result id="${worker}" agent="qa-auditor" status="completed"><output>invalid receipt</output></task-result>`,
+					})),
+				},
+			});
+			const snapshots = manager
+				.getBranch()
+				.slice(before)
+				.filter(entry => entry.type === "custom" && entry.customType === "requirements_auditor_assignments");
+			expect(snapshots).toHaveLength(1);
+			expect(
+				getPersistedRequirementAuditorAssignments(
+					manager.getBranch(),
+					manager.getHeader()!.id,
+					getLatestRequirements(manager.getBranch()),
+				).size,
+			).toBe(0);
+			expect(
+				getPersistedRequirementAuditRejections(manager.getBranch(), manager.getHeader()!.id).get("R1"),
+			).toContain("rejected verdict table");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("publishes the persisted reason for an async JSON object without a verdict table", async () => {
 		const { cwd, manager, runtime, notices, gate } = fixture();
 		try {
@@ -1946,6 +1997,29 @@ describe("real row-scoped auditor receipts", () => {
 });
 
 describe("requirement image audit inputs", () => {
+	it("forwards inline requirement pixels when sessions have no artifact directory", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const data = Buffer.from("inline image pixels").toString("base64");
+			const sha256 = createHash("sha256").update(Buffer.from(data, "base64")).digest("hex");
+			appendRequirementsSnapshot(
+				{ appendEntry: (type, value) => manager.appendCustomEntry(type, value) },
+				getLatestRequirements(manager.getBranch()).map(requirement => ({
+					...requirement,
+					images: [{ index: 1, data, sha256, mimeType: "image/png" }],
+				})),
+			);
+			const revised = await runtime.prepareAuditorTaskCall("task", "inline-image", {
+				name: "main",
+				agent: "qa-auditor",
+				task: "Audit R1 for Build artifact",
+			});
+			expect(revised?.images).toEqual([{ type: "image", mimeType: "image/png", sha256, rn: "R1", index: 1, data }]);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
 	it("forwards referenced image sha256 and artifact path to qa-auditor", async () => {
 		const { cwd, manager, runtime } = fixture();
 		try {
@@ -2445,6 +2519,9 @@ describe("replay: R1 audit for row A while R2 is linked to row B", () => {
 			expect(revised?.task).toContain('R1 row "DRIVE41 row A"');
 			expect(revised?.task).not.toContain("R2 (said at");
 			await deliverReplay(fx, "replay-r1", "R1", R1_RAW_TEXT, head => `DRIVE41 row A @ ${head}`);
+			expect([
+				...getPersistedRequirementAuditRejections(fx.manager.getBranch(), fx.manager.getHeader()!.id),
+			]).toEqual([]);
 			const requirements = getLatestRequirements(fx.manager.getBranch());
 			expect(requirements.find(requirement => requirement.id === "R1")?.rowVerdicts?.["DRIVE41 row A"]?.status).toBe(
 				"pass",

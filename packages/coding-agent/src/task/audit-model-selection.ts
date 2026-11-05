@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
+import { resolveCatalogAxes } from "@oh-my-pi/pi-catalog/compat/resolve";
 import { classifyModel } from "@oh-my-pi/pi-catalog/compat/taxonomy";
 import { bareModelId } from "@oh-my-pi/pi-catalog/identity";
 import { splitThinkingSuffix } from "@oh-my-pi/pi-tui/overlays/model-selector";
@@ -28,73 +29,31 @@ export interface AuditModelCandidate {
 	weight: number;
 }
 
-/** Operator-requested audit strength order, not the catalog's vendor-lineage `class`.
- * Levels align small/ordinary/strong/maximum across vendors. Unknown strength stays unknown.
- * This single explicit fallback table is used until the catalog exposes comparable strength.
- */
-const STRENGTH: Record<string, readonly [RegExp, number][]> = {
-	// Luna and Terra share the ordinary tier: the operator explicitly requested
-	// Luna → Terra as different_model, with Sol/Astra as the higher-class lanes.
-	openai: [
-		[/astra/, 4],
-		[/sol/, 3],
-		[/luna|terra/, 2],
-	],
-	anthropic: [
-		[/opus/, 3],
-		[/sonnet/, 2],
-		[/haiku/, 1],
-	],
-	xai: [
-		[/grok-4\.7/, 3],
-		[/grok-build/, 2],
-	],
-	muse: [
-		[/muse-wonder/, 3],
-		[/muse-spark/, 2],
-	],
-	abliteration: [
-		[/abliterated-model-large/, 3],
-		[/abliterated-model/, 2],
-	],
-	deepseek: [
-		[/pro/, 2],
-		[/flash/, 1],
-	],
-	kimi: [[/kimi|k3/, 2]],
-	qwen: [[/qwen/, 2]],
-	google: [
-		[/gemini.*pro/, 2],
-		[/gemma|gemini.*flash/, 1],
-	],
-	inception: [[/mercury/, 1]],
-	xiaomi: [[/mimo/, 2]],
-	nvidia: [[/nemotron/, 2]],
-};
-const VENDOR_FALLBACKS: readonly [string, string][] = [
-	["abliterated-model", "abliteration"],
-	["muse-", "muse"],
-	["mercury", "inception"],
-	["nemotron", "nvidia"],
-	["k3", "kimi"],
-];
-const VENDOR_ALIASES: Record<string, string> = { gemma: "google", gemini: "google", mimo: "xiaomi" };
-
 export function auditModelFacts(model: {
 	id: string;
 	provider?: string;
 	identity?: Model["identity"];
+	api?: Model["api"];
+	reasoning?: boolean;
 }): AuditModelFacts {
 	const id = bareModelId(splitThinkingSuffix(model.id, 0).base).toLowerCase();
 	const identity = model.identity ?? classifyModel(model.provider ?? "", id);
-	// Muse and abliterated derivatives are independent audit vendors by explicit operator policy.
-	const fallback = VENDOR_FALLBACKS.find(([prefix]) => id.startsWith(prefix))?.[1];
+	const policy = resolveCatalogAxes({
+		id,
+		provider: model.provider ?? "",
+		api: model.api ?? "openai-completions",
+		reasoning: model.reasoning ?? false,
+	});
 	const vendor =
-		fallback ?? (identity.class === "unknown" ? undefined : (VENDOR_ALIASES[identity.class] ?? identity.class));
+		typeof policy.auditVendor === "string"
+			? policy.auditVendor
+			: identity.class === "unknown"
+				? undefined
+				: identity.class;
 	return {
 		model: id,
 		vendor,
-		tier: vendor ? STRENGTH[vendor]?.find(([pattern]) => pattern.test(id))?.[1] : undefined,
+		tier: typeof policy.auditStrength === "number" ? policy.auditStrength : undefined,
 	};
 }
 

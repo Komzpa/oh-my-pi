@@ -1,3 +1,4 @@
+import { useFastGitStatusCoordinator } from "../helpers/fast-status-coordinator";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,6 +11,8 @@ import {
 	currentRequirementIdentity,
 	currentRequirementGitStatus,
 } from "../../src/utils/requirement-artifact";
+
+useFastGitStatusCoordinator();
 
 const roots: string[] = [];
 afterEach(() => {
@@ -38,21 +41,35 @@ async function fixture(files: Record<string, string>): Promise<{ root: string; h
 }
 
 describe("native Git worktree identity", () => {
-	it("checks foreground status without entering the display polling queue", async () => {
+	it("checks fresh foreground status through the shared status queue", async () => {
 		const { root } = await fixture({ "artifact.txt": "before\n" });
 		const repo = vcs.requireGit(root);
-		const queue = spyOn(statusCoordinator, "request").mockImplementation(() => {
-			throw new Error("display polling must not hold a requirement gate");
-		});
+		const queue = spyOn(statusCoordinator, "request");
 		try {
 			expect(await currentRequirementGitStatus(repo)).toBe("");
 			fs.writeFileSync(path.join(root, "artifact.txt"), "after\n");
 			expect(await currentRequirementGitStatus(repo)).toContain("artifact.txt");
-			expect(queue).not.toHaveBeenCalled();
+			expect(queue).toHaveBeenCalled();
 		} finally {
 			queue.mockRestore();
 		}
 	});
+
+	for (const reftable of [false, true]) {
+		it(`ignores group execute permission in ${reftable ? "reftable" : "ordinary"} Git path identities`, async () => {
+			if (process.platform === "win32") return;
+			const { root, head } = await fixture({ "script.sh": "echo ready\n" });
+			if (reftable) execFileSync("git", ["-C", root, "refs", "migrate", "--ref-format=reftable"]);
+			fs.chmodSync(path.join(root, "script.sh"), 0o654);
+			expect(
+				await checkRequirementIdentity({ kind: "git", repo: root, commit: head, paths: ["script.sh"] }),
+			).toEqual({ state: "fresh" });
+			fs.chmodSync(path.join(root, "script.sh"), 0o754);
+			expect(
+				(await checkRequirementIdentity({ kind: "git", repo: root, commit: head, paths: ["script.sh"] })).state,
+			).not.toBe("fresh");
+		}, 30_000);
+	}
 
 	it("applies eol clean filters before checking named path receipts", async () => {
 		const { root } = await fixture({

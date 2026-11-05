@@ -6707,7 +6707,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					gatedMessage = { ...message, content };
 				}
 				const requirementsResult = await requirementsGate(gatedMessage, signal);
-				if (requirementsResult !== undefined) return requirementsResult;
+				if (requirementsResult !== undefined)
+					return extensionResult?.replacementText === undefined
+						? requirementsResult
+						: { ...requirementsResult, preserveImages: undefined };
 			}
 			return extensionResult;
 		});

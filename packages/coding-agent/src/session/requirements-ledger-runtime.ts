@@ -106,6 +106,8 @@ import {
 } from "../utils/requirement-artifact";
 import auditInputTemplate from "../prompts/session/requirements-ledger-audit-input.md" with { type: "text" };
 import receiptHeader from "../prompts/session/requirements-ledger-receipt-header.md" with { type: "text" };
+import rowAuditTemplate from "../prompts/session/requirements-ledger-row-audit.md" with { type: "text" };
+import linkedRowTemplate from "../prompts/session/requirements-ledger-linked-row.md" with { type: "text" };
 import flowNoticeTemplate from "../prompts/session/requirements-ledger-flow-notice.md" with { type: "text" };
 import unavailableToolsTemplate from "../prompts/session/requirements-ledger-tools-unavailable.md" with { type: "text" };
 
@@ -137,7 +139,7 @@ async function isBundledQaAuditor(agent: AgentDefinition | undefined): Promise<b
 	if (!agent.filePath) return false;
 	try {
 		const agentContent = await Bun.file(agent.filePath).text();
-		return agentContent.replace(/\r\n/g, "\n") === BUNDLED_QA_AUDITOR_TEMPLATE.replace(/\r\n/g, "\n");
+		return agentContent.replace(/\r\n?/g, "\n") === BUNDLED_QA_AUDITOR_TEMPLATE.replace(/\r\n?/g, "\n");
 	} catch {
 		return false;
 	}
@@ -669,15 +671,16 @@ export class RequirementsLedgerRuntime {
 					}
 					const imagePath = image.artifactPath ?? image.sourcePath;
 					imageLines.push(
-						`${source.id} Image #${image.index}: sha256=${image.sha256 ?? "unavailable"}${imagePath ? `, source=${imagePath}` : ""}${!image.sha256 || !imagePath ? " (source unavailable)" : ""}`,
+						`${source.id} Image #${image.index}: sha256=${image.sha256 ?? "unavailable"}${imagePath ? `, source=${imagePath}` : ""}${!available ? " (source unavailable)" : ""}`,
 					);
-					if (!image.sha256 || !imagePath) continue;
+					if (!image.sha256 || (!imagePath && !image.data)) continue;
 					imagePayloads.push({
 						type: "image",
 						mimeType: image.mimeType ?? "image/png",
 						sha256: image.sha256,
 						rn: source.id,
 						index: image.index,
+						...(!imagePath && image.data ? { data: image.data } : {}),
 						...(image.sourcePath ? { sourcePath: image.sourcePath } : {}),
 						...(image.artifactPath ? { artifactPath: image.artifactPath } : {}),
 					});
@@ -837,7 +840,16 @@ export class RequirementsLedgerRuntime {
 			await this.#announceFlowNotice(
 				JSON.stringify(["linked-row", row, ids, requirementRowDeclarationSnapshot(phases, [row]), verdicts]),
 				`Audit ${ids.join(", ")} on ${JSON.stringify(row)} before marking it done.`,
-				`Closing this linked row requires a qa-auditor pass bound to its current artifact. Call task({agent:"qa-auditor",name:"qa-auditor",requirementIds:${JSON.stringify(ids)},task:${JSON.stringify(`Audit ${ids.join(", ")} for TODO row ${JSON.stringify(row)} at its current artifact; return one receipt row per ID.`)}}).`,
+				prompt
+					.render(linkedRowTemplate, {
+						call: JSON.stringify({
+							agent: "qa-auditor",
+							name: "qa-auditor",
+							requirementIds: ids,
+							task: prompt.render(rowAuditTemplate, { ids: ids.join(", "), row: JSON.stringify(row) }).trim(),
+						}),
+					})
+					.trim(),
 			);
 		}
 	}
@@ -977,6 +989,7 @@ export class RequirementsLedgerRuntime {
 		this.#restorePendingAuditors();
 		let pendingChanged = false;
 		const acceptedIds: string[] = [];
+		const rejections: Array<{ workerId: string; ids: string[]; reason: string }> = [];
 		for (const job of message.details.jobs) {
 			if (!isRecord(job) || job.type !== "task" || typeof job.jobId !== "string") continue;
 			const workerId = typeof job.agentId === "string" && job.agentId ? job.agentId : job.jobId;
@@ -995,7 +1008,7 @@ export class RequirementsLedgerRuntime {
 						: "async result was incomplete, truncated, or not from qa-auditor";
 			if (outcome.status !== "absent") acceptedIds.push(...(outcome.acceptedIds ?? []));
 			if (rejection)
-				this.#persistPendingAuditors({
+				rejections.push({
 					workerId: key,
 					ids: outcome.status === "rejected" ? (outcome.rejectedIds ?? assignment.ids) : assignment.ids,
 					reason: rejection,
@@ -1003,7 +1016,7 @@ export class RequirementsLedgerRuntime {
 			this.#pendingAuditors.delete(key);
 			pendingChanged = true;
 		}
-		if (pendingChanged) this.#persistPendingAuditors(undefined, acceptedIds);
+		if (pendingChanged) this.#persistPendingAuditors(rejections, acceptedIds);
 	}
 
 	async #publicationGate(
@@ -1711,7 +1724,9 @@ export class RequirementsLedgerRuntime {
 	}
 
 	#persistPendingAuditors(
-		rejected?: { workerId: string; ids: string[]; reason: string },
+		rejected?:
+			| { workerId: string; ids: string[]; reason: string }
+			| readonly { workerId: string; ids: string[]; reason: string }[],
 		acceptedIds: readonly string[] = [],
 	): void {
 		const sessionId = this.#sessionId();
@@ -1724,10 +1739,11 @@ export class RequirementsLedgerRuntime {
 			),
 			sessionId,
 		);
-		for (const id of acceptedIds) rejections.delete(id);
-		if (rejected) {
-			for (const id of rejected.ids) rejections.set(id, rejected.reason);
+		const rejectedItems = rejected === undefined ? [] : Array.isArray(rejected) ? rejected : [rejected];
+		for (const item of rejectedItems) {
+			for (const id of item.ids) rejections.set(id, item.reason);
 		}
+		for (const id of acceptedIds) rejections.delete(id);
 		this.#host.sessionManager.appendCustomEntry(REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE, {
 			version: 1,
 			sessionId,
@@ -1736,7 +1752,7 @@ export class RequirementsLedgerRuntime {
 					assignment =>
 						assignment.sessionId === sessionId &&
 						assignment.workerId &&
-						assignment.workerId !== rejected?.workerId,
+						!rejectedItems.some(item => assignment.workerId === item.workerId),
 				)
 				.map(assignment => ({
 					workerId: assignment.workerId,

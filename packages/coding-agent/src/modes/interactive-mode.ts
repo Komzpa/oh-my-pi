@@ -1719,10 +1719,12 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	describeStatusHud(children: readonly Component[], cx: DescribeContext): NativeNode {
 		const todo = this.describeTodoHud(cx);
+		const requirement = this.describeRequirementHudSummary();
 		const memo = this.#statusHudNative;
-		if (memo && memo.todo === todo && sameItems(memo.children, children)) return memo.node;
+		if (!requirement && memo && memo.todo === todo && sameItems(memo.children, children)) return memo.node;
 		const parts: NativeChild[] = [];
 		if (children.length > 0) parts.push(node("col", { role: "omp.hud.status" }, children.slice(), "status"));
+		if (requirement) parts.push(requirement);
 		if (todo) parts.push(todo);
 		const described =
 			parts.length === 0 ? EMPTY_HUD : row(parts, { role: "omp.hud.activity", align: "center", gap: "sm" });

@@ -87,7 +87,7 @@ function wrapGitRepo(repo) {
 					const snapshot = { untracked: "normal", nulTerminated: true, pathspecs: [] };
 					const meta = statusMetadata(info);
 					return statusCoordinator.request(identity, JSON.stringify(snapshot), meta,
-						() => Reflect.apply(target.statusPorcelain, target, [snapshot, undefined]), signal)
+						() => Reflect.apply(target.statusPorcelain, target, [snapshot, undefined]), signal, property === "isDirty")
 						.then(status => property === "isDirty" ? status.length > 0 : summarize(status));
 				};
 			}
