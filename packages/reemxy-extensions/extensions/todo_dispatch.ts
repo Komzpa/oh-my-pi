@@ -2254,7 +2254,6 @@ export function syncCriticalFast(
 }
 
 export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe; reviewPageOpener?: (url: string) => void } = {}): Promise<void> {
-  const speculativeRefusals = new Map<string, string>();
   const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
   const previewConfig = (ctx: ExtensionContext) => ctx.getTodoPreviewConfig?.() ?? { enabled: false, paths: [], thresholdMinutes: 15 };
   let previewPoll: Promise<PreviewRecord[]> | undefined;
@@ -2710,7 +2709,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return promise;
   };
   const load = (ctx: ExtensionContext) => {
-    speculativeRefusals.clear();
     flushSprintState();
     risk = undefined; riskCheckedAt = 0;
     reset();
@@ -5088,33 +5086,42 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName === "task" && isMain(ctx)) {
       const phases = todoPhases(ctx);
       const rows = phases.flatMap((phase) => phase.tasks);
-      const pending = pendingReview(phases);
-      const pendingContents = new Set(pending.map((row) => String(row.content)));
       for (const item of taskItems(event.input)) {
         const brief = String(item.task ?? "");
         const boundRows = speculativeTaskRows(item, phases);
         for (const row of boundRows) {
           gateTrace(ctx, "speculative-review-checked", { row: row.content, agent: item.agent, readOnly: readOnlyAudit(item), speculativeOn: row.schedule?.speculativeOn, dependencies: (row.schedule?.dependencies ?? []).map((content) => { const target = rows.find((candidate) => candidate.content === content); return { content, status: target?.status, review: target?.schedule?.review }; }) });
-          const previousTarget = speculativeRefusals.get(String(row.content));
-          const previousReview = rows.find((candidate) => candidate.content === previousTarget);
-          const remedyApplied = previousTarget !== undefined && (row.schedule?.speculativeOn === previousTarget || !previousReview || previousReview.status === "completed" || previousReview.status === "abandoned" || previousReview.schedule?.review !== "user");
-          if (remedyApplied) {
-            speculativeRefusals.delete(String(row.content));
-            gateTrace(ctx, "speculative-refusal-remedy-applied", { row: row.content, target: previousTarget, speculativeOn: row.schedule?.speculativeOn, targetStatus: previousReview?.status, targetReview: previousReview?.schedule?.review });
-          }
           if (readOnlyAudit(item)) continue;
-          const schedule = row.schedule as { dependencies?: string[]; speculativeOn?: string; attemptHistory?: unknown[]; review?: string; progress?: { evidence?: string } } | undefined;
-          // Retrying this row does not create a dependency on itself.
+          // A dropped title with the same exclusive resources is still the same work.
+          const resources = row.schedule?.resources ?? [];
+          const predecessor = resources.length && rows.find(candidate => candidate !== row && candidate.status === "abandoned"
+            && candidate.schedule?.resources?.length === resources.length
+            && resources.every(resource => candidate.schedule.resources.includes(resource))
+            && candidate.schedule?.attemptHistory?.length);
+          if (predecessor && !row.schedule?.attemptHistory?.length) {
+            const patch = { review: predecessor.schedule.review,
+              reviewPagePending: predecessor.schedule.reviewPagePending,
+              firstDeliveredAt: predecessor.schedule.firstDeliveredAt };
+            ctx.updateTodoSchedule?.(String(row.content), patch);
+            row.schedule = { ...row.schedule, ...patch };
+            pi.sendMessage({ customType: USER_REVIEW_CUSTOM_TYPE,
+              content: prompt.render(gateNoticeInstructions, { renamedRow: row.content, predecessor: predecessor.content }).trim(),
+              display: true, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: false });
+          }
+          const schedule = row.schedule ?? {};
+          const unseen = !schedule.review && (schedule.attemptHistory ?? predecessor?.schedule?.attemptHistory)?.some(attempt => attempt.terminalStatus === "completed");
           const dependentReview = missingSpeculativeReview(item, phases, row);
-          if (dependentReview && schedule?.speculativeOn !== dependentReview && !(remedyApplied && dependentReview === previousTarget)) {
-            speculativeRefusals.set(String(row.content), dependentReview);
-            return { block: true, reason: `Schedule ${JSON.stringify(String(row.content))} as speculative on ${JSON.stringify(dependentReview)} first. Checked row=${JSON.stringify(row.content)}, speculativeOn=${JSON.stringify(schedule?.speculativeOn ?? null)}, dependency review=user. Exactly: todo schedule this row with speculativeOn set to that review; use a separate worktree/branch or commit series and do not publish until accepted.` };
+          const reviewTarget = dependentReview ?? schedule.speculativeOn ?? (schedule.review === "user" || unseen ? String(row.content) : undefined);
+          const patch = {
+            ...(unseen ? { review: "user" as const, reviewPagePending: !schedule.reviewPage,
+              firstDeliveredAt: schedule.firstDeliveredAt ?? Date.now() } : {}),
+            ...(reviewTarget ? { speculativeOn: reviewTarget } : {}),
+          };
+          if (Object.keys(patch).length) {
+            ctx.updateTodoSchedule?.(String(row.content), patch);
+            row.schedule = { ...schedule, ...patch };
           }
-          if ((schedule?.attemptHistory?.length ?? 0) >= 1 && !schedule?.review && !pending.some((candidate) => candidate.content === row.content)) {
-            return { block: true, reason: `Hand attempt ${(schedule?.attemptHistory?.length ?? 0)}'s result to the user first (it can stay speculative): ${rowReviewNotice(row)}. Then redo may proceed speculatively. After showing the link, record the handoff with: todo op="schedule" updates=[{task:${JSON.stringify(String(row.content))}, review:"user"}]` };
-          }
-          const reviewTarget = schedule?.speculativeOn ?? (schedule?.review === "user" ? String(row.content) : undefined);
-          if (reviewTarget && pendingContents.has(reviewTarget)) {
+          if (reviewTarget) {
             item.task = `${brief}\n\n${prompt.render(gateNoticeInstructions, { speculative: true, reviewRow: reviewTarget }).trim()}`;
           }
           if (schedule?.review === "redo" && schedule.progress?.evidence) {
