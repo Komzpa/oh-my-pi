@@ -790,6 +790,35 @@ describe("live schedule admission", () => {
 			expect(h.phases()).toEqual(initial);
 		}
 	});
+	it("renaming a stored cycle does not introduce a new cycle", async () => {
+		const h = createHarness([
+			{
+				name: "W",
+				tasks: [
+					{ content: "A", status: "pending", schedule: { dependencies: ["B"] } },
+					{ content: "B", status: "pending", schedule: { dependencies: ["A"] } },
+				],
+			},
+		]);
+		const r = await h.tool.execute("rename-old-cycle", {
+			op: "schedule",
+			updates: [{ task: "A", content: "Renamed A" }],
+		});
+		expect(r.isError).not.toBe(true);
+		expect(h.phases()[0].tasks[1].schedule!.dependencies).toEqual(["Renamed A"]);
+	});
+	it("rejects a rename that turns an unresolved target into a self dependency", async () => {
+		const initial: TodoPhase[] = [
+			{ name: "W", tasks: [{ content: "A", status: "pending", schedule: { dependencies: ["Renamed A"] } }] },
+		];
+		const h = createHarness(initial);
+		const r = await h.tool.execute("rename-self", {
+			op: "schedule",
+			updates: [{ task: "A", content: "Renamed A" }],
+		});
+		expect(r.isError).toBe(true);
+		expect(h.phases()).toEqual(initial);
+	});
 	it("allows staffing when an unrelated stored cycle exists", async () => {
 		const h = createHarness([
 			{
