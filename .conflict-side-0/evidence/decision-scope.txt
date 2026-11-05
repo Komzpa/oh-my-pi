@@ -1,0 +1,3 @@
+DECISION: Yes—keep #92 limited to the reproduced in-turn history read/grep path, and report cold-start and first-read latency as remaining limits.
+
+The 18.6 s heartbeat gap and 2.98 GB read reproduce on that path; cached per-entry materialization and lazy `getBranchView` reduce the six-turn maximum to 452 ms, including maintenance. Expanding into journal loading or installation/live mutation would cross this lane’s explicit exclusions. The first request still takes about 22 s asynchronously and stores ~3.1 GB of markdown; startup still blocks about 5 s before `session_start`.

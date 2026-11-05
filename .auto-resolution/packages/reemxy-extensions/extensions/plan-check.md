@@ -1,0 +1,1 @@
+PLAN CHECK: {{count}} problem(s). {{{problems}}}.{{#if workerStatus}} {{{workerStatus}}}{{/if}} Follow the row NEXT ACTION already supplied in this turn. Consult skill://chief-of-staff only if the row or remedy is missing; do not read the runbook before an explicit staffing or claim-recovery action.

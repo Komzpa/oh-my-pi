@@ -1,0 +1,87 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/agent_router.yield-budget.test.ts:
+(pass) the yield gate answers inside the host's extension handler timeout [0.04ms]
+(pass) a yield hook slower than 30 s after a completed commit never blocks the worker's result [27.00ms]
+(pass) negative control: a fast refusal inside the budget still blocks the yield [0.41ms]
+(pass) neighbour: a fast pass inside the budget records nothing [0.27ms]
+
+packages/reemxy-extensions/extensions/editgrant.test.ts:
+(pass) assignment paths become durable scope; shared context cannot grant writes; explicit scope still conflicts [6.87ms]
+(pass) nested children with no own row inherit live ancestor scope and cannot widen it through assignment, cwd, symlink or revocation [3.49ms]
+(pass) resource scope requests restating assignments grant without lead work; new paths deliver one ready schedule action [13.67ms]
+(pass) assigned Worktree overrides stale row resources even with explicit file resources [3.41ms]
+(pass) assigned cwd: overrides stale row resources even with explicit file resources [2.47ms]
+(pass) assigned "scope":{"root": overrides stale row resources even with explicit file resources [1.61ms]
+
+packages/reemxy-extensions/extensions/task_spawn_admission.test.ts:
+(pass) conflicting batch item is refused before job or executor ownership, while its sibling spawns [16.17ms]
+(pass) released claim uses current resources; both items spawn [4.18ms]
+(pass) narrowed claim uses current resources; both items spawn [2.39ms]
+(pass) all-conflicting call has no job and is a harness refusal [1.13ms]
+(pass) claim acquired after admission still fails through runtime gate [2.09ms]
+(pass) streamed conflicting item cannot launch speculatively before dispatch [5.06ms]
+(pass) non-resource deterministic gate also refuses before job registration [1.33ms]
+(pass) synchronous fallback refuses a conflicting item and runs its free sibling [3.71ms]
+(pass) ROOT reader and four disjoint or unscoped writers all start; reader tools cannot mutate [14.65ms]
+(pass) explicit item scope narrows a broad row; second same-file writer is refused before spawn [8.51ms]
+(pass) item scope outside the canonical row is refused without changing ownership [4.46ms]
+(pass) qa-auditor ROOT reading does not acquire a write claim [7.46ms]
+(pass) observer ROOT reading does not acquire a write claim [4.25ms]
+(pass) three identical admission conflicts block only that row, persist across tool recreation, and notify once [6.25ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > writes spawn JSONL with requested stats fields [11.59ms]
+(pass) agent router > visual words in a brief never refuse a spawn [6.66ms]
+(pass) agent router > blocks a second non-isolated writer while allowing isolation [2.29ms]
+(pass) agent router > keeps long file paths and worker ids actionable in the first line [1.54ms]
+(pass) agent router > incoming git-pr-owner bypasses the checkout gate while file writers stay gated [0.68ms]
+(pass) agent router > grievance 467: coder beside a running git-pr-owner is admitted on disjoint paths, refused on overlap [12.28ms]
+(pass) agent router > explicit spawn resources keep nested coders on disjoint subdirs of one repo admitted [7.08ms]
+(pass) agent router > lanePathsFromText drops HTTP routes whose top-level directory does not exist [0.07ms]
+(pass) agent router > unowned batch coders scope from spawn row title and lane path [12.85ms]
+(pass) agent router > checkout writer scopes allow disjoint repositories and refuse every active collision [12.50ms]
+(pass) agent router > checkout writer scopes follow the canonical plan while the worker runs [13.56ms]
+(pass) agent router > checkout writer scopes require exact canonical ownership and allow undeclared scopes without claiming ROOT [25.17ms]
+(pass) agent router > checkout writer scopes use the host latest TODO getter and current branch [16.56ms]
+(pass) agent router > leaves unknown agents untouched [0.35ms]
+(pass) agent router > capacity counts unique authenticated model routes [0.26ms]
+(pass) agent router > records exact settled wait job outcome once [3.52ms]
+(pass) agent router > records a correlated task outcome with job id and resolved model when observable [0.60ms]
+(pass) agent router > records core fallback reason when resolved model differs from the router pick [0.55ms]
+(pass) agent router > does not invent an outcome when two pending spawns share the same agent and no exact key is visible [0.33ms]
+(pass) agent router > extension registers spawn, fallback and result handlers [0.07ms]
+(pass) agent router > announces file guard at session start and active writer once after async spawn [29.61ms]
+(pass) agent router > extension follows a late core fallback with the actual routed model in UI [0.35ms]
+(pass) agent router > refuses empty writes unless the call explicitly confirms replacement [0.46ms]
+(pass) agent router > refuses tiny writes to tracked files but allows normal in-repository writes [87.83ms]
+(pass) agent router > writes and edits outside the session repository pass: sessions work on other repositories from tasks-loop [0.81ms]
+(pass) agent router > unknown-scope holder does not block scoped writers [11.96ms]
+(pass) agent router > writer refusal names the holder repo and points at row resources [3.22ms]
+(pass) a failed async-result delivery with no wait is recorded once [0.79ms]
+(pass) /brrrr session preset > applies the brrrr preset and clears it on off [0.27ms]
+(pass) /brrrr session preset > reports the canonical unavailable reason through the registered command [0.06ms]
+(pass) /brrrr session preset > reports the canonical unavailable reason through the registered command
+(pass) /brrrr session preset > reports the canonical invalid reason through the registered command
+(pass) /brrrr session preset > reports the canonical failed reason through the registered command
+(pass) /brrrr session preset > reports a missing preset and an unsupported build without acting [0.06ms]
+
+packages/reemxy-extensions/extensions/dispatch_preflight.test.ts:
+(pass) write behavior blocks outside cwd without telltale prose and cannot be bypassed by retry [0.86ms]
+(pass) known bash write operands are checked; mention-only commands pass [0.72ms]
+(pass) symlink escapes and edit rename targets are blocked [0.56ms]
+(pass) actual test launch probes fresh resources on each attempt; matching words alone do not [0.84ms]
+(pass) three same-project suites admit a fourth with RAM capacity of at least four [0.54ms]
+(pass) RAM below the floor refuses an idle project [0.09ms]
+(pass) low VRAM refuses hardware perf while functional e2e still runs [0.55ms]
+(pass) shell redirections and changed cwd resolve targets, quoted mentions remain inert [0.55ms]
+(pass) registered tool hook checks launch state and file target before execution [0.44ms]
+(pass) a managed browser launch checks RAM while attaching an existing browser does not [0.20ms]
+(pass) patch payload targets cannot escape through pathless edit formats [0.37ms]
+(pass) a running worker reads live parent resources on every write, including revocation [14.00ms]
+(pass) ROOT reader does not block writes; unscoped concurrent writes acquire one exact target [0.48ms]
+
+ 71 pass
+ 0 fail
+ 325 expect() calls
+Ran 71 tests across 5 files. [1335.00ms]
