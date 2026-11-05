@@ -160,6 +160,9 @@ const TodoScheduleUpdateInput = type({
 	"review?": type('"user" | "accepted" | "redo" | "drop" | null'),
 	"reviewPage?": type("string | null").describe("HTTP URL of the published decision review page"),
 	"speculativeOn?": type("string | null"),
+	"postDeadline?": type("boolean").describe(
+		"Explicitly move this row outside deadline scope; keep it as an after deadline follow-up",
+	),
 });
 
 const InitListEntry = type({
@@ -1141,6 +1144,7 @@ function applyScheduleUpdates(
 		else if (update.reviewPage !== undefined) schedule.reviewPage = update.reviewPage.trim();
 		if (update.review === null) delete schedule.review;
 		else if (update.review !== undefined) schedule.review = update.review;
+		if (update.postDeadline !== undefined) schedule.postDeadline = update.postDeadline;
 		if (update.speculativeOn === null) delete schedule.speculativeOn;
 		else if (update.speculativeOn !== undefined) schedule.speculativeOn = update.speculativeOn.trim();
 		candidates.set(task, schedule);
@@ -1157,6 +1161,24 @@ function applyScheduleUpdates(
 				const dependencies = previousDependencies.map(dependency => renamedContent.get(dependency) ?? dependency);
 				if (dependencies.some((dependency, index) => dependency !== previousDependencies[index]))
 					candidates.set(task, { ...structuredClone(schedule), dependencies });
+			}
+		}
+	}
+	if (!options.replay) {
+		const rows = phases.flatMap(phase => phase.tasks);
+		const deferred = new Set(
+			rows
+				.filter(row => (candidates.get(row) ?? row.schedule)?.postDeadline)
+				.map(row => renamedTasks.get(row) ?? row.content),
+		);
+		for (const row of rows) {
+			const schedule = candidates.get(row) ?? row.schedule;
+			if (schedule?.postDeadline || row.status === "completed" || row.status === "abandoned") continue;
+			for (const dependency of schedule?.dependencies ?? []) {
+				if (deferred.has(dependency))
+					errors.push(
+						`Task "${row.content}" still requires after-deadline task "${dependency}"; keep the prerequisite in scope or record a safe dependency re-plan`,
+					);
 			}
 		}
 	}
@@ -1892,6 +1914,24 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	): Promise<AgentToolResult<TodoToolDetails>> {
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
+		// Tool calls cannot establish user authority over a goal deadline.
+		const deadlineKeys = ["deadlineAt", "due", "dueAt", "deadlineRenegotiation"];
+		const raw = params as unknown as Record<string, unknown>;
+		const updates = Array.isArray(raw.updates) ? raw.updates : [];
+		if (
+			[raw, ...updates].some(value => value && typeof value === "object" && deadlineKeys.some(key => key in value))
+		) {
+			return {
+				content: [
+					{
+						type: "text",
+						text: "The deadline belongs to the user. Todo operations cannot change the due time. Re-plan the work to fit the existing deadline.",
+					},
+				],
+				isError: true,
+				details: { phases: previousPhases, storage },
+			};
+		}
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
 		if (typeof resolved === "string") {
 			return {

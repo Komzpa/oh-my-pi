@@ -29,6 +29,7 @@ import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDea
 import unansweredUserInstructions from "./unanswered-user-reply.md" with { type: "text" };
 import gateNoticeInstructions from "./gate-notices.md" with { type: "text" };
 import chatChoiceInstructions from "./chat-choice-gate.md" with { type: "text" };
+import deadlineMissInstructions from "./deadline-miss.md" with { type: "text" };
 import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
@@ -2100,7 +2101,7 @@ export function decideTodoDispatch(
   const repeatedEstimates = forecastRows.filter((row) => row.reestimateCount >= 3);
   const prompt = [
     ...(!goalPaused && deadlineRisk
-      ? ["DELIVERY FIRST: the fixed deadline is at risk. Name the exact missing user-visible artifact and its current version; take the shortest safe action that creates or updates it now. Do not re-read the same plan, reforecast, or rerun broad checks without a changed artifact or a specific new diagnostic question. Reconcile workers only to unblock real work; report the remaining gap without moving the deadline or silently shrinking scope. No automatic paid/model escalation."]
+      ? ["DELIVERY FIRST: the fixed deadline is at risk. Name the exact missing user-visible artifact and its current version; take the shortest safe action that creates or updates it now. Do not re-read the same plan, reforecast, or rerun broad checks without a changed artifact or a specific new diagnostic question. Reconcile workers only to unblock real work; re-plan the critical path with parallel staffing, safe overlap, evidence-based estimates, or visible nice-to-have post-deadline scope triage; the due time belongs to the user. No automatic paid/model escalation."]
       : []),
     staticPrompt,
     `Now=${displayClock(now, deadline?.timezone)}; ETA anchored to recorded estimates/real starts, not redraw time.`,
@@ -4037,7 +4038,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const deadline = decision.deadline ?? sdk.readGoalDeadline(dispatchStateEntries(ctx), ctx.cwd, { includePaused: true });
     const deadlineAt = deadline?.deadlineAt ?? decision.forecast.deadlineAt;
     const overDeadline = open.length > 0 && deadlineAt !== undefined && now < deadlineAt && (
-      (planFinish !== undefined && planFinish > deadlineAt) || decision.forecast.deadlineStatus === "at-risk"
+      (planFinish !== undefined && planFinish > deadlineAt) || (decision.forecast.deadlineStatus === "will-miss" || decision.forecast.deadlineStatus === "at-risk")
     );
     const estimateSignature = (row: TodoTaskForecast) => `${row.estimateRevision}:${row.estimateUpdatedAt ?? ""}:${JSON.stringify(row.estimateRangeSeconds ?? null)}`;
     const estimatesRevised = forecastReplanBaseline !== null && open.every((row) =>
@@ -6030,12 +6031,24 @@ export function idleRedRowsRefusal(
 ): string | undefined {
   if (decision.goalPaused) return;
   const running = new Set((decision.ownerRunStates ?? []).filter(row => row.running).map(row => row.content));
-  const risk = ["at-risk", "overdue"].includes(decision.forecast?.deadlineStatus ?? "") || decision.alarms.some(alarm => alarm.startsWith("deadline-risk-"));
+  const forecast = decision.forecast;
+  const scoped = (forecast?.rows ?? []).filter(row => !row.schedule?.postDeadline && isNonClosedRowStatus(row.status));
+  const overdue = scoped.filter(row => row.overdue);
+  if (forecast?.deadlineStatus === "will-miss" || overdue.length) {
+    const finish = forecast.expectedResourceFinish ?? Math.max(...scoped.map(row => row.expectedResourceFinish ?? 0));
+    const late = Math.max(0, Math.ceil((finish - (forecast.deadlineAt ?? finish)) / 60_000), ...overdue.map(row => Math.ceil((forecast.now - (row.resourceFinish ?? forecast.now)) / 60_000)));
+    const causes = scoped.filter(row => row.critical || overdue.includes(row) || (row.expectedResourceFinish ?? 0) > (forecast.deadlineAt ?? Infinity));
+    const revision = `deadline:${forecast.deadlineAt}:${JSON.stringify(scoped.map(row => [row.content, row.status, row.estimateRevision, row.estimateUpdatedAt, row.owner, row.schedule?.dependencies, row.expectedResourceFinish, row.overdue]))}`;
+    if (previewNotified.has(revision)) return prompt.render(deadlineMissInstructions, { repeated: true }).trim();
+    previewNotified.add(revision);
+    return prompt.render(deadlineMissInstructions, { late, rows: causes.map(row => `${JSON.stringify(row.content)} (slack ${row.totalFloatSeconds === undefined ? "unknown" : `${Math.floor(row.totalFloatSeconds / 60)}m`}, deadline slack ${row.expectedResourceFinish === undefined || forecast.deadlineAt === undefined ? "unknown" : `${Math.floor((forecast.deadlineAt - row.expectedResourceFinish) / 60_000)}m`})`).join(", ") }).trim();
+  }
+  
   const red = (decision.forecast?.rows ?? []).filter(row =>
     isNonClosedRowStatus(row.status) && !row.waitsForUser && !running.has(row.content) &&
-    (row.overdue || (risk && row.critical) || (!row.owner && row.startedAt !== undefined)),
+    (!row.schedule?.postDeadline && !row.owner && row.startedAt !== undefined),
   );
-  const preview = previewRows.filter(row => row.status === "in_progress").filter(row => {
+  const preview = previewRows.filter(row => !row.schedule?.postDeadline && row.status === "in_progress").filter(row => {
     const key = `${row.content}\0${row.schedule?.estimateRevision ?? 0}`;
     if (previewNotified.has(key)) return false;
     previewNotified.add(key);
