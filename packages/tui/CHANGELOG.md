@@ -47,7 +47,7 @@
 
 ### Fixed
 
-- Status bar titles follow the active TODO phase or current goal.
+- Status bar titles follow the active TODO phase or current goal ([#165](https://github.com/Komzpa/oh-my-pi/pull/165) by [@Komzpa](https://github.com/Komzpa)).
 - Tern's classic renderer draws inline images (table charts included) as Kitty Unicode placeholders, so text that replaces an image's cells removes the image instead of leaving a stale copy over the table while an answer streams or the pane resizes
 - The native composer's first frame shows the cached thinking level on the model chip (or effort chip) instead of the plain model icon until the session attaches
 - Clicking the popup of an enum setting with many values (Edit Mode, Session Tree Filter, Advisor Sync Backlog) on a native settings page opens its menu instead of doing nothing
