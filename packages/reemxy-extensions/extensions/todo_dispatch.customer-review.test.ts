@@ -60,7 +60,30 @@ test("evidence-based remaining work may be shorter than full-task profile median
   expect(estimateFloorRefusal([{ ...update, evidence: undefined }], rows, floors, now)).toContain("below 15m");
   const earlyRow = estimateRow("Early panel", { startedAt: now - 4 * 60_000 });
   const early = forecastTodoPlan([{ name: "Work", tasks: [earlyRow] }], { now }).rows;
-  expect(estimateFloorRefusal([{ ...update, task: earlyRow.content }], early, floors, now)).toContain("below 11m");
+  // A running attempt's evidenced remaining time is accepted however early it is.
+  expect(estimateFloorRefusal([{ ...update, task: earlyRow.content }], early, floors, now)).toBeUndefined();
+  // Negative control: a new attempt (not yet started) is still floored even with evidence.
+  const freshRow = { ...estimateRow("New panel attempt", { startedAt: undefined, executor: undefined }), status: "pending" };
+  const fresh = forecastTodoPlan([{ name: "Work", tasks: [freshRow] }], { now }).rows;
+  expect(estimateFloorRefusal([{ ...update, task: "New panel attempt" }], fresh, floors, now)).toContain("below 15m");
+});
+
+// Live DC 2026-11-05: "Refusing todo schedule for 'Locale-independent decimal parsing': likely 2m is
+// below 27m; floor 27m ... previous attempt took 27m" while the row's worker ran its last step.
+test("a remaining-time update on a running attempt with progress evidence is not floored", () => {
+  const floors = successfulDurationFloors(Array.from({ length: 5 }, () => JSON.stringify({ kind: "outcome", agent: "coder", status: "completed", durationMs: 600_000 })));
+  const content = "Locale-independent decimal parsing on input and paste (07)";
+  const attemptHistory = [{ attemptId: "ParseDecimalsAnyLocale", durationMs: 27 * 60_000, terminalStatus: "failed" }];
+  const running = estimateRow(content, { startedAt: now - 40 * 60_000, attemptHistory, executor: { workerId: "DoItemsOnConsolidated", agentProfile: "coder", startedAt: now - 40 * 60_000 } });
+  const rows = forecastTodoPlan([{ name: "Work", tasks: [running] }], { now }).rows;
+  const live = { task: content, owner: "DoItemsBrowserProof", evidence: "cb4b8269 tsc 0 lint 0 78 unit cases; browser proof inside row 41", estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 300, confidence: "medium", basis: "Code is committed at cb4b8269. The row closes on the proof row's receipt." } };
+  expect(estimateFloorRefusal([live], rows, floors, now)).toBeUndefined();
+  // Without progress evidence the same update is still floored.
+  expect(estimateFloorRefusal([{ ...live, evidence: undefined }], rows, floors, now)).toContain("previous attempt took 27m");
+  // Negative control: once the executor finished, the next estimate is a new attempt and is floored.
+  const finished = estimateRow(content, { startedAt: now - 40 * 60_000, attemptHistory, executor: { workerId: "DoItemsOnConsolidated", agentProfile: "coder", startedAt: now - 40 * 60_000, finishedAt: now - 60_000, outcome: "failed" } });
+  const retryRows = forecastTodoPlan([{ name: "Work", tasks: [finished] }], { now }).rows;
+  expect(estimateFloorRefusal([live], retryRows, floors, now)).toContain("below 27m");
 });
 
 test("retry uses the previous attempt's measured duration, not a multiplied estimate", () => {

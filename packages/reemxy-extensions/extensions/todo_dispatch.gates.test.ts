@@ -2872,7 +2872,10 @@ test("an overdue row's evidence-backed reestimate still meets the measured previ
   }));
   expect(accepted).toBeUndefined();
 
-  const bare = await slipCall([row], jobs, reestimateCall("Record scene inputs", {
+  // A new attempt (the previous executor finished) is still floored by the measured attempt.
+  const retry = structuredClone(row);
+  retry.schedule.executor = { workerId: "EvidenceOwner", startedAt: stale, finishedAt: stale + 60_000, outcome: "failed" };
+  const bare = await slipCall([retry], jobs, reestimateCall("Record scene inputs", {
     evidence: "Only evidence, estimate remains below the floor.",
   }));
   expect(bare?.block).toBe(true);

@@ -641,11 +641,14 @@ export function estimateFloorRefusal(updates: readonly Record<string, unknown>[]
     // evidenced re-estimate for work already underway measures what remains;
     // applying the whole-attempt floor again would double-count elapsed work.
     const elapsedMs = typeof row.startedAt === "number" ? Math.max(0, now - row.startedAt) : 0;
-    const hasRemainingEvidence = row.status === "in_progress" && elapsedMs > 0
-      && typeof update.evidence === "string" && update.evidence.trim().length > 0
-      && typeof estimate.basis === "string" && /\bremaining\b/i.test(estimate.basis);
+    // The floor bounds the estimate of a NEW attempt only. A row already in progress whose current
+    // executor has not finished is a running attempt: an evidenced update on it states the time that
+    // remains, and is accepted as given (decided from row state, not from the basis wording).
+    const runningAttempt = row.status === "in_progress" && elapsedMs > 0 && row.schedule?.executor?.finishedAt === undefined;
+    const progressUpdate = runningAttempt && typeof update.evidence === "string" && update.evidence.trim().length > 0;
+    if (progressUpdate) continue;
     const fullAttemptFloor = Math.max(sampleMedian ?? 0, attemptFloor);
-    const floorMs = hasRemainingEvidence ? Math.max(0, fullAttemptFloor - elapsedMs) : fullAttemptFloor;
+    const floorMs = fullAttemptFloor;
     const floorSource = sampleMedian === undefined
       ? `all profiles (successful outcomes, n=${samples.length})`
       : profileSamples?.length
