@@ -182,19 +182,31 @@ function readShellSubstitution(command: string, start: number, depth = 0): { end
 }
 
 /** Heredoc text has no quoting syntax: only backslash, $, and backticks are special. */
-export function shellHereDocumentSubstitutions(body: string): string[] {
-	const substitutions: string[] = [];
+export function expandShellHereDocument(body: string, substitute: (command: string) => string | undefined): string {
+	let expanded = "";
 	for (let i = 0; i < body.length; i++) {
 		if (body[i] === "\\" && /[\\$`\n]/u.test(body[i + 1] ?? "")) {
+			if (body[i + 1] !== "\n") expanded += body[i + 1];
 			i++;
 			continue;
 		}
-		if (body[i] !== "$" && body[i] !== "`") continue;
-		const substitution = readShellSubstitution(body, i);
-		if (!substitution) continue;
-		substitutions.push(substitution.body);
+		const substitution = body[i] === "$" || body[i] === "`" ? readShellSubstitution(body, i) : undefined;
+		if (!substitution) {
+			expanded += body[i];
+			continue;
+		}
+		expanded += substitute(substitution.body) ?? body.slice(i, substitution.end);
 		i = substitution.end - 1;
 	}
+	return expanded;
+}
+
+export function shellHereDocumentSubstitutions(body: string): string[] {
+	const substitutions: string[] = [];
+	expandShellHereDocument(body, command => {
+		substitutions.push(command);
+		return undefined;
+	});
 	return substitutions;
 }
 
@@ -272,7 +284,11 @@ export function tokenizeShellExecutionSegments(command: string): ShellExecutionS
  * quote/escape-removed word, `raw` its verbatim spelling; separators are runs of spaces, tabs, and
  * the operator characters `\n ; & | ( )`.
  */
-export function lexShellCommand(command: string, hereDocuments = false): ShellToken[] {
+export function lexShellCommand(
+	command: string,
+	hereDocuments = false,
+	substitute?: (command: string) => string | undefined,
+): ShellToken[] {
 	const tokens: ShellToken[] = [];
 	const pending: PendingShellHereDocument[] = [];
 	let value = "";
@@ -335,7 +351,9 @@ export function lexShellCommand(command: string, hereDocuments = false): ShellTo
 			const substitution = readShellSubstitution(command, i);
 			if (substitution) {
 				startWord(i);
-				value += command.slice(i, substitution.end);
+				value +=
+					(ch === "$" || ch === "`" ? substitute?.(substitution.body) : undefined) ??
+					command.slice(i, substitution.end);
 				dynamic = true;
 				substitutions.push(substitution.body);
 				i = substitution.end - 1;
@@ -953,9 +971,13 @@ export function extractLeadingCdTarget(command: string): { path: string; rest: s
  * escaped instance of the closing delimiter.
  *
  * Returns `undefined` when `text` is empty or all leading whitespace, and
- * `"unterminated"` for an unclosed quote.
+ * `"unterminated"` for an unclosed quote. xargs mode preserves logical line
+ * boundaries and rejects unescaped newlines inside quotes.
  */
-export function readShellWord(text: string): { value: string; rest: string } | "unterminated" | undefined {
+export function readShellWord(
+	text: string,
+	mode: "shell" | "xargs" = "shell",
+): { value: string; rest: string } | "unterminated" | undefined {
 	let i = 0;
 	while (i < text.length && /[ \t\n\r]/.test(text[i])) i++;
 	if (i >= text.length) return undefined;
@@ -965,6 +987,7 @@ export function readShellWord(text: string): { value: string; rest: string } | "
 	let inDouble = false;
 	for (; i < text.length; i++) {
 		const ch = text[i];
+		if (mode === "xargs" && ch === "\n" && (inSingle || inDouble)) return "unterminated";
 		if (inSingle) {
 			if (ch === "'") {
 				inSingle = false;
@@ -1006,5 +1029,5 @@ export function readShellWord(text: string): { value: string; rest: string } | "
 		value += ch;
 	}
 	if (inSingle || inDouble) return "unterminated";
-	return { value, rest: text.slice(i).trim() };
+	return { value, rest: mode === "xargs" ? text.slice(i) : text.slice(i).trim() };
 }

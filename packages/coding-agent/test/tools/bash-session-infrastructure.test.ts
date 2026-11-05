@@ -291,6 +291,78 @@ const allowed = [
 ];
 
 describe("bash session infrastructure default denies", () => {
+	it("inspects reconstructed substitution output at shell stdin without treating data as execution", async () => {
+		const denied = [
+			`sh <<< "$(printf 'killall plasmashell')"`,
+			"sh <<EOF\n$(printf 'killall plasmashell')\nEOF",
+			"sh <<EOF\n`printf 'killall plasmashell'`\nEOF",
+			`sh <<< "$(printf 'killall ')$(printf 'plasmashell\\n\\n')"`,
+			`cat <<< "$(killall plasmashell)"`,
+			"cat <<EOF\n$(killall plasmashell)\nEOF",
+			"cat <<EOF <<'LAST'\n$(killall plasmashell)\nEOF\nsafe\nLAST",
+		];
+		for (const command of denied) {
+			expect(bashTool().approval({ command }), command).toMatchObject({ policy: "deny" });
+			await expect(bashTool().execute("substitution-stdin-refusal", { command })).rejects.toThrow(refusal);
+		}
+		for (const command of [
+			`cat <<< "$(printf 'killall plasmashell')"`,
+			"cat <<EOF\n$(printf 'killall plasmashell')\nEOF",
+			"cat <<'EOF'\n$(printf 'killall plasmashell')\nEOF",
+			"cat <<'EOF'\n$(killall plasmashell)\nEOF",
+			`sh <<< "$(printf 'echo plasmashell')"`,
+		]) {
+			const decision = bashTool().approval({ command });
+			expect(typeof decision === "object" && decision.policy === "deny", command).toBe(false);
+		}
+	});
+
+	it("inspects every xargs line batch with option precedence and quoted-data controls", async () => {
+		const input = `printf "'echo safe'\\n'killall plasmashell'\\n"`;
+		const denied = [
+			`${input} | xargs -L1 sh -c`,
+			`${input} | xargs -L 1 sh -c`,
+			`${input} | xargs --max-lines=1 sh -c`,
+			`${input} | xargs --max-lines 1 sh -c`,
+			`${input} | xargs -n2 -L1 sh -c`,
+			`${input} | xargs -I{} -L1 sh -c`,
+			`${input} | xargs -L2 -n1 sh -c`,
+			`${input} | xargs -I{} -n1 sh -c {}`,
+			`${input} | xargs -n2 -I{} sh -c {}`,
+			`printf 'echo safe\\0killall plasmashell\\0' | xargs -0 -L1 sh -c`,
+			`printf "'echo safe'\\n\\n'echo other'\\n'killall plasmashell'\\n" | xargs -L2 sh -c`,
+		];
+		for (const command of denied) {
+			expect(bashTool().approval({ command }), command).toMatchObject({ policy: "deny" });
+			await expect(bashTool().execute("xargs-lines-refusal", { command })).rejects.toThrow(refusal);
+		}
+		for (const command of [
+			`${input} | xargs -L1 -n2 sh -c`,
+			`${input} | xargs -L2 sh -c`,
+			`${input} | xargs -L1 -I{} -n2 sh -c {}`,
+			`${input} | xargs -L1 -I{} echo {}`,
+			`${input} | xargs -L1 echo`,
+			`printf "'echo safe' \\n'killall plasmashell'\\n" | xargs -L1 sh -c`,
+			`printf "'echo safe\\nkillall plasmashell'\\n" | xargs -L1 sh -c`,
+			`printf 'echo safe\\nkillall plasmashell\\0' | xargs -0 -L1 echo`,
+		]) {
+			const decision = bashTool().approval({ command });
+			expect(typeof decision === "object" && decision.policy === "deny", command).toBe(false);
+		}
+	});
+
+	it("runs reconstructed safe stdin and separate xargs line consumers", async () => {
+		for (const [command, expected] of [
+			["sh <<EOF\n$(printf 'printf reconstructed-stdin')\nEOF", "reconstructed-stdin"],
+			[`printf "'printf first-line'\\n'printf second-line'\\n" | xargs -L1 sh -c`, "first-linesecond-line"],
+			[`printf "'printf first-line'\\n'printf second-line'\\n" | xargs -L1 -n2 sh -c 2>/dev/null`, "first-line"],
+		]) {
+			const result = await bashTool().execute("safe-stdin-control", { command });
+			const text = result.content.map(part => (part.type === "text" ? part.text : "")).join("");
+			expect(text).toBe(expected);
+		}
+	});
+
 	it("retains group pipe input until a command consumes it", () => {
 		for (const command of [
 			"printf 'killall plasmashell\\n' | (true; sh)",

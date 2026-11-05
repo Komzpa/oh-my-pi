@@ -53,6 +53,8 @@ import { outputMeta, resolveInlineByteCapBudget } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
 import {
 	decodeShellEscapes,
+	expandShellHereDocument,
+	lexShellCommand,
 	extractLeadingCdTarget,
 	extractLiteralAndChainSegments,
 	type LiteralShellCommandSegment,
@@ -370,6 +372,7 @@ function xargsInvocations(
 	maxArgs?: number,
 	eof?: string,
 	noRunIfEmpty = false,
+	maxLines?: number,
 ): string[][] {
 	if (input === undefined) return [args];
 	if (delimiter === undefined && eof) {
@@ -378,19 +381,34 @@ function xargsInvocations(
 		if (end >= 0) input = lines.slice(0, end).join("\n");
 	}
 	const values: string[] = [];
-	if (delimiter !== undefined)
+	const lineEnds: number[] = [];
+	if (delimiter !== undefined) {
 		values.push(...input.split(delimiter).filter((value, i, all) => value !== "" || i < all.length - 1));
-	else {
+		lineEnds.push(...values.map((_, index) => index + 1));
+	} else {
 		let rest = input;
 		while (rest) {
-			const word = readShellWord(rest);
+			const word = readShellWord(rest, "xargs");
 			if (!word || word === "unterminated") break;
 			values.push(word.value);
+			// A newline after trailing blanks continues the logical input line.
+			if (word.rest.startsWith("\n")) lineEnds.push(values.length);
 			rest = word.rest;
 		}
 	}
 	if (values.length === 0 && !replacement) return noRunIfEmpty ? [] : [args];
 	if (!replacement) {
+		if (maxLines && maxLines > 0) {
+			if (lineEnds.at(-1) !== values.length) lineEnds.push(values.length);
+			const commands: string[][] = [];
+			let start = 0;
+			for (let line = 0; line < lineEnds.length; line += maxLines) {
+				const end = lineEnds[Math.min(line + maxLines, lineEnds.length) - 1];
+				commands.push([...args, ...values.slice(start, end)]);
+				start = end;
+			}
+			return commands;
+		}
 		if (!maxArgs || maxArgs < 1) return [[...args, ...values]];
 		const commands: string[][] = [];
 		for (let i = 0; i < values.length; i += maxArgs) commands.push([...args, ...values.slice(i, i + maxArgs)]);
@@ -534,10 +552,16 @@ function targetsSessionInfrastructure(
 		// pipeline within that group uses a separate descriptor for its stage.
 		const input = pipedStdin && !openedGroup ? { value: pipelineOutput } : inheritedInput;
 		const streams = new Map<string, string>();
+		const substitutionOutputs = new Map<string, string>();
 		for (const word of words) {
-			for (const substitution of word.substitutions ?? []) {
+			const substitutions =
+				word.hereDocument && !word.hereDocument.quoted
+					? shellHereDocumentSubstitutions(word.hereDocument.body)
+					: (word.substitutions ?? []);
+			for (const substitution of substitutions) {
 				const stream: { value?: string } = {};
 				if (targetsSessionInfrastructure(substitution, depth + 1, undefined, stream)) return true;
+				if (stream.value !== undefined) substitutionOutputs.set(substitution, stream.value.replace(/\n+$/u, ""));
 				if (word.value === `<(${substitution})` && stream.value !== undefined)
 					streams.set(word.value, stream.value);
 			}
@@ -548,12 +572,22 @@ function targetsSessionInfrastructure(
 		if (input.value !== undefined) inputSources.set(0, input.value);
 		const executableWords = words.filter((word, i) => {
 			if (word.hereDocument) {
-				inputSources.set(word.hereDocument.fd, word.hereDocument.body);
+				inputSources.set(
+					word.hereDocument.fd,
+					word.hereDocument.quoted
+						? word.hereDocument.body
+						: expandShellHereDocument(word.hereDocument.body, command => substitutionOutputs.get(command)),
+				);
 				return false;
 			}
 			if (word.redirection) {
 				const { operator, fd } = word.redirection;
-				const target = words[i + 1]?.value ?? "";
+				const operand = words[i + 1];
+				const expanded =
+					operator === "<<<" && operand
+						? lexShellCommand(operand.raw, true, command => substitutionOutputs.get(command))[0]
+						: undefined;
+				const target = expanded?.kind === "word" ? expanded.value : (operand?.value ?? "");
 				const source =
 					operator === "<<<"
 						? target
@@ -590,6 +624,7 @@ function targetsSessionInfrastructure(
 				let replacement: string | undefined;
 				let delimiter: string | undefined;
 				let maxArgs: number | undefined;
+				let maxLines: number | undefined;
 				let eof: string | undefined;
 				let noRunIfEmpty = false;
 				let input = inputSources.get(0);
@@ -614,6 +649,20 @@ function targetsSessionInfrastructure(
 										? option.slice(11)
 										: option.slice(2),
 							);
+							maxLines = undefined;
+							if (maxArgs !== 1) replacement = undefined;
+							continue;
+						}
+						if (option.startsWith("-L") || option === "--max-lines" || option.startsWith("--max-lines=")) {
+							maxLines = Number(
+								option === "-L" || option === "--max-lines"
+									? tokens[start++]
+									: option.startsWith("--")
+										? option.slice(12)
+										: option.slice(2),
+							);
+							maxArgs = undefined;
+							replacement = undefined;
 							continue;
 						}
 						if (option === "-E") {
@@ -627,8 +676,11 @@ function targetsSessionInfrastructure(
 						if (option === "-0" || option === "--null") delimiter = "\0";
 						if (option === "-I" || option === "-d") {
 							const value = tokens[start++];
-							if (option === "-I") replacement = value;
-							else delimiter = decodeShellEscapes(value ?? "");
+							if (option === "-I") {
+								replacement = value;
+								maxArgs = undefined;
+								maxLines = undefined;
+							} else delimiter = decodeShellEscapes(value ?? "");
 							continue;
 						}
 						if (option.startsWith("-I")) replacement = option.slice(2);
@@ -640,6 +692,10 @@ function targetsSessionInfrastructure(
 						if (option === "--delimiter") {
 							delimiter = decodeShellEscapes(tokens[start++] ?? "");
 							continue;
+						}
+						if (option.startsWith("-I") || option.startsWith("-i") || option.startsWith("--replace")) {
+							maxArgs = undefined;
+							maxLines = undefined;
 						}
 						if (/^(?:-a|--arg-file)/u.test(option)) input = undefined;
 					}
@@ -678,6 +734,7 @@ function targetsSessionInfrastructure(
 						maxArgs,
 						eof,
 						noRunIfEmpty,
+						maxLines,
 					)) {
 						const child = quotePosixArgv(argv.length ? argv : ["echo"]);
 						if (targetsSessionInfrastructure(child, depth + 1)) return true;
@@ -702,16 +759,6 @@ function targetsSessionInfrastructure(
 		const shellOutput: { value?: string } = {};
 		for (const payload of invocation.payloads) {
 			if (targetsSessionInfrastructure(payload, depth + 1, stdinPayload, shellOutput)) return true;
-		}
-		const documents = words.flatMap(word => (word.hereDocument ? [word.hereDocument] : []));
-		for (const document of documents) {
-			// Every unquoted document expands, including superseded redirects and
-			// non-stdin descriptors. Bare text is code only for a shell reading stdin.
-			if (!document.quoted) {
-				for (const substitution of shellHereDocumentSubstitutions(document.body)) {
-					if (targetsSessionInfrastructure(substitution, depth + 1)) return true;
-				}
-			}
 		}
 		if (
 			invocation.stdin &&
