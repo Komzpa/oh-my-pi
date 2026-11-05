@@ -1,7 +1,7 @@
 // @ts-nocheck -- extension runtime fixtures follow the host's forecast contract.
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import storedRows from "./fixtures/settled-dc-rows.json";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -159,11 +159,11 @@ test("completed executor can hand off a visible user preview; review label alone
 
 // Replay the 2026-11-06 DC wait boundary, including session-file liveness.
 test("DC lead waits on both overdue executors, refuses missing or stalled workers, and cannot stop", async () => {
-  const cwd = mkdtempSync(join(process.cwd(), ".tmp", "waitgate-"));
+  const cwd = fs.mkdtempSync(path.join(process.cwd(), ".tmp", "waitgate-"));
   const now = Date.now();
-  const session = join(cwd, "lead.jsonl");
-  const childDir = join(cwd, "lead");
-  mkdirSync(childDir);
+  const session = path.join(cwd, "lead.jsonl");
+  const childDir = path.join(cwd, "lead");
+  fs.mkdirSync(childDir);
   const owners = ["UnionGate-3", "CleanupRigor"];
   const titles = ["Use grid: row opens explainer panel, small inline toggle", "Repo cleanup round 2: rigorous keep/remove rule"];
   const phases = [{ name: "DC", tasks: titles.map((content, i) => ({ content, status: "in_progress", schedule: {
@@ -193,7 +193,7 @@ test("DC lead waits on both overdue executors, refuses missing or stalled worker
     isIdle: () => true, hasPendingMessages: () => false, setTimeout: () => ({}), clearTimer: () => undefined,
   };
   try {
-    for (const id of owners) writeFileSync(join(childDir, `${id}.jsonl`), '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash"}]}}\n');
+    for (const id of owners) fs.writeFileSync(path.join(childDir, `${id}.jsonl`), '{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash"}]}}\n');
     await todoDispatch(api);
     const wait = () => handlers.get("tool_call")({ toolName: "wait", input: {} }, ctx);
     expect((await wait())?.block).not.toBe(true);
@@ -208,14 +208,14 @@ test("DC lead waits on both overdue executors, refuses missing or stalled worker
     expect((await wait())?.block).toBe(true);
     jobs = { running: allJobs, recent: [] };
     const stale = new Date(now - 16 * 60_000);
-    utimesSync(join(childDir, "CleanupRigor.jsonl"), stale, stale);
+    fs.utimesSync(path.join(childDir, "CleanupRigor.jsonl"), stale, stale);
     expect((await wait())?.block).toBe(true);
     const fresh = new Date();
-    utimesSync(join(childDir, "CleanupRigor.jsonl"), fresh, fresh);
+    fs.utimesSync(path.join(childDir, "CleanupRigor.jsonl"), fresh, fresh);
     expect((await wait())?.block).not.toBe(true);
     expect(deadline).toEqual(originalDeadline);
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
-    rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 });
