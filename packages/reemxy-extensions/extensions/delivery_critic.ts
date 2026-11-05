@@ -29,7 +29,12 @@ export function parseDeliveryVerdict(output: unknown): DeliveryVerdict | undefin
 		return;
 	if (value.verdict !== "clean" && value.verdict !== "defects") return;
 	const findings: Finding[] = [];
+	let ignoredThinInput = false;
 	for (const finding of value.findings) {
+		if (finding?.kind === "thin_input") {
+			ignoredThinInput = true;
+			continue;
+		}
 		if (
 			!finding ||
 			typeof finding !== "object" ||
@@ -40,6 +45,8 @@ export function parseDeliveryVerdict(output: unknown): DeliveryVerdict | undefin
 			return;
 		findings.push(finding);
 	}
+	if (value.verdict === "defects" && findings.length === 0 && ignoredThinInput)
+		return { verdict: "clean", findings: [] };
 	if ((value.verdict === "clean") !== (findings.length === 0)) return;
 	return { verdict: value.verdict, findings };
 }
