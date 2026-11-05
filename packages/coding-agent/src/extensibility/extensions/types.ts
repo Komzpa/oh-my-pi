@@ -762,16 +762,21 @@ export interface ExtensionLiveSession {
 }
 
 export interface ExtensionContext {
+	/** Launch the delivery critic through the native task pool. */
+	runDeliveryCritic?(task: string, signal?: AbortSignal): Promise<AgentToolResult>;
 	getTodoPreviewConfig?(): { openReviewPages?: boolean; enabled: boolean; paths: string[]; thresholdMinutes: number };
 	/** Current hydrated plan, without replaying the session journal. Undefined before session initialization. */
 	getTodoPhases?(): TodoPhase[] | undefined;
-	/** Merge a schedule annotation into one exact row and append its durable snapshot. Never changes task status or attempt history. */
+	/** Merge a schedule annotation into one exact row and append its durable snapshot. Critic redo reopens its row; attempt history is preserved. */
 	updateTodoSchedule?(
 		task: string,
 		patch: Pick<
 			TodoSchedule,
 			| "review"
 			| "reviewSummary"
+			| "deliveryCritic"
+			| "handoffPending"
+			| "progress"
 			| "reviewPagePending"
 			| "firstRequirementAt"
 			| "firstDeliveredAt"

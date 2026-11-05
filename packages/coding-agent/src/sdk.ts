@@ -3795,6 +3795,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				if (matches.length !== 1) return false;
 				const row = matches[0];
 				row.schedule = { ...row.schedule, ...structuredClone(patch) };
+				if (patch.deliveryCritic?.verdict === "defects" && patch.review === "redo") {
+					row.status = "pending";
+					row.blocker = undefined;
+				}
 				// The callback merges into fresh hydrated state synchronously. A canonical
 				// append-only snapshot keeps extension annotations on the normal resume path.
 				sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });

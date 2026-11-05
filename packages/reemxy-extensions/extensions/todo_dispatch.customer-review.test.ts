@@ -197,7 +197,7 @@ test("user accept resolves review and demands fast publication of the dependent 
   expect(harness.sent.some((message) => String(message.content).includes("NEXT ACTION: fast merge/publish"))).toBe(true);
 });
 
-async function reviewHookHarness(initialPhases: unknown, jobs: unknown, branchEntries: unknown[] = [], finalText = "The worker finished.") {
+async function reviewHookHarness(initialPhases: unknown, jobs: unknown, branchEntries: unknown[] = [], finalText = "The worker finished.", options = {}) {
   let phases = initialPhases;
   const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
   const sent: Array<Record<string, unknown>> = [];
@@ -210,7 +210,7 @@ async function reviewHookHarness(initialPhases: unknown, jobs: unknown, branchEn
     sendMessage: (message: Record<string, unknown>) => sent.push(message),
     pi: { ...sdk, agentPauseGate: { paused: false } },
   };
-  await todoDispatch(api as never);
+  await todoDispatch(api as never, options);
   const ctx = {
     cwd: process.cwd(),
     sessionManager: {
@@ -665,4 +665,27 @@ test("published user-review row dispatches a speculative redo", async () => {
   expect((await harness.handlers.get("tool_call")({ toolName: "task", input }, harness.ctx))?.block).not.toBe(true);
   expect(input.tasks[0].task).toContain("SPECULATIVE");
   expect(harness.phases()[0].tasks[0].schedule.speculativeOn).toBe(row.content);
+});
+
+
+test("runtime completion queues one delivery critic before the batch and clean releases it", async () => {
+  const deferred = Promise.withResolvers();
+  const records = [];
+  const row = { content: "Rack tiles fit panel height at 1568, no scrollbar", status: "completed", schedule: {
+    owner: "RackInputHeight-2", executor: { workerId: "RackInputHeight-2", startedAt: now - 5000, finishedAt: now, outcome: "completed",
+    gitCommits: [{ commit: "a".repeat(40), repoPath: "/project" }] }, dependencies: [] } };
+  const harness = await reviewHookHarness([{ name: "Final handoff", tasks: [row] }], { running: [], recent: [] }, [], "", { deliveryCriticRecord: async (_row, verdict) => { records.push(verdict); } });
+  let spawns = 0;
+  harness.ctx.runDeliveryCritic = () => { spawns++; return deferred.promise; };
+  const event = { toolName: "task", toolCallId: "rack-done", details: { results: [{ id: "RackInputHeight-2", status: "completed", output: "Rack controls delivered" }] } };
+  await harness.handlers.get("tool_result")(event, harness.ctx);
+  await harness.handlers.get("tool_result")(event, harness.ctx);
+  expect(spawns).toBe(1);
+  expect(harness.phases()[0].tasks[0].schedule.review).toBeUndefined();
+  expect(harness.phases()[0].tasks[0].schedule.handoffPending).toBe(false);
+  expect(harness.sent.some(message => String(message.content).startsWith("Handoff required:"))).toBe(false);
+  deferred.resolve({ details: { results: [{ output: JSON.stringify({ verdict: "clean", findings: [] }) }] } });
+  await deferred.promise; await Bun.sleep(0);
+  expect(harness.phases()[0].tasks[0].schedule.handoffPending).toBe(true);
+  expect(records).toEqual([{ verdict: "clean", findings: [] }]);
 });
