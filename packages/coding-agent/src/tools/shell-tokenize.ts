@@ -243,7 +243,8 @@ export function tokenizeShellExecutionSegments(command: string): { words: ShellW
 		else if (/[\n;&|()]/.test(token.raw) && current.length > 0) {
 			segments.push({ words: current, pipedStdin });
 			current = [];
-			pipedStdin = /^\s*\|&?\s*$/u.test(token.raw);
+			// Grouping does not disconnect a pipe from its first command.
+			pipedStdin = /^\s*\|&?\s*$/u.test(token.raw.replace(/[()]/gu, ""));
 		}
 	}
 	if (current.length > 0) segments.push({ words: current, pipedStdin });

@@ -515,7 +515,8 @@ function targetsSessionInfrastructure(
 	if (depth > SESSION_MAX_PAYLOAD_DEPTH) return true;
 	const segments = tokenizeShellExecutionSegments(command);
 	let pipelineOutput: string | undefined;
-	for (const { words, pipedStdin } of segments) {
+	let stdout: string | undefined = "";
+	for (const [index, { words, pipedStdin }] of segments.entries()) {
 		const streams = new Map<string, string>();
 		for (const word of words) {
 			for (const substitution of word.substitutions ?? []) {
@@ -724,15 +725,20 @@ function targetsSessionInfrastructure(
 			(invocation.stdin || (executable === "cat" && (args.length === 0 || args.includes("-"))))
 		)
 			stdin = undefined;
-		pipelineOutput =
-			executableWords.some(word => word.dynamic && !streams.has(word.value)) ||
-			words.some(word => word.redirection?.fd === 1)
+		pipelineOutput = words.some(word => word.redirection?.fd === 1)
+			? ""
+			: executableWords.some(word => word.dynamic && !streams.has(word.value))
 				? undefined
 				: invocation.payloads.length || invocation.stdin
 					? shellOutput.value
 					: shellLiteralOutput(executable, args, stdinPayload, streams);
+		// Only the last stage writes to the enclosing shell's stdout; separate
+		// commands append to that stream rather than replacing earlier output.
+		if (!segments[index + 1]?.pipedStdin) {
+			stdout = stdout !== undefined && pipelineOutput !== undefined ? stdout + pipelineOutput : undefined;
+		}
 	}
-	if (output) output.value = pipelineOutput;
+	if (output) output.value = stdout;
 	return false;
 }
 

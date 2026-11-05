@@ -288,6 +288,39 @@ const allowed = [
 ];
 
 describe("bash session infrastructure default denies", () => {
+	it("refuses protected scripts assembled by sequential nested stdout", () => {
+		for (const command of [
+			`sh -c "printf 'killall '; printf plasmashell" | sh`,
+			`sh -c "printf 'killall '; printf plasmashell" | cat | sh`,
+		]) {
+			expect(bashTool().approval({ command })).toMatchObject({ policy: "deny" });
+		}
+		for (const command of [
+			`sh -c "printf 'killall '; printf plasmashell" | cat`,
+			`sh -c "printf 'echo '; printf plasmashell" | sh`,
+			`sh -c "printf 'killall ' | cat >/dev/null; printf plasmashell" | sh`,
+		]) {
+			const decision = bashTool().approval({ command });
+			expect(typeof decision === "object" && decision.policy === "deny").toBe(false);
+		}
+	});
+	it("preserves literal stdin for grouped pipeline consumers", () => {
+		for (const command of [
+			"printf 'killall plasmashell\\n' | (sh)",
+			"printf 'killall plasmashell\\n' | ((sh))",
+			"printf 'killall plasmashell\\n' | (cat) | sh",
+		]) {
+			expect(bashTool().approval({ command })).toMatchObject({ policy: "deny" });
+		}
+		for (const command of [
+			"printf 'killall plasmashell\\n' | (cat)",
+			"printf 'killall plasmashell\\n' | (sh </dev/null)",
+			"printf 'echo plasmashell\\n' | (sh)",
+		]) {
+			const decision = bashTool().approval({ command });
+			expect(typeof decision === "object" && decision.policy === "deny").toBe(false);
+		}
+	});
 	it("classifies review payloads without executing them", () => {
 		const cases: Array<[string, boolean]> = [
 			["printf '' | xargs -n1 killall plasmashell", true],
