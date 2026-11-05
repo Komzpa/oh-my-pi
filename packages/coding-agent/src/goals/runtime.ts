@@ -319,7 +319,10 @@ export class GoalRuntime {
 			this.#wallClock.activeGoalId === state.goal.id
 				? Math.max(0, Math.floor((this.#now() - this.#wallClock.lastAccountedAt) / 1000))
 				: 0;
-		if (tokenDelta <= 0 && wallSeconds <= 0) return;
+		if (tokenDelta <= 0 && wallSeconds <= 0) {
+			if (persistWallClock) await this.#commitState(state, { persist: "goal" });
+			return;
+		}
 
 		state.goal.tokensUsed += tokenDelta;
 		state.goal.timeUsedSeconds += wallSeconds;

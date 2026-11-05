@@ -195,6 +195,16 @@ describe("goal runtime", () => {
 		});
 	});
 
+	it("persists elapsed usage consumed by agent-end before interruption", async () => {
+		const harness = createHarness({ state: { enabled: true, mode: "active", goal: createGoal() } });
+		harness.runtime.onTurnStart("turn-1", createUsage());
+		harness.advance(2_500);
+		await harness.runtime.onAgentEnd();
+		expect(harness.persists).toHaveLength(0);
+		await harness.runtime.onTaskAborted({ reason: "interrupted" });
+		expect(harness.persists.at(-1)).toMatchObject({ mode: "goal", state: { goal: { timeUsedSeconds: 2 } } });
+	});
+
 	it("resets wall-clock baseline when preserving an active goal after a no-goal switch", async () => {
 		const goal = createGoal();
 		const harness = createHarness({

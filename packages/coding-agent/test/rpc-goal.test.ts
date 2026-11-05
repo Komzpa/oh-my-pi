@@ -575,6 +575,22 @@ describe("RpcGoalController continuation gate", () => {
 		expect(admitted).toEqual(["goal-continuation"]);
 	});
 
+	test("resume waits for queued turns but starts when the queue is clear", async () => {
+		const admitted: string[] = [];
+		const { session, controller } = fakeSession(async customType => {
+			admitted.push(customType);
+			return true;
+		});
+		session.queuedMessageCount = 1;
+		await controller.handle({ op: "resume" });
+		await nextMacrotask();
+		expect(admitted).toEqual([]);
+		session.queuedMessageCount = 0;
+		await controller.handle({ op: "resume" });
+		await nextMacrotask();
+		expect(admitted).toEqual(["goal-continuation"]);
+	});
+
 	test("a host abort of a continuation turn that ran a tool admits no further continuation", async () => {
 		const admitted: string[] = [];
 		const { controller } = fakeSession(async customType => {

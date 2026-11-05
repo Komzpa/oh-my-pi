@@ -1365,6 +1365,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#abortInProgress = false;
 	/** Forced sends still unwinding, including while their pending agent_end is flushed. */
 	#forcedQueuedMessageDeliveryCount = 0;
+	#goalContinuationInterrupted = false;
 	/** In-flight {@link abort} calls; each settles after scheduling its stranded-queue drain, which {@link waitForIdle} must observe. */
 	#abortUnwinds = new Set<Promise<void>>();
 	/** Submissions accepted by prompt()/promptCustomMessage()/sendCustomMessage() that have not
@@ -7147,6 +7148,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		void prewarmModelConnection(model);
 	}
 
+	/** User interruption holds autonomous goal turns until explicit host input. */
+	get goalContinuationInterrupted(): boolean {
+		return this.#goalContinuationInterrupted;
+	}
+
+	resumeGoalContinuation(): void {
+		this.#goalContinuationInterrupted = false;
+	}
+
 	get isAborting(): boolean {
 		return this.agent.isAborting;
 	}
@@ -10753,6 +10763,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.agent.peekFollowUpQueue().filter(isDisplayableQueuedMessage).length +
 			pendingNextTurnCount
 		);
+
 	}
 
 	/** Whether an empty submit should interrupt the streaming turn: displayable input is
@@ -11622,6 +11633,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		/** Internal `/compact` startup keeps the manual-compaction marker alive while aborting the active turn. */
 		preserveCompaction?: boolean;
 	}): Promise<void> {
+		if (options?.goalReason !== "internal" && this.getGoalModeState()?.enabled) {
+			this.#goalContinuationInterrupted = true;
+		}
 		const userInterrupt = options?.reason === USER_INTERRUPT_LABEL;
 		this.#pendingAbortErrorId = userInterrupt ? AIError.create(AIError.Flag.UserInterrupt) : undefined;
 		// Latch only when the interrupt stops something; an idle Esc would otherwise fold
