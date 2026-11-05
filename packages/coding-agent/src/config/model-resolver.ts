@@ -1926,6 +1926,14 @@ export async function resolveModelOverrideWithAuthFallback(
 	if (primaryKey === kNoAuth || isAuthenticated(primaryKey)) {
 		return { ...primary, authFallbackUsed: false };
 	}
+	// A denied parent cannot be a fallback. Point it at the primary so the
+	// ordered chain still runs, then the existing equality check keeps it active.
+	if (
+		parentActiveModelPattern &&
+		modelSelectorBlacklistError(parentActiveModelPattern, lookupRegistry.getAvailable())
+	) {
+		parentActiveModelPattern = formatModelStringWithRouting(primary.model);
+	}
 	// The ordered override list is the caller's own fallback chain: an
 	// authenticated later entry beats the parent's model.
 	for (const pattern of resolveConfiguredModelPatterns(modelPatterns, settings)) {
@@ -1938,9 +1946,6 @@ export async function resolveModelOverrideWithAuthFallback(
 		}
 	}
 
-	if (modelSelectorBlacklistError(parentActiveModelPattern, lookupRegistry.getAvailable())) {
-		return { ...primary, authFallbackUsed: false };
-	}
 	const fallback = resolveModelOverride([parentActiveModelPattern], lookupRegistry, settings);
 	if (!fallback.model) {
 		return { ...primary, authFallbackUsed: false };

@@ -27,11 +27,8 @@ import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-cat
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong, sleepUntil } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import {
-	formatModelStringWithRouting,
-	resolveModelOverride,
-	modelSelectorBlacklistError,
-} from "../config/model-resolver";
+import { modelSelectorBlacklistError } from "../config/model-resolver";
+import { formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
 
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
@@ -2111,8 +2108,8 @@ export class TurnRecovery {
 		const ceiling = this.#host.thinkingLevelCeiling();
 		for (const role of this.retryFallbackChainKeys(currentSelector, currentModel)) {
 			for (const candidate of this.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
-				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
 				if (modelSelectorBlacklistError(candidate.raw, this.#host.modelRegistry.getAvailable())) continue;
+				if (this.isRetryFallbackSelectorSuppressed(candidate)) continue;
 				const resolved = resolveModelOverride([candidate.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidateModel = resolved.model ?? this.#host.modelRegistry.find(candidate.provider, candidate.id);
 				if (!candidateModel || !this.#host.modelRegistry.hasConfiguredAuth(candidateModel)) continue;
