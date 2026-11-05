@@ -9,6 +9,10 @@
 ### Changed
 
 - Agent `bash` commands run with `LANG`/`LC_ALL=C.UTF-8` on every platform instead of the inherited locale, so sort order, number formats and tool messages no longer vary by machine; a locale in the command's `env` or `.envrc` still wins, and `!` commands keep yours
+### Changed
+
+- Show one TODO progress summary with live work, grouped dependencies, audits and user review states ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 ### Fixed
 
 - Close previously accepted TODO rows on session load, retaining blocked audit reasons as follow-ups ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

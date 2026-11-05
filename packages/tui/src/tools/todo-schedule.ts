@@ -2,6 +2,7 @@ import { drawAttemptChain, riskCells, riskRandom, type RowRiskOptions, type RowR
 export * from "./todo-row-risk";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { truncateToWidth } from "../utils";
+import { TRUNCATE_LENGTHS } from "../render/render-utils";
 
 export type TodoConfidence = "low" | "medium" | "high";
 export type TodoForecastConfidence = TodoConfidence | "unknown";
@@ -1942,4 +1943,184 @@ export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): 
 	if (overdue) parts.push(`${overdue} overdue`);
 	if (plan.riskModelUnavailable) parts.push("risk model unavailable");
 	return parts.join(" · ");
+}
+
+export type TodoDisplayState = "working" | "waiting" | "auditing" | "ready to close" | "needs you" | "stuck";
+
+export interface TodoDisplayWorker {
+	id: string;
+	agent?: string;
+	startedAt?: number;
+}
+
+/** Structured ledger projection; the display never infers a verdict from blocker text. */
+export interface TodoDisplayRequirement {
+	classification: string;
+	rows: readonly string[];
+	rowVerdicts?: Record<string, { status: string } | undefined>;
+}
+
+export interface TodoDisplayContext {
+	workers: readonly TodoDisplayWorker[];
+	/** Exact ownership links established by the runtime's executor/liveness policy. */
+	owners: ReadonlyMap<string, TodoDisplayWorker>;
+	requirements?: readonly TodoDisplayRequirement[];
+	auditors?: ReadonlyMap<string, string>;
+}
+
+export interface TodoDisplayRowState {
+	state: TodoDisplayState;
+	worker?: TodoDisplayWorker;
+	dependency?: string;
+}
+
+export function classifyTodoDisplayRow(
+	task: TodoScheduleInputTask,
+	phases: TodoScheduleInput,
+	context: TodoDisplayContext,
+): TodoDisplayRowState {
+	if (isTodoAwaitingReview(task)) return { state: "needs you" };
+	const auditorId = context.auditors?.get(task.content);
+	const auditor = context.workers.find(worker => worker.id === auditorId);
+	const owner = context.owners.get(task.content);
+	if (auditor || owner?.agent === "qa-auditor") return { state: "auditing", worker: auditor ?? owner };
+	if (owner) return { state: "working", worker: owner };
+	const tasks = phases.flatMap(phase => phase.tasks);
+	const visited = new Set<string>([task.content]);
+	const findDependency = (dependencies: readonly string[]): TodoDisplayRowState | undefined => {
+		for (const dependency of dependencies) {
+			if (visited.has(dependency)) continue;
+			visited.add(dependency);
+			const job = context.workers.find(worker => worker.id === dependency);
+			if (job) return { state: "waiting", dependency, worker: job };
+			const matches = tasks.filter(row => row.content === dependency);
+			if (matches.length !== 1) continue;
+			const prerequisite = matches[0]!;
+			if (prerequisite.status === "completed" || prerequisite.status === "abandoned") continue;
+			const liveOwner = context.owners.get(dependency);
+			if (liveOwner) return { state: "waiting", dependency: liveOwner.id, worker: liveOwner };
+			const indirect = findDependency(prerequisite.schedule?.dependencies ?? []);
+			if (indirect) return indirect;
+		}
+		return undefined;
+	};
+	const waiting = findDependency(task.schedule?.dependencies ?? []);
+	if (waiting) return waiting;
+	const linked = context.requirements?.filter(requirement => requirement.rows.includes(task.content));
+	if (linked?.length && linked.every(requirement => requirement.rowVerdicts?.[task.content]?.status === "pass"))
+		return { state: "ready to close" };
+	return { state: "stuck" };
+}
+
+export function formatTodoDisplayEta(at: number | undefined, now: number): string {
+	if (at === undefined || !Number.isFinite(at)) return "";
+	return at > now ? `ETA ${displayTimestamp(at, now)}` : `overdue ${Math.floor((now - at) / 60_000)}m`;
+}
+
+/** Collapsed plan: one accounting line, one requirements line, then phase trees. */
+export function renderTodoPlanDisplay(
+	phases: TodoScheduleInput,
+	context: TodoDisplayContext,
+	options: {
+		now: number;
+		forecast?: TodoPlanForecast;
+		archived?: number;
+		width?: number;
+		paint: (tone: "dim" | "warning" | "accent", text: string) => string;
+	},
+): { lines: string[]; owners: (string | undefined)[] } {
+	const { now, paint } = options;
+	const tasks = phases.flatMap(phase => phase.tasks);
+	const open = tasks.filter(
+		task => isTodoAwaitingReview(task) || (task.status !== "completed" && task.status !== "abandoned"),
+	);
+	const states = new Map(open.map(task => [task, classifyTodoDisplayRow(task, phases, context)]));
+	const count = (state: TodoDisplayState): number => [...states.values()].filter(row => row.state === state).length;
+	const archived = options.archived ?? 0;
+	const eta = formatTodoDisplayEta(options.forecast?.resourceFinish ?? options.forecast?.knownWorkFinish, now);
+	const header = `${open.length} open — ${count("working")} working · ${count("waiting")} waiting · ${count("auditing")} auditing · ${count("ready to close")} ready to close · ${count("needs you")} need you · ${count("stuck")} stuck · ${tasks.length - open.length + archived} closed (${archived} archived)${eta ? ` · ${eta}` : ""}`;
+	const lines = [header];
+	const owners: (string | undefined)[] = [undefined];
+	const push = (line: string, worker?: TodoDisplayWorker): void => {
+		lines.push(line);
+		owners.push(worker?.id);
+	};
+	if (context.requirements) {
+		const requirements = context.requirements.filter(
+			row => row.classification !== "merged" && row.classification !== "not-a-requirement",
+		);
+		const passed = requirements.filter(
+			row => row.rows.length && row.rows.every(title => row.rowVerdicts?.[title]?.status === "pass"),
+		).length;
+		const failed = requirements.filter(row =>
+			row.rows.some(title => row.rowVerdicts?.[title]?.status === "fail"),
+		).length;
+		push(paint("dim", `requirements ${passed}/${requirements.length} passed · ${failed} failed`));
+	}
+	const grouped = new Map<string, TodoScheduleInputTask[]>();
+	for (const task of open) {
+		const state = states.get(task)!;
+		if (state.state !== "waiting" || !state.dependency) continue;
+		const group = grouped.get(state.dependency) ?? [];
+		group.push(task);
+		grouped.set(state.dependency, group);
+	}
+	const emitted = new Set<string>();
+	const elapsed = (worker: TodoDisplayWorker): string =>
+		worker.startedAt === undefined ? "" : ` ${Math.floor(Math.max(0, now - worker.startedAt) / 60_000)}m`;
+	for (const [index, phase] of phases.entries()) {
+		const visible = phase.tasks.filter(task => states.has(task));
+		if (!visible.length) continue;
+		push(
+			paint(
+				"dim",
+				`${index + 1}. ${safeText(phase.name)} · ${phase.tasks.filter(task => !states.has(task)).length}/${phase.tasks.length}`,
+			),
+		);
+		for (const task of visible) {
+			const state = states.get(task)!;
+			const group = state.dependency ? grouped.get(state.dependency) : undefined;
+			if (group && group.length > 1) {
+				if (emitted.has(state.dependency!)) continue;
+				emitted.add(state.dependency!);
+				push(
+					paint(
+						"dim",
+						`  ${group.length} waiting on ${safeText(state.dependency!)}${state.worker ? ` (running${elapsed(state.worker)})` : ""}`,
+					),
+					state.worker,
+				);
+				for (const child of group) push(paint("dim", `    ☐ ${safeText(child.content)}`), state.worker);
+				continue;
+			}
+			const label = state.state === "waiting" ? `waiting on ${safeText(state.dependency!)}` : state.state;
+			const blocker =
+				state.state === "stuck" && task.blocker
+					? `: ${truncateToWidth(safeText(task.blocker), TRUNCATE_LENGTHS.TITLE)}`
+					: "";
+			const worker = state.worker ? ` · ${safeText(state.worker.id)}${elapsed(state.worker)}` : "";
+			const row = options.forecast?.rows.find(row => row.content === task.content);
+			const rowEta = formatTodoDisplayEta(row?.resourceFinish, now);
+			const attempts = task.schedule?.attemptHistory?.length ?? 0;
+			const suffix = ` — ${label}${blocker}${worker}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}`;
+			const title = truncateToWidth(
+				safeText(task.content),
+				Math.max(0, (options.width ?? Infinity) - Bun.stringWidth(suffix) - 4),
+			);
+			push(
+				paint(
+					state.state === "stuck" ? "warning" : state.state === "needs you" ? "accent" : "dim",
+					`  ☐ ${title}${suffix}`,
+				),
+				state.worker,
+			);
+		}
+	}
+	const assigned = new Set([...states.values()].flatMap(state => (state.worker ? [state.worker.id] : [])));
+	const unassigned = context.workers.filter(worker => !assigned.has(worker.id));
+	if (unassigned.length) {
+		push(paint("dim", "unassigned workers"));
+		for (const worker of unassigned) push(paint("dim", `  ${safeText(worker.id)}${elapsed(worker)}`), worker);
+	}
+	return { lines, owners };
 }
