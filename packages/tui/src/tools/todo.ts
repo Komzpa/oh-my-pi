@@ -89,6 +89,8 @@ export interface TodoOperationPersistedEdit {
 	at: number;
 	op: TodoOperation;
 	params: unknown;
+	/** This operation already reported and committed legacy self-edge repair. */
+	healedSelfEdges?: true;
 	reviewClosures?: Array<{ task: string; reason?: string }>;
 }
 

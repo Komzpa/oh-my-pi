@@ -477,7 +477,7 @@ function replayTodoEdit(
 	)
 		return undefined;
 	const current = phases ? (options.mutable ? phases : copyTodoData(phases)) : [];
-	healStoredSelfEdges(current);
+	if (edit.kind === "op" && edit.healedSelfEdges) healStoredSelfEdges(current);
 	if (edit.kind === "executor") {
 		const updated = applyTodoExecutorObservation(current, {
 			...edit.observation,
@@ -2044,6 +2044,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 				: getCompletionTransitions(previousPhases, updated);
 		if ((archived || healedRows.length) && !this.#validatingReviewClosure) this.session.setTodoPhases?.(effective);
 		const operation = !readOnly && !failed ? buildTodoOpPersistedEdit(op, entry, now) : undefined;
+		if (operation && healedRows.length) operation.healedSelfEdges = true;
 		if (operation && reviewClosures.length) operation.reviewClosures = reviewClosures;
 		const archiveEdit: TodoArchivePersistedEdit | undefined =
 			newArchive.length > 0 ? { v: 1, kind: "archive", at: now, operation, archivedPhases: newArchive } : undefined;
