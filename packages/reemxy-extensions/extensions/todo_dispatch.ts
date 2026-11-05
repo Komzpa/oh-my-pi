@@ -6024,7 +6024,7 @@ export async function idleUserReviewRefusal(
   },
 ): Promise<string | undefined> {
   if (!jobs || jobs.running.some((job) => job.status === "running")) return;
-  const open = phases.flatMap((phase) => phase.tasks).filter((row) => row.status === "blocked" || (row.status !== "abandoned" && isDeliveredReview(row)));
+  const open = phases.flatMap((phase) => phase.tasks).filter((row) => (row.status === "blocked" && waitsOnUser(row.schedule?.owner, row.blocker)) || (row.status !== "abandoned" && isDeliveredReview(row)));
   if (!open.length) return;
   // Reuse the todo owner/review interpretation. No assistant message is an input.
   const decisions = open.filter(
