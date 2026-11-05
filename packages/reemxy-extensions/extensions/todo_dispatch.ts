@@ -5339,7 +5339,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const retroDemand = sprintState.retroDueReason && BLOCKING_RETRO_REASONS.has(sprintState.retroDueReason) && !retroFacilitatorRunning ? ["retro"] : [];
     const acceptedClosingProblems = phasesNow.flatMap(phase => phase.tasks)
       .filter(row => isNonClosedRowStatus(row.status) && row.schedule?.review === "accepted")
-      .map(row => `user accepted ${JSON.stringify(row.content)}; close it or fix: ${row.schedule.reviewClosingBlocked ?? "retry todo done through the completion gate"}`);
+      // The user's Accept is the acceptance: name the one call that closes the row, never an audit to wait for.
+      .map(row => `user accepted ${JSON.stringify(row.content)}; close it now: todo op="schedule", updates=[{task:${JSON.stringify(row.content)}, review:"accepted"}] (internal audits run afterwards and never block it)`);
     if (!decision.forecast) {
       if (acceptedClosingProblems.length) return `PLAN CHECK: ${acceptedClosingProblems.length} problem(s). ${acceptedClosingProblems.join("; ")}`;
       // A plan with no open rows has no plan problems: decay every other demand here too, or an
