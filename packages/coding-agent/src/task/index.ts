@@ -99,6 +99,7 @@ import {
 } from "../tools/todo";
 import {
 	applyTodoExecutorObservation,
+	validateTodoExecutorRow,
 	appendTodoReworkAttempt,
 	findRespawnOwnerRows,
 	type TodoExecutorObservation,
@@ -426,6 +427,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 		return params.tasks;
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task, taskFile: params.taskFile };
+	if ("row" in params) item.row = params.row;
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
 	if ("rework" in params) item.rework = params.rework;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
@@ -517,6 +519,7 @@ function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent
 	if (item.task !== undefined) spawn.task = item.task;
 	if (item.taskFile !== undefined) spawn.taskFile = item.taskFile;
 	if (item.taskFileSha256 !== undefined) spawn.taskFileSha256 = item.taskFileSha256;
+	if (item.row !== undefined) spawn.row = item.row;
 	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
 	if (item.rework !== undefined) spawn.rework = item.rework;
 	if (params.context !== undefined) spawn.context = params.context;
@@ -1315,6 +1318,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						agentProfile: event.agent,
 						description: event.description,
 						taskText: event.taskText,
+						row: event.row,
 						startedAt: event.at ?? Date.now(),
 					};
 					this.#todoExecutors.set(event.id, observed);
@@ -1555,6 +1559,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 * task wire contract.
 	 */
 	#resolveSpawnPreflight(params: TaskParams) {
+		if (params.row !== undefined) {
+			const error = validateTodoExecutorRow(this.session.getTodoPhases?.() ?? [], params.row);
+			if (error) throw new Error(error);
+		}
 		return resolveEffectiveSubagentPolicy({
 			session: this.session,
 			invocationKind: "task",
@@ -2460,6 +2468,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...this.#resultParams(params),
 				...this.#effortParams(params),
 				solutionSpace: params.solutionSpace,
+				row: params.row,
 				...(route?.rung ? { model: route.rung.model } : {}),
 				...(params.tools?.length
 					? {

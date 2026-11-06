@@ -28,6 +28,9 @@ import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { loadBundledAgents } from "@oh-my-pi/pi-coding-agent/task/agents";
 import type { SingleResult, TaskParams } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { EventBus } from "../../src/utils/event-bus";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "../../src/task/types";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
 import { cfgTaskDisabledAgents, cfgTaskEnableEffort, cfgTaskStructured } from "@oh-my-pi/pi-coding-agent/task/settings";
@@ -301,6 +304,58 @@ describe("task.batch validation", () => {
 			{ "task.batch": true },
 		);
 		expect(emptyBatchText).toContain("not part of the batch shape");
+	});
+
+	it("links an explicit batch row at lifecycle start even when the task has no matching title", async () => {
+		mockDiscovery();
+		let phases: TodoPhase[] = [{ name: "Work", tasks: [{ content: "Exact row", status: "pending" }] }];
+		const bus = new EventBus();
+		const session = createSession({ settings: { "async.enabled": false, "task.batch": true } });
+		session.subagentEventBus = bus;
+		session.getTodoPhases = () => phases;
+		session.setTodoPhases = updated => {
+			phases = updated;
+		};
+		session.persistTodoPhases = () => {};
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id: options.id,
+				agent: "task",
+				status: "started",
+				row: options.row,
+				at: 1,
+			});
+			expect(phases[0].tasks[0]).toMatchObject({
+				status: "in_progress",
+				schedule: { owner: options.id, executor: { workerId: options.id } },
+			});
+			return makeResult(options.id);
+		});
+		const tool = await TaskTool.create(session);
+		const result = await tool.execute("row-launch", {
+			context: "Shared context.",
+			tasks: [{ name: "Linked", row: "Exact row", task: "Unrelated text", solutionSpace: "one fix" }],
+		});
+		expect(result.isError).not.toBe(true);
+		expect(result.details?.results).toHaveLength(1);
+		expect(phases[0].tasks[0].schedule?.owner).toBe("Linked");
+	});
+
+	it("refuses unknown and closed explicit rows before spawning any worker", async () => {
+		mockDiscovery();
+		const run = vi.spyOn(executorModule, "runSubprocess");
+		const session = createSession({ settings: { "async.enabled": false } });
+		session.getTodoPhases = () => [{ name: "Work", tasks: [{ content: "Closed", status: "completed" }] }];
+		const tool = await TaskTool.create(session);
+		for (const [row, message] of [
+			["Unknown", "does not exist"],
+			["Closed", "closed"],
+		]) {
+			const result = await tool.execute("row-refusal", { task: "Work", row, solutionSpace: "one fix" });
+			expect(getFirstText(result)).toContain(message);
+			expect(result.isError).toBe(true);
+		}
+		expect(run).not.toHaveBeenCalled();
 	});
 
 	it("rejects a misplaced specialist before spawning any agent", async () => {

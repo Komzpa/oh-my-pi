@@ -452,6 +452,7 @@ export interface ExecutorOptions {
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
+	row?: string;
 	preparedSession?: PreparedSeanceSession;
 	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
 	context?: string;
@@ -5206,6 +5207,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				agentSource: agent.source,
 				description: options.description,
 				taskText: assignment ?? options.task,
+				row: options.row,
 				status: "started" as const,
 				sessionFile: subtaskSessionFile,
 				index,
@@ -5234,6 +5236,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				// Blocks as sent; the session appends a newer session_init whenever a model call's base changes.
 				systemPrompt: session.agent.state.systemPrompt,
 				task,
+				row: options.row,
 				tools: persistedSubagentTools,
 				mountedTools: session.getMountedXdevToolNames(),
 				agent: agent.name,

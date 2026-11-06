@@ -4949,6 +4949,9 @@
 				"taskText": {
 					"type": "string"
 				},
+				"row": {
+					"type": "string"
+				},
 				"sessionFile": {
 					"type": "string"
 				},

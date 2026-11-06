@@ -90,6 +90,8 @@ export interface TodoSchedule {
 	/** A row whose work is speculative until the named review is accepted. */
 	speculativeOn?: string;
 	/** Observed Task worker that actually executed this row, independent of forecast ownership. */
+	/** Durable membership for concurrent row workers. */
+	workerIds?: string[];
 	executor?: {
 		gitCommits?: { commit: string; repoPath: string }[];
 		workerId: string;
@@ -2223,8 +2225,16 @@ export function renderTodoPlanDisplay(
 			const label = state.state === "waiting" ? `waiting on ${safeText(state.dependency!)}` : state.state;
 			const why = state.reason ?? (state.state === "stuck" ? task.blocker : undefined);
 			const blocker = why ? `: ${truncateToWidth(safeText(why), TRUNCATE_LENGTHS.TITLE)}` : "";
+			const rowWorkers = state.worker
+				? [
+						state.worker,
+						...context.workers.filter(
+							worker => worker.id !== state.worker?.id && task.schedule?.workerIds?.includes(worker.id),
+						),
+					]
+				: [];
 			const worker = state.worker
-				? ` · ${safeText(state.worker.id)}${elapsed(state.worker)}`
+				? ` · ${rowWorkers.map(worker => `${safeText(worker.id)}${elapsed(worker)}`).join(", ")}`
 				: state.previous
 					? ` · after ${safeText(state.previous)}`
 					: "";
@@ -2245,7 +2255,7 @@ export function renderTodoPlanDisplay(
 			);
 		}
 	}
-	const assigned = new Set([...states.values()].flatMap(state => (state.worker ? [state.worker.id] : [])));
+	const assigned = new Set(open.flatMap(task => [states.get(task)?.worker?.id, ...(task.schedule?.workerIds ?? [])]));
 	const unassigned = context.workers.filter(worker => !assigned.has(worker.id));
 	if (unassigned.length) {
 		push(paint("dim", "unassigned workers"));

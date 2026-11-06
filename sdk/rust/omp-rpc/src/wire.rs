@@ -4396,6 +4396,8 @@ pub struct SubagentLifecyclePayload {
 	pub description: Option<String>,
 	#[serde(rename = "taskText", default, skip_serializing_if = "Option::is_none")]
 	pub task_text: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub row: Option<String>,
 	#[serde(rename = "sessionFile", default, skip_serializing_if = "Option::is_none")]
 	pub session_file: Option<String>,
 	#[serde(rename = "parentToolCallId", default, skip_serializing_if = "Option::is_none")]
