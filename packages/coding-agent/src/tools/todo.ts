@@ -16,6 +16,7 @@ import {
 	type TodoPersistedEdit,
 } from "@oh-my-pi/pi-tui/tools/todo";
 import {
+	todoNeedsOwnerDecision,
 	forecastTodoPlan,
 	formatPlanForecast,
 	formatPlanForecastDisplay,
@@ -161,6 +162,9 @@ const TodoScheduleUpdateInput = type({
 	"resources?": type("string").array(),
 	"estimate?": TodoEstimateInput,
 	"evidence?": type("string"),
+	"decision?": type('"owner"').describe(
+		"Agent-authored product content beyond the owner request needs an owner decision",
+	),
 	"review?": type('"user" | "accepted" | "redo" | "drop" | null'),
 	"reviewCard?": type("string | null").describe("Published review card slug"),
 	"reviewPage?": type("string | null").describe("HTTP URL of the published decision review page"),
@@ -1341,6 +1345,7 @@ function applyScheduleUpdates(
 			}
 		}
 		if (update.evidence?.trim()) schedule.progress = { at: now, evidence: update.evidence.trim() };
+		if (update.decision !== undefined) schedule.decision = update.decision;
 		if (update.reviewCard === null) delete schedule.reviewCard;
 		else if (update.reviewCard !== undefined) schedule.reviewCard = update.reviewCard.trim();
 		if (update.reviewPage === null) delete schedule.reviewPage;
@@ -2230,6 +2235,16 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
 			: applyParams(clonePhases(previousPhases), entry, now, getLatestTodoArchiveFromEntries(todoEntries));
+		if (op === "done" && !this.#validatingReviewClosure) {
+			for (const phase of updated)
+				for (const row of phase.tasks) {
+					const before = previousPhases.flatMap(phase => phase.tasks).find(task => task.content === row.content);
+					if (row.status === "completed" && before?.status !== "completed" && todoNeedsOwnerDecision(row.schedule))
+						errors.push(
+							`Owner decision required for ${JSON.stringify(row.content)}; show its product content and record the owner's answer before closing.`,
+						);
+				}
+		}
 		// Use the ordinary done operation so every native completion gate still runs.
 		const reviewClosures: Array<{ task: string; reason?: string }> = [];
 		if (op === "schedule" && errors.length === 0) {
