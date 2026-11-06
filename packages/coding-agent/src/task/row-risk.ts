@@ -102,7 +102,14 @@ export async function loadRowRisk(
 		let cached = componentCaches.get(file);
 		if (cached?.version !== version) {
 			// Validate structure once; age is checked separately on every load.
-			const raw: unknown = await Bun.file(file).json();
+			let raw: unknown;
+			try {
+				raw = await Bun.file(file).json();
+			} catch (error) {
+				if (!(error instanceof SyntaxError)) throw error;
+				componentCaches.set(file, { version, components: undefined });
+				return;
+			}
 			const generatedAt =
 				typeof raw === "object" && raw !== null && "generatedAt" in raw ? raw.generatedAt : undefined;
 			const generated = typeof generatedAt === "string" ? Date.parse(generatedAt) : NaN;
