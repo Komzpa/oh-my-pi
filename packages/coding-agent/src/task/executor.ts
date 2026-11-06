@@ -66,7 +66,7 @@ import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pendi
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
 import { AgentLifecycleManager, type AgentReviver } from "../registry/agent-lifecycle";
-import { AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { AgentRegistry, type AgentRef, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { ensurePersistedRoster, isCurrentSessionRosterRef } from "../registry/persisted-agents";
 import {
 	type CreateAgentSessionOptions,
@@ -4641,6 +4641,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 		artifactsDir: options.artifactsDir,
 	};
 
+	let startingRef: AgentRef | undefined;
 	const runSubagent = async (): Promise<{
 		exitCode: number;
 		error?: string;
@@ -4687,6 +4688,23 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 
 		try {
 			checkAbort();
+			const startupRegistry = AgentRegistry.global();
+			const previous = startupRegistry.get(id);
+			if (previous) await AgentLifecycleManager.global().reclaimDeadCorpse(id, previous);
+			startingRef = startupRegistry.registerIfAvailable(
+				{
+					id,
+					displayName: agent.name,
+					kind: "sub",
+					parentId: options.parentAgentId,
+					session: null,
+					sessionFile: subtaskSessionFile,
+					status: "running",
+					starting: true,
+				},
+				null,
+			);
+			if (!startingRef) throw new Error(`Agent "${id}" is already owned by another session generation.`);
 			// Pin authStorage to modelRegistry.authStorage — mirrors the createAgentSession invariant.
 			const registryFromParent = options.modelRegistry !== undefined;
 			const modelRegistry =
@@ -5057,7 +5075,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			let sessionPromise: Promise<CreateAgentSessionResult> | undefined;
 			try {
 				sessionPromise = createAgentSession(
-					buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, null, mcpFollower, {
+					buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, startingRef, mcpFollower, {
 						workPoolYieldItems: options.workPoolYieldItems ?? [],
 						// A revived session restores the tier history it persisted (including
 						// tiers a provider rejected or an extension changed since spawn); only
@@ -5544,6 +5562,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 		AgentRegistry.global().setHistory(id, { outputPath: result.outputPath });
 		return result;
 	} finally {
+		if (startingRef && AgentRegistry.global().get(id)?.starting) {
+			AgentRegistry.global().setStatus(id, "aborted", startingRef);
+		}
 		// The result is published: messages held during the run get their own
 		// turns, unless the caller still has work to finish first.
 		if (releaseIrcWakes && options.deferIrcWakeRelease) options.deferIrcWakeRelease(releaseIrcWakes);
