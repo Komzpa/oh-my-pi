@@ -2805,7 +2805,46 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	 * usage aggregation, VCS probing, or segment getters run on a cache hit.
 	 * Fills `target` in place so the per-frame probe allocates nothing.
 	 */
+	#externalProbeFrame: object | undefined;
+
+	/** Share the external snapshot only within one synchronous compositor paint. */
+	beginFrame(): void {
+		this.#externalProbeFrame = {};
+	}
+
+	endFrame(): void {
+		this.#externalProbeFrame = undefined;
+		this.#externalProbeMemo = undefined;
+	}
+
+	#externalProbeMemo: { session: StatusLineSession; revision: unknown; inputs: StatusLineExternalInputs } | undefined;
+
 	#readStatusLineExternalInputs(target: StatusLineExternalInputs): void {
+		const revision = this.#externalProbeFrame;
+		const memo = this.#externalProbeMemo;
+		if (revision !== undefined && memo?.session === this.session && memo.revision === revision) {
+			Object.assign(target, memo.inputs);
+		} else {
+			this.#readSessionExternalInputs(target);
+			this.#externalProbeMemo =
+				revision === undefined
+					? undefined
+					: {
+							session: this.session,
+							revision,
+							inputs: Object.assign(new StatusLineExternalInputs(), target),
+						};
+		}
+		// Settings, workspace and theme have independent owners and remain live.
+		target.themeRef = theme;
+		target.themeEpoch = getThemeEpoch();
+		target.projectDir = getProjectDir();
+		target.sessionSettingsRef = this.host.getSessionSettingsIdentity(this.session);
+		target.sessionSettingsRevision = this.host.getSessionSettingsRevision(this.session);
+		target.globalSettingsRevision = this.host.getSettingsRevision();
+	}
+
+	#readSessionExternalInputs(target: StatusLineExternalInputs): void {
 		const state = this.session.state;
 		const stateMessages = state.messages ?? EMPTY_MESSAGES;
 		const stateLastMessage = stateMessages[stateMessages.length - 1];
@@ -2857,14 +2896,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		}
 		const tools = this.session.agent?.state?.tools;
 		const skills = this.session.skills;
-		target.themeRef = theme;
-		target.themeEpoch = getThemeEpoch();
-		target.projectDir = getProjectDir();
 		target.sessionRef = this.session;
 		target.sessionFile = this.session.sessionFile;
-		target.sessionSettingsRef = this.host.getSessionSettingsIdentity(this.session);
-		target.sessionSettingsRevision = this.host.getSessionSettingsRevision(this.session);
-		target.globalSettingsRevision = this.host.getSettingsRevision();
 		target.stateRef = state;
 		target.stateMessagesRef = stateMessages;
 		target.stateMessagesLength = stateMessages.length;

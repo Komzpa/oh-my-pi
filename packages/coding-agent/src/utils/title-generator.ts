@@ -60,6 +60,10 @@ interface WindowsConsoleTitleApi {
 
 let windowsConsoleTitleApi: WindowsConsoleTitleApi | null | undefined;
 let lastTerminalTitle: string | undefined;
+let pendingTerminalTitle: { text: string; recomposeStaticOnFailure: boolean } | undefined;
+let terminalTitleWriteTimer: NodeJS.Timeout | undefined;
+let lastTerminalTitleWriteAt = Number.NEGATIVE_INFINITY;
+const TERMINAL_TITLE_WRITE_INTERVAL_MS = 1000;
 
 function getWindowsConsoleTitleApi(): WindowsConsoleTitleApi | null {
 	if (process.platform !== "win32") return null;
@@ -635,8 +639,39 @@ export function setTerminalTitle(title: string): void {
 function writeTerminalTitle(title: string, recomposeStaticOnFailure = false): void {
 	if (terminalTitleRuntime.disposed) return;
 	if (!process.stdout.isTTY || isTerminalHeadless()) return;
+	// Compare raw input before sanitizing: frequent spinner frames otherwise pay
+	// the sanitizer cost even when the caller repeats the same title.
+	if (title === lastTerminalTitle && !windowsConsoleTitleDrifted(title)) {
+		pendingTerminalTitle = undefined;
+		clearTimeout(terminalTitleWriteTimer);
+		terminalTitleWriteTimer = undefined;
+		return;
+	}
 	const next = sanitizeTerminalTitlePart(title) ?? DEFAULT_TERMINAL_TITLE;
-	if (next === lastTerminalTitle && !windowsConsoleTitleDrifted(next)) return;
+	if (next === lastTerminalTitle && !windowsConsoleTitleDrifted(next)) {
+		pendingTerminalTitle = undefined;
+		clearTimeout(terminalTitleWriteTimer);
+		terminalTitleWriteTimer = undefined;
+		return;
+	}
+	const remaining = TERMINAL_TITLE_WRITE_INTERVAL_MS - (Date.now() - lastTerminalTitleWriteAt);
+	if (remaining > 0) {
+		if (
+			pendingTerminalTitle?.text === next &&
+			pendingTerminalTitle.recomposeStaticOnFailure === recomposeStaticOnFailure
+		)
+			return;
+		pendingTerminalTitle = { text: next, recomposeStaticOnFailure };
+		if (terminalTitleWriteTimer) return;
+		terminalTitleWriteTimer = setTimeout(() => {
+			terminalTitleWriteTimer = undefined;
+			const latest = pendingTerminalTitle;
+			pendingTerminalTitle = undefined;
+			if (latest !== undefined) writeTerminalTitle(latest.text, latest.recomposeStaticOnFailure);
+		}, remaining);
+		terminalTitleWriteTimer.unref?.();
+		return;
+	}
 	if (!setWindowsConsoleTitle(next)) {
 		// Native path failed on a Windows console: every later frame would cross
 		// ConPTY as OSC and reintroduce the write-loop CPU cost the static
@@ -664,12 +699,14 @@ function writeTerminalTitle(title: string, recomposeStaticOnFailure = false): vo
 				if (latched === lastTerminalTitle) return;
 				writeTerminalSequence(`\x1b]0;${latched}\x07`);
 				lastTerminalTitle = latched;
+				lastTerminalTitleWriteAt = Date.now();
 				return;
 			}
 		}
 		writeTerminalSequence(`\x1b]0;${next}\x07`);
 	}
 	lastTerminalTitle = next;
+	lastTerminalTitleWriteAt = Date.now();
 }
 
 /**
@@ -977,12 +1014,15 @@ function startTerminalTitleSpinner(): void {
 	)
 		return;
 
-	terminalTitleRuntime.timer = setInterval(() => {
-		terminalTitleRuntime.frame =
-			(terminalTitleRuntime.frame + 1) % TERMINAL_TITLE_SPINNER_STYLES[terminalTitleRuntime.style].length;
-		// An extension override is frame-independent; the sink would dedupe it anyway.
-		if (terminalTitleRuntime.extensionOverride === undefined) emitTerminalTitle();
-	}, terminalTitleRuntime.intervalMs);
+	terminalTitleRuntime.timer = setInterval(
+		() => {
+			terminalTitleRuntime.frame =
+				(terminalTitleRuntime.frame + 1) % TERMINAL_TITLE_SPINNER_STYLES[terminalTitleRuntime.style].length;
+			// An extension override is frame-independent; the sink would dedupe it anyway.
+			if (terminalTitleRuntime.extensionOverride === undefined) emitTerminalTitle();
+		},
+		Math.max(terminalTitleRuntime.intervalMs, TERMINAL_TITLE_WRITE_INTERVAL_MS),
+	);
 	// Never keep the event loop alive for a cosmetic animation.
 	terminalTitleRuntime.timer.unref?.();
 }
@@ -1108,6 +1148,10 @@ export function disposeTerminalTitleState(): void {
 	}
 	disposeWindowsConsoleTitleApi();
 	lastTerminalTitle = undefined;
+	clearTimeout(terminalTitleWriteTimer);
+	terminalTitleWriteTimer = undefined;
+	pendingTerminalTitle = undefined;
+	lastTerminalTitleWriteAt = Number.NEGATIVE_INFINITY;
 }
 
 /**

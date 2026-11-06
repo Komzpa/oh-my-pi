@@ -26,7 +26,7 @@ import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
 import { type VersionUpdate, WelcomeComponent } from "./welcome";
-import { ensureThemeSync, getEditorTheme, theme } from "../theme/theme";
+import { ensureThemeSync, getEditorTheme, getThemeEpoch, theme } from "../theme/theme";
 
 const DOUBLE_INTERRUPT_MS = 500;
 // How long idle chrome must hold its height after a turn before it is treated as permanent.
@@ -98,6 +98,9 @@ export interface ComposerOptions {
 
 /** How {@link Composer.setRuntimeChildren} lays out the roots below the transcript. */
 export interface RuntimeChildrenOptions {
+	/** Opt in pure roots to row/span reuse. Change the version for every row or click-target mutation.
+	 * Return undefined for roots with render-time effects (including image registration). */
+	readonly renderVersion?: (root: Component) => unknown;
 	/**
 	 * Dock order on a TSP terminal (no status strip; the composer carries its
 	 * facts): the native dock stacks HUD pills, the working row and queued messages over
@@ -153,10 +156,17 @@ export interface ComposerStartOptions {
  * status line's facts ({@link StatusLineComponent.describeComposerFacts}).
  */
 class StatusHost implements Component {
-	#component: Component | undefined;
+	#component: (Component & Partial<Pick<StatusLineComponent, "beginFrame" | "endFrame">>) | undefined;
 
 	setComponent(component: Component): void {
 		this.#component = component;
+	}
+
+	beginFrame(): void {
+		this.#component?.beginFrame?.();
+	}
+	endFrame(): void {
+		this.#component?.endFrame?.();
 	}
 
 	render(width: number): readonly string[] {
@@ -243,6 +253,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#nativeDock: readonly Component[] | undefined;
 	#nativeTail: readonly Container[] = [];
 	#allocation: RuntimeChildrenOptions["allocation"];
+	#renderVersion: RuntimeChildrenOptions["renderVersion"];
+	#belowRootCache = new WeakMap<
+		Component,
+		{ version: unknown; width: number; themeEpoch: number; lines: string[]; spans: ViewportClickSpan[] }
+	>();
 	/** Cache-driven status line shown until {@link setStatusComponent} mounts the session's. */
 	#startupStatus: StatusLineComponent | undefined;
 	#runtimeMounted = false;
@@ -416,6 +431,15 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	/** Compose the bounded mutable viewport and the next ordered history append. */
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
+		this.#statusHost.beginFrame();
+		try {
+			return this.#renderFrame(viewport);
+		} finally {
+			this.#statusHost.endFrame();
+		}
+	}
+
+	#renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
@@ -593,6 +617,15 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	 * retirement, resize replay and hover bands are ANSI concerns.
 	 */
 	describeSurface(cx: DescribeContext): NativeSurface {
+		this.#statusHost.beginFrame();
+		try {
+			return this.#describeSurface(cx);
+		} finally {
+			this.#statusHost.endFrame();
+		}
+	}
+
+	#describeSurface(cx: DescribeContext): NativeSurface {
 		if (!this.#started || this.#stopped) return this.#nativeSurface;
 		const main: NativeChild[] = [...this.#header.children];
 		const dock: NativeChild[] = [];
@@ -635,6 +668,24 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	 * up to the last target.
 	 */
 	#renderBelowRoot(root: Component, width: number, after: string[], spans: ViewportClickSpan[]): void {
+		const version = this.#renderVersion?.(root);
+		if (version !== undefined) {
+			const themeEpoch = getThemeEpoch();
+			let cached = this.#belowRootCache.get(root);
+			if (!cached || cached.version !== version || cached.width !== width || cached.themeEpoch !== themeEpoch) {
+				cached = { version, width, themeEpoch, lines: [], spans: [] };
+				this.#renderBelowRootUncached(root, width, cached.lines, cached.spans);
+				this.#belowRootCache.set(root, cached);
+			}
+			const offset = after.length;
+			after.push(...cached.lines);
+			for (const span of cached.spans) spans.push({ ...span, start: span.start + offset, end: span.end + offset });
+			return;
+		}
+		this.#renderBelowRootUncached(root, width, after, spans);
+	}
+
+	#renderBelowRootUncached(root: Component, width: number, after: string[], spans: ViewportClickSpan[]): void {
 		const start = after.length;
 		const plainContainer = root instanceof Container && root.render === Container.prototype.render;
 		const targets = root instanceof Container ? root.children : [root];
@@ -1235,6 +1286,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#runtimeMounted = true;
 		}
 		this.#runtimeChildren = children;
+		this.#renderVersion = options.renderVersion;
+		this.#belowRootCache = new WeakMap();
 		for (const child of children) this.ui.addChild(child);
 		this.ui.addChild(this.#statusHost);
 		this.ui.requestRender();
