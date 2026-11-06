@@ -168,3 +168,27 @@ test("working rows name each worker's profile and model", () => {
 	const row = display.lines.find(line => line.includes("Row with worker"))!;
 	expect(row).toContain("W-1 (ui-coder) gpt-6.1-terra:low 3m");
 });
+
+test("the accounting line shows the plan-wide P80 forecast, not only the last running row", () => {
+	const task = { content: "Unstarted row", status: "pending", schedule: {} };
+	const now = Date.UTC(2026, 10, 6, 19, 0);
+	const forecast = {
+		rows: [],
+		resourceFinish: now + 30 * 60_000,
+		risk: { p80Finish: now + 3 * 3600_000, onTimeProbability: 0.4 },
+		deadlineAt: now + 2 * 3600_000,
+	};
+	const display = renderTodoPlanDisplay(
+		[{ name: "Stage", tasks: [task] }] as never,
+		{ workers: [], owners: new Map() },
+		{
+			now,
+			width: 300,
+			forecast: forecast as never,
+			paint,
+		},
+	);
+	expect(display.lines[0]).toContain("P80 ");
+	expect(display.lines[0]).toContain("P(on time) 40%");
+	expect(display.lines[0]).toContain("due ");
+});
