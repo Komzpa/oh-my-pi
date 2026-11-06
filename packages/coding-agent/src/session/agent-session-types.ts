@@ -51,6 +51,7 @@ import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SettingsGatedToolDelta } from "./session-tools";
 import type { CostGateApi } from "./cost-gate";
 import type { SessionManager } from "./session-manager";
+import type { InstructionFiles } from "./instruction-files";
 
 /** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
 export const SHUTDOWN_CONSOLIDATE_BUDGET_MS = 1_500;
@@ -170,6 +171,7 @@ export interface InitialRetryFallbackState {
 
 /** Dependencies and initial state used to construct an AgentSession. */
 export interface AgentSessionConfig {
+	instructionFiles?: InstructionFiles;
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;

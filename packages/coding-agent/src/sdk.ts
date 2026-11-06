@@ -250,11 +250,13 @@ import { anthropicSlowModeHasNoSiblingHeadroom } from "./session/anthropic-slow-
 import { CacheWarmer } from "./session/cache-warmer";
 import { createSettingsAwareStreamFn } from "./session/settings-stream-fn";
 import { SnapcompactInlineTransformer } from "./session/snapcompact-inline";
+import { InstructionFiles } from "./session/instruction-files";
 import { createSnapcompactSavingsRecorder } from "./session/snapcompact-savings-journal";
 import { createSpeculativeToolExecutionConfig } from "./speculation/host";
 import { closeAllConnections } from "./ssh/connection-manager";
 import {
 	type BuildSystemPromptResult,
+	type ContextFileSnapshot,
 	buildSystemPrompt as buildSystemPromptInternal,
 	cfgSystemPromptInputs,
 	composeAppendPrompt,
@@ -363,7 +365,11 @@ import {
 	cfgToolsXdevInlineDevices,
 	cfgSessionToolGates,
 } from "./tools/settings";
-import { cfgToolsFormat } from "./session/context-settings";
+import {
+	cfgToolsFormat,
+	cfgInstructionRefreshEnabled,
+	cfgInstructionRefreshMaxBytes,
+} from "./session/context-settings";
 import { cfgAutolearnEnabled } from "./autolearn/settings";
 import { cfgBrowserEnabled } from "./tools/browser/settings";
 import {
@@ -1358,7 +1364,7 @@ export async function discoverContextFiles(
 	cwd?: string,
 	_agentDir?: string,
 	disabledExtensions?: string[],
-): Promise<Array<{ path: string; content: string; depth?: number }>> {
+): Promise<ContextFileSnapshot[]> {
 	return await loadContextFilesInternal({
 		cwd: cwd ?? getProjectDir(),
 		disabledExtensions,
@@ -2468,6 +2474,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorConfigsPromise,
 		]);
 	let contextFiles = initialContextFiles;
+	const instructionFiles = new InstructionFiles(sessionManager, text => obfuscator?.obfuscate(text) ?? text);
+	// Enroll delivered context even while refresh is disabled, so later opt-in sees edits.
+	if (options.systemPrompt === undefined || typeof options.systemPrompt === "function") {
+		for (const file of contextFiles ?? []) {
+			for (const source of (file as ContextFileSnapshot).sources ?? [file]) {
+				await instructionFiles.loaded(source.path, source.content, true);
+			}
+		}
+	}
 
 	let agent: Agent;
 	const effectiveGetApiKey =
@@ -2619,6 +2634,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			skipPythonPreflight: options.skipPythonPreflight,
 			contextFiles,
+			get recordInstructionFile() {
+				return cfgInstructionRefreshEnabled.get(settings)
+					? (filePath: string, body?: string) =>
+							instructionFiles.loadedInstruction(filePath, body, cfgInstructionRefreshMaxBytes.get(settings))
+					: undefined;
+			},
 			noContextFiles: options.noContextFiles,
 			get workspaceTree() {
 				return lateWorkspaceTree ?? resolvedWorkspaceTree;
@@ -4393,6 +4414,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					: { mode: "full" },
 			);
 			const defaultPrompt = await buildSystemPromptInternal({
+				onContextFile: async file => {
+					if (cfgInstructionRefreshEnabled.get(settings)) {
+						for (const source of file.sources ?? [file])
+							await instructionFiles.loaded(source.path, source.content, true);
+					}
+				},
 				cwd: promptCwd,
 				additionalWorkspaceRoots: sessionManager.getAdditionalDirectories(),
 				noContextFiles: options.noContextFiles,
@@ -5026,6 +5053,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// (defaulting to read/grep/glob).
 		const advisorToolSession: ToolSession = {
 			...toolSession,
+			// Advisor reads are not delivered to the primary.
+			recordInstructionFile: undefined,
 			// The primary may carry a dormant xd:// write transport. Advisors use
 			// their own configured tool slate, so a selected write is always full.
 			deviceOnlyWrite: undefined,
@@ -5088,6 +5117,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// block createAgentSession for tens of seconds while the whole file is
 		// streamed and parsed on the main thread.
 		session = new AgentSession({
+			instructionFiles,
 			cacheWarmer,
 			costGate: options.costGate,
 			advisorWatchdogPrompt,
