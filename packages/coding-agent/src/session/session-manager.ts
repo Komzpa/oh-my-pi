@@ -622,6 +622,7 @@ export class SessionEntryIndex {
 	// leaf appends to the issued view in O(1); a leaf change or rebuild starts
 	// a fresh array. Weak ownership lets dropped historical views be collected.
 	#generation = 0;
+	#mutableMetadata = new Set<string>();
 	#metadataCache: { generation: number; leaf: string | null | undefined; path: IndexedSessionEntry[] } | undefined;
 	#branchCache: { leaf: string | null; generation: number; branch: WeakRef<SessionEntry[]> } | undefined;
 	#read?: (entry: IndexedSessionEntry) => SessionEntry;
@@ -631,6 +632,7 @@ export class SessionEntryIndex {
 
 	clear(closeReader = true): void {
 		this.#metadataCache = undefined;
+		this.#mutableMetadata.clear();
 		this.#entriesById.clear();
 		this.#ordered = [];
 		this.#children.clear();
@@ -698,10 +700,23 @@ export class SessionEntryIndex {
 		};
 		this.#ordered.push(indexed);
 		this.#entriesById.set(entry.id, indexed);
+		if (indexed.entry) this.#mutableMetadata.add(entry.id);
 		// Late usage is physically last but replays to the leaf captured at append time.
 		const nextLeaf = sessionEntryLeafId(entry);
 		this.#leaf = nextLeaf;
 		this.#generation++;
+		const metadataCache = this.#metadataCache;
+		if (
+			isNew &&
+			nextLeaf === entry.id &&
+			entry.parentId === previousLeaf &&
+			metadataCache?.leaf === previousLeaf &&
+			metadataCache.generation === this.#generation - 1
+		) {
+			metadataCache.path.unshift(indexed);
+			metadataCache.leaf = nextLeaf;
+			metadataCache.generation = this.#generation;
+		}
 		const cache = this.#branchCache;
 		const branch = cache?.branch.deref();
 		if (
@@ -747,6 +762,7 @@ export class SessionEntryIndex {
 	get(id: string, retainIdentity = true): SessionEntry | undefined {
 		const indexed = this.#entriesById.get(id);
 		if (!indexed) return undefined;
+		if (retainIdentity) this.#mutableMetadata.add(id);
 		const strong = indexed.entry ?? this.#active.get(id);
 		if (strong) return strong;
 		const retained = indexed.weak?.deref();
@@ -847,32 +863,30 @@ export class SessionEntryIndex {
 	}
 
 	#metadataLeafPath(id: string | null | undefined = this.#leaf): IndexedSessionEntry[] {
-		const cache = this.#metadataCache;
-		if (cache?.generation === this.#generation && cache.leaf === id) {
-			let valid = true;
-			for (let i = 0; i < cache.path.length; i++) {
-				const current = cache.path[i]!;
-				const retained = this.retainedEntry(current.id);
-				if (retained) {
-					Object.assign(current, sessionContextEntryMetadata(retained));
-					if (retained.type === "compaction") current.firstKeptEntryId = retained.firstKeptEntryId;
-				}
-				if (i + 1 < cache.path.length && current.parentId !== cache.path[i + 1]!.id) valid = false;
-				if (i + 1 === cache.path.length && current.parentId !== null) valid = false;
+		// Only exposed payloads can change behind the index. Disk-only history is immutable.
+		// Keep the shared-reference mutation contract without rechecking the entire journal.
+		for (const entryId of this.#mutableMetadata) {
+			const retained = this.retainedEntry(entryId);
+			if (!retained) {
+				this.#mutableMetadata.delete(entryId);
+				continue;
 			}
-			if (valid) return cache.path.slice();
+			const indexed = this.#entriesById.get(entryId)!;
+			if (indexed.parentId !== retained.parentId || indexed.type !== retained.type) {
+				this.#metadataCache = undefined;
+				this.#branchCache = undefined;
+			}
+			Object.assign(indexed, sessionContextEntryMetadata(retained));
+			indexed.firstKeptEntryId = retained.type === "compaction" ? retained.firstKeptEntryId : undefined;
 		}
+		const cache = this.#metadataCache;
+		if (cache?.generation === this.#generation && cache.leaf === id) return cache.path.slice();
 		const path: IndexedSessionEntry[] = [];
 		// A corrupt cyclic parent chain stops at the FIRST repeated id, even
 		// when unrelated entries inflate the index beyond that cycle's length.
 		const seen = new Set<string>();
 		let current = id ? this.#entriesById.get(id) : undefined;
 		while (current && !seen.has(current.id)) {
-			const retained = this.retainedEntry(current.id);
-			if (retained) {
-				Object.assign(current, sessionContextEntryMetadata(retained));
-				if (retained.type === "compaction") current.firstKeptEntryId = retained.firstKeptEntryId;
-			}
 			seen.add(current.id);
 			path.push(current);
 			current = current.parentId ? this.#entriesById.get(current.parentId) : undefined;
@@ -917,6 +931,7 @@ export class SessionEntryIndex {
 		}
 		const wasLabel = indexed.type === "label";
 		indexed.entry = entry;
+		this.#mutableMetadata.add(entry.id);
 		indexed.revision = (indexed.revision ?? 0) + 1;
 		Object.assign(indexed, sessionContextEntryMetadata(entry));
 		indexed.firstKeptEntryId = entry.type === "compaction" ? entry.firstKeptEntryId : undefined;
