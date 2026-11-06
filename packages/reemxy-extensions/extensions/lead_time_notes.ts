@@ -1,3 +1,4 @@
+import { selectBranchNewestFirst } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 
@@ -16,9 +17,7 @@ function readIdentity(entry: TimedNoteMessage): TimedNoteIdentity | undefined {
 }
 
 function latestIdentity(ctx: TimedNoteContext, customType: string): TimedNoteIdentity | undefined {
-	const branch = ctx.sessionManager.getBranch();
-	for (let index = branch.length - 1; index >= 0; index--) {
-		const entry = branch[index];
+	for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom_message")) {
 		if (entry?.type !== "custom_message" || entry.customType !== customType) continue;
 		return readIdentity(entry);
 	}

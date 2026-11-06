@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Reduce pauses during busy lead turns and dispatch ticks in long sessions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Keep lead time notes brief and replace stale state notices at the next tool boundary ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Allow waiting on overdue rows while every affected executor is live and active; keep the miss visible and refuse stopping with running work ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
