@@ -1802,6 +1802,7 @@ export async function anonymizeSessionTranscripts(session: AnonymizeSessionInput
 	try {
 		if (session.sessionFile) {
 			subSessions = await collectSubSessions(session.sessionFile, {
+				purpose: "export",
 				onUnreadable: key => unreadable.push(memberFor(key)),
 			});
 		}
