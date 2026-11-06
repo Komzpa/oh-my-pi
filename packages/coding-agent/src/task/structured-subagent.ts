@@ -42,7 +42,7 @@ import type { TaskImage } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
-import { bindRequirementRowArtifact, getLatestTodoPhasesFromEntries } from "../tools/todo";
+import { bindRequirementRowArtifact, getRequirementArtifactTodoPhases } from "../tools/todo";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess, type SubagentToolResult } from "./executor";
@@ -1106,7 +1106,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 				const bindOwnedRows = async (): Promise<void> => {
 					const manager = request.session.sessionManager;
 					if (!manager) return;
-					const phases = getLatestTodoPhasesFromEntries(manager.getBranch());
+					const phases = getRequirementArtifactTodoPhases(manager);
 					for (const phase of phases) {
 						for (const task of phase.tasks) {
 							if (!("schedule" in task)) continue;

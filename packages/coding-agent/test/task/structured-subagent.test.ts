@@ -30,6 +30,8 @@ import {
 import * as planHandoff from "@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import * as todoModule from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -146,6 +148,31 @@ afterEach(() => {
 });
 
 describe("structured subagent primitive", () => {
+	it("binds worker-owned rows before and after a run without materializing the branch", async () => {
+		mockDiscovery();
+		const manager = SessionManager.inMemory("/tmp");
+		let todoId: string;
+		Object.assign(manager, { getBranchMatching: () => [manager.getEntry(todoId)!] });
+		const snapshot = (content: string) => ({
+			phases: [{ name: "Plan", tasks: [{ content, status: "pending", schedule: { owner: "Worker" } }] }],
+		});
+		todoId = manager.appendCustomEntry(todoModule.USER_TODO_EDIT_CUSTOM_TYPE, snapshot("Before"));
+		vi.spyOn(manager, "getBranch").mockImplementation(() => {
+			throw new Error("full branch read forbidden");
+		});
+		const bind = vi
+			.spyOn(todoModule, "bindRequirementRowArtifact")
+			.mockResolvedValue({ cwd: "/tmp", head: null, dirty: false });
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async () => {
+			todoId = manager.appendCustomEntry(todoModule.USER_TODO_EDIT_CUSTOM_TYPE, snapshot("After"));
+			return result();
+		});
+		await runStructuredSubagent(
+			request({ identity: { id: "Worker" }, session: { ...session(), sessionManager: manager } }),
+		);
+		expect(bind.mock.calls.map(call => call[1])).toEqual(["Before", "After"]);
+	});
+
 	it("resolves user-tagged model agents for task and eval but rejects untagged names", async () => {
 		mockDiscovery();
 		const taggedSession = session();
