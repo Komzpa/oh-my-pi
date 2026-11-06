@@ -114,6 +114,8 @@ export function normalizeAssistantUsage(message: Extract<AgentMessage, { role: "
 }
 
 export interface VisitEntriesFromFileStreamOptions {
+	startOffset?: number;
+	onTrailingRecord?: (offset: number) => void | Promise<void>;
 	/** Stop after the visitor returns `false`. */
 	shouldContinue?: () => boolean;
 	/** Stop after this many valid or malformed JSONL records have been consumed. */
@@ -271,13 +273,13 @@ export async function visitEntriesFromFileStream(
 ): Promise<SessionTitleUpdate | undefined> {
 	let lastYield = performance.now();
 	let titleSlot: SessionTitleUpdate | undefined;
-	let sawFirstLine = false;
-	let sawFirstEntry = false;
+	let sawFirstLine = (options.startOffset ?? 0) > 0;
+	let sawFirstEntry = sawFirstLine;
 	let bytesSinceYield = 0;
 	let entriesSinceYield = 0;
 	let recordsSeen = 0;
-	let sourceBytes = 0;
-	let offset = 0;
+	let sourceBytes = options.startOffset ?? 0;
+	let offset = options.startOffset ?? 0;
 	let stopped = false;
 	const maxRecords = Math.max(0, options.maxRecords ?? Number.POSITIVE_INFINITY);
 	const maxBytes = Math.max(0, options.maxBytes ?? Number.POSITIVE_INFINITY);
@@ -446,7 +448,7 @@ export async function visitEntriesFromFileStream(
 	};
 	let source: AsyncIterable<Uint8Array>;
 	try {
-		if (options.sourceFd === undefined) {
+		if (options.sourceFd === undefined && options.startOffset === undefined) {
 			// Capped by hand, not with `file.slice(0, maxBytes)`: on Bun 1.3.14 a slice's
 			// stream over a file that continues past the slice either stays pending after
 			// delivering its bytes (macOS) or ignores the bound and streams the whole
@@ -455,9 +457,10 @@ export async function visitEntriesFromFileStream(
 		} else {
 			source = fs.createReadStream(filePath, {
 				fd: options.sourceFd,
-				autoClose: false,
-				start: 0,
-				...(Number.isFinite(maxBytes) && maxBytes > 0 ? { end: maxBytes - 1 } : {}),
+				autoClose: options.sourceFd === undefined,
+				highWaterMark: 64 * 1024,
+				start: options.startOffset ?? 0,
+				...(Number.isFinite(maxBytes) && maxBytes > 0 ? { end: (options.startOffset ?? 0) + maxBytes - 1 } : {}),
 			});
 		}
 		let unread = maxBytes;
@@ -479,6 +482,7 @@ export async function visitEntriesFromFileStream(
 		throw err;
 	}
 	if (!stopped && recordsSeen < maxRecords && !sink.isEmpty) {
+		await options.onTrailingRecord?.(offset);
 		sink.append(LF);
 		await drain(true);
 	}
