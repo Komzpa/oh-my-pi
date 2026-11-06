@@ -130,7 +130,6 @@ export interface StructuredSubagentRequest {
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
-	row?: string;
 	context?: string;
 	agent?: string;
 	/** Saved source session selected for the bundled seance agent. */
@@ -171,6 +170,7 @@ export interface StructuredSubagentRequest {
 	thinkingLevel?: Effort;
 	identity?: StructuredSubagentIdentity;
 	index?: number;
+	row?: string;
 	parentToolCallId?: string;
 	detached?: boolean;
 	invokedAt?: number;
