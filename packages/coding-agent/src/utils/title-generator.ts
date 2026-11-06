@@ -672,6 +672,9 @@ function writeTerminalTitle(title: string, recomposeStaticOnFailure = false): vo
 		terminalTitleWriteTimer.unref?.();
 		return;
 	}
+	pendingTerminalTitle = undefined;
+	clearTimeout(terminalTitleWriteTimer);
+	terminalTitleWriteTimer = undefined;
 	if (!setWindowsConsoleTitle(next)) {
 		// Native path failed on a Windows console: every later frame would cross
 		// ConPTY as OSC and reintroduce the write-loop CPU cost the static
