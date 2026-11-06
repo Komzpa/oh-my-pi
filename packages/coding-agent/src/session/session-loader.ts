@@ -710,11 +710,11 @@ export async function visitSessionFileForResume(
 		}
 		const positions = new WeakMap<SessionEntry, PositionedSessionEntry>();
 		const compactor = options.compactExecutorObservations
-			? new ExecutorObservationCompactor(references.ids, entry => {
+			? new ExecutorObservationCompactor(references.ids, (entry, compacted) => {
 					if (entry.type === "session") return;
 					const position = positions.get(entry)!;
 					position.parentId = entry.parentId;
-					if (entry.type === "custom" && entry.customType === "user_todo_edit") position.entry = entry;
+					if (compacted) position.entry = entry;
 					visit(entry, position);
 				})
 			: undefined;
