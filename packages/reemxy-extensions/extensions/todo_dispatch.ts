@@ -1,6 +1,6 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import { resetDeliveryCriticTimers, queueDeliveryCritic, type DeliveryRow, type DeliveryVerdict } from "./delivery_critic";
-import { openReviewPages, probeReviewPage } from "./todo_review_opener";
+import { openReviewPages, probeReviewPage, ReviewAnswerPoller } from "./todo_review_opener";
 import { PREVIEW_ENTRY_TYPE, refreshPreviewVisibility, overduePreviewRows, previewScheduleRefusal, previewDispatchRefusal, previewPlanProblem, previewReason, type PreviewRecord } from "./todo_preview";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
@@ -2333,7 +2333,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return Array.isArray(entry?.data?.records) ? entry.data.records : [];
   };
   const openedReviewPages = new Set<string>();
+  const reviewAnswers = new ReviewAnswerPoller();
+  const pollReviewAnswers = (ctx: ExtensionContext, force = false) => {
+    if (singleWriterLane || !isMain(ctx)) return Promise.resolve();
+    return reviewAnswers.poll(ctx, (row, card) => pi.sendMessage({ customType: "todo-review-stale-answer",
+      content: `Saved owner answer for ${JSON.stringify(row)} (card ${card}) belongs to an older published revision; reconcile it before requesting another review.`, display: true }), force);
+  };
   const pollPreview = async (ctx: ExtensionContext): Promise<PreviewRecord[]> => {
+    await pollReviewAnswers(ctx);
     if (!singleWriterLane && isMain(ctx)) {
       for (const row of todoPhases(ctx).flatMap(phase => phase.tasks)) {
         if (!row.schedule?.reviewPagePending || !row.schedule.reviewPage) continue;
@@ -3946,6 +3953,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     inFlightAssistantHasText = text.length > 0;
   });
   const chatChoiceReason = async (ctx: ExtensionContext) => {
+    await pollReviewAnswers(ctx, true);
     if (singleWriterLane || !isMain(ctx)) return;
     return idleUserReviewRefusal(
       todoPhases(ctx),
@@ -6301,6 +6309,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   pi.on("agent_end", async (_event, ctx) => {
     if (singleWriterLane) return;
+    await pollReviewAnswers(ctx, true);
     persistRoster(ctx);
     await refreshLiveWorkerModels(ctx);
     const decision = currentDecision(ctx);

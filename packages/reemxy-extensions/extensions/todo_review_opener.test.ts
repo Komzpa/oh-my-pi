@@ -29,7 +29,7 @@ test("pending card claims survive restart, serialize concurrent checks, and admi
 								},
 							],
 						})
-					: String(input).endsWith("answers.json")
+					: String(input).endsWith("api/answers")
 						? Response.json(answers)
 						: new Response(`<article data-id="card" data-sha="${sha}"></article>`),
 			{ preconnect: globalThis.fetch.preconnect },
@@ -93,10 +93,14 @@ test("a batch waits for every delivered card of the row and ignores other rows' 
 	];
 	const cards = ["first", "second"].map(id => ({
 		id,
+		content_sha: "v1",
 		disposition: { kind: "delivered-change" },
 		landed: "Commit abc — row: Delivery",
 	}));
-	const answers: Record<string, { answer: string }> = { first: { answer: "accept" }, unrelated: { answer: "drop" } };
+	const answers: Record<string, { answer: string; content_sha: string }> = {
+		first: { answer: "accept", content_sha: "v1" },
+		unrelated: { answer: "drop", content_sha: "v1" },
+	};
 	const calls: string[] = [];
 	const fetch = spyOn(globalThis, "fetch").mockImplementation(
 		Object.assign(
@@ -124,7 +128,7 @@ test("a batch waits for every delivered card of the row and ignores other rows' 
 			},
 		);
 		expect(calls).toEqual([url]);
-		answers.second = { answer: "redo" };
+		answers.second = { answer: "redo", content_sha: "v1" };
 		await openReviewPages(
 			phases,
 			new Set(),

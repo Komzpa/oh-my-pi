@@ -900,6 +900,7 @@ export class ExtensionRunner {
 		createAnnotations?: ExtensionAnnotationsFactory,
 		private readonly getTodoPhases?: ExtensionContext["getTodoPhases"],
 		private readonly updateTodoSchedule?: ExtensionContext["updateTodoSchedule"],
+		private readonly applyReviewPageAnswer?: ExtensionContext["applyReviewPageAnswer"],
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -1902,6 +1903,7 @@ export class ExtensionRunner {
 					},
 				),
 			getTodoPhases: () => this.getTodoPhases?.(),
+			applyReviewPageAnswer: answer => this.applyReviewPageAnswer?.(answer) ?? Promise.resolve(false),
 			updateTodoSchedule: (task, patch) => this.updateTodoSchedule?.(task, patch) ?? false,
 			setSubagentFastMode: this.#setSubagentFastModeFn,
 			hasUI: this.hasUI(),

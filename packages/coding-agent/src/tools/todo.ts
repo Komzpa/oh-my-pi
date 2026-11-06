@@ -152,6 +152,7 @@ const TodoScheduleUpdateInput = type({
 	"estimate?": TodoEstimateInput,
 	"evidence?": type("string"),
 	"review?": type('"user" | "accepted" | "redo" | "drop" | null'),
+	"reviewCard?": type("string | null").describe("Published review card slug"),
 	"reviewPage?": type("string | null").describe("HTTP URL of the published decision review page"),
 	"speculativeOn?": type("string | null"),
 	"postDeadline?": type("boolean").describe(
@@ -1335,6 +1336,8 @@ function applyScheduleUpdates(
 			}
 		}
 		if (update.evidence?.trim()) schedule.progress = { at: now, evidence: update.evidence.trim() };
+		if (update.reviewCard === null) delete schedule.reviewCard;
+		else if (update.reviewCard !== undefined) schedule.reviewCard = update.reviewCard.trim();
 		if (update.reviewPage === null) delete schedule.reviewPage;
 		else if (update.reviewPage !== undefined) schedule.reviewPage = update.reviewPage.trim();
 		if (update.review === null) delete schedule.review;
@@ -2119,6 +2122,16 @@ function attachLiveTodoDetails(
 // Tool Class
 // =============================================================================
 
+export interface ReviewPageAnswer {
+	task: string;
+	page: string;
+	card: string;
+	contentSha: string;
+	answer: "accept" | "redo" | "drop";
+	note: string;
+	at: string;
+}
+
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly name = "todo";
 	readonly approval = "read" as const;
@@ -2136,6 +2149,59 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(todoDescription);
+	}
+
+	/** Consume a verified page decision through the ordinary review transition. */
+	async applyReviewPageAnswer(answer: ReviewPageAnswer): Promise<boolean> {
+		const rows = (this.session.getTodoPhases?.() ?? []).flatMap(phase => phase.tasks);
+		const matches = rows.filter(row => row.content === answer.task);
+		if (matches.length !== 1) return false;
+		const row = matches[0];
+		const key = JSON.stringify([answer.page, answer.card, answer.contentSha, answer.answer]);
+		if (
+			row.schedule?.review !== "user" ||
+			row.schedule.reviewPage !== answer.page ||
+			(row.schedule.reviewCard && row.schedule.reviewCard !== answer.card) ||
+			row.schedule.reviewAnswers?.includes(key) ||
+			(answer.answer === "redo" && !answer.note.trim())
+		)
+			return false;
+		const evidence = `owner ${answer.answer === "accept" ? "accepted" : answer.answer === "redo" ? "requested redo" : "dropped"} on review page at ${answer.at}${answer.note ? `: ${answer.note}` : ""}`;
+		const result = await this.execute("review-page-answer", {
+			op: "schedule",
+			updates: [
+				{
+					task: answer.task,
+					reviewCard: answer.card,
+					review: answer.answer === "accept" ? "accepted" : answer.answer,
+					evidence,
+				},
+			],
+		});
+		if (!committedTodoPhases(result)) return false;
+		// Forecast calculation can yield; keep unrelated edits made during that await.
+		const phases = clonePhases(this.session.getTodoPhases?.() ?? []);
+		const target = phases.flatMap(phase => phase.tasks).find(row => row.content === answer.task);
+		if (
+			!target?.schedule ||
+			target.schedule.reviewPage !== answer.page ||
+			target.schedule.review !== (answer.answer === "accept" ? "accepted" : answer.answer)
+		)
+			return false;
+		target.schedule.reviewAnswers = [...(target.schedule.reviewAnswers ?? []), key];
+		target.schedule.reviewPagePending = false;
+		target.schedule.handoffPending = false;
+		target.schedule.reviewSummary = evidence;
+		if (answer.answer === "redo") {
+			target.status = "pending";
+			target.schedule.reviewSummary = answer.note;
+		}
+		const edit = committedTodoEdit(result);
+		if (edit?.kind === "archive")
+			this.session.sessionManager?.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
+		this.session.sessionManager?.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+		this.session.setTodoPhases?.(phases);
+		return true;
 	}
 
 	async execute(

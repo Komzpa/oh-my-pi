@@ -1,3 +1,4 @@
+import type { ReviewPageAnswer } from "../../tools/todo";
 /**
  * Extension system types.
  *
@@ -793,6 +794,8 @@ export interface ExtensionLiveSession {
 }
 
 export interface ExtensionContext {
+	/** Apply one verified owner decision through the native todo acceptance path. */
+	applyReviewPageAnswer?(answer: ReviewPageAnswer): Promise<boolean>;
 	/** Launch the delivery critic through the native task pool. */
 	runDeliveryCritic?(task: string, signal?: AbortSignal): Promise<AgentToolResult>;
 	/** Launch one batched audit of delivered TODO rows through the native task pool. */

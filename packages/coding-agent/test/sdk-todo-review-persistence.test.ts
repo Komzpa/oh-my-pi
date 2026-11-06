@@ -20,7 +20,13 @@ test("real extension context persists customer review annotations through sessio
 				{
 					content: "Delivered UI",
 					status: "completed",
-					schedule: { dependencies: [], owner: "Coder", finishedAt: 123, attemptHistory: [] },
+					schedule: {
+						dependencies: [],
+						owner: "Coder",
+						finishedAt: 123,
+						attemptHistory: [],
+						reviewPage: "http://review.example/result/",
+					},
 				},
 				{ content: "Independent work", status: "in_progress", schedule: { dependencies: [], owner: "Docs" } },
 			],
@@ -82,6 +88,25 @@ test("real extension context persists customer review annotations through sessio
 		const restored = getLatestTodoPhasesFromEntries(ready.getBranch());
 		expect(restored[0].tasks[0].schedule?.reviewPagePending).toBeUndefined();
 		expect(restored[0].tasks[0].schedule?.review).toBe("user");
+		const answer = {
+			task: "Delivered UI",
+			page: "http://review.example/result/",
+			card: "delivered-ui",
+			contentSha: "published-v1",
+			answer: "accept" as const,
+			note: "",
+			at: "2026-11-06T07:49:41.801Z",
+		};
+		expect(await ctx.applyReviewPageAnswer!(answer)).toBe(true);
+		expect(session.getTodoPhases()[0].tasks[0].schedule?.review).toBe("accepted");
+		expect(await ctx.applyReviewPageAnswer!(answer)).toBe(false);
+		await manager.ensureOnDisk();
+		manager.flushSync();
+		const accepted = await SessionManager.open(manager.getSessionFile()!);
+		const acceptedRows = getLatestTodoPhasesFromEntries(accepted.getBranch());
+		expect(acceptedRows[0].tasks[0].status).toBe("completed");
+		expect(acceptedRows[0].tasks[0].schedule?.reviewAnswers).toHaveLength(1);
+		await accepted.close();
 		expect(
 			ctx.updateTodoSchedule!("Delivered UI", {
 				deliveryCritic: {
