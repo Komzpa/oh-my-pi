@@ -9,11 +9,13 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { getAgentDir, getConfigRootDir, getLogsDir, pathIsWithin } from "@oh-my-pi/pi-utils";
+import * as utils from "@oh-my-pi/pi-utils";
 import type { Api, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { createAssistantMessage } from "../test/helpers/agent-session-setup";
 import { ModelRegistry } from "../src/config/model-registry";
+import { resolveConfiguredModelPatterns } from "../src/config/model-resolver";
 import { resetSettingsForTest, Settings } from "../src/config/settings";
 import { InteractiveMode } from "../src/modes/interactive-mode";
 import { AgentRegistry } from "../src/registry/agent-registry";
@@ -33,7 +35,9 @@ import {
 } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 
 const entries = 200_000;
-const workers = 1_000;
+const extended = process.env.JOURNAL_BENCH_SHAPE === "dc";
+const workers = extended ? 6_000 : 1_000;
+const workerFiles = extended ? 8_338 : workers;
 const timestamp = "2026-11-06T12:00:00.000Z";
 
 async function fixture(dir: string): Promise<string> {
@@ -42,7 +46,7 @@ async function fixture(dir: string): Promise<string> {
 	writer.write(
 		`${JSON.stringify({ type: "session", version: CURRENT_SESSION_VERSION, id: "benchmark", timestamp, cwd: dir })}\n`,
 	);
-	const padding = "x".repeat(2700);
+	const padding = "x".repeat(extended ? 10_350 : 2700);
 	for (let i = 0; i < entries; i++) {
 		writer.write(
 			`${JSON.stringify({ type: "custom", id: `e${i}`, parentId: i ? `e${i - 1}` : null, timestamp, customType: "benchmark-archive", data: { padding } })}\n`,
@@ -50,8 +54,13 @@ async function fixture(dir: string): Promise<string> {
 		if (i % 1024 === 0) await writer.flush();
 	}
 	writer.write(
-		`${JSON.stringify({ type: "custom", id: "todo", parentId: `e${entries - 1}`, timestamp, customType: "user_todo_edit", data: { phases: [{ name: "Benchmark", tasks: [{ content: "work", status: "in_progress" }] }] } })}\n`,
+		`${JSON.stringify({ type: "custom", id: "todo", parentId: `e${entries - 1}`, timestamp, customType: "user_todo_edit", data: { phases: [{ name: "Benchmark", tasks: Array.from({ length: extended ? 250 : 1 }, (_, index) => ({ content: index ? `work ${index}` : "work", status: index ? "pending" : "in_progress", ...(extended ? { estimate: { optimistic: 1, mostLikely: 2, pessimistic: 5 }, workerType: "task" } : {}) })) }] } })}\n`,
 	);
+	if (extended) {
+		writer.write(
+			`${JSON.stringify({ type: "custom", id: "requirements", parentId: "todo", timestamp, customType: "requirements_ledger", data: { version: 1, requirements: Array.from({ length: 250 }, (_, index) => ({ id: `R${index + 1}`, at: timestamp, rawText: `Synthetic requirement ${index}`, classification: "linked", rows: [index ? `work ${index}` : "work"] })) } })}\n`,
+		);
+	}
 	await writer.end();
 	const workerDir = file.slice(0, -6);
 	await fs.mkdir(workerDir);
@@ -67,10 +76,25 @@ async function fixture(dir: string): Promise<string> {
 				message: { role: "user", content: padding, timestamp: 1 },
 			},
 		];
-		await Bun.write(
-			path.join(workerDir, `Worker${i}.jsonl`),
-			`${records.map(record => JSON.stringify(record)).join("\n")}\n`,
-		);
+		const transcript = Bun.file(path.join(workerDir, `Worker${i}.jsonl`)).writer();
+		transcript.write(`${records.map(record => JSON.stringify(record)).join("\n")}\n`);
+		if (extended) {
+			// 5,992 short transcripts and eight large ones: valid records, no sparse-file substitute.
+			const record = `${JSON.stringify({ type: "custom", id: "archive", parentId: "answer", timestamp, customType: "worker-archive", data: { padding: "x".repeat(16_000) } })}\n`;
+			const targetBytes = i < 8 ? 205_000_000 : 160_000;
+			for (let bytes = 0; bytes < targetBytes; bytes += record.length) {
+				transcript.write(record);
+				if (bytes % (record.length * 256) === 0) await transcript.flush();
+			}
+		}
+		await transcript.end();
+	}
+	if (extended) {
+		for (let i = workers; i < workerFiles; i++)
+			await Bun.write(
+				path.join(workerDir, i < 8_000 ? `deliverable-${i}.md` : `restart-${i}.marker`),
+				"Synthetic worker deliverable\n",
+			);
 	}
 	return file;
 }
@@ -97,11 +121,37 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		}
 	}
 	console.error(`BENCH_PATHS ${JSON.stringify(isolatedPaths)}`);
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-journal-frames-"));
+	const scratch = path.resolve(".tmp");
+	await fs.mkdir(scratch, { recursive: true });
+	const dir = await fs.mkdtemp(path.join(scratch, "omp-journal-frames-"));
+	// The risk loader and agent discovery use homedir; isolate their real file APIs too.
+	if (extended) vi.spyOn(os, "homedir").mockReturnValue(dir);
 	let mode: InteractiveMode | undefined;
 	let session: AgentSession | undefined;
 	let auth: AuthStorage | undefined;
 	let totalPositionedReads = 0;
+	let totalJsonlParses = 0;
+	let totalPlanClones = 0;
+	const originalParse = utils.parseJsonlLenient;
+	const parseSpy = vi
+		.spyOn(utils, "parseJsonlLenient")
+		.mockImplementation((...args: Parameters<typeof originalParse>) => {
+			parseSpy.mockClear();
+			totalJsonlParses++;
+			return originalParse(...args);
+		});
+	const originalClone = globalThis.structuredClone;
+	const cloneSpy = vi.spyOn(globalThis, "structuredClone").mockImplementation((value, options) => {
+		cloneSpy.mockClear();
+		if (
+			value &&
+			typeof value === "object" &&
+			("phases" in value ||
+				(Array.isArray(value) && value.some(phase => phase && typeof phase === "object" && "tasks" in phase)))
+		)
+			totalPlanClones++;
+		return originalClone(value, options);
+	});
 	let stopFrameClock: (() => void) | undefined;
 	const originalRead = loader.readPositionedSessionEntry;
 	const readSpy = vi
@@ -116,6 +166,31 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 	try {
 		console.error(`BENCH_STAGE fixture-start ${Date.now()}`);
 		const file = await fixture(dir);
+		if (extended) {
+			const generatedAt = new Date().toISOString();
+			const quantiles = { q: [0.05, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95], v: [1, 1, 1, 1, 1, 1, 1] };
+			await Bun.write(
+				path.join(dir, ".omp/agent/row-risk.json"),
+				JSON.stringify({
+					version: 1,
+					generatedAt,
+					window: { start: generatedAt, end: generatedAt },
+					source: { runs: "synthetic", labels: "synthetic" },
+					unit: "ratio",
+					components: {
+						"*": {
+							"*": {
+								n: 100,
+								n_eff: 100,
+								p_redo: [0.1, 0.05, 0],
+								attempt_ratio: quantiles,
+								gap_ratio: quantiles,
+							},
+						},
+					},
+				}),
+			);
+		}
 		console.error(`BENCH_STAGE fixture-done ${Date.now()}`);
 		const journalBytes = (await fs.stat(file)).size;
 		expect(journalBytes).toBeGreaterThanOrEqual(500_000_000);
@@ -137,6 +212,18 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 			contextWindow: 200_000,
 			maxTokens: 4096,
 		} as ModelSpec<Api>) as Model<Api>;
+		const settings = Settings.isolated(
+			extended
+				? {
+						modelRoles: {
+							task: "@benchmark_outer",
+							benchmark_outer: "@benchmark_inner:high",
+							benchmark_inner: "journal-benchmark/journal-benchmark",
+						},
+					}
+				: {},
+		);
+		if (extended) vi.spyOn(models, "getAvailable").mockReturnValue([model]);
 		const started = performance.now();
 		console.error(`BENCH_STAGE open-start ${Date.now()}`);
 		const manager = await SessionManager.open(file, dir, undefined, { suppressBreadcrumb: true });
@@ -166,7 +253,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 				},
 			}),
 			sessionManager: manager,
-			settings: Settings.isolated(),
+			settings,
 			modelRegistry: models,
 		});
 		const terminal = new VirtualTerminal(120, 40);
@@ -184,6 +271,19 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		console.error(`BENCH_STAGE mode-init ${Date.now()}`);
 		await mode.init();
 		console.error(`BENCH_STAGE mode-ready ${Date.now()}`);
+		if (extended) {
+			const hud = mode as InteractiveMode & {
+				renderRequirementHudSegment?: (
+					base: (width: number) => readonly string[],
+					width: number,
+				) => readonly string[];
+			};
+			if (!hud.renderRequirementHudSegment)
+				throw new Error(
+					"DC shape requires the requirements-ledger owner PR in the assembled tree; run original shape for standalone #93",
+				);
+			expect(Bun.stripANSI(hud.renderRequirementHudSegment(() => [], 240).join("\n"))).toContain("requirements 250");
+		}
 		// Render the real TUI to the in-process terminal; no desktop or process stdin.
 		const render = () => {
 			mode!.ui.renderNow();
@@ -217,6 +317,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 			readSpy.mockClear();
 			if (frameCount % 50 === 0) Bun.gc(true);
 			const before = totalPositionedReads;
+			if (extended) resolveConfiguredModelPatterns("@task", settings);
 			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
 				index: 0,
 				agent: "task",
@@ -255,7 +356,10 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		readSpy.mockClear();
 		Bun.gc(true);
 		const beforeProgressWindow = totalPositionedReads;
+		const parsesBeforeProgressWindow = totalJsonlParses;
+		const clonesBeforeProgressWindow = totalPlanClones;
 		for (let i = 0; i < 10; i++) {
+			if (extended) resolveConfiguredModelPatterns("@task", settings);
 			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
 				index: 0,
 				agent: "task",
@@ -263,11 +367,14 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 				task: "work",
 				progress: { id: "Worker0", description: "work", durationMs: i * 20 },
 			});
+			render();
 			await Bun.sleep(20);
 		}
 		await Bun.sleep(120);
 		const progressWindowPositionedReads = totalPositionedReads - beforeProgressWindow;
 		const result = {
+			shape: extended ? "dc" : "original",
+			workerFiles,
 			journalBytes,
 			journalEntries: manager.getEntryCount(),
 			workerTranscripts: workers,
@@ -285,6 +392,8 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 			maxGapMs: Math.max(...intervals),
 			readsInFrames,
 			progressWindowPositionedReads,
+			progressWindowJsonlParses: totalJsonlParses - parsesBeforeProgressWindow,
+			progressWindowPlanClones: totalPlanClones - clonesBeforeProgressWindow,
 			totalPositionedReads,
 			memory: process.memoryUsage(),
 		};
@@ -294,8 +403,10 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		expect(turnEnds).toBeGreaterThan(0);
 		expect(readsInFrames).toBe(0);
 		expect(progressWindowPositionedReads).toBe(0);
-		expect(result.p95Ms).toBeLessThan(100);
-		expect(result.maxGapMs).toBeLessThan(500);
+		expect(result.progressWindowJsonlParses).toBe(0);
+		expect(result.progressWindowPlanClones).toBe(0);
+		expect(result.p95Ms).toBeLessThan(extended ? 50 : 100);
+		expect(result.maxGapMs).toBeLessThan(extended ? 200 : 500);
 		expect(frameCount).toBeGreaterThanOrEqual(Math.floor(durationMs / 20) - 1);
 	} finally {
 		stopFrameClock?.();
