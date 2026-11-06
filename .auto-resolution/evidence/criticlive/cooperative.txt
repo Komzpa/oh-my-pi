@@ -1,0 +1,9 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/coding-agent/test/session-branch-cooperative.test.ts:
+(pass) digest selection stays on the active ancestry and yields without materializing the transcript [2.20ms]
+
+ 1 pass
+ 0 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [159.00ms]

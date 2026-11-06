@@ -1,0 +1,20 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.test.ts:
+(pass) no active deadline: overdue rows with live workers allow waiting [1.69ms]
+(pass) no active deadline: a started overdue row without a live worker is still a red row, without the deadline lecture [0.42ms]
+(pass) negative control: an active will-miss deadline with unstaffed critical rows refuses [0.29ms]
+(pass) active deadline: progressing executors allow waiting without revising the estimate [0.17ms]
+(pass) an overdue Brag/Finance model label and attempt do not permit waiting on unrelated jobs [0.31ms]
+(pass) an ownerless clock refuses idle; P95-only risk permits waiting [0.25ms]
+(pass) 15-minute preview gap refuses missing and unlanded identities once per row revision [0.43ms]
+(pass) a missing commit can be deferred only until its recorded time; an expired or untimed reason is not visibility [0.07ms]
+(pass) deadline slack uses the resource finish when expected finish is absent, and omits it without a due time [0.20ms]
+(pass) DC settled executors need restaff or verification; running registry workers and a live job pid permit wait [22.12ms]
+(pass) completed executor can hand off a visible user preview; review label alone still needs action [0.19ms]
+(pass) DC lead waits on both overdue executors, refuses missing or stalled workers, and cannot stop [45.03ms]
+
+ 12 pass
+ 0 fail
+ 74 expect() calls
+Ran 12 tests across 1 file. [872.00ms]

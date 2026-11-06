@@ -1,0 +1,3 @@
+ancestorEntries = ["packages/coding-agent/src/modes/interactive-mode.ts"]
+ourEntries = ["packages/coding-agent/src/modes/interactive-mode.ts"]
+theirEntries = ["packages/coding-agent/src/modes/interactive-mode.ts"]

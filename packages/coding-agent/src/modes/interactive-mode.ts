@@ -246,6 +246,7 @@ import {
 	nextActionableTask,
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	type TodoHudStateEntryData,
+	type TodoHudVisibility,
 } from "../tools/todo";
 import { readTodoDisplayArchive, readTodoDisplayLedgerFromManager } from "../tools/todo-plan-display";
 import { todoMatchesObservedWorker } from "../tools/todo-executor";

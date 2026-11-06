@@ -1,0 +1,3 @@
+DECISION: YES—project the existing structured `planningIssues` into FIX NOW, and leave prose-only `planCheck` telemetry above it unchanged.
+
+That covers the plan problems already represented in gate state without re-deriving facts or relying on stale prose. It leaves advisory diagnostics such as worker check-ins, status telemetry, sizing, and overlap warnings outside the list.
