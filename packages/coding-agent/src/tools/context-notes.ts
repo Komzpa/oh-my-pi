@@ -11,6 +11,7 @@ import contextNotesDescription from "../prompts/tools/context-notes.md" with { t
 import contextNotesTextDescription from "../prompts/tools/context-notes-text.md" with { type: "text" };
 import newContextDescription from "../prompts/tools/new-context.md" with { type: "text" };
 import { CONTEXT_NOTES_ENTRY_TYPE, type ContextNotesEntry, getContextNotes } from "../session/context-notes";
+import { selectBranchEntries, selectLatestBranchEntry } from "../session/branch-selection";
 import { cfgCompactionExperimentalContextManagement } from "../session/context-settings";
 import type { ToolSession } from ".";
 import { throwIfAborted } from "./tool-errors";
@@ -114,7 +115,12 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 		}
 		if (action === "read") {
 			// Read never mutates, whatever placeholder text a model may also send.
-			const notes = getContextNotes(manager.getBranch());
+			const notes = getContextNotes(
+				selectBranchEntries(
+					manager,
+					metadata => metadata.type === "reset_boundary" || metadata.customType === CONTEXT_NOTES_ENTRY_TYPE,
+				),
+			);
 			return {
 				content: [{ type: "text", text: notes?.text ?? "No context notes are stored for this session branch." }],
 				details: notes ? { entryId: notes.entryId, text: notes.text } : { entryId: undefined, text: "" },
@@ -136,7 +142,7 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 		const bytes = Buffer.byteLength(text, "utf8");
 
 		const ownerId = this.session.getSessionId?.();
-		const branchLeafId = manager.getBranch().at(-1)?.id;
+		const branchLeafId = manager.getLeafId?.() ?? selectLatestBranchEntry(manager, () => true)?.id;
 		await manager.ensureOnDisk();
 		throwIfAborted(signal);
 		const currentManager = getExperimentalContextSession(this.session);
@@ -148,7 +154,7 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 			manager.getSessionId?.() !== ownerId ||
 			// Unrelated appends may advance the leaf while the disk is prepared; only a
 			// branch switch that drops the snapshotted leaf from the active branch is stale.
-			(branchLeafId !== undefined && !manager.getBranch().some(entry => entry.id === branchLeafId))
+			(branchLeafId !== undefined && !selectLatestBranchEntry(manager, metadata => metadata.id === branchLeafId))
 		) {
 			throw new ToolError("Experimental context notes were not saved because the session branch changed.");
 		}
