@@ -7,6 +7,9 @@ import { expect, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as costProjection from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
+import * as persistedAgents from "../src/registry/persisted-agents";
+import * as titleGenerator from "../src/utils/title-generator";
 import * as tui from "@oh-my-pi/pi-tui";
 import {
 	initTerminalTitleState,
@@ -47,6 +50,17 @@ import {
 } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 
 const steady = process.env.JOURNAL_BENCH_STEADY === "1";
+const timings: Record<string, { calls: number; ms: number; rows?: number }> = {};
+function timed<T>(name: string, run: () => T): T {
+	const metric = (timings[name] ??= { calls: 0, ms: 0 });
+	metric.calls++;
+	const start = performance.now();
+	try {
+		return run();
+	} finally {
+		metric.ms += performance.now() - start;
+	}
+}
 const entries = steady ? 4_500 : 200_000;
 const shape = process.env.JOURNAL_BENCH_SHAPE ?? "original";
 const dc = shape === "dc";
@@ -179,7 +193,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 				(Array.isArray(value) && value.some(phase => phase && typeof phase === "object" && "tasks" in phase)))
 		)
 			totalPlanClones++;
-		return originalClone(value, options);
+		return timed("structuredClone", () => originalClone(value, options));
 	});
 	let titleWrites = 0;
 	const titleWriteTimes: number[] = [];
@@ -190,6 +204,23 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 			titleWrites++;
 			titleWriteTimes.push(performance.now());
 		}
+	});
+	const originalCost = costProjection.aggregateCost;
+	const costSpy = vi.spyOn(costProjection, "aggregateCost").mockImplementation(args => {
+		costSpy.mockClear();
+		const value = timed("aggregateCost", () => originalCost(args));
+		timings.aggregateCost!.rows = (timings.aggregateCost!.rows ?? 0) + args.rows.length;
+		return value;
+	});
+	const originalMembership = persistedAgents.sessionFileBelongsToRoot;
+	const membershipSpy = vi.spyOn(persistedAgents, "sessionFileBelongsToRoot").mockImplementation((...args) => {
+		membershipSpy.mockClear();
+		return timed("treeMembership", () => originalMembership(...args));
+	});
+	const originalTitle = titleGenerator.setTerminalTitle;
+	const titleSpy = vi.spyOn(titleGenerator, "setTerminalTitle").mockImplementation(value => {
+		titleSpy.mockClear();
+		timed("titleSetter", () => originalTitle(value));
 	});
 	let stopFrameClock: (() => void) | undefined;
 	const originalRead = loader.readPositionedSessionEntry;
@@ -391,6 +422,16 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 			},
 		});
 		mode = new InteractiveMode(session, "benchmark", undefined, undefined, undefined, eventBus, composer);
+		const syncBadge = mode.syncRunningSubagentBadge.bind(mode);
+		const badgeSpy = vi.spyOn(mode, "syncRunningSubagentBadge").mockImplementation(options => {
+			badgeSpy.mockClear();
+			return timed("badgeSync", () => syncBadge(options));
+		});
+		const frame = composer.renderFrame.bind(composer);
+		const frameSpy = vi.spyOn(composer, "renderFrame").mockImplementation(viewport => {
+			frameSpy.mockClear();
+			return timed("renderFrame", () => frame(viewport));
+		});
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		console.error(`BENCH_STAGE mode-init ${Date.now()}`);
 		await mode.init();
@@ -463,6 +504,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		const durationMs = Number(process.env.JOURNAL_BENCH_DURATION_MS ?? "6000");
 		const parsesBeforeMeasurement = totalJsonlParses;
 		const branchReadsBeforeMeasurement = wholeBranchReads;
+		for (const key of Object.keys(timings)) delete timings[key];
 		const runStart = performance.now();
 		const measurementStartUnixMs = Date.now();
 		const titleWritesBeforeMeasurement = titleWrites;
@@ -526,6 +568,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		const mainThreadOffCpuShare =
 			1 - (measurementThreadCpu.user + measurementThreadCpu.system) / (emissionElapsedMs * 1000);
 		const measurementTitleWrites = titleWrites - titleWritesBeforeMeasurement;
+		const measurementTimings = Object.fromEntries(Object.entries(timings).map(([key, value]) => [key, { ...value }]));
 		await pendingTurn;
 		await restoration;
 		console.error(`BENCH_STAGE turns-done ${Date.now()}`);
@@ -560,6 +603,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 			steady,
 			measurementStartUnixMs,
 			measurementEndUnixMs,
+			measurementTimings,
 			measurementCpu,
 			measurementThreadCpu,
 			mainThreadOffCpuShare,
