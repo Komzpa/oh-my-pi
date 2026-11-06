@@ -6159,7 +6159,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ...(chief ? [prompt.render(leadTimeSummary, {
         open: decision.forecast?.rows.filter(row => row.status !== "completed" && row.status !== "abandoned").length ?? 0,
         running: decision.activeTaskCount ?? 0,
-        ready: decision.readyCandidates.filter(row => row.ownership === "unassigned" || row.ownership === "unverified").length,
+        ready: visibleRows.filter(row => row.state === "needs worker").length,
         lost: visibleRows.filter(row => row.state === "needs worker" && row.reason === "lost").length,
         forecast: decision.forecast ? sdk.formatPlanForecast(decision.forecast, now) : null,
       }).trim()] : []),
