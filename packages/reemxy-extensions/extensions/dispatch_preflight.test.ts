@@ -11,13 +11,13 @@ import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import agentRouter from "./agent_router";
-import { workerToolPreflight, type TestProcess } from "./dispatch_preflight";
+import { workerToolPreflight, type HostResourceProbes, type TestProcess } from "./dispatch_preflight";
 const ctx = { cwd: "/project", agent: { kind: "sub" } } as ExtensionContext;
 const low = {
 	meminfo: async () => "MemTotal: 999999 kB\nMemFree: 1 kB\nMemAvailable: 4194304 kB\n",
 	processes: async (): Promise<TestProcess[]> => [],
 };
-const call = (toolName: string, input: unknown, context = ctx, probes = low) =>
+const call = (toolName: string, input: unknown, context = ctx, probes: HostResourceProbes = low) =>
 	workerToolPreflight({ toolName, input }, context, probes);
 
 test("write behavior blocks outside cwd without telltale prose and cannot be bypassed by retry", async () => {
@@ -68,19 +68,67 @@ test("actual test launch probes fresh resources on each attempt; matching words 
 	expect(await call("bash", { command: "bun test" }, ctx, probes)).toBeUndefined();
 	expect(count).toBe(3);
 });
-test("same-project proc argv prevents simultaneous launches, unrelated commands and projects do not", async () => {
+test("three same-project suites admit a fourth with RAM capacity of at least four", async () => {
 	const probes = {
-		meminfo: async () => "MemAvailable: 99999999 kB\n",
-		processes: async () => [
-			{ pid: 42, cwd: "/project/tests", command: "", argv: ["chromium", "--headless"] },
-			{ pid: 43, cwd: "/project-other", command: "bun test" },
-			{ pid: 44, cwd: "/project", command: "echo playwright test" },
-		],
+		meminfo: async () => "MemAvailable: 58720256 kB\n", // 56 GiB, floor 8 => N=12
+		cpus: () => 32,
+		processes: async () => [42, 43, 44].map(pid => ({ pid, cwd: "/project/tests", command: "bun test" })),
 	};
-	expect((await call("bash", { command: "npx playwright test" }, ctx, probes))?.reason).toContain(
-		"same-project test processes=1 (PIDs 42)",
+	expect(await call("bash", { command: "npx playwright test" }, ctx, probes)).toBeUndefined();
+	expect(await call("browser", { action: "open" }, ctx, probes)).toBeUndefined();
+	const full = { ...probes, cpus: () => 3 };
+	const refused = await call("bash", { command: "bun test" }, ctx, full);
+	expect(refused?.reason).toContain("N=3");
+	expect(refused?.reason).toContain("PIDs 42, 43, 44");
+	expect(refused?.reason).toContain("running count is below N");
+	expect(
+		await call("bash", { command: "bun test" }, ctx, {
+			...full,
+			processes: async () => (await probes.processes()).slice(1),
+		}),
+	).toBeUndefined();
+	expect(await call("bash", { command: "bun test" }, { ...ctx, cwd: "/other" }, full)).toBeUndefined();
+});
+
+test("RAM below the floor refuses an idle project", async () => {
+	expect((await call("bash", { command: "bun test" }))?.reason).toContain("minimum=8 GiB");
+});
+
+test("low VRAM refuses hardware perf while functional e2e still runs", async () => {
+	const probes = {
+		...low,
+		meminfo: async () => "MemAvailable: 58720256 kB\n",
+		cpus: () => 32,
+		gpuFreeMiB: async () => [1000, 700],
+	};
+	const refused = await call(
+		"bash",
+		{ command: "OMP_TEST_GPU=1 npx playwright test e2e/frame-cap.spec.ts" },
+		ctx,
+		probes,
 	);
-	expect(await call("bash", { command: "npx playwright test" }, { ...ctx, cwd: "/other" }, probes)).toBeUndefined();
+	expect(refused?.reason).toContain("additional GPU slots=0");
+	expect(refused?.reason).toContain("[1000,700]");
+	expect(await call("bash", { command: "npx playwright test e2e/functional.spec.ts" }, ctx, probes)).toBeUndefined();
+	expect(await call("bash", { command: "npx playwright test e2e/timing.spec.ts" }, ctx, probes)).toMatchObject({
+		block: true,
+	});
+	expect(
+		await call("bash", { command: "OMP_TEST_GPU=1 npx playwright test" }, ctx, {
+			...probes,
+			gpuFreeMiB: async () => [3072, 700],
+		}),
+	).toBeUndefined();
+	const unknown = {
+		...probes,
+		gpuFreeMiB: async (): Promise<number[]> => {
+			throw new Error("probe failed");
+		},
+	};
+	expect(await call("bash", { command: "OMP_TEST_GPU=1 npx playwright test" }, ctx, unknown)).toMatchObject({
+		block: true,
+	});
+	expect(await call("bash", { command: "npx playwright test e2e/functional.spec.ts" }, ctx, unknown)).toBeUndefined();
 });
 
 test("shell redirections and changed cwd resolve targets, quoted mentions remain inert", async () => {

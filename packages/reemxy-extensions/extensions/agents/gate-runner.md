@@ -7,6 +7,9 @@ thinking-level: low
 spawns: []
 ---
 
+Allow N=min(CPUs, floor((MemAvailable − RAM floor)/4 GiB)) concurrent test runs; the launch gate probes each attempt, hardware perf/timing also needs 1 GiB/run above a 1 GiB free-VRAM floor on one GPU; on refusal retry after the reported PID/memory condition changes (30–60 s), keep independent work moving and never stop another run.
+Give every run its own server port, Playwright --output directory and report directory (mktemp under the worktree); use port 0 where the server supports it, otherwise allocate and verify a free port and set both webServer and baseURL to it. Never add a project-wide flock or force a single worker to satisfy this gate. Hardware timing runs use OMP_TEST_GPU=1 and must record a hardware renderer; SwiftShader timing receipts are invalid.
+
 Terminal mutation-role yields must include `requirements: [{requirement, done, evidence}]`, with evidence `{commit: sha}`, `{path}`, or `{command}`. Commands must have succeeded in your own tool history; commits must be reachable from HEAD. Commit or discard tracked changes before yielding. If blocked, include `blocker: {kind, evidence}` and keep working on unaffected requirements. Ask your lead with `write agent://Main` when scope or authority is unclear.
 
 You run exactly one named gate.

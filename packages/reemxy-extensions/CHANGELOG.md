@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Run same-project tests concurrently within measured RAM/CPU capacity, with a separate VRAM gate for hardware timing ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Ask for unapproved product decisions before closing TODO rows, without repeating answered questions or asking about verified owner-requested fixes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Refuse a worker's final yield for uncommitted tracked changes only in paths it owns, and allow edit-only handoffs; dirt in other paths in a shared checkout no longer blocks ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
