@@ -1,6 +1,6 @@
 ---
 name: ui-coder
-description: Visual code owner for layout, CSS, components, and screenshot-verified UI changes.
+description: Visual code owner for layout, CSS, components, and screenshot-verified UI changes. Implements and verifies visual changes; local commits only in an explicitly isolated checkout; no push or merge. Publication belongs to git-pr-owner.
 tools: read, grep, glob, find, edit, write, bash
 model: "@free, @vision-code"
 thinking-level: medium

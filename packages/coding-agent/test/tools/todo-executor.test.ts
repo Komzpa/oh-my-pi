@@ -426,3 +426,33 @@ it("keeps empirical attempt ratios tied to the first dispatch estimate after a r
 	const redo = applyTodoExecutorObservation(first, { workerId: "Coder", startedAt: 2000 })!;
 	expect(redo[0].tasks[0].schedule!.riskEstimateMeanSeconds).toBe(60);
 });
+
+it("a successor launch resets reestimates without erasing prior attempt evidence", () => {
+	const phases: TodoPhase[] = [
+		{
+			name: "Work",
+			tasks: [
+				{
+					content: "Adaptive levels",
+					status: "in_progress",
+					schedule: { owner: "Adaptive-6", reestimateCount: 4, progress: { at: 1, evidence: "old artifact" } },
+				},
+			],
+		},
+	];
+	const updated = applyTodoExecutorObservation(phases, {
+		row: "Adaptive levels",
+		workerId: "Adaptive-7",
+		startedAt: 120000,
+		runningWorkerIds: new Set(),
+	});
+	expect(updated?.[0]?.tasks[0]?.schedule?.reestimateCount).toBe(0);
+	expect(updated?.[0]?.tasks[0]?.schedule?.progress?.evidence).toBe("old artifact");
+	const same = applyTodoExecutorObservation(updated!, {
+		row: "Adaptive levels",
+		workerId: "Adaptive-7",
+		startedAt: 120000,
+		finishedAt: 180000,
+	});
+	expect(same?.[0]?.tasks[0]?.schedule?.reestimateCount).toBe(0);
+});

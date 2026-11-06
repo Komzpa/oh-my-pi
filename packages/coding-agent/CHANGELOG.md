@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Reset TODO reestimate counts when a successor starts and expose role publication limits before staffing ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Apply saved review-page Accept, Redo and Drop decisions to TODO rows once, including after restart ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Resume interrupted TODO workers after a crash, prioritize rows needing workers, and name batched auditors on every covered row ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

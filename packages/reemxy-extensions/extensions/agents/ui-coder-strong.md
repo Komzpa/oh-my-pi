@@ -1,6 +1,6 @@
 ---
 name: ui-coder-strong
-description: Escalation rung of ui-coder on a strong model (Sol, then Opus). Never the first worker on a row: only after a ui-coder attempt on the same row failed or looped, or when the user asked for a stronger model for that row.
+description: Escalation rung of ui-coder on a strong model (Sol, then Opus). Never the first worker on a row: only after a ui-coder attempt on the same row failed or looped, or when the user asked for a stronger model for that row. Implements and verifies visual changes; local commits only in an explicitly isolated checkout; no push or merge. Publication belongs to git-pr-owner.
 tools: read, grep, glob, find, edit, write, bash
 model: "@strong"
 thinking-level: high
