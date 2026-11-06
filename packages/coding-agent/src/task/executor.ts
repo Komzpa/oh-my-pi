@@ -4079,6 +4079,7 @@ interface SubagentSessionSpec {
 
 /** Launch-only session inputs: a revived session restores these from its transcript or goes without. */
 interface SubagentLaunchInputs {
+	expectedAgentRef?: AgentRef;
 	workPoolYieldItems: readonly WorkPoolYieldItem[];
 	resolveServiceTierByFamily?: CreateAgentSessionOptions["resolveServiceTierByFamily"];
 	onFirstChatDispatch?: () => void;
@@ -4109,7 +4110,7 @@ function buildSubagentSessionOptions(
 		customTools: customTools.length > 0 ? customTools : undefined,
 		settings,
 		sessionManager,
-		expectedAgentRef,
+		expectedAgentRef: launch?.expectedAgentRef ?? expectedAgentRef,
 		resolveServiceTierByFamily: launch?.resolveServiceTierByFamily,
 		onFirstChatDispatch: launch?.onFirstChatDispatch,
 		// A launch prompts its assignment only after setup; a revive's turns are its IRC wakes.
@@ -5075,12 +5076,13 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			let sessionPromise: Promise<CreateAgentSessionResult> | undefined;
 			try {
 				sessionPromise = createAgentSession(
-					buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, startingRef, mcpFollower, {
+					buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, null, mcpFollower, {
 						workPoolYieldItems: options.workPoolYieldItems ?? [],
 						// A revived session restores the tier history it persisted (including
 						// tiers a provider rejected or an extension changed since spawn); only
 						// the fresh spawn resolves the per-agent override.
 						resolveServiceTierByFamily,
+						expectedAgentRef: startingRef,
 						onFirstChatDispatch: () => {
 							firstChatDispatchAt ??= performance.now();
 						},
