@@ -1,0 +1,20 @@
+opened 01a1921c-7697-72a8-b4a3-4efdbbf06221
+identity {
+  type: "session",
+  id: "01a1b558-76bd-72e1-bead-878682b2ce9a",
+  timestamp: "2026-11-07T09:30:36.093Z",
+  parentSession: "01a1921c-7697-72a8-b4a3-4efdbbf06221",
+  continuationOf: "01a1921c-7697-72a8-b4a3-4efdbbf06221",
+  version: 3,
+  cwd: "/home/kom/proj/sunbim/datacenter-decision-graph",
+  title: "🏢 DC: Create datacenter work branch",
+  titleSource: "auto",
+  providerPromptCacheKey: "01a1921c-7697-72a8-b4a3-4efdbbf06221",
+} 6
+loaded [ "/home/kom/proj/ai_pr/omp-criticlive-20261107/oh-my-pi/evidence/criticlive/runtime/node_modules/@oh-my-pi/reemxy-extensions/extensions/goal_deadlines.ts",
+  "/home/kom/proj/ai_pr/omp-criticlive-20261107/oh-my-pi/evidence/criticlive/runtime/node_modules/@oh-my-pi/reemxy-extensions/extensions/todo_dispatch.ts",
+  "/home/kom/proj/ai_pr/omp-criticlive-20261107/oh-my-pi/evidence/criticlive/runtime/node_modules/@oh-my-pi/reemxy-extensions/extensions/agent_router.ts",
+  "<inline-0>"
+] errors []
+elapsedMs 60470.579094
+calls 0

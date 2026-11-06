@@ -1,0 +1,3 @@
+DECISION: Yes—archive the exact installed source and run the extended repro in the isolated lane.
+
+The brief asks for an offline repro against the installed source, using copied data, isolated HOME/XDG, a disposable session cwd, and `unshare -Urn`. Keep #92 local and make no forbidden live, install, or config changes.

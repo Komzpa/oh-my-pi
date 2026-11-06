@@ -1,0 +1,7 @@
+{
+  "type": "stringify",
+  "time": 1794086436250,
+  "ms": 22.609952999999223,
+  "bytes": 14565803,
+  "stack": "Error\n    at <anonymous> (/home/kom/proj/ai_pr/omp-stringifyfreeze-20261108/oh-my-pi/evidence/heartbeat.ts:7:174)\n    at renderRawEntry (/home/kom/proj/ai_pr/omp-stringifyfreeze-20261108/offline-source/packages/coding-agent/src/internal-urls/history-protocol.ts:375:28)\n    at <anonymous> (/home/kom/proj/ai_pr/omp-stringifyfreeze-20261108/offline-source/packages/coding-agent/src/internal-urls/history-protocol.ts:458:6)"
+}

@@ -1,0 +1,5 @@
+DECISION: Yes—accept the isolated fork/registry reproduction, extracted observer-loop reproduction, and focused lifecycle tests as offline proof; a full offline `agent_end` runtime replay is not required.
+
+The measured fork and registry paths reproduce the reported cost and meet the stated after-state bounds on the same copy, with identical context and cost progression. The focused lifecycle tests cover the relevant integration points.
+
+Record the missing full `agent_end` replay and live DC/provider replay as limits; they are not required to accept this offline proof or claim live validation.

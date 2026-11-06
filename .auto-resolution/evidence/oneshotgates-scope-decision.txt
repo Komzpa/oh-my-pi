@@ -1,0 +1,3 @@
+DECISION: Deliver the narrow PR92 mitigation and include an explicit PR41 handoff for the remaining guarantee.
+
+The brief authorizes a PR92 push; it does not authorize changing PR41 or a generic notice-dispatch policy. Implement and verify the wait exemption, no-row plan/retro suppression, and one-shot lead guidance on PR92. Record that PR41 still needs to suppress candidate notices and publication bookkeeping when there are no TODO rows or linked requirements, so the mitigation does not claim zero forced bookkeeping.
