@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { AsyncJobError } from "../async";
 import { AgentRegistry } from "../registry/agent-registry";
@@ -76,7 +77,12 @@ export async function recoverCrashedRows(session: AgentSession, options: Restore
 			);
 		const ref = registry.get(sub.agentId);
 		const init = extractSessionInit(sub.entries);
-		if (!rows.length || !ref?.sessionFile || ref.session || !init || init.isolated || !sub.header) continue;
+		if (!rows.length || !ref?.sessionFile || ref.session || !init || !sub.header) continue;
+		try {
+			if (!(await fs.stat(sub.header.cwd)).isDirectory()) continue;
+		} catch {
+			continue;
+		}
 		const id = await outputs.allocate(sub.agentId);
 		const file = path.join(dir, `${id}.jsonl`);
 		const fork = await SessionManager.forkFrom(ref.sessionFile, sub.header.cwd, dir, undefined, {
@@ -85,6 +91,8 @@ export async function recoverCrashedRows(session: AgentSession, options: Restore
 			copyArtifacts: false,
 		});
 		await fork.close();
+		const isolationMarker = path.join(dir, `${id}.restart-isolation.json`);
+		if (init.isolated) await Bun.write(isolationMarker, JSON.stringify({ id, cwd: sub.header.cwd }));
 		registry.register({
 			id,
 			displayName: ref.displayName,
@@ -147,6 +155,7 @@ export async function recoverCrashedRows(session: AgentSession, options: Restore
 					return result.structuredOutput ? { text, structured: result.structuredOutput } : text;
 				} finally {
 					if (acquired) permit.release();
+					if (init.isolated) await fs.rm(isolationMarker, { force: true });
 					for (const row of titles) {
 						const updated = applyTodoExecutorObservation(session.getTodoPhases(), {
 							row,
