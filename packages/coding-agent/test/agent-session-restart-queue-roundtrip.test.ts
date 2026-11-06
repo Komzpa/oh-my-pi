@@ -145,6 +145,50 @@ describe("AgentSession restart queue round trip", () => {
 		return session;
 	}
 
+	it.each(["steering", "followUp"] as const)(
+		"cancels a restored %s drain without a role error and delivers it on retry",
+		async queue => {
+			const manager = currentManager();
+			manager.appendMessage({ role: "user", content: "prior task", timestamp: Date.now() - 1 });
+			appendPriorAssistant(manager);
+			session = createSession(manager);
+			const lease = session.beginRestartDrain();
+			const queued: AgentMessage = { role: "user", content: "survive cancelled drain", timestamp: Date.now() };
+			if (queue === "steering") session.agent.steer(queued);
+			else session.agent.followUp(queued);
+			await lease.waitForQuiescence();
+			const file = manager.getSessionFile();
+			if (!file) throw new Error("Expected checkpoint file");
+			await session.dispose();
+			session = undefined;
+			sessionManager = undefined;
+			const inputs: string[] = [];
+			const restored = await reopenSession(file, [{ content: ["received"] }], inputs);
+			const controller = new AbortController();
+			const detach = restored.agent.addBeforeQueuedMessageDequeueHook(() => controller.abort());
+			try {
+				const outcome = await restored.agent.continue(controller.signal).then(
+					() => null,
+					(error: unknown) => (error instanceof Error ? error.message : String(error)),
+				);
+				expect(outcome).toBeNull();
+				expect(inputs).toEqual([]);
+				expect(restored.agent.snapshotPendingQueues()[queue]).toEqual([queued]);
+			} finally {
+				detach();
+			}
+			await restored.agent.continue();
+			await restored.waitForIdle();
+			await currentManager().flush();
+			expect(inputs[0]).toContain("survive cancelled drain");
+			expect(
+				currentManager()
+					.getEntries()
+					.filter(e => e.type === "message" && e.message.role === "user" && e.message.content === queued.content),
+			).toHaveLength(1);
+		},
+	);
+
 	it.each(["completed", "failed", "cancelled"])("does not replay queued notices after a %s restart", async state => {
 		const manager = currentManager();
 		appendPriorAssistant(manager);
