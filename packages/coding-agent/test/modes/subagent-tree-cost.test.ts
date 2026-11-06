@@ -6,6 +6,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { sumSubagentTreeCost } from "@oh-my-pi/pi-coding-agent/modes/agent-hub-runtime";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
+import * as persistedAgents from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentMetricsSummary, AgentRef } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -75,6 +76,40 @@ describe("sumSubagentTreeCost", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
+	it("reuses indexed tree membership on progress without freezing live billing", () => {
+		const worker = ref("Progress", { cost: 1 });
+		const args = {
+			refs: [worker],
+			observers: new SessionObserverRegistry(),
+			rootSessionFile: root,
+			sessionCosts: new WeakMap<object, AgentCostSnapshot>(),
+		};
+		const membership = spyOn(persistedAgents, "sessionFileBelongsToRoot");
+		expect(sumSubagentTreeCost(args)).toBe(1);
+		membership.mockClear();
+		worker.history!.metrics!.cost = 2;
+		expect(sumSubagentTreeCost(args)).toBe(2);
+		// Progress paints must not normalize every unchanged worker path again.
+		expect(membership).not.toHaveBeenCalled();
+	});
+
+	it("updates billing when a ref moves between roots without keeping stale membership", () => {
+		const worker = ref("Moving", { cost: 1 });
+		const args = {
+			refs: [worker],
+			observers: new SessionObserverRegistry(),
+			rootSessionFile: root,
+			sessionCosts: new WeakMap<object, AgentCostSnapshot>(),
+		};
+		expect(sumSubagentTreeCost(args)).toBe(1);
+		worker.history!.metrics!.cost = 2;
+		expect(sumSubagentTreeCost(args)).toBe(2);
+		worker.sessionFile = path.resolve("sessions", "other", "Moving.jsonl");
+		expect(sumSubagentTreeCost(args)).toBe(0);
+		args.rootSessionFile = path.resolve("sessions", "other.jsonl");
+		expect(sumSubagentTreeCost(args)).toBe(2);
+	});
+
 	it("sums the root's subagent tree and nothing outside it", () => {
 		const observers = new SessionObserverRegistry();
 		const cost = sumSubagentTreeCost({
