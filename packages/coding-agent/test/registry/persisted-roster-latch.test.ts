@@ -4,6 +4,7 @@ import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
+import * as sessionLoader from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
@@ -526,4 +527,25 @@ describe("persisted roster latch semantics", () => {
 		expect(registry.get("Worker")?.sessionFile).toBe(childA);
 		expect(countReaddirs(readdirs, scanDir(rootA))).toBe(3);
 	}, 10_000);
+});
+
+it("captured workers use indexed Vibe ownership without streaming the root journal", async () => {
+	using tempDir = TempDir.createSync("@omp-roster-restart-index-");
+	const rootFile = path.join(tempDir.path(), "main.jsonl");
+	const workerFile = path.join(tempDir.path(), "main", "Worker.jsonl");
+	const vibeFile = path.join(tempDir.path(), "main", "Vibe.jsonl");
+	await Bun.write(rootFile, `${sessionHeader("main")}\n`);
+	for (const file of [workerFile, vibeFile])
+		await Bun.write(file, `${sessionHeader(path.basename(file))}\n${sessionInitRecord()}\n`);
+	const visit = sessionLoader.visitEntriesFromFileStream;
+	vi.spyOn(sessionLoader, "visitEntriesFromFileStream").mockImplementation((...args) => {
+		if (args[0] === rootFile) throw new Error("restart streamed the root journal");
+		return visit(...args);
+	});
+	const registry = new AgentRegistry();
+	expect(await ensurePersistedRoster(registry, rootFile, undefined, [workerFile, vibeFile], new Set(["Vibe"]))).toBe(
+		rootFile,
+	);
+	expect(registry.get("Worker")).toMatchObject({ sessionFile: workerFile, status: "parked" });
+	expect(registry.get("Vibe")).toBeUndefined();
 });

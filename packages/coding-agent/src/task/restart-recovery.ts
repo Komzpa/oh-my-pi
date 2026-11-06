@@ -8,6 +8,7 @@ import {
 import { prompt } from "@oh-my-pi/pi-utils";
 import isolationRecoveryPrompt from "../prompts/restart-isolation-recovery.md" with { type: "text" };
 import { selectRestartBranchEntries } from "./restart-branch-selection";
+import { persistedVibeChildIds, VIBE_LIFECYCLE_CUSTOM_TYPE } from "../vibe/lifecycle";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { IrcBus } from "../irc/bus";
@@ -780,6 +781,12 @@ export async function restoreSubagentsAfterRestart(
 			identity.rootSessionFile,
 			undefined,
 			handoff.children.filter(child => child.status !== "parked").map(child => child.sessionFile),
+			persistedVibeChildIds(
+				selectRestartBranchEntries(
+					rootSession.sessionManager,
+					entry => entry.type === "custom" && entry.customType === VIBE_LIFECYCLE_CUSTOM_TYPE,
+				),
+			),
 		);
 		if (!scannedRoot || path.resolve(scannedRoot) !== identity.rootSessionFile) {
 			throw new Error("persisted subagent transcript scan could not resolve this root session");

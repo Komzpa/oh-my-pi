@@ -596,6 +596,7 @@ export async function ensurePersistedRoster(
 	sessionFileHint?: string | null,
 	requestedAgentId?: string,
 	capturedSessionFiles?: readonly string[],
+	vibeOwnedIds?: ReadonlySet<string>,
 ): Promise<string | undefined> {
 	let root: string | undefined;
 	try {
@@ -615,6 +616,7 @@ export async function ensurePersistedRoster(
 			registerPersistedSubagents(registry, root, {
 				hydrateHistory: false,
 				sessionFiles: capturedSessionFiles,
+				vibeOwnedIds,
 			}),
 		);
 		taggedRegistry[kPersistedRosterScanTail] = scan.then(
@@ -725,6 +727,8 @@ export async function registerPersistedSubagents(
 		requestedAgentId?: string;
 		/** Restart handoff: inspect only captured transcripts and their ancestors. */
 		sessionFiles?: readonly string[];
+		/** Restart recovery already holds the indexed root lifecycle entries. */
+		vibeOwnedIds?: ReadonlySet<string>;
 		/** Observe refs already registered from a different root whose transcript is also present in this root. */
 		onCopiedRef?: (ref: AgentRef) => void;
 	} = {},
@@ -735,7 +739,10 @@ export async function registerPersistedSubagents(
 	if (!shouldContinue()) return;
 	// The main transcript can be large: read it once, and only for a transcript the registry does not hold yet.
 	let vibeOwnedIds: Promise<Set<string>> | undefined;
-	const vibeOwned = () => (vibeOwnedIds ??= readPersistedVibeChildIds(sessionFile, shouldContinue));
+	const vibeOwned = () =>
+		options.vibeOwnedIds !== undefined
+			? Promise.resolve(options.vibeOwnedIds)
+			: (vibeOwnedIds ??= readPersistedVibeChildIds(sessionFile, shouldContinue));
 	const root = sessionFile.slice(0, -6);
 	const selectedFiles = options.sessionFiles
 		? new Set(
