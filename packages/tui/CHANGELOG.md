@@ -132,6 +132,8 @@
 - The BTW history list shows the date for questions asked before today (and the year for ones from an earlier year), instead of a bare time that read as today's; a follow-up asked on a later day than its topic shows its date too ([#18210](https://github.com/can1357/oh-my-pi/pull/18210) by [@a-glapinski](https://github.com/a-glapinski))
 
 ## [18.17.0] - 2026-11-06
+- TODO rows show queued audits and pending handoffs separately, and request review only after verification and handoff finish.
+
 ### Changed
 
 - Show one TODO progress summary with live work, grouped dependencies, audits and user review states ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

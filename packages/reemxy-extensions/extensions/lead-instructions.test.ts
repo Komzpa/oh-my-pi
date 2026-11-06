@@ -11,10 +11,12 @@ beforeAll(async () => {
 	scenarios = await leadInstructionScenarios();
 });
 
-const contracts: Record<string, { tool?: string; operation?: string; wait?: boolean }> = {
+const contracts: Record<string, { tool?: string; operation?: string; wait?: boolean; handoff?: boolean }> = {
 	working: { wait: true },
 	waiting: { wait: true },
 	verifying: { wait: true },
+	"audit-queued": { wait: true },
+	"handoff-pending": { handoff: true },
 	auditing: { wait: true },
 	"ready-to-close": { tool: "todo", operation: "done" },
 	"needs-you": { wait: true },
@@ -61,6 +63,9 @@ for (const id of Object.keys(contracts)) {
 				expect(notice).toContain("tasks:");
 				expect(notice).toContain("task:");
 			}
+		} else if (contract.handoff) {
+			expect(notice).toContain("send review page http://review.invalid/card");
+			expect(notice).toContain("handoffPending:false after sending");
 		} else if (contract.wait) {
 			expect(notice.toLowerCase()).toContain("wait");
 			expect(notice).not.toContain("NEXT ACTION:");

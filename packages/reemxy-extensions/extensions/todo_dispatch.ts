@@ -1270,8 +1270,8 @@ function isDeliveredReview(task: { status: string; schedule?: unknown }): boolea
 
 /** A review row is closed only when an artifact was actually delivered. */
 export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; schedule?: unknown }> }>(phases: P[]): P[] {
-  return phases.map((phase) => phase.tasks.some((task) => isDeliveredReview(task) && isNonClosedRowStatus(task.status))
-    ? { ...phase, tasks: phase.tasks.map((task) => isDeliveredReview(task) && isNonClosedRowStatus(task.status) ? { ...task, status: "completed" } : task) }
+  return phases.map((phase) => phase.tasks.some((task) => isDeliveredReview(task) && !todoRowAfterWorker(task) && isNonClosedRowStatus(task.status))
+    ? { ...phase, tasks: phase.tasks.map((task) => isDeliveredReview(task) && !todoRowAfterWorker(task) && isNonClosedRowStatus(task.status) ? { ...task, status: "completed" } : task) }
     : phase);
 }
 
@@ -2013,7 +2013,7 @@ export function decideTodoDispatch(
    const dispatchableReady = ownerlessReady.filter(
      (candidate) =>
        staffingSnapshotComplete &&
-      !(candidate.owner !== null && completedTaskOwners.has(candidate.owner) &&
+      !(afterWorker.get(candidate.content)?.kind !== "needs-worker" && candidate.owner !== null && completedTaskOwners.has(candidate.owner) &&
         openTasksByContent.get(candidate.content)?.status === "in_progress") &&
       // A restored owner that is not running after startup is dead (omp --resume brings nobody back):
       // its row is staffed again under the owner's name (live 21:48: 0 of 20 ran while two such rows waited).
