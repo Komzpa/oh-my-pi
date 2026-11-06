@@ -12,6 +12,8 @@ export interface RestartIsolation {
 	cwd: string;
 	marker: string;
 	snapshotPath?: string;
+	captureDeadlineAt?: number;
+	captureError?: string;
 }
 
 export async function restartIsolation(
@@ -153,6 +155,15 @@ export async function snapshotRestartIsolation(item: RestartIsolation, destinati
 
 /** Recover a missing worktree. An existing worktree remains authoritative. */
 export async function restoreRestartIsolation(item: RestartIsolation): Promise<void> {
+	while (item.captureDeadlineAt !== undefined) {
+		if (Date.now() >= item.captureDeadlineAt) throw new Error(`Restart snapshot deadline expired for ${item.id}`);
+		await Bun.sleep(Math.min(10, Math.max(1, item.captureDeadlineAt - Date.now())));
+		const updated = (await Bun.file(item.marker).json()) as RestartIsolation;
+		if (updated.id !== item.id || updated.cwd !== item.cwd)
+			throw new Error(`Restart snapshot identity changed for ${item.id}`);
+		Object.assign(item, { captureDeadlineAt: undefined }, updated);
+	}
+	if (item.captureError) throw new Error(item.captureError);
 	try {
 		await fs.lstat(item.cwd);
 		return;

@@ -1,3 +1,4 @@
+import { launchRestartSnapshots, type RestartSnapshotCapture } from "./restart-snapshot-worker";
 import * as fs from "node:fs/promises";
 import { AgentRegistry } from "../registry/agent-registry";
 import {
@@ -164,6 +165,8 @@ export interface RestartQueueControllerOptions {
 	restartSuccessor?: boolean;
 	/** Interactive startup calls resumeChildren after accepting input and painting. */
 	deferChildren?: boolean;
+	/** Interactive process replacement lets filesystem capture survive exec. */
+	backgroundSnapshots?: boolean;
 	onChildProgress?: (id: string, completed: number, total: number) => void;
 	onStateChange?: (record: RestartRequestRecord) => void;
 	captureGoalMode?: () => { goalId: string } | undefined;
@@ -219,6 +222,7 @@ interface ActiveRestartDrain {
 	notifiedSessions: Map<AgentSessionHandle, Set<string>>;
 	irreversible: boolean;
 	callbackStarted: boolean;
+	snapshotCapture?: RestartSnapshotCapture;
 	cancelNoticeDelivered: boolean;
 }
 
@@ -537,6 +541,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	readonly #identity: () => RestartControlIdentity;
 	readonly #restart: () => Promise<void>;
 	readonly #deferChildren: boolean;
+	readonly #backgroundSnapshots: boolean;
 	readonly #onChildProgress: RestartQueueControllerOptions["onChildProgress"];
 	readonly #restartSuccessor: boolean | undefined;
 	readonly #onStateChange: ((record: RestartRequestRecord) => void) | undefined;
@@ -576,6 +581,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		this.#restart = options.restart;
 		this.#restartSuccessor = options.restartSuccessor;
 		this.#deferChildren = options.deferChildren ?? false;
+		this.#backgroundSnapshots = options.backgroundSnapshots ?? false;
 		this.#onChildProgress = options.onChildProgress;
 		this.#onStateChange = options.onStateChange;
 		this.#captureGoalMode = options.captureGoalMode;
@@ -816,6 +822,15 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			["replace_runtime", 1_000],
 			["restore_children", 1_000],
 		].map(([stage, minimum]) => ({ stage: String(stage), estimateMs: Number(minimum) }));
+		if (this.#backgroundSnapshots) {
+			const index = minima.findIndex(item => item.stage === "snapshot_isolation");
+			const [capture] = minima.splice(index, 1);
+			minima.splice(
+				minima.findIndex(item => item.stage === "replace_runtime"),
+				0,
+				capture,
+			);
+		}
 		const plan = minima.map(({ stage, estimateMs }) => ({
 			stage,
 			estimateMs: Math.max(this.#stageMinima[stage] ?? estimateMs, ...(this.#recentDurations.get(stage) ?? [])),
@@ -1061,9 +1076,11 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (run.cancelled || this.#disposed) return;
 			const safe = await this.#settleAndFlush(run);
 			if (!safe || run.cancelled || this.#disposed) return;
-			await this.#measureStage(run.record, "snapshot_isolation", async () => {
-				await Promise.all([...run.isolations.values()].map(isolated => snapshotRestartIsolation(isolated)));
-			});
+			if (!this.#backgroundSnapshots) {
+				await this.#measureStage(run.record, "snapshot_isolation", () =>
+					Promise.all([...run.isolations.values()].map(isolated => snapshotRestartIsolation(isolated))),
+				);
+			}
 			await this.#measureStage(run.record, "capture_children", () =>
 				captureSubagentsForRestart(this.#session, {
 					runningAgentIds: run.runningAgentIds,
@@ -1074,6 +1091,15 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			run.record = await this.#measureStage(run.record, "flush", () => this.#transition(run, "checkpointed"));
 			if (run.cancelled || this.#disposed) return;
 			run.irreversible = true;
+			if (this.#backgroundSnapshots) {
+				await this.#measureStage(run.record, "snapshot_isolation", async () => {
+					run.snapshotCapture = await launchRestartSnapshots(
+						[...run.isolations.values()],
+						run.record.requestId,
+						run.budget.deadlineAt,
+					);
+				});
+			}
 			run.record = await this.#transition(run, "restarting");
 			run.callbackStarted = true;
 			await this.#measureStage(run.record, "replace_runtime", () => this.#restart());
@@ -1210,6 +1236,8 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			requestId: record?.requestId,
 			sessionId: this.#session.sessionManager.getSessionId(),
 			stage,
+			deadlineAt: budget?.deadlineAt,
+			remainingEstimateMs: budget?.remainingEstimate(stage),
 		};
 		logger.info("Restart stage started", {
 			...context,
@@ -1230,6 +1258,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				...context,
 				outcome,
 				durationMs: performance.now() - started,
+				remainingReserveMs: budget ? budget.deadlineAt - Date.now() : undefined,
 				requestElapsedMs: record ? Math.max(0, Date.now() - record.requestedAt) : undefined,
 			});
 		}
@@ -1480,6 +1509,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	}
 
 	async #releaseLeases(run: ActiveRestartDrain): Promise<void> {
+		// A failed relaunch must stop the reader before workers can write again.
+		await run.snapshotCapture?.stop();
+		run.snapshotCapture = undefined;
 		clearTimeout(run.watchdog);
 		for (const lease of run.leases.values()) {
 			try {

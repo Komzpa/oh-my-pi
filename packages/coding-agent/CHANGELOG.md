@@ -2433,9 +2433,7 @@ Older entries are archived in [packages/coding-agent/CHANGELOG.md@72d5cf31d861](
 - Task-file approvals show and keep the checked file target through dispatch, so retargeted symlinks cannot silently substitute another assignment; replaced files require a retry ([#18314](https://github.com/can1357/oh-my-pi/pull/18314) by [@iliaal](https://github.com/iliaal)).
 - Subagents receive task instructions with their blank lines, Markdown hard breaks, and table spacing intact, whether given inline or via `taskFile`.
 - Graceful restarts retain late and idle isolated workers for revival; unrecoverable assignments keep their previous worker and transcript.
-- Graceful restarts preserve dirty isolated workers without waiting for commits or pushes, reuse journal indexes, and restore workers after input becomes ready.
-- Large sessions keep the HUD responsive while workers report progress, turns end, and saved agents load ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
-- Graceful restarts preserve dirty isolated workers without waiting for commits or pushes, keep journal indexes current between restarts, and restore workers after input becomes ready.
+- Graceful restarts preserve dirty isolated workers without commits or pushes, capture workspaces during runtime replacement, keep journal indexes current, and restore workers after input becomes ready.
 
 - Graceful restart stages share a request deadline, reserve remaining recovery work, and report deadline progress without interrupting the lead turn.
 

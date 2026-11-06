@@ -43,9 +43,11 @@ import {
 	PARENT_WATCHDOG_WORKER_ARG,
 	STATS_ACTIVITY_WORKER_ARG,
 	SUBAGENT_WORKER_ARG,
+	RESTART_SNAPSHOT_WORKER_ARG,
 	TERMINAL_OUTPUT_WORKER_ARG,
 	TEXT_PREDICT_WORKER_ARG,
 } from "./cli/worker-selectors";
+import type * as RestartSnapshotWorker from "./task/restart-snapshot-worker";
 import type * as JsProcessEntry from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { startParentWatchdog } from "./subprocess/parent-watchdog";
@@ -162,6 +164,8 @@ async function runSmokeTest(): Promise<void> {
 	const { smokeTestTerminalOutputWorker } = await import("./launch/terminal-output-worker-client");
 	const { smokeTestTextPredictDaemon } = await import("./predict/client");
 	const { smokeTestSubagentWorker } = await import("./thread/subagent-worker");
+	const snapshots: typeof RestartSnapshotWorker = require("./task/restart-snapshot-worker");
+	await snapshots.smokeTestRestartSnapshotWorker();
 	await smokeTestSyncWorker();
 	await smokeTestStatsActivityWorker();
 
@@ -204,6 +208,11 @@ const TTS_WORKER_ARG = "__omp_worker_tts";
 const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
+	if (arg === RESTART_SNAPSHOT_WORKER_ARG) {
+		const snapshots: typeof RestartSnapshotWorker = require("./task/restart-snapshot-worker");
+		await snapshots.runRestartSnapshotWorker();
+		return true;
+	}
 	if (arg === TINY_WORKER_ARG) {
 		await runTinyWorker();
 		return true;
