@@ -1079,17 +1079,15 @@ export function getTodoRowChanges(entries: readonly SessionEntry[]): Map<string,
 	return changes;
 }
 
-/** Walk every canonical snapshot on the branch in order, then return the active phases. */
+/** Observe canonical history without cloning an unused active-plan result. */
 export function observeLatestTodoPhases(
 	entries: SessionEntry[],
 	onSnapshot: (phases: readonly TodoPhase[]) => void,
-): TodoPhase[] {
-	let latest: TodoPhase[] | undefined;
+): void {
 	for (const entry of entries) {
 		const phases = canonicalTodoPhases(entry);
 		if (phases) {
 			onSnapshot(phases);
-			latest = phases;
 		}
 		// Archive edits retain row identity and artifact bindings after the live
 		// plan drops them. Observe them without making them the active snapshot.
@@ -1112,7 +1110,6 @@ export function observeLatestTodoPhases(
 		)
 			onSnapshot(edit.archivedPhases);
 	}
-	return latest ? clonePhases(latest) : [];
 }
 
 /** Last recorded completion survives removal; later open or abandoned states clear it. */
