@@ -52,16 +52,64 @@ test("verified path ignores the same partial prose; missing path refuses without
 		await h.close();
 	}
 });
-test("tracked changes refuse while untracked files do not", async () => {
+const wrote = (file: string) => ({
+	role: "assistant",
+	content: [{ type: "toolCall", id: `w-${file}`, name: "edit", arguments: { path: file } }],
+});
+const commitAll = (cwd: string) =>
+	$`git -C ${cwd} add -A && git -C ${cwd} -c user.name=Test -c user.email=test@example.test commit -qm work`.quiet();
+
+test("work outside the repo plus unrelated tracked dirt and untracked files may yield", async () => {
+	const h = await harness();
+	try {
+		await Bun.write(path.join(h.cwd, "proof"), "someone else's edit");
+		await Bun.write(path.join(h.cwd, "untracked"), "ok");
+		h.messages.push(wrote(path.join(os.tmpdir(), "outside-repo-output.txt")));
+		expect(await h.call(complete({ path: "proof" }))).toBeUndefined();
+	} finally {
+		await h.close();
+	}
+});
+test("owned work committed plus unrelated dirt may yield", async () => {
+	const h = await harness();
+	try {
+		await Bun.write(path.join(h.cwd, "other"), "x");
+		await $`git -C ${h.cwd} add other`.quiet();
+		await commitAll(h.cwd);
+		await Bun.write(path.join(h.cwd, "mine"), "v1");
+		h.messages.push(wrote("mine"));
+		await commitAll(h.cwd);
+		await Bun.write(path.join(h.cwd, "other"), "foreign dirt");
+		expect(await h.call(complete({ path: "mine" }))).toBeUndefined();
+	} finally {
+		await h.close();
+	}
+});
+test("edit-only handoff with an uncommitted owned file may yield", async () => {
+	const h = await harness();
+	try {
+		h.messages.push(
+			{ role: "user", content: [{ type: "text", text: "Only edit the file; the lead commits." }] },
+			wrote("proof"),
+		);
+		await Bun.write(path.join(h.cwd, "proof"), "changed");
+		expect(await h.call(complete({ path: "proof" }))).toBeUndefined();
+	} finally {
+		await h.close();
+	}
+});
+test("assigned to commit: an uncommitted owned file refuses, untracked files and committing do not", async () => {
 	const h = await harness();
 	try {
 		await Bun.write(path.join(h.cwd, "untracked"), "ok");
-		expect(await h.call(complete({ path: "proof" }))).toBeUndefined();
+		h.messages.push({ role: "user", content: "Fix proof and commit it." }, wrote("proof"));
 		await Bun.write(path.join(h.cwd, "proof"), "changed");
 		expect(await h.call(complete({ path: "proof" }))).toMatchObject({
 			block: true,
-			reason: expect.stringContaining("commit or discard"),
+			reason: expect.stringContaining("commit them"),
 		});
+		await commitAll(h.cwd);
+		expect(await h.call(complete({ path: "proof" }))).toBeUndefined();
 	} finally {
 		await h.close();
 	}

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { ExtensionContext, ToolCallEventResult } from "@oh-my-pi/pi-coding-agent";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { fileToolTargets, liveWorkerRows } from "./dispatch_preflight";
 import continueReminder from "./worker-continue.md" with { type: "text" };
 
 const READ_ONLY_ROLES = new Set([
@@ -34,6 +35,74 @@ export interface WorkerRequirement {
 	requirement: string;
 	done: boolean;
 	evidence: WorkerEvidence;
+}
+
+const HANDOFF =
+	/\b(?:lead|main|parent|orchestrator|caller)\b[^.\n]{0,40}\bcommits?\b|\b(?:do not|don't|never)\s+commit\b|\bedit[- ]only\b|\bonly edit\b/i;
+
+/** Status paths are worktree-relative; derive the worktree root from the cwd prefix. */
+function worktreeRoot(repo: { prefixOf(dir: string): string | null }, cwd: string): string {
+	const prefix = repo.prefixOf(cwd) ?? "";
+	const depth = prefix.split("/").filter(Boolean).length;
+	let root = path.resolve(cwd);
+	for (let i = 0; i < depth; i++) root = path.dirname(root);
+	return root;
+}
+function stripResource(resource: string): string {
+	return resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "").replace(/:[^/]+$/, "");
+}
+function within(root: string, target: string): boolean {
+	return target === root || target.startsWith(`${root}${path.sep}`);
+}
+function statusPaths(porcelain: string): string[] {
+	const out: string[] = [];
+	for (const line of porcelain.split("\n")) {
+		if (line.length < 4) continue;
+		for (const part of line.slice(3).split(" -> ")) out.push(part.replace(/^"(.*)"$/, "$1"));
+	}
+	return out;
+}
+function writtenTargets(ctx: ExtensionContext): string[] {
+	const branch = ctx.sessionManager.getBranch();
+	const start = branch.findIndex(entry => entry.type === "session_init");
+	const targets: string[] = [];
+	for (const entry of start < 0 ? [] : branch.slice(start + 1)) {
+		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+		for (const part of entry.message.content)
+			if (part.type === "toolCall" && ["edit", "write", "ast_edit"].includes(part.name))
+				targets.push(...fileToolTargets((part.arguments ?? {}) as Record<string, unknown>));
+	}
+	return targets;
+}
+/** Dirty tracked paths this worker owns: its row resources below the repo root plus files it wrote. */
+function ownedDirt(porcelain: string, root: string, ctx: ExtensionContext): string[] {
+	const owned = [
+		...liveWorkerRows(ctx)
+			.flatMap(row => row.schedule?.resources ?? [])
+			.map(stripResource),
+		...writtenTargets(ctx),
+	]
+		.filter(target => !target.includes("://"))
+		.map(target => path.resolve(ctx.cwd, target))
+		.filter(target => target !== root && within(root, target));
+	return statusPaths(porcelain).filter(rel => owned.some(target => within(target, path.resolve(root, rel))));
+}
+/** The brief or row says the lead commits: uncommitted owned edits are handed off, not refused. */
+function editOnlyHandoff(ctx: ExtensionContext): boolean {
+	const texts = liveWorkerRows(ctx).map(row => row.content);
+	for (const entry of ctx.sessionManager.getBranch()) {
+		if (entry.type !== "message" || entry.message.role !== "user") continue;
+		const content = entry.message.content as unknown;
+		texts.push(
+			typeof content === "string"
+				? content
+				: Array.isArray(content)
+					? content.map(part => (part as { text?: string }).text ?? "").join("\n")
+					: "",
+		);
+		break;
+	}
+	return texts.some(text => HANDOFF.test(text));
 }
 
 async function verifyEvidence(value: unknown, ctx: ExtensionContext): Promise<string | undefined> {
@@ -111,8 +180,11 @@ export async function workerYieldRefusal(
 	let failure: string | undefined;
 	try {
 		const repo = vcs.git(ctx.cwd);
-		if (repo && (await repo.statusPorcelain({ untracked: "no" })).trim())
-			failure = "Uncommitted tracked changes: commit or discard, then yield";
+		if (repo) {
+			const dirty = ownedDirt(await repo.statusPorcelain({ untracked: "no" }), worktreeRoot(repo, ctx.cwd), ctx);
+			if (dirty.length && !editOnlyHandoff(ctx))
+				failure = `Uncommitted tracked changes in your own paths (${dirty.slice(0, 5).join(", ")}): commit them, then yield`;
+		}
 	} catch {
 		failure = "Cannot verify worktree state";
 	}
