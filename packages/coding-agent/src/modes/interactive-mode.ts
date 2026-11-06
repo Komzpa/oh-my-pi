@@ -5720,6 +5720,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			const liveWorkers: TodoDisplayWorker[] = sessions.map(worker => ({
 				id: worker.id,
 				agent: worker.agent ?? worker.progress?.agent,
+				// Which model and profile serve each row (2026-11-06: "тут потерялось какая модель и в каком профиле работает").
+				model: isFeedModelBadgeEnabled()
+					? formatTodoModelBadge(
+							worker.progress?.resolvedModelIdentity ?? worker.progress?.resolvedModel,
+							worker.progress?.resolvedThinkingLevel,
+						) || undefined
+					: undefined,
 				startedAt:
 					worker.progressAt !== undefined && worker.progress
 						? worker.progressAt - worker.progress.durationMs
