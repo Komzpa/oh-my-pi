@@ -55,7 +55,8 @@ for run in range(runs):
     events = fixture / 'e2e.jsonl'
     events.unlink(missing_ok=True)
     with (fixture / f'{label}-{run}.log').open('w') as log:
-        result = subprocess.run(['bun', str(Path(__file__).with_suffix('.ts').resolve())], env=env,
+        command = [os.environ['OMP_RESTART_BENCH_EXECUTABLE']] if os.environ.get('OMP_RESTART_BENCH_EXECUTABLE') else ['bun', str(Path(__file__).with_suffix('.ts').resolve())]
+        result = subprocess.run(command, env=env,
                                 stdout=log, stderr=log, timeout=60)
     for i in range(4):
         assert fingerprint(fixture / f'worker-{i}') == expected[i], f'worker-{i} changed bytes/index/history'
