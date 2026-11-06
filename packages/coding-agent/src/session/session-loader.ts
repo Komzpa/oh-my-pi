@@ -25,6 +25,7 @@ import {
 	resolveImageDataUrl,
 	resolveImageDataUrlSync,
 } from "./blob-store";
+import { ExecutorObservationCompactor, ExecutorObservationReferences } from "./executor-observation-compaction";
 import {
 	buildSessionContextFromLeafPath,
 	selectSessionContextEntriesFromLeafPath,
@@ -145,6 +146,8 @@ export interface VisitEntriesFromFileStreamOptions {
 
 /** Controls how a missing session file is handled. */
 export interface LoadSessionOptions {
+	/** Resume projection; raw archival readers retain every observation. */
+	compactExecutorObservations?: boolean;
 	/** Propagate ENOENT instead of treating the path as a new empty session. */
 	throwIfMissing?: boolean;
 }
@@ -491,17 +494,35 @@ export async function visitEntriesFromFileStream(
 /** Exported for testing — the ≥8MiB streaming path (works on any file size). */
 export async function loadEntriesFromFileStream(
 	filePath: string,
-	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing">,
+	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing"> & { compactExecutorObservations?: boolean },
 ): Promise<SessionLoadResult> {
-	const entries: FileEntry[] = [];
+	const references = new ExecutorObservationReferences();
+	let snapshotBytes: number | undefined;
+	if (options?.compactExecutorObservations) {
+		snapshotBytes = 0;
+		await visitEntriesFromFileStream(filePath, entry => references.visit(entry), {
+			throwIfMissing: options.throwIfMissing,
+			onBytesConsumed: bytes => {
+				snapshotBytes! += bytes;
+			},
+		});
+	}
+	const compactor = options?.compactExecutorObservations
+		? new ExecutorObservationCompactor(references.ids)
+		: undefined;
+	const entries: FileEntry[] = compactor?.entries ?? [];
 	let malformedRecords = 0;
 	let bytesConsumed = 0;
 	const titleSlot = await visitEntriesFromFileStream(
 		filePath,
 		entry => {
-			entries.push(entry);
+			if (compactor) compactor.push(entry);
+			else entries.push(entry);
 		},
 		{
+			// Both passes must see the same prefix: a later appended branch may
+			// reference an observation the first pass did not know to protect.
+			maxBytes: snapshotBytes,
 			onMalformedRecord: () => {
 				malformedRecords++;
 			},
@@ -511,6 +532,7 @@ export async function loadEntriesFromFileStream(
 			},
 		},
 	);
+	compactor?.flush();
 	return {
 		entries,
 		titleSlot,
@@ -531,15 +553,23 @@ async function loadWithKnownSize(
 	filePath: string,
 	storage: SessionStorage,
 	size: number,
-	options?: { throwIfMissing?: boolean },
+	options?: LoadSessionOptions,
 ): Promise<{ loaded: SessionLoadResult; sourceSize: number }> {
 	if (shouldStreamEntries(storage, size)) {
-		const loaded = await loadEntriesFromFileStream(filePath, { throwIfMissing: options?.throwIfMissing });
+		const loaded = await loadEntriesFromFileStream(filePath, options);
 		const sourceSize = loaded.sourceSize ?? 0;
 		return { loaded: loaded.invalidHeader ? { ...loaded, entries: [] } : loaded, sourceSize };
 	}
 	const content = await storage.readText(filePath);
 	const loaded = parseSessionContent(content);
+	if (options?.compactExecutorObservations) {
+		const references = new ExecutorObservationReferences();
+		for (const entry of loaded.entries) references.visit(entry);
+		const compactor = new ExecutorObservationCompactor(references.ids);
+		for (const entry of loaded.entries) compactor.push(entry);
+		compactor.flush();
+		loaded.entries = compactor.entries;
+	}
 	return {
 		loaded: loaded.invalidHeader ? { ...loaded, entries: [] } : loaded,
 		sourceSize: Buffer.byteLength(content, "utf8"),
@@ -620,6 +650,8 @@ export interface PositionedSessionEntry extends SessionContextEntryMetadata {
 	offset: number;
 	length: number;
 	firstKeptEntryId?: string;
+	/** Compacted executor payload may combine fields from multiple physical records. */
+	entry?: SessionEntry;
 }
 
 /** Stream canonical migrations; caller owns the returned source descriptor and must close or adopt it. */
@@ -644,6 +676,27 @@ export async function visitSessionFileForResume(
 	}
 	let transferred = false;
 	try {
+		// Scan references on the same inode and byte prefix as the indexed pass.
+		const snapshotBytes = fs.fstatSync(sourceFd).size;
+		const references = new ExecutorObservationReferences();
+		if (options.compactExecutorObservations) {
+			await visitEntriesFromFileStream(filePath, entry => references.visit(entry), {
+				sourceFd,
+				startOffset: 0,
+				maxBytes: snapshotBytes,
+				throwIfMissing: options.throwIfMissing,
+			});
+		}
+		const positions = new WeakMap<SessionEntry, PositionedSessionEntry>();
+		const compactor = options.compactExecutorObservations
+			? new ExecutorObservationCompactor(references.ids, entry => {
+					if (entry.type === "session") return;
+					const position = positions.get(entry)!;
+					position.parentId = entry.parentId;
+					if (entry.type === "custom" && entry.customType === "user_todo_edit") position.entry = entry;
+					visit(entry, position);
+				})
+			: undefined;
 		let header: SessionHeader | undefined;
 		let version = CURRENT_SESSION_VERSION;
 		let malformedRecords = 0;
@@ -657,6 +710,8 @@ export async function visitSessionFileForResume(
 		const forwardReferences: Array<{ position: PositionedSessionEntry; target: number }> = [];
 		const titleSlot = await visitEntriesFromFileStream(filePath, () => !invalidHeader, {
 			sourceFd,
+			startOffset: 0,
+			maxBytes: snapshotBytes,
 			throwIfMissing: options.throwIfMissing,
 			onBytesConsumed: bytes => {
 				sourceSize += bytes;
@@ -712,9 +767,13 @@ export async function visitSessionFileForResume(
 					firstKeptEntryId: entry.type === "compaction" ? entry.firstKeptEntryId : undefined,
 				};
 				if (target !== undefined && target > arrayIndex) forwardReferences.push({ position, target });
-				visit(entry, position);
+				if (compactor) {
+					positions.set(entry, position);
+					compactor.push(entry);
+				} else visit(entry, position);
 			},
 		});
+		compactor?.flush();
 		// Array migration reads a forward target's original id before that target is
 		// migrated. Preserve that exact behavior rather than inventing a future id.
 		for (const { position, target } of forwardReferences) {
