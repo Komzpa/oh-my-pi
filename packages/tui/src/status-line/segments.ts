@@ -1060,7 +1060,7 @@ const cacheSegment: StatusLineSegment = {
 
 /** Display current structured work without rewriting the persisted session name. */
 export function currentWorkTitle(session: StatusLineSession): string | undefined {
-	const phases = session.getTodoPhases?.() ?? [];
+	const phases = session.getTodoSnapshot?.() ?? session.getTodoPhases?.() ?? [];
 	const active = phases.find(phase => phase.tasks.some(task => task.status === "in_progress"));
 	const activeName = active ? sanitizeStatusText(active.name) : "";
 	if (activeName) return activeName;

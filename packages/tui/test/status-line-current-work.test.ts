@@ -157,3 +157,23 @@ it("invalidates the ANSI component cache and refreshes native preview titles as 
 		component.dispose();
 	}
 });
+
+it("reads a live snapshot for frame titles without copying an unchanged plan", () => {
+	let phases = [{ name: "Implementation", tasks: [{ status: "in_progress" }] }];
+	let copies = 0;
+	const session = {
+		getTodoSnapshot: () => phases,
+		getTodoPhases: () => {
+			copies++;
+			return structuredClone(phases);
+		},
+		getGoalModeState: () => undefined,
+	} as unknown as StatusLineSession;
+	const context = createContext({ session });
+	for (let frame = 0; frame < 100; frame++)
+		expect(Bun.stripANSI(renderSegment("session_name", context).content)).toBe("Implementation");
+	expect(copies).toBe(0);
+	phases = [{ name: "Verification", tasks: [{ status: "in_progress" }] }];
+	expect(Bun.stripANSI(renderSegment("session_name", context).content)).toBe("Verification");
+	expect(copies).toBe(0);
+});
