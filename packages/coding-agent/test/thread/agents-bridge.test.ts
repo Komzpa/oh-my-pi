@@ -100,6 +100,25 @@ async function mainSession(id: string): Promise<AgentSession> {
 	return session;
 }
 
+it("a running worker reads the parent's updated TODO resources over the real peer bridge", async () => {
+	const session = await mainSession("ScopeLead");
+	AgentRegistry.global().register({ id: "ScopeLead", displayName: "ScopeLead", kind: "main", session });
+	const { probe } = await startWorker();
+	const phases = [
+		{
+			name: "Work",
+			tasks: [
+				{ content: "Fix pipes", status: "in_progress" as const, schedule: { owner: "Pipes", resources: ["/old"] } },
+			],
+		},
+	];
+	session.setTodoPhases(phases);
+	expect(await probe.peerResources("ScopeLead")).toEqual(["/old"]);
+	phases[0]!.tasks[0]!.schedule.resources = ["/replacement"];
+	session.setTodoPhases(phases);
+	expect(await probe.peerResources("ScopeLead")).toEqual(["/replacement"]);
+});
+
 it("delivers hidden next-turn notices to a worker-homed session", async () => {
 	const { probe } = await startWorker();
 	await probe.open("W1", {});
@@ -296,23 +315,4 @@ describe("agent bridging across subagent workers", () => {
 		expect(liveRef("W1").status).toBe("idle");
 		expect(worker.load).toBe(1);
 	});
-});
-
-it("a running worker reads the parent's updated TODO resources over the real peer bridge", async () => {
-	const session = await mainSession("ScopeLead");
-	AgentRegistry.global().register({ id: "ScopeLead", displayName: "ScopeLead", kind: "main", session });
-	const { probe } = await startWorker();
-	const phases = [
-		{
-			name: "Work",
-			tasks: [
-				{ content: "Fix pipes", status: "in_progress" as const, schedule: { owner: "Pipes", resources: ["/old"] } },
-			],
-		},
-	];
-	session.setTodoPhases(phases);
-	expect(await probe.peerResources("ScopeLead")).toEqual(["/old"]);
-	phases[0]!.tasks[0]!.schedule.resources = ["/replacement"];
-	session.setTodoPhases(phases);
-	expect(await probe.peerResources("ScopeLead")).toEqual(["/replacement"]);
 });
