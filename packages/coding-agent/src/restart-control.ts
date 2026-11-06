@@ -489,12 +489,13 @@ export async function sendRestartControl(
 /** Follow only this accepted request across its same-session handoff, never retarget a stale request. */
 export async function waitForRestartResult(
 	accepted: RestartControlSnapshot,
-	options?: RestartControlOptions,
+	options?: RestartControlOptions & { onProgress?: (snapshot: RestartControlSnapshot) => void },
 ): Promise<RestartControlSnapshot> {
 	const requestId = accepted.request?.requestId;
 	if (!requestId) throw new RestartControlError("malformed_response");
 	let current = accepted;
 	for (;;) {
+		options?.onProgress?.(current);
 		if (
 			current.request?.requestId === requestId &&
 			["completed", "failed", "cancelled"].includes(current.request.state)

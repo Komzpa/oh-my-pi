@@ -7832,7 +7832,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		await this.sessionManager.flush();
 	}
 
-	beginRestartDrain(): RestartDrainLease {
+	beginRestartDrain(options?: { interruptProvider?: boolean }): RestartDrainLease {
 		if (this.#isDisposed) throw new Error("Cannot drain a disposed session for restart");
 		if (this.#restartDrainLeaseCount === 0) {
 			this.#restartWaitAbort.abort(TOOL_INTERRUPT_ABORT_REASON);
@@ -7844,7 +7844,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const generation = this.#restartDrainGeneration;
 		const wasRunning = this.isStreaming;
 		this.#restartDrainLeaseCount++;
-		if (this.agent.abortProviderRequest()) this.#restartDrainStoppedRun = true;
+		if (options?.interruptProvider !== false && this.agent.abortProviderRequest())
+			this.#restartDrainStoppedRun = true;
 		let released = false;
 		return {
 			wasRunning,

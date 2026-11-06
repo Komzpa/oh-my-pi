@@ -130,6 +130,8 @@ export interface RestartQueueControllerOptions {
 	captureGoalMode?: () => { goalId: string } | undefined;
 	restorePendingAsk?: (onAnswered: (answered?: boolean) => void) => boolean;
 	restoreGoalMode?: (snapshot: { goalId: string }, resumeWork: boolean) => Promise<void>;
+	/** Root wait bound; expiry leaves the restart queued until the safe boundary. */
+	restartRootQuiescenceMs?: number;
 	restartWorkerGraceMs?: number;
 	/** Maximum wait for isolated workers before quiescing and snapshotting them. */
 	restartIsolationWaitMs?: number;
@@ -381,6 +383,8 @@ function formatRestartRequestSummary(record: RestartRequestRecord | null, now = 
 
 export function formatRestartRequestStatus(record: RestartRequestRecord | null, now = Date.now()): string {
 	const summary = formatRestartRequestSummary(record, now);
+	if ((record?.state === "queued" || record?.state === "draining") && record.drainStatus?.stage === "root_quiescence")
+		return `${summary} Waiting for the lead's turn to finish.`;
 	const status = record?.drainStatus;
 	return status?.stage && status.stageStartedAt !== undefined
 		? `${summary} Stage: ${status.stage} (${formatDuration(Math.max(0, now - status.stageStartedAt))}); abandoned: ${status.abandoned?.length ?? 0}.`
@@ -424,7 +428,7 @@ function isActiveState(state: RestartRequestState): boolean {
 function canTransition(from: RestartRequestState, to: RestartRequestState): boolean {
 	if (to === "failed") return isActiveState(from);
 	if (from === "queued") return to === "draining" || to === "cancelled";
-	if (from === "draining") return to === "checkpointed" || to === "cancelled";
+	if (from === "draining") return to === "queued" || to === "checkpointed" || to === "cancelled";
 	if (from === "checkpointed") return to === "restarting" || to === "completed";
 	return from === "restarting" && to === "completed";
 }
@@ -461,6 +465,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	readonly #restartWorkerAbortGraceMs: number;
 	readonly #restoreGoalMode: RestartQueueControllerOptions["restoreGoalMode"];
 	readonly #restartWorkerGraceMs: number;
+	readonly #restartRootQuiescenceMs: number;
 	readonly #restartIsolationWaitMs: number;
 	#serial: Promise<void> = Promise.resolve();
 	#run: ActiveRestartDrain | undefined;
@@ -468,6 +473,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	#disposed = false;
 
 	constructor(options: RestartQueueControllerOptions) {
+		this.#restartRootQuiescenceMs =
+			options.restartRootQuiescenceMs ?? Number(process.env.OMP_RESTART_ROOT_QUIESCENCE_MS ?? 600_000);
+		if (!Number.isFinite(this.#restartRootQuiescenceMs) || this.#restartRootQuiescenceMs < 0)
+			throw new Error("Invalid root restart wait");
 		this.#restartIsolationWaitMs =
 			options.restartIsolationWaitMs ?? Number(process.env.OMP_RESTART_ISOLATION_WAIT_MS ?? 1_800_000);
 		if (!Number.isFinite(this.#restartIsolationWaitMs) || this.#restartIsolationWaitMs < 0)
@@ -886,7 +895,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	#takeLease(run: ActiveRestartDrain, session: AgentSessionHandle): RestartDrainLease {
 		const existing = run.leases.get(session);
 		if (existing) return existing;
-		const lease = session.beginRestartDrain();
+		const lease = session.beginRestartDrain({ interruptProvider: session !== this.#session });
 		run.leases.set(session, lease);
 		return lease;
 	}
@@ -988,14 +997,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			await this.#measureStage(run.record, "notifications", () => Promise.all(notifications), false);
 			// Child drain leases are already active. Count that time toward their grace
 			// instead of granting a second full window after the root finishes.
-			const settled = await this.#measureStage(run.record, "root_quiescence", () =>
-				Promise.race([
-					this.#rootLease(run)
-						.waitForQuiescence()
-						.then(() => true),
-					run.cancelSignal.then(() => false),
-				]),
-			);
+			const settled = await this.#measureStage(run.record, "root_quiescence", () => this.#waitForRoot(run), false);
 			if (!settled || run.cancelled || this.#disposed) return false;
 			await this.#measureStage(
 				run.record,
@@ -1012,6 +1014,30 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				added = true;
 			}
 			if (!added) return true;
+		}
+	}
+
+	async #waitForRoot(run: ActiveRestartDrain): Promise<boolean> {
+		const boundary = Promise.race([
+			this.#rootLease(run)
+				.waitForQuiescence()
+				.then(() => true),
+			run.cancelSignal.then(() => false),
+		]);
+		const expired = Promise.withResolvers<undefined>();
+		const timer = setTimeout(() => expired.resolve(undefined), this.#restartRootQuiescenceMs);
+		try {
+			const settled = await Promise.race([boundary, expired.promise]);
+			if (settled !== undefined) return settled;
+			if (run.cancelled || this.#disposed) return false;
+			// Keep the lease and its original wait alive: expiry must never interrupt generation.
+			run.record = await this.#transition(run, "queued");
+			const safe = await boundary;
+			if (!safe || run.cancelled || this.#disposed) return false;
+			run.record = await this.#transition(run, "draining");
+			return true;
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 

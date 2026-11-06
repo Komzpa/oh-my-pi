@@ -29,6 +29,13 @@ Replay retains up to 20,000 records, 2 MiB output and 8 MiB payload; evictions a
 the running process with `process.execve` (supported by Bun on Linux). The PID,
 foreground terminal and shell exit status are preserved; no supervisor or old
 session heap remains. Platforms without `process.execve` cannot restart this way.
+The lead finishes its current model response and tool batch before checkpointing;
+its in-flight model call is never aborted. While waiting, the CLI reports that it
+is waiting for the lead's turn to finish. `OMP_RESTART_ROOT_QUIESCENCE_MS` sets the
+root wait bound in milliseconds (default `600000`, ten minutes). On expiry the
+request stays queued and restarts at the next safe boundary. Use
+`omp restart cancel --instance <id>` to cancel it. Child worker grace is unchanged.
+
 A replacement startup failure returns to the shell; resume the saved checkpoint
 with `omp --resume <session-file>`.
 

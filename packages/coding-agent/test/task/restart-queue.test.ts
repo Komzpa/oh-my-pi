@@ -176,6 +176,68 @@ afterEach(async () => {
 });
 
 describe("restart queue controller", () => {
+	it.each(["boundary", "expiry", "cancel"] as const)(
+		"keeps a busy root intact through %s and restarts only at its boundary",
+		async outcome => {
+			const { manager, file } = await createRoot(makeTempDir());
+			const boundary = Promise.withResolvers<void>();
+			let aborts = 0;
+			const harness = makeSession(manager, {
+				wasRunning: true,
+				quiescence: boundary.promise,
+				abort: async () => {
+					aborts++;
+				},
+			});
+			registerRoot(AgentRegistry.global(), harness.session, file);
+			const identity = identityFor(manager, "busy-root", 1);
+			const waiting = Promise.withResolvers<void>();
+			const expired = Promise.withResolvers<void>();
+			const terminal = Promise.withResolvers<RestartRequestRecord>();
+			let restarts = 0;
+			const controller = createRestartQueueController({
+				session: harness.session,
+				identity: () => identity,
+				restartWorkerGraceMs: 5,
+				restartWorkerAbortGraceMs: 1_000,
+				restartRootQuiescenceMs: outcome === "boundary" ? 70_000 : 10,
+				restart: async () => {
+					restarts++;
+				},
+				onStateChange: record => {
+					if (record.drainStatus?.stage === "root_quiescence") {
+						waiting.resolve();
+						if (record.state === "queued") expired.resolve();
+					}
+					if (["completed", "failed", "cancelled"].includes(record.state)) terminal.resolve(record);
+				},
+			});
+			try {
+				await controller.handle({ identity, op: "request", requestId: "busy-root" });
+				await waiting.promise;
+				if (outcome === "boundary") await Bun.sleep(60_000);
+				else await expired.promise;
+				expect(restarts).toBe(0);
+				expect(aborts).toBe(0);
+				expect(controller.snapshot().request?.state).toBe(outcome === "boundary" ? "draining" : "queued");
+				expect(formatRestartRequestStatus(controller.snapshot().request)).toContain("Waiting for the lead's turn");
+				if (outcome === "cancel") {
+					const cancelled = await controller.handle({ identity, op: "cancel", requestId: "busy-root" });
+					expect(cancelled.request?.state).toBe("cancelled");
+					expect(harness.releaseCount).toBe(1);
+				}
+				boundary.resolve();
+				expect((await terminal.promise).state).toBe(outcome === "cancel" ? "cancelled" : "completed");
+				await Bun.sleep(10);
+				expect(restarts).toBe(outcome === "cancel" ? 0 : 1);
+			} finally {
+				controller.dispose();
+				boundary.resolve();
+			}
+		},
+		75_000,
+	);
+
 	it("restores the goal captured before a failed restart after relaunch", async () => {
 		const cwd = makeTempDir();
 		const { manager } = await createRoot(cwd);
