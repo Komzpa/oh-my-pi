@@ -112,6 +112,7 @@ export interface StatusLineSession {
 		| { goal?: { status: string; objective?: string; tokensUsed: number; tokenBudget?: number } }
 		| undefined;
 	getTodoPhases?(): readonly { name: string; tasks: readonly { status: string }[] }[];
+	getTodoSnapshot?(): readonly { name: string; tasks: readonly { status: string }[] }[];
 	getAdvisorStatusOverview?(): { configured: boolean; advisors: readonly { status: string; yielded: boolean }[] };
 	getAdvisorCost?(): number;
 	isAdvisorUsingSubscription?(): boolean;
