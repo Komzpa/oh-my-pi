@@ -37,7 +37,7 @@ it("selects branch state in path order and stops a latest read before older chec
 	}
 });
 
-it("refreshes retained metadata and parent changes after repeated branch selections", async () => {
+it("refreshes announced metadata and parent changes after repeated branch selections", async () => {
 	const manager = SessionManager.inMemory();
 	try {
 		const first = manager.appendCustomEntry("checkpoint", { revision: 1 });
@@ -50,10 +50,12 @@ it("refreshes retained metadata and parent changes after repeated branch selecti
 		const retained = manager.getEntry(middle);
 		if (!retained || retained.type !== "custom") throw new Error("Missing custom entry");
 		retained.customType = "checkpoint";
+		manager.updateEntry(retained);
 		expect(select()).toEqual([first, middle, last]);
 		const tail = manager.getEntry(last);
 		if (!tail) throw new Error("Missing tail");
 		tail.parentId = first;
+		manager.updateEntry(tail);
 		expect(select()).toEqual([first, last]);
 		expect(select()).toEqual([first, last]);
 		manager.branch(middle);
