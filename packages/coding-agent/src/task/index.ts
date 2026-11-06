@@ -153,7 +153,6 @@ export {
 } from "./types";
 
 interface TaskDescriptionOptions {
-	catalogOnly?: boolean;
 	agents: AgentDefinition[];
 	isolationEnabled: boolean;
 	applyIsolatedChanges: boolean;
@@ -164,6 +163,7 @@ interface TaskDescriptionOptions {
 	perCallModelAdvertisement?: PerCallModelAdvertisement;
 	evalToolsEnabled: boolean;
 	structured: boolean;
+	catalogOnly?: boolean;
 	file: boolean;
 	asyncEnabled: boolean;
 	ircEnabled: boolean;
