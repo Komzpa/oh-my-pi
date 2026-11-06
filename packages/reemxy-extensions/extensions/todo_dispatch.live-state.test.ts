@@ -28,16 +28,16 @@ test("live plan checks do not read historical TODO payloads and observe later ch
   expect(todoReads).toBe(0);
 });
 
-test("pending edits keep full durable replay history and their original order", () => {
+test("pending edits keep their original order after the current native snapshot", () => {
   const history = [{ id: "archive", parentId: null, timestamp: "2026-10-18T00:00:00Z", type: "custom" as const, customType: "user_todo_edit", data: { edit: { kind: "archive" } } }];
   const pending = [{ type: "custom", customType: "user_todo_edit", data: { phases: [] } }];
   const ctx = {
-    getTodoPhases: () => { throw new Error("pending edits require durable replay"); },
+    getTodoPhases: () => [],
     sessionManager: {
       getBranch: () => history,
       getBranchMatching: (predicate: (metadata: SessionContextEntryMetadata) => boolean) => history.filter(entry => predicate(sessionContextEntryMetadata(entry))),
     },
   } as unknown as ExtensionContext;
-  expect(todoStateEntries(ctx, pending)).toEqual([...history, ...pending]);
-  expect(dispatchStateEntries(ctx, pending)).toEqual([...history, ...pending]);
+  expect(todoStateEntries(ctx, pending)).toEqual([{ type: "custom", customType: "user_todo_edit", data: { phases: [] } }, ...pending]);
+  expect(dispatchStateEntries(ctx, pending)).toEqual([{ type: "custom", customType: "user_todo_edit", data: { phases: [] } }, ...pending]);
 });
