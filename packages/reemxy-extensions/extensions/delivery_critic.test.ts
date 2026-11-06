@@ -183,3 +183,17 @@ test("late defect from a superseded attempt is recorded without reopening the ne
 	expect(h.records).toHaveLength(1);
 	expect(h.row.schedule.review).toBeUndefined();
 });
+
+for (const review of ["accepted", "redo", "drop"] as const)
+	test(`a saved owner ${review} decision survives a pending critic and its timeout`, async () => {
+		const h = harness();
+		h.queue();
+		h.row.schedule.review = review;
+		h.row.schedule.reviewAnswers = ["page/card/sha/answer"];
+		h.row.schedule.handoffPending = false;
+		h.timeout();
+		await h.finish({ verdict: "clean", findings: [] });
+		expect(h.row.schedule.review).toBe(review);
+		expect(h.row.schedule.handoffPending).toBe(false);
+		if (review !== "redo") expect(h.queue()).toBe(false);
+	});

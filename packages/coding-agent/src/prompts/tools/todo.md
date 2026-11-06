@@ -62,6 +62,6 @@ User gives multi-step plan—phased todo, numbered/bulleted checklist, or "N bug
 - Enumerate all; NEVER summarize into fewer tasks, sample "the important ones", drop items, or track the rest from memory.
 </critical>
 
-For a user decision, use `schedule` with `review: "user"` and `reviewPage: "http://..."` on the decision row. Publish one review card per decision (accept/redo/drop). An idle lead probes the URL for HTTP 200 before waiting. `reviewPage: null` clears the artifact.
+For a user decision, use `schedule` with `review: "user"` and `reviewPage: "http://..."` on the decision row. Publish one review card per decision (accept/redo/drop). Set `reviewCard` to the published card slug. The runtime reads `api/answers` about every 60 seconds and on lead idle, and applies current accept/redo/drop answers through the native review path once per row/card/content hash/answer. Legacy rows match one unique card by its exact landed row, title or content; ambiguous matches stay unresolved. Hashes come from the manifest or rendered `data-id`/`data-sha`. Stale answers are reported to the lead, never applied. Read saved decisions before asking again. `reviewPage: null` clears the artifact.
 
 At 50 closed rows, a row closure automatically archives older closed history. The last ten closed rows, open-row prerequisites and pending review/handoff rows stay live. Use `view` with `archive: true` to list the archive, or `view` with `task` to retrieve any row by its exact content. Archived rows remain addressable for review acceptance and reopening.

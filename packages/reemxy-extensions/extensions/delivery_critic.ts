@@ -104,6 +104,7 @@ export function queueDeliveryCritic(
 	previewPath?: string,
 ): boolean {
 	const schedule = row.schedule ?? {};
+	if (schedule.review === "accepted" || schedule.review === "drop") return false;
 	const attempt = schedule.executor;
 	const commits = attempt?.gitCommits ?? [];
 	const preview = previewPath ?? schedule.reviewPage ?? "";
@@ -130,6 +131,7 @@ export function queueDeliveryCritic(
 			const latest = current();
 			if (
 				latest?.schedule?.deliveryCritic?.key !== key ||
+				(latest.schedule.reviewAnswers?.length ?? 0) !== (schedule.reviewAnswers?.length ?? 0) ||
 				attemptKey(latest.schedule) !== key ||
 				latest.schedule.deliveryCritic.verdict !== "pending"
 			)
@@ -162,7 +164,12 @@ export function queueDeliveryCritic(
 				logger.error("Delivery critic verdict ledger failed", { row: row.content, error: String(error) });
 			});
 			const latest = current();
-			if (latest?.schedule?.deliveryCritic?.key !== key || attemptKey(latest.schedule) !== key) return;
+			if (
+				latest?.schedule?.deliveryCritic?.key !== key ||
+				attemptKey(latest.schedule) !== key ||
+				(latest.schedule.reviewAnswers?.length ?? 0) !== (schedule.reviewAnswers?.length ?? 0)
+			)
+				return;
 			const evidence = verdict.findings.map(finding => `${finding.kind}: ${finding.evidence}`).join("\n");
 			ctx.updateTodoSchedule?.(row.content, {
 				deliveryCritic: { ...state, verdict: verdict.verdict, evidence },

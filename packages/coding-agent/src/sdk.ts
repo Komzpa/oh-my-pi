@@ -337,6 +337,7 @@ import { isFilesystemSourcePath } from "./tools/path-utils";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
 import {
+	TodoTool,
 	isTodoSelectionEntryMetadata,
 	shouldPersistTodoFullSnapshotCheckpoint,
 	USER_TODO_EDIT_CUSTOM_TYPE,
@@ -3811,6 +3812,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				session.setTodoPhases(phases);
 				return true;
 			},
+			answer => (hasSession ? new TodoTool(toolSession).applyReviewPageAnswer(answer) : Promise.resolve(false)),
 		);
 		// A dialog waits for the user, not the agent: the session lets the display sleep while one is open.
 		const trackUserWait: UserWaitTracker = dialog => (hasSession ? session.waitForUser(dialog) : dialog());
