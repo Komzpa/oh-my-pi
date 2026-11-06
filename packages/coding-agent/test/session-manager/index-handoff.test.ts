@@ -67,8 +67,13 @@ test("replacement restores context, bookmarks and lazy history without parsing t
 		expect(restored.getEntry("history")).toEqual(original.getEntry("history"));
 		expect(restored.getLabel("history")).toBe("bookmark");
 		expect(restored.getChildren("history").map(entry => entry.id)).toEqual(["label"]);
+		const base = await Bun.file(`${file}.index-handoff`).text();
 		const appended = restored.appendCustomEntry("checkpoint", { revision: 2 });
 		expect(restored.getChildren("tail").map(entry => entry.id)).toEqual([appended]);
+		expect(await restored.writeIndexHandoff()).toBe(true);
+		expect(await Bun.file(`${file}.index-handoff`).text()).toBe(base);
+		const next = await open(file);
+		expect(next.getEntry(appended)).toMatchObject({ customType: "checkpoint", data: { revision: 2 } });
 		expect(parse).not.toHaveBeenCalled();
 	} finally {
 		parse.mockRestore();

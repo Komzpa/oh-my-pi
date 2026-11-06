@@ -613,6 +613,13 @@ interface SessionIndexHandoff {
 	usage: UsageStatistics;
 }
 
+interface SessionIndexHandoffBase {
+	stamp: string;
+	count: number;
+	file: string;
+	currentStamp: string;
+}
+
 function journalStamp(stat: fs.BigIntStats): string {
 	return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 }
@@ -1125,6 +1132,7 @@ export class SessionEntryIndex {
 
 interface IndexedSessionLoadResult extends SessionLoadResult {
 	index?: SessionEntryIndex;
+	handoffBase?: SessionIndexHandoffBase;
 	migrated?: boolean;
 }
 
@@ -1391,7 +1399,7 @@ export class SessionManager {
 	#expectedDiskSize: number | null = null;
 	#indexHandoffWrite: Promise<boolean> | undefined;
 	#indexHandoffInvalidated = false;
-	#indexHandoffBase: { stamp: string; count: number; file: string; currentStamp: string } | undefined;
+	#indexHandoffBase: SessionIndexHandoffBase | undefined;
 	/**
 	 * Generation of the latest deferred publish queued on a `defersSyncPublish`
 	 * backend. A deferred-rewrite confirmation older than the latest queued
@@ -2951,6 +2959,7 @@ export class SessionManager {
 			if (loaded.index) {
 				this.#index.clear();
 				this.#index = loaded.index;
+				this.#indexHandoffBase = loaded.handoffBase;
 				// The loaded index already owns the descriptor used by its scanner.
 				this.#entries = this.#index.contextLeafPath().reverse();
 			}
@@ -5243,8 +5252,8 @@ export class SessionManager {
 			handoffFd = fs.openSync(filePath, "r");
 			const before = fs.fstatSync(handoffFd, { bigint: true });
 			const snapshot = (await Bun.file(`${filePath}.index-handoff`).json()) as SessionIndexHandoff;
+			const baseStamp = snapshot.stamp;
 			if (snapshot.stamp !== journalStamp(before)) {
-				const baseStamp = snapshot.stamp;
 				const tails = Bun.JSONL.parse(await Bun.file(`${filePath}.index-handoff-tail`).text()) as Array<{
 					baseStamp: string;
 					snapshot: SessionIndexHandoff;
@@ -5276,6 +5285,12 @@ export class SessionManager {
 				index.setFileReader(path.resolve(filePath), blobs, true, handoffFd);
 				handoffFd = undefined;
 				return {
+					handoffBase: {
+						stamp: baseStamp,
+						currentStamp: snapshot.stamp,
+						count: snapshot.ordered.length,
+						file: path.resolve(filePath),
+					},
 					entries: [snapshot.header],
 					titleSlot: snapshot.titleSlot,
 					malformedRecords: 0,
