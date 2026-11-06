@@ -45,7 +45,7 @@ async function expectProviderYieldContract(
 	if (yieldEnd < 0) throw new Error("Missing provider yield declaration boundary");
 	const yieldDeclaration = providerPrompt.slice(yieldStart, yieldEnd);
 	if (pooled) {
-		expect(yieldDeclaration).toContain("key: 1,");
+		expect(yieldDeclaration).toContain("key: number,");
 		expect(yieldDeclaration).not.toContain("type?:");
 	} else {
 		expect(yieldDeclaration).toContain("type?:");

@@ -60,6 +60,8 @@ describe("YieldTool", () => {
 		];
 		expect(toRecord(tool.parameters).required).toEqual(["key"]);
 		expect(tool.description).toContain("ONE workpool item at a time");
+		const schema = JSON.stringify(tool.parameters);
+		await expect(tool.execute("pool-invalid", { key: 99, data: "invalid" })).rejects.toThrow("key must be one of");
 		const first = await tool.execute("pool-1", { key: 1, data: "one" });
 		expect(first.content).toEqual([{ type: "text", text: "Item 1 submitted. Remaining item(s): 2." }]);
 		expect(first.details).toMatchObject({
@@ -78,6 +80,7 @@ describe("YieldTool", () => {
 		expect(second.details).toMatchObject({ status: "success", type: ["review#2"], complete: true });
 
 		items = [{ id: "next#1", index: 1 }];
+		expect(JSON.stringify(tool.parameters)).toBe(schema);
 		const next = await tool.execute("pool-next", { key: 1, data: { outcome: "new batch" } });
 		expect(next.details).toMatchObject({ type: ["next#1"], complete: true });
 	});
