@@ -1360,9 +1360,9 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 
 describe("completed row history publication replay", () => {
 	it.each([
-		["removed", false, 0],
-		["removed", true, 0],
-		["archive", true, 0],
+		["removed", false, 1],
+		["removed", true, 1],
+		["archive", true, 1],
 		["reopened", false, 1],
 		["abandoned", false, 1],
 		["open", false, 1],
@@ -2293,7 +2293,7 @@ describe("compact ledger publication notice", () => {
 			expect(Buffer.byteLength(notices[0]!)).toBeLessThanOrEqual(1500);
 			expect(notices[0]).not.toContain("RAW USER QUOTE");
 			expect(notices[0]).not.toContain('op="classify"');
-			expect(notices[0]).toMatch(/\+\d+ more$/);
+			expect(notices[0]).toContain("at most 4 concurrent requirement auditors");
 			const lines = notices[0]!.split("\n");
 			expect(new Set(lines).size).toBe(lines.length);
 			await gate()?.(message as never, signal);

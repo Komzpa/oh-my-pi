@@ -1,3 +1,4 @@
+import boundedAuditNotice from "../prompts/session/requirements-ledger-bounded-audit.md" with { type: "text" };
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
@@ -1065,14 +1066,10 @@ export async function evaluateRequirementDoneGate(
 	rows: readonly string[],
 	getArtifact: (row: string, receipt?: string) => Promise<RequirementGateArtifact>,
 	rejections: ReadonlyMap<string, string> = new Map(),
-	/**
-	 * Rows already completed and not being closed by this check (turn-end / publication
-	 * sweeps). A still-authentic passing receipt on such a row stays a pass when the
-	 * checkout moves later; staleness is judged only when a row is being closed or
-	 * re-closed, so these sweeps leave that out. Source changes still re-evaluate it.
-	 */
-	settledRows: ReadonlySet<string> = new Set(),
+	/** Completed history is retained for callers; completion alone is not acceptance. */
+	_settledRows: ReadonlySet<string> = new Set(),
 	followUpRows: ReadonlySet<string> = new Set(),
+	acceptedRows: ReadonlySet<string> = new Set(),
 ): Promise<RequirementDoneGateIssue[]> {
 	const targets = new Set(rows);
 	const artifacts = new Map<string, Promise<RequirementGateArtifact>>();
@@ -1095,7 +1092,10 @@ export async function evaluateRequirementDoneGate(
 		// An image-only ask whose bytes and source path are both gone cannot be
 		// audited at all. Ask the user once and stop demanding qa-auditor passes
 		// for it — an unanswerable audit demand is a gate loop.
-		if (requirement.imageState === "needs-user-restatement") {
+		if (
+			requirement.imageState === "needs-user-restatement" &&
+			!getLinkedRequirementRows(requirement, rows).every(row => acceptedRows.has(row))
+		) {
 			const issue = `${requirement.id}: the attached image is gone from this session — please restate it in words or re-attach it in a new message naming ${requirement.id}; then associate that new candidate with todo op="classify", id="${requirement.id}", classification="merged", mergeInto="<new Rn>" and request a fresh audit`;
 			open.push({
 				requirement,
@@ -1107,6 +1107,7 @@ export async function evaluateRequirementDoneGate(
 			continue;
 		}
 		for (const row of getLinkedRequirementRows(requirement, rows)) {
+			if (acceptedRows.has(row)) continue;
 			const recorded = getRequirementRowVerdict(requirement, row);
 			const unhandled =
 				recorded?.collateral?.defects.filter(
@@ -1118,20 +1119,12 @@ export async function evaluateRequirementDoneGate(
 				);
 				continue;
 			}
-			// A settled row's pass survives checkout movement, including one an older sweep already demoted
-			// to unverifiable for staleness alone (same receipt; only status and evidence were rewritten).
-			const settled =
-				settledRows.has(row) &&
-				(recorded?.status === "pass" ||
-					(recorded?.status === "unverifiable" &&
-						recorded.evidence === STALE_PASS_EVIDENCE &&
-						!!recorded.artifact));
-			const verdict = settled && recorded ? { ...recorded, status: "pass" as const } : recorded;
+			const restored = recorded?.status === "unverifiable" && recorded.evidence === STALE_PASS_EVIDENCE;
+			const verdict = restored ? { ...recorded, status: "pass" as const } : recorded;
 			const sourceIssue = verdict ? getRequirementVerdictSourceIssue(requirement, row, verdict) : undefined;
 			const sourceSnapshotIssue =
 				verdict?.sourceSnapshot !== undefined &&
 				verdict.sourceSnapshot !== requirementSourceSnapshot(requirements, requirement.id);
-			if (settled && !sourceIssue && !sourceSnapshotIssue) continue;
 			const receipt =
 				!sourceIssue && !sourceSnapshotIssue && verdict?.status === "pass" ? verdict.artifact : undefined;
 			const cacheKey = JSON.stringify([row, receipt]);
@@ -1157,7 +1150,10 @@ export async function evaluateRequirementDoneGate(
 				// Missing, non-pass, unauthenticated, and stale receipts all come from the
 				// canonical producer, so every gate surface reports the same exact cause.
 				// The receipt's failure evidence trails the artifact and is never parsed as a cause.
-				const staleReason = getRequirementVerdictStaleness(requirement, [{ row, ...current }]);
+				const checked = restored
+					? { ...requirement, rowVerdicts: { ...requirement.rowVerdicts, [row]: verdict! } }
+					: requirement;
+				const staleReason = getRequirementVerdictStaleness(checked, [{ row, ...current }]);
 				if (staleReason !== null) {
 					const evidence =
 						verdict && verdict.status !== "pass"
@@ -1871,7 +1867,20 @@ export function formatUnclassifiedCandidateReminder(
 /** Compact model-only context: raw asks and worker evidence stay in the ledger. */
 export function formatRequirementGateNotice(
 	open: readonly { requirement: RequirementLedgerItem; issues: string[]; awaitingUser?: boolean }[],
+	maxAuditors = 4,
 ): string {
+	const auditCount = open.filter(item => item.requirement.classification === "linked" && !item.awaitingUser).length;
+	const budgetNotice = auditCount
+		? prompt.render(boundedAuditNotice, {
+				count: auditCount,
+				maxAuditors,
+				rows: new Set(open.filter(item => !item.awaitingUser).flatMap(item => item.requirement.rows)).size,
+				candidates: open.filter(item => item.requirement.classification === "candidate").length,
+				awaitingUser: open.filter(item => item.awaitingUser).length,
+			})
+		: "";
+	if (auditCount && open.length > 4) return budgetNotice;
+	const detailBudget = 1500 - Buffer.byteLength(budgetNotice) - 1;
 	const details = new Map<string, string>();
 	const lines: string[] = [];
 	for (const { requirement, issues, awaitingUser } of open) {
@@ -1930,16 +1939,17 @@ export function formatRequirementGateNotice(
 				action,
 				...(count < lines.length ? [`+${lines.length - count} more`] : []),
 			].join("\n"),
-		) > 1500
+		) > detailBudget
 	)
 		count--;
 	while (
 		prefix.length > 0 &&
 		Buffer.byteLength([...prefix, ...lines.slice(0, count), action, `+${lines.length - count} more`].join("\n")) >
-			1500
+			detailBudget
 	)
 		prefix.pop();
 	return [
+		budgetNotice,
 		action,
 		...prefix,
 		...lines.slice(0, count),
