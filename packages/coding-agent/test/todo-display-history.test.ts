@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { SessionManager } from "../src/session/session-manager";
-import { readTodoDisplayLedgerFromManager } from "../src/tools/todo-plan-display";
+import * as todo from "../src/tools/todo";
+import { readTodoDisplayArchive, readTodoDisplayLedgerFromManager } from "../src/tools/todo-plan-display";
 
 test("HUD refreshes avoid historical payloads and refresh ledger and auditor state on branch changes", () => {
 	const manager = SessionManager.inMemory();
@@ -28,5 +29,34 @@ test("HUD refreshes avoid historical payloads and refresh ledger and auditor sta
 		expect(fullBranch).toHaveBeenCalledTimes(4);
 	} finally {
 		fullBranch.mockRestore();
+	}
+});
+
+test("archive refresh reuses reconstruction across unrelated messages and clears after todo init", () => {
+	const manager = SessionManager.inMemory();
+	manager.appendCustomEntry("user_todo_edit", {
+		edit: {
+			v: 1,
+			kind: "archive",
+			at: 1000,
+			archivedPhases: [{ name: "Old", tasks: [{ content: "Shipped", status: "completed" }] }],
+		},
+	});
+	const replay = spyOn(todo, "getLatestTodoArchiveFromEntries");
+	try {
+		for (let i = 0; i < 50; i++) {
+			manager.appendCustomEntry("unrelated", { tick: i });
+			const view = readTodoDisplayArchive(manager);
+			expect(view.summary?.count).toBe(1);
+			expect(view.phases[0]?.tasks[0]?.content).toBe("Shipped");
+		}
+		expect(replay).toHaveBeenCalledTimes(2);
+		manager.appendCustomEntry("user_todo_edit", { edit: { v: 1, kind: "op", at: 2000, op: "init", params: {} } });
+		const cleared = readTodoDisplayArchive(manager);
+		expect(cleared.summary).toBeUndefined();
+		expect(cleared.phases).toEqual([]);
+		expect(replay).toHaveBeenCalledTimes(4);
+	} finally {
+		replay.mockRestore();
 	}
 });
