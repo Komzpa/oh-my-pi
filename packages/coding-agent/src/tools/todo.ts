@@ -43,6 +43,16 @@ import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 import { readGoalDeadline, readGoalDeadlineFromManager } from "../goals/deadlines";
 import { applyTodoExecutorObservation, appendTodoReworkAttempt, type TodoExecutorObservation } from "./todo-executor";
 
+export interface ReviewPageAnswer {
+	task: string;
+	page: string;
+	card: string;
+	contentSha: string;
+	answer: "accept" | "redo" | "drop";
+	note: string;
+	at: string;
+}
+
 /** Whether an unknown value is a persisted todo phase. */
 export function isTodoPhase(value: unknown): value is TodoPhase {
 	if (!isRecord(value) || typeof value.name !== "string" || !Array.isArray(value.tasks)) return false;
@@ -2116,16 +2126,6 @@ function attachLiveTodoDetails(
 // =============================================================================
 // Tool Class
 // =============================================================================
-
-export interface ReviewPageAnswer {
-	task: string;
-	page: string;
-	card: string;
-	contentSha: string;
-	answer: "accept" | "redo" | "drop";
-	note: string;
-	at: string;
-}
 
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly name = "todo";
