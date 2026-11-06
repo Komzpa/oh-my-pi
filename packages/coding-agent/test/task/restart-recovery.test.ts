@@ -1035,7 +1035,12 @@ it("reserves three restoring owners before revival and names their rows in the r
 	AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
 		async ref => async () => {
 			await release.promise;
-			return makeTestSession(track(await SessionManager.open(ref.sessionFile!)), { streaming: true }).session;
+			return makeTestSession(track(await SessionManager.open(ref.sessionFile!)), {
+				streaming: true,
+				onDelivery: () => {
+					AgentRegistry.global().setStatus(ref.id, "running");
+				},
+			}).session;
 		},
 		() => 0,
 	);
@@ -1044,12 +1049,6 @@ it("reserves three restoring owners before revival and names their rows in the r
 	const during = asyncJobSnapshot(jobs, MAIN_AGENT_ID).nonJobAgents;
 	release.resolve();
 	const report = await restoring;
-	expect(
-		during
-			?.filter(agent => agent.live)
-			.map(agent => agent.id)
-			.sort(),
-	).toEqual(children.map(child => child.id).sort());
 	let body = "";
 	vi.spyOn(IrcBus.global(), "send").mockImplementation(async message => {
 		body = message.body;
@@ -1059,5 +1058,17 @@ it("reserves three restoring owners before revival and names their rows in the r
 	for (let i = 0; i < 3; i++) expect(body).toContain(`${children[i]!.id} → row ${i}`);
 	expect(body).toContain("3 workers restored and running");
 	expect(body).toContain("do not re-dispatch them");
+	expect(
+		during
+			?.filter(agent => agent.live)
+			.map(agent => agent.id)
+			.sort(),
+	).toEqual(children.map(child => child.id).sort());
+	expect(
+		asyncJobSnapshot(jobs, MAIN_AGENT_ID)
+			.nonJobAgents?.filter(agent => agent.live)
+			.map(agent => agent.id)
+			.sort(),
+	).toEqual(children.map(child => child.id).sort());
 	await jobs.dispose();
 });
