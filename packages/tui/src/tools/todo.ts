@@ -131,6 +131,8 @@ export interface TodoExecutorPersistedEdit {
 export interface TodoSchedulePatchPersistedEdit {
 	v: 1;
 	kind: "schedule_patch";
+	/** Undefined assignments need an explicit wire representation across JSON persistence. */
+	cleared?: Array<keyof TodoSchedule>;
 	at: number;
 	task: string;
 	patch: Partial<TodoSchedule>;

@@ -426,7 +426,13 @@ function isTodoPersistedEdit(value: unknown): value is TodoPersistedEdit {
 	) {
 		return false;
 	}
-	if (value.kind === "schedule_patch") return typeof value.task === "string" && isRecord(value.patch);
+	if (value.kind === "schedule_patch")
+		return (
+			typeof value.task === "string" &&
+			isRecord(value.patch) &&
+			(value.cleared === undefined ||
+				(Array.isArray(value.cleared) && value.cleared.every(key => typeof key === "string")))
+		);
 	if (value.kind === "op") return typeof value.op === "string" && value.params !== undefined;
 	if (value.kind === "archive") {
 		return (
@@ -488,7 +494,12 @@ function replayTodoEdit(
 	if (edit.kind === "op" && edit.healedSelfEdges) healStoredSelfEdges(current);
 	if (edit.kind === "op" && edit.healedDanglingEdges) healStoredDanglingEdges(current, options.archived);
 	if (edit.kind === "schedule_patch") {
-		const updated = patchTodoSchedule(current, edit.task, edit.patch, edit.at);
+		const updated = patchTodoSchedule(
+			current,
+			edit.task,
+			{ ...edit.patch, ...Object.fromEntries((edit.cleared ?? []).map(key => [key, undefined])) },
+			edit.at,
+		);
 		return updated ? { phases: updated, mutable: true } : undefined;
 	}
 	if (edit.kind === "executor") {
