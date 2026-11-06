@@ -1898,6 +1898,7 @@ describe("cold revival replays the system prompt the last request sent", () => {
 		requests: string[][];
 		/** Tool names and descriptions of each provider request, in order. */
 		toolRequests: string[];
+		messageRequests: string[];
 	}
 
 	interface ExtensionHooks {
@@ -1918,10 +1919,12 @@ describe("cold revival replays the system prompt the last request sent", () => {
 		responses: MockResponseSource,
 		hooks: ExtensionHooks = {},
 		toolNames: string[] = ["read"],
+		options?: CreateAgentSessionOptions,
 	): RecordingSession {
 		const mock = createMockModel({ responses, handler: { content: ["done"] } });
 		const requests: string[][] = [];
 		const toolRequests: string[] = [];
+		const messageRequests: string[] = [];
 		const owner: { session?: AgentSession } = {};
 		// Like the real yield tool, its wire definition carries the active work-pool items.
 		const yieldTool: AgentTool = {
@@ -1954,6 +1957,7 @@ describe("cold revival replays the system prompt the last request sent", () => {
 			convertToLlm,
 			streamFn: (model, context, streamOptions) => {
 				requests.push([...(context.systemPrompt ?? [])]);
+				messageRequests.push(JSON.stringify(context.messages));
 				toolRequests.push(JSON.stringify(context.tools?.map(tool => [tool.name, tool.description])));
 				return mock.stream(model, context, streamOptions);
 			},
@@ -1981,13 +1985,20 @@ describe("cold revival replays the system prompt the last request sent", () => {
 					return override ? { systemPrompt: override } : undefined;
 				},
 			} as unknown as ExtensionRunner,
+			getStartupContext: () => {
+				const defaults = buildPrompt(agent.state.tools.map(tool => tool.name));
+				const callback = options?.systemPrompt;
+				return options?.systemPromptIsStartupContext && typeof callback === "function"
+					? [callback(defaults)].flat().slice(defaults.length).join("\n\n")
+					: undefined;
+			},
 			rebuildSystemPrompt: async toolNames => ({ systemPrompt: buildPrompt(toolNames) }),
 		});
 		owner.session = session;
 		const { beforeModelCall } = hooks;
 		if (beforeModelCall) agent.addBeforeModelCallHook(() => beforeModelCall(session));
 		sessions.push(session);
-		return { session, requests, toolRequests };
+		return { session, requests, toolRequests, messageRequests };
 	}
 
 	const spawnResponses = (): MockResponse[] => [
@@ -2011,6 +2022,7 @@ describe("cold revival replays the system prompt the last request sent", () => {
 				responses,
 				hooks,
 				toolNames,
+				options,
 			);
 			// The SDK registers a spawned child, which keeps it live after it yields.
 			AgentRegistry.global().register({
@@ -2147,11 +2159,9 @@ describe("cold revival replays the system prompt the last request sent", () => {
 		expect(warm.toolRequests.at(-1)).toBe(spawned.toolRequests.at(-1)!);
 	});
 
-	/** The executor's own subagent prompt over a default block listing the active tools. */
+	/** Mimic SDK assembly; spawn context is delivered separately below. */
 	function subagentPrompt(toolNames: string[], options?: CreateAgentSessionOptions): string[] {
-		const build = options?.systemPrompt;
-		if (typeof build !== "function") throw new Error("Expected a system prompt builder");
-		return [build([`default: ${toolNames.join(",")}`])].flat();
+		return [`default: ${toolNames.join(",")}`, options?.agentRolePrompt ?? ""];
 	}
 
 	function registerPeer(): void {
@@ -2180,6 +2190,8 @@ describe("cold revival replays the system prompt the last request sent", () => {
 				names => subagentPrompt(names, options),
 				[{ content: ["next"] }],
 				hooks,
+				undefined,
+				options,
 			);
 			return { session: warm.session } as CreateAgentSessionResult;
 		});
@@ -2193,7 +2205,7 @@ describe("cold revival replays the system prompt the last request sent", () => {
 	it("warm-revives with the system prompt it was sent with after a peer joins, and keeps it on rebuild", async () => {
 		const cwd = makeTempDir("@pi-revive-warm-roster-");
 		const spawned = await spawn(cwd, subagentPrompt, spawnResponses());
-		expect(spawned.requests.at(-1)!.join("\n")).toContain("(no other agents)");
+		expect(spawned.messageRequests.at(-1)).toContain("(no other agents)");
 		const { live, warm } = await parkAndRevive(registerPeer);
 		expect(warm.requests[0]).toEqual(spawned.requests.at(-1)!);
 		// A rebuild after the revive keeps the roster too: a live one would rewrite the cached conversation.
@@ -2218,7 +2230,7 @@ describe("cold revival replays the system prompt the last request sent", () => {
 		});
 		const spawned = await spawn(cwd, subagentPrompt, spawnResponses());
 		const sentPrompt = spawned.requests.at(-1)!;
-		expect(sentPrompt.join("\n")).toContain("`Peer` — Peer (sub, running): reading a.ts");
+		expect(spawned.messageRequests.at(-1)).toContain("`Peer` — Peer (sub, running): reading a.ts");
 
 		AgentRegistry.global().setActivity("Peer", "editing b.ts");
 		await spawned.session.refreshBaseSystemPrompt();
@@ -2227,7 +2239,9 @@ describe("cold revival replays the system prompt the last request sent", () => {
 		expect(spawned.requests.at(-1)).toEqual(sentPrompt);
 
 		await spawned.session.setActiveToolsByName(["read"]);
-		expect(spawned.session.systemPrompt.join("\n")).toContain("`Peer` — Peer (sub, running): editing b.ts");
+		expect(spawned.session.systemPrompt.join("\n")).not.toContain("`Peer`");
+		expect(spawned.messageRequests.at(-1)).toContain("reading a.ts");
+		expect(spawned.messageRequests.at(-1)).not.toContain("editing b.ts");
 	});
 
 	it("warm-revives with the roster its prompt held, not one a discarded rebuild rendered", async () => {

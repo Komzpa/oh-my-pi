@@ -208,7 +208,7 @@ describe("runSubprocess yield reminders", () => {
 		expect(createAgentSessionSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("appends the per-spawn subagent prompt after the default blocks so the static prefix stays shared", async () => {
+	it("separates the stable agent role from per-spawn conversation instructions", async () => {
 		let userPrompt = "";
 		const session = createMockSession(({ text, emit }) => {
 			userPrompt = text;
@@ -231,18 +231,15 @@ describe("runSubprocess yield reminders", () => {
 			task: "Your assignment is below.\nBe thorough and complete fully before yielding.\n\nDo the task.",
 		});
 
-		const systemPromptBuilder = createAgentSessionSpy.mock.calls[0]?.[0]?.systemPrompt;
-		expect(systemPromptBuilder).toBeFunction();
-		if (typeof systemPromptBuilder !== "function") throw new Error("Expected system prompt builder");
-		const systemPrompt = systemPromptBuilder(["system", "<project-context>\ncwd\n</project-context>"]);
-
-		expect(systemPrompt).toHaveLength(3);
-		expect(systemPrompt?.[0]).toBe("system");
-		expect(systemPrompt?.[1]).toBe("<project-context>\ncwd\n</project-context>");
-		expect(systemPrompt?.[2]).toContain(baseAgent.systemPrompt);
-		// The parent-conversation CONTEXT section is gone: subagents get their
-		// background inside the assignment (or a local:// file), never a dump.
-		expect(systemPrompt?.[2]).not.toMatch(/CONTEXT\n=+/);
+		const options = createAgentSessionSpy.mock.calls[0]?.[0];
+		expect(options?.agentRolePrompt).toBe(baseAgent.systemPrompt);
+		const defaults = ["system", "<project-context>cwd</project-context>"];
+		const callback = options?.systemPrompt;
+		const startup =
+			typeof callback === "function" ? [callback(defaults)].flat().slice(defaults.length).join("\n\n") : undefined;
+		expect(options?.systemPromptIsStartupContext).toBe(true);
+		expect(startup).not.toContain(baseAgent.systemPrompt);
+		expect(startup).toContain("§ Completion");
 		expect(userPrompt).not.toMatch(/CONTEXT\n=+/);
 	});
 	it("resets yield state after an intervening wake wins the follow-up prompt race", async () => {
@@ -596,7 +593,7 @@ describe("runSubprocess yield reminders", () => {
 		expect(sessionOptions?.toolNames).toEqual(["read"]);
 		const systemPromptBuilder = sessionOptions?.systemPrompt;
 		if (typeof systemPromptBuilder !== "function") throw new Error("Expected system prompt builder");
-		expect(systemPromptBuilder(["system"])?.at(-1)).toContain("your final message is your result");
+		expect([systemPromptBuilder(["system"])].flat().at(-1)).toContain("your final message is your result");
 		expect(prompts).toHaveLength(1);
 		expect(result.exitCode).toBe(0);
 		expect(result.output).toBe(report);

@@ -40,7 +40,7 @@ describe("SYSTEM.md prompt assembly", () => {
 
 	afterEach(cleanupTempHome(() => ({ tempDir, tempHomeDir, originalHome })));
 
-	it("keeps per-request date/cwd out of the system prompt footer", async () => {
+	it("keeps the clock dynamic while recording the project cwd", async () => {
 		// The date/cwd line was moved out of the system prompt and onto the first
 		// user turn (#7404): any byte that changes per request at the tail of the
 		// system block invalidates the tool-schema prefix cache on open-weight
@@ -64,7 +64,7 @@ describe("SYSTEM.md prompt assembly", () => {
 
 		const promptText = systemPrompt.join("\n\n");
 		const normalizedProjectDir = projectDir.replace(/\\/g, "/");
-		expect(promptText).not.toContain(normalizedProjectDir);
+		expect(promptText).toContain(normalizedProjectDir);
 		expect(promptText).not.toContain("Today");
 		expect(promptText).not.toContain("current working directory");
 	});

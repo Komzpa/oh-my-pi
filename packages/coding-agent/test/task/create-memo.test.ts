@@ -54,7 +54,7 @@ describe("TaskTool.create discovery memo", () => {
 		const second = await TaskTool.create(createSession("/tmp"));
 
 		expect(spy).toHaveBeenCalledTimes(1);
-		expect(first.description).toBe(second.description);
+		expect(first.projectInstructions).toBe(second.projectInstructions);
 	});
 
 	it("rescans for a different cwd", async () => {
@@ -78,8 +78,8 @@ describe("TaskTool.create discovery memo", () => {
 		const second = await TaskTool.create(createSession("/tmp/omp-memo-shared", ["/extensions/second"]));
 
 		expect(spy).toHaveBeenCalledTimes(2);
-		expect(first.description).toContain("General-purpose task agent");
-		expect(second.description).toContain("Refreshed task agent");
+		expect(first.projectInstructions).toContain("General-purpose task agent");
+		expect(second.projectInstructions).toContain("Refreshed task agent");
 	});
 
 	it("does not cache a rejected discovery", async () => {
@@ -91,7 +91,7 @@ describe("TaskTool.create discovery memo", () => {
 		await expect(TaskTool.create(createSession("/tmp"))).rejects.toThrow("boom");
 		const tool = await TaskTool.create(createSession("/tmp"));
 
-		expect(tool.description).toContain("task");
+		expect(tool.projectInstructions).toContain("task");
 		expect(spy).toHaveBeenCalledTimes(2);
 	});
 
@@ -117,11 +117,11 @@ describe("TaskTool.create discovery memo", () => {
 		} as unknown as ToolSession;
 
 		const before = await TaskTool.create(session);
-		expect(before.description).toContain("General-purpose task agent");
+		expect(before.projectInstructions).toContain("General-purpose task agent");
 
 		cfgExtensions.override(settings, ["/extensions/live"]);
 		const after = await TaskTool.create(session);
-		expect(after.description).toContain("Refreshed task agent");
+		expect(after.projectInstructions).toContain("Refreshed task agent");
 		expect(spy).toHaveBeenCalledTimes(2);
 	});
 
@@ -133,13 +133,13 @@ describe("TaskTool.create discovery memo", () => {
 		const session = createSession("/tmp/omp-memo-refresh");
 		const existing = await TaskTool.create(session);
 
-		expect(existing.description).toContain("General-purpose task agent");
+		expect(existing.projectInstructions).toContain("General-purpose task agent");
 		await refreshAgentDiscovery(session.cwd, session.effectiveExtensionRoots?.());
 
-		expect(existing.description).toContain("Refreshed task agent");
-		expect(existing.description).not.toContain("General-purpose task agent");
+		expect(existing.projectInstructions).toContain("Refreshed task agent");
+		expect(existing.projectInstructions).not.toContain("General-purpose task agent");
 		const future = await TaskTool.create(session);
-		expect(future.description).toContain("Refreshed task agent");
+		expect(future.projectInstructions).toContain("Refreshed task agent");
 		expect(spy).toHaveBeenCalledTimes(2);
 	});
 });

@@ -272,13 +272,15 @@ function withSectionVariants(dataSchema: Record<string, unknown>): Record<string
 }
 
 function wrapWorkPoolYieldParameters(items: readonly WorkPoolYieldItem[]): Record<string, unknown> {
+	void items; // Item membership is validated at execution; the provider schema stays reusable.
 	return {
 		type: "object",
 		additionalProperties: false,
 		description: "submit one workpool item outcome",
 		properties: {
 			key: {
-				enum: items.map(item => item.index),
+				type: "integer",
+				minimum: 1,
 				description: "1-based workpool item number",
 			},
 			data: { description: "Self-contained outcome and evidence for this item" },

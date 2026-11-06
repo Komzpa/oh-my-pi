@@ -4552,7 +4552,7 @@ function volatileSystemSuffixStart(systemBlocks: readonly AnthropicSystemBlock[]
  * there is no stable boundary and the breakpoint stays on the array tail.
  *
  * Anthropic allows at most 4 cache breakpoints per request. At most one is
- * spent on tools and one on system here, leaving the remaining budget for
+ * spent on tools and up to two on system here, leaving the remaining budget for
  * the message tail and historical decimation checkpoints in `applyPromptCaching`.
  *
  * The tool array is anchored on both API-key and OAuth paths: the tool definitions
@@ -4602,6 +4602,14 @@ function applyHeadCaching(
 		if (anchor && anchor.cache_control == null) {
 			for (const block of systemBlocks) delete block.cache_control;
 			anchor.cache_control = cloneAnthropicCacheControl(cacheControl);
+		}
+		// The layered renderer's final project block is stable within a cwd. Keep
+		// the cross-project head above AND cache the full project prefix before
+		// dynamic conversation context. Message caching counts these anchors and
+		// spends only the remaining portion of Anthropic's four-breakpoint budget.
+		const project = systemBlocks.at(-1);
+		if (project?.text.startsWith("<project-context>")) {
+			project.cache_control = cloneAnthropicCacheControl(cacheControl);
 		}
 	}
 }

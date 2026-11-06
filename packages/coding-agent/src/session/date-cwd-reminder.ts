@@ -123,12 +123,24 @@ function messageStartsWithReminder(message: UserMessage, reminder: string): bool
 	return message.content[0]?.type === "text" && message.content[0].text === reminder;
 }
 
+let reminderPrefixes: WeakMap<Message, string> | undefined;
+
+/** Debug-only boundary recorded where the reminder is inserted, without parsing prompt text. */
+export function dateCwdReminderPrefix(message: Message): string | undefined {
+	return reminderPrefixes?.get(message);
+}
+
 function injectReminder(message: UserMessage, reminder: string): UserMessage {
 	const content: UserMessage["content"] =
 		typeof message.content === "string"
 			? `${reminder}\n\n${message.content}`
 			: [{ type: "text", text: reminder }, ...message.content];
-	return { ...message, content };
+	const injected = { ...message, content };
+	if (Bun.env.OMP_PROMPT_LAYERS === "1") {
+		reminderPrefixes ??= new WeakMap();
+		reminderPrefixes.set(injected, reminder);
+	}
+	return injected;
 }
 
 /** Developer turns the injector inserted; every other output message maps to an input one. */
