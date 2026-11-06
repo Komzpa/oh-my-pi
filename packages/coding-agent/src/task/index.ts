@@ -1413,12 +1413,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			runningWorkerIds: new Set(this.#todoExecutors.keys()),
 		});
 		if (!updated) return;
+		const row = updated.flatMap((phase, phaseIndex) =>
+			phase.tasks.filter((task, taskIndex) => task !== phases[phaseIndex]?.tasks[taskIndex]),
+		)[0];
+		const owner = row?.schedule?.owner;
 		this.session.setTodoPhases?.(updated);
 		this.session.persistTodoPhases?.(
 			updated,
 			buildTodoExecutorPersistedEdit({
 				...observation,
-				runningWorkerIds: new Set(this.#todoExecutors.keys()),
+				// The resolved row replaces roster-based matching during replay. Only
+				// its current owner's liveness affects completion ownership.
+				row: row?.content ?? observation.row,
+				runningWorkerIds: owner && this.#todoExecutors.has(owner) ? new Set([owner]) : undefined,
 			}),
 		);
 	}

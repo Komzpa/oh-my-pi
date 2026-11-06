@@ -27,7 +27,7 @@ import {
 	runSubagentFollowUpTurn,
 	runSubprocess,
 } from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import { type AgentDefinition, TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { WaitTool } from "@oh-my-pi/pi-coding-agent/tools/wait";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
@@ -672,6 +672,33 @@ describe("runSubprocess result acceptance", () => {
 		} finally {
 			tempDir.removeSync();
 		}
+	});
+
+	it("does not attribute a previous abort to an empty continuation but reports a new abort", async () => {
+		const harness = createHarness();
+		registerRunning(harness.session);
+		const previous: AssistantMessage = {
+			...assistantStopMessage([]),
+			stopReason: "aborted",
+			errorMessage: "Request was aborted",
+		};
+		const latest = vi.spyOn(harness.session, "getLastAssistantMessage").mockReturnValue(previous);
+		const eventBus = new EventBus();
+		const statuses: string[] = [];
+		eventBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, event => {
+			if (typeof event === "object" && event !== null && "status" in event) statuses.push(String(event.status));
+		});
+		attachIrcWakeTurnMonitor(harness.session, { id: AGENT_ID, agent: baseAgent, eventBus });
+		const observer = harness.wakeObserver();
+		if (!observer) throw new Error("wake-turn observer was not registered");
+		const empty = observer([]);
+		await empty?.(undefined);
+		expect(statuses).toEqual(["started", "failed"]);
+		statuses.length = 0;
+		const cancelled = observer([]);
+		latest.mockReturnValue({ ...previous, timestamp: previous.timestamp + 1 });
+		await cancelled?.(undefined);
+		expect(statuses).toEqual(["started", "aborted"]);
 	});
 
 	it.each([true, false])(
