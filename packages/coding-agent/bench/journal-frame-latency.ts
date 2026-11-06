@@ -7,9 +7,13 @@ import { expect, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Type } from "@oh-my-pi/omptype/typebox";
+import { collectSubSessions } from "../src/session/sub-sessions";
+import dcSizes from "./fixtures/dc-worker-sizes.json";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { getAgentDir, getConfigRootDir, getLogsDir, pathIsWithin } from "@oh-my-pi/pi-utils";
 import * as utils from "@oh-my-pi/pi-utils";
+import { resetLoopPhaseWindow, takeLoopPhaseAttribution, withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import type { Api, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
@@ -35,9 +39,11 @@ import {
 } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
 
 const entries = 200_000;
-const extended = process.env.JOURNAL_BENCH_SHAPE === "dc";
-const workers = extended ? 6_000 : 1_000;
-const workerFiles = extended ? 8_338 : workers;
+const shape = process.env.JOURNAL_BENCH_SHAPE ?? "original";
+const burst = shape === "dc";
+const extended = burst || shape === "dc-static";
+const workers = burst ? dcSizes.sizes.length : extended ? 6_000 : 1_000;
+const workerFiles = burst ? dcSizes.directoryFiles : extended ? 8_338 : workers;
 const timestamp = "2026-11-06T12:00:00.000Z";
 
 async function fixture(dir: string): Promise<string> {
@@ -54,7 +60,7 @@ async function fixture(dir: string): Promise<string> {
 		if (i % 1024 === 0) await writer.flush();
 	}
 	writer.write(
-		`${JSON.stringify({ type: "custom", id: "todo", parentId: `e${entries - 1}`, timestamp, customType: "user_todo_edit", data: { phases: [{ name: "Benchmark", tasks: Array.from({ length: extended ? 250 : 1 }, (_, index) => ({ content: index ? `work ${index}` : "work", status: index ? "pending" : "in_progress", ...(extended ? { schedule: { agentProfile: "task", dependencies: [], resources: [], owner: "task", estimate: { optimisticSeconds: 1, likelySeconds: 2, pessimisticSeconds: 5, confidence: "high", basis: "synthetic benchmark", updatedAt: Date.now() } } } : {}) })) }] } })}\n`,
+		`${JSON.stringify({ type: "custom", id: "todo", parentId: `e${entries - 1}`, timestamp, customType: "user_todo_edit", data: { phases: [{ name: "Benchmark", tasks: Array.from({ length: extended ? 250 : 1 }, (_, index) => ({ content: index ? `work ${index}` : "work", status: index ? "pending" : "in_progress", ...(extended ? { schedule: { agentProfile: "task", dependencies: [], resources: [], owner: burst ? `Worker${index}` : "task", estimate: { optimisticSeconds: 1, likelySeconds: 2, pessimisticSeconds: 5, confidence: "high", basis: "synthetic benchmark", updatedAt: Date.now() } } } : {}) })) }] } })}\n`,
 	);
 	if (extended) {
 		writer.write(
@@ -81,7 +87,7 @@ async function fixture(dir: string): Promise<string> {
 		if (extended) {
 			// 5,992 short transcripts and eight large ones: valid records, no sparse-file substitute.
 			const record = `${JSON.stringify({ type: "custom", id: "archive", parentId: "answer", timestamp, customType: "worker-archive", data: { padding: "x".repeat(16_000) } })}\n`;
-			const targetBytes = i < 8 ? 205_000_000 : 160_000;
+			const targetBytes = burst ? dcSizes.sizes[i]! : i < 8 ? 205_000_000 : 160_000;
 			for (let bytes = 0; bytes < targetBytes; bytes += record.length) {
 				transcript.write(record);
 				if (bytes % (record.length * 256) === 0) await transcript.flush();
@@ -131,6 +137,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 	let auth: AuthStorage | undefined;
 	let totalPositionedReads = 0;
 	let totalJsonlParses = 0;
+	const wholeParseStacks: string[] = [];
 	let totalPlanClones = 0;
 	const originalParse = utils.parseJsonlLenient;
 	const parseSpy = vi
@@ -138,6 +145,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		.mockImplementation((...args: Parameters<typeof originalParse>) => {
 			parseSpy.mockClear();
 			totalJsonlParses++;
+			if (wholeParseStacks.length < 12) wholeParseStacks.push(new Error("whole-transcript parse").stack ?? "");
 			return originalParse(...args);
 		});
 	const originalClone = globalThis.structuredClone;
@@ -164,6 +172,11 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 			totalPositionedReads++;
 			return originalRead(...args);
 		});
+	const originalLoad = loader.loadSessionFile;
+	vi.spyOn(loader, "loadSessionFile").mockImplementation((...args: Parameters<typeof originalLoad>) => {
+		if (wholeParseStacks.length < 12) wholeParseStacks.push(new Error("loadSessionFile caller").stack ?? "");
+		return originalLoad(...args);
+	});
 	try {
 		console.error(`BENCH_STAGE fixture-start ${Date.now()}`);
 		const file = await fixture(dir);
@@ -233,17 +246,90 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		await registerPersistedSubagents(registry, file, { hydrateHistory: false });
 		console.error(`BENCH_STAGE registry-done ${Date.now()}`);
 		const eventBus = new EventBus();
+		let burstIssued = false;
+		let activeWorkers = 0;
+		let peakWorkers = 0;
+		let completedWorkers = 0;
+		const burstStarted = Promise.withResolvers<void>();
 		session = new AgentSession({
 			agent: new Agent({
-				initialState: { model, systemPrompt: ["Benchmark"], tools: [], messages: [] },
+				initialState: {
+					model,
+					systemPrompt: ["Benchmark"],
+					tools: burst
+						? [
+								{
+									name: "benchmark_worker",
+									label: "Benchmark worker completion",
+									description: "Complete synthetic worker",
+									parameters: Type.Object({ index: Type.Number() }),
+									execute: async (_id, args) => {
+										const id = `Burst${args.index}`;
+										const workerFile = path.join(file.slice(0, -6), `${id}.jsonl`);
+										await fs.copyFile(
+											path.join(file.slice(0, -6), `Worker${Math.floor((args.index * workers) / 5)}.jsonl`),
+											workerFile,
+										);
+										AgentRegistry.global().register({
+											id,
+											displayName: id,
+											kind: "sub",
+											session: null,
+											sessionFile: workerFile,
+											status: "running",
+										});
+										eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+											id,
+											index: args.index,
+											agent: "task",
+											agentSource: "builtin",
+											status: "running",
+											description: "burst worker",
+										});
+										activeWorkers++;
+										peakWorkers = Math.max(peakWorkers, activeWorkers);
+										if (activeWorkers === 5) burstStarted.resolve();
+										await burstStarted.promise;
+										await Bun.sleep(20);
+										activeWorkers--;
+										completedWorkers++;
+										AgentRegistry.global().setStatus(id, "parked");
+										eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+											id,
+											index: args.index,
+											agent: "task",
+											agentSource: "builtin",
+											status: "completed",
+											description: "burst worker",
+										});
+										return { content: [{ type: "text", text: `Completed ${id}` }], details: { id } };
+									},
+								},
+							]
+						: [],
+					messages: [],
+				},
 				streamFn: () => {
 					const stream = new AssistantMessageEventStream();
+					const spawn = burst && !burstIssued;
+					burstIssued ||= spawn;
 					queueMicrotask(() =>
 						stream.push({
 							type: "done",
-							reason: "stop",
+							reason: spawn ? "toolUse" : "stop",
 							message: {
 								...createAssistantMessage("ok"),
+								...(spawn
+									? {
+											stopReason: "toolUse" as const,
+											content: Array.from({ length: 5 }, (_, index) => ({
+												type: "toolCall" as const,
+												id: `burst-${index}`,
+												name: "benchmark_worker",
+												arguments: { index },
+											})),
+										}
+									: {}),
 								api: model.api,
 								provider: model.provider,
 								model: model.id,
@@ -294,8 +380,10 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		const startupMs = firstPaintAt - started;
 		const startupReadyMs = performance.now() - started;
 		const intervals: number[] = [];
+		const slowFrames: { gapMs: number; renderMs: number; phase?: { label: string; ms: number }; at: number }[] = [];
 		let last = performance.now();
 		let frameCount = 0;
+		const blockingOperations: { op: string; ms: number }[] = [];
 		let readsInFrames = 0;
 		let turns = 0;
 		let turnEnds = 0;
@@ -303,20 +391,34 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		session.subscribe(event => {
 			if (event.type === "turn_end") turnEnds++;
 		});
+		resetLoopPhaseWindow(last + 16);
 		const timer = setInterval(() => {
-			render();
+			const beforeRender = performance.now();
+			withLoopPhase("journal-bench:render", render);
 			const now = performance.now();
 			intervals.push(now - last);
+			const phase = takeLoopPhaseAttribution(now);
+			if (now - last > 100)
+				slowFrames.push({ gapMs: now - last, renderMs: now - beforeRender, phase, at: Date.now() });
+			resetLoopPhaseWindow(now + 16);
 			last = now;
 		}, 16);
 		stopFrameClock = () => clearInterval(timer);
 		const durationMs = Number(process.env.JOURNAL_BENCH_DURATION_MS ?? "6000");
+		const parsesBeforeMeasurement = totalJsonlParses;
 		const runStart = performance.now();
+		// Exercise the same restore collector used by both restart paths while the UI is painting.
+		const restoreOptions = { purpose: "restore" as const, includeCompressed: false };
+		const restoration = burst ? collectSubSessions(file, restoreOptions) : undefined;
 		while (performance.now() - runStart < durationMs) {
 			// GC is deliberately outside frame call-count measurement: WeakRef cache
 			// retention must not hide re-reading a branch after normal collection.
 			readSpy.mockClear();
-			if (frameCount % 50 === 0) Bun.gc(true);
+			if (frameCount % 50 === 0) {
+				const beforeGc = performance.now();
+				withLoopPhase("journal-bench:forced-gc", () => Bun.gc(true));
+				blockingOperations.push({ op: "forced-gc", ms: performance.now() - beforeGc });
+			}
 			const before = totalPositionedReads;
 			if (extended) resolveConfiguredModelPatterns("@task", settings);
 			eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
@@ -349,6 +451,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		console.error(`BENCH_STAGE emitted ${Date.now()}`);
 		const emissionElapsedMs = performance.now() - runStart;
 		await pendingTurn;
+		await restoration;
 		console.error(`BENCH_STAGE turns-done ${Date.now()}`);
 		await Bun.sleep(120);
 		clearInterval(timer);
@@ -375,12 +478,25 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		const progressWindowPositionedReads = totalPositionedReads - beforeProgressWindow;
 		const actualWorkerFiles = (await fs.readdir(file.slice(0, -6))).length;
 		const workerDirectoryBytes = await directoryBytes(file.slice(0, -6));
-		if (extended) {
-			expect(actualWorkerFiles).toBe(workerFiles);
-			expect(workerDirectoryBytes).toBeGreaterThanOrEqual(2_600_000_000);
-		}
+
 		const result = {
-			shape: extended ? "dc" : "original",
+			shape,
+			peakWorkers,
+			completedWorkers,
+			wholeTranscriptParses: totalJsonlParses - parsesBeforeMeasurement,
+			wholeParseStacks,
+			blockingOperations,
+			slowFrames,
+			toolResults: session.agent.state.messages
+				.filter(message => message.role === "toolResult")
+				.map(message => ({
+					toolCallId: message.toolCallId,
+					isError: message.isError,
+					text: message.content
+						.filter(part => part.type === "text")
+						.map(part => part.text.slice(0, 200))
+						.join(" "),
+				})),
 			workerFiles: actualWorkerFiles,
 			journalBytes,
 			journalEntries: manager.getEntryCount(),
@@ -407,7 +523,20 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		console.log(`JOURNAL_BENCH_RESULT ${JSON.stringify(result)}`);
 		if (process.env.JOURNAL_BENCH_OUTPUT)
 			await Bun.write(process.env.JOURNAL_BENCH_OUTPUT, JSON.stringify(result, null, 2));
+		if (extended) {
+			expect(actualWorkerFiles).toBeGreaterThanOrEqual(workerFiles + (burst ? 5 : 0));
+			if (burst)
+				expect(
+					result.toolResults.filter(message => message.toolCallId.startsWith("burst-") && !message.isError).length,
+				).toBe(5);
+			expect(workerDirectoryBytes).toBeGreaterThanOrEqual(burst ? dcSizes.totalBytes : 2_600_000_000);
+		}
 		expect(turnEnds).toBeGreaterThan(0);
+		if (burst) {
+			expect(result.wholeTranscriptParses).toBe(0);
+			expect(peakWorkers).toBe(5);
+			expect(completedWorkers).toBe(5);
+		}
 		expect(readsInFrames).toBe(0);
 		expect(progressWindowPositionedReads).toBe(0);
 		expect(result.progressWindowJsonlParses).toBe(0);
@@ -417,6 +546,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		expect(frameCount).toBeGreaterThanOrEqual(Math.floor(durationMs / 20) - 1);
 	} finally {
 		stopFrameClock?.();
+		resetLoopPhaseWindow();
 		mode?.stop();
 		await session?.dispose();
 		auth?.close();
