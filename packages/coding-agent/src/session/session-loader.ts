@@ -23,7 +23,6 @@ import {
 	resolveImageDataUrl,
 	resolveImageDataUrlSync,
 } from "./blob-store";
-import { ExecutorObservationCompactor, ExecutorObservationReferences } from "./executor-observation-compaction";
 import { buildSessionContext } from "./session-context";
 import type { FileEntry, RawFileEntry, SessionEntry, SessionHeader } from "./session-entries";
 import { migrateToCurrentVersion } from "./session-migrations";
@@ -124,8 +123,6 @@ export interface VisitEntriesFromFileStreamOptions {
 
 /** Controls how a missing session file is handled. */
 export interface LoadSessionOptions {
-	/** Resume projection; raw archival readers retain every observation. */
-	compactExecutorObservations?: boolean;
 	/** Propagate ENOENT instead of treating the path as a new empty session. */
 	throwIfMissing?: boolean;
 }
@@ -470,35 +467,17 @@ export async function visitEntriesFromFileStream(
 /** Exported for testing — the ≥8MiB streaming path (works on any file size). */
 export async function loadEntriesFromFileStream(
 	filePath: string,
-	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing"> & { compactExecutorObservations?: boolean },
+	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing">,
 ): Promise<SessionLoadResult> {
-	const references = new ExecutorObservationReferences();
-	let snapshotBytes: number | undefined;
-	if (options?.compactExecutorObservations) {
-		snapshotBytes = 0;
-		await visitEntriesFromFileStream(filePath, entry => references.visit(entry), {
-			throwIfMissing: options.throwIfMissing,
-			onBytesConsumed: bytes => {
-				snapshotBytes! += bytes;
-			},
-		});
-	}
-	const compactor = options?.compactExecutorObservations
-		? new ExecutorObservationCompactor(references.ids)
-		: undefined;
-	const entries: FileEntry[] = compactor?.entries ?? [];
+	const entries: FileEntry[] = [];
 	let malformedRecords = 0;
 	let bytesConsumed = 0;
 	const titleSlot = await visitEntriesFromFileStream(
 		filePath,
 		entry => {
-			if (compactor) compactor.push(entry);
-			else entries.push(entry);
+			entries.push(entry);
 		},
 		{
-			// Both passes must see the same prefix: a later appended branch may
-			// reference an observation the first pass did not know to protect.
-			maxBytes: snapshotBytes,
 			onMalformedRecord: () => {
 				malformedRecords++;
 			},
@@ -508,7 +487,6 @@ export async function loadEntriesFromFileStream(
 			},
 		},
 	);
-	compactor?.flush();
 	return {
 		entries,
 		titleSlot,
@@ -529,23 +507,15 @@ async function loadWithKnownSize(
 	filePath: string,
 	storage: SessionStorage,
 	size: number,
-	options?: LoadSessionOptions,
+	options?: { throwIfMissing?: boolean },
 ): Promise<{ loaded: SessionLoadResult; sourceSize: number }> {
 	if (shouldStreamEntries(storage, size)) {
-		const loaded = await loadEntriesFromFileStream(filePath, options);
+		const loaded = await loadEntriesFromFileStream(filePath, { throwIfMissing: options?.throwIfMissing });
 		const sourceSize = loaded.sourceSize ?? 0;
 		return { loaded: loaded.invalidHeader ? { ...loaded, entries: [] } : loaded, sourceSize };
 	}
 	const content = await storage.readText(filePath);
 	const loaded = parseSessionContent(content);
-	if (options?.compactExecutorObservations) {
-		const references = new ExecutorObservationReferences();
-		for (const entry of loaded.entries) references.visit(entry);
-		const compactor = new ExecutorObservationCompactor(references.ids);
-		for (const entry of loaded.entries) compactor.push(entry);
-		compactor.flush();
-		loaded.entries = compactor.entries;
-	}
 	return {
 		loaded: loaded.invalidHeader ? { ...loaded, entries: [] } : loaded,
 		sourceSize: Buffer.byteLength(content, "utf8"),
