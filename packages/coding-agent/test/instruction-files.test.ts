@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import { $ } from "bun";
 import { InstructionFiles } from "../src/session/instruction-files";
@@ -108,6 +108,31 @@ describe("loaded instruction refresh", () => {
 		manager.branch(originalLeaf);
 		expect(tracker.systemNotices()).toEqual([]);
 		expect((await tracker.refresh(16384))[0]).toContain("updated secret-value");
+	});
+
+	it("refreshes appended turns without replaying historical instruction state", async () => {
+		using dir = TempDir.createSync("@instruction-incremental-");
+		const file = dir.join("AGENTS.md");
+		await Bun.write(file, "initial");
+		const manager = SessionManager.inMemory(dir.path());
+		const tracker = new InstructionFiles(manager);
+		await tracker.loaded(file);
+		const branch = spyOn(manager, "getBranch");
+		const read = spyOn(manager, "getEntry");
+		try {
+			for (let i = 0; i < 10; i++) {
+				manager.appendMessage({ role: "user", content: "next turn", timestamp: i });
+				expect(await tracker.refresh(16384)).toEqual([]);
+			}
+			expect(branch).not.toHaveBeenCalled();
+			expect(read).toHaveBeenCalledTimes(10);
+			await Bun.write(file, "changed instruction");
+			await fs.utimes(file, new Date(), new Date(Date.now() + 2000));
+			expect((await tracker.refresh(16384))[0]).toContain("changed instruction");
+		} finally {
+			branch.mockRestore();
+			read.mockRestore();
+		}
 	});
 
 	it.skipIf(process.platform === "win32")(
