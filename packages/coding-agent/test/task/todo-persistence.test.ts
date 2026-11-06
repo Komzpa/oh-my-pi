@@ -106,6 +106,86 @@ describe("task todo persistence", () => {
 		expect(new TextEncoder().encode(JSON.stringify(writes[0])).length).toBeLessThan(1_500);
 	});
 
+	it("writes no row journal bytes for repeated IRC follow-up lifecycles", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [{ name: "task", description: "Task agent", systemPrompt: "Run work", source: "bundled" }],
+			projectAgentsDir: null,
+		});
+		const bus = new EventBus();
+		const writes: Array<{ phases?: TodoPhase[]; edit?: TodoPersistedEdit }> = [];
+		await TaskTool.create(createSession(heavyTodoPlan(300), writes, bus));
+		bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "owner",
+			agent: "task",
+			status: "started",
+			description: "Task 001 with retained schedule history",
+			at: 100,
+		});
+		const journalBytes = () =>
+			Buffer.byteLength(
+				writes
+					.map((write, index) =>
+						JSON.stringify(compactEntry(write.edit!, `e${index}`, index ? `e${index - 1}` : "base")),
+					)
+					.join("\n") + "\n",
+			);
+		const bytes = journalBytes();
+		for (let i = 0; i < 1000; i++) {
+			for (const status of ["started", "aborted"])
+				bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+					id: "owner",
+					agent: "task",
+					status,
+					taskText: "IRC follow-up",
+					at: 200 + i,
+					followUpTurn: true,
+				});
+		}
+		expect(journalBytes()).toBe(bytes);
+		expect(writes).toHaveLength(1);
+		expect(writes[0]?.edit).toMatchObject({ observation: { row: "Task 001 with retained schedule history" } });
+		expect(writes[0]?.edit).toMatchObject({ observation: { runningWorkerIds: ["owner"] } });
+	});
+
+	it("persists only the row owner's liveness and replays a completion without stealing that owner", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [], projectAgentsDir: null });
+		const bus = new EventBus();
+		const writes: Array<{ phases?: TodoPhase[]; edit?: TodoPersistedEdit }> = [];
+		const session = createSession(heavyTodoPlan(100), writes, bus);
+		await TaskTool.create(session);
+		for (let i = 0; i < 100; i++)
+			bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id: `worker-${i}`,
+				agent: "task",
+				status: "started",
+				at: i,
+				description: `Task ${String(i + 1).padStart(3, "0")} with retained schedule history`,
+			});
+		expect(writes).toHaveLength(100);
+		for (const write of writes) {
+			if (write.edit?.kind !== "executor") throw new Error("Missing executor edit");
+			expect(write.edit.observation.runningWorkerIds?.length ?? 0).toBeLessThanOrEqual(1);
+		}
+		const base = structuredClone(session.getTodoPhases!());
+		base[0].tasks[0].schedule!.owner = "worker-1";
+		session.setTodoPhases!(base);
+		writes.length = 0;
+		bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, { id: "worker-0", agent: "task", status: "completed", at: 101 });
+		const replayed = getLatestTodoPhasesFromEntries([
+			{
+				type: "custom",
+				customType: USER_TODO_EDIT_CUSTOM_TYPE,
+				id: "base",
+				parentId: null,
+				timestamp: "2026-11-07T00:00:00Z",
+				data: { phases: base },
+			},
+			...writes.map((write, index) => compactEntry(write.edit!, `e${index}`, "base")),
+		]);
+		expect(replayed).toEqual(session.getTodoPhases!());
+		expect(replayed?.[0].tasks[0].schedule?.owner).toBe("worker-1");
+	});
+
 	it("replays old full snapshots plus compact task owner links to the same plan", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [{ name: "task", description: "Task agent", systemPrompt: "Run work", source: "bundled" }],
