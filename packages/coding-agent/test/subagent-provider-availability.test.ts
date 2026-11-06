@@ -137,6 +137,7 @@ describe("subagent runtime fallback on a real provider error", () => {
 					"task.agentIdleTtlMs": 0,
 					"compaction.enabled": false,
 					"retry.baseDelayMs": 1,
+					"retry.modelFallback": false,
 					"retry.enabled": mode !== "quota" && mode !== "all-midrun",
 					"retry.maxRetries": 2,
 					"todo.enabled": false,

@@ -853,7 +853,10 @@ export class TurnRecovery {
 						resolveConfiguredModelPatterns(this.#host.settings.getModelRole("default"), this.#host.settings) ??
 						[];
 					const fallbacks: { role: string; primary: string; selector: RetryFallbackSelector }[] = [];
-					if (cfgRetryModelFallback.get(this.#host.settings) && !this.#host.modelFallbackDisabled?.()) {
+					if (
+						(this.#host.isSubagent?.() || cfgRetryModelFallback.get(this.#host.settings)) &&
+						!this.#host.modelFallbackDisabled?.()
+					) {
 						for (const primary of [...patterns]) {
 							for (const role of this.retryFallbackChainKeys(primary, undefined, { roleHint: "default" })) {
 								for (const selector of getRetryFallbackEffectiveChain(
@@ -936,7 +939,10 @@ export class TurnRecovery {
 				const cooldown = providerExhaustionRecord(model.provider);
 				if (!cooldown) return;
 				const currentSelector = formatRetryFallbackSelector(model, this.#host.thinkingLevel());
-				if (cfgRetryModelFallback.get(this.#host.settings) && !this.#host.modelFallbackDisabled?.()) {
+				if (
+					(this.#host.isSubagent?.() || cfgRetryModelFallback.get(this.#host.settings)) &&
+					!this.#host.modelFallbackDisabled?.()
+				) {
 					const fallback = await this.#findKeyedRetryFallback(currentSelector, model, waitSignal, {
 						wrapAround: true,
 					});
@@ -2316,7 +2322,10 @@ export class TurnRecovery {
 				credentialVersion: this.#host.modelRegistry.providerCredentialVersion(currentModel.provider),
 			});
 		}
-		if (cfgRetryModelFallback.get(this.#host.settings) && !this.#host.modelFallbackDisabled?.()) {
+		if (
+			(this.#host.isSubagent?.() || cfgRetryModelFallback.get(this.#host.settings)) &&
+			!this.#host.modelFallbackDisabled?.()
+		) {
 			const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
 			const fallback = await this.#findKeyedRetryFallback(currentSelector, currentModel, signal);
 			if (fallback)
