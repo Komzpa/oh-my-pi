@@ -89,6 +89,10 @@ export interface TodoSchedule {
 	audit?: TodoRowAudit;
 	/** Published decision artifact, probed at the idle lead boundary. */
 	reviewPage?: string;
+	/** Published card slug; legacy rows use an unambiguous landed row/title match. */
+	reviewCard?: string;
+	/** Applied (page, card, content hash, answer) receipts, retained across rework. */
+	reviewAnswers?: string[];
 	/** A refused handoff remains pending until its published row card resolves. */
 	reviewPagePending?: boolean;
 	/** Append-only durable attempts for this exact row. */

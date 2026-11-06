@@ -56,7 +56,7 @@ test("admission and opener require the published matching result card, then open
 	const fetch = spyOn(globalThis, "fetch").mockImplementation(async input =>
 		String(input).endsWith("cards.json")
 			? Response.json({ cards: [{ disposition: { kind: "delivered-change" }, landed }] })
-			: String(input).endsWith("answers.json")
+			: String(input).endsWith("api/answers")
 				? Response.json({})
 				: new Response("page"),
 	);
