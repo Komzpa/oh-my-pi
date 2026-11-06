@@ -47,25 +47,26 @@ test("admission and opener require the published matching result card, then open
 	const fetch = spyOn(globalThis, "fetch").mockImplementation(async input =>
 		String(input).endsWith("cards.json")
 			? Response.json({ cards: [{ disposition: { kind: "delivered-change" }, landed }] })
-			: new Response("page"),
+			: String(input).endsWith("answers.json")
+				? Response.json({})
+				: new Response("page"),
 	);
 	try {
 		const handlers = new Map();
+		const entries = [];
 		const opened = [];
 		let current = structuredClone(live);
 		current[0].tasks[0].status = "completed";
 		delete current[0].tasks[0].schedule.review;
-		await todoDispatch(
-			{
-				on: (name, fn) => handlers.set(name, fn),
-				getActiveTools: () => ["todo"],
-				appendEntry: () => {},
-				sendMessage: () => {},
-				registerSoftToolRequirementProvider: () => {},
-				pi: { ...schedule, ...todos },
-			},
-			{ reviewPageOpener: value => opened.push(value) },
-		);
+		const api = {
+			on: (name, fn) => handlers.set(name, fn),
+			getActiveTools: () => ["todo"],
+			appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+			sendMessage: () => {},
+			registerSoftToolRequirementProvider: () => {},
+			pi: { ...schedule, ...todos },
+		};
+		await todoDispatch(api, { reviewPageOpener: value => opened.push(value) });
 		const ctx = {
 			cwd: process.cwd(),
 			getTodoPhases: () => current,
@@ -79,7 +80,7 @@ test("admission and opener require the published matching result card, then open
 				getHeader: () => ({ id: "review-test" }),
 				getBranch: () => [],
 				getBranchMatching: () => [],
-				getLatestBranchMatching: () => undefined,
+				getLatestBranchMatching: predicate => entries.findLast(predicate),
 			},
 			getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
 			getTaskMaxConcurrency: () => 20,
@@ -129,11 +130,18 @@ test("admission and opener require the published matching result card, then open
 			{
 				name: "Review",
 				tasks: [
-					{ ...row, status: "completed", schedule: { ...row.schedule, reviewPage: url, reviewPagePending: true } },
+					{
+						...row,
+						status: "in_progress",
+						schedule: { ...row.schedule, reviewPage: url, reviewPagePending: true },
+					},
 				],
 			},
 		];
 		expect((await handlers.get("tool_call")(event, ctx))?.block).not.toBe(true);
+		expect((await handlers.get("tool_call")(event, ctx))?.block).not.toBe(true);
+		expect(opened).toEqual([url]);
+		await todoDispatch(api, { reviewPageOpener: value => opened.push(value) });
 		expect((await handlers.get("tool_call")(event, ctx))?.block).not.toBe(true);
 		expect(opened).toEqual([url]);
 		expect(current[0].tasks[0].schedule.reviewPagePending).toBeUndefined();

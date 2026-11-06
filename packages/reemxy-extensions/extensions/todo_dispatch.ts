@@ -2319,8 +2319,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
             ctx.updateTodoSchedule?.(String(row.content), { reviewPagePending: undefined });
         } catch {}
       }
-      if (ctx.getTodoPreviewConfig?.().openReviewPages !== false)
-        await openReviewPages(todoPhases(ctx), openedReviewPages, options.reviewPageProbe, options.reviewPageOpener);
+      if (ctx.getTodoPreviewConfig?.().openReviewPages !== false) {
+        const entry = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-review-opened");
+        for (const key of entry?.data?.keys ?? []) if (typeof key === "string") openedReviewPages.add(key);
+        await openReviewPages(todoPhases(ctx), openedReviewPages, options.reviewPageProbe, options.reviewPageOpener,
+          key => pi.appendEntry("todo-review-opened", { keys: [...openedReviewPages].filter(value => !value.startsWith("pending:")).concat(key) }));
+      }
     }
     const config = previewConfig(ctx);
     if (!config.enabled) {
