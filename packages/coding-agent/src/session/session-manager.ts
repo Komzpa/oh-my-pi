@@ -624,7 +624,6 @@ export class SessionEntryIndex {
 	// leaf appends to the issued view in O(1); a leaf change or rebuild starts
 	// a fresh array. Weak ownership lets dropped historical views be collected.
 	#generation = 0;
-	#mutableMetadata = new Set<string>();
 	#metadataCache: { generation: number; leaf: string | null | undefined; path: IndexedSessionEntry[] } | undefined;
 	#branchCache: { leaf: string | null; generation: number; branch: WeakRef<SessionEntry[]> } | undefined;
 	#read?: (entry: IndexedSessionEntry) => SessionEntry;
@@ -634,7 +633,6 @@ export class SessionEntryIndex {
 
 	clear(closeReader = true): void {
 		this.#metadataCache = undefined;
-		this.#mutableMetadata.clear();
 		this.#entriesById.clear();
 		this.#ordered = [];
 		this.#children.clear();
@@ -702,7 +700,6 @@ export class SessionEntryIndex {
 		};
 		this.#ordered.push(indexed);
 		this.#entriesById.set(entry.id, indexed);
-		if (indexed.entry) this.#mutableMetadata.add(entry.id);
 		// Late usage is physically last but replays to the leaf captured at append time.
 		const nextLeaf = sessionEntryLeafId(entry);
 		this.#leaf = nextLeaf;
@@ -764,7 +761,6 @@ export class SessionEntryIndex {
 	get(id: string, retainIdentity = true): SessionEntry | undefined {
 		const indexed = this.#entriesById.get(id);
 		if (!indexed) return undefined;
-		if (retainIdentity) this.#mutableMetadata.add(id);
 		const strong = indexed.entry ?? this.#active.get(id);
 		if (strong) return strong;
 		const retained = indexed.weak?.deref();
@@ -864,40 +860,10 @@ export class SessionEntryIndex {
 		return branch;
 	}
 
-	/**
-	 * Only exposed payloads can change behind the index; disk-only history is immutable.
-	 * Keeps the shared-reference mutation contract, but a whole exposed branch makes this set
-	 * as large as the journal, and a frame asks for the path many times: compare the few
-	 * metadata fields in place and rebuild an entry's metadata only when one of them changed.
-	 */
-	#syncMutableMetadata(): void {
-		for (const entryId of this.#mutableMetadata) {
-			const retained = this.retainedEntry(entryId);
-			if (!retained) {
-				this.#mutableMetadata.delete(entryId);
-				continue;
-			}
-			const indexed = this.#entriesById.get(entryId)!;
-			const structural = indexed.parentId !== retained.parentId || indexed.type !== retained.type;
-			if (structural) {
-				this.#metadataCache = undefined;
-				this.#branchCache = undefined;
-			}
-			if (
-				structural ||
-				(retained.type === "custom" && indexed.customType !== retained.customType) ||
-				(retained.type === "compaction" && indexed.firstKeptEntryId !== retained.firstKeptEntryId) ||
-				(retained.type === "model_usage" && indexed.activeLeafId !== retained.activeLeafId) ||
-				(retained.type === "message" && indexed.messageRole !== retained.message.role)
-			) {
-				Object.assign(indexed, sessionContextEntryMetadata(retained));
-				indexed.firstKeptEntryId = retained.type === "compaction" ? retained.firstKeptEntryId : undefined;
-			}
-		}
-	}
-
+	// In-place edits are announced through update() (SessionManager.updateEntry) or a
+	// rebuild; both refresh metadata and bump the generation. A per-call rescan of every
+	// exposed entry was O(branch) on each of the many path reads per frame.
 	#metadataLeafPath(id: string | null | undefined = this.#leaf): IndexedSessionEntry[] {
-		this.#syncMutableMetadata();
 		const cache = this.#metadataCache;
 		if (cache?.generation === this.#generation && cache.leaf === id) return cache.path.slice();
 		const path: IndexedSessionEntry[] = [];
@@ -948,9 +914,9 @@ export class SessionEntryIndex {
 			this.#generation++;
 			this.#branchCache = undefined;
 		}
+		this.#metadataCache = undefined;
 		const wasLabel = indexed.type === "label";
 		indexed.entry = entry;
-		this.#mutableMetadata.add(entry.id);
 		indexed.revision = (indexed.revision ?? 0) + 1;
 		Object.assign(indexed, sessionContextEntryMetadata(entry));
 		indexed.firstKeptEntryId = entry.type === "compaction" ? entry.firstKeptEntryId : undefined;
