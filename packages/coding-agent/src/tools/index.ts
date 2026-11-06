@@ -482,6 +482,8 @@ export interface ToolSession {
 	getClientBridge?: () => ClientBridge | undefined;
 	/** Get cached todo phases for this session. */
 	getTodoPhases?: () => TodoPhase[];
+	/** Stable immutable view for read and copy-on-write lifecycle paths. */
+	getTodoSnapshot?: () => readonly TodoPhase[];
 	/** Replace cached todo phases for this session. */
 	setTodoPhases?: (phases: TodoPhase[]) => void;
 	/**

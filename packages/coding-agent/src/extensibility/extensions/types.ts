@@ -808,6 +808,8 @@ export interface ExtensionContext {
 	getTodoPreviewConfig?(): { openReviewPages?: boolean; enabled: boolean; paths: string[]; thresholdMinutes: number };
 	/** Current hydrated plan, without replaying the session journal. Undefined before session initialization. */
 	getTodoPhases?(): TodoPhase[] | undefined;
+	/** Stable immutable plan view. Never mutate it; use updateTodoSchedule for edits. */
+	getTodoSnapshot?(): readonly TodoPhase[] | undefined;
 	/** Merge a schedule annotation into one exact row and append its durable snapshot. Critic redo reopens its row; an audit pass closes it; attempt history is preserved. */
 	updateTodoSchedule?(
 		task: string,

@@ -90,10 +90,13 @@ export interface TodoTrackerHost {
 	consumeLastServedToolChoiceLabel(): string | undefined;
 }
 
+const ownedTodoSnapshots = new WeakSet<object>();
+
 /** Freeze only detached plan data, once when its owner replaces it. */
 function freezeTodoSnapshot(value: unknown): void {
-	if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+	if (value === null || typeof value !== "object" || ownedTodoSnapshots.has(value)) return;
 	Object.freeze(value);
+	ownedTodoSnapshots.add(value);
 	for (const child of Object.values(value)) freezeTodoSnapshot(child);
 }
 
@@ -150,7 +153,14 @@ export class TodoTracker {
 
 	/** Replaces todo phases with a defensive clone. */
 	setPhases(phases: TodoPhase[]): void {
-		this.#phases = this.#clonePhases(phases);
+		this.#phases = phases.map(phase => {
+			if (ownedTodoSnapshots.has(phase)) return phase;
+			const { tasks, ...metadata } = phase;
+			return {
+				...structuredClone(metadata),
+				tasks: tasks.map(task => (ownedTodoSnapshots.has(task) ? task : structuredClone(task))),
+			};
+		});
 		freezeTodoSnapshot(this.#phases);
 		// Legacy restores close accepted rows on load; persist that once so resume replays it.
 		if (takeTodoMigrationCheckpoint(phases)) {
@@ -303,7 +313,7 @@ export class TodoTracker {
 			logger.debug("Todo completion: max reminders reached", { count: this.#reminderCount });
 			return false;
 		}
-		const phases = this.phases;
+		const phases = this.#phases;
 		if (phases.length === 0) {
 			this.#reminderCount = 0;
 			this.#reminderAwaitingProgress = false;

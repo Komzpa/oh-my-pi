@@ -228,7 +228,7 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 		entries: (bridge, key, delta) => bridge.session(key)?.applyEntries(delta),
 		closed: (bridge, key) => bridge.closed(key),
 		read: (_bridge, session, fields) => readSessionFields(session, fields),
-		readTodoPhases: (_bridge, session) => toWireData(session.getTodoPhases()),
+		readTodoPhases: (_bridge, session) => toWireData([...(session.getTodoSnapshot?.() ?? session.getTodoPhases())]),
 		readMessages: (_bridge, session) => toWireData(session.messages),
 		hasQueuedIrcFrom: (_bridge, session, from) => session.hasQueuedIrcFrom(from),
 		subscribe: (bridge, session, listener) =>

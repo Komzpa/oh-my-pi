@@ -127,7 +127,17 @@ export interface TodoExecutorPersistedEdit {
 	};
 }
 
+/** Runtime annotation delta; replayed through the same schedule transition as the live edit. */
+export interface TodoSchedulePatchPersistedEdit {
+	v: 1;
+	kind: "schedule_patch";
+	at: number;
+	task: string;
+	patch: Partial<TodoSchedule>;
+}
+
 export type TodoPersistedEdit =
+	| TodoSchedulePatchPersistedEdit
 	| TodoOperationPersistedEdit
 	| TodoExecutorPersistedEdit
 	| TodoReworkAttemptPersistedEdit

@@ -978,7 +978,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	readonly #reflectingWorkers = new Set<string>();
 
 	#routeRework(spawn: TaskParams): { route?: ReworkRoute; error?: string } {
-		const phases = this.session.getTodoPhases?.();
+		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.();
 		const name = spawn.name?.trim();
 		if (!phases || !name) return {};
 		const rows = phases.flatMap(phase =>
@@ -1066,7 +1066,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	}
 
 	#appendAttempt(row: ReworkRoute["row"], attempt: TodoReworkAttempt): void {
-		const phases = this.session.getTodoPhases?.();
+		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.();
 		if (!phases || !this.session.setTodoPhases || !this.session.persistTodoPhases) {
 			throw new Error("Rework requires durable Todo persistence.");
 		}
@@ -1103,7 +1103,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		>,
 	): void {
 		if (!result.aborted && result.exitCode === 0 && !result.error) return;
-		const phases = this.session.getTodoPhases?.();
+		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.();
 		if (!phases) return;
 		const rows = phases.flatMap(phase =>
 			phase.tasks
@@ -1197,7 +1197,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			? await Bun.file(previous.result.outputPath).text()
 			: previous.result.output;
 		const attemptId = `${route.previous.workerId}:${route.previous.startedAt}`;
-		const phasesBefore = this.session.getTodoPhases?.() ?? [];
+		const phasesBefore = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.() ?? [];
 		const priorRecord = phasesBefore
 			.find(phase => phase.name === route.row.phase)
 			?.tasks.find(task => task.content === route.row.content)
@@ -1260,7 +1260,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						.at(-1) ?? "",
 			});
 		}
-		const phases = this.session.getTodoPhases?.() ?? [];
+		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.() ?? [];
 		const task = phases
 			.find(phase => phase.name === route.row.phase)
 			?.tasks.find(task => task.content === route.row.content);
@@ -1396,7 +1396,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	}
 
 	#persistTodoExecutor(observation: TodoExecutorObservation): void {
-		const phases = this.session.getTodoPhases?.();
+		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.();
 		if (!phases) return;
 		const updated = applyTodoExecutorObservation(phases, {
 			...observation,
@@ -1422,11 +1422,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		spawns: ReadonlyArray<{ requestedName: string; workerId: string }>,
 		manager: AsyncJobManagerApi,
 	): string | undefined {
-		const phases = this.session.getTodoPhases?.();
+		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.();
 		if (!phases || !this.session.setTodoPhases || !this.session.persistTodoPhases) return undefined;
 		const running = new Set([...this.#todoExecutors.keys(), ...manager.getRunningJobs().map(job => job.id)]);
 		const notes: string[] = [];
-		let current = phases;
+		let current = [...phases];
 		for (const { requestedName, workerId } of spawns) {
 			if (!requestedName) continue;
 			// The new worker's own job is already registered as running; only the requested id counts.
@@ -1599,7 +1599,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 */
 	#resolveSpawnPreflight(params: TaskParams) {
 		if (params.row !== undefined) {
-			const error = validateTodoExecutorRow(this.session.getTodoPhases?.() ?? [], params.row);
+			const error = validateTodoExecutorRow(
+				this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.() ?? [],
+				params.row,
+			);
 			if (error) throw new Error(error);
 		}
 		return resolveEffectiveSubagentPolicy({

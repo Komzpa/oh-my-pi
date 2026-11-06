@@ -65,7 +65,7 @@ export async function recoverCrashedRows(session: AgentSession, options: Restore
 		)
 			continue;
 		const rows = session
-			.getTodoPhases()
+			.getTodoSnapshot()
 			.flatMap(phase => phase.tasks)
 			.filter(
 				row =>
@@ -105,7 +105,7 @@ export async function recoverCrashedRows(session: AgentSession, options: Restore
 		const startedAt = Date.now();
 		const titles = new Set(rows.map(row => row.content));
 		session.commitTodoPhases(
-			session.getTodoPhases().map(phase => ({
+			session.getTodoSnapshot().map(phase => ({
 				...phase,
 				tasks: phase.tasks.map(row =>
 					titles.has(row.content)
@@ -157,7 +157,7 @@ export async function recoverCrashedRows(session: AgentSession, options: Restore
 					if (acquired) permit.release();
 					if (init.isolated) await fs.rm(isolationMarker, { force: true });
 					for (const row of titles) {
-						const updated = applyTodoExecutorObservation(session.getTodoPhases(), {
+						const updated = applyTodoExecutorObservation(session.getTodoSnapshot(), {
 							row,
 							workerId: id,
 							startedAt,
