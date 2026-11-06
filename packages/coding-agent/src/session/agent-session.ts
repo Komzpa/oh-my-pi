@@ -11147,6 +11147,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#modelMentions.resolve(selector);
 	}
 
+	getTodoSnapshot(): readonly TodoPhase[] {
+		return this.#todo.snapshot;
+	}
+
 	getTodoPhases(): TodoPhase[] {
 		return this.#todo.phases;
 	}

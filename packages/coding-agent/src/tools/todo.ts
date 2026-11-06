@@ -361,8 +361,8 @@ function copyTodoData<T>(value: T): T {
 	return copy as T;
 }
 
-// Consumers receive detached snapshots unless an owned read-only scan explicitly borrows them.
-function canonicalTodoPhases(entry: SessionEntry, copy = true): TodoPhase[] | undefined {
+// Internal scans borrow snapshots; mutation and public read boundaries make their own detached copies.
+function canonicalTodoPhases(entry: SessionEntry, copy = false): TodoPhase[] | undefined {
 	if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
 		const phases = (entry.data as { phases?: unknown } | undefined)?.phases;
 		return Array.isArray(phases) ? (copy ? copyTodoData(phases as TodoPhase[]) : (phases as TodoPhase[])) : undefined;
