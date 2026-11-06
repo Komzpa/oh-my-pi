@@ -17,6 +17,7 @@ import {
 	type RestartQueueController,
 	type RestartRequestRecord,
 } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
+import * as snapshotWorker from "@oh-my-pi/pi-coding-agent/task/restart-snapshot-worker";
 import * as restartRecovery from "@oh-my-pi/pi-coding-agent/task/restart-recovery";
 import { captureSubagentsForRestart } from "@oh-my-pi/pi-coding-agent/task/restart-recovery";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -1297,4 +1298,40 @@ describe("restart-queued notice replay (session 01a0e3fe)", () => {
 			context.messages.filter(message => message.role === "custom" && message.customType === "restart-queued"),
 		).toHaveLength(0);
 	});
+});
+
+it("a failed replacement stops background capture before releasing worker write leases", async () => {
+	const { manager, file } = await createRoot(makeTempDir());
+	const harness = makeSession(manager);
+	registerRoot(AgentRegistry.global(), harness.session, file);
+	const identity = identityFor(manager, "failed-exec", 1);
+	const stopping = Promise.withResolvers<void>();
+	const stopped = Promise.withResolvers<void>();
+	const launch = vi.spyOn(snapshotWorker, "launchRestartSnapshots").mockResolvedValue({
+		stop: async () => {
+			stopping.resolve();
+			await stopped.promise;
+		},
+	});
+	const controller = createRestartQueueController({
+		session: harness.session,
+		identity: () => identity,
+		backgroundSnapshots: true,
+		restart: async () => {
+			throw new Error("replacement failed");
+		},
+	});
+	try {
+		await controller.handle({ identity, op: "request", requestId: "failed-exec" });
+		await stopping.promise;
+		expect(harness.releaseCount).toBe(0);
+		stopped.resolve();
+		for (let i = 0; i < 100 && !harness.releaseCount; i++) await Bun.sleep(1);
+		expect(harness.releaseCount).toBe(1);
+		expect(controller.snapshot().request).toMatchObject({ state: "failed", error: "replacement failed" });
+	} finally {
+		stopped.resolve();
+		launch.mockRestore();
+		controller.dispose();
+	}
 });

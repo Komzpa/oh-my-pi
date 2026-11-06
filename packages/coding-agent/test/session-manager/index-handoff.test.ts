@@ -236,3 +236,15 @@ test("an external same-size edit cannot be recertified by repeated handoff reque
 	expect(restored.getEntry("changed")).toMatchObject({ customType: "history" });
 	expect(restored.getEntry("history")).toBeUndefined();
 });
+
+test("switching journals starts a fresh incremental handoff after appending", async () => {
+	const original = await open(await journal());
+	await original.writeIndexHandoff();
+	const next = await journal();
+	await original.setSessionFile(next);
+	const id = original.appendCustomEntry("after-switch", { value: 1 });
+	expect(await original.writeIndexHandoff()).toBe(true);
+	const restored = await open(next);
+	expect(restored.getLeafId()).toBe(id);
+	expect(restored.getEntry(id)).toMatchObject({ customType: "after-switch", data: { value: 1 } });
+});

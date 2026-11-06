@@ -1983,6 +1983,16 @@ export class SessionManager {
 	#appendWriter(): SessionStorageWriter {
 		if (!this.#sessionFile) throw new Error("Cannot open a session writer before a session file exists");
 
+		const base = this.#indexHandoffBase;
+		if (
+			base &&
+			(base.file !== this.#sessionFile ||
+				journalStamp(fs.statSync(base.file, { bigint: true })) !== base.currentStamp)
+		) {
+			this.#indexHandoffBase = undefined;
+			this.#indexHandoffInvalidated = true;
+		}
+
 		if (this.#writer?.isOpen()) return this.#writer;
 
 		this.#writer = this.#storage.openWriter(this.#sessionFile, {
@@ -2413,15 +2423,6 @@ export class SessionManager {
 		// A mid-close writer leaves `#writer` undefined, so `#appendWriter` simply
 		// opens a fresh append handle and the entry still lands.
 		try {
-			const base = this.#indexHandoffBase;
-			if (
-				base &&
-				(base.file !== this.#sessionFile ||
-					journalStamp(fs.statSync(base.file, { bigint: true })) !== base.currentStamp)
-			) {
-				this.#indexHandoffBase = undefined;
-				this.#indexHandoffInvalidated = true;
-			}
 			const writer = this.#appendWriter();
 			const line = this.#lineFor(entry);
 			if (writer.appendSync && !this.#storage.defersSyncPublish) {
@@ -2869,6 +2870,8 @@ export class SessionManager {
 		options?: { throwIfMissing?: boolean; newSession?: NewSessionOptions },
 	): Promise<void> {
 		await this.#drainAndCloseWriter();
+		this.#indexHandoffBase = undefined;
+		this.#indexHandoffInvalidated = false;
 		this.#clearDiskError();
 		this.#draftOnlySessionCleanupArmed = false;
 		// A switch gives up the previous file. Opening claims nothing: the first
@@ -3477,7 +3480,8 @@ export class SessionManager {
 			if (journalStamp(fs.statSync(sessionFile, { bigint: true })) !== stamp) return false;
 			await fs.promises.rename(temporary, target);
 			fs.writeFileSync(`${sessionFile}.index-handoff-tail`, "", { mode: 0o600 });
-			this.#indexHandoffBase = { stamp, count: snapshot.ordered.length, file: sessionFile, currentStamp: stamp };
+			if (this.#sessionFile === sessionFile)
+				this.#indexHandoffBase = { stamp, count: snapshot.ordered.length, file: sessionFile, currentStamp: stamp };
 			return true;
 		} finally {
 			await fs.promises.rm(temporary, { force: true });
