@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-/** Opt-in, single-turn provider eval. No returned tool is executed. */
+/** Opt-in provider eval. Only native TODO decisions are replayed in disposable state. */
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -20,7 +20,11 @@ import { getAgentDir, isEnoent, prompt, logger } from "@oh-my-pi/pi-utils";
 import taskDescription from "../../../coding-agent/src/prompts/tools/task.md" with { type: "text" };
 import readDescription from "../../../coding-agent/src/prompts/tools/read.md" with { type: "text" };
 import turnTemplate from "./lead-instructions-turn.md" with { type: "text" };
-import { leadInstructionScenarios } from "../lead-instructions.scenarios";
+import {
+	leadInstructionScenarios,
+	verifyLeadRoundTrip,
+	type LeadInstructionScenario,
+} from "../lead-instructions.scenarios";
 import { CODEX_LB_PROVIDER } from "../codex_lb_provider";
 
 logger.setTransports({ file: false }); // Evaluation must not create ~/.omp log files.
@@ -199,13 +203,22 @@ try {
 						response.content.some(
 							b =>
 								b.type === "text" &&
-								b.text.includes("?") &&
+								("reviewPage" in expected!.args || b.text.includes("?")) &&
 								Object.values(expected!.args).every(value =>
 									b.text.toLowerCase().includes(String(value).toLowerCase()),
 								),
 						)
 					: first?.name === expected.tool && contains(first.arguments, expected.args, first.name === "task"));
-		const pass = passes(scenario.expected);
+		const calls = response.content.filter(b => b.type === "toolCall");
+		const roundTrip =
+			!scenario.id.startsWith("estimate-cap") && "phases" in scenario
+				? await verifyLeadRoundTrip(scenario as LeadInstructionScenario, calls)
+				: true;
+		const repeatsQuestion =
+			"expectedReview" in scenario &&
+			scenario.expectedReview &&
+			response.content.some(b => b.type === "text" && b.text.includes("?"));
+		const pass = passes(scenario.expected) && roundTrip && !repeatsQuestion;
 		const result: Result = {
 			id: scenario.id,
 			pass,
@@ -223,13 +236,18 @@ try {
 		};
 		results.push(
 			result,
-			...aliases.map(alias => ({
-				...result,
-				id: alias.id,
-				expected: alias.expected,
-				pass: passes(alias.expected),
-				aliasOf: scenario.id,
-			})),
+			...(await Promise.all(
+				aliases.map(async alias => ({
+					...result,
+					id: alias.id,
+					expected: alias.expected,
+					pass:
+						passes(alias.expected) &&
+						("phases" in alias ? await verifyLeadRoundTrip(alias as LeadInstructionScenario, calls) : true) &&
+						!repeatsQuestion,
+					aliasOf: scenario.id,
+				})),
+			)),
 		);
 		await Bun.write(
 			values.output,
@@ -237,7 +255,9 @@ try {
 		);
 		console.log(`${pass ? "PASS" : "FAIL"}\t${scenario.id}\t${first?.name ?? "no call"}`);
 		for (const alias of aliases)
-			console.log(`${passes(alias.expected) ? "PASS" : "FAIL"}\t${alias.id}\talias of ${scenario.id}`);
+			console.log(
+				`${results.find(r => r.id === alias.id)?.pass ? "PASS" : "FAIL"}\t${alias.id}\talias of ${scenario.id}`,
+			);
 		if (response.stopReason === "error" || response.stopReason === "aborted")
 			throw new Error(`Provider stopped at ${scenario.id}; no retries or fallback. Receipt saved.`);
 	}

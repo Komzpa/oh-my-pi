@@ -1,5 +1,6 @@
 // @ts-nocheck -- exercises registered hooks with disposable plan state.
-import { expect, test } from "bun:test";
+import { expect, test, vi } from "bun:test";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch, { leadActionPending } from "./todo_dispatch";
@@ -101,4 +102,19 @@ test("negative control: block on a row without a delivered result still passes",
 	const h = await harness([row]);
 	const result = await h.hooks.get("tool_call")({ toolName: "todo", input: { op: "block", task: row.content, reason: "CI run 812 still queued on the runner" } }, h.ctx);
 	expect(result?.reason ?? "").not.toContain("Refusing block");
+});
+
+ test("resource schedule result steers the existing worker once without stopping it", async () => {
+	const registry = new AgentRegistry();
+	const spy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+	const messages = [];
+	registry.register({ id: "Pipes", displayName: "Pipes", kind: "sub", session: { steer: async text => { messages.push(text); } } });
+	try {
+		const h = await harness([{ content: "Fix pipes", status: "in_progress", schedule: { owner: "Pipes", resources: ["/new-worktree"] } }]);
+		await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule", updates: [{ task: "Fix pipes", resources: ["/new-worktree"] }] }, details: { op: "schedule" }, content: [] }, h.ctx);
+		expect(messages).toHaveLength(1);
+		expect(messages[0]).toContain('/new-worktree');
+		expect(messages[0]).toContain('running worker immediately');
+		expect(messages[0]).not.toMatch(/kill|redispatch/);
+	} finally { spy.mockRestore(); }
 });

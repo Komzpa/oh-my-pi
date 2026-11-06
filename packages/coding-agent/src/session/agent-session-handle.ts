@@ -109,6 +109,8 @@ export interface AgentSessionHandle {
 	readonly ircWakesPending: boolean;
 	/** Full message list, including custom message types. */
 	readonly messages: AgentMessage[];
+	/** Current TODO rows, read from the home thread on each call. */
+	getTodoPhases(): TodoPhase[];
 	/** Current transcript path, or undefined when sessions are disabled. */
 	readonly sessionFile: string | undefined;
 	/** Current model, when selected. */

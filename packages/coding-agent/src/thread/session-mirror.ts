@@ -326,6 +326,7 @@ export type SessionBridgeProtocol = {
 	entries: RpcMethod<[key: string, delta: SessionEntriesDelta], void>;
 	closed: RpcMethod<[key: string], void>;
 	read: RpcMethod<[session: AgentSessionHandle, fields: readonly PeerStateField[]], Partial<SessionMirrorState>>;
+	readTodoPhases: RpcMethod<[session: AgentSessionHandle], TodoPhase[]>;
 	readMessages: RpcMethod<[session: AgentSessionHandle], AgentMessage[]>;
 	hasQueuedIrcFrom: RpcMethod<[session: AgentSessionHandle, from: string], boolean>;
 	subscribe: RpcMethod<[session: AgentSessionHandle, listener: AgentSessionEventListener], () => void>;

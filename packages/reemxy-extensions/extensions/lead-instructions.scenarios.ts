@@ -6,6 +6,11 @@ import { formatTodoView, getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-cod
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import type { TodoDisplayContext, TodoDisplayState, TodoScheduleInputTask } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { TodoTool, type ReviewPageAnswer } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { workerToolPreflight } from "./dispatch_preflight";
 import todoDescription from "../../coding-agent/src/prompts/tools/todo.md" with { type: "text" };
 import live from "./fixtures/dc-rowclose-1645.json";
 import todoDispatch from "./todo_dispatch";
@@ -19,6 +24,9 @@ export interface LeadInstructionScenario {
 	state: TodoDisplayState;
 	expectedState: TodoDisplayState;
 	notices: string[];
+	phases: TodoPhase[];
+	answer?: string;
+	expectedReview?: string;
 }
 interface Case {
 	id: string;
@@ -29,6 +37,8 @@ interface Case {
 	context?: Partial<TodoDisplayContext>;
 	userMessage?: string;
 	userBlockAsked?: boolean;
+	pageAnswer?: "accept" | "redo" | "drop";
+	scopeRefused?: boolean;
 }
 
 /** Independent consumer expectation: adding a display state requires a decision here. */
@@ -213,6 +223,41 @@ function cases(now: number): Case[] {
 		userMessage: "Accept this delivery",
 		expected: { tool: "todo", args: { op: "schedule", updates: [{ task: answered.content, review: "accepted" }] } },
 	});
+	for (const answer of ["accept", "redo", "drop"] as const)
+		output.push({
+			id: `review-page-${answer}`,
+			row: change(auditedReview),
+			pageAnswer: answer,
+			state: "needs worker",
+			expected: answer === "redo" ? dispatch(auditedReview) : null,
+		});
+	output.push({
+		id: "owner-question-telegram",
+		row: change(auditedReview),
+		state: "needs you",
+		userMessage: `Reemxy owner_question reply via Telegram, row "${auditedReview.content}": Accept this delivery`,
+		expected: {
+			tool: "todo",
+			args: { op: "schedule", updates: [{ task: auditedReview.content, review: "accepted" }] },
+		},
+	});
+	output.push({
+		id: "never-handed-to-owner",
+		row: change(auditedReview, { schedule: { ...auditedReview.schedule, handoffPending: true } }),
+		state: "handoff pending",
+		expected: { tool: "text", args: { reviewPage: "http://review.invalid/card" } },
+	});
+	output.push({
+		id: "running-worker-scope",
+		row: change(work),
+		state: "working",
+		workers: [{ id: owner }],
+		scopeRefused: true,
+		expected: {
+			tool: "todo",
+			args: { op: "schedule", updates: [{ task: work.content }] },
+		},
+	});
 	const blocked = change(work, {
 		status: "blocked",
 		blocker: "waits for user: Which endpoint? proposal: staging because production is not approved",
@@ -266,7 +311,7 @@ export async function leadInstructionScenarios(): Promise<LeadInstructionScenari
 async function capture(item: Case): Promise<LeadInstructionScenario> {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-instruction-turn-"));
 	try {
-		const phases = [{ name: "Delivery", tasks: [structuredClone(item.row)] }];
+		let phases = [{ name: "Delivery", tasks: [structuredClone(item.row)] }];
 		if (item.id === "waiting")
 			phases[0]!.tasks.push({
 				content: "DependencyWorker",
@@ -278,6 +323,44 @@ async function capture(item: Case): Promise<LeadInstructionScenario> {
 					executor: undefined,
 				},
 			});
+		const manager = SessionManager.inMemory();
+		const tool = new TodoTool({
+			cwd,
+			settings: Settings.isolated(),
+			sessionManager: manager,
+			getSessionFile: () => null,
+			getTodoPhases: () => phases,
+			setTodoPhases: (next: TodoPhase[]) => {
+				phases = next;
+			},
+		} as unknown as ToolSession);
+		let page: Bun.Server<undefined> | undefined;
+		if (item.pageAnswer) {
+			page = Bun.serve({
+				port: 0,
+				hostname: "127.0.0.1",
+				fetch(request) {
+					return Response.json(
+						new URL(request.url).pathname.endsWith("api/answers")
+							? {
+									card: {
+										answer: item.pageAnswer,
+										expectedReview:
+											item.pageAnswer === "accept" ||
+											item.id === "user-answered-review" ||
+											item.id === "owner-question-telegram"
+												? "accepted"
+												: item.pageAnswer,
+										note: item.pageAnswer === "redo" ? "The switch still clips at 720 px" : "",
+										content_sha: "fixture-sha",
+									},
+								}
+							: { cards: [{ id: "card", title: item.row.content, content_sha: "fixture-sha" }] },
+					);
+				},
+			});
+			phases[0]!.tasks[0]!.schedule!.reviewPage = `http://127.0.0.1:${page.port}/review/`;
+		}
 		const journal: Array<Record<string, unknown>> = [];
 		if (item.context?.requirements)
 			journal.push({
@@ -342,6 +425,7 @@ async function capture(item: Case): Promise<LeadInstructionScenario> {
 			},
 			getTodoPhases: () => phases,
 			updateTodoSchedule: () => true,
+			applyReviewPageAnswer: (answer: ReviewPageAnswer) => tool.applyReviewPageAnswer(answer),
 			getAsyncJobSnapshot: () => ({
 				running: workers.map(worker => ({
 					...worker,
@@ -367,14 +451,31 @@ async function capture(item: Case): Promise<LeadInstructionScenario> {
 				{ message: { role: "user", content: item.userMessage, timestamp: Date.now() } } as never,
 				ctx as never,
 			);
+		if (item.pageAnswer)
+			await hooks.get("tool_call")?.({ toolName: "read", input: { path: "review-page" } } as never, ctx as never);
 		await hooks.get("turn_end")!({} as never, ctx as never);
 		const view = formatTodoView(phases as TodoPhase[], {
 			now: Date.now(),
 			capacity: item.context?.capacityFull ? workers.length : 20,
 		});
-		const state = schedule.classifyTodoDisplayRow(item.row, phases, displayContext).state;
+		const finalRow = phases[0]!.tasks[0]!;
+		const state = schedule.classifyTodoDisplayRow(finalRow, phases, displayContext).state;
+		page?.stop(true);
+		await manager.close();
+		const refusal = item.scopeRefused
+			? await workerToolPreflight({ toolName: "write", input: { path: "/replacement-worktree/result.ts" } }, {
+					cwd,
+					agent: { kind: "sub", id: item.row.schedule!.owner },
+				} as ExtensionContext)
+			: undefined;
 		return {
 			id: item.id,
+			phases: phases as TodoPhase[],
+			answer: item.pageAnswer,
+			expectedReview:
+				item.pageAnswer === "accept" || item.id === "user-answered-review" || item.id === "owner-question-telegram"
+					? "accepted"
+					: item.pageAnswer,
 			todoDescription,
 			row: item.row.content,
 			state,
@@ -383,6 +484,11 @@ async function capture(item: Case): Promise<LeadInstructionScenario> {
 			notices: messages.map(message => message.content),
 			context: [
 				todoDescription,
+				...(refusal
+					? [
+							`Worker ${item.row.schedule!.owner} on row ${JSON.stringify(item.row.content)} reports: ${refusal.reason}. The required scope is /replacement-worktree.`,
+						]
+					: []),
 				...(item.userMessage ? [item.userMessage] : []),
 				view,
 				...messages.map(message => message.content),
@@ -390,6 +496,56 @@ async function capture(item: Case): Promise<LeadInstructionScenario> {
 		};
 	} finally {
 		await fs.rm(cwd, { recursive: true, force: true });
+	}
+}
+
+/** Execute only native TODO decisions in disposable state; no worker/control tools run. */
+export async function verifyLeadRoundTrip(
+	scenario: LeadInstructionScenario,
+	calls: Array<{ name: string; arguments: unknown }>,
+): Promise<boolean> {
+	if (
+		calls.some(
+			call => call.name === "ask" || (call.name === "write" && JSON.stringify(call.arguments).includes("/kill")),
+		)
+	)
+		return false;
+	if (!scenario.expectedReview && scenario.id !== "running-worker-scope") return true;
+	let phases = structuredClone(scenario.phases);
+	const manager = SessionManager.inMemory();
+	try {
+		const tool = new TodoTool({
+			cwd: "/tmp",
+			settings: Settings.isolated(),
+			sessionManager: manager,
+			getSessionFile: () => null,
+			getTodoPhases: () => phases,
+			setTodoPhases: (next: TodoPhase[]) => {
+				phases = next;
+			},
+		} as unknown as ToolSession);
+		for (const call of calls)
+			if (call.name === "todo")
+				await tool.execute("eval-answer", call.arguments as Parameters<TodoTool["execute"]>[1]);
+		const row = phases.flatMap(phase => phase.tasks).find(row => row.content === scenario.row);
+		if (scenario.id === "running-worker-scope")
+			return (
+				row?.schedule?.resources?.some(
+					resource => resource === "/replacement-worktree" || resource === "/replacement-worktree/result.ts",
+				) === true
+			);
+		return (
+			!!row &&
+			row.schedule?.review === scenario.expectedReview &&
+			row.status ===
+				(scenario.expectedReview === "accepted"
+					? "completed"
+					: scenario.expectedReview === "drop"
+						? "abandoned"
+						: "pending")
+		);
+	} finally {
+		await manager.close();
 	}
 }
 
