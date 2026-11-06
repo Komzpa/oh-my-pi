@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Tell the lead each row’s next tool call, while runtime verification and genuine waits stay quiet ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Keep answered review pages closed after restart and open each pending card version once ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Reduce pauses during busy lead turns and dispatch ticks in long sessions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
