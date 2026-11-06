@@ -1218,6 +1218,8 @@ export function rolePriorityDefaults(role: string): string[] {
  * a plain {@link ModelRoleLookup} simply has no pools.
  */
 export interface ModelRolePoolLookup extends ModelRoleLookup {
+	/** Effective settings revision; mutable lookups without one are never cached. */
+	readonly revision?: number;
 	getModelRolePool?(role: string): ModelRolePool | undefined;
 }
 
@@ -1341,6 +1343,9 @@ export function expandRoleAlias(value: string, settings?: ModelRoleLookup): stri
 	return resolved ?? value;
 }
 
+const configuredPatternCache = new WeakMap<ModelRolePoolLookup, { revision: number; values: Map<string, string[]> }>();
+const CONFIGURED_PATTERN_CACHE_LIMIT = 8192;
+
 /**
  * Expand every role alias in `value` to its ordered member patterns. With a `seed`, roles listed in
  * `modelRolePools` are reordered by a weighted draw within their own segment (segment order is
@@ -1351,11 +1356,29 @@ export function resolveConfiguredModelPatterns(
 	settings?: ModelRolePoolLookup,
 	seed?: string,
 ): string[] {
+	const revision = settings?.revision;
+	let cache: Map<string, string[]> | undefined;
+	const key = JSON.stringify([value, seed]);
+	if (settings && typeof revision === "number") {
+		let entry = configuredPatternCache.get(settings);
+		if (entry?.revision !== revision) {
+			entry = { revision, values: new Map() };
+			configuredPatternCache.set(settings, entry);
+		}
+		cache = entry.values;
+		const cached = cache.get(key);
+		if (cached) return [...cached];
+	}
 	const patterns = normalizeModelPatternList(value);
-	return patterns.flatMap(pattern => {
+	const resolvedPatterns = patterns.flatMap(pattern => {
 		const resolved = resolveConfiguredRolePattern(pattern, settings, new Set(), seed);
 		return resolved ?? [];
 	});
+	if (cache) {
+		if (cache.size >= CONFIGURED_PATTERN_CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+		cache.set(key, resolvedPatterns);
+	}
+	return [...resolvedPatterns];
 }
 export interface AgentModelPatternResolutionOptions {
 	/** Highest-priority request selector, when supplied by a caller. */

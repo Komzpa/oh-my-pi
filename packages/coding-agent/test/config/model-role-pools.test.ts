@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import {
 	resolveAgentModelSelection,
 	resolveConfiguredModelPatterns,
@@ -133,4 +133,40 @@ describe("modelRolePools", () => {
 		expect(selection.role).toBe("free");
 		expect(selection.patterns.slice(3)).toEqual(["fast/one", "fast/two"]);
 	});
+});
+
+it("reuses role expansion until settings change without freezing seeded draws or sharing mutable output", () => {
+	const settings = Settings.isolated({
+		modelRoles: { outer: "@pool", pool: "a, b, c" },
+		modelRolePools: { pool: {} },
+	});
+	const lookup = spyOn(settings, "getModelRole");
+	try {
+		const first = resolveConfiguredModelPatterns("@outer", settings, "frame");
+		const calls = lookup.mock.calls.length;
+		for (let frame = 0; frame < 100; frame++) {
+			const patterns = resolveConfiguredModelPatterns("@outer", settings, "frame");
+			expect(patterns).toEqual(first);
+			patterns.pop();
+		}
+		expect(lookup.mock.calls.length).toBe(calls);
+		const draws = new Set(
+			Array.from({ length: 20 }, (_, i) => resolveConfiguredModelPatterns("@outer", settings, `worker-${i}`).join()),
+		);
+		expect(draws.size).toBeGreaterThan(1);
+		settings.setModelRole("pool", "d, e");
+		const before = lookup.mock.calls.length;
+		expect(resolveConfiguredModelPatterns("@outer", settings, "frame").sort()).toEqual(["d", "e"]);
+		expect(lookup.mock.calls.length).toBeGreaterThan(before);
+	} finally {
+		lookup.mockRestore();
+	}
+});
+
+it("refreshes mutable custom role lookups without a revision", () => {
+	let role = "a, b";
+	const lookup = { getModelRole: () => role };
+	expect(resolveConfiguredModelPatterns("@pool", lookup)).toEqual(["a", "b"]);
+	role = "c";
+	expect(resolveConfiguredModelPatterns("@pool", lookup)).toEqual(["c"]);
 });
