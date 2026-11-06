@@ -2752,6 +2752,14 @@ export class InteractiveMode implements InteractiveModeContext {
 				// as persistent: once it holds its height after a run the floor rises
 				// to it, and its later collapse floats the editor until output fills
 				// in. Classify every new root that can collapse on its own.
+				renderVersion: root => {
+					if (root === this.todoContainer) {
+						this.refreshTodoHud(this.ui.terminal.columns);
+						return `${this.#todoRenderVersion}:${this.settings.revision}:${this.ui.terminal.rows}`;
+					}
+					if (root === this.subagentContainer) return this.#subagentRenderVersion;
+					return undefined;
+				},
 				transientChrome: [
 					this.editorContainer,
 					this.attachmentChipsContainer,
@@ -2772,20 +2780,15 @@ export class InteractiveMode implements InteractiveModeContext {
 					this.modelCycleContainer,
 					this.progressHudContainer,
 				],
-				renderVersion: root => {
-					if (root === this.todoContainer) {
-						this.refreshTodoHud(this.ui.terminal.columns);
-						return `${this.#todoRenderVersion}:${this.settings.revision}:${this.ui.terminal.rows}`;
-					}
-					if (root === this.subagentContainer) return this.#subagentRenderVersion;
-					return undefined;
-				},
 				allocation: {
 					hud: this.todoContainer,
 					input: this.editorContainer,
 					apply: (viewport, chromeRows, renderInput) => {
 						const active =
-							!this.todoExpanded && !this.#todoHudHidden && !this.isCompactTodoMode() && this.#todoHasOpenTasks;
+							!this.todoExpanded &&
+							!this.#todoHudHidden &&
+							!this.isCompactTodoMode() &&
+							this.todoPhases.some(phase => phase.tasks.some(task => !isClosedTodo(task)));
 						const preferred = active
 							? Math.max(
 									0,
@@ -5602,7 +5605,6 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#todoRenderVersion = 0;
 	#subagentRenderVersion = 0;
-	#todoHasOpenTasks = false;
 
 	refreshTodoHud(width: number): void {
 		const key = `${width}:${this.ui.terminal.rows}:${this.#todoPanelRows()}`;
@@ -5652,7 +5654,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.todoPhases = immutableSnapshot ? this.#todoPhasesOwner!.getTodoPhases() : (liveSnapshot as TodoPhase[]);
 			this.#todoLiveSnapshot = liveSnapshot;
 		}
-		this.#todoHasOpenTasks = this.todoPhases.some(phase => phase.tasks.some(task => !isClosedTodo(task)));
 		const sourcePhases = this.todoPhases;
 		const livePhases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
 		const workers = linkTodoWorkers(livePhases, running);
