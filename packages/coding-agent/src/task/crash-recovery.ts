@@ -8,7 +8,7 @@ import { extractSessionInit, SessionManager } from "../session/session-manager";
 import { collectSubSessions } from "../session/sub-sessions";
 import { applyTodoExecutorObservation } from "../tools/todo-executor";
 import { runSubagentFollowUpTurn, softRequestBudgetFor } from "./executor";
-import { TaskTool } from "./index";
+import type { SpawnPermit } from "./spawn-run";
 import { AgentOutputManager } from "./output-manager";
 import { persistedAgentDefinition } from "./persisted-revive";
 import { formatTaskResultSummary } from "./result-summary";
@@ -20,7 +20,8 @@ export async function recoverCrashedRows(session: AgentSession, options: Restore
 	const mainFile = session.sessionManager.getSessionFile();
 	const manager = session.asyncJobManager;
 	const taskTool = session.getToolByName("task");
-	if (!mainFile || !manager || !(taskTool instanceof TaskTool)) return { turn: false, subagents: [] };
+	const permit = taskTool && "recoveryPermit" in taskTool ? (taskTool.recoveryPermit as SpawnPermit) : undefined;
+	if (!mainFile || !manager || !permit) return { turn: false, subagents: [] };
 	const registry = AgentRegistry.global();
 	await ensurePersistedRoster(registry, mainFile);
 	const children = await collectSubSessions(mainFile);
@@ -121,7 +122,7 @@ export async function recoverCrashedRows(session: AgentSession, options: Restore
 				let acquired = false;
 				let outcome: "completed" | "failed" | "aborted" = "failed";
 				try {
-					await taskTool.recoveryPermit.acquire(signal);
+					await permit.acquire(signal);
 					acquired = true;
 					markRunning();
 					const result = await runSubagentFollowUpTurn({
@@ -145,7 +146,7 @@ export async function recoverCrashedRows(session: AgentSession, options: Restore
 					if (outcome !== "completed") throw new AsyncJobError(text, result.structuredOutput);
 					return result.structuredOutput ? { text, structured: result.structuredOutput } : text;
 				} finally {
-					if (acquired) taskTool.recoveryPermit.release();
+					if (acquired) permit.release();
 					for (const row of titles) {
 						const updated = applyTodoExecutorObservation(session.getTodoPhases(), {
 							row,
