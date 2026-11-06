@@ -86,20 +86,20 @@ const STATUS_MAP: Record<string, ObservableSession["status"]> = {
 
 export class SessionObserverRegistry {
 	#sessions = new Map<string, ObservableSession>();
-	#listeners = new Set<(kind: SessionObserverChangeKind) => void>();
+	#listeners = new Set<(kind: SessionObserverChangeKind, id?: string) => void>();
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#sortOrderById = new Map<string, number>();
 	#parentSortOrderById = new Map<string, number>();
 	#nextSortOrder = 0;
 
 	/** Add a change listener. Returns unsubscribe function. */
-	onChange(cb: (kind: SessionObserverChangeKind) => void): () => void {
+	onChange(cb: (kind: SessionObserverChangeKind, id?: string) => void): () => void {
 		this.#listeners.add(cb);
 		return () => this.#listeners.delete(cb);
 	}
 
-	#notifyListeners(kind: SessionObserverChangeKind): void {
-		for (const cb of this.#listeners) cb(kind);
+	#notifyListeners(kind: SessionObserverChangeKind, id?: string): void {
+		for (const cb of this.#listeners) cb(kind, id);
 	}
 
 	#ensureSortOrder(id: string): number {
@@ -251,7 +251,7 @@ export class SessionObserverRegistry {
 								lastUpdate: Date.now(),
 							});
 						}
-						this.#notifyListeners("lifecycle");
+						this.#notifyListeners("lifecycle", payload.id);
 					}),
 				),
 			);
@@ -294,7 +294,7 @@ export class SessionObserverRegistry {
 								progressAt: now,
 							});
 						}
-						this.#notifyListeners("progress");
+						this.#notifyListeners("progress", id);
 					}),
 				),
 			);

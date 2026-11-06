@@ -93,12 +93,14 @@ function costRefBelongsToRoot(ref: AgentRef, root: string): boolean {
 	return included;
 }
 
-export function sumSubagentTreeCost(args: {
+export interface SubagentTreeCostInputs {
 	refs: readonly AgentRef[];
 	observers: SessionObserverRegistry;
 	rootSessionFile: string | undefined;
 	sessionCosts: WeakMap<object, AgentCostSnapshot>;
-}): number {
+}
+
+export function sumSubagentTreeCost(args: SubagentTreeCostInputs): number {
 	const { observers, rootSessionFile, sessionCosts } = args;
 	const rows: AgentRef[] = [];
 	const observedById = new Map<string, ObservableSession>();
@@ -114,4 +116,64 @@ export function sumSubagentTreeCost(args: {
 		if (observed) observedById.set(ref.id, observed);
 	}
 	return aggregateCost({ rows, observedById, sessionCosts });
+}
+
+/** Retains finished-worker totals; progress only revisits the worker that changed. */
+export class SubagentTreeCostIndex {
+	#costs = new Map<object, number>();
+	#dirty = new Set<string>();
+	#root: string | undefined;
+	#refs: readonly AgentRef[] | undefined;
+	#groups = new Map<object, AgentRef[]>();
+	#keys = new Map<string, object>();
+	#unsubscribers: (() => void)[] = [];
+	#total = 0;
+
+	invalidate(id?: string): void {
+		if (id) this.#dirty.add(id);
+		else this.#refs = undefined;
+	}
+
+	dispose(): void {
+		for (const unsubscribe of this.#unsubscribers) unsubscribe();
+		this.#unsubscribers = [];
+		this.#refs = undefined;
+		this.#groups.clear();
+		this.#keys.clear();
+		this.#dirty.clear();
+		this.#costs.clear();
+	}
+
+	read(args: SubagentTreeCostInputs): number {
+		if (args.refs !== this.#refs || args.rootSessionFile !== this.#root) {
+			this.dispose();
+			this.#refs = args.refs;
+			this.#root = args.rootSessionFile;
+			this.#total = 0;
+			for (const ref of args.refs) {
+				const key = ref.session ?? ref;
+				let group = this.#groups.get(key);
+				if (!group) {
+					group = [];
+					this.#groups.set(key, group);
+					if (ref.session) this.#unsubscribers.push(ref.session.subscribe(() => this.invalidate(ref.id)));
+				}
+				group.push(ref);
+				this.#keys.set(ref.id, key);
+				this.#dirty.add(ref.id);
+			}
+		}
+		const changed = new Set<object>();
+		for (const id of this.#dirty) {
+			const key = this.#keys.get(id);
+			if (key) changed.add(key);
+		}
+		for (const key of changed) {
+			const cost = sumSubagentTreeCost({ ...args, refs: this.#groups.get(key)! });
+			this.#total += cost - (this.#costs.get(key) ?? 0);
+			this.#costs.set(key, cost);
+		}
+		this.#dirty.clear();
+		return this.#total;
+	}
 }

@@ -147,7 +147,7 @@ import type { AgentHubRegistry } from "@oh-my-pi/pi-tui/overlays/agent-hub-types
 import { type AgentRef, AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { registerPersistedSubagents } from "../registry/persisted-agents";
 import type { AgentCostSnapshot } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
-import { sumSubagentTreeCost } from "./agent-hub-runtime";
+import { SubagentTreeCostIndex } from "./agent-hub-runtime";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -2795,15 +2795,20 @@ export class InteractiveMode implements InteractiveModeContext {
 				// their current height so streamed rows reach native history as
 				// they leave the screen.
 				billedChrome: [this.statusContainer, this.editorTopGapContainer],
+				renderVersion: root => {
+					if (root === this.todoContainer) {
+						this.refreshTodoHud(this.ui.terminal.columns);
+						return `${this.#todoRenderVersion}:${this.settings.revision}:${this.ui.terminal.rows}`;
+					}
+					if (root === this.subagentContainer) return this.#subagentRenderVersion;
+					return undefined;
+				},
 				allocation: {
 					hud: this.todoContainer,
 					input: this.editorContainer,
 					apply: (viewport, chromeRows, renderInput) => {
 						const active =
-							!this.todoExpanded &&
-							!this.#todoHudHidden &&
-							!this.isCompactTodoMode() &&
-							this.todoPhases.some(phase => phase.tasks.some(task => !isClosedTodo(task)));
+							!this.todoExpanded && !this.#todoHudHidden && !this.isCompactTodoMode() && this.#todoHasOpenTasks;
 						const preferred = active
 							? Math.max(
 									0,
@@ -2904,7 +2909,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 		this.syncRunningSubagentBadge();
-		this.#observerRegistry.onChange(kind => {
+		this.#observerRegistry.onChange((kind, id) => {
+			this.#subagentTreeCostIndex.invalidate(id);
 			this.#scheduleObserverUiSync(kind);
 		});
 		// `/pause` stops the live-preview tick (the fullscreen pause screen covers
@@ -5080,6 +5086,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * registry, and the cost segment's subagent-tree spend (local sessions only:
 	 * a collab guest's registry mirrors host transcripts outside this root).
 	 */
+	#subagentTreeCostIndex = new SubagentTreeCostIndex();
+
 	#badgeRoster: { registry: AgentRegistryApi; refs: AgentRef[]; agentIds: string[]; inspectable: number } | undefined;
 
 	syncRunningSubagentBadge(options: { requestRender?: boolean } = {}): boolean {
@@ -5111,7 +5119,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.collabGuest) {
 			const rootSessionFile = this.sessionManager.getSessionFile() ?? undefined;
 			this.#hydratePersistedSubagentCosts(rootSessionFile);
-			treeCost = sumSubagentTreeCost({
+			treeCost = this.#subagentTreeCostIndex.read({
 				refs: roster.refs,
 				observers: this.#observerRegistry,
 				rootSessionFile,
@@ -5627,6 +5635,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 	}
 
+	#todoRenderVersion = 0;
+	#subagentRenderVersion = 0;
+	#todoHasOpenTasks = false;
+
 	refreshTodoHud(width: number): void {
 		const key = `${width}:${this.ui.terminal.rows}:${this.#todoPanelRows()}`;
 		if (key !== this.#todoHudGeometryKey) this.#renderTodoList(width);
@@ -5647,6 +5659,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#renderTodoList(width = this.ui.terminal.columns): void {
+		this.#todoRenderVersion++;
 		this.#todoWorkerDisplayKey = this.#currentTodoWorkerDisplayKey();
 		const panelRows = this.#todoPanelRows();
 		this.#todoHudGeometryKey = `${width}:${this.ui.terminal.rows}:${panelRows}`;
@@ -5674,6 +5687,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.todoPhases = immutableSnapshot ? this.#todoPhasesOwner!.getTodoPhases() : (liveSnapshot as TodoPhase[]);
 			this.#todoLiveSnapshot = liveSnapshot;
 		}
+		this.#todoHasOpenTasks = this.todoPhases.some(phase => phase.tasks.some(task => !isClosedTodo(task)));
 		const sourcePhases = this.todoPhases;
 		const livePhases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
 		const workers = linkTodoWorkers(livePhases, running);
@@ -6250,6 +6264,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#renderSubagentList(): boolean {
+		this.#subagentRenderVersion++;
 		this.#cancelSubagentPreviewTick();
 		const todoChanged = this.#currentTodoWorkerDisplayKey() !== this.#todoWorkerDisplayKey;
 		if (todoChanged) this.#renderTodoList();
@@ -8840,6 +8855,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			unsubscribe();
 		}
 		this.#eventBusUnsubscribers = [];
+		this.#subagentTreeCostIndex.dispose();
 		this.#observerRegistry.dispose();
 		this.#agentRegistryUnsubscribe?.();
 		this.#agentRegistryUnsubscribe = undefined;
