@@ -228,8 +228,12 @@ test("overlapping index preparation calls publish one usable handoff", async () 
 test("an external same-size edit cannot be recertified by repeated handoff requests", async () => {
 	const file = await journal();
 	const original = await open(file);
-	await original.writeIndexHandoff();
+	expect(await original.writeIndexHandoff()).toBe(true);
 	await Bun.write(file, (await Bun.file(file).text()).replace('"id":"history"', '"id":"changed"'));
+	// The handoff cache is keyed by stat metadata. Make the mutation distinct even
+	// on filesystems whose ctime/mtime clock can repeat within one tick.
+	const changed = new Date(Date.now() + 1000);
+	await fs.utimes(file, changed, changed);
 	expect(await original.writeIndexHandoff()).toBe(false);
 	expect(await original.writeIndexHandoff()).toBe(false);
 	const restored = await open(file);
