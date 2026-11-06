@@ -1959,6 +1959,8 @@ export class Agent {
 
 		try {
 			const dequeueSignal = this.#continuationDequeueSignal(signal) ?? continuationAbortController.signal;
+			// Dequeue hooks can cancel this attempt without replacing its controller.
+			// Leave the queued input for the next run rather than reporting an invalid tail.
 			const messages = this.#state.messages;
 			if (messages.length === 0) {
 				// An empty transcript has nothing to resume, but a queued steer/follow-up
@@ -1968,13 +1970,13 @@ export class Agent {
 				// microtask because hasQueuedMessages() never clears, spinning an unbounded
 				// allocation loop until OOM (issue #6344).
 				const queuedSteering = await this.#dequeueSteeringMessagesAfterHooks(dequeueSignal);
-				if (this.#abortController !== continuationAbortController) return;
+				if (this.#abortController !== continuationAbortController || dequeueSignal.aborted) return;
 				if (queuedSteering.length > 0) {
 					await this.#runLoop(queuedSteering, { skipInitialSteeringPoll: true }, signal, true);
 					return;
 				}
 				const queuedFollowUp = await this.#dequeueFollowUpMessagesAfterHooks(dequeueSignal);
-				if (this.#abortController !== continuationAbortController) return;
+				if (this.#abortController !== continuationAbortController || dequeueSignal.aborted) return;
 				if (queuedFollowUp.length > 0) {
 					await this.#runLoop(queuedFollowUp, undefined, signal, true);
 					return;
@@ -1992,14 +1994,14 @@ export class Agent {
 					return;
 				}
 				const queuedSteering = await this.#dequeueSteeringMessagesAfterHooks(dequeueSignal);
-				if (this.#abortController !== continuationAbortController) return;
+				if (this.#abortController !== continuationAbortController || dequeueSignal.aborted) return;
 				if (queuedSteering.length > 0) {
 					await this.#runLoop(queuedSteering, { skipInitialSteeringPoll: true }, signal, true);
 					return;
 				}
 
 				const queuedFollowUp = await this.#dequeueFollowUpMessagesAfterHooks(dequeueSignal);
-				if (this.#abortController !== continuationAbortController) return;
+				if (this.#abortController !== continuationAbortController || dequeueSignal.aborted) return;
 				if (queuedFollowUp.length > 0) {
 					await this.#runLoop(queuedFollowUp, undefined, signal, true);
 					return;

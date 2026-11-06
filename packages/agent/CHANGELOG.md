@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Cancelled queue drains preserve pending input for the next turn without reporting an assistant-role error ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
+
 ## [18.17.0] - 2026-11-06
 
 ### Added
