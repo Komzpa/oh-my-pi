@@ -30,6 +30,17 @@ export function matchingRequirementBranch(
 	);
 }
 
+/** Opt stable pure metadata selectors into the journal's append-aware snapshot cache. */
+export function cachedRequirementBranch(
+	manager: Pick<SessionManager, "getBranch">,
+	predicate: (entry: RequirementEntryMetadata) => boolean,
+): SessionEntry[] {
+	const selective = manager as Pick<SessionManager, "getBranch"> & {
+		getCachedBranchMatching?: (predicate: (entry: RequirementEntryMetadata) => boolean) => SessionEntry[];
+	};
+	return selective.getCachedBranchMatching?.(predicate) ?? matchingRequirementBranch(manager, predicate);
+}
+
 /** Stop decoding once the caller has found its newest valid snapshot. */
 export function* matchingRequirementBranchNewestFirst(
 	manager: Pick<SessionManager, "getBranch">,

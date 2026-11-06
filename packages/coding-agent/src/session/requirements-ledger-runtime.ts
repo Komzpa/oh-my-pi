@@ -1,5 +1,6 @@
 import {
 	matchingRequirementBranch,
+	cachedRequirementBranch,
 	latestRequirementsFromSession,
 	matchingRequirementBranchNewestFirst,
 	type RequirementEntryMetadata,
@@ -120,6 +121,12 @@ function isTodoStateEntryMetadata(entry: RequirementEntryMetadata): boolean {
 		(entry.type === "message" && entry.messageRole === "toolResult" && entry.toolName === "todo")
 	);
 }
+
+const isPublicationEntryMetadata = (entry: RequirementEntryMetadata): boolean =>
+	(entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) || isTodoStateEntryMetadata(entry);
+const isFreshnessEntryMetadata = (entry: RequirementEntryMetadata): boolean =>
+	isPublicationEntryMetadata(entry) ||
+	(entry.type === "custom" && entry.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE);
 
 /** The harness renames a worker whose requested name is taken by appending `-<n>`. */
 function sameWorkerIdentity(a: string, b: string): boolean {
@@ -270,6 +277,7 @@ export class RequirementsLedgerRuntime {
 	readonly #pendingAuditors = new Map<string, RequirementAuditAssignment>();
 	#publicationGeneration = 0;
 	#publicationState = "";
+	#publicationBranch?: readonly SessionEntry[];
 	#noticeState = "";
 	#linkedRowNotices: Promise<void> = Promise.resolve();
 	readonly #stablePublicationGate: RequirementPublicationGate = (message, signal) =>
@@ -1149,13 +1157,7 @@ export class RequirementsLedgerRuntime {
 		}>;
 	}> {
 		const sessionId = this.#sessionId();
-		const branch = matchingRequirementBranch(
-			this.#host.sessionManager,
-			metadata =>
-				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
-				(metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE) ||
-				isTodoStateEntryMetadata(metadata),
-		);
+		const branch = cachedRequirementBranch(this.#host.sessionManager, isFreshnessEntryMetadata);
 		const requirements = getLatestRequirements(branch);
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const changes = getTodoRowChanges(branch);
@@ -1831,12 +1833,9 @@ export class RequirementsLedgerRuntime {
 	}
 
 	#getPublicationGeneration(): number {
-		const branch = matchingRequirementBranch(
-			this.#host.sessionManager,
-			metadata =>
-				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
-				isTodoStateEntryMetadata(metadata),
-		);
+		const branch = cachedRequirementBranch(this.#host.sessionManager, isPublicationEntryMetadata);
+		if (Object.isFrozen(branch) && this.#publicationBranch === branch) return this.#publicationGeneration;
+		this.#publicationBranch = Object.isFrozen(branch) ? branch : undefined;
 		const state = JSON.stringify([
 			this.#sessionId(),
 			getLatestRequirements(branch),
