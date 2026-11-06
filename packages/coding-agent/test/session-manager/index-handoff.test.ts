@@ -194,3 +194,45 @@ test.skipIf(!process.env.OMP_HANDOFF_BENCH)(
 	},
 	60000,
 );
+
+test("prepared index stays current across appends without replacing its base", async () => {
+	const file = await journal();
+	const original = await open(file);
+	expect(await original.writeIndexHandoff()).toBe(true);
+	const base = await Bun.file(`${file}.index-handoff`).text();
+	const id = original.appendCustomEntry("restart-checkpoint", { value: 42 });
+	await original.flush();
+	expect(await Bun.file(`${file}.index-handoff`).text()).toBe(base);
+	const parse = spyOn(loader, "visitSessionFileForResume").mockImplementation(async () => {
+		throw new Error("incremental handoff reparsed journal");
+	});
+	try {
+		const restored = await open(file);
+		expect(restored.getLeafId()).toBe(id);
+		expect(restored.getEntry(id)).toMatchObject({ customType: "restart-checkpoint", data: { value: 42 } });
+		expect(restored.getEntryCount()).toBe(5);
+		expect(restored.getLabel("history")).toBe("bookmark");
+	} finally {
+		parse.mockRestore();
+	}
+});
+
+test("overlapping index preparation calls publish one usable handoff", async () => {
+	const file = await journal();
+	const original = await open(file);
+	expect(await Promise.all([original.writeIndexHandoff(), original.writeIndexHandoff()])).toEqual([true, true]);
+	const restored = await open(file);
+	expect(restored.buildSessionContext().messages).toEqual(original.buildSessionContext().messages);
+});
+
+test("an external same-size edit cannot be recertified by repeated handoff requests", async () => {
+	const file = await journal();
+	const original = await open(file);
+	await original.writeIndexHandoff();
+	await Bun.write(file, (await Bun.file(file).text()).replace('"id":"history"', '"id":"changed"'));
+	expect(await original.writeIndexHandoff()).toBe(false);
+	expect(await original.writeIndexHandoff()).toBe(false);
+	const restored = await open(file);
+	expect(restored.getEntry("changed")).toMatchObject({ customType: "history" });
+	expect(restored.getEntry("history")).toBeUndefined();
+});
