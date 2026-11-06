@@ -37,7 +37,7 @@ import {
 	resolveResourceArtifact,
 	sameIdentity,
 } from "../utils/requirement-artifact";
-import { matchingRequirementBranch } from "../session/requirements-branch-selection";
+import { matchingRequirementBranch, type RequirementEntryMetadata } from "../session/requirements-branch-selection";
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as fs from "node:fs";
 
@@ -156,7 +156,14 @@ export interface RequirementRowArtifact {
 
 export interface RequirementRowArtifactContext {
 	cwd: string;
-	sessionManager?: { getBranch(): SessionEntry[] };
+	sessionManager?: {
+		getBranch(): SessionEntry[];
+		getBranchMatching?(predicate: (metadata: RequirementEntryMetadata) => boolean): SessionEntry[];
+		getCachedBranchMatching?(predicate: (metadata: RequirementEntryMetadata) => boolean): SessionEntry[];
+		getLeafId?(): string | null;
+		getEntryCount?(): number;
+		readonly bodyRevision?: number;
+	};
 	setTodoPhases?: (phases: TodoPhase[]) => void;
 	getAsyncJobSnapshot?: () => { running?: readonly { id: string; agentId?: string }[] } | undefined;
 	signal?: AbortSignal;
@@ -447,6 +454,64 @@ async function resolveTypedRequirementArtifact(
 	};
 }
 
+interface RequirementArtifactPlan {
+	latest: Map<string, TodoItem[]>;
+	historical: Map<string, TodoItem | null>;
+}
+const requirementArtifactPlans = new WeakMap<
+	object,
+	{
+		leaf: string | null;
+		count: number | undefined;
+		revision: number;
+		plan: RequirementArtifactPlan;
+		entries: SessionEntry[];
+	}
+>();
+
+function isRequirementArtifactTodoMetadata(metadata: RequirementEntryMetadata): boolean {
+	return (
+		(metadata.type === "custom" && metadata.customType === USER_TODO_EDIT_CUSTOM_TYPE) ||
+		(metadata.type === "message" && metadata.messageRole === "toolResult" && metadata.toolName === "todo")
+	);
+}
+
+function requirementArtifactPlan(
+	manager: NonNullable<RequirementRowArtifactContext["sessionManager"]>,
+): RequirementArtifactPlan {
+	const leaf = manager.getLeafId?.();
+	const revision = manager.bodyRevision;
+	const count = manager.getEntryCount?.();
+	const cached = requirementArtifactPlans.get(manager);
+	const cacheable = leaf !== undefined && revision !== undefined;
+	if (cacheable && cached?.leaf === leaf && cached.revision === revision && cached.count === count) return cached.plan;
+	const entries =
+		manager.getCachedBranchMatching?.(isRequirementArtifactTodoMetadata) ??
+		matchingRequirementBranch(manager, isRequirementArtifactTodoMetadata);
+	if (cacheable && cached?.revision === revision && cached.entries === entries) {
+		requirementArtifactPlans.set(manager, { leaf, revision, count, entries, plan: cached.plan });
+		return cached.plan;
+	}
+	const latest = new Map<string, TodoItem[]>();
+	for (const phase of getLatestTodoPhasesFromEntries(entries)) {
+		for (const task of phase.tasks) {
+			const matches = latest.get(task.content) ?? [];
+			matches.push(task);
+			latest.set(task.content, matches);
+		}
+	}
+	const historical = new Map<string, TodoItem | null>();
+	observeLatestTodoPhases(entries, phases => {
+		const rows = new Map<string, TodoItem | null>();
+		for (const phase of phases)
+			for (const task of phase.tasks) rows.set(task.content, rows.has(task.content) ? null : task);
+		for (const [row, task] of rows) historical.set(row, task ? cloneTask(task) : null);
+	});
+	const plan = { latest, historical };
+	if (cacheable) requirementArtifactPlans.set(manager, { leaf, revision, count, entries, plan });
+	return plan;
+}
+
 /** Resolve a row's persisted checkout, then read its current HEAD and dirty state without blocking the CLI. */
 async function resolveRequirementRowArtifact(
 	ctx: RequirementRowArtifactContext,
@@ -464,26 +529,9 @@ async function resolveRequirementRowArtifact(
 	}
 	const archived = !task;
 	if (!task && ctx.sessionManager) {
-		let historical: TodoItem | undefined;
-		let ambiguous = false;
-		observeLatestTodoPhases(ctx.sessionManager.getBranch(), snapshot => {
-			let match: TodoItem | undefined;
-			for (const phase of snapshot) {
-				for (const candidate of phase.tasks) {
-					if (candidate.content !== row) continue;
-					if (match) {
-						ambiguous = true;
-						return;
-					}
-					match = candidate;
-				}
-			}
-			if (match) {
-				historical = cloneTask(match);
-				ambiguous = false;
-			}
-		});
-		if (ambiguous) return unknownRequirementArtifact(`duplicate historical TODO row ${JSON.stringify(row)}`);
+		const historical = requirementArtifactPlan(ctx.sessionManager).historical.get(row);
+		if (historical === null)
+			return unknownRequirementArtifact(`duplicate historical TODO row ${JSON.stringify(row)}`);
 		task = historical;
 	}
 	if (!task) return unknownRequirementArtifact("unknown row");
@@ -522,11 +570,7 @@ async function resolveRequirementRowArtifact(
 	// and the same schedule, so a reassigned row never inherits an old checkout.
 	let persistedCwd: string | undefined;
 	const latest =
-		archived || !ctx.sessionManager
-			? []
-			: getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch())
-					.flatMap(phase => phase.tasks)
-					.filter(candidate => candidate.content === row);
+		archived || !ctx.sessionManager ? [] : (requirementArtifactPlan(ctx.sessionManager).latest.get(row) ?? []);
 	const latestTask = latest.length === 1 ? latest[0]! : undefined;
 	const latestSchedule = latestTask && "schedule" in latestTask ? latestTask.schedule : undefined;
 	for (const candidate of [
