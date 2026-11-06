@@ -1,3 +1,5 @@
+import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { reserveRestoringAgents } from "../registry/restoring-agents";
 import {
 	preserveRestartIsolation,
 	restartIsolation,
@@ -521,6 +523,7 @@ async function recordRootContinuationReceipt(
 export async function sendRootContinuationOnce(
 	session: AgentSession,
 	requestId: string,
+	report?: RestartRecoveryReport,
 ): Promise<RootContinuationResult> {
 	const rootSessionId = session.sessionManager.getSessionId();
 	const rootRef = AgentRegistry.global()
@@ -556,7 +559,26 @@ export async function sendRootContinuationOnce(
 		receipt = await IrcBus.global().send({
 			from: rootRef.id,
 			to: rootRef.id,
-			body: restartRootContinuationPrompt.trim(),
+			body: prompt
+				.render(restartRootContinuationPrompt, {
+					workers: (report?.resumed ?? []).map(id => ({
+						id,
+						rows: ((session.getTodoPhases?.() ?? []) as TodoScheduleInput)
+							.flatMap(phase => phase.tasks)
+							.filter(row => {
+								const schedule = row.schedule as
+									| { owner?: string; executor?: { workerId?: string } }
+									| undefined;
+								return schedule?.owner === id || schedule?.executor?.workerId === id;
+							})
+							.map(row => row.content)
+							.join("; "),
+					})),
+					count: report?.resumed.length ?? 0,
+					idle: report?.restoredIdle ?? [],
+					lost: report?.failures ?? [],
+				})
+				.trim(),
 		});
 	} catch (error) {
 		const reason = `root continuation send threw after its durable claim; result is uncertain and it will not be retried: ${error instanceof Error ? error.message : String(error)}`;
@@ -775,6 +797,10 @@ export async function restoreSubagentsAfterRestart(
 	const snapshotWorkers: RestartIsolation[] = [];
 	for (const omitted of handoff.omittedChildren ?? []) report.failures.push(omitted);
 	const registry = AgentRegistry.global();
+	const releaseOwner = reserveRestoringAgents(
+		registry,
+		handoff.children.filter(child => child.status === "running" && !child.settled),
+	);
 	try {
 		const scannedRoot = await ensurePersistedRoster(
 			registry,
@@ -793,6 +819,7 @@ export async function restoreSubagentsAfterRestart(
 		}
 	} catch (error) {
 		report.failures.push({ id: "root", reason: error instanceof Error ? error.message : String(error) });
+		for (const child of handoff.children) releaseOwner(child.id);
 		emitReportNotice(rootSession, report);
 		return report;
 	}
@@ -992,7 +1019,11 @@ export async function restoreSubagentsAfterRestart(
 		Array.from({ length: Math.min(4, childrenToRestore.length) }, async () => {
 			while (nextChild < childrenToRestore.length) {
 				const child = childrenToRestore[nextChild++]!;
-				await restoreChild(child);
+				try {
+					await restoreChild(child);
+				} finally {
+					releaseOwner(child.id);
+				}
 				options?.onProgress?.(child.id, ++completedChildren, childrenToRestore.length);
 			}
 		}),
