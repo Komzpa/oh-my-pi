@@ -268,6 +268,16 @@ export const cfgTaskEager = register({
 	},
 });
 
+export const cfgRequirementAuditors = register({
+	id: "task.requirementAuditors",
+	type: "number",
+	default: 4,
+	validate: value => {
+		if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+			throw new Error("task.requirementAuditors must be a positive integer");
+	},
+});
+
 export const cfgTaskBatch = register({
 	id: "task.batch",
 	protocolDefault: ["rpc", "acp"],

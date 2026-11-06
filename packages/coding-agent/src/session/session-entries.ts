@@ -1,3 +1,4 @@
+import type { AssistantProviderReplayState } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type {
 	ImageContent,
@@ -113,6 +114,8 @@ export interface SessionEntryBase {
 export interface SessionMessageEntry extends SessionEntryBase {
 	type: "message";
 	message: AgentMessage;
+	/** Local provider continuation state, excluded from the published message. */
+	assistantProviderReplay?: AssistantProviderReplayState;
 }
 
 /** Usage from a model call that does not belong in the conversation transcript. */
@@ -440,4 +443,11 @@ export function isAssistantMessageLine(line: string): boolean {
 		return false;
 	}
 	return record.type === "message" && record.message?.role === "assistant";
+}
+
+/** Omit local provider continuation metadata from every exported session entry. */
+export function sessionEntryForExport(entry: SessionEntry): SessionEntry {
+	if (entry.type !== "message" || !entry.assistantProviderReplay) return entry;
+	const { assistantProviderReplay: _replay, ...published } = entry;
+	return published;
 }

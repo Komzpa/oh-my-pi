@@ -14,6 +14,7 @@ import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { FileSink } from "bun";
 import type { BashResult } from "../../exec/bash-executor";
 import type { AgentSessionEvent, SessionStats } from "../../session/agent-session";
+import { currentRequirementInput } from "../../session/requirement-input";
 import type { CacheWarmingMode } from "../../session/cache-warmer";
 import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import type { SessionLeaseReport } from "../../session/session-storage";
@@ -1669,7 +1670,12 @@ export class RpcClient {
 		if (!this.#process?.stdin) {
 			throw new Error("Client not started");
 		}
-		const fullCommand = { ...command, id } as RpcCommand;
+		const rawRequirementText = currentRequirementInput();
+		const fullCommand = {
+			...command,
+			...(command.type === "prompt" && rawRequirementText !== undefined ? { rawRequirementText } : {}),
+			id,
+		} as RpcCommand;
 		const { promise, resolve, reject } = Promise.withResolvers<RpcResponse>();
 		let settled = false;
 		const timeoutId = this.#startTimeout(timeoutMs, () => {

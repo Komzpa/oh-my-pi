@@ -27,7 +27,12 @@ import { $ } from "bun";
 import { obfuscateToolArguments } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { SecretValueSet } from "../secrets/placeholder";
-import { type SessionEntry, type SessionHeader, TITLE_CHANGE_ENTRY_TYPE } from "../session/session-entries";
+import {
+	type SessionEntry,
+	type SessionHeader,
+	TITLE_CHANGE_ENTRY_TYPE,
+	sessionEntryForExport,
+} from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import type { SubSession } from "../session/sub-sessions";
@@ -301,6 +306,7 @@ function redactShareEntry(
 	entry: SessionEntry,
 	sharedRegexSecretValues: ReadonlySet<string>,
 ): SessionEntry {
+	entry = sessionEntryForExport(entry);
 	switch (entry.type) {
 		case "message":
 			return { ...entry, message: redactShareMessage(o, entry.message, sharedRegexSecretValues) };

@@ -2,7 +2,28 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Completed passing requirements stay settled when HEAD moves; unaudited closed history is shown as legacy unverified without blocking delivery ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- Fixed requirement audits reopening after unrelated commits, retained owner acceptance, and bounded concurrent auditors ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 ## [18.17.0] - 2026-11-06
+### Fixed
+
+- TODO summaries distinguish requirements, task rows, and requirements needing audit verification ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- UI audits accept screenshots created within successful auditor tool calls even when paths are assembled in code, and request absolute collateral paths ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- Row audits prefer an independent vendor or stronger/different configured model, with visual capability checks and recorded selection reasons ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- UI audit screenshots now require fresh files linked to the auditor’s own tool activity ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- Completed TODO rows keep their verified audit status after leaving the active plan ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- UI audits now require distinct before/after screenshots and report unbuildable comparison bases ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- UI audits now inspect the changed region at narrow widths and block TODO closure on unhandled collateral defects ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
 
 ### Added
 
@@ -144,6 +165,10 @@
 
 ### Fixed
 
+- Fixed `todo done` rejecting passing audits for pinned large directories and equivalent paths, and clarified audits bound to another row ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- An out-of-credit provider error (a 402 billing body, an insufficient or prepaid balance, a credits wall, a spend ceiling) now ends the turn with that error instead of starting a retry: the retry engine was sleeping the 30-minute `QUOTA_EXHAUSTED` heuristic on it, and a `retry.maxDelayMs` raised that high let the sleep run, so Retry did nothing while the countdown lasted and the error card was later marked recovered by an unrelated turn. Topping the account up and pressing Retry now re-attempts at once ([#17937](https://github.com/can1357/oh-my-pi/pull/17937) by [@iacore](https://github.com/iacore))
+- Fixed the Agent Hub still listing the previous session's subagents after `/new` or switching sessions; it now shows only the current session's agents ([#17945](https://github.com/can1357/oh-my-pi/issues/17945))
 - Browser: `browser.close({ all: true })` from a subagent no longer closes its parent's tabs; it releases only the calling agent's tabs. Tabs now belong to the agent that opened them rather than its conversation id, so after `/new`, `/resume`, fork, or branch they are still frozen, idle-closed, released by close-all, and closed when the session ends instead of leaking ([#15975](https://github.com/can1357/oh-my-pi/issues/15975), [#16133](https://github.com/can1357/oh-my-pi/pull/16133) by [@harshaygadekar](https://github.com/harshaygadekar))
 - `lsp request` now sends `payload: "null"` as JSON null instead of substituting auto-built document params ([#17715](https://github.com/can1357/oh-my-pi/issues/17715)).
 - A prompt rejected before a turn starts because its model or credential is missing returns to the editor for retry; `.`/`c` on an empty conversation reports that there is nothing to resume ([#17828](https://github.com/can1357/oh-my-pi/issues/17828)).
@@ -210,6 +235,9 @@
 - Local dictation stops live previews when the speech model repeatedly cannot keep up, so final transcripts no longer wait behind repeated previews ([#17410](https://github.com/can1357/oh-my-pi/issues/17410)).
 - ACP clients now receive `_omp/compaction/start` and `_omp/compaction/end` notifications, including failures and cancellations, without requiring an active prompt. ([#16969](https://github.com/can1357/oh-my-pi/issues/16969); [#17384](https://github.com/can1357/oh-my-pi/pull/17384) by [@SAKANA-MOONLIGHT](https://github.com/SAKANA-MOONLIGHT)).
 - Fixed `cd` (and `pushd`/`popd`/`z`) failing with `command not found: __zsh_like_cd` in agent shells when `mise activate` or `zoxide init` installed wrapper functions: the shell snapshot now keeps the underscore-prefixed helper functions those wrappers call, instead of dropping every private-looking function ([#17448](https://github.com/can1357/oh-my-pi/pull/17448) by [@KamijoToma](https://github.com/KamijoToma))
+### Fixed
+
+- The qa-auditor opens an image carried by the QA AUDIT INPUT requirement before any verdict. A terse word like "fix" alone does not justify unverifiable while that image exists ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.14.2] - 2026-10-31
 
@@ -225,6 +253,25 @@
 - In a Tern pane, `omp stats` shows the dashboard in place of the block it runs in, with a Close button (or Esc, or Ctrl+C) that stops it and brings the terminal back, and `/stats` opens it in a browser block beside omp, instead of the system browser
 - `bash` tool commands now see `PI_TOOL_CALL_ID`, the id of the call running them, so a script the agent runs can point at that call in the session transcript ([#17489](https://github.com/can1357/oh-my-pi/pull/17489) by [@will-bogusz](https://github.com/will-bogusz))
 - Native judgments with a configured fallback now move to it after a 3-second candidate deadline (configurable with `judgment.attemptTimeoutMs`) and briefly skip the timed-out route; without a configured fallback a slow judge is never cut off or replaced ([#17465](https://github.com/can1357/oh-my-pi/pull/17465) by [@Xytronix](https://github.com/Xytronix)).
+- Pin and unpin sessions from the resume picker with `Alt+K` / `Alt+Shift+K` (remappable as `app.session.pin` / `app.session.unpin`); pinned sessions move to the top at once and also lead search results ([#9837](https://github.com/can1357/oh-my-pi/pull/9837) by [@zhang17-24](https://github.com/zhang17-24))
+- Set `PI_LINK_SCHEME` (and optionally `PI_LINK_HOST`) to make file links in SSH/tmux sessions open through a desktop protocol handler such as `ompfile://<host>/<path>?line=N&col=M` ([#15855](https://github.com/can1357/oh-my-pi/pull/15855) by [@KunoLu](https://github.com/KunoLu))
+- Captured user requirements now have QA receipts, native and ANSI HUD counts, and shared TODO completion checks; stale receipts remain open until audited again ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+### Fixed
+
+- Shared Git status probes across session callers at ten-second intervals to prevent repository scans from overwhelming disk I/O ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- Fixed requirement audits being blocked by completed sibling TODO rows removed from the active plan ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- Requirement gates now announce needed classification and QA steps and show the next action first when refusing a call ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+- Fixed requirement QA gates rejecting symlinked artifacts; directory manifests now track link destinations ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
+- Unclassified requirement candidates no longer block the `task` tool: they are listed as a reminder on the call and still hold the completion gates. Merging into a requirement classified not-a-requirement now inherits that verdict, merging into a merged requirement follows the link to its active target, and batched classify calls give the same ledger in any order. Quoted text (`>` lines) and pure urgency or profanity are recorded as not-a-requirement on capture
+
+### Changed
+
+- Anthropic web search and Files API uploads follow `PI_ANTHROPIC_API_VERSION=2026-10-21`; web search omits `temperature` under that version ([#16706](https://github.com/can1357/oh-my-pi/pull/16706) by [@H4vC](https://github.com/H4vC))
+- llama.cpp auto-discovery now also finds local servers on llama-server's new default port 9931 when nothing answers on 8080 ([#16675](https://github.com/can1357/oh-my-pi/pull/16675) by [@bartbroere](https://github.com/bartbroere))
 
 ### Fixed
 
@@ -433,6 +480,14 @@
 - Fixed find treating nonempty linked files as empty and dropping them before judgment ([#17180](https://github.com/can1357/oh-my-pi/pull/17180) by [@alphastorm](https://github.com/alphastorm))
 - Fixed JSON selectors failing on BOM-prefixed input, backup and extensionless files, and modifier-only queries ([#17179](https://github.com/can1357/oh-my-pi/pull/17179) by [@alphastorm](https://github.com/alphastorm))
 - Fixed JSON selectors on `ssh://` text files while preserving pagination and the remote read limit ([#17179](https://github.com/can1357/oh-my-pi/pull/17179) by [@alphastorm](https://github.com/alphastorm))
+- A passing QA receipt for the same commit is no longer rejected as "row artifact changed after audit dispatch" when dispatch recorded the commit as `head` and the receipt resolved it as a typed Git identity.
+- Requirement classification and row-start notices no longer scan unrelated artifacts; completion verifies only selected rows without waiting for display polling.
+
+- Preserved requirements publication hooks alongside revived-agent lifecycle policy and image-aware side questions.
+- Withdrawing queued user messages also withdraws their captured requirements; follow-up capture uses expanded editor text.
+- TODO Markdown imports now audit newly completed rows, share metadata preservation, and retain pending user checks during initialization.
+- Requirement receipts reject malformed requested clauses; image audits normalize the authenticated bytes, service targets retain their declared version, and named Git artifacts support reftable worktrees.
+- Requirement receipts no longer require an auditor-copied source digest (a typo voided valid receipts); a legacy digest column is ignored, the authenticated assignment binds the source, and a rejected receipt names the row, column, expected and received value.
 - Fixed `tool.apply_patch(...)` being rejected as an unknown tool in JavaScript eval when apply-patch editing is enabled ([#17178](https://github.com/can1357/oh-my-pi/pull/17178) by [@alphastorm](https://github.com/alphastorm))
 - Fixed eval silently changing supplied cell deadlines without showing the requested and effective timeouts ([#17178](https://github.com/can1357/oh-my-pi/pull/17178) by [@alphastorm](https://github.com/alphastorm))
 - Fixed unavailable Python remaining in eval's advertised languages and corrected its interpreter setup guidance ([#17178](https://github.com/can1357/oh-my-pi/pull/17178) by [@alphastorm](https://github.com/alphastorm))

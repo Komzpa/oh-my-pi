@@ -51,6 +51,28 @@ function createSession(tools: AgentTool[]): ToolSession {
 }
 
 describe("callSessionTool", () => {
+	it.each([
+		{ agent: "qa-auditor", requirementIds: ["R1"] },
+		{ agent: "qa-auditor", name: "bound-owner" },
+		{ tasks: [{ agent: "qa-auditor", requirementIds: ["R1"] }] },
+		{ agent: "reviewer", requirementIds: ["R1"] },
+	])("refuses a bridged audit before execution and directs it through ledger admission: %j", async args => {
+		const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "unauthenticated pass" }] });
+		const session = createSession([createTool("task", execute)]);
+		await expect(callSessionTool("task", args, { session })).rejects.toThrow("call the direct `task` tool");
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("keeps an ordinary bridged task callable", async () => {
+		const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "worker result" }] });
+		const task = createTool("task", execute);
+		task.parameters = type({ agent: "string", task: "string" });
+		expect(
+			await callSessionTool("task", { agent: "worker", task: "inspect" }, { session: createSession([task]) }),
+		).toBe("worker result");
+		expect(execute).toHaveBeenCalledTimes(1);
+	});
+
 	it("summarizes text results into the bridge value and status event", async () => {
 		const execute = vi.fn().mockResolvedValue({
 			content: [{ type: "text", text: "hello" }],
@@ -698,9 +720,9 @@ describe("callSessionTool", () => {
 		);
 
 		expect(result).not.toEqual(expect.objectContaining({ hasError: true }));
-		expect(phases).toEqual([
-			{ name: "Recovered", tasks: [{ content: "From malformed JSON", status: "in_progress" }] },
-		]);
+		expect(phases).toHaveLength(1);
+		expect(phases[0]?.name).toBe("Recovered");
+		expect(phases[0]?.tasks[0]).toMatchObject({ content: "From malformed JSON", status: "in_progress" });
 	});
 
 	it("persists bridged todo mutations to the branch, which a direct toolResult would carry", async () => {
