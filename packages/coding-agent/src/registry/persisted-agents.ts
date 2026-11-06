@@ -329,13 +329,23 @@ async function readPersistedAgentHistory(
  * picked out of the directory listing the scan already holds:
  * `<id>.nested-<n>-<path>.patch`, in capture order.
  */
-function nestedPatchFilesFor(dir: string, transcriptName: string, entries: readonly fs.Dirent[]): string[] {
-	const prefix = `${transcriptName.slice(0, -".jsonl".length)}.nested-`;
-	return entries
-		.filter(entry => entry.isFile() && entry.name.startsWith(prefix) && entry.name.endsWith(".patch"))
-		.map(entry => entry.name)
-		.sort((a, b) => Number.parseInt(a.slice(prefix.length), 10) - Number.parseInt(b.slice(prefix.length), 10))
-		.map(name => path.join(dir, name));
+function indexNestedPatchFiles(dir: string, entries: readonly fs.Dirent[]): Map<string, string[]> {
+	const byTranscript = new Map<string, { index: number; file: string }[]>();
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		const match = /^(.*)\.nested-(\d+)-.*\.patch$/.exec(entry.name);
+		if (!match) continue;
+		const transcript = `${match[1]}.jsonl`;
+		let patches = byTranscript.get(transcript);
+		if (!patches) byTranscript.set(transcript, (patches = []));
+		patches.push({ index: Number.parseInt(match[2]!, 10), file: path.join(dir, entry.name) });
+	}
+	return new Map(
+		[...byTranscript].map(([transcript, patches]) => [
+			transcript,
+			patches.sort((a, b) => a.index - b.index).map(patch => patch.file),
+		]),
+	);
 }
 
 /**
@@ -850,6 +860,7 @@ async function registerPersistedSubagentsFromDir(
 		throw error;
 	}
 	if (!shouldContinue()) return;
+	const nestedPatches = indexNestedPatchFiles(dir, entries);
 	const childDirectories = new Set<string>();
 	for (const entry of entries) {
 		if (entry.isDirectory()) childDirectories.add(entry.name);
@@ -968,7 +979,7 @@ async function registerPersistedSubagentsFromDir(
 			}
 		} else {
 			const expected = existing ?? null;
-			const metadata = await readPersistedAgentMetadata(sessionFile, nestedPatchFilesFor(dir, entry.name, entries));
+			const metadata = await readPersistedAgentMetadata(sessionFile, nestedPatches.get(entry.name) ?? []);
 			if (!shouldContinue()) return;
 			// Metadata reads yield. A spawn may claim the id while this scan is
 			// inspecting the file; never replace that live generation with a
