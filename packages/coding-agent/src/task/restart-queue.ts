@@ -1,7 +1,6 @@
 import * as fs from "node:fs/promises";
 import { AgentRegistry } from "../registry/agent-registry";
 import {
-	isolationHasWork,
 	preserveRestartIsolation,
 	restartIsolation,
 	snapshotRestartIsolation,
@@ -153,6 +152,7 @@ export interface RestartQueueController {
 	snapshot(): RestartControlSnapshot;
 	handle(request: RestartControlRequest): Promise<RestartControlSnapshot>;
 	restore(): Promise<void>;
+	resumeChildren(): Promise<void>;
 	dispose(): void;
 }
 
@@ -162,6 +162,9 @@ export interface RestartQueueControllerOptions {
 	restart: () => Promise<void>;
 	/** Whether startup was invoked by the same-session restart handoff. */
 	restartSuccessor?: boolean;
+	/** Interactive startup calls resumeChildren after accepting input and painting. */
+	deferChildren?: boolean;
+	onChildProgress?: (id: string, completed: number, total: number) => void;
 	onStateChange?: (record: RestartRequestRecord) => void;
 	captureGoalMode?: () => { goalId: string } | undefined;
 	restorePendingAsk?: (onAnswered: (answered?: boolean) => void) => boolean;
@@ -174,7 +177,7 @@ export interface RestartQueueControllerOptions {
 	/** Minimum durability reserves, raised by recent measured durations. */
 	restartStageMinimaMs?: Partial<Record<string, number>>;
 	restartWorkerGraceMs?: number;
-	/** Maximum wait for isolated workers before quiescing and snapshotting them. */
+	/** @deprecated Dirty isolated work no longer waits for commits or pushes. */
 	restartIsolationWaitMs?: number;
 	restartWorkerAbortGraceMs?: number;
 }
@@ -533,6 +536,8 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	readonly #session: AgentSession;
 	readonly #identity: () => RestartControlIdentity;
 	readonly #restart: () => Promise<void>;
+	readonly #deferChildren: boolean;
+	readonly #onChildProgress: RestartQueueControllerOptions["onChildProgress"];
 	readonly #restartSuccessor: boolean | undefined;
 	readonly #onStateChange: ((record: RestartRequestRecord) => void) | undefined;
 	readonly #captureGoalMode: (() => { goalId: string } | undefined) | undefined;
@@ -541,7 +546,6 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	readonly #restoreGoalMode: RestartQueueControllerOptions["restoreGoalMode"];
 	readonly #restartWorkerGraceMs: number;
 	readonly #restartRootQuiescenceMs: number;
-	readonly #restartIsolationWaitMs: number;
 	readonly #restartTotalMs: number | undefined;
 	readonly #restartWatchdogSlackMs: number;
 	readonly #stageMinima: Partial<Record<string, number>>;
@@ -549,6 +553,8 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	#serial: Promise<void> = Promise.resolve();
 	#run: ActiveRestartDrain | undefined;
 	#restorePromise: Promise<void> | undefined;
+	#childrenRecovery: (() => Promise<void>) | undefined;
+	#childrenRecoveryPromise: Promise<void> | undefined;
 	#restoringRecord: RestartRequestRecord | undefined;
 	#disposed = false;
 
@@ -557,10 +563,6 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			options.restartRootQuiescenceMs ?? Number(process.env.OMP_RESTART_ROOT_QUIESCENCE_MS ?? 600_000);
 		if (!Number.isFinite(this.#restartRootQuiescenceMs) || this.#restartRootQuiescenceMs < 0)
 			throw new Error("Invalid root restart wait");
-		this.#restartIsolationWaitMs =
-			options.restartIsolationWaitMs ?? Number(process.env.OMP_RESTART_ISOLATION_WAIT_MS ?? 1_800_000);
-		if (!Number.isFinite(this.#restartIsolationWaitMs) || this.#restartIsolationWaitMs < 0)
-			throw new Error("Invalid isolated restart wait");
 		this.#restartTotalMs =
 			options.restartTotalMs ??
 			(process.env.OMP_RESTART_TOTAL_MS ? Number(process.env.OMP_RESTART_TOTAL_MS) : undefined);
@@ -573,6 +575,8 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		this.#identity = options.identity;
 		this.#restart = options.restart;
 		this.#restartSuccessor = options.restartSuccessor;
+		this.#deferChildren = options.deferChildren ?? false;
+		this.#onChildProgress = options.onChildProgress;
 		this.#onStateChange = options.onStateChange;
 		this.#captureGoalMode = options.captureGoalMode;
 		this.#restoreGoalMode = options.restoreGoalMode;
@@ -615,6 +619,11 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		if (request.op === "request") return this.#requestRestart(request, identity);
 		if (request.op === "cancel") return this.#cancelRestart(request, identity);
 		return Promise.reject(new Error("Unsupported restart control operation"));
+	}
+
+	resumeChildren(): Promise<void> {
+		if (this.#disposed) return Promise.resolve();
+		return (this.#childrenRecoveryPromise ??= this.#childrenRecovery?.() ?? Promise.resolve());
 	}
 
 	restore(): Promise<void> {
@@ -722,33 +731,31 @@ class RestartQueueControllerImpl implements RestartQueueController {
 					await this.#session.sessionManager.flush();
 				}
 			}
-			if (!stored || record?.state === "completed" || manualHandoff) {
-				await this.#measureStage(record, "restore_children", () =>
-					restoreSubagentsAfterRestart(this.#session, record ? { requestId: record.requestId } : undefined),
-				);
-			}
-			if (
-				!pendingAsk &&
-				record &&
-				(record.state === "completed" || record.state === "cancelled" || record.state === "failed")
-			) {
-				await this.#restoreGoalModeFor(record);
-			}
-			// Last: the continuation wakes the model without awaiting its turn, so the terminal notice that
-			// lifts the restart restriction must already be queued ahead of it. A root
-			// can be idle while admitted input is checkpointed in its model queues;
-			// passive next-turn context alone must not wake it.
-			restoreComplete = true;
-			if (askSettled) {
-				await this.#resumeAfterRestoredAsk(record, askAnswered);
-			} else if (
-				!pendingAsk &&
-				restartCompleted &&
-				record &&
-				(record.rootWasRunning || this.#session.getRestartPendingInputCount() > 0)
-			) {
-				await sendRootContinuationOnce(this.#session, record.requestId);
-			}
+			this.#childrenRecovery = async () => {
+				if (!stored || record?.state === "completed" || manualHandoff) {
+					await this.#measureStage(record, "restore_children", () =>
+						restoreSubagentsAfterRestart(this.#session, {
+							requestId: record?.requestId,
+							onProgress: this.#onChildProgress,
+						}),
+					);
+				}
+				if (!pendingAsk && record && ["completed", "cancelled", "failed"].includes(record.state))
+					await this.#restoreGoalModeFor(record);
+				// Terminal notices must precede any model continuation.
+				restoreComplete = true;
+				if (askSettled) {
+					await this.#resumeAfterRestoredAsk(record, askAnswered);
+				} else if (
+					!pendingAsk &&
+					restartCompleted &&
+					record &&
+					(record.rootWasRunning || this.#session.getRestartPendingInputCount() > 0)
+				) {
+					await sendRootContinuationOnce(this.#session, record.requestId);
+				}
+			};
+			if (!this.#deferChildren) await this.resumeChildren();
 		});
 		return this.#restorePromise;
 	}
@@ -797,10 +804,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		};
 		const minima: RestartStageEstimate[] = [
 			["prepare", 1_000],
-			[
-				"isolation",
-				Math.min(this.#restartIsolationWaitMs, this.#restartWorkerGraceMs + this.#restartWorkerAbortGraceMs),
-			],
+			["isolation", 0],
 			["notifications", 1_000],
 			["root_quiescence", this.#restartRootQuiescenceMs],
 			["worker_grace", this.#restartWorkerGraceMs],
@@ -820,9 +824,6 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			now + (this.#restartTotalMs ?? minima.reduce((sum, item) => sum + item.estimateMs, 0)),
 			plan,
 			{
-				isolation:
-					now +
-					Math.min(this.#restartIsolationWaitMs, this.#restartWorkerGraceMs + this.#restartWorkerAbortGraceMs),
 				root_quiescence: now + this.#restartRootQuiescenceMs,
 			},
 		);
@@ -933,14 +934,16 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		this.#notifySession(run, this.#session);
 		const rootLease = this.#takeLease(run, this.#session);
 		run.record = { ...run.record, rootWasRunning: rootLease.wasRunning || rootWasStreaming };
-		for (const child of getLiveSubagentsForRestart(this.#session)) {
-			const isolated = await restartIsolation(child);
-			if (isolated) {
-				await preserveRestartIsolation(isolated);
-				run.isolations.set(child.id, isolated);
-				if (AgentRegistry.global().isRunning(child)) run.runningAgentIds.add(child.id);
-			} else this.#prepareChild(run, child.id, child.status, child.session);
-		}
+		await Promise.all(
+			getLiveSubagentsForRestart(this.#session).map(async child => {
+				const isolated = await restartIsolation(child);
+				if (isolated) {
+					await preserveRestartIsolation(isolated);
+					run.isolations.set(child.id, isolated);
+				}
+				this.#prepareChild(run, child.id, child.status, child.session);
+			}),
+		);
 		run.record = this.#withDrainStatus({ ...run.record, runningWorkerCount: run.runningAgentIds.size }, run);
 	}
 
@@ -1037,7 +1040,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	#takeLease(run: ActiveRestartDrain, session: AgentSessionHandle): RestartDrainLease {
 		const existing = run.leases.get(session);
 		if (existing) return existing;
-		const lease = session.beginRestartDrain({ interruptProvider: session !== this.#session });
+		const lease = session.beginRestartDrain({ interruptProvider: true });
 		run.leases.set(session, lease);
 		return lease;
 	}
@@ -1046,18 +1049,20 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		try {
 			if (run.cancelled) return;
 			run.record = await this.#transition(run, "draining");
-			// The wait owns its snapshot deadline; an outer stage timeout would fire while a
-			// slow `git status` pass is still running and fail the restart instead of snapshotting.
-			await this.#measureStage(run.record, "isolation", deadline => this.#waitForIsolatedWork(run, deadline));
+			await this.#measureStage(run.record, "isolation", async () => {
+				// Dirty and unpushed work is captured as-is after writer quiescence.
+				await Promise.all(
+					getLiveSubagentsForRestart(this.#session).map(async child => {
+						await this.#retainIsolation(run, child);
+						this.#prepareChild(run, child.id, child.status, child.session);
+					}),
+				);
+			});
 			if (run.cancelled || this.#disposed) return;
-			for (const child of getLiveSubagentsForRestart(this.#session)) {
-				await this.#retainIsolation(run, child);
-				this.#prepareChild(run, child.id, child.status, child.session);
-			}
 			const safe = await this.#settleAndFlush(run);
 			if (!safe || run.cancelled || this.#disposed) return;
 			await this.#measureStage(run.record, "snapshot_isolation", async () => {
-				for (const isolated of run.isolations.values()) await snapshotRestartIsolation(isolated);
+				await Promise.all([...run.isolations.values()].map(isolated => snapshotRestartIsolation(isolated)));
 			});
 			await this.#measureStage(run.record, "capture_children", () =>
 				captureSubagentsForRestart(this.#session, {
@@ -1095,40 +1100,6 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				await this.#releaseLeases(run);
 			if (this.#run === run && (!run.cancelled || run.cancelNoticeDelivered)) this.#run = undefined;
 		}
-	}
-
-	async #waitForIsolatedWork(run: ActiveRestartDrain, deadline: number): Promise<void> {
-		while (!run.cancelled && !this.#disposed && Date.now() < deadline) {
-			const pending: RestartIsolation[] = [];
-			for (const child of getLiveSubagentsForRestart(this.#session)) {
-				let item = run.isolations.get(child.id);
-				if (!item) {
-					item = await restartIsolation(child);
-					if (item) {
-						await preserveRestartIsolation(item);
-						run.isolations.set(child.id, item);
-					}
-				}
-				if (item && AgentRegistry.global().isRunning(child) && (await isolationHasWork(item.cwd)))
-					pending.push(item);
-			}
-			if (pending.length === 0 || Date.now() >= deadline) break;
-			run.record = this.#withDrainStatus(
-				{
-					...run.record,
-					drainStatus: {
-						...run.record.drainStatus,
-						runningWorkers: [],
-						queuedInputCount: 0,
-						isolationPendingReason: `Waiting for isolated workers with uncommitted or unpushed work: ${pending.map(item => `${item.name} (${item.id})`).join(", ")}; snapshot deadline ${new Date(deadline).toISOString()}`,
-					},
-				},
-				run,
-			);
-			this.#onStateChange?.(run.record);
-			await Promise.race([Bun.sleep(Math.min(1000, Math.max(1, deadline - Date.now()))), run.cancelSignal]);
-		}
-		if (run.record.drainStatus) delete run.record.drainStatus.isolationPendingReason;
 	}
 
 	async #settleAndFlush(run: ActiveRestartDrain): Promise<boolean> {
@@ -1363,7 +1334,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 					// The worker grace deadline may expire while idle parking is still
 					// closing its journal. That terminal flush must finish before relaunch.
 					if (session.isDisposed) await session.dispose();
-					await session.flushRestartJournal();
+					await session.flushRestartJournal({ handoffIndex: session !== this.#session && !session.isDisposed });
 				}),
 			),
 		);

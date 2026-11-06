@@ -280,7 +280,7 @@ export type SessionHostProtocol = {
 	beginRestartDrain: RpcMethod<[], RestartDrainLease>;
 	getRestartBranchEntries: RpcMethod<[], SessionEntry[]>;
 	sendRestartNotice: RpcMethod<[message: Omit<CustomMessage, "role" | "timestamp">], void>;
-	flushRestartJournal: RpcMethod<[], void>;
+	flushRestartJournal: RpcMethod<[options?: { handoffIndex?: boolean }], void>;
 
 	flushSession: RpcMethod<[], void>;
 	ensureOnDisk: RpcMethod<[], void>;
@@ -350,7 +350,7 @@ export type SessionBridgeProtocol = {
 		[session: AgentSessionHandle, message: Omit<CustomMessage, "role" | "timestamp">],
 		void
 	>;
-	flushRestartJournal: RpcMethod<[session: AgentSessionHandle], void>;
+	flushRestartJournal: RpcMethod<[session: AgentSessionHandle, options?: { handoffIndex?: boolean }], void>;
 
 	deliverIrcMessage: RpcMethod<[session: AgentSessionHandle, msg: IrcMessage], "injected" | "woken">;
 	waitForIrcReplies: RpcMethod<[session: AgentSessionHandle], void>;

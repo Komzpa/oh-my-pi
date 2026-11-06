@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
@@ -17,6 +17,7 @@ import {
 	type RestartQueueController,
 	type RestartRequestRecord,
 } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
+import * as restartRecovery from "@oh-my-pi/pi-coding-agent/task/restart-recovery";
 import { captureSubagentsForRestart } from "@oh-my-pi/pi-coding-agent/task/restart-recovery";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { buildSessionContext } from "../../src/session/session-context";
@@ -177,6 +178,36 @@ afterEach(async () => {
 });
 
 describe("restart queue controller", () => {
+	it("finishes startup admission before deferred child recovery and starts recovery once", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const harness = makeSession(manager);
+		const identity = identityFor(manager, "successor", 1);
+		const finished = Promise.withResolvers<restartRecovery.RestartRecoveryReport>();
+		const recovery = vi
+			.spyOn(restartRecovery, "restoreSubagentsAfterRestart")
+			.mockImplementation(() => finished.promise);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+			deferChildren: true,
+		});
+		try {
+			await controller.restore();
+			expect(recovery).not.toHaveBeenCalled();
+			const running = controller.resumeChildren();
+			await controller.handle({ identity, op: "status" });
+			const again = controller.resumeChildren();
+			expect(recovery).toHaveBeenCalledTimes(1);
+			finished.resolve({ resumed: [], restoredIdle: [], parked: [], pendingToolCalls: [], failures: [] });
+			await Promise.all([running, again]);
+		} finally {
+			recovery.mockRestore();
+			controller.dispose();
+		}
+	});
+
 	it("reserves downstream work before assigning a wait deadline", () => {
 		const budget = new RestartBudget(10_000, [
 			{ stage: "isolation", estimateMs: 5_000 },

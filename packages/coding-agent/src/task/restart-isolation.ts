@@ -1,6 +1,5 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { $ } from "bun";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getBaseConfigRoot, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { SessionManager } from "../session/session-manager";
@@ -57,39 +56,118 @@ export async function preserveRestartIsolation(item: RestartIsolation): Promise<
 	}
 }
 
-/** Called only after all worker writers have quiesced. Failure prevents restart. */
+/** Copy-on-write where supported; byte copies elsewhere. Never share mutable inodes. */
+async function copySnapshotPath(source: string, destination: string): Promise<void> {
+	await fs.cp(source, destination, { recursive: true, verbatimSymlinks: true, mode: fs.constants.COPYFILE_FICLONE });
+}
+
+/** Materialize alternates too: a recovery must survive deletion of the source repository. */
+async function copySnapshotObjects(source: string, destination: string, seen = new Set<string>()): Promise<void> {
+	const canonical = await fs.realpath(source);
+	if (seen.has(canonical)) return;
+	seen.add(canonical);
+	let alternates: string[] = [];
+	try {
+		alternates = (await Bun.file(path.join(source, "info/alternates")).text()).split("\n").filter(Boolean);
+	} catch (error) {
+		if (!isEnoent(error)) throw error;
+	}
+	for (const alternate of alternates) {
+		await copySnapshotObjects(path.resolve(source, alternate), destination, seen);
+	}
+	await fs.cp(source, destination, {
+		recursive: true,
+		verbatimSymlinks: true,
+		mode: fs.constants.COPYFILE_FICLONE,
+		filter: file => file !== path.join(source, "info/alternates"),
+	});
+}
+
+/** Capture dirty bytes and Git history without asking the worker to commit or push. */
 export async function snapshotRestartIsolation(item: RestartIsolation, destination?: string): Promise<void> {
 	const dir = destination ?? path.join(getBaseConfigRoot(), "recovery", "isolated-workers");
 	await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-	const file = path.join(dir, `${crypto.randomUUID()}.tar.gz`);
-	const list = `${file}.files`;
-	const repo = vcs.requireGit(item.cwd);
-	const paths = new Set([...(await repo.lsFiles(false, false)), ...(await repo.lsFiles(true, true))]);
-	const present: string[] = [];
-	for (const name of paths) {
-		try {
-			await fs.lstat(path.join(item.cwd, name));
-			present.push(name);
-		} catch (error) {
-			if (!isEnoent(error)) throw error;
-		}
-	}
+	const snapshot = path.join(dir, crypto.randomUUID());
+	await fs.mkdir(snapshot, { mode: 0o700 });
 	try {
-		await Bun.write(list, present.map(name => `${name}\0`).join(""));
-		await $`tar -czf ${file} -C ${item.cwd} --null -T ${list}`.quiet();
-		await fs.chmod(file, 0o600);
-		const archive = await fs.open(file, "r");
-		try {
-			await archive.sync();
-		} finally {
-			await archive.close();
+		const repo = vcs.requireGit(item.cwd);
+		const info = repo.info();
+		// Walk the filesystem, not Git's visible paths: ignored worker output is work too.
+		const names: { name: string; symlink: boolean; file: boolean }[] = [];
+		const directories = [""];
+		for (let index = 0; index < directories.length; index++) {
+			const directory = directories[index];
+			for (const entry of await fs.readdir(path.join(item.cwd, directory), { withFileTypes: true })) {
+				if (!directory && entry.name === ".git") continue;
+				const name = path.join(directory, entry.name);
+				if (entry.isDirectory()) directories.push(name);
+				else names.push({ name, symlink: entry.isSymbolicLink(), file: entry.isFile() });
+			}
 		}
-		// Persist the manifest only after the archive has completed successfully.
-		item.snapshotPath = file;
+		await Promise.all(directories.map(directory => fs.mkdir(path.join(snapshot, directory), { recursive: true })));
+		let next = 0;
+		const copied = await Promise.allSettled(
+			Array.from({ length: Math.min(32, names.length) }, async () => {
+				while (next < names.length) {
+					const entry = names[next++];
+					const name = entry.name;
+					try {
+						const source = path.join(item.cwd, name);
+						const target = path.join(snapshot, name);
+						if (entry.symlink) await fs.symlink(await fs.readlink(source), target);
+						else if (entry.file) await fs.copyFile(source, target, fs.constants.COPYFILE_FICLONE);
+						else await copySnapshotPath(source, target);
+					} catch (error) {
+						// Deleted tracked files must stay deleted.
+						if (!isEnoent(error)) throw error;
+					}
+				}
+			}),
+		);
+		const failure = copied.find(result => result.status === "rejected");
+		if (failure?.status === "rejected") throw failure.reason;
+		const git = path.join(snapshot, ".git");
+		await fs.cp(info.commonDir, git, {
+			recursive: true,
+			verbatimSymlinks: true,
+			mode: fs.constants.COPYFILE_FICLONE,
+			filter: file => !["objects", "worktrees"].some(name => file === path.join(info.commonDir, name)),
+		});
+		if (info.gitDir !== info.commonDir) {
+			await fs.cp(info.gitDir, git, {
+				recursive: true,
+				verbatimSymlinks: true,
+				mode: fs.constants.COPYFILE_FICLONE,
+				filter: file => !["commondir", "gitdir"].some(name => file === path.join(info.gitDir, name)),
+			});
+		}
+		await copySnapshotObjects(path.join(info.commonDir, "objects"), path.join(git, "objects"));
+		item.snapshotPath = snapshot;
 		await preserveRestartIsolation(item);
 		logger.warn("Isolated worker restart snapshot saved", { ...item });
+	} catch (error) {
+		await fs.rm(snapshot, { recursive: true, force: true });
+		throw error;
+	}
+}
+
+/** Recover a missing worktree. An existing worktree remains authoritative. */
+export async function restoreRestartIsolation(item: RestartIsolation): Promise<void> {
+	try {
+		await fs.lstat(item.cwd);
+		return;
+	} catch (error) {
+		if (!isEnoent(error)) throw error;
+	}
+	if (!item.snapshotPath) throw new Error(`No restart isolation snapshot for ${item.id}`);
+	if (!(await fs.stat(item.snapshotPath)).isDirectory())
+		throw new Error(`Legacy archive requires manual recovery: ${item.snapshotPath}`);
+	const pending = `${item.cwd}.${crypto.randomUUID()}.recovery`;
+	try {
+		await copySnapshotPath(item.snapshotPath, pending);
+		await fs.rename(pending, item.cwd);
 	} finally {
-		await fs.rm(list, { force: true });
+		await fs.rm(pending, { recursive: true, force: true });
 	}
 }
 
