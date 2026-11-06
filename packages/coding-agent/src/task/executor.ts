@@ -3347,6 +3347,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				.filter(Boolean)
 				.join("\n\n") || "IRC follow-up";
 		const turnStartTime = Date.now();
+		const previousAssistant = session.getLastAssistantMessage();
 		const relay = Promise.withResolvers<void>();
 		session.trackIrcReply(relay.promise);
 		const sessionFile = AgentRegistry.global().get(id)?.sessionFile ?? options.sessionFile ?? undefined;
@@ -3462,8 +3463,11 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			unsubscribeTurn();
 			unsubscribeParentSteer();
 			const activeSession = turnMonitor.takeActiveSession();
-			if (activeSession) turnMonitor.captureSalvage(activeSession);
-			const lastAssistant = session.getLastAssistantMessage();
+			const latestAssistant = session.getLastAssistantMessage();
+			// A rejected queue claim can settle without producing any assistant.
+			// Its predecessor's abort/error and prose do not belong to this attempt.
+			const lastAssistant = latestAssistant !== previousAssistant ? latestAssistant : undefined;
+			if (activeSession && lastAssistant) turnMonitor.captureSalvage(activeSession);
 			const yielded = turnMonitor.yieldCalled();
 			const runtimeLimitExceeded = turnMonitor.runtimeLimitExceeded();
 			const budgetExceeded = turnMonitor.abortKind() === "budget";

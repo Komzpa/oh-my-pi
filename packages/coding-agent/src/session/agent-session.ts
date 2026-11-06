@@ -5504,7 +5504,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			for (;;) {
 				try {
 					if (!this.agent.state.isStreaming) onStart?.();
+					const steering = [...this.agent.peekSteeringQueue()];
+					const followUp = [...this.agent.peekFollowUpQueue()];
 					await this.agent.continue(signal);
+					// The core loop can resolve after aborting a queued preparation and
+					// restoring its claim. Settling is not delivery: retrying the same
+					// queue here re-arms itself through #endInFlight forever. New input
+					// or an explicit resume releases the existing drain latch.
+					if (request.options.source === "queued-message-drain") {
+						const remainingSteering = this.agent.peekSteeringQueue();
+						const remainingFollowUp = this.agent.peekFollowUpQueue();
+						if (
+							steering.length + followUp.length > 0 &&
+							steering.length === remainingSteering.length &&
+							followUp.length === remainingFollowUp.length &&
+							steering.every((message, index) => message === remainingSteering[index]) &&
+							followUp.every((message, index) => message === remainingFollowUp[index])
+						) {
+							this.#queuedMessageDrainBlocked = true;
+							return { status: "skipped", reason: "should-continue-false" };
+						}
+					}
 					return { status: "completed" };
 				} catch (error) {
 					if (!(error instanceof AgentBusyError)) throw error;
@@ -10197,7 +10217,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Gate for idle-path queued-message auto-continue (see `#scheduleQueuedMessageDrain`).
 	 */
 	#canAutoContinueForFollowUp(): boolean {
-		if (this.isRetrying) return false;
+		if (this.#isDisposed || this.isRetrying) return false;
 		// An ACP client that defers agent-initiated turns owns turn
 		// lifecycle, and a queued steer/follow-up may only resume while a
 		// CLIENT prompt owns the turn: `#clientPromptInFlightCount` covers
