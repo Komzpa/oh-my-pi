@@ -13,7 +13,9 @@ it("reuses the todo snapshot identity until the selected todo entries change", a
 		expect(first).toBeDefined();
 		manager.appendCustomEntry("unrelated", {});
 		expect(getLatestTodoSnapshotIdentity(select())).toBe(first);
-		manager.appendCustomEntry("user_todo_edit", { phases: [{ name: "A", tasks: [{ content: "two", status: "pending" }] }] });
+		manager.appendCustomEntry("user_todo_edit", {
+			phases: [{ name: "A", tasks: [{ content: "two", status: "pending" }] }],
+		});
 		const second = getLatestTodoSnapshotIdentity(select());
 		expect(second?.sourceEntryId).not.toBe(first?.sourceEntryId);
 		expect(getLatestTodoSnapshotIdentity(select().slice(0, 1))).toEqual(first);
