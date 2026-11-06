@@ -225,7 +225,7 @@ import {
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	type TodoHudStateEntryData,
 } from "../tools/todo";
-import { readTodoDisplayLedger } from "../tools/todo-plan-display";
+import { readTodoDisplayLedgerFromManager } from "../tools/todo-plan-display";
 import { todoMatchesObservedWorker } from "../tools/todo-executor";
 import {
 	formatPhaseDisplayName,
@@ -5643,6 +5643,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		const deadlineAt = deadline?.deadlineAt;
 		const hasScheduleData =
 			deadlineAt !== undefined || livePhases.some(phase => phase.tasks.some(task => task.schedule));
+		const archiveSummary = getTodoArchiveSummaryFromEntries(
+			selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
+		);
 		if (!hasScheduleData) {
 			this.#todoForecast = undefined;
 			this.#todoForecastCacheKey = undefined;
@@ -5654,9 +5657,6 @@ export class InteractiveMode implements InteractiveModeContext {
 			// completed row that archival moved out of the live phases. The archive
 			// summary joins the cache key so an archival (or an init that clears it)
 			// never serves a stale forecast resurrecting pre-archive plan data.
-			const archiveSummary = getTodoArchiveSummaryFromEntries(
-				selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
-			);
 			const cache = this.#todoForecastCacheKey;
 			const cacheHit =
 				cache?.phases === sourcePhases &&
@@ -5728,8 +5728,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				);
 				if (worker) owners.set(task.content, worker);
 			}
-			const entries = owner.sessionManager.getBranch();
-			const ledger = readTodoDisplayLedger(entries, runningWorkerIds);
+			const ledger = readTodoDisplayLedgerFromManager(owner.sessionManager, runningWorkerIds);
 			const display = renderTodoPlanDisplay(
 				phases,
 				{ workers: liveWorkers, owners, ...ledger },
@@ -5737,7 +5736,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					now,
 					width: Math.max(0, width - 2),
 					forecast: this.#todoForecast,
-					archived: getTodoArchiveSummaryFromEntries(entries)?.count,
+					archived: archiveSummary?.count,
 					paint: (tone, text) => theme.fg(tone, text),
 				},
 			);
