@@ -1,3 +1,4 @@
+import { todoNeedsOwnerDecision } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { selectBranchNewestFirst } from "./session/branch-selection";
 import * as path from "node:path";
 import {
@@ -3801,8 +3802,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					row.status = "pending";
 					row.blocker = undefined;
 				}
+				if (todoNeedsOwnerDecision(row.schedule) && row.schedule.executor?.outcome === "completed") {
+					row.schedule.review = "user";
+					row.schedule.firstDeliveredAt ??= Date.now();
+					row.schedule.reviewPagePending = !row.schedule.reviewPage;
+				}
 				// A passing runtime audit of the delivered run is the row's done receipt.
-				if (patch.audit?.verdict === "pass" && (row.status === "pending" || row.status === "in_progress")) {
+				if (
+					patch.audit?.verdict === "pass" &&
+					!todoNeedsOwnerDecision(row.schedule) &&
+					(row.status === "pending" || row.status === "in_progress")
+				) {
 					row.status = "completed";
 					row.blocker = undefined;
 					row.schedule.finishedAt ??= Date.now();

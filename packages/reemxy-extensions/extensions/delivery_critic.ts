@@ -2,7 +2,12 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { TODO_AUDIT_PROFILES, todoRowAfterWorker, type TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import {
+	TODO_AUDIT_PROFILES,
+	todoNeedsOwnerDecision,
+	todoRowAfterWorker,
+	type TodoSchedule,
+} from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import brief from "./delivery-critic.md" with { type: "text" };
 
 export const CRITIC_TIMEOUT_MS = 15 * 60_000;
@@ -143,8 +148,8 @@ export function queueDeliveryCritic(
 				return;
 			ctx.updateTodoSchedule?.(row.content, {
 				deliveryCritic: { ...state, timedOut: true },
-				handoffPending: true,
-				review: "user",
+				handoffPending: todoNeedsOwnerDecision(latest.schedule),
+				review: todoNeedsOwnerDecision(latest.schedule) ? "user" : latest.schedule.review,
 				firstDeliveredAt: Date.now(),
 			});
 		},
@@ -178,8 +183,13 @@ export function queueDeliveryCritic(
 			const evidence = verdict.findings.map(finding => `${finding.kind}: ${finding.evidence}`).join("\n");
 			ctx.updateTodoSchedule?.(row.content, {
 				deliveryCritic: { ...state, verdict: verdict.verdict, evidence },
-				handoffPending: verdict.verdict === "clean",
-				review: verdict.verdict === "clean" ? "user" : "redo",
+				handoffPending: verdict.verdict === "clean" && todoNeedsOwnerDecision(latest.schedule),
+				review:
+					verdict.verdict === "clean"
+						? todoNeedsOwnerDecision(latest.schedule)
+							? "user"
+							: latest.schedule.review
+						: "redo",
 				...(verdict.verdict === "defects"
 					? { progress: { at: Date.now(), evidence } }
 					: { firstDeliveredAt: Date.now() }),

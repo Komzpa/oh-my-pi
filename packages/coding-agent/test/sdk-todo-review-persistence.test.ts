@@ -3,9 +3,14 @@ import { AuthStorage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getLatestTodoPhasesFromEntries, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import {
+	getLatestTodoPhasesFromEntries,
+	TodoTool,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+} from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -144,6 +149,12 @@ test("a passing runtime audit closes its delivered row through the real schedule
 			name: "Work",
 			tasks: [
 				{ content: "No red focus frame", status: "in_progress", schedule: { owner: executor.workerId, executor } },
+				{ content: "Showcase scenario", status: "in_progress", schedule: { executor } },
+				{
+					content: "Answered scenario",
+					status: "in_progress",
+					schedule: { decision: "owner", executor, reviewAnswers: ["page/card/hash/accept"] },
+				},
 				{ content: "Edges only in package", status: "in_progress", schedule: { owner: "UxGraphEdges", executor } },
 			],
 		},
@@ -170,9 +181,28 @@ test("a passing runtime audit closes its delivered row through the real schedule
 	});
 	try {
 		const ctx = session.extensionRunner!.createContext();
+		const tool = new TodoTool({
+			cwd: dir.path(),
+			settings: Settings.isolated(),
+			sessionManager: manager,
+			getSessionFile: () => null,
+			getTodoPhases: () => session.getTodoPhases(),
+			setTodoPhases: (next: TodoPhase[]) => session.setTodoPhases(next),
+		} as unknown as ToolSession);
+		const staffed = await tool.execute("owner-staff", {
+			op: "schedule",
+			updates: [{ task: "Showcase scenario", decision: "owner" }],
+		});
+		expect(staffed.isError).not.toBe(true);
+		const refused = await tool.execute("owner-done", { op: "done", task: "Showcase scenario" });
+		expect(refused.isError).toBe(true);
+		expect(session.getTodoPhases()[0].tasks.find(row => row.content === "Showcase scenario")?.status).toBe(
+			"in_progress",
+		);
 		const audit = {
 			delivery: JSON.stringify([executor.workerId, 10, 20]),
 			repoPath: dir.path(),
+			agent: "qa-auditor",
 			head: "c64ec5fe6",
 			startedAt: 30,
 		};
@@ -184,10 +214,17 @@ test("a passing runtime audit closes its delivered row through the real schedule
 				audit: { ...audit, verdict: "fail", findings: "Settings edge still listed", at: 40 },
 			}),
 		).toBe(true);
+		for (const task of ["Showcase scenario", "Answered scenario"])
+			ctx.updateTodoSchedule!(task, { audit: { ...audit, verdict: "pass", at: 40 } });
 		await manager.ensureOnDisk();
 		manager.flushSync();
 		const reopened = await SessionManager.open(manager.getSessionFile()!);
-		const [closed, open] = getLatestTodoPhasesFromEntries(reopened.getBranch())[0].tasks;
+		const [closed, scenario, answered, open] = getLatestTodoPhasesFromEntries(reopened.getBranch())[0].tasks;
+		expect(scenario.status).toBe("in_progress");
+		expect(scenario.schedule?.review).toBe("user");
+		expect(answered.status).toBe("completed");
+		expect(answered.schedule?.review).toBeUndefined();
+		expect(closed.schedule?.review).toBeUndefined();
 		expect(closed.status).toBe("completed");
 		expect(typeof closed.schedule?.finishedAt).toBe("number");
 		expect(closed.schedule?.audit?.verdict).toBe("pass");

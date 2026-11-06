@@ -23,7 +23,7 @@ import { clampThinkingLevelToCeiling, resolveThinkingLevelForModel } from "@oh-m
 import { readTodoDisplayLedger } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-display";
 import { refuseProofReview, renderLeadRowInstructions } from "./lead-row-instructions";
 import { checkRowAudits } from "./row_audit";
-import { classifyTodoDisplayRow, todoRowAfterWorker, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { todoNeedsOwnerDecision, classifyTodoDisplayRow, todoRowAfterWorker, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -1553,7 +1553,7 @@ function rowReviewNotice(row: Record<string, unknown>): string {
 }
 
 function pendingReview(phases: DispatchTodoPhases): Array<Record<string, unknown>> {
-  return phases.flatMap((phase) => phase.tasks).filter((row) => (row.schedule as { review?: unknown } | undefined)?.review === "user");
+  return phases.flatMap((phase) => phase.tasks).filter((row) => (row.schedule as { review?: unknown } | undefined)?.review === "user" && !row.schedule?.reviewAnswers?.length).sort((a, b) => Number(todoNeedsOwnerDecision(b.schedule)) - Number(todoNeedsOwnerDecision(a.schedule)));
 }
 
 /** The user is asked once per row. A user message re-surfaces it at most once per message
@@ -5275,7 +5275,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
             && resources.every(resource => candidate.schedule.resources.includes(resource))
             && candidate.schedule?.attemptHistory?.length);
           if (predecessor && !row.schedule?.attemptHistory?.length) {
-            const patch = { review: predecessor.schedule.review,
+            const patch = { decision: predecessor.schedule.decision, reviewAnswers: predecessor.schedule.reviewAnswers, review: predecessor.schedule.review,
               reviewPagePending: predecessor.schedule.reviewPagePending,
               firstDeliveredAt: predecessor.schedule.firstDeliveredAt };
             ctx.updateTodoSchedule?.(String(row.content), patch);
@@ -5285,9 +5285,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
               display: true, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: false });
           }
           const schedule = row.schedule ?? {};
-          const unseen = !(schedule.deliveryCritic?.verdict === "pending" && !schedule.deliveryCritic?.timedOut) && !schedule.review && (schedule.attemptHistory ?? predecessor?.schedule?.attemptHistory)?.some(attempt => attempt.terminalStatus === "completed");
+          const unseen = todoNeedsOwnerDecision(schedule) && !(schedule.deliveryCritic?.verdict === "pending" && !schedule.deliveryCritic?.timedOut) && !schedule.review && (schedule.attemptHistory ?? predecessor?.schedule?.attemptHistory)?.some(attempt => attempt.terminalStatus === "completed");
           const dependentReview = missingSpeculativeReview(item, phases, row);
-          const reviewTarget = dependentReview ?? schedule.speculativeOn ?? (schedule.review === "user" || unseen ? String(row.content) : undefined);
+          const reviewTarget = dependentReview ?? schedule.speculativeOn ?? ((schedule.review === "user" && !schedule.reviewAnswers?.length) || unseen ? String(row.content) : undefined);
           const patch = {
             ...(unseen ? { review: "user" as const, reviewPagePending: !schedule.reviewPage,
               firstDeliveredAt: schedule.firstDeliveredAt ?? Date.now() } : {}),
@@ -6107,6 +6107,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
               const result = resultById.get(worker) as { output?: unknown } | undefined;
               const output = typeof result?.output === "string" ? result.output.trim() : "";
               if (queueDeliveryCritic(ctx, row, output, options.deliveryCriticRecord, Date.now(), previewRecords(ctx).find(record => record.task === row.content)?.previewPath)) return row;
+              if (!todoNeedsOwnerDecision(schedule)) return row;
               const summary = output.split(/\n\s*\n/).at(-1)?.trim().slice(-800);
               const updated = { ...row, schedule: {
                 ...schedule,

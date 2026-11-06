@@ -10,7 +10,9 @@ export type TodoForecastConfidence = TodoConfidence | "unknown";
 export function isTodoAwaitingReview(task: { status: string; schedule?: TodoSchedule }): boolean {
 	return (
 		task.status !== "abandoned" &&
-		task.schedule?.review === "user" &&
+		!!task.schedule &&
+		!task.schedule.reviewAnswers?.length &&
+		(task.schedule?.review === "user" || (todoNeedsOwnerDecision(task.schedule) && todoRowHasDeliverable(task))) &&
 		(task.schedule.reviewPagePending === true ||
 			task.status === "completed" ||
 			task.schedule.visibleAt !== undefined ||
@@ -19,6 +21,17 @@ export function isTodoAwaitingReview(task: { status: string; schedule?: TodoSche
 			task.schedule.attemptHistory?.some(
 				attempt => Array.isArray(attempt.deliverablePaths) && attempt.deliverablePaths.length > 0,
 			) === true)
+	);
+}
+
+/** Saved decisions belong to this content identity, across attempts and forwarded page answers. */
+export function todoNeedsOwnerDecision(schedule: TodoSchedule | undefined): boolean {
+	return (
+		schedule?.decision === "owner" &&
+		!schedule.reviewAnswers?.length &&
+		schedule.review !== "accepted" &&
+		schedule.review !== "redo" &&
+		schedule.review !== "drop"
 	);
 }
 
@@ -47,6 +60,8 @@ export interface TodoEstimate {
 
 /** Forecast metadata belongs to the exact task content; there are deliberately no generated IDs. */
 export interface TodoSchedule {
+	/** Agent-authored product choices beyond the ledger request require an owner decision. */
+	decision?: "owner";
 	agentProfile?: string;
 	/** Explicit scope cut, retained as a visible follow-up. */
 	postDeadline?: boolean;

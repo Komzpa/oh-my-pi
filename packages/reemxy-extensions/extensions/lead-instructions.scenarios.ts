@@ -133,6 +133,15 @@ function cases(now: number): Case[] {
 		findings: churn.row.schedule.progress.evidence,
 	};
 	const output: Case[] = [
+		{
+			id: "unseen-product-decision",
+			row: change(auditedReview, {
+				content: "Maksim: showcase scenario",
+				schedule: { ...auditedReview.schedule, decision: "owner", handoffPending: true },
+			}),
+			state: "handoff pending",
+			expected: { tool: "text", args: { reviewPage: "http://review.invalid/card" } },
+		},
 		{ id: "missing-executable-proof", row: proof, state: "needs worker", expected: dispatch(proof) },
 		{ id: "working", row: work, state: "working", expected: null, workers: [{ id: owner }] },
 		{
