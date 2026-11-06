@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Tools start without loading archived conversation history ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 - Finished or killed requirement auditors free concurrency slots, including after restart; refusals name the live auditors ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
 
 - Completed passing requirements stay settled when HEAD moves; unaudited closed history is shown as legacy unverified without blocking delivery ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
