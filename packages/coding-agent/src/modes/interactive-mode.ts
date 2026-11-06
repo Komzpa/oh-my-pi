@@ -143,7 +143,7 @@ import planFilenamePrompt from "../prompts/system/plan-filename.md" with { type:
 import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" with { type: "text" };
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with { type: "text" };
 import type { AgentHubRegistry } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
-import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { type AgentRef, AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { registerPersistedSubagents } from "../registry/persisted-agents";
 import type { AgentCostSnapshot } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
 import { sumSubagentTreeCost } from "./agent-hub-runtime";
@@ -5045,20 +5045,30 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * registry, and the cost segment's subagent-tree spend (local sessions only:
 	 * a collab guest's registry mirrors host transcripts outside this root).
 	 */
+	#badgeRoster: { registry: AgentRegistryApi; refs: AgentRef[]; agentIds: string[]; inspectable: number } | undefined;
+
 	syncRunningSubagentBadge(options: { requestRender?: boolean } = {}): boolean {
 		const registry = getRunningSubagentBadgeRegistry(this.collabGuest, AgentRegistry.global());
 		if (this.#agentRegistrySubscriptionTarget !== registry) {
 			this.#agentRegistryUnsubscribe?.();
 			this.#agentRegistrySubscriptionTarget = registry;
+			this.#badgeRoster = undefined;
 			this.#agentRegistryUnsubscribe = registry.onChange(() => {
+				this.#badgeRoster = undefined;
 				// Restoring a roster emits one event per agent. Rebuild the UI once
 				// for the batch, through the same scheduler as session observations.
 				this.#scheduleObserverUiSync("lifecycle");
 			});
 		}
-		const agentIds = getRunningSubagentBadgeAgentIds(registry);
+		const roster = (this.#badgeRoster ??= {
+			registry,
+			refs: registry.list(),
+			agentIds: getRunningSubagentBadgeAgentIds(registry),
+			inspectable: getInspectableSubagentCount(registry),
+		});
+		const agentIds = roster.agentIds;
 		this.#runningSubagentCount = agentIds.length;
-		const inspectable = getInspectableSubagentCount(registry);
+		const inspectable = roster.inspectable;
 		const inspectableChanged = inspectable !== this.#inspectableSubagentCount;
 		this.#inspectableSubagentCount = inspectable;
 		const agentsChanged = this.statusLine.setRunningSubagents(agentIds);
@@ -5067,7 +5077,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			const rootSessionFile = this.sessionManager.getSessionFile() ?? undefined;
 			this.#hydratePersistedSubagentCosts(rootSessionFile);
 			treeCost = sumSubagentTreeCost({
-				refs: AgentRegistry.global().list(),
+				refs: roster.refs,
 				observers: this.#observerRegistry,
 				rootSessionFile,
 				sessionCosts: this.#subagentSessionCosts,
