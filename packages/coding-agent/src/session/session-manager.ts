@@ -3699,7 +3699,6 @@ export class SessionManager {
 	appendSessionInit(init: {
 		systemPrompt: string[];
 		task: string;
-		row?: string;
 		tools: string[];
 		mountedTools?: string[];
 		agent?: string;
@@ -3709,6 +3708,8 @@ export class SessionManager {
 		perCallModelIdentity?: string;
 		perCallThinkingLevel?: ConfiguredThinkingLevel | null;
 		retryFallback?: RetryFallbackRole;
+		row?: string;
+		row?: string;
 		readOnly?: boolean;
 		outputSchema?: unknown;
 		outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -4771,7 +4772,6 @@ export function hasConversationalHistory(entries: readonly FileEntry[]): boolean
 export interface PersistedSessionInit {
 	systemPrompt: string[];
 	task: string;
-	row?: string;
 	tools: string[];
 	mountedTools?: string[];
 	agent?: string;
@@ -4781,6 +4781,7 @@ export interface PersistedSessionInit {
 	perCallModelIdentity?: string;
 	perCallThinkingLevel?: ConfiguredThinkingLevel | null;
 	retryFallback?: RetryFallbackRole;
+	row?: string;
 	readOnly?: boolean;
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -4804,7 +4805,6 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 		init = {
 			systemPrompt: typeof entry.systemPrompt === "string" ? [entry.systemPrompt] : entry.systemPrompt,
 			task: entry.task,
-			row: entry.row,
 			tools: entry.tools,
 			mountedTools: entry.mountedTools,
 			agent: entry.agent,
@@ -4814,6 +4814,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			perCallModelIdentity: entry.perCallModelIdentity,
 			perCallThinkingLevel: entry.perCallThinkingLevel,
 			retryFallback: entry.retryFallback,
+			row: entry.row,
 			readOnly: entry.readOnly,
 			outputSchema: entry.outputSchema,
 			outputSchemaMode: entry.outputSchemaMode,
