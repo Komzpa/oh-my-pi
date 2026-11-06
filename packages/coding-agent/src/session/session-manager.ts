@@ -1930,8 +1930,10 @@ export class SessionManager {
 						new Error("Authoritative session repair was superseded before verification."),
 					]);
 				}
-				await this.#appendRewriteTail(entryCount);
-				this.#atomicRewriteDirty = false;
+				if (this.#largeRewriteFence) {
+					await this.#appendRewriteTail(entryCount);
+					this.#atomicRewriteDirty = false;
+				}
 			} while (this.#atomicRewriteDirty);
 
 			this.#fileIsCurrent = true;
@@ -2043,6 +2045,7 @@ export class SessionManager {
 	}
 
 	async #recordFullRewriteAsync(body: SessionFileBody, source: string): Promise<void> {
+		if (body.bytes < LARGE_SESSION_REWRITE_BYTES) return this.#recordFullRewrite(body, source);
 		let sliceStart = performance.now();
 		for (const _ of this.#recordFullRewriteSteps(body, source)) {
 			if (performance.now() - sliceStart >= 4) {
@@ -2152,6 +2155,7 @@ export class SessionManager {
 
 	/** Serialize the full indexed prefix cooperatively, including off-branch history. */
 	async #serializeBodyAsync(): Promise<SessionFileBody> {
+		if ((this.#expectedDiskSize ?? 0) < LARGE_SESSION_REWRITE_BYTES) return this.#serializeBody();
 		const titleLine = this.#titleSlotLine();
 		const headerLine = this.#lineFor(this.#header);
 		const entries = this.#entries;
@@ -2434,9 +2438,11 @@ export class SessionManager {
 					return false;
 				}
 				await this.#recordFullRewriteAsync(body, sessionFile);
-				await this.#appendRewriteTail(body.stamp.entryCount);
-				if (this.#diskEpoch !== epoch) return false;
-				this.#atomicRewriteDirty = false;
+				if (this.#largeRewriteFence) {
+					await this.#appendRewriteTail(body.stamp.entryCount);
+					if (this.#diskEpoch !== epoch) return false;
+					this.#atomicRewriteDirty = this.#bodyRevision !== body.stamp.revision;
+				}
 			} while (this.#atomicRewriteDirty);
 			return true;
 		} finally {
