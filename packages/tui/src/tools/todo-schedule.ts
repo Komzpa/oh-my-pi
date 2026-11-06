@@ -123,7 +123,7 @@ export interface TodoSchedule {
 /**
  * One batched audit of delivered rows at one repository head. A pass verifies the row; a defect
  * or two genuinely inconclusive audits return it to a worker.
- * Omitted batch rows and unavailable auditors remain queued, without consuming a real retry.
+ * Missing verdicts retry once, then return a concrete evidence task to the lead.
  */
 export interface TodoRowAudit {
 	workerId?: string;
@@ -134,8 +134,10 @@ export interface TodoRowAudit {
 	startedAt: number;
 	verdict: "pending" | "pass" | "fail" | "inconclusive" | "omitted" | "unavailable";
 	agent?: string;
-	/** Real audit attempts for this delivery at this head; omitted rows consume no attempt. */
+	/** Audit attempts for this delivery at this head, including missing verdicts. */
 	attempts?: number;
+	/** Evidence text already audited; timestamp-only updates cannot restart the same audit. */
+	evidence?: string;
 	findings?: string;
 	at?: number;
 }
@@ -2059,10 +2061,11 @@ export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWor
 		return { kind: "needs-worker", reason: "audit-failed", worker, findings: audit.findings };
 	if (audit?.verdict === "pass") return undefined;
 	if (
-		audit?.verdict === "inconclusive" &&
-		audit.findings?.trim() !== "auditor returned no verdict for this row" &&
+		(audit?.verdict === "inconclusive" || audit?.verdict === "omitted") &&
 		(audit.attempts ?? 1) >= 2 &&
-		(schedule.progress?.at ?? 0) <= (audit.at ?? audit.startedAt)
+		(audit.evidence !== undefined
+			? (schedule.progress?.evidence ?? "") === audit.evidence
+			: (schedule.progress?.at ?? 0) <= (audit.at ?? audit.startedAt))
 	)
 		return { kind: "needs-worker", reason: "audit-inconclusive", worker, findings: audit.findings };
 	const deliverable = todoRowHasDeliverable(task);

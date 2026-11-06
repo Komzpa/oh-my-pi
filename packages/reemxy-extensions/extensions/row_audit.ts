@@ -107,7 +107,7 @@ function rowRepo(row: RowAuditRow, cwd: string): string {
 /**
  * Delivered rows whose audit must be (re)launched, batches grouped by repository head. A row whose
  * pending audit already runs at the current head (`inFlight`) is skipped; a pending audit at an
- * older head, or one no longer running in this process, is audited again at the current head. Omitted verdicts retry individually without consuming an attempt; two inconclusive verdicts
+ * older head, or one no longer running in this process, is audited again at the current head. Omitted verdicts retry individually once; two inconclusive verdicts
  * return the row to staffing for the missing evidence.
  */
 export function planRowAudits(
@@ -132,10 +132,13 @@ export function planRowAudits(
 		const audit = previous?.head === head ? previous : undefined;
 		if (audit?.verdict === "pass") continue;
 		const omitted = audit?.verdict === "omitted" || audit?.findings === "auditor returned no verdict for this row";
-		let attempt = omitted ? (audit?.verdict === "omitted" ? (audit.attempts ?? 0) + 1 : 1) : (audit?.attempts ?? 1);
+		let attempt = audit?.attempts ?? 1;
 		let retry: string | undefined;
-		if (audit?.verdict === "inconclusive" && !omitted) {
-			const newEvidence = (row.schedule?.progress?.at ?? 0) > (audit.at ?? Infinity);
+		if (audit?.verdict === "inconclusive" || audit?.verdict === "omitted") {
+			const newEvidence =
+				audit.evidence !== undefined
+					? (row.schedule?.progress?.evidence ?? "") !== audit.evidence
+					: (row.schedule?.progress?.at ?? 0) > (audit.at ?? Infinity);
 			if (attempt >= 2 && !newEvidence) continue;
 			attempt = newEvidence ? 1 : attempt + 1;
 			retry = audit.findings;
@@ -306,6 +309,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 				verdict: "pending",
 				agent,
 				attempts: row.attempt,
+				evidence: row.schedule?.progress?.evidence ?? "",
 			};
 			// Persist before launching: a resumed session sees the pending audit, never a bare delivery.
 			if (ctx.updateTodoSchedule(row.content, { audit })) records.set(row.content, audit);
@@ -348,9 +352,15 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 					const verdict = verdicts.find(item => item.row === content);
 					if (!verdict) {
 						ctx.updateTodoSchedule!(content, {
-							audit: { ...audit, verdict: "omitted", attempts: Math.max(0, (audit.attempts ?? 1) - 1), at },
+							audit: {
+								...audit,
+								verdict: "omitted",
+								findings:
+									"auditor returned no verdict for this row; produce revision-bound executable checks and inspected screenshots required by the row",
+								at,
+							},
 						});
-						retry = true;
+						if ((audit.attempts ?? 1) < 2) retry = true;
 						continue;
 					}
 					const settled = settleRowAuditVerdict(verdict, fileExists);

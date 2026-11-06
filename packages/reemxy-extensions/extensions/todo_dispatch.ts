@@ -21,7 +21,7 @@ import { cfgTaskAgentModelOverrides, cfgTaskMaxEffort } from "@oh-my-pi/pi-codin
 import { cfgDefaultThinkingLevel } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { clampThinkingLevelToCeiling, resolveThinkingLevelForModel } from "@oh-my-pi/pi-tui/thinking";
 import { readTodoDisplayLedger } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-display";
-import { renderLeadRowInstructions } from "./lead-row-instructions";
+import { refuseProofReview, renderLeadRowInstructions } from "./lead-row-instructions";
 import { checkRowAudits } from "./row_audit";
 import { classifyTodoDisplayRow, todoRowAfterWorker, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
@@ -5282,6 +5282,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const brief = String(item.task ?? "");
         const boundRows = speculativeTaskRows(item, phases);
         for (const row of boundRows) {
+          const refusal = refuseProofReview(row, item.agent, Date.now());
+          if (refusal) return { block: true, reason: refusal };
           gateTrace(ctx, "speculative-review-checked", { row: row.content, agent: item.agent, readOnly: readOnlyAudit(item), speculativeOn: row.schedule?.speculativeOn, dependencies: (row.schedule?.dependencies ?? []).map((content) => { const target = rows.find((candidate) => candidate.content === content); return { content, status: target?.status, review: target?.schedule?.review }; }) });
           if (readOnlyAudit(item)) continue;
           // A dropped title with the same exclusive resources is still the same work.

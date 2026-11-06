@@ -12,6 +12,7 @@ import { TodoTool, type ReviewPageAnswer } from "@oh-my-pi/pi-coding-agent/tools
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { workerToolPreflight } from "./dispatch_preflight";
 import todoDescription from "../../coding-agent/src/prompts/tools/todo.md" with { type: "text" };
+import churn from "./fixtures/dc-verify-churn.json";
 import live from "./fixtures/dc-rowclose-1645.json";
 import todoDispatch from "./todo_dispatch";
 
@@ -121,7 +122,18 @@ function cases(now: number): Case[] {
 		workerId: "RowAudit",
 	};
 
+	const proof = normalize(structuredClone(churn.row) as TodoScheduleInputTask);
+	proof.schedule!.audit = {
+		agent: schedule.TODO_ROW_AUDITOR,
+		delivery: schedule.todoRowDeliveryKey(proof.schedule),
+		repoPath: churn.row.artifactCwd,
+		head: "f73f78a6147e1e16d26619b39ab698769e66e461",
+		startedAt: now,
+		verdict: "fail",
+		findings: churn.row.schedule.progress.evidence,
+	};
 	const output: Case[] = [
+		{ id: "missing-executable-proof", row: proof, state: "needs worker", expected: dispatch(proof) },
 		{ id: "working", row: work, state: "working", expected: null, workers: [{ id: owner }] },
 		{
 			id: "waiting",
