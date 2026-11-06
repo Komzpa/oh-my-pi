@@ -116,3 +116,41 @@ it("observer plan probe reads only the newest ledger and never the whole branch"
 	for (let frame = 0; frame < 100; frame++) expect(latestRequirementsFromSession(manager).length).toBe(1);
 	expect(decoded).toBe(100);
 });
+
+it("retains derived counts across unrelated appends and refreshes after ledger edits", () => {
+	let count = 1;
+	let bodyRevision = 0;
+	let decoded = 0;
+	let requirements = createRequirementCandidates([], ["first"], "2026-11-06T00:00:00Z");
+	const selected = Object.freeze([
+		{
+			type: "custom",
+			customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+			get data() {
+				decoded++;
+				return { version: 1, requirements };
+			},
+		},
+	]) as unknown as SessionEntry[];
+	const manager = {
+		getLeafId: () => String(count),
+		getEntryCount: () => count,
+		get bodyRevision() {
+			return bodyRevision;
+		},
+		getEntries: () => selected,
+		getBranch: () => selected,
+		getCachedBranchMatching: () => selected,
+	};
+	expect(getRequirementHudCounts(manager).total).toBe(1);
+	const firstDecoded = decoded;
+	for (let i = 0; i < 100; i++) {
+		count++;
+		expect(getRequirementHudCounts(manager).total).toBe(1);
+	}
+	expect(decoded).toBe(firstDecoded);
+	requirements = createRequirementCandidates([], ["first", "second"], "2026-11-06T00:00:00Z");
+	bodyRevision++;
+	expect(getRequirementHudCounts(manager).total).toBe(2);
+	expect(decoded).toBeGreaterThan(firstDecoded);
+});
