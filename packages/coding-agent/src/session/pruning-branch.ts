@@ -3,6 +3,9 @@ import type { SessionEntry } from "./session-entries";
 interface PruningBranchSource {
 	getLeafId(): string | null;
 	getEntry(id: string): SessionEntry | undefined;
+	iterateBranchMatchingNewestFirst?(
+		predicate: (metadata: { id: string; type: string; messageRole?: string }) => boolean,
+	): IterableIterator<SessionEntry>;
 }
 
 /** Read the prune region first, and older tool calls only when a kept result needs them. */
@@ -12,12 +15,27 @@ export function getPruningBranch(source: PruningBranchSource): SessionEntry[] {
 	let id = source.getLeafId();
 	let boundary: string | undefined;
 	let foundCompaction = false;
-	while (id && !seen.has(id)) {
+	let lookingForCalls = false;
+	const selected = source.iterateBranchMatchingNewestFirst?.(metadata =>
+		lookingForCalls
+			? metadata.type === "message" && metadata.messageRole === "assistant"
+			: metadata.type === "message" ||
+				metadata.type === "compaction" ||
+				metadata.type === "tool_result_prune" ||
+				metadata.id === boundary,
+	);
+	const nextEntry = (): SessionEntry | undefined => {
+		if (selected) return selected.next().value;
+		if (!id || seen.has(id)) return undefined;
 		seen.add(id);
 		const entry = source.getEntry(id);
+		id = entry?.parentId ?? null;
+		return entry;
+	};
+	while (true) {
+		const entry = nextEntry();
 		if (!entry) break;
 		entries.push(entry);
-		id = entry.parentId;
 		if (!foundCompaction && entry.type === "compaction") {
 			foundCompaction = true;
 			boundary = entry.firstKeptEntryId;
@@ -34,11 +52,10 @@ export function getPruningBranch(source: PruningBranchSource): SessionEntry[] {
 		}
 	}
 	const missing = new Set([...results].filter(call => !calls.has(call)));
-	while (missing.size > 0 && id && !seen.has(id)) {
-		seen.add(id);
-		const entry = source.getEntry(id);
+	lookingForCalls = true;
+	while (missing.size > 0) {
+		const entry = nextEntry();
 		if (!entry) break;
-		id = entry.parentId;
 		if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 		let needed = false;
 		for (const block of entry.message.content) {
