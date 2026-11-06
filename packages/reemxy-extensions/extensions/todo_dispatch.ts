@@ -3737,8 +3737,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return kept.filter(item => !item.received);
   };
   const leadDisplayContext = (ctx, phases, decision) => {
-    const rowWorkers = (ctx.getAsyncJobSnapshot()?.running ?? []).filter(job => job.type === "task" && job.status === "running")
+    const jobs = ctx.getAsyncJobSnapshot();
+    const rowWorkers = (jobs?.running ?? []).filter(job => job.type === "task" && job.status === "running")
       .map(job => ({ id: job.agentId ?? job.id, agent: job.agent, startedAt: job.startTime }));
+    for (const worker of jobs?.nonJobAgents ?? []) {
+      if (worker.live && !rowWorkers.some(candidate => candidate.id === worker.id))
+        rowWorkers.push({ id: worker.id, agent: undefined, startedAt: undefined });
+    }
     const rowOwners = new Map(phases.flatMap(phase => phase.tasks).flatMap(row => {
       const worker = rowWorkers.find(worker => worker.id === row.schedule?.owner || worker.id === row.schedule?.executor?.workerId);
       return worker ? [[row.content, worker]] : [];
@@ -3749,6 +3754,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       capacityFull: decision.capacity > 0 && decision.activeTaskCount >= decision.capacity,
     };
   };
+  const staffingRows = (phases, displayContext) => phases.flatMap(phase => phase.tasks).filter(task => isOpenRowStatus(task.status)).flatMap(task => {
+    const state = classifyTodoDisplayRow(task, phases, displayContext);
+    return state.state === "needs worker" ? [{ content: task.content, owner: task.schedule?.owner, previous: state.previous, reason: state.reason, findings: todoRowAfterWorker(task)?.findings }] : [];
+  });
+  const staffingData = rows => ({
+    staffing: true, rows: rows.map(row => JSON.stringify(row.content)).join(", "),
+    continuations: rows.filter(row => row.previous).map(row =>
+      `${JSON.stringify(row.content)} from agent://${row.previous} (${row.reason}${row.findings ? `: ${shorten(row.findings)}` : ""})`).join("; "),
+  });
   const announceGates = (ctx: ExtensionContext, pending: unknown[] = [], now = Date.now(), measured?: DispatchDecision) => {
     if (singleWriterLane || !isMain(ctx) || typeof pi.sendMessage !== "function" || typeof pi.appendEntry !== "function") return;
     const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending));
@@ -3761,15 +3775,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (pauseGate?.paused || gateSwitchedOff(ctx)) return;
     const decision = measured ?? currentDecision(ctx, now, pending);
     const displayContext = leadDisplayContext(ctx, phases, decision);
-    const rows = phases.flatMap(phase => phase.tasks).filter(task => isOpenRowStatus(task.status)).flatMap(task => {
-      const state = classifyTodoDisplayRow(task, phases, displayContext);
-      return state.state === "needs worker" ? [{ content: task.content, owner: task.schedule?.owner, previous: state.previous, reason: state.reason, findings: todoRowAfterWorker(task)?.findings }] : [];
-    });
-    const continuations = rows.filter(row => row.previous).map(row =>
-      `${JSON.stringify(row.content)} from agent://${row.previous} (${row.reason}${row.findings ? `: ${shorten(row.findings)}` : ""})`);
-    if (rows.length) notice("staffing", JSON.stringify(rows.map(row => [row.content, row.owner, row.previous ?? null])), {
-      staffing: true, rows: rows.map(row => JSON.stringify(row.content)).join(", "), continuations: continuations.join("; "),
-    });
+    const rows = staffingRows(phases, displayContext);
+    if (rows.length) notice("staffing", JSON.stringify(rows.map(row => [row.content, row.owner, row.previous ?? null])), staffingData(rows));
     const tasks = [...new Set(getTodoPlanningIssues(phases).map(issue => issue.task))];
     if (tasks.length) notice("schedule", JSON.stringify(tasks), { schedule: true, rows: tasks.map(task => JSON.stringify(task)).join(", "), tasks });
     for (const item of activeRecoveries(ctx, pending)) notice("recovery", JSON.stringify([item.kind, item.row, item.owner, item.at]), {
@@ -5168,6 +5175,19 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         if (refusal) return { block: true, reason: refusal };
       }
     }
+    // Ownership survives IRC revival even when staffing policy is paused or disabled.
+    if (event.toolName === "task" && isMain(ctx)) {
+      const phases = todoPhases(ctx);
+      const display = leadDisplayContext(ctx, phases, currentDecision(ctx));
+      for (const item of taskItems(event.input)) {
+        for (const row of speculativeTaskRows(item, phases)) {
+          const owner = display.owners.get(row.content);
+          if (owner) return { block: true, reason: prompt.render(gateNoticeInstructions, {
+            liveOwner: true, row: JSON.stringify(row.content), owner: owner.id,
+          }).trim() };
+        }
+      }
+    }
     await refreshLiveWorkerModels(ctx);
     if (gateSwitchedOff(ctx)) return;
     if (singleWriterLane) return;
@@ -6256,6 +6276,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     await refreshLiveWorkerModels(ctx);
     if (!singleWriterLane && isMain(ctx)) await gitState(ctx, Date.now(), true);
     if (!singleWriterLane && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) currentDecision(ctx);
+    // Startup warnings may have been queued before child restoration. Revalidate at consumption.
+    const isStaffing = message => message.role === "custom" && message.customType === "todo-gate-staffing";
+    if (isMain(ctx) && event.messages.some(isStaffing)) {
+      const phases = todoPhases(ctx);
+      const rows = staffingRows(phases, leadDisplayContext(ctx, phases, currentDecision(ctx)));
+      const last = event.messages.findLast(isStaffing);
+      return { messages: event.messages.flatMap(message => !isStaffing(message) ? [message]
+        : message === last && rows.length ? [{ ...message, content: prompt.render(gateNoticeInstructions, staffingData(rows)).trim() }] : []) };
+    }
     return { messages: event.messages };
   });
 

@@ -109,3 +109,83 @@ test("a batch that staffs every priority row may also staff a new row; a partial
 	expect(partial.reason).toContain("Repair cooling trunks");
 	expect(partial.reason).not.toContain(`Staff "Repair power source frame"`);
 });
+
+// IRC-restored children are live without AsyncJobManager task entries.
+test("turn_start keeps three restored row owners working despite stale failed executor records", async () => {
+	const rows = Array.from({ length: 3 }, (_, i) => ({
+		content: `restored row ${i}`,
+		status: "in_progress",
+		schedule: {
+			owner: `Restored-${i}`,
+			dependencies: [],
+			executor: { workerId: `Restored-${i}`, startedAt: 1, finishedAt: 2, outcome: "failed" },
+		},
+	}));
+	const h = await harness(rows);
+	h.ctx.getAsyncJobSnapshot = () => ({
+		running: [],
+		recent: [],
+		nonJobAgents: rows.map(row => ({ id: row.schedule.owner, live: true })),
+	});
+	await h.hooks.get("turn_start")({}, h.ctx);
+	expect(h.notices.filter(notice => notice.customType === "todo-gate-staffing")).toEqual([]);
+});
+
+test("task refuses a restored live row owner and admits replacement only after the owner stops", async () => {
+	const h = await harness([structuredClone(failed)]);
+	let live = true;
+	h.ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [], nonJobAgents: [{ id: failed.schedule.owner, live }] });
+	const invoke = input => h.hooks.get("tool_call")({ toolName: "task", input }, h.ctx);
+	for (const item of [
+		{ name: "Replacement", row: failed.content, task: failed.content, agent: "task" },
+		{ name: "Replacement", task: `Continue ${failed.content}`, agent: "task" },
+		{ tasks: [{ name: "Replacement", row: failed.content, task: failed.content, agent: "task" }] },
+	]) {
+		const denied = await invoke(item);
+		expect(denied?.block).toBe(true);
+		expect(denied.reason).toContain(failed.schedule.owner);
+		expect(denied.reason).toContain("Steer");
+	}
+	live = false;
+	const allowed = await invoke({ name: "ContinentalSnail", row: failed.content, task: failed.content, agent: "task" });
+	expect(allowed?.block).not.toBe(true);
+});
+
+// Startup can queue the warning before the restart controller revives children.
+test("context withdraws a startup staffing warning after its owners are restored", async () => {
+	const h = await harness([structuredClone(failed)]);
+	await h.hooks.get("turn_start")({}, h.ctx);
+	const stale = h.notices.find(notice => notice.customType === "todo-gate-staffing");
+	expect(stale).toBeDefined();
+	h.ctx.getAsyncJobSnapshot = () => ({
+		running: [],
+		recent: [],
+		nonJobAgents: [{ id: failed.schedule.owner, live: true }],
+	});
+	const user = { role: "user", content: "continue", timestamp: 1 };
+	const result = await h.hooks.get("context")({ messages: [user, { ...stale, role: "custom" }] }, h.ctx);
+	expect(result.messages).toEqual([user]);
+});
+
+test("task also refuses a row owned by an ordinary running job", async () => {
+	const h = await harness([structuredClone(failed)]);
+	h.ctx.getAsyncJobSnapshot = () => ({
+		running: [
+			{
+				id: "job",
+				agentId: failed.schedule.owner,
+				type: "task",
+				status: "running",
+				label: failed.content,
+				startTime: Date.now(),
+			},
+		],
+		recent: [],
+	});
+	const result = await h.hooks.get("tool_call")(
+		{ toolName: "task", input: { name: "Replacement", row: failed.content, task: failed.content, agent: "task" } },
+		h.ctx,
+	);
+	expect(result?.block).toBe(true);
+	expect(result.reason).toContain(failed.schedule.owner);
+});
