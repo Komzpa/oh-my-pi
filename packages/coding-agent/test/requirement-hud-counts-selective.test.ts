@@ -63,7 +63,7 @@ it("skips malformed newest ledgers and stops before decoding superseded snapshot
 		},
 	} as unknown as SessionManager;
 	const counts = getRequirementHudCounts(manager);
-	expect(counts).toEqual({ total: 1, passed: 0, failed: 0, open: 1 });
+	expect(counts).toEqual({ total: 1, passed: 0, failed: 0, legacyUnverified: 0, open: 1 });
 	expect(counts).toEqual(getRequirementHudCounts(manager));
 	expect(reads).toBe(2);
 });
@@ -76,7 +76,7 @@ it("refreshes HUD counts from a session handle without selective history methods
 		getEntries: () => entries,
 		getBranch: () => entries,
 	};
-	expect(getRequirementHudCounts(manager)).toEqual({ total: 0, passed: 0, failed: 0, open: 0 });
+	expect(getRequirementHudCounts(manager)).toEqual({ total: 0, passed: 0, failed: 0, legacyUnverified: 0, open: 0 });
 	entries.push({
 		type: "custom",
 		id: "ledger",
@@ -88,5 +88,5 @@ it("refreshes HUD counts from a session handle without selective history methods
 			requirements: createRequirementCandidates([], ["handle requirement"], "2026-11-03T00:00:00Z"),
 		},
 	});
-	expect(getRequirementHudCounts(manager)).toEqual({ total: 1, passed: 0, failed: 0, open: 1 });
+	expect(getRequirementHudCounts(manager)).toEqual({ total: 1, passed: 0, failed: 0, legacyUnverified: 0, open: 1 });
 });

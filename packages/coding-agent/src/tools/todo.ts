@@ -1130,6 +1130,24 @@ export function getCompletedTodoRows(entries: SessionEntry[]): Set<string> {
 	return completed;
 }
 
+/** Closed history survives pruning; reopening removes the exemption. */
+export function getClosedTodoRows(entries: SessionEntry[]): Set<string> {
+	const closed = new Set<string>();
+	observeLatestTodoPhases(entries, phases => {
+		const byRow = new Map<string, boolean>();
+		for (const task of phases.flatMap(phase => phase.tasks))
+			byRow.set(
+				task.content,
+				(byRow.get(task.content) ?? true) && (task.status === "completed" || task.status === "abandoned"),
+			);
+		for (const [row, done] of byRow) {
+			if (done) closed.add(row);
+			else closed.delete(row);
+		}
+	});
+	return closed;
+}
+
 /** Owner acceptance survives plan pruning; a later explicit review replaces it. */
 export function getAcceptedTodoRows(entries: SessionEntry[]): Set<string> {
 	const accepted = new Set<string>();
@@ -1866,13 +1884,14 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 					lastChange: changes.get(row),
 				}),
 				getPersistedRequirementAuditRejections(branch, sessionManager.getSessionId?.() ?? null),
-				new Set(),
+				getCompletedTodoRows(branch),
 				new Set(
 					previousPhases.flatMap(phase =>
 						phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content),
 					),
 				),
 				getAcceptedTodoRows(branch),
+				getClosedTodoRows(branch),
 			);
 			if (JSON.stringify(getLatestRequirements(sessionManager.getBranch())) !== requirementSnapshot) {
 				return {

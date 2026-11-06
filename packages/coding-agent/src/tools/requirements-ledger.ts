@@ -159,6 +159,7 @@ export interface RequirementCounts {
 	passed: number;
 	open: number;
 	failed: number;
+	legacyUnverified: number;
 }
 
 export type RequirementAuditSource = Pick<RequirementLedgerItem, "id" | "at" | "rawText" | "images">;
@@ -743,17 +744,72 @@ function relinkRequirement(
 	return { requirements: next };
 }
 
-/** Counts active requirements; merged and explicitly rejected asks do not block completion. */
-export function countRequirements(requirements: readonly RequirementLedgerItem[]): RequirementCounts {
+/** Unaudited closed row bindings remain history, alongside any completed passes. */
+export function isLegacyUnverifiedRequirement(
+	requirement: RequirementLedgerItem,
+	closedRows: ReadonlySet<string>,
+	acceptedRows: ReadonlySet<string> = new Set(),
+): boolean {
+	return (
+		requirement.classification === "linked" &&
+		requirement.rows.length > 0 &&
+		requirement.rows.some(row => !acceptedRows.has(row) && !getRequirementRowVerdict(requirement, row)) &&
+		requirement.rows.every(row => {
+			const verdict = effectiveRequirementVerdict(getRequirementRowVerdict(requirement, row));
+			return (
+				(acceptedRows.has(row) || closedRows.has(row)) &&
+				(acceptedRows.has(row) ||
+					!verdict ||
+					(verdict.status === "pass" && !getRequirementVerdictSourceIssue(requirement, row, verdict)))
+			);
+		})
+	);
+}
+
+/** Recover only the old sweep's demotion, never a real unverifiable audit. */
+function effectiveRequirementVerdict(verdict: RequirementVerdict | undefined): RequirementVerdict | undefined {
+	return verdict?.status === "unverifiable" && verdict.evidence === STALE_PASS_EVIDENCE
+		? { ...verdict, status: "pass" }
+		: verdict;
+}
+
+function hasFinalCompletedPass(
+	requirement: RequirementLedgerItem,
+	row: string,
+	completedRows: ReadonlySet<string>,
+): boolean {
+	const verdict = effectiveRequirementVerdict(getRequirementRowVerdict(requirement, row));
+	return (
+		completedRows.has(row) &&
+		verdict?.status === "pass" &&
+		!getRequirementVerdictSourceIssue(requirement, row, verdict)
+	);
+}
+
+export function countRequirements(
+	requirements: readonly RequirementLedgerItem[],
+	completedRows: ReadonlySet<string> = new Set(),
+	closedRows: ReadonlySet<string> = completedRows,
+	acceptedRows: ReadonlySet<string> = new Set(),
+): RequirementCounts {
 	let total = 0;
 	let passed = 0;
 	let failed = 0;
+	let legacyUnverified = 0;
 	for (const requirement of requirements) {
 		if (requirement.classification !== "candidate" && requirement.classification !== "linked") continue;
 		total++;
 		if (requirement.classification !== "linked") continue;
+		if (isLegacyUnverifiedRequirement(requirement, closedRows, acceptedRows)) {
+			legacyUnverified++;
+			continue;
+		}
 		const verdicts = requirement.rows.map(row => {
-			const verdict = getRequirementRowVerdict(requirement, row);
+			const saved = getRequirementRowVerdict(requirement, row);
+			const verdict = completedRows.has(row) ? effectiveRequirementVerdict(saved) : saved;
+			if (acceptedRows.has(row)) return { status: "pass", auditor: "qa-auditor" };
+			if (verdict?.status !== "fail" && !completedRows.has(row) && verdict?.collateral?.defects.length)
+				return undefined;
 			return verdict?.status === "pass" && getRequirementVerdictSourceIssue(requirement, row, verdict)
 				? undefined
 				: verdict;
@@ -761,7 +817,7 @@ export function countRequirements(requirements: readonly RequirementLedgerItem[]
 		if (verdicts.every(verdict => verdict?.status === "pass" && verdict.auditor === "qa-auditor")) passed++;
 		else if (verdicts.some(verdict => verdict?.status === "fail")) failed++;
 	}
-	return { total, passed, failed, open: total - passed - failed };
+	return { total, passed, failed, legacyUnverified, open: total - passed - failed - legacyUnverified };
 }
 
 /** Linked rows remain open until the extension records QA evidence for the current artifact. */
@@ -1066,10 +1122,11 @@ export async function evaluateRequirementDoneGate(
 	rows: readonly string[],
 	getArtifact: (row: string, receipt?: string) => Promise<RequirementGateArtifact>,
 	rejections: ReadonlyMap<string, string> = new Map(),
-	/** Completed history is retained for callers; completion alone is not acceptance. */
-	_settledRows: ReadonlySet<string> = new Set(),
+	/** Passing receipts are final while their row remains completed. */
+	settledRows: ReadonlySet<string> = new Set(),
 	followUpRows: ReadonlySet<string> = new Set(),
 	acceptedRows: ReadonlySet<string> = new Set(),
+	closedRows: ReadonlySet<string> = settledRows,
 ): Promise<RequirementDoneGateIssue[]> {
 	const targets = new Set(rows);
 	const artifacts = new Map<string, Promise<RequirementGateArtifact>>();
@@ -1085,6 +1142,7 @@ export async function evaluateRequirementDoneGate(
 			continue;
 		}
 		if (requirement.classification !== "linked" || !requirement.rows.some(row => targets.has(row))) continue;
+		if (isLegacyUnverifiedRequirement(requirement, closedRows, acceptedRows)) continue;
 		const issues: string[] = [];
 		const awaitingUserIssues: string[] = [];
 		const stalePassRows: string[] = [];
@@ -1094,7 +1152,12 @@ export async function evaluateRequirementDoneGate(
 		// for it — an unanswerable audit demand is a gate loop.
 		if (
 			requirement.imageState === "needs-user-restatement" &&
-			!getLinkedRequirementRows(requirement, rows).every(row => acceptedRows.has(row))
+			!getLinkedRequirementRows(requirement, rows).every(
+				row =>
+					acceptedRows.has(row) ||
+					hasFinalCompletedPass(requirement, row, settledRows) ||
+					(closedRows.has(row) && !getRequirementRowVerdict(requirement, row)),
+			)
 		) {
 			const issue = `${requirement.id}: the attached image is gone from this session — please restate it in words or re-attach it in a new message naming ${requirement.id}; then associate that new candidate with todo op="classify", id="${requirement.id}", classification="merged", mergeInto="<new Rn>" and request a fresh audit`;
 			open.push({
@@ -1109,6 +1172,8 @@ export async function evaluateRequirementDoneGate(
 		for (const row of getLinkedRequirementRows(requirement, rows)) {
 			if (acceptedRows.has(row)) continue;
 			const recorded = getRequirementRowVerdict(requirement, row);
+			if (!recorded && closedRows.has(row)) continue;
+			if (hasFinalCompletedPass(requirement, row, settledRows)) continue;
 			const unhandled =
 				recorded?.collateral?.defects.filter(
 					defect => !followUpRows.has(collateralFollowUpRow(row, defect.defect)),

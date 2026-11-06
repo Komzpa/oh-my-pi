@@ -39,23 +39,23 @@ function requirement(): RequirementLedgerItem {
 // The checkout HEAD has moved from A to B since the passes were recorded.
 const movedHead = async () => ({ cwd: "/tmp", head: SHA_B, dirty: false });
 
-describe("completion alone cannot bypass artifact relevance", () => {
-	it("requires fresh evidence when delivery scope is unknown", async () => {
+describe("completed passing receipts are final", () => {
+	it("keeps a completed pass without probing a moved artifact", async () => {
 		const requirements = [requirement()];
 		const sweep = await evaluateRequirementDoneGate(
 			requirements,
 			[DONE_ROW],
-			movedHead,
+			async () => {
+				throw new Error("completed passes must not probe artifacts");
+			},
 			new Map(),
 			new Set([DONE_ROW]),
 		);
-		expect(sweep).toHaveLength(1);
-		expect(invalidateStaleRequirementVerdicts(requirements, sweep)[0]!.rowVerdicts![DONE_ROW]!.status).toBe(
-			"unverifiable",
-		);
+		expect(sweep).toHaveLength(0);
+		expect(invalidateStaleRequirementVerdicts(requirements, sweep)[0]!.rowVerdicts![DONE_ROW]!.status).toBe("pass");
 	});
 
-	it("does not restore a demoted receipt without a successful freshness check", async () => {
+	it("recovers historical stale demotions but retains real unverifiable verdicts", async () => {
 		const demoted = requirement();
 		demoted.rowVerdicts = {
 			[DONE_ROW]: {
@@ -65,7 +65,7 @@ describe("completion alone cannot bypass artifact relevance", () => {
 			},
 		};
 		const sweep = await evaluateRequirementDoneGate([demoted], [DONE_ROW], movedHead, new Map(), new Set([DONE_ROW]));
-		expect(sweep).toHaveLength(1);
+		expect(sweep).toHaveLength(0);
 		// a real unverifiable verdict (other evidence) is still reported
 		demoted.rowVerdicts[DONE_ROW] = { ...demoted.rowVerdicts[DONE_ROW]!, evidence: "Could not reproduce the screen" };
 		const still = await evaluateRequirementDoneGate([demoted], [DONE_ROW], movedHead, new Map(), new Set([DONE_ROW]));
@@ -82,7 +82,7 @@ describe("completion alone cannot bypass artifact relevance", () => {
 		expect(next.rowVerdicts![OTHER_ROW]!.status).toBe("unverifiable");
 	});
 
-	it("negative control: closing the same row again at the new head still demands a fresh audit", async () => {
+	it("negative control: an open or reopened row still demands a fresh audit", async () => {
 		const open = await evaluateRequirementDoneGate([requirement()], [DONE_ROW], movedHead);
 		expect(open).toHaveLength(1);
 		expect(open[0]!.stalePassRows).toEqual([DONE_ROW]);

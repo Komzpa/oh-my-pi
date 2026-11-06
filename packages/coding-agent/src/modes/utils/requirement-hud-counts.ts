@@ -1,4 +1,5 @@
-import { latestRequirementsFromSession } from "../../session/requirements-branch-selection";
+import { matchingRequirementBranch, latestRequirementsFromSession } from "../../session/requirements-branch-selection";
+import { getCompletedTodoRows, getClosedTodoRows, getAcceptedTodoRows } from "../../tools/todo";
 import type { SessionManager } from "../../session/session-manager";
 import { countRequirements, type RequirementCounts } from "../../tools/requirements-ledger";
 
@@ -17,7 +18,21 @@ export function getRequirementHudCounts(sessionManager: RequirementHudSessionMan
 	const cached = requirementHudCountsCache.get(sessionManager);
 	if (cached?.leafId === leafId && cached.entryCount === entryCount) return cached.counts;
 
-	const counts = countRequirements(latestRequirementsFromSession(sessionManager));
+	const requirements = latestRequirementsFromSession(sessionManager);
+	const branch = requirements.some(r => r.classification === "linked")
+		? matchingRequirementBranch(
+				sessionManager,
+				entry =>
+					(entry.type === "custom" && entry.customType === "user_todo_edit") ||
+					(entry.type === "message" && entry.messageRole === "toolResult" && entry.toolName === "todo"),
+			)
+		: [];
+	const counts = countRequirements(
+		requirements,
+		getCompletedTodoRows(branch),
+		getClosedTodoRows(branch),
+		getAcceptedTodoRows(branch),
+	);
 
 	requirementHudCountsCache.set(sessionManager, { leafId, entryCount, counts });
 	return counts;

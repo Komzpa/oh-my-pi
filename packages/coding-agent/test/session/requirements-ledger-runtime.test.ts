@@ -1360,9 +1360,9 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 
 describe("completed row history publication replay", () => {
 	it.each([
-		["removed", false, 1],
-		["removed", true, 1],
-		["archive", true, 1],
+		["removed", false, 0],
+		["removed", true, 0],
+		["archive", true, 0],
 		["reopened", false, 1],
 		["abandoned", false, 1],
 		["open", false, 1],
