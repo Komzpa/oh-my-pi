@@ -22,10 +22,18 @@ export async function restartIsolation(child: LiveRestartSubagent): Promise<Rest
 	return {
 		id: child.id,
 		name: child.displayName,
-		row: peek.init.task?.split("\n", 1)[0],
+		row: restartRow(peek.init),
 		cwd: peek.cwd,
 		marker: path.join(path.dirname(child.sessionFile), `${child.id}.restart-isolation.json`),
 	};
+}
+
+/** The todo row a worker serves: the structured `row` when the runtime recorded one, else the packet's `Row:` line. */
+function restartRow(init: { task?: string }): string | undefined {
+	const recorded = (init as { row?: unknown }).row;
+	if (typeof recorded === "string" && recorded.trim()) return recorded;
+	const line = init.task?.split("\n").find(entry => /^Row:\s*\S/.test(entry));
+	return line?.replace(/^Row:\s*/, "").trim() ?? init.task?.split("\n", 1)[0];
 }
 
 /** A missing upstream is unsafe: a fresh isolated repository commonly has none. */
