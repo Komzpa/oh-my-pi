@@ -42,7 +42,7 @@ import {
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { summarizeUsageResetCredits } from "../overlays/usage-display";
 import { getPreset } from "./presets";
-import { describeSegment, renderSegment, type SegmentContext } from "./segments";
+import { currentWorkTitle, describeSegment, renderSegment, type SegmentContext } from "./segments";
 import { promptCacheBrief } from "./prompt-cache";
 import type { TspMeterMark, TspProps } from "@oh-my-pi/pi-wire";
 import type { NativeNode, NativeUiEvent } from "../native/node";
@@ -2900,7 +2900,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		target.tokenizerRef = this.session.agent?.tokenizer;
 		target.skillsRef = skills;
 		target.skillsLength = skills?.length ?? 0;
-		target.sessionName = this.session.sessionManager?.getSessionName?.();
+		target.sessionName = currentWorkTitle(this.session);
 		target.sessionId = this.session.sessionManager?.getSessionId?.();
 		target.isStreaming = this.session.isStreaming;
 		target.isAutoThinking = this.session.isAutoThinking;
