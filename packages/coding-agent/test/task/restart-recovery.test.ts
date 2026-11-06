@@ -1,3 +1,5 @@
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { asyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/async-job-views";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -11,6 +13,7 @@ import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { collectPendingToolCalls, SESSION_EXIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import {
 	captureSubagentsForRestart,
+	sendRootContinuationOnce,
 	restoreSubagentsAfterRestart,
 } from "@oh-my-pi/pi-coding-agent/task/restart-recovery";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
@@ -990,4 +993,71 @@ it("persists an unrevivable row as needing a worker with its previous transcript
 	expect(
 		persisted.getEntries().findLast(entry => entry.type === "custom" && entry.customType === "user_todo_edit"),
 	).toMatchObject({ data: { phases } });
+});
+
+it("reserves three restoring owners before revival and names their rows in the root continuation", async () => {
+	const cwd = makeTempDir("@pi-restaff-");
+	const { manager, file } = await createRootSession(cwd, path.join(cwd, "sessions"));
+	const root = makeTestSession(manager).session;
+	registerRoot(AgentRegistry.global(), root, file);
+	const children: Transcript[] = [];
+	for (let i = 0; i < 3; i++) {
+		const child = await createTranscript(cwd, file.slice(0, -6), { task: `row ${i}` });
+		children.push(child);
+		AgentRegistry.global().register({
+			id: child.id,
+			displayName: child.id,
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: makeTestSession(track(await SessionManager.open(child.sessionFile)), { streaming: true }).session,
+			sessionFile: child.sessionFile,
+			status: "running",
+		});
+	}
+	await captureSubagentsForRestart(root, { requestId: "restaff" });
+	await Promise.all([...managers].map(value => value.close()));
+	AgentLifecycleManager.resetGlobalForTests();
+	AgentRegistry.resetGlobalForTests();
+	IrcBus.resetGlobalForTests();
+	const successor = makeTestSession(track(await SessionManager.open(file))).session;
+	successor.getTodoPhases = () => [
+		{
+			name: "Work",
+			tasks: children.map((child, i) => ({
+				content: `row ${i}`,
+				status: "in_progress",
+				schedule: { owner: child.id },
+			})),
+		},
+	];
+	registerRoot(AgentRegistry.global(), successor, file);
+	const release = Promise.withResolvers<void>();
+	AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+		async ref => async () => {
+			await release.promise;
+			return makeTestSession(track(await SessionManager.open(ref.sessionFile!)), { streaming: true }).session;
+		},
+		() => 0,
+	);
+	const jobs = new AsyncJobManager({});
+	const restoring = restoreSubagentsAfterRestart(successor, { requestId: "restaff" });
+	const during = asyncJobSnapshot(jobs, MAIN_AGENT_ID).nonJobAgents;
+	release.resolve();
+	const report = await restoring;
+	expect(
+		during
+			?.filter(agent => agent.live)
+			.map(agent => agent.id)
+			.sort(),
+	).toEqual(children.map(child => child.id).sort());
+	let body = "";
+	vi.spyOn(IrcBus.global(), "send").mockImplementation(async message => {
+		body = message.body;
+		return { to: message.to, outcome: "woken" };
+	});
+	await sendRootContinuationOnce(successor, "restaff", report);
+	for (let i = 0; i < 3; i++) expect(body).toContain(`${children[i]!.id} → row ${i}`);
+	expect(body).toContain("3 workers restored and running");
+	expect(body).toContain("do not re-dispatch them");
+	await jobs.dispose();
 });
