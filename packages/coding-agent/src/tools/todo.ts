@@ -535,8 +535,26 @@ export function shouldPersistTodoFullSnapshotCheckpoint(entriesNewestFirst: Iter
 	return true;
 }
 
+// HUD sync asks for the identity on every subagent progress event; a full replay copies every
+// todo edit on the branch (5 s of a 30 s live DC profile). The answer only changes when the
+// selected todo entries change, so reuse it while the same newest entry and count are selected.
+const latestTodoSnapshotIdentityCache = new WeakMap<
+	SessionEntry,
+	{ first: SessionEntry; length: number; identity: TodoSnapshotIdentity | undefined }
+>();
+
 /** Identify the latest durable canonical todo snapshot on the active branch. */
 export function getLatestTodoSnapshotIdentity(entries: SessionEntry[]): TodoSnapshotIdentity | undefined {
+	const last = entries.at(-1);
+	if (!last) return undefined;
+	const cached = latestTodoSnapshotIdentityCache.get(last);
+	if (cached && cached.first === entries[0] && cached.length === entries.length) return cached.identity;
+	const identity = computeLatestTodoSnapshotIdentity(entries);
+	latestTodoSnapshotIdentityCache.set(last, { first: entries[0]!, length: entries.length, identity });
+	return identity;
+}
+
+function computeLatestTodoSnapshotIdentity(entries: SessionEntry[]): TodoSnapshotIdentity | undefined {
 	let latest: TodoPhase[] | undefined;
 	let mutable = false;
 	let sourceEntryId: string | undefined;
