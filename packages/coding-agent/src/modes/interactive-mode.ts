@@ -481,7 +481,8 @@ import {
 	cfgCompactionIdleTimeoutSeconds,
 	cfgCompactionMethodOrder,
 } from "../session/context-settings";
-import { getLatestRequirements, REQUIREMENTS_LEDGER_CUSTOM_TYPE } from "../tools/requirements-ledger";
+import { latestRequirementsFromSession } from "../session/requirements-branch-selection";
+import { REQUIREMENTS_LEDGER_CUSTOM_TYPE } from "../tools/requirements-ledger";
 import { getRequirementHudCounts } from "./utils/requirement-hud-counts";
 
 /**
@@ -2699,7 +2700,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			const owner = this.#todoPhasesOwner ?? this.session;
 			// Ledger plans require artifact verification. Worker observations may
 			// repaint them, but cannot authorize completion or journal writes.
-			const ledgerPlan = getLatestRequirements(owner.sessionManager.getBranch()).length > 0;
+			// Runs on every worker frame: select the ledger entry by metadata instead of
+			// hydrating the whole branch (3.8 s of a 30 s live DC profile, 2026-11-06).
+			const ledgerPlan = latestRequirementsFromSession(owner.sessionManager).length > 0;
 			this.#scheduleObserverUiSync(ledgerPlan ? "progress" : kind);
 		});
 		// `/pause` stops the live-preview tick (the fullscreen pause screen covers

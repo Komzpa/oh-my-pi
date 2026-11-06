@@ -90,3 +90,29 @@ it("refreshes HUD counts from a session handle without selective history methods
 	});
 	expect(getRequirementHudCounts(manager)).toEqual({ total: 1, passed: 0, failed: 0, legacyUnverified: 0, open: 1 });
 });
+
+// The interactive observer listener runs on every worker frame; it must decide the
+// plan display from the newest ledger entry, never by hydrating the branch
+// (3.8 s of a 30 s live DC profile on a 2 GB journal, 2026-11-06).
+it("observer plan probe reads only the newest ledger and never the whole branch", async () => {
+	const { latestRequirementsFromSession } = await import("../src/session/requirements-branch-selection");
+	let decoded = 0;
+	const manager = {
+		getBranch: () => {
+			throw new Error("observer frame must not hydrate the branch");
+		},
+		*iterateBranchMatchingNewestFirst(predicate: (entry: { type: string; customType?: string }) => boolean) {
+			expect(predicate({ type: "message" })).toBe(false);
+			expect(predicate({ type: "custom", customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE })).toBe(true);
+			decoded++;
+			yield {
+				type: "custom",
+				customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+				data: { version: 1, requirements: createRequirementCandidates([], ["plan"], "2026-11-06T00:00:00Z") },
+			};
+			throw new Error("older ledgers must not be decoded");
+		},
+	} as unknown as SessionManager;
+	for (let frame = 0; frame < 100; frame++) expect(latestRequirementsFromSession(manager).length).toBe(1);
+	expect(decoded).toBe(100);
+});
