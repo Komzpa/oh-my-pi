@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { createMockModel, type MockResponse, type MockResponseSource } from "@oh-my-pi/pi-ai/providers/mock";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -55,6 +56,7 @@ describe("AgentSession restart queue round trip", () => {
 		responses: MockResponseSource = [],
 		modelInputs?: string[],
 		tools: AgentTool[] = [],
+		asyncJobManager?: AsyncJobManager,
 	): AgentSession {
 		const mock = createMockModel({ responses });
 		const agent = new Agent({
@@ -75,6 +77,7 @@ describe("AgentSession restart queue round trip", () => {
 			agent,
 			sessionManager: manager,
 			settings: Settings.isolated({ "compaction.enabled": false }),
+			asyncJobManager,
 			modelRegistry,
 		});
 	}
@@ -144,6 +147,98 @@ describe("AgentSession restart queue round trip", () => {
 		session = createSession(sessionManager, responses, modelInputs);
 		return session;
 	}
+
+	it("wakes a restored idle root within one second with owner input first despite background work", async () => {
+		appendPriorAssistant(currentManager());
+		session = createSession(currentManager());
+		const lease = session.beginRestartDrain();
+		session.agent.steer({ role: "user", content: "owner after restart", timestamp: Date.now() });
+		await lease.waitForQuiescence();
+		const file = currentManager().getSessionFile()!;
+		await session.dispose();
+		session = undefined;
+		sessionManager = await SessionManager.open(file, tempDir.path());
+		const jobs = new AsyncJobManager({});
+		const background = Promise.withResolvers<string>();
+		jobs.register("bash", "background worker", () => background.promise, { ownerId: "Main" });
+		jobs.registerDeliverySink("Main", () => {});
+		const inputs: string[] = [];
+		try {
+			session = createSession(currentManager(), [{ content: ["received"] }], inputs, [], jobs);
+			const start = Date.now();
+			while (inputs.length === 0 && Date.now() - start < 950) await Bun.sleep(5);
+			expect(inputs).toHaveLength(1);
+			expect(session.hasPendingAsyncWork()).toBe(true);
+			expect(JSON.parse(inputs[0])[1]).toMatchObject({ role: "user", content: "owner after restart" });
+			await session.waitForIdle();
+		} finally {
+			background.resolve("done");
+			await jobs.waitForAll();
+		}
+	});
+
+	it("injects steering behind a runtime notice before an independently started turn's first call", async () => {
+		appendPriorAssistant(currentManager());
+		currentManager().appendCustomEntry("omp:restart-pending-queues", {
+			steering: [
+				{ ...hiddenNextTurnMessage("runtime status"), customType: "runtime-status" },
+				{ role: "user", content: "owner must be seen first", timestamp: Date.now() },
+				{ role: "user", content: "second owner input", timestamp: Date.now() },
+			],
+			followUp: [],
+			pendingNextTurn: [],
+		});
+		const inputs: string[] = [];
+		session = createSession(currentManager(), [{ content: ["received"] }, { content: ["second received"] }], inputs);
+		await session.promptCustomMessage({ customType: "todo-plan-check", content: "all rows WAIT", display: false });
+		await session.waitForIdle();
+		expect(inputs[0]).toContain("owner must be seen first");
+		expect(inputs[0]).not.toContain("second owner input");
+		expect(inputs[1]).toContain("second owner input");
+		expect(
+			currentManager()
+				.getEntries()
+				.flatMap(entry =>
+					entry.type === "message" && entry.message.role === "user" ? [entry.message.content] : [],
+				),
+		).toEqual(["owner must be seen first", "second owner input"]);
+		expect(session.agent.hasQueuedMessages()).toBe(false);
+	});
+
+	it("bounds restored and newly queued hidden runtime backlog without dropping owner messages", async () => {
+		const backlog = Array.from({ length: 251 }, (_, i) => hiddenNextTurnMessage(`old gate ${i}`));
+		const owner = { ...hiddenNextTurnMessage("owner instruction"), attribution: "user" as const };
+		appendPriorAssistant(currentManager());
+		currentManager().appendCustomEntry("omp:restart-pending-queues", {
+			steering: [],
+			followUp: [],
+			pendingNextTurn: [owner, ...backlog],
+		});
+		const inputs: string[] = [];
+		session = createSession(currentManager(), [{ content: ["received"] }], inputs);
+		const lease = session.beginRestartDrain();
+		await lease.waitForQuiescence();
+		const restoredCheckpoint = restartQueueCheckpoints(currentManager()).at(-1);
+		const restoredData = (restoredCheckpoint?.type === "custom" ? restoredCheckpoint.data : undefined) as {
+			pendingNextTurn: AgentMessage[];
+		};
+		expect(restoredData.pendingNextTurn).toHaveLength(33);
+		for (let i = 0; i < 251; i++) session.queueDeferredMessage(hiddenNextTurnMessage(`new gate ${i}`));
+		await lease.waitForQuiescence();
+		const checkpoint = restartQueueCheckpoints(currentManager()).at(-1);
+		const pending = (checkpoint?.type === "custom" ? checkpoint.data : undefined) as {
+			pendingNextTurn: AgentMessage[];
+		};
+		expect(pending.pendingNextTurn).toHaveLength(33);
+		expect(pending.pendingNextTurn[0]).toMatchObject(owner);
+		lease.release();
+		await session.waitForIdle();
+		await session.prompt("consume backlog");
+		expect(inputs[0]).toContain("owner instruction");
+		expect(inputs[0]).toContain("new gate 250");
+		expect(inputs[0]).not.toContain("old gate 0");
+		expect(inputs[0]).not.toContain("new gate 0");
+	});
 
 	it.each(["steering", "followUp"] as const)(
 		"cancels a restored %s drain without a role error and delivers it on retry",
