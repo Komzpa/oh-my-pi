@@ -139,6 +139,7 @@ function cases(now: number): Case[] {
 	}
 	const failed = change(delivered);
 	failed.schedule!.audit = {
+		agent: schedule.TODO_ROW_AUDITOR,
 		delivery: schedule.todoRowDeliveryKey(failed.schedule),
 		repoPath: "/fixture",
 		head: "abc1234",
@@ -149,6 +150,7 @@ function cases(now: number): Case[] {
 	output.push({ id: "audit-fail", row: failed, state: "needs worker", expected: dispatch(failed) });
 	const moved = change(delivered);
 	moved.schedule!.audit = {
+		agent: schedule.TODO_ROW_AUDITOR,
 		delivery: schedule.todoRowDeliveryKey(moved.schedule),
 		repoPath: "/fixture",
 		head: "old1234",
@@ -347,8 +349,8 @@ async function capture(item: Case): Promise<LeadInstructionScenario> {
 			context: [
 				todoDescription,
 				...(item.userMessage ? [item.userMessage] : []),
-				...messages.map(message => message.content),
 				view,
+				...messages.map(message => message.content),
 			].join("\n\n"),
 		};
 	} finally {
