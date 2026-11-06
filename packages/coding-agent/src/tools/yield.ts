@@ -272,7 +272,6 @@ function withSectionVariants(dataSchema: Record<string, unknown>): Record<string
 }
 
 function wrapWorkPoolYieldParameters(items: readonly WorkPoolYieldItem[]): Record<string, unknown> {
-	void items; // Item membership is validated at execution; the provider schema stays reusable.
 	return {
 		type: "object",
 		additionalProperties: false,
