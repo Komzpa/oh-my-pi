@@ -203,11 +203,7 @@ export function buildSessionData(sm: SessionManager, state?: AgentState): Sessio
 
 /** All trace transcripts next to `sessionFile`, with export-only header fields stripped. */
 async function collectExportSubSessions(sessionFile: string): Promise<Record<string, SubSession>> {
-	const subSessions = await collectSubSessions(sessionFile, {
-		purpose: "export",
-		includeAdvisors: true,
-		includeCompressed: true,
-	});
+	const subSessions = await collectSubSessions(sessionFile, { includeAdvisors: true, includeCompressed: true });
 	for (const sub of Object.values(subSessions)) sub.header = sessionHeaderForExport(sub.header);
 	return subSessions;
 }

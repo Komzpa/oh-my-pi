@@ -112,7 +112,7 @@ async function collectSubSessionsFromDir(
 		if (compressed && fileNames.has(transcriptName)) continue;
 		const agentId = transcriptName.slice(0, -6);
 		const key = parentKey ? `${parentKey}/${agentId}` : agentId;
-		const loaded = await (options.purpose !== "export"
+		const loaded = await (options.purpose !== "export" && !options.includeAdvisors && !options.includeCompressed
 			? loadSessionRestoreSummary(path.join(dir, name))
 			: loadCollectedSession(path.join(dir, name)));
 		if (!loaded) continue;
