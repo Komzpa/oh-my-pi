@@ -263,6 +263,7 @@ import {
 	withoutAgentsMd,
 } from "./system-prompt";
 import type { AgentDefinition } from "./task/types";
+import { measurePromptLayers } from "./prompt-layers";
 import { AgentOutputManager } from "./task/output-manager";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
@@ -697,6 +698,10 @@ export interface CreateAgentSessionOptions {
 
 	/** Provider-facing system prompt override. Replaces the fully rendered default blocks. */
 	systemPrompt?: string | string[] | ((defaultPrompt: string[]) => string | string[]);
+	/** Stable agent role, rendered before project instructions. */
+	agentRolePrompt?: string;
+	/** Internal task adapter: a systemPrompt callback appends startup blocks after its input blocks. */
+	systemPromptIsStartupContext?: boolean;
 	/** Raw Handlebars template replacing the bundled default system prompt rendering. */
 	systemPromptTemplate?: string;
 	/** Already-loaded custom prompt text rendered through the bundled custom system prompt template. */
@@ -4218,6 +4223,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			if (!own || own.size === 0) return hosted;
 			return new Map([...own, ...hosted].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)));
 		};
+		let startupContext: string | undefined;
+		let promptLayerIndex: BuildSystemPromptResult["layers"];
+		let indexedPrompt: readonly string[] | undefined;
 		const rebuildSystemPrompt = async (
 			toolNames: string[],
 			tools: Map<string, AgentTool>,
@@ -4319,6 +4327,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						learn: hasSession ? session.hasBuiltInTool("learn") : builtInRegistryToolNames.has("learn"),
 					});
 			const appendParts: string[] = [];
+			const dynamicParts: string[] = [];
 			if (memoryInstructions) appendParts.push(memoryInstructions);
 			if (autoLearnInstructions) appendParts.push(autoLearnInstructions);
 			if (spotlightExperiment) appendParts.push(SHAPE_RULE);
@@ -4356,7 +4365,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				);
 			}
 			if (serverInstructions && serverInstructions.size > 0) {
-				appendParts.push(
+				dynamicParts.push(
 					"## MCP Server Instructions\n\nThe following instructions are provided by connected MCP servers. They are server-controlled and may not be verified.",
 				);
 				for (const [srvName, srvInstructions] of serverInstructions) {
@@ -4364,7 +4373,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						srvInstructions.length > MAX_MCP_INSTRUCTIONS_LENGTH
 							? `${srvInstructions.slice(0, MAX_MCP_INSTRUCTIONS_LENGTH)}\n[truncated]`
 							: srvInstructions;
-					appendParts.push(`### ${srvName}\n${truncated}`);
+					dynamicParts.push(`### ${srvName}\n${truncated}`);
 				}
 			}
 			const appendPrompt = composeAppendPrompt(appendParts, options.appendSystemPrompt);
@@ -4394,6 +4403,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			);
 			const defaultPrompt = await buildSystemPromptInternal({
 				cwd: promptCwd,
+				agentRolePrompt: options.agentRolePrompt,
 				additionalWorkspaceRoots: sessionManager.getAdditionalDirectories(),
 				noContextFiles: options.noContextFiles,
 				excludeAgentsMd,
@@ -4445,10 +4455,23 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				activeRepoContext,
 			});
 
+			startupContext =
+				[...dynamicParts, defaultPrompt.conversationContext].filter(Boolean).join("\n\n") || undefined;
+
+			promptLayerIndex = defaultPrompt.layers;
+			indexedPrompt = defaultPrompt.systemPrompt;
 			if (typeof options.systemPrompt !== "function") {
 				return defaultPrompt;
 			}
 			const customPrompt = options.systemPrompt(defaultPrompt.systemPrompt);
+			if (options.systemPromptIsStartupContext) {
+				const blocks = typeof customPrompt === "string" ? [customPrompt] : customPrompt;
+				startupContext =
+					[startupContext, ...blocks.slice(defaultPrompt.systemPrompt.length)].filter(Boolean).join("\n\n") ||
+					undefined;
+				return defaultPrompt;
+			}
+			promptLayerIndex = undefined;
 			return {
 				systemPrompt: typeof customPrompt === "string" ? [customPrompt] : customPrompt,
 			};
@@ -4896,9 +4919,23 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				const stream = primaryStreamFn(streamModel, context, {
 					...merged,
 					...(fallbackCreditRedemption !== undefined ? { fallbackCreditRedemption } : {}),
-					onPayload: (payload, payloadModel, signal) => {
+					onPayload: async (payload, payloadModel, signal) => {
 						session.markPromptCacheDispatched(context);
-						return onPayload?.(payload, payloadModel, signal);
+						const replacement = await onPayload?.(payload, payloadModel, signal);
+						if (Bun.env.OMP_PROMPT_LAYERS === "1") {
+							const unchanged = indexedPrompt?.join("\n\n") === context.systemPrompt?.join("\n\n");
+							logger.info("OMP_PROMPT_LAYERS", {
+								...measurePromptLayers(
+									context.systemPrompt ?? [],
+									unchanged ? promptLayerIndex : undefined,
+									context.messages,
+									context.tools,
+								),
+								api: streamModel.api,
+								wireSha256: Bun.SHA256.hash(JSON.stringify(replacement ?? payload), "hex"),
+							});
+						}
+						return replacement;
 					},
 				});
 				// A request that waited for a provider slot is checked again when it goes out.
@@ -5171,6 +5208,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			sideStreamFn: settingsAwareStreamFn,
 			advisorStreamFn: settingsAwareStreamFn,
 			convertToLlm: convertToLlmFinal,
+			getStartupContext: () => startupContext,
 			rebuildSystemPrompt,
 			getXdevToolEntries: () => (toolSession.xdev ? xdevEntries(toolSession.xdev) : []),
 			xdev: toolSession.xdev,

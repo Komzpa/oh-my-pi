@@ -20,6 +20,8 @@
 
 ### Fixed
 
+- Cache the complete stable project prompt on Anthropic while retaining the shared cross-project prefix ([#166](https://github.com/Komzpa/oh-my-pi/pull/166) by [@Komzpa](https://github.com/Komzpa)).
+
 - Fixed account switching stopping at rate-limited accounts; other eligible stored accounts are now tried first
 - Fixed OpenRouter Decisions judges ignoring `compat.openRouterRouting` and `compat.extraBody`, including `@provider` pins ([#18140](https://github.com/can1357/oh-my-pi/issues/18140))
 - OAuth broker now validates residency, inference-region, and selected-organization metadata in uploaded credentials and remote snapshots

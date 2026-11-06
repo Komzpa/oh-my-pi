@@ -4088,6 +4088,8 @@ function buildSubagentSessionOptions(
 		expectedAgentRef,
 		resolveServiceTierByFamily: launch?.resolveServiceTierByFamily,
 		onFirstChatDispatch: launch?.onFirstChatDispatch,
+		agentRolePrompt: inputs.agentSystemPrompt,
+		systemPromptIsStartupContext: true,
 		// A launch prompts its assignment only after setup; a revive's turns are its IRC wakes.
 		awaitingAssignment: launch !== undefined,
 		systemPrompt: defaultPrompt => {
