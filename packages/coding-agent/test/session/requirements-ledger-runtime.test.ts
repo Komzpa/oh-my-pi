@@ -83,6 +83,7 @@ function fixture(
 	let gate: RequirementPublicationGate | undefined;
 	const notices: string[] = [];
 	const auditStatuses: Array<string | undefined> = [];
+	const runningWorkers = new Set<string>();
 	const runtime = new RequirementsLedgerRuntime({
 		agent: {} as never,
 		agentKind: () => "main",
@@ -92,13 +93,103 @@ function fixture(
 		queueModelNotice: (notice: string) => {
 			notices.push(notice);
 		},
+		runningWorkerIds: () => [...runningWorkers],
 		setAuditStatus: text => auditStatuses.push(text),
 		setPublicationGate: next => {
 			gate = next;
 		},
 	});
-	return { cwd, manager, runtime, notices, auditStatuses, gate: () => gate };
+	return { cwd, manager, runtime, notices, auditStatuses, runningWorkers, gate: () => gate };
 }
+
+describe("auditor capacity follows live workers", () => {
+	async function dispatch(runtime: RequirementsLedgerRuntime, id: string) {
+		await runtime.prepareAuditorTaskCall("task", id, {
+			name: "main",
+			agent: "qa-auditor",
+			task: "Audit R1",
+			requirementIds: ["R1"],
+		});
+		await runtime.afterToolCall({
+			toolCall: { id, name: "task" },
+			result: { content: [], details: { progress: [{ index: 0, agent: "qa-auditor", id }] } },
+			isError: false,
+		} as never);
+	}
+	const batch = (count: number) => ({
+		tasks: Array.from({ length: count }, (_, index) => ({
+			name: `audit-${index}`,
+			agent: "qa-auditor",
+			task: "Audit R1",
+			requirementIds: ["R1"],
+		})),
+	});
+
+	it("17 stale assignments and one live auditor admit three; refusal identifies only live auditors", async () => {
+		const { cwd, runtime, runningWorkers } = fixture();
+		try {
+			for (let index = 0; index < 17; index++) await dispatch(runtime, `stale-${index}`);
+			await dispatch(runtime, "live-auditor");
+			runningWorkers.add("live-auditor");
+			runningWorkers.add("unrelated-coder");
+			expect(await runtime.prepareAuditorTaskCall("task", "three", batch(3))).toMatchObject({
+				tasks: expect.any(Array),
+			});
+			await expect(runtime.prepareAuditorTaskCall("task", "four", batch(4))).rejects.toThrow(
+				"1 active: live-auditor",
+			);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("killing an auditor releases capacity and its delayed completed receipt still records a verdict", async () => {
+		const { cwd, manager, runtime, runningWorkers } = fixture();
+		try {
+			await dispatch(runtime, "killed-auditor");
+			runningWorkers.add("killed-auditor");
+			await expect(runtime.prepareAuditorTaskCall("task", "full", batch(4))).rejects.toThrow("killed-auditor");
+			runningWorkers.delete("killed-auditor");
+			expect(await runtime.prepareAuditorTaskCall("task", "released", batch(4))).toMatchObject({
+				tasks: expect.any(Array),
+			});
+			const head = git(cwd, "rev-parse", "HEAD");
+			await runtime.consumeAsyncResult({
+				role: "custom",
+				customType: ASYNC_RESULT_MESSAGE_TYPE,
+				attribution: "agent",
+				content: `<task-result id="killed-auditor" agent="qa-auditor" status="completed"><output>${JSON.stringify({ report: receiptTable(gitIdentity(cwd, head)) })}</output></task-result>`,
+				details: { jobs: [{ type: "task", jobId: "killed-auditor", agentId: "killed-auditor" }] },
+			});
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("pass");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("restart reserves capacity only for surviving workers, deduplicating worker sources", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			await dispatch(runtime, "dead-before-restart");
+			await dispatch(runtime, "survivor");
+			const restored = new RequirementsLedgerRuntime({
+				agent: {} as never,
+				agentKind: () => "main",
+				cwd: () => cwd,
+				sessionManager: manager,
+				onSettledAssistantMessage: () => {},
+				setPublicationGate: () => {},
+				runningWorkerIds: () => ["survivor", "survivor", "coder"],
+			});
+			expect(await restored.prepareAuditorTaskCall("task", "three", batch(3))).toMatchObject({
+				tasks: expect.any(Array),
+			});
+			await expect(restored.prepareAuditorTaskCall("task", "four", batch(4))).rejects.toThrow("1 active: survivor");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
 
 // A long session can contain thousands of obsolete snapshots. Restoring pending
 // work needs the newest valid ledger and the newest assignment for this session.

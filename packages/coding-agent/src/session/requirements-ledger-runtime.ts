@@ -257,6 +257,8 @@ export interface RequirementsLedgerRuntimeHost {
 	queueModelNotice?(notice: string): void | Promise<void>;
 	setTodoPhases?(phases: TodoPhase[]): void;
 	maxRequirementAuditors?(): number;
+	/** Worker ids from the live task jobs and subagent registry used by the HUD. */
+	runningWorkerIds?(): readonly string[];
 	setAuditStatus?(text: string | undefined): void;
 	setPublicationGate?(gate: RequirementPublicationGate | undefined): void;
 }
@@ -555,11 +557,14 @@ export class RequirementsLedgerRuntime {
 		this.#restorePendingAuditors();
 		const limit = this.#host.maxRequirementAuditors?.() ?? 4;
 		const requested = items.filter(item => isRecord(item) && item.agent === "qa-auditor").length;
-		const active =
-			this.#pendingAuditors.size + [...this.#auditCalls.values()].reduce((sum, calls) => sum + calls.length, 0);
+		// Assignments authenticate late receipts; they are not worker-liveness records.
+		// In particular, restoring one after restart must not reserve a slot.
+		const running = this.#host.runningWorkerIds?.() ?? [];
+		const activeIds = [...new Set(running)].filter(id => this.#resolvePendingAuditorKey(id) !== undefined);
+		const active = activeIds.length;
 		if (requested && active + requested > limit)
 			throw new Error(
-				`Requirement audits allow at most ${limit} concurrent auditors (${active} active). Group rows sharing a checkout/area in one auditor; wait for active audits before dispatching more.`,
+				`Requirement audits allow at most ${limit} concurrent auditors (${active} active: ${activeIds.join(", ") || "none"}). Group rows sharing a checkout/area in one auditor; wait for active audits before dispatching more.`,
 			);
 		const revised = [...items];
 		const assignments: RequirementAuditAssignment[] = [];

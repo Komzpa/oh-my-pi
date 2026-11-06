@@ -2769,6 +2769,17 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#agentKind = config.agentKind ?? "main";
 		this.#requirementsLedger = new RequirementsLedgerRuntime({
 			maxRequirementAuditors: () => cfgRequirementAuditors.get(this.settings),
+			runningWorkerIds: () => {
+				const registry = this.#agentRegistry ?? AgentRegistry.global();
+				const ids = registry
+					.list()
+					.filter(ref => ref.kind === "sub" && registry.isRunning(ref))
+					.map(ref => ref.id);
+				for (const job of this.#asyncJobManager?.getRunningJobs() ?? []) {
+					if (job.type === "task") ids.push(job.agentId ?? job.id);
+				}
+				return ids;
+			},
 			agent: this.agent,
 			agentKind: () => this.#agentKind,
 			cwd: () => this.sessionManager.getCwd(),
