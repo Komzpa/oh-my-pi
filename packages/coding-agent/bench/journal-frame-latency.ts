@@ -147,6 +147,7 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 			value &&
 			typeof value === "object" &&
 			("phases" in value ||
+				("content" in value && "status" in value) ||
 				(Array.isArray(value) && value.some(phase => phase && typeof phase === "object" && "tasks" in phase)))
 		)
 			totalPlanClones++;
