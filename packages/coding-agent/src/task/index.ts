@@ -161,6 +161,7 @@ export {
 } from "./types";
 
 interface TaskDescriptionOptions {
+	catalogOnly?: boolean;
 	agents: AgentDefinition[];
 	isolationEnabled: boolean;
 	applyIsolatedChanges: boolean;
@@ -177,7 +178,6 @@ interface TaskDescriptionOptions {
 	planMode: boolean;
 	asyncGuidance: string;
 	parentSpawns: string;
-	catalogOnly?: boolean;
 }
 
 /** Plan mode hides seance; a `spawns` list led by it defaults to the next permitted agent. */
