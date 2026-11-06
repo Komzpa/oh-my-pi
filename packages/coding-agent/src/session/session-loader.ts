@@ -703,7 +703,6 @@ export async function visitSessionFileForResume(
 					const sanitized = sanitizeRehydratedOpenAIResponsesAssistantMessage(entry.message);
 					if (sanitized !== entry.message) {
 						entry.message = sanitized;
-						migrated = true;
 					}
 				}
 				const position: PositionedSessionEntry = {
