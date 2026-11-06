@@ -1,5 +1,6 @@
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { TodoDisplayRequirement } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { type BranchSource, selectLatestBranchEntry } from "../session/branch-selection";
 import type { SessionEntry } from "../session/session-entries";
 
 /** Read the ledger's durable wire projection without depending on an extension implementation. */
@@ -48,4 +49,28 @@ export function readTodoDisplayLedger(
 			for (const row of job.rows) if (typeof row === "string") auditors.set(row, job.workerId);
 		}
 	return { requirements: ledger === undefined ? undefined : requirements, auditors };
+}
+
+interface DisplayLedgerSource extends BranchSource {
+	getLeafId(): string | null;
+}
+const displayEntries = new WeakMap<DisplayLedgerSource, { leaf: string | null; entries: SessionEntry[] }>();
+
+/** Keep HUD refreshes off the full journal; only the latest two snapshots matter. */
+export function readTodoDisplayLedgerFromManager(manager: DisplayLedgerSource, liveWorkerIds?: ReadonlySet<string>) {
+	const leaf = manager.getLeafId();
+	let cached = displayEntries.get(manager);
+	if (!cached || cached.leaf !== leaf) {
+		const entries: SessionEntry[] = [];
+		for (const customType of ["requirements_ledger", "requirements_auditor_assignments"]) {
+			const entry = selectLatestBranchEntry(
+				manager,
+				metadata => metadata.type === "custom" && metadata.customType === customType,
+			);
+			if (entry) entries.push(entry);
+		}
+		cached = { leaf, entries };
+		displayEntries.set(manager, cached);
+	}
+	return readTodoDisplayLedger(cached.entries, liveWorkerIds);
 }

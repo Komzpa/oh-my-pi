@@ -2284,9 +2284,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const deliveryKey = (row) => JSON.stringify([row.content, row.schedule?.executor?.workerId, row.schedule?.executor?.startedAt, row.schedule?.executor?.finishedAt]);
   const checkDeliveries = (ctx: ExtensionContext) => {
     if (!isMain(ctx)) return;
+    const previews = previewRecords(ctx);
     for (const phase of todoPhases(ctx)) for (const row of phase.tasks) {
       if (row.schedule?.deliveryCritic || !priorDeliveries.has(deliveryKey(row)))
-        queueDeliveryCritic(ctx, row, "", options.deliveryCriticRecord, Date.now(), previewRecords(ctx).find(record => record.task === row.content)?.previewPath);
+        queueDeliveryCritic(ctx, row, "", options.deliveryCriticRecord, Date.now(), previews.find(record => record.task === row.content)?.previewPath);
     }
   };
   const singleWriterLane = process.env.OMP_LANE_UNIT !== undefined;
