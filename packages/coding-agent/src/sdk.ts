@@ -3797,6 +3797,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					row.status = "pending";
 					row.blocker = undefined;
 				}
+				// A passing runtime audit of the delivered run is the row's done receipt.
+				if (patch.audit?.verdict === "pass" && (row.status === "pending" || row.status === "in_progress")) {
+					row.status = "completed";
+					row.blocker = undefined;
+					row.schedule.finishedAt ??= Date.now();
+				}
 				// The callback merges into fresh hydrated state synchronously. A canonical
 				// append-only snapshot keeps extension annotations on the normal resume path.
 				sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
