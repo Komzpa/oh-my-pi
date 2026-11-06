@@ -31,6 +31,7 @@ import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from
 import { installSqliteLockShim } from "@oh-my-pi/pi-natives/sqlite-locks";
 import { isNativeShell, runNativeShell } from "./cli/native-shell";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
+import { bootstrapJitDebugInfo } from "./cli/jit-bootstrap";
 import {
 	AUTO_UPDATE_WORKER_ARG,
 	BLOB_BROKER_WORKER_ARG,
@@ -71,6 +72,7 @@ if (process.platform !== "win32") {
 // CLI builds are unaffected. A compiled binary's entry module is by definition
 // the process entry, so the define-folded PI_COMPILED marker stands in.
 const isProcessEntry = import.meta.main || process.env.PI_COMPILED === "true";
+if (isProcessEntry) bootstrapJitDebugInfo(process.env.PI_COMPILED === "true");
 
 /**
  * Worker inboxes must attach before this entry module reaches its first await,

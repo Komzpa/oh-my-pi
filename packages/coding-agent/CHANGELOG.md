@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Preserve JavaScript function names for debugger attachment to a stuck Linux CLI ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Avoid copying archived TODO rows on worker lifecycle updates and plan reads ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep worker billing and terminal titles responsive in sessions with many finished agents ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
