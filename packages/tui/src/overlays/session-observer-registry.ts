@@ -18,6 +18,8 @@ export interface SubagentProgressPayload {
 	sessionFile?: string;
 	/** See {@link SubagentLifecyclePayload.detached}. */
 	detached?: boolean;
+	/** Activity in a kept-alive session; never a new row executor run. */
+	followUpTurn?: boolean;
 }
 
 /** Payload emitted on TASK_SUBAGENT_LIFECYCLE_CHANNEL */
@@ -43,6 +45,8 @@ export interface SubagentLifecyclePayload {
 	 * unset — surfaces like the subagent HUD only list detached spawns.
 	 */
 	detached?: boolean;
+	/** Activity in a kept-alive session; never a new row executor run. */
+	followUpTurn?: boolean;
 }
 
 /** Minimal event subscription surface supplied by the host. */

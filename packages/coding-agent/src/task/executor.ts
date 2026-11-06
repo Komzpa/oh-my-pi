@@ -1289,6 +1289,7 @@ const MAX_YIELD_TOOL_ERRORS = 6;
 
 /** Inputs for the run monitor driving one subagent assignment. */
 interface RunMonitorArgs {
+	followUpTurn?: boolean;
 	index: number;
 	id: string;
 	agent: AgentDefinition;
@@ -1696,6 +1697,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			task,
 			parentToolCallId: args.parentToolCallId,
 			detached: args.detached,
+			followUpTurn: args.followUpTurn,
 			assignment,
 			progress: { ...progress },
 			sessionFile: args.sessionFile,
@@ -3057,6 +3059,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		resolvedThinkingLevel: progress.resolvedThinkingLevel,
 		parentToolCallId: args.parentToolCallId,
 		detached: args.detached,
+		followUpTurn: args.followUpTurn,
 		agentSource: agent.source,
 		description: progress.description,
 		taskText: assignment ?? task,
@@ -3409,6 +3412,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			subagentEventBus: options.subagentEventBus,
 			parentToolCallId: options.parentToolCallId,
 			detached: true,
+			followUpTurn: true,
 			sessionFile,
 			softRequestBudget,
 			softRequestBudgetNotice,
@@ -3428,6 +3432,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			at: Date.now(),
 			parentToolCallId: options.parentToolCallId,
 			detached: true,
+			followUpTurn: true,
 			agentSource: agent.source,
 			description: options.description,
 			taskText: ircTask,
@@ -3932,6 +3937,7 @@ async function driveFollowUpTurn(
 		subagentEventBus: options.subagentEventBus,
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
+		followUpTurn: true,
 		sessionFile,
 		softRequestBudget,
 		softRequestBudgetNotice,
@@ -3945,6 +3951,7 @@ async function driveFollowUpTurn(
 		at: Date.now(),
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
+		followUpTurn: true,
 		agentSource: agent.source,
 		description: options.description,
 		taskText: message,

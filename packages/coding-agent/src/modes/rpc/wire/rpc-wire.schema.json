@@ -4929,6 +4929,9 @@
 				"index": {
 					"type": "integer"
 				},
+				"followUpTurn": {
+					"type": "boolean"
+				},
 				"at": {
 					"type": "number",
 					"description": "Wall clock of the emitted lifecycle transition, in Unix milliseconds."
@@ -4987,6 +4990,9 @@
 					"properties": {},
 					"additionalProperties": {},
 					"description": "Raw `AgentProgress` record."
+				},
+				"followUpTurn": {
+					"type": "boolean"
 				},
 				"parentToolCallId": {
 					"type": "string"

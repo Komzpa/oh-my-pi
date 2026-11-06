@@ -279,6 +279,7 @@ export interface AgentProgress {
 }
 
 export interface SubagentProgressPayload {
+	followUpTurn?: boolean;
 	index: number;
 	agent: string;
 	task: string;
@@ -289,6 +290,7 @@ export interface SubagentProgressPayload {
 }
 
 export interface SubagentLifecyclePayload {
+	followUpTurn?: boolean;
 	id: string;
 	agent: string;
 	description?: string;
