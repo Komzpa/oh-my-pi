@@ -11,12 +11,18 @@ import {
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import live from "./fixtures/dc-rowclose-1645.json";
 import gateNotices from "./gate-notices.md" with { type: "text" };
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import divineRoadrunner from "./fixtures/row-audit-divine-roadrunner.json";
 import {
 	checkRowAudits,
 	parseRowAuditVerdicts,
 	planRowAudits,
+	registryAuditor,
 	resetRowAuditsForTest,
 	ROW_AUDIT_CAP,
+	settleRowAuditVerdict,
 } from "./row_audit";
 import { decideTodoDispatch } from "./todo_dispatch";
 
@@ -84,7 +90,19 @@ function replay(phases = live.phases) {
 	return { decision, states, display };
 }
 
-function harness(phases = clone(), heads: Record<string, string> = { [REPO]: "c64ec5fe6".padEnd(40, "0") }) {
+const ran = [{ command: "bunx playwright test e2e/facility-decisions-list.spec.ts", exitCode: 0 }];
+const verdict = (row: string, value: string, findings = "checked at HEAD") => ({
+	row,
+	verdict: value,
+	findings,
+	checks: ran,
+});
+
+function harness(
+	phases = clone(),
+	heads: Record<string, string> = { [REPO]: "c64ec5fe6".padEnd(40, "0") },
+	auditor: string | null = "qa-auditor",
+) {
 	const launches: Array<{
 		task: string;
 		agent: string;
@@ -116,8 +134,15 @@ function harness(phases = clone(), heads: Record<string, string> = { [REPO]: "c6
 				});
 			}),
 	};
-	const check = () =>
-		checkRowAudits(ctx, { now: () => live.now, readHead: async repo => heads[repo], agent: "qa-auditor" });
+	const options = {
+		now: () => live.now,
+		readHead: async (repo: string) => heads[repo],
+		resolveAuditor: async () => auditor ?? undefined,
+		requirementsFor: (row: string) =>
+			row === AUDITED[1] ? ["R242: no red frame on Power source rows at 1440 and 430"] : [],
+		fileExists: () => false,
+	};
+	const check = () => checkRowAudits(ctx, options);
 	const settle = async (index: number, output: unknown) => {
 		launches[index].resolve(output);
 		for (let i = 0; i < 5; i++) await Bun.sleep(0);
@@ -154,6 +179,9 @@ test("DC replay launches one batched audit per head, persists it first, and a re
 	expect(await h.check()).toBe(1);
 	expect(h.launches).toHaveLength(1);
 	expect(h.launches[0].agent).toBe("qa-auditor");
+	expect(h.launches[0].task).toContain("Linked requirement: R242: no red frame on Power source rows at 1440 and 430");
+	expect(h.launches[0].task).toContain("context only, not proof");
+	expect(h.launches[0].task).toContain("Recorded evidence (commits and checks to re-run at HEAD): f1ee6e909 in ROOT");
 	for (const content of AUDITED) {
 		expect(h.launches[0].task).toContain(JSON.stringify(content));
 		expect(h.rows().find(row => row.content === content).schedule.audit.verdict).toBe("pending");
@@ -173,12 +201,8 @@ test("audit pass closes the row; audit fail returns it to needs worker carrying 
 	await h.check();
 	await h.settle(0, {
 		rows: [
-			{ row: AUDITED[1], verdict: "pass", findings: "frame and boxes absent at 1440/430; spec 70/70" },
-			{
-				row: AUDITED[3],
-				verdict: "fail",
-				findings: "Settings->Facility edge still listed (KnowledgeGraphApp.tsx:8588)",
-			},
+			verdict(AUDITED[1], "pass", "frame and boxes absent at 1440/430; spec 70/70"),
+			verdict(AUDITED[3], "fail", "Settings->Facility edge still listed (KnowledgeGraphApp.tsx:8588)"),
 		],
 	});
 	const pass = h.rows().find(row => row.content === AUDITED[1]);
@@ -193,23 +217,28 @@ test("audit pass closes the row; audit fail returns it to needs worker carrying 
 		findings: "Settings->Facility edge still listed (KnowledgeGraphApp.tsx:8588)",
 	});
 	expect(fail.schedule.progress.evidence).toContain("audit fail at c64ec5fe6000");
-	// A row the auditor did not answer is not passed.
+	// A row the auditor did not answer is neither passed nor failed: it stays verifying.
 	const silent = h.rows().find(row => row.content === AUDITED[0]);
 	expect(silent.status).toBe("in_progress");
-	expect(silent.schedule.audit.verdict).toBe("fail");
+	// It was recorded inconclusive and immediately relaunched once (attempt 2).
+	expect(silent.schedule.audit).toMatchObject({ verdict: "pending", attempts: 2 });
+	expect(todoRowAfterWorker(silent)).toMatchObject({ kind: "verify", via: "audit" });
 	const decision = replay(h.phases).decision;
 	const staffed = decision.dispatchableReady.find(row => row.content === AUDITED[3]);
 	expect(staffed).toMatchObject({ previous: "UxGraphEdges", reason: "audit-failed" });
 	expect(decision.dispatchableReady.some(row => row.content === AUDITED[1])).toBe(false);
-	// Settled rows are not audited again.
-	expect(await h.check()).toBe(0);
+	// Inconclusive rows were relaunched once naming the missing piece; settled rows were not.
+	expect(h.launches).toHaveLength(2);
+	expect(h.launches[1].task).not.toContain(JSON.stringify(AUDITED[1]));
+	expect(h.launches[1].task).not.toContain(JSON.stringify(AUDITED[3]));
+	expect(h.launches[1].task).toContain("Previous audit was inconclusive: auditor returned no verdict for this row");
 });
 
 test("a head move while the audit runs discards its verdicts and re-audits once at the new head", async () => {
 	const h = harness();
 	await h.check();
 	h.heads[REPO] = "56651dc53".padEnd(40, "0");
-	await h.settle(0, { rows: AUDITED.map(row => ({ row, verdict: "pass", findings: "ok" })) });
+	await h.settle(0, { rows: AUDITED.map(row => verdict(row, "pass", "ok")) });
 	for (const content of AUDITED) {
 		const row = h.rows().find(candidate => candidate.content === content);
 		expect(row.status).toBe("in_progress");
@@ -242,7 +271,7 @@ test("batches split per repository head and stop at the auditor cap", async () =
 	expect(await h.check()).toBe(ROW_AUDIT_CAP);
 	expect(h.launches).toHaveLength(ROW_AUDIT_CAP);
 	expect(await h.check()).toBe(0);
-	await h.settle(0, { rows: [{ row: rows[0].content, verdict: "pass", findings: "ok" }] });
+	await h.settle(0, { rows: [verdict(rows[0].content, "pass", "ok")] });
 	expect(await h.check()).toBe(1);
 });
 
@@ -280,6 +309,7 @@ test("aborted and lost workers need a worker; a lost audit of a delivered row is
 		head: "h",
 		startedAt: 3,
 		verdict: "fail",
+		agent: "qa-auditor",
 		findings: "x",
 	};
 	expect(todoRowAfterWorker(failed)).toMatchObject({ kind: "needs-worker", reason: "audit-failed" });
@@ -302,8 +332,98 @@ test("aborted and lost workers need a worker; a lost audit of a delivered row is
 
 test("audit verdict parser accepts fenced JSON and rejects malformed rows", () => {
 	expect(parseRowAuditVerdicts('done\n```json\n{"rows":[{"row":"a","verdict":"pass","findings":"ok"}]}\n```')).toEqual(
-		[{ row: "a", verdict: "pass", findings: "ok" }],
+		[{ row: "a", verdict: "pass", findings: "ok", checks: [], screenshots: [] }],
 	);
 	expect(parseRowAuditVerdicts('{"rows":[{"row":"a","verdict":"maybe"}]}')).toBeUndefined();
 	expect(parseRowAuditVerdicts("no json")).toBeUndefined();
+});
+
+test("DivineRoadrunner replay: a yield of unverified 'fail' verdicts is inconclusive, never needs worker", async () => {
+	// Live 17:30: the gate-runner fallback read transcripts, ran only `git rev-parse HEAD`, and failed every row.
+	const yielded = parseRowAuditVerdicts(JSON.stringify(divineRoadrunner));
+	expect(yielded).toHaveLength(7);
+	for (const item of yielded) expect(settleRowAuditVerdict(item).verdict).toBe("inconclusive");
+	expect(
+		settleRowAuditVerdict({ ...yielded[0], checks: [{ command: "git rev-parse HEAD", exitCode: 0 }] }).verdict,
+	).toBe("inconclusive");
+	const h = harness();
+	await h.check();
+	await h.settle(0, divineRoadrunner);
+	expect(h.launches).toHaveLength(2); // relaunched once with the missing piece named
+	expect(h.launches[1].task).toContain(
+		'Previous audit was inconclusive: "fail" without a check or screenshot at HEAD',
+	);
+	await h.settle(1, divineRoadrunner);
+	expect(h.launches).toHaveLength(2); // a second inconclusive goes to the lead, not a third launch
+	expect(await h.check()).toBe(0);
+	const after = replay(h.phases);
+	for (const content of AUDITED) {
+		expect(after.states.get(content)).toBe("verifying");
+		expect(after.decision.dispatchableReady.some(row => row.content === content)).toBe(false);
+	}
+	expect(after.display.lines.join("\n")).toContain(
+		'Power source rows: remove red selection frame and grey boxes — verifying: inconclusive — "fail" without a check',
+	);
+	const notice = prompt.render(gateNotices, { audit: true, rows: '"row" (inconclusive: x)' });
+	expect(notice).toContain("Do not staff a new worker for a delivered row");
+	// New evidence the lead records on the row reruns its audit.
+	const row = h.rows().find(candidate => candidate.content === AUDITED[1]);
+	row.schedule.progress = { at: live.now + 1, evidence: "f1ee6e909: run bunx playwright test e2e/power-rows.spec.ts" };
+	expect(await h.check()).toBe(1);
+	expect(h.launches[2].task).toContain(JSON.stringify(AUDITED[1]));
+});
+
+test("no auditor profile: nothing launches, never a gate-runner substitute, rows show auditor unavailable", async () => {
+	const h = harness(undefined, undefined, null);
+	expect(await h.check()).toBe(0);
+	expect(h.launches).toHaveLength(0);
+	for (const content of AUDITED) {
+		const row = h.rows().find(candidate => candidate.content === content);
+		expect(row.schedule.audit).toMatchObject({ verdict: "unavailable", agent: "qa-auditor" });
+	}
+	const after = replay(h.phases);
+	expect(after.display.lines.join("\n")).toContain(
+		"Mau standup transcript into plans, requirements, knowledgebase — verifying: auditor unavailable",
+	);
+	expect(after.decision.dispatchableReady.some(row => AUDITED.includes(row.content))).toBe(false);
+});
+
+test("the auditor is resolved through the agent registry, not by file presence next to the extension", async () => {
+	const home = mkdtempSync(join(tmpdir(), "row-audit-home-"));
+	const bare = mkdtempSync(join(tmpdir(), "row-audit-bare-"));
+	expect(await registryAuditor(bare, home)).toBeUndefined();
+	const project = mkdtempSync(join(tmpdir(), "row-audit-project-"));
+	mkdirSync(join(project, ".omp", "agents"), { recursive: true });
+	writeFileSync(
+		join(project, ".omp", "agents", "qa-auditor.md"),
+		"---\nname: qa-auditor\ndescription: Audit delivered rows at HEAD.\ntools: read, bash\n---\nAudit.\n",
+	);
+	expect(await registryAuditor(project, home)).toBe("qa-auditor");
+});
+
+test("verdicts from the old gate-runner fallback are void: those rows reopen to verifying and are re-audited", async () => {
+	const phases = clone();
+	const bogus = phases.flatMap(phase => phase.tasks).filter(row => AUDITED.slice(0, 4).includes(row.content));
+	for (const row of bogus) {
+		const { workerId, startedAt, finishedAt } = row.schedule.executor;
+		row.schedule.audit = {
+			delivery: JSON.stringify([workerId, startedAt, finishedAt]),
+			repoPath: REPO,
+			head: "c64ec5fe6".padEnd(40, "0"),
+			startedAt: live.now - 1,
+			verdict: "fail",
+			agent: "gate-runner",
+			findings: "Missing HEAD acceptance evidence.",
+			at: live.now - 1,
+		};
+	}
+	const states = replay(phases).states;
+	for (const row of bogus) {
+		expect(todoRowAfterWorker(row)).toMatchObject({ kind: "verify", via: "audit" });
+		expect(states.get(row.content)).toBe("verifying");
+	}
+	const h = harness(phases);
+	expect(await h.check()).toBe(1);
+	expect(h.launches[0].agent).toBe("qa-auditor");
+	for (const row of bogus) expect(h.launches[0].task).toContain(JSON.stringify(row.content));
 });
