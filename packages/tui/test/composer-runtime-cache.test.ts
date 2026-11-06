@@ -1,6 +1,6 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, expect, it } from "bun:test";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
-import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-tui/prompt/composer";
+import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
