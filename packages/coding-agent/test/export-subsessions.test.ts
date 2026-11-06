@@ -74,7 +74,7 @@ describe("collectSubSessions", () => {
 		await Bun.write(path.join(root, "main/Alpha/Child.jsonl"), sessionJsonl("child", ["c1"]));
 		await Bun.write(path.join(root, "main/Beta.jsonl"), sessionJsonl("beta", ["b1"]));
 
-		const subs = await collectSubSessions(mainFile);
+		const subs = await collectSubSessions(mainFile, { purpose: "export" });
 
 		expect(Object.keys(subs).sort()).toEqual(["Alpha", "Alpha/Child", "Beta"]);
 		expect(subs.Alpha).toMatchObject({ agentId: "Alpha", parent: null, leafId: "a2" });
@@ -96,7 +96,7 @@ describe("collectSubSessions", () => {
 		});
 		await Bun.write(path.join(root, "main/Alpha.jsonl"), `${sessionJsonl("alpha", ["a1", "a2"])}${lateUsage}\n`);
 
-		const subs = await collectSubSessions(mainFile);
+		const subs = await collectSubSessions(mainFile, { purpose: "export" });
 
 		expect(subs.Alpha.leafId).toBe("a2");
 	});
@@ -139,7 +139,7 @@ describe("collectSubSessions", () => {
 		});
 		expect(await Bun.file(mainFile).text()).toBe(mainJsonl);
 		expect(await Bun.file(subFile).text()).toBe(subJsonl);
-		expect((await collectSubSessions(mainFile)).Alpha.header).toMatchObject(subKeys);
+		expect((await collectSubSessions(mainFile, { purpose: "export" })).Alpha.header).toMatchObject(subKeys);
 		expect(html).not.toContain(mainPreviousPath);
 		expect(html).not.toContain(subPreviousPath);
 	});
@@ -264,7 +264,7 @@ describe("collectSubSessions", () => {
 		await Bun.write(path.join(root, "main/Good.jsonl.123.bak"), sessionJsonl("bak", ["x1"]));
 		await Bun.write(path.join(root, "main/notes.md"), "# notes\n");
 
-		const subs = await collectSubSessions(mainFile);
+		const subs = await collectSubSessions(mainFile, { purpose: "export" });
 
 		expect(Object.keys(subs)).toEqual(["Good"]);
 	});
@@ -276,10 +276,14 @@ describe("collectSubSessions", () => {
 		await Bun.write(path.join(root, "main/Scout/__advisor.jsonl"), sessionJsonl("adv3", ["v3"]));
 		await Bun.write(path.join(root, "main/Archived.jsonl.gz"), Bun.gzipSync(sessionJsonl("archived", ["g1"])));
 
-		const subs = await collectSubSessions(mainFile);
+		const subs = await collectSubSessions(mainFile, { purpose: "export" });
 		expect(Object.keys(subs)).toEqual(["Scout"]);
 
-		const complete = await collectSubSessions(mainFile, { includeAdvisors: true, includeCompressed: true });
+		const complete = await collectSubSessions(mainFile, {
+			purpose: "export",
+			includeAdvisors: true,
+			includeCompressed: true,
+		});
 		expect(Object.keys(complete)).toEqual([
 			"Archived",
 			"Scout",
@@ -301,6 +305,7 @@ describe("collectSubSessions", () => {
 		const unreadable: string[] = [];
 
 		const subs = await collectSubSessions(mainFile, {
+			purpose: "export",
 			includeCompressed: true,
 			onUnreadable: key => unreadable.push(key),
 		});
@@ -320,7 +325,7 @@ describe("collectSubSessions", () => {
 		await Bun.write(path.join(root, "main/..jsonl"), sessionJsonl("dot", ["d1"]));
 		await Bun.write(path.join(root, "main/Scout.jsonl"), sessionJsonl("scout", ["s1"]));
 
-		const subs = await collectSubSessions(mainFile);
+		const subs = await collectSubSessions(mainFile, { purpose: "export" });
 
 		expect(Object.keys(subs).sort()).toEqual([".", "Scout"]);
 	});
@@ -330,14 +335,14 @@ describe("collectSubSessions", () => {
 		await Bun.write(path.join(root, "main/Killed.jsonl.tombstone"), "");
 		await Bun.write(path.join(root, "main/Live.jsonl"), sessionJsonl("live", ["l1"]));
 
-		const subs = await collectSubSessions(mainFile);
+		const subs = await collectSubSessions(mainFile, { purpose: "export" });
 
 		expect(subs.Killed.aborted).toBe(true);
 		expect(subs.Live.aborted).toBe(false);
 	});
 
 	test("returns empty record when no subagent dir exists", async () => {
-		expect(await collectSubSessions(mainFile)).toEqual({});
+		expect(await collectSubSessions(mainFile, { purpose: "export" })).toEqual({});
 		expect(await collectSubSessions(path.join(root, "not-a-session"))).toEqual({});
 	});
 });

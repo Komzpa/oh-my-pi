@@ -16738,7 +16738,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		let subSessions: Record<string, SubSession> = {};
 		let subagentError: string | undefined;
 		try {
-			if (sessionFile) subSessions = await collectSubSessions(sessionFile);
+			if (sessionFile) subSessions = await collectSubSessions(sessionFile, { purpose: "export" });
 		} catch (error) {
 			subagentError = error instanceof Error ? error.message : String(error);
 			logger.warn("Failed to collect subagent transcripts for dump", { sessionFile, error: subagentError });
