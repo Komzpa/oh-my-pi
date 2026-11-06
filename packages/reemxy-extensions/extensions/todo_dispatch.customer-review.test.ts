@@ -1,6 +1,6 @@
 // @ts-nocheck -- exercises the extension through its registered runtime hooks.
 import { expect, test, spyOn } from "bun:test";
-import { decideTodoDispatch, deliveredRowsClosed, USER_WAIT_REFUSAL, waitsOnUser, acceptedSpeculativeMergeDemand, estimateFloorRefusal, firstDeliveryCutRequired, missedEtaRowsText, missingSpeculativeReview, SPRINT_STATE_ENTRY_TYPE, successfulDurationFloors, userUnblockAskDue, workerPastForecast } from "./todo_dispatch";
+import { speculativeTaskRows, decideTodoDispatch, deliveredRowsClosed, USER_WAIT_REFUSAL, waitsOnUser, acceptedSpeculativeMergeDemand, estimateFloorRefusal, firstDeliveryCutRequired, missedEtaRowsText, missingSpeculativeReview, SPRINT_STATE_ENTRY_TYPE, successfulDurationFloors, userUnblockAskDue, workerPastForecast } from "./todo_dispatch";
 import todoDispatch from "./todo_dispatch";
 import handoffReplay from "./fixtures/handoff-dc-refusals.json";
 import speculativeReplay from "./fixtures/speculative-dc-replay.json";
@@ -685,10 +685,12 @@ test("customer verdicts pass admission on a user-review wait while ordinary wait
 
 test("DC audit dispatch survives all five refused calls and the intervening remedies", async () => {
 	for (const capture of speculativeReplay) {
-		const targets = new Set(capture.input.tasks.map(item => item.row ?? item.task));
+		const targets = new Set(capture.input.tasks.flatMap(item => speculativeTaskRows(item, capture.phases).map(row => row.content)));
+		// One worker may own several rows; a settled audit target cannot also be synthesized as live through its sibling.
+		const targetOwners = new Set(capture.phases.flatMap(phase => phase.tasks).filter(row => targets.has(row.content)).flatMap(row => [row.schedule?.owner, row.schedule?.executor?.workerId]).filter(Boolean));
 		const running = capture.phases
 			.flatMap(phase => phase.tasks)
-			.filter(row => row.schedule?.owner && !targets.has(row.content))
+			.filter(row => row.schedule?.owner && !targets.has(row.content) && !targetOwners.has(row.schedule.owner))
 			.map(row => ({
 				id: row.schedule.owner,
 				agentId: row.schedule.owner,
