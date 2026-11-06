@@ -2,6 +2,13 @@ import { expect, test } from "bun:test";
 
 const probe = `${import.meta.dir}/fixtures/jit-bootstrap-probe.ts`;
 
+interface ProbeOutput {
+	args: string[];
+	pid: number;
+	jit?: string;
+	inherited?: string;
+}
+
 function cleanEnv(extra: Record<string, string> = {}): Record<string, string | undefined> {
 	const env: Record<string, string | undefined> = { ...process.env, ...extra };
 	delete env.BUN_JSC_useGdbJITInfo;
@@ -11,7 +18,7 @@ function cleanEnv(extra: Record<string, string> = {}): Record<string, string | u
 
 async function runProbe(args: string[], env: Record<string, string | undefined>) {
 	const child = Bun.spawn([process.execPath, probe, ...args], { env, stdout: "pipe", stderr: "pipe" });
-	const output = await new Response(child.stdout).json();
+	const output = (await new Response(child.stdout).json()) as ProbeOutput;
 	expect(await child.exited).toBe(0);
 	return { output, pid: child.pid };
 }
