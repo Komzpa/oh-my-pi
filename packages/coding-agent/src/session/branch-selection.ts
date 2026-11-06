@@ -21,10 +21,13 @@ type Predicate = (metadata: SessionContextEntryMetadata) => boolean;
 export type BranchSource = {
 	getBranch(): readonly SessionEntry[];
 	getBranchMatching?: (predicate: Predicate) => SessionEntry[];
+	getCachedBranchMatching?: (predicate: Predicate) => SessionEntry[];
 	getLatestBranchMatching?: (predicate: Predicate) => SessionEntry | undefined;
 	iterateBranchMatchingNewestFirst?: (predicate: Predicate) => Iterable<SessionEntry>;
 };
 export function selectBranchEntries(source: BranchSource, predicate: Predicate): SessionEntry[] {
+	if (predicate === isTodoSelectionEntryMetadata && source.getCachedBranchMatching)
+		return source.getCachedBranchMatching(predicate);
 	if (source.getBranchMatching) return source.getBranchMatching(predicate);
 	return source.getBranch().filter(entry => predicate(sessionContextEntryMetadata(entry)));
 }
