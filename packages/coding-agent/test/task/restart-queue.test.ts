@@ -8,6 +8,7 @@ import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import {
+	RestartBudget,
 	createRestartQueueController,
 	formatRestartRequestStatus,
 	isRestartResumePending,
@@ -176,6 +177,83 @@ afterEach(async () => {
 });
 
 describe("restart queue controller", () => {
+	it("reserves downstream work before assigning a wait deadline", () => {
+		const budget = new RestartBudget(10_000, [
+			{ stage: "isolation", estimateMs: 5_000 },
+			{ stage: "snapshot_isolation", estimateMs: 2_000 },
+			{ stage: "capture_children", estimateMs: 500 },
+			{ stage: "flush", estimateMs: 500 },
+			{ stage: "replace_runtime", estimateMs: 1_000 },
+			{ stage: "restore_children", estimateMs: 1_000 },
+		]);
+		expect(budget.stageDeadline("isolation")).toBe(5_000);
+		expect(budget.stageDeadline("capture_children")).toBe(7_500);
+		expect(budget.stageDeadline("restore_children")).toBe(10_000);
+	});
+
+	it("reports the stage that overruns the global watchdog without interrupting the root", async () => {
+		const { manager, file } = await createRoot(makeTempDir());
+		const boundary = Promise.withResolvers<void>();
+		const harness = makeSession(manager, { wasRunning: true, quiescence: boundary.promise });
+		registerRoot(AgentRegistry.global(), harness.session, file);
+		const identity = identityFor(manager, "watchdog", 1);
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+			restartTotalMs: 50,
+			restartWatchdogSlackMs: 10,
+		});
+		try {
+			await controller.handle({ identity, op: "request" });
+			await Bun.sleep(100);
+			expect(controller.snapshot().request?.state).toBe("queued");
+			expect(harness.notices.some(item => item.message.includes("watchdog: stage root_quiescence"))).toBe(true);
+			const status = formatRestartRequestStatus(controller.snapshot().request);
+			expect(status).toContain("deadline:");
+			expect(status).toContain("reserved remaining work:");
+			await controller.handle({ identity, op: "cancel" });
+			expect(harness.releaseCount).toBe(1);
+		} finally {
+			controller.dispose();
+			boundary.resolve();
+		}
+	});
+
+	it("uses recent replacement duration to reserve more work on the next request", async () => {
+		const { manager, file } = await createRoot(makeTempDir());
+		const harness = makeSession(manager);
+		registerRoot(AgentRegistry.global(), harness.session, file);
+		const identity = identityFor(manager, "estimates", 1);
+		let terminal = Promise.withResolvers<void>();
+		const reserves: number[] = [];
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restartTotalMs: 10_000,
+			restartStageMinimaMs: { replace_runtime: 0 },
+			restart: async () => {
+				await Bun.sleep(40);
+			},
+			onStateChange: record => {
+				if (record.drainStatus?.stage === "capture_children")
+					reserves.push(record.drainStatus.remainingEstimateMs!);
+				if (record.state === "completed") terminal.resolve();
+			},
+		});
+		try {
+			await controller.handle({ identity, op: "request", requestId: "first" });
+			await terminal.promise;
+			await Bun.sleep(10);
+			terminal = Promise.withResolvers<void>();
+			await controller.handle({ identity, op: "request", requestId: "second" });
+			await terminal.promise;
+			expect(reserves[1]! - reserves[0]!).toBeGreaterThanOrEqual(35);
+		} finally {
+			controller.dispose();
+		}
+	});
+
 	it.each(["boundary", "expiry", "cancel"] as const)(
 		"keeps a busy root intact through %s and restarts only at its boundary",
 		async outcome => {
