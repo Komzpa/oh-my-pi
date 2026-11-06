@@ -104,15 +104,21 @@ export interface TodoSchedule {
 	};
 }
 
-/** One batched audit of delivered rows at one repository head. A pass closes the row; a fail returns it to a worker. */
+/**
+ * One batched audit of delivered rows at one repository head. A pass closes the row; only a defect
+ * observed at the head ("fail") returns it to a worker. "inconclusive" (nothing was verified) and
+ * "unavailable" (no auditor profile resolved) keep the row verifying.
+ */
 export interface TodoRowAudit {
 	/** `todoRowDeliveryKey` of the executor run being audited; a newer run invalidates this record. */
 	delivery: string;
 	repoPath: string;
 	head: string;
 	startedAt: number;
-	verdict: "pending" | "pass" | "fail";
+	verdict: "pending" | "pass" | "fail" | "inconclusive" | "unavailable";
 	agent?: string;
+	/** Audit launches for this delivery at this head; an inconclusive audit is relaunched once. */
+	attempts?: number;
 	findings?: string;
 	at?: number;
 }
@@ -1964,6 +1970,8 @@ export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): 
 
 /** Read-only profiles whose run verifies a delivery rather than producing one. */
 export const TODO_AUDIT_PROFILES: readonly string[] = ["qa-auditor", "reviewer", "gate-runner"];
+/** The only profile whose row-audit verdicts count; records from any other runner are void. */
+export const TODO_ROW_AUDITOR = "qa-auditor";
 /** Investigation profiles: their run answers a question; the change it calls for is a next worker's. */
 export const TODO_FINDINGS_PROFILES: readonly string[] = [
 	"researcher",
@@ -2026,7 +2034,9 @@ export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWor
 			return { kind: "needs-worker", reason: "audit-failed", worker, findings: critic.evidence };
 		if (critic.verdict === "pending" && !critic.timedOut) return { kind: "verify", via: "critic", worker };
 	}
-	const audit = schedule.audit?.delivery === delivery ? schedule.audit : undefined;
+	// A verdict from another runner (the old gate-runner fallback) verified nothing: re-audit.
+	const audit =
+		schedule.audit?.delivery === delivery && schedule.audit.agent === TODO_ROW_AUDITOR ? schedule.audit : undefined;
 	if (audit?.verdict === "fail")
 		return { kind: "needs-worker", reason: "audit-failed", worker, findings: audit.findings };
 	const deliverable = todoRowHasDeliverable(task);
@@ -2126,7 +2136,12 @@ export function classifyTodoDisplayRow(
 		return { state: "ready to close" };
 	if (task.status === "blocked") return { state: "stuck", reason: task.blocker ?? "blocked" };
 	const after = todoRowAfterWorker(task);
-	if (after?.kind === "verify") return { state: "verifying" };
+	if (after?.kind === "verify")
+		return after.audit?.verdict === "inconclusive" && (after.audit.attempts ?? 1) >= 2
+			? { state: "verifying", reason: `inconclusive — ${after.audit.findings ?? "nothing verified"}` }
+			: after.audit?.verdict === "unavailable"
+				? { state: "verifying", reason: "auditor unavailable" }
+				: { state: "verifying" };
 	const needsWorker = (reason: string, previous?: string): TodoDisplayRowState =>
 		context.capacityFull
 			? { state: "stuck", reason: "cap full", previous }

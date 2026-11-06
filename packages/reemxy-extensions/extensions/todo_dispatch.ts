@@ -3751,6 +3751,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     for (const item of activeRecoveries(ctx, pending)) notice("recovery", JSON.stringify([item.kind, item.row, item.owner, item.at]), {
       recovery: true, action: recoveryAction(item), owner: item.owner, recoveryCap: item.kind === "cap",
     }, true);
+    // Delivered rows the runtime audit could not verify go to the lead with the missing piece.
+    const unverified = phases.flatMap((phase) => phase.tasks).flatMap((task) => {
+      const after = todoRowAfterWorker(task);
+      const audit = after?.kind === "verify" ? after.audit : undefined;
+      if (audit?.verdict === "unavailable") return [`${JSON.stringify(task.content)} (auditor unavailable: ${shorten(audit.findings ?? "")})`];
+      if (audit?.verdict === "inconclusive" && (audit.attempts ?? 1) >= 2) return [`${JSON.stringify(task.content)} (inconclusive: ${shorten(audit.findings ?? "")})`];
+      return [];
+    });
+    if (unverified.length) notice("audit", JSON.stringify(unverified), { audit: true, rows: unverified.join("; ") });
     const decision = measured ?? currentDecision(ctx, now, pending);
     const rows = decision.dispatchableReady ?? [];
     const continuations = rows.filter(row => row.previous).map(row =>
