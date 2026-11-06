@@ -30,7 +30,7 @@
 
 ### Fixed
 
-- Resuming large sessions no longer rewrites replay metadata; explicit rewrites keep the CLI responsive while new entries arrive ([#167](https://github.com/Komzpa/oh-my-pi/pull/167) by [@Komzpa](https://github.com/Komzpa)).
+- Fenced session rewrites publish and clean up asynchronously, including the Windows replacement fallback ([#167](https://github.com/Komzpa/oh-my-pi/pull/167) by [@Komzpa](https://github.com/Komzpa)).
 
 - Subagents receive task instructions with their blank lines, Markdown hard breaks, and table spacing intact, whether given inline or via `taskFile`.
 - Hindsight `retain` and `learn` memories are no longer lost when delivery fails or omp exits: they are kept on disk, retried, and delivered by the next session without duplicates ([#18176](https://github.com/can1357/oh-my-pi/pull/18176) by [@alphastorm](https://github.com/alphastorm))
