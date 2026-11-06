@@ -279,6 +279,7 @@ describe("label tracks what the session is doing now", () => {
 	}
 
 	function lastTitle(): string | undefined {
+		vi.advanceTimersByTime(1000);
 		return writes
 			.map(payload => /\x1b\]0;([\s\S]*?)\x07/.exec(payload)?.[1])
 			.filter((t): t is string => t !== undefined)
@@ -286,6 +287,7 @@ describe("label tracks what the session is doing now", () => {
 	}
 
 	beforeEach(() => {
+		vi.useFakeTimers();
 		prevHeadless = setTerminalHeadless(false);
 		ttyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
@@ -300,7 +302,9 @@ describe("label tracks what the session is doing now", () => {
 	});
 
 	afterEach(() => {
+		setTerminalTitleTaskNow(undefined);
 		disposeTerminalTitleState();
+		vi.useRealTimers();
 		stdoutSpy?.mockRestore();
 		stdoutSpy = undefined;
 		if (ttyDescriptor) Object.defineProperty(process.stdout, "isTTY", ttyDescriptor);
