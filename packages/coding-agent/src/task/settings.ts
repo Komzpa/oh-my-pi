@@ -273,7 +273,7 @@ export const cfgRequirementAuditors = register({
 	type: "number",
 	default: 4,
 	validate: value => {
-		if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1)
+		if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1))
 			throw new Error("task.requirementAuditors must be a positive integer");
 	},
 });
