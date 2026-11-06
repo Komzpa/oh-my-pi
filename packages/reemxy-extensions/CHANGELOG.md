@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Stop delivered rows cycling through read-only reviews; return missing verification proof to an execution worker after one audit retry ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Change running workers’ write scope with TODO resources updates, without restarting them ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Apply saved review-page Accept, Redo and Drop decisions to TODO rows once, including after restart ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

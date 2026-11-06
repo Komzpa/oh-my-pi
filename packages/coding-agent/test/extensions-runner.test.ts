@@ -5220,7 +5220,7 @@ describe("ExtensionRunner", () => {
 			const native = { ...nativeProbe(seen), name: "task" };
 			const runner = await runnerWithNative(native);
 			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
-			expect(seen.params).toEqual({ agent: "gate-runner", task: "Review completed rack controls", effort: "lo" });
+			expect(seen.params).toEqual({ agent: "reviewer", task: "Review completed rack controls", effort: "lo" });
 			expect(result?.content).toEqual([{ type: "text", text: "native ran" }]);
 		});
 
@@ -5236,7 +5236,7 @@ describe("ExtensionRunner", () => {
 			};
 			const runner = await runnerWithNative(native);
 			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
-			expect(seen.params).toEqual({ agent: "gate-runner", task: "Review completed rack controls", effort: "lo" });
+			expect(seen.params).toEqual({ agent: "reviewer", task: "Review completed rack controls", effort: "lo" });
 			expect(result?.content).toEqual([{ type: "text", text: "final verdict" }]);
 		});
 

@@ -1,5 +1,7 @@
 import {
 	classifyTodoDisplayRow,
+	TODO_AUDIT_PROFILES,
+	type TodoScheduleInputTask,
 	isTodoAwaitingReview,
 	parseUserWait,
 	todoRowAfterWorker,
@@ -66,6 +68,9 @@ export function renderLeadRowInstructions(
 					break;
 				case "needs worker":
 					data.workerAction = true;
+					data.proofAction =
+						after?.kind === "needs-worker" &&
+						(after.reason === "audit-failed" || after.reason === "audit-inconclusive");
 					data.previous = display.previous ?? row.schedule?.owner;
 					data.reason = display.reason;
 					data.findings = after?.kind === "needs-worker" ? after.findings : undefined;
@@ -104,4 +109,16 @@ export function renderLeadRowInstructions(
 			return [prompt.render(notices, data).trim()];
 		})
 		.join("\n");
+}
+
+/** A failed/exhausted audit requires an execution/repair worker, not another review. */
+export function refuseProofReview(row: TodoScheduleInputTask, agent: unknown, now: number): string | undefined {
+	const after = todoRowAfterWorker(row);
+	if (
+		!TODO_AUDIT_PROFILES.includes(String(agent ?? "")) ||
+		after?.kind !== "needs-worker" ||
+		(after.reason !== "audit-failed" && after.reason !== "audit-inconclusive")
+	)
+		return;
+	return renderLeadRowInstructions([{ name: "Proof", tasks: [row] }], { workers: [], owners: new Map() }, { now });
 }

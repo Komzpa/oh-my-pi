@@ -29,6 +29,7 @@ const contracts: Record<string, { tool?: string; operation?: string; wait?: bool
 	"external-blocker": { wait: true },
 	"lost-after-restart": { tool: "task" },
 	"audit-fail": { tool: "task" },
+	"missing-executable-proof": { tool: "task" },
 	"head-moved": { wait: true },
 	"eta-reached": { tool: "todo", operation: "schedule" },
 	"user-answered-review": { tool: "todo", operation: "schedule" },
@@ -101,6 +102,10 @@ for (const id of Object.keys(contracts)) {
 			const summary = scenario.notices.find(text => text.includes("TODO status:"));
 			expect(summary).toContain("0 ready without a verified owner");
 			expect(summary).toContain("0 lost owners");
+		}
+		if (id === "missing-executable-proof") {
+			expect(notice).toContain("run the named focused checks");
+			expect(notice).toContain("inspected desktop/phone screenshots");
 		}
 		if (id === "audit-fail") expect(notice).toContain("Settings still exposes the wrong return edge");
 		if (contract.tool !== "task") {

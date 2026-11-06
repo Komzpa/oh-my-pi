@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import type { TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { TODO_AUDIT_PROFILES, todoRowAfterWorker, type TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import brief from "./delivery-critic.md" with { type: "text" };
 
 export const CRITIC_TIMEOUT_MS = 15 * 60_000;
@@ -106,6 +106,11 @@ export function queueDeliveryCritic(
 	const schedule = row.schedule ?? {};
 	if (schedule.review === "accepted" || schedule.review === "drop") return false;
 	const attempt = schedule.executor;
+	// Reviews and gate receipts are evidence for the existing delivery, never fresh products.
+	if (TODO_AUDIT_PROFILES.includes(attempt?.agentProfile ?? "")) return false;
+	const after = todoRowAfterWorker({ ...row, status: "in_progress" });
+	if (after?.kind === "needs-worker" && (after.reason === "audit-failed" || after.reason === "audit-inconclusive"))
+		return false;
 	const commits = attempt?.gitCommits ?? [];
 	const preview = previewPath ?? schedule.reviewPage ?? "";
 	if (attempt?.outcome !== "completed" || (!commits.length && !preview)) return false;
