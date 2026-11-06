@@ -3,6 +3,7 @@ import { expandAtImports } from "../discovery/at-imports";
 import rereadTemplate from "../prompts/system/instruction-file-reread.md" with { type: "text" };
 import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import changedTemplate from "../prompts/system/instruction-file-changed.md" with { type: "text" };
+import type { SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 
 const ENTRY_TYPE = "instruction-file-version";
@@ -34,10 +35,36 @@ export class InstructionFiles {
 		const id = this.manager.getSessionId();
 		const leaf = this.manager.getLeafId();
 		if (id === this.#sessionId && leaf === this.#leafId) return;
+		let entries: SessionEntry[] | undefined;
+		if (id === this.#sessionId && this.#leafId !== null) {
+			const added: SessionEntry[] = [];
+			let cursor = leaf;
+			// A normal turn extends the previous leaf by a few entries. Bound the
+			// probe so switching branches never decodes the old transcript to find it.
+			for (let remaining = 256; cursor !== this.#leafId && cursor !== null && remaining > 0; remaining--) {
+				const entry = this.manager.getEntry(cursor);
+				if (!entry) break;
+				if (entry.type === "custom" && entry.customType === ENTRY_TYPE) added.push(entry);
+				cursor = entry.parentId;
+			}
+			if (cursor === this.#leafId) entries = added.reverse();
+		}
+		if (!entries) {
+			// Selective reads are supplied by the disk-backed session index. The
+			// fallback keeps this topic independently usable on the in-memory index.
+			const manager = this.manager as SessionManager & {
+				getBranchMatching?: (
+					predicate: (metadata: { type: string; customType?: string }) => boolean,
+				) => SessionEntry[];
+			};
+			entries = manager.getBranchMatching
+				? manager.getBranchMatching(metadata => metadata.type === "custom" && metadata.customType === ENTRY_TYPE)
+				: manager.getBranch();
+			this.#versions.clear();
+		}
 		this.#leafId = leaf;
 		this.#sessionId = id;
-		this.#versions.clear();
-		for (const entry of this.manager.getBranch()) {
+		for (const entry of entries) {
 			if (entry.type !== "custom" || entry.customType !== ENTRY_TYPE) continue;
 			const version = entry.data as InstructionVersion;
 			if (typeof version?.path === "string" && typeof version.hash === "string") {
