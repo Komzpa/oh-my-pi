@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { setImmediate as yieldImmediate } from "node:timers/promises";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../advisor/transcript-recorder";
@@ -21,6 +22,8 @@ import { getAgentTombstonePath } from "./agent-tombstone";
 
 /** Maximum prefix entries inspected for task metadata. */
 const MAX_METADATA_LINES = 64;
+/** A record count alone does not bound legacy prompts or message payloads. */
+const MAX_METADATA_BYTES = 1024 * 1024;
 /**
  * Upper bound on records scanned to compute an advisor transcript's Hub metrics.
  * Well above any healthy advisor file (post issue #9553 the file grows O(new
@@ -262,7 +265,13 @@ async function readPersistedAgentHistory(
 	let servedModel: string | undefined;
 	let latestModelChange: { model: string; resolvedModelIsFallback: boolean } | undefined;
 	const visited = new Set<string>();
+	let lastYield = performance.now();
 	for (let id = leafId; id && !visited.has(id); id = parents.get(id)) {
+		if (performance.now() - lastYield >= 16) {
+			await yieldImmediate();
+			lastYield = performance.now();
+			if (!shouldContinue()) return {};
+		}
 		visited.add(id);
 		const modelChange = modelChangeById.get(id);
 		if (modelChange) {
@@ -405,7 +414,7 @@ async function readPersistedAgentMetadata(
 				};
 				return false;
 			},
-			{ maxRecords: MAX_METADATA_LINES },
+			{ maxRecords: MAX_METADATA_LINES, maxBytes: MAX_METADATA_BYTES },
 		);
 	} catch (error) {
 		// Malformed and truncated records are skipped in-band by the stream
@@ -425,7 +434,8 @@ async function readPersistedAgentMetadata(
 		activity,
 		createdAt: createdAt ?? file?.birthtimeMs,
 		lastActivity: file?.mtimeMs,
-		incomplete: !hasSessionInit && !hasConversation,
+		// A bounded prefix ending inside a large record is not a header-only spawn stub.
+		incomplete: !hasSessionInit && !hasConversation && (file?.size ?? 0) <= MAX_METADATA_BYTES,
 		history: {
 			...history,
 			...(hasOutput ? { outputPath } : {}),
@@ -443,7 +453,7 @@ async function readPersistedVibeChildIds(sessionFile: string, shouldContinue: ()
 			entry => {
 				for (const id of persistedVibeChildIds([entry])) ids.add(id);
 			},
-			{ shouldContinue },
+			{ shouldContinue, entryTypes: ["custom"] },
 		);
 		return ids;
 	} catch (error) {
@@ -837,12 +847,12 @@ async function registerPersistedSubagentsFromDir(
 	for (const entry of entries) {
 		if (entry.isDirectory()) childDirectories.add(entry.name);
 	}
-	let entriesSinceYield = 0;
+	let lastYield = performance.now();
 	for (const entry of entries) {
 		if (!shouldContinue()) return;
-		if (++entriesSinceYield >= 16) {
-			entriesSinceYield = 0;
-			await Bun.sleep(0);
+		if (performance.now() - lastYield >= 16) {
+			await yieldImmediate();
+			lastYield = performance.now();
 		}
 		if (!shouldContinue()) return;
 		if (!entry.isFile() || !entry.name.endsWith(".jsonl") || entry.name.includes(".bak")) continue;

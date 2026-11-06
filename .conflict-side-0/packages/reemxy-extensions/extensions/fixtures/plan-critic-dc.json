@@ -1,0 +1,1724 @@
+{
+  "provenance": {
+    "path": "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221.jsonl",
+    "tailBytes": 31457280,
+    "snapshotAt": "2026-11-07T05:08:53.045Z",
+    "noteCount": 172,
+    "selection": "Second complete snapshot in bounded tail, projected to open rows and trajectory fields; note first lines through snapshot timestamp. Exact values retained. Two graph snapshots projected to open row estimates/dependencies."
+  },
+  "now": "2026-11-07T05:08:53.045Z",
+  "entries": [
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T01:27:43.969Z",
+      "content": "05:27 · The user is: away (guess from signals: last message 203 min ago, 05:27 Asia/Tbilisi, deadline 07:00 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T01:27:49.464Z",
+      "content": "05:27 · TODO status: 11 open · 7 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T02:30:58.152Z",
+      "content": "06:30 · The user is: away (guess from signals: last message 266 min ago, 06:30 Asia/Tbilisi, deadline 08:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:11:17.688Z",
+      "content": "07:11 · TODO status: 10 open · 4 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:11:24.289Z",
+      "content": "07:11 · TODO status: 10 open · 4 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:11:29.924Z",
+      "content": "07:11 · TODO status: 10 open · 4 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:11:32.806Z",
+      "content": "07:11 · TODO status: 10 open · 4 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:11:37.671Z",
+      "content": "07:11 · TODO status: 10 open · 4 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:12:56.478Z",
+      "content": "07:12 · The user is: away (guess from signals: last message 308 min ago, 07:12 Asia/Tbilisi, deadline 09:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:12:56.564Z",
+      "content": "07:12 · TODO status: 10 open · 3 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:13:06.011Z",
+      "content": "07:13 · The user is: away (guess from signals: last message 308 min ago, 07:13 Asia/Tbilisi, deadline 09:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:13:06.055Z",
+      "content": "07:13 · TODO status: 10 open · 3 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:13:10.915Z",
+      "content": "07:13 · The user is: away (guess from signals: last message 308 min ago, 07:13 Asia/Tbilisi, deadline 09:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:13:10.961Z",
+      "content": "07:13 · TODO status: 10 open · 3 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:13:19.635Z",
+      "content": "07:13 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:13:32.665Z",
+      "content": "07:13 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:13:41.120Z",
+      "content": "07:13 · TODO status: 10 open · 3 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:20:20.804Z",
+      "content": "07:20 · The user is: away (guess from signals: last message 315 min ago, 07:20 Asia/Tbilisi, deadline 09:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:20:20.962Z",
+      "content": "07:20 · TODO status: 10 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:20:32.639Z",
+      "content": "07:20 · The user is: away (guess from signals: last message 315 min ago, 07:20 Asia/Tbilisi, deadline 09:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:20:32.756Z",
+      "content": "07:20 · TODO status: 10 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:20:46.254Z",
+      "content": "07:20 · The user is: away (guess from signals: last message 316 min ago, 07:20 Asia/Tbilisi, deadline 09:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:20:46.325Z",
+      "content": "07:20 · TODO status: 10 open · 4 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:23:31.194Z",
+      "content": "07:23 · TODO status: 10 open · 4 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:24:21.058Z",
+      "content": "07:24 · The user is: away (guess from signals: last message 319 min ago, 07:24 Asia/Tbilisi, deadline 09:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:24:21.164Z",
+      "content": "07:24 · TODO status: 9 open · 4 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:30:42.185Z",
+      "content": "07:30 · The user is: away (guess from signals: last message 326 min ago, 07:30 Asia/Tbilisi, deadline 09:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:30:42.274Z",
+      "content": "07:30 · TODO status: 9 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:30:44.962Z",
+      "content": "07:30 · The user is: away (guess from signals: last message 326 min ago, 07:30 Asia/Tbilisi, deadline 09:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:31:38.803Z",
+      "content": "07:31 · The user is: away (guess from signals: last message 327 min ago, 07:31 Asia/Tbilisi, deadline 09:24 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:31:38.937Z",
+      "content": "07:31 · TODO status: 9 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:31:55.074Z",
+      "content": "07:31 · TODO status: 9 open · 3 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:33:44.049Z",
+      "content": "07:33 · The user is: away (guess from signals: last message 329 min ago, 07:33 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:33:53.449Z",
+      "content": "07:33 · The user is: away (guess from signals: last message 329 min ago, 07:33 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:33:53.508Z",
+      "content": "07:33 · TODO status: 9 open · 3 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:33:55.906Z",
+      "content": "07:33 · The user is: away (guess from signals: last message 329 min ago, 07:33 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:33:55.942Z",
+      "content": "07:33 · TODO status: 9 open · 3 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:34:13.425Z",
+      "content": "07:34 · TODO status: 9 open · 4 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:38:23.262Z",
+      "content": "07:38 · TODO status: 9 open · 4 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:40:03.198Z",
+      "content": "07:40 · The user is: away (guess from signals: last message 335 min ago, 07:40 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:40:03.284Z",
+      "content": "07:40 · TODO status: 9 open · 3 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:40:05.999Z",
+      "content": "07:40 · The user is: away (guess from signals: last message 335 min ago, 07:40 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:40:06.033Z",
+      "content": "07:40 · TODO status: 9 open · 3 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:40:16.947Z",
+      "content": "07:40 · The user is: away (guess from signals: last message 335 min ago, 07:40 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:40:17.150Z",
+      "content": "07:40 · TODO status: 9 open · 3 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:43:43.422Z",
+      "content": "07:43 · TODO status: 9 open · 2 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:43:48.784Z",
+      "content": "07:43 · TODO status: 9 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:44:05.849Z",
+      "content": "07:44 · TODO status: 9 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:44:13.971Z",
+      "content": "07:44 · TODO status: 9 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:44:16.792Z",
+      "content": "07:44 · TODO status: 9 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:44:23.327Z",
+      "content": "07:44 · TODO status: 9 open · 2 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:44:26.541Z",
+      "content": "07:44 · The user is: away (guess from signals: last message 339 min ago, 07:44 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:44:26.637Z",
+      "content": "07:44 · TODO status: 10 open · 2 active workers · 3 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:44:32.142Z",
+      "content": "07:44 · The user is: away (guess from signals: last message 339 min ago, 07:44 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:44:32.181Z",
+      "content": "07:44 · TODO status: 10 open · 2 active workers · 3 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:45:03.860Z",
+      "content": "07:45 · The user is: away (guess from signals: last message 340 min ago, 07:45 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:45:03.983Z",
+      "content": "07:45 · TODO status: 10 open · 3 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:45:12.178Z",
+      "content": "07:45 · The user is: away (guess from signals: last message 340 min ago, 07:45 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:45:12.219Z",
+      "content": "07:45 · TODO status: 10 open · 3 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:47:38.123Z",
+      "content": "07:47 · TODO status: 10 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:47:43.888Z",
+      "content": "07:47 · TODO status: 10 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:47:48.364Z",
+      "content": "07:47 · TODO status: 10 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:48:00.271Z",
+      "content": "07:48 · TODO status: 10 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:48:10.941Z",
+      "content": "07:48 · TODO status: 10 open · 3 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:48:15.007Z",
+      "content": "07:48 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:48:19.359Z",
+      "content": "07:48 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:48:23.770Z",
+      "content": "07:48 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:49:08.088Z",
+      "content": "07:49 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:49:12.165Z",
+      "content": "07:49 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:52:23.430Z",
+      "content": "07:52 · The user is: away (guess from signals: last message 347 min ago, 07:52 Asia/Tbilisi, deadline 11:50 on track) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:52:23.491Z",
+      "content": "07:52 · TODO status: 10 open · 3 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:53:03.406Z",
+      "content": "07:53 · TODO status: 10 open · 2 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:53:06.311Z",
+      "content": "07:53 · TODO status: 10 open · 2 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:53:16.719Z",
+      "content": "07:53 · TODO status: 10 open · 1 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:53:28.860Z",
+      "content": "07:53 · TODO status: 10 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:53:34.439Z",
+      "content": "07:53 · TODO status: 10 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:55:28.995Z",
+      "content": "07:55 · TODO status: 10 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T03:56:59.062Z",
+      "content": "07:56 · The user is: away (guess from signals: last message 352 min ago, 07:56 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:56:59.147Z",
+      "content": "07:56 · TODO status: 10 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:57:28.935Z",
+      "content": "07:57 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:57:58.930Z",
+      "content": "07:57 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:58:29.327Z",
+      "content": "07:58 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:58:49.154Z",
+      "content": "07:58 · TODO status: 10 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:58:53.825Z",
+      "content": "07:58 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:59:09.260Z",
+      "content": "07:59 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:59:29.240Z",
+      "content": "07:59 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T03:59:35.182Z",
+      "content": "07:59 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T04:00:19.338Z",
+      "content": "08:00 · The user is: away (guess from signals: last message 355 min ago, 08:00 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:00:19.411Z",
+      "content": "08:00 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:00:40.224Z",
+      "content": "08:00 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T04:08:22.985Z",
+      "content": "08:08 · The user is: away (guess from signals: last message 363 min ago, 08:08 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:08:23.050Z",
+      "content": "08:08 · TODO status: 10 open · 0 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:08:34.920Z",
+      "content": "08:08 · TODO status: 10 open · 0 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:08:43.826Z",
+      "content": "08:08 · TODO status: 10 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:09:01.169Z",
+      "content": "08:09 · TODO status: 10 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:09:09.731Z",
+      "content": "08:09 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:09:14.687Z",
+      "content": "08:09 · TODO status: 10 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:09:17.423Z",
+      "content": "08:09 · TODO status: 10 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:09:20.107Z",
+      "content": "08:09 · TODO status: 10 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:09:29.744Z",
+      "content": "08:09 · TODO status: 10 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:09:31.723Z",
+      "content": "08:09 · TODO status: 10 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T04:14:28.502Z",
+      "content": "08:14 · The user is: away (guess from signals: last message 369 min ago, 08:14 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:14:28.608Z",
+      "content": "08:14 · TODO status: 10 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:14:34.623Z",
+      "content": "08:14 · TODO status: 10 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:14:40.627Z",
+      "content": "08:14 · TODO status: 10 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:14:55.811Z",
+      "content": "08:14 · TODO status: 10 open · 2 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:15:03.244Z",
+      "content": "08:15 · TODO status: 10 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:15:08.962Z",
+      "content": "08:15 · TODO status: 10 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:15:18.432Z",
+      "content": "08:15 · TODO status: 10 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:15:48.716Z",
+      "content": "08:15 · TODO status: 10 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom",
+      "customType": "user_todo_edit",
+      "timestamp": "2026-11-07T04:16:00.162Z",
+      "data": {
+        "phases": [
+          {
+            "name": "Follow-ups",
+            "tasks": [
+              {
+                "content": "Facility orbit paints 30 fps: labels stop blocking frames",
+                "status": "pending",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 300,
+                    "likelySeconds": 900,
+                    "pessimisticSeconds": 1800,
+                    "confidence": "medium",
+                    "basis": "one qa-auditor pass on existing receipts, 1-15 min by the qa-auditor anchors",
+                    "updatedAt": 1794021089588
+                  },
+                  "dependencies": [
+                    "Orbit fps measured on Darafei's Mac during a call"
+                  ]
+                }
+              },
+              {
+                "content": "Facility labels after rotation: leaders cross the building",
+                "status": "pending",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 1200,
+                    "likelySeconds": 1800,
+                    "pessimisticSeconds": 3000,
+                    "confidence": "medium",
+                    "basis": "AdaptiveLand (~15-25 min) then fast-forward ROOT and the runtime re-audit (~5 min)",
+                    "updatedAt": 1794021199223
+                  },
+                  "dependencies": [
+                    "Levels never refused: layout grows to fit counts"
+                  ]
+                }
+              },
+              {
+                "content": "Orbit fps measured on Darafei's Mac during a call",
+                "status": "blocked",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 300,
+                    "likelySeconds": 900,
+                    "pessimisticSeconds": 1800,
+                    "confidence": "low",
+                    "basis": "Darafei pastes mac-probe.js into DevTools during a call, 3 runs of main and the fix x 10 s plus setup; the agent then records the numbers",
+                    "updatedAt": 1794023071696
+                  },
+                  "dependencies": []
+                }
+              }
+            ]
+          },
+          {
+            "name": "Maksim call 06-11",
+            "tasks": [
+              {
+                "content": "Maksim: pipes stick out of the building",
+                "status": "pending",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 900,
+                    "likelySeconds": 1500,
+                    "pessimisticSeconds": 2700,
+                    "confidence": "medium",
+                    "basis": "r5 at 2ccfeb47c: roof scenes 0 m outside; open items are a generic oracle routeEnds rewrite plus fixing 4 yard-trunk excesses in cooling-trunk routing, unit + 2 scene keys, then one 6-key yard browser run (~1 min run, ~5 min setup)",
+                    "updatedAt": 1794023303630
+                  },
+                  "dependencies": []
+                }
+              },
+              {
+                "content": "Cooling pipes: consolidated realistic trunks, warm and cold both shown",
+                "status": "in_progress",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 900,
+                    "likelySeconds": 2100,
+                    "pessimisticSeconds": 3500,
+                    "confidence": "low",
+                    "basis": "Lands with the pipes branch (wt/PipeGoldens rebased on 95f835d3d), then one trunk proof on the integrated head; pipes has 4 red keys left",
+                    "updatedAt": 1794014808631
+                  },
+                  "dependencies": [
+                    "Maksim: pipes stick out of the building"
+                  ]
+                }
+              },
+              {
+                "content": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.",
+                "status": "in_progress",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 1500,
+                    "likelySeconds": 3000,
+                    "pessimisticSeconds": 5400,
+                    "confidence": "low",
+                    "basis": "verified after labels and levels land; the camera fit check comes after integration",
+                    "updatedAt": 1794016451059
+                  },
+                  "dependencies": [
+                    "Levels that cannot fit show as conflict/risk, not silent revert"
+                  ]
+                }
+              },
+              {
+                "content": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the building extends beyond the narrow viewport, leaving only part of the floor visible and communication pipes covering much of the rack area. Before, the whole building footprint was visible.",
+                "status": "pending",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 60,
+                    "likelySeconds": 300,
+                    "pessimisticSeconds": 900,
+                    "confidence": "medium",
+                    "basis": "same fix and oracle at 430 inside sibling's change; only verification after it",
+                    "updatedAt": 1793985749765
+                  },
+                  "dependencies": [
+                    "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together."
+                  ]
+                }
+              },
+              {
+                "content": "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor",
+                "status": "in_progress",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 1020,
+                    "likelySeconds": 2040,
+                    "pessimisticSeconds": 3540,
+                    "confidence": "low",
+                    "basis": "Painted-label oracle plus 7 new product-root keys to fix",
+                    "updatedAt": 1794010215368
+                  },
+                  "dependencies": [
+                    "Facility labels after rotation: leaders cross the building"
+                  ]
+                }
+              },
+              {
+                "content": "Levels that cannot fit show as conflict/risk, not silent revert",
+                "status": "in_progress",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 900,
+                    "likelySeconds": 1800,
+                    "pessimisticSeconds": 3000,
+                    "confidence": "low",
+                    "basis": "e2e run plus stale-key migration plus rerun, then cherry-pick",
+                    "updatedAt": 1794011316400
+                  },
+                  "dependencies": [
+                    "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor"
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "name": "Adaptive levels",
+            "tasks": [
+              {
+                "content": "Levels never refused: layout grows to fit counts",
+                "status": "in_progress",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 474,
+                    "likelySeconds": 474,
+                    "pessimisticSeconds": 948,
+                    "confidence": "low",
+                    "basis": "Measured floor: p50 8m; remaining is one qa-auditor pass on 435440718",
+                    "updatedAt": 1794024908646
+                  },
+                  "dependencies": []
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:16:00.734Z",
+      "content": "08:16 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:16:19.486Z",
+      "content": "08:16 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:16:44.535Z",
+      "content": "08:16 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:16:53.252Z",
+      "content": "08:16 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:17:02.832Z",
+      "content": "08:17 · TODO status: 10 open · 3 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T04:19:45.555Z",
+      "content": "08:19 · The user is: away (guess from signals: last message 375 min ago, 08:19 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:19:45.644Z",
+      "content": "08:19 · TODO status: 10 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:19:54.844Z",
+      "content": "08:19 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:20:08.828Z",
+      "content": "08:20 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:21:55.643Z",
+      "content": "08:21 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T04:25:15.339Z",
+      "content": "08:25 · The user is: away (guess from signals: last message 380 min ago, 08:25 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:25:15.426Z",
+      "content": "08:25 · TODO status: 10 open · 0 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:25:25.618Z",
+      "content": "08:25 · TODO status: 10 open · 0 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:26:46.258Z",
+      "content": "08:26 · TODO status: 10 open · 0 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:27:05.322Z",
+      "content": "08:27 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T04:30:46.244Z",
+      "content": "08:30 · The user is: away (guess from signals: last message 386 min ago, 08:30 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:30:46.339Z",
+      "content": "08:30 · TODO status: 10 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:31:26.305Z",
+      "content": "08:31 · TODO status: 9 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:31:46.262Z",
+      "content": "08:31 · TODO status: 9 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:32:08.285Z",
+      "content": "08:32 · TODO status: 9 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:32:12.357Z",
+      "content": "08:32 · TODO status: 9 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:32:15.904Z",
+      "content": "08:32 · TODO status: 9 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:35:29.460Z",
+      "content": "08:35 · TODO status: 9 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T04:37:48.619Z",
+      "content": "08:37 · The user is: away (guess from signals: last message 393 min ago, 08:37 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:37:48.693Z",
+      "content": "08:37 · TODO status: 9 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:39:48.780Z",
+      "content": "08:39 · TODO status: 9 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:41:28.792Z",
+      "content": "08:41 · TODO status: 8 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:41:48.707Z",
+      "content": "08:41 · TODO status: 8 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:42:10.044Z",
+      "content": "08:42 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T04:44:10.385Z",
+      "content": "08:44 · The user is: away (guess from signals: last message 399 min ago, 08:44 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:44:10.464Z",
+      "content": "08:44 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:46:30.527Z",
+      "content": "08:46 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:47:00.952Z",
+      "content": "08:47 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T04:51:40.503Z",
+      "content": "08:51 · The user is: away (guess from signals: last message 407 min ago, 08:51 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:51:40.569Z",
+      "content": "08:51 · TODO status: 8 open · 0 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:54:00.647Z",
+      "content": "08:54 · TODO status: 8 open · 0 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:54:03.696Z",
+      "content": "08:54 · TODO status: 8 open · 0 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:54:11.615Z",
+      "content": "08:54 · TODO status: 9 open · 0 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:54:26.485Z",
+      "content": "08:54 · TODO status: 9 open · 0 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:54:37.438Z",
+      "content": "08:54 · TODO status: 9 open · 0 active workers · 2 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:55:03.673Z",
+      "content": "08:55 · TODO status: 8 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:55:16.816Z",
+      "content": "08:55 · TODO status: 8 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T04:56:43.448Z",
+      "content": "08:56 · The user is: away (guess from signals: last message 412 min ago, 08:56 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:56:43.518Z",
+      "content": "08:56 · TODO status: 8 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:57:43.597Z",
+      "content": "08:57 · TODO status: 8 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:58:23.582Z",
+      "content": "08:58 · TODO status: 8 open · 1 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T04:59:53.556Z",
+      "content": "08:59 · TODO status: 8 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:00:13.605Z",
+      "content": "09:00 · TODO status: 8 open · 1 active workers · 1 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:00:46.838Z",
+      "content": "09:00 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:00:50.078Z",
+      "content": "09:00 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T05:02:36.795Z",
+      "content": "09:02 · The user is: away (guess from signals: last message 418 min ago, 09:02 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:02:36.887Z",
+      "content": "09:02 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:02:56.827Z",
+      "content": "09:02 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:05:02.696Z",
+      "content": "09:05 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:05:17.375Z",
+      "content": "09:05 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:05:25.636Z",
+      "content": "09:05 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:05:46.902Z",
+      "content": "09:05 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:08:21.019Z",
+      "content": "09:08 · TODO status: 8 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "goal-deadline-time-note",
+      "timestamp": "2026-11-07T05:08:33.077Z",
+      "content": "09:08 · The user is: watching (guess from signals: last message 0 min ago, 09:08 Asia/Tbilisi, deadline not set) — the user's own words in the conversation outrank this guess."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:08:33.360Z",
+      "content": "09:08 · TODO status: 6 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:08:46.251Z",
+      "content": "09:08 · TODO status: 6 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom_message",
+      "customType": "todo-dispatch-time-note",
+      "timestamp": "2026-11-07T05:08:49.631Z",
+      "content": "09:08 · TODO status: 6 open · 2 active workers · 0 ready without a verified owner · 0 lost owners."
+    },
+    {
+      "type": "custom",
+      "customType": "user_todo_edit",
+      "timestamp": "2026-11-07T05:08:53.045Z",
+      "data": {
+        "phases": [
+          {
+            "name": "Follow-ups",
+            "tasks": [
+              {
+                "content": "Facility labels after rotation: leaders cross the building",
+                "status": "in_progress",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 1800,
+                    "likelySeconds": 3000,
+                    "pessimisticSeconds": 3600,
+                    "confidence": "low",
+                    "basis": "4 code defects with known lines: unit tests+fix ~20 min, browser spec base+candidate ~15 min, screenshots ~5 min; task median 10, p75 23",
+                    "updatedAt": 1794027925254
+                  },
+                  "dependencies": []
+                }
+              }
+            ]
+          },
+          {
+            "name": "Maksim call 06-11",
+            "tasks": [
+              {
+                "content": "Cooling pipes: consolidated realistic trunks, warm and cold both shown",
+                "status": "in_progress",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 1500,
+                    "likelySeconds": 2400,
+                    "pessimisticSeconds": 3300,
+                    "confidence": "low",
+                    "basis": "worker read all code by 09:00; remaining tests+2 builders regrouping ~20 min, vitest+tsc+lint 8 min, footprint e2e+2 captures 10 min",
+                    "updatedAt": 1794027925254
+                  },
+                  "dependencies": []
+                }
+              },
+              {
+                "content": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.",
+                "status": "in_progress",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 1500,
+                    "likelySeconds": 3000,
+                    "pessimisticSeconds": 5400,
+                    "confidence": "low",
+                    "basis": "verified after labels and levels land; the camera fit check comes after integration",
+                    "updatedAt": 1794016451059
+                  },
+                  "dependencies": [
+                    "Levels that cannot fit show as conflict/risk, not silent revert"
+                  ]
+                }
+              },
+              {
+                "content": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the building extends beyond the narrow viewport, leaving only part of the floor visible and communication pipes covering much of the rack area. Before, the whole building footprint was visible.",
+                "status": "pending",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 600,
+                    "likelySeconds": 1200,
+                    "pessimisticSeconds": 2400,
+                    "confidence": "low",
+                    "basis": "same camera fit at 430 width; reuses the wide-viewport fix, adds narrow capture and bbox check",
+                    "updatedAt": 1794027925254
+                  },
+                  "dependencies": [
+                    "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together."
+                  ]
+                }
+              },
+              {
+                "content": "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor",
+                "status": "in_progress",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 900,
+                    "likelySeconds": 1800,
+                    "pessimisticSeconds": 3000,
+                    "confidence": "low",
+                    "basis": "floor-buttons spec exists; scene level selection fix ~15 min + floor-buttons e2e 10 min",
+                    "updatedAt": 1794027925254
+                  },
+                  "dependencies": [
+                    "Facility labels after rotation: leaders cross the building"
+                  ]
+                }
+              },
+              {
+                "content": "Levels that cannot fit show as conflict/risk, not silent revert",
+                "status": "in_progress",
+                "schedule": {
+                  "estimate": {
+                    "optimisticSeconds": 1200,
+                    "likelySeconds": 2100,
+                    "pessimisticSeconds": 3300,
+                    "confidence": "low",
+                    "basis": "Risk/Levels conflict path partly done in R275 commit 435440718; remaining surfacing ~20 min + journey 10 min",
+                    "updatedAt": 1794027925254
+                  },
+                  "dependencies": [
+                    "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor"
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "phases": [
+    {
+      "name": "Follow-ups",
+      "tasks": [
+        {
+          "content": "Facility labels after rotation: leaders cross the building",
+          "status": "in_progress",
+          "schedule": {
+            "firstRequirementAt": 1793965507771,
+            "dependencies": [],
+            "owner": "LabelsBrowserProof-5",
+            "reestimateCount": 1,
+            "estimateRevision": 17,
+            "estimate": {
+              "optimisticSeconds": 1800,
+              "likelySeconds": 3000,
+              "pessimisticSeconds": 3600,
+              "confidence": "low",
+              "basis": "4 code defects with known lines: unit tests+fix ~20 min, browser spec base+candidate ~15 min, screenshots ~5 min; task median 10, p75 23",
+              "updatedAt": 1794027925254
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "LeaderCrossFix-2:1793967820822",
+                "workerName": "LeaderCrossFix-2",
+                "resolvedModel": "anthropic/claude-sonnet-5-5",
+                "effort": "medium",
+                "startedAt": 1793967820822,
+                "finishedAt": 1793970809736,
+                "durationMs": 2991920,
+                "terminalStatus": "failed",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/LeaderCrossFix-2.md"
+                ],
+                "infraFailureError": "Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Handover refused: resolve these shared resources before submitting again. Peer clash: agent://UxGraphModel; resource=port:24678. Agree with this peer before handing back. Send a direct message and receive its reply, or include deconfliction: [{peer: \"UxGraphModel\", resource: \"port:24678\", agreement: \"what you agreed\"}] with your yield. Peer messages do not release declared writer ownership. The lead must still resolve known overlap before dispatch.",
+                "infraFailureLine": "attempt 1 failed: Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Handover refused: resolve these shared resources before submitting again. Peer clash: agent://UxGraphModel; resource=port:24678. Agree with this peer before handing back. Send a direct message and receive its reply, or include deconfliction: [{peer: \"UxGraphModel\", resource: \"port:24678\", agreement: \"what you agreed\"}] with your yield. Peer messages do not release declared writer ownership. The lead must still resolve known overlap before dispatch."
+              },
+              {
+                "attemptId": "LeaderCrossFix-3:1793971297843",
+                "workerName": "LeaderCrossFix-3",
+                "resolvedModel": "codex-lb/gpt-6.1-terra",
+                "effort": "medium",
+                "startedAt": 1793971297843,
+                "finishedAt": 1793971638934,
+                "durationMs": 342164,
+                "terminalStatus": "aborted",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/LeaderCrossFix-3.md"
+                ],
+                "infraFailureError": "BLOCKED: awaiting lead answer: Should I proceed with the requested full behavior repair despite these regressions? Asked twice; no reply. No paths changed; existing commit ea242acc9d227214dfe5a9c822bbbcbe6255bb53 remains on clean detached worktree. Prior fix5 trace shows crossings 0→7 and failure; prior fix3 oracle passed 0→0, but fix4 gate had rotate-held and adaptive-room failures. Base interaction failures: 182, 213, 316, 781; prior candidate fix3 has the same four. Inspected prior 1440px rotated screenshots in fix3 and fix5: long leaders remain visible across the hall; no 430px screenshot inspected. Commands in this attempt: git log/status exit 0; focused Vitest 24/24 exit 0; npx tsc -b && npm run lint exit 0 (five warnings); isolated build exit 0. No server started, port 24678 never bound. Remaining: repair regressions, full oracle and interaction comparison, rebase, post-rebase proof, fresh 1440/430 screenshots, patch and required oracle report/exit/served receipts. No patch generated.",
+                "infraFailureLine": "attempt 2 failed: BLOCKED: awaiting lead answer: Should I proceed with the requested full behavior repair despite these regressions? Asked twice; no reply. No paths changed; existing commit ea242acc9d227214dfe5a9c822bbbcbe6255bb53 remains on clean detached worktree. Prior fix5 trace shows crossings 0→7 and failure; prior fix3 oracle passed 0→0, but fix4 gate had rotate-held and adaptive-room failures. Base interaction failures: 182, 213, 316, 781; prior candidate fix3 has the same four. Inspected prior 1440px rotated screenshots in fix3 and fix5: long leaders remain visible across the hall; no 430px screenshot inspected. Commands in this attempt: git log/status exit 0; focused Vitest 24/24 exit 0; npx tsc -b && npm run lint exit 0 (five warnings); isolated build exit 0. No server started, port 24678 never bound. Remaining: repair regressions, full oracle and interaction comparison, rebase, post-rebase proof, fresh 1440/430 screenshots, patch and required oracle report/exit/served receipts. No patch generated."
+              },
+              {
+                "attemptId": "GreatHalibut-5:1793996336756",
+                "workerName": "GreatHalibut-5",
+                "resolvedModel": "xai-oauth/grok-4.7",
+                "effort": "medium",
+                "startedAt": 1793996336756,
+                "finishedAt": 1793996340535,
+                "durationMs": 23459,
+                "terminalStatus": "failed",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/GreatHalibut-5.md"
+                ],
+                "infraFailureError": "provider unavailable (quota)",
+                "infraFailureLine": "attempt 3 failed: provider unavailable (quota)"
+              },
+              {
+                "attemptId": "AdaptiveBatchLand-8-2:1794014089836",
+                "workerName": "AdaptiveBatchLand-8-2",
+                "resolvedModel": "codex-lb/gpt-6.1-terra",
+                "effort": "medium",
+                "startedAt": 1794014089836,
+                "finishedAt": 1794014368037,
+                "durationMs": 319841,
+                "terminalStatus": "aborted",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/AdaptiveBatchLand-8-2.md"
+                ],
+                "infraFailureError": "Blocked before edits: the edit tool refuses the explicitly assigned worktree because the task row does not declare /home/kom/proj/sunbim/wt/AdaptiveBatch as a resource. Requested a scope grant from Main; no grant received. Worktree is clean on adaptive-batch-2026-11-07 at 6cdb69d6c; no commits, tests, screenshots, or crossing counts produced. Retro: previous attempt preserved the PRD and identified the three fixes; restart lost execution, and this attempt is blocked by the resource ownership gate.",
+                "infraFailureLine": "attempt 4 failed: Blocked before edits: the edit tool refuses the explicitly assigned worktree because the task row does not declare /home/kom/proj/sunbim/wt/AdaptiveBatch as a resource. Requested a scope grant from Main; no grant received. Worktree is clean on adaptive-batch-2026-11-07 at 6cdb69d6c; no commits, tests, screenshots, or crossing counts produced. Retro: previous attempt preserved the PRD and identified the three fixes; restart lost execution, and this attempt is blocked by the resource ownership gate."
+              }
+            ],
+            "progress": {
+              "at": 1794027568379,
+              "evidence": "audit fail at 2222fb3f05ce: Identity: ROOT HEAD=2222fb3f05cef1004739665a588c67d973f9b214. The served preview on :47418 was PID 2643741, running from cwd /home/kom/proj/sunbim/datacenter-decision-graph at that HEAD. Lane commit 25d0ac536 is not an ancestor of HEAD (merge-base exit 1). `git cherry -v HEAD 25d0ac536` marks a90c78dd4, 114e333e1, 52e9dbc66, 7efa941f6 and 25d0ac536 all '-', so their patch equivalents are in HEAD. The spec assertions cited in the evidence are present at e2e/facility-label-rotate-overlap.spec.ts:510-512 (foreignRooms, distantInterior, leader length <=48). The matching PRD clauses are doc/product-requirements.md:558 (leaders stay out of foreign rooms; a leader starting inside a room or hall is at most 48 px) and :441 (carried slots kept during a gesture). The user's complaint (crossing-hell after rotating) is fixed at HEAD: the orbit tests passed at 1440, 1920 and 430. I looked at after-orbit-1440, after-orbit-1920 and after-orbit-430; leaders do not cross each other and do not run across the halls. At 430 the '9 Generators' and 'Utility services' leaders are long, but they run outside the building, and the test's distantInterior check passed. Defect: the evidence claimed the spec exits 0, but at HEAD the whole spec exits 1. report.json stats: expected 11, unexpected 1, flaky 0. The failing test is 'Facility callouts keep their resting layout when a drag starts at 1568' (spec:339). The assertion at :398, 'drag start keeps the visible label set', fails because the 'site-access' label disappears when the rotate drag starts. This contradicts PRD:441, which says carried slots and visible names are kept from the first camera input. A --repeat-each 2 rerun of :339 failed 4 out of 4: 1568 failed again at :398 with 'site-access' missing, both times. 430 failed at :392 with 'labels visible at rest' = 0; it passed in the first run, so the 430 result is unstable. So a label still drops when a rotation starts, and the rotation-label spec named in the evidence is red at HEAD. I did not run lint or tsc (read-only audit). I also did not classify this failure against a base worktree, so I cannot say whether it existed before the lane."
+            },
+            "audit": {
+              "delivery": "[\"LabelsBrowserProof-4\",1794025948180,1794026920025]",
+              "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+              "head": "2222fb3f05cef1004739665a588c67d973f9b214",
+              "startedAt": 1794026932292,
+              "verdict": "fail",
+              "agent": "qa-auditor",
+              "attempts": 1,
+              "evidence": "07:13 The audit read ROOT 4f39f0c03, which does not yet contain the labels lane. In the lane, AdaptiveBatch@25d0ac536, there is no `relaxedViewport`: rescue checks facilityLabelPlacementViolation(placement, bounds) at facilityLabelLayout.ts:1035, and the spec asserts selectedGeometry.foreignRooms and distantInterior at facility-label-rotate-overlap.spec.ts:510-511 plus leader length <= 48 at :512. Browser runs at 1920/1440/430: exit 0, 0 crossings, 0 foreign rooms (evidence/25d0ac536.../labels-r4). AdaptiveLand is landing the lane into ROOT; the audit repeats after ROOT moves.",
+              "workerId": "GivenBarnacle",
+              "findings": "Identity: ROOT HEAD=2222fb3f05cef1004739665a588c67d973f9b214. The served preview on :47418 was PID 2643741, running from cwd /home/kom/proj/sunbim/datacenter-decision-graph at that HEAD. Lane commit 25d0ac536 is not an ancestor of HEAD (merge-base exit 1). `git cherry -v HEAD 25d0ac536` marks a90c78dd4, 114e333e1, 52e9dbc66, 7efa941f6 and 25d0ac536 all '-', so their patch equivalents are in HEAD. The spec assertions cited in the evidence are present at e2e/facility-label-rotate-overlap.spec.ts:510-512 (foreignRooms, distantInterior, leader length <=48). The matching PRD clauses are doc/product-requirements.md:558 (leaders stay out of foreign rooms; a leader starting inside a room or hall is at most 48 px) and :441 (carried slots kept during a gesture). The user's complaint (crossing-hell after rotating) is fixed at HEAD: the orbit tests passed at 1440, 1920 and 430. I looked at after-orbit-1440, after-orbit-1920 and after-orbit-430; leaders do not cross each other and do not run across the halls. At 430 the '9 Generators' and 'Utility services' leaders are long, but they run outside the building, and the test's distantInterior check passed. Defect: the evidence claimed the spec exits 0, but at HEAD the whole spec exits 1. report.json stats: expected 11, unexpected 1, flaky 0. The failing test is 'Facility callouts keep their resting layout when a drag starts at 1568' (spec:339). The assertion at :398, 'drag start keeps the visible label set', fails because the 'site-access' label disappears when the rotate drag starts. This contradicts PRD:441, which says carried slots and visible names are kept from the first camera input. A --repeat-each 2 rerun of :339 failed 4 out of 4: 1568 failed again at :398 with 'site-access' missing, both times. 430 failed at :392 with 'labels visible at rest' = 0; it passed in the first run, so the 430 result is unstable. So a label still drops when a rotation starts, and the rotation-label spec named in the evidence is red at HEAD. I did not run lint or tsc (read-only audit). I also did not classify this failure against a base worktree, so I cannot say whether it existed before the lane.",
+              "at": 1794027568379
+            },
+            "visibleAt": 1794011864911
+          }
+        }
+      ]
+    },
+    {
+      "name": "Maksim call 06-11",
+      "tasks": [
+        {
+          "content": "Cooling pipes: consolidated realistic trunks, warm and cold both shown",
+          "status": "in_progress",
+          "schedule": {
+            "firstRequirementAt": 1793977913951,
+            "dependencies": [],
+            "owner": "CoolingTrunksJourney-3",
+            "reestimateCount": 1,
+            "estimateRevision": 11,
+            "estimate": {
+              "optimisticSeconds": 1500,
+              "likelySeconds": 2400,
+              "pessimisticSeconds": 3300,
+              "confidence": "low",
+              "basis": "worker read all code by 09:00; remaining tests+2 builders regrouping ~20 min, vitest+tsc+lint 8 min, footprint e2e+2 captures 10 min",
+              "updatedAt": 1794027925254
+            },
+            "progress": {
+              "at": 1794027254658,
+              "evidence": "requirement_violation: src/packages/datacenter/facilityScene/dataCenterMaksimReferenceScene.ts:1063–1104 groups mains by individual plantId and emits a separate supply/return pair for each heat-rejection unit, rather than consolidating units into duty-row headers. Its lines 992–1007 also connect otherwise-unused units directly to room loads. The generic path independently groups by plantId at src/packages/datacenter/facilityScene/dataCenterFacilitySceneConnections.ts:1982–2028. This does not implement doc/product-requirements.md:200–206: one pair per duty row per independent train, pairCount = trainMultiplier × ceil(dutyUnitCount / unitsPerHeaderRow), with standby joining its train header. Repository search finds sizeDataCenterCoolingTrunksV1 only at its definition and in coolingTrunkSizing.test.ts, not in production callers. The inspected facility-pipe-60mw-adaptive-3-yard-1440.png and -430.png goldens show numerous parallel cooling runs covering the halls; they do not establish the required row-level consolidation.\nrequirement_violation: src/packages/datacenter/facilityScene/dataCenterMaksimReferenceScene.ts:1098 sizes a main as min(0.35, max(0.115, 0.06 × sqrt(routes.length))); dataCenterFacilitySceneConnections.ts:2018 uses the same formula with ids.length. Both measure connection count, not served thermal duty or coolant flow, and impose a fixed upper clamp. facilityScene.ts:2264 passes authored.radius directly to the rendered route. This contradicts doc/product-requirements.md:203–207, which requires package-derived flow sizing and radius proportional to sqrt(served duty) at fixed temperature rise and velocity. The duty-based helper at dataCenterFacilityEquipmentSizing.ts:283–295 is tested in isolation but is not called by either production builder."
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "CoolingTrunksRealistic-2:1793978736097",
+                "workerName": "CoolingTrunksRealistic-2",
+                "resolvedModel": "codex-lb/gpt-6.1-terra",
+                "effort": "medium",
+                "startedAt": 1793978736097,
+                "finishedAt": 1793978859349,
+                "durationMs": 178135,
+                "terminalStatus": "aborted",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/CoolingTrunksRealistic-2.md"
+                ],
+                "infraFailureError": "The operation was aborted.",
+                "infraFailureLine": "attempt 1 failed: The operation was aborted."
+              }
+            ],
+            "audit": {
+              "delivery": "[\"CoolingTrunksJourney-2\",1794026559957,1794027090047]",
+              "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+              "head": "2222fb3f05cef1004739665a588c67d973f9b214",
+              "startedAt": 1794027100586,
+              "verdict": "fail",
+              "agent": "qa-auditor",
+              "attempts": 1,
+              "evidence": "Audit 05:21: 95f835d3d not in HEAD. It is carried by PipeHeaderRouting-2's branch.",
+              "workerId": "NearSole",
+              "findings": "Identity: ROOT HEAD=2222fb3f05cef1004739665a588c67d973f9b214, clean tree. The named commit 95f835d3d is not an ancestor of HEAD (merge-base exit 1). Its content reached HEAD as cherry-pick 77d14444d, which has the same title, touches the same one file (dataCenterMaksimReferenceScene.ts, +53/-3) and has a '(cherry picked from 95f835d3d)' trailer. Companion commit 530e9b4d9 reached HEAD as f5824909c.\n\nThe model-level oracle passes. src/__tests__/coolingTrunks.test.ts ran 11/11: supply count equals return count, every rejector is connected on both supply and return, footprint crossings are zero, segments are orthogonal, nothing runs outside the shell, and supply and return mains are paired.\n\nThe e2e 'AI Project draws paired cooling mains and a see-through buried return in Heat' (product-root.spec.ts:3446) passed at 1440 and 430. report.json stats: expected 2, unexpected 0; exit-code.txt is 0.\n\nThe visible requirement is not met. The user asked why everything is only blue when the warm orange pipes should be about as many. In my own HEAD screenshots in Heat, the hall pipework is almost all cold cyan (#28d8ff). Warm return (#ffb347) shows only as small orange stubs and fittings. The buried return draws as faint, barely visible red see-through lines. Pixel count on the hall crop of the 1440 capture (600,420–1100,780, scaled 2x): about 103 warm-orange pixels against about 6053 cyan. On the whole canvas: warm 521 vs cold 1849 at 1440, and warm 111 vs cold 585 at 430. The canvas counts include orange generators and cyan label leader lines.\n\nSo warm and cold are equal in the scene data but not in what the user sees. The complaint 'всё только синее' still holds at HEAD in the Facility Heat view: Facility → 3D → Layers → Heat, loaded example configuration.\n\nSide note: dataCenterMaximProjectExample.test.ts has 2 failing tests at HEAD. They cover plan-label anchors and a q-cooling-method completeness gap. Neither is about cooling pipe geometry; I am reporting them, not counting them toward this verdict. The requirement's attached images (#1 and #2) were not available to this audit.",
+              "at": 1794027250099
+            },
+            "visibleAt": 1794024502414
+          }
+        },
+        {
+          "content": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.",
+          "status": "in_progress",
+          "schedule": {
+            "firstRequirementAt": 1793985378797,
+            "dependencies": [
+              "Levels that cannot fit show as conflict/risk, not silent revert"
+            ],
+            "reestimateCount": 2,
+            "estimateRevision": 9,
+            "estimate": {
+              "optimisticSeconds": 1500,
+              "likelySeconds": 3000,
+              "pessimisticSeconds": 5400,
+              "confidence": "low",
+              "basis": "verified after labels and levels land; the camera fit check comes after integration",
+              "updatedAt": 1794016451059
+            },
+            "owner": "AdaptiveBatchLand-7",
+            "progress": {
+              "at": 1794016451059,
+              "evidence": "Waiting for AdaptiveBatch labels proof (slot granted at 05:52)"
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "PushFitCamera:1793989939334",
+                "workerName": "PushFitCamera",
+                "resolvedModel": "codex-lb/gpt-6.1-terra",
+                "effort": "low",
+                "startedAt": 1793989939334,
+                "finishedAt": 1793990297528,
+                "durationMs": 427408,
+                "terminalStatus": "aborted",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/PushFitCamera.md"
+                ],
+                "infraFailureError": "BLOCKED: awaiting lead answer: Should publication wait for the build and full E2E gate? Asked twice; no reply. The requested gates passed on candidate f44e79b3c98d6bf89b605606e3f45a71d31d1ac1: npx tsc -b exit 0; npm run lint exit 0 (five warnings); npm run test:precommit exit 0 (222 files, 2239 tests). npm ci exit 0. Candidate branch fit-camera-levels was clean and based on e6eb91a246bbeacf8d39748214804e182eef0c34; fetch and ls-remote showed e6eb91a246bbeacf8d39748214804e182eef0c34 refs/heads/maksim-adaptive-hotfix-2026-11-06, so no rebase was needed. ROOT was clean and detached at e6eb91a246bbeacf8d39748214804e182eef0c34. No push or ROOT checkout occurred; no product files changed. Publication remains pending: repository instructions require a passing build and full E2E before push, neither authorized in this brief; predecessor explicitly reports full E2E pending. Reviews and CI for the current head were not read. Baseline and candidate camera evidence are in agent://FitCameraAfterLevels-2; causal comparison is that predecessor's finding, not independently verified here. Product conflicts: none observed. Retro: requested gates preserved intent and all passed; missing publication gates and lead decision prevented push. Rollback after a future successful push would be git push --force-with-lease=refs/heads/maksim-adaptive-hotfix-2026-11-06:f44e79b3c98d6bf89b605606e3f45a71d31d1ac1 git@bitbucket-sunbim:sunbim/xmova-app.git e6eb91a246bbeacf8d39748214804e182eef0c34:refs/heads/maksim-adaptive-hotfix-2026-11-06.",
+                "infraFailureLine": "attempt 1 failed: BLOCKED: awaiting lead answer: Should publication wait for the build and full E2E gate? Asked twice; no reply. The requested gates passed on candidate f44e79b3c98d6bf89b605606e3f45a71d31d1ac1: npx tsc -b exit 0; npm run lint exit 0 (five warnings); npm run test:precommit exit 0 (222 files, 2239 tests). npm ci exit 0. Candidate branch fit-camera-levels was clean and based on e6eb91a246bbeacf8d39748214804e182eef0c34; fetch and ls-remote showed e6eb91a246bbeacf8d39748214804e182eef0c34 refs/heads/maksim-adaptive-hotfix-2026-11-06, so no rebase was needed. ROOT was clean and detached at e6eb91a246bbeacf8d39748214804e182eef0c34. No push or ROOT checkout occurred; no product files changed. Publication remains pending: repository instructions require a passing build and full E2E before push, neither authorized in this brief; predecessor explicitly reports full E2E pending. Reviews and CI for the current head were not read. Baseline and candidate camera evidence are in agent://FitCameraAfterLevels-2; causal comparison is that predecessor's finding, not independently verified here. Product conflicts: none observed. Retro: requested gates preserved intent and all passed; missing publication gates and lead decision prevented push. Rollback after a future successful push would be git push --force-with-lease=refs/heads/maksim-adaptive-hotfix-2026-11-06:f44e79b3c98d6bf89b605606e3f45a71d31d1ac1 git@bitbucket-sunbim:sunbim/xmova-app.git e6eb91a246bbeacf8d39748214804e182eef0c34:refs/heads/maksim-adaptive-hotfix-2026-11-06."
+              }
+            ],
+            "audit": {
+              "delivery": "[\"PushFitCamera-9\",1794010108735,1794010806212]",
+              "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+              "head": "e6eb91a246bbeacf8d39748214804e182eef0c34",
+              "startedAt": 1794010831714,
+              "verdict": "fail",
+              "agent": "qa-auditor",
+              "attempts": 1,
+              "evidence": "PushFitCamera-9 started 04:06 at f44e79b3c. No receipt yet.",
+              "workerId": "StraightAntlion",
+              "findings": "Observed artifact: row \"Collateral for \\\"Maksim: Building layout broken, model incomplete\\\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@e6eb91a246bbeacf8d39748214804e182eef0c34. Acceptance: applying Levels 2 should preserve an overview containing the building and surrounding equipment, without dense routes obscuring the racks. Reproduced AI Project → Requested IT load 11 MW → Adaptive layout → Levels 2, Plant on roof No. My settled screenshots at 1440×900 and 430×932 show that this is still broken: at desktop the building and yard extend past the scene's left/bottom bounds and dense cyan/yellow routes cover the central rack block; at phone much of the building is behind the open structure panel and the overview does not contain the whole footprint and yards. Captures followed idle camera/callout readiness plus an additional 1.2-second wait; debug camera transitionProgress was 1, renderedFrame 43 at desktop and 48 at phone. The existing spec:377 passed both widths (report stats: expected 2, unexpected 0, skipped 0, flaky 0), but its immediate applied-state captures were blank and it does not enforce overview containment at this HEAD. Those blank captures were not treated as the defect: the independent settled captures establish the failure. Build, lint and 69 camera/level unit tests passed. f44e79b3c could not be resolved in this repository (ancestor command exit 128); supplied worker context identified a later 32f4cc4e6801a0c56a2e528608763a6c4ae0fa0e, also unavailable here (exit 128). Neither missing commit alone is the reason for fail. The independent script initially captured desktop successfully but timed out locating the phone Levels row; a second attempt also timed out. After explicitly waiting for the mounted phone sidebar, the phone capture succeeded. ROOT stayed clean at assigned HEAD. Production preview PID 4084471 served ROOT and was stopped after capture. No base revision was supplied; before/after pairs show the Levels interaction at HEAD, not a base-revision regression comparison.",
+              "at": 1794011574323
+            },
+            "visibleAt": 1794011864911
+          }
+        },
+        {
+          "content": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the building extends beyond the narrow viewport, leaving only part of the floor visible and communication pipes covering much of the rack area. Before, the whole building footprint was visible.",
+          "status": "pending",
+          "schedule": {
+            "firstRequirementAt": 1793985378797,
+            "dependencies": [
+              "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together."
+            ],
+            "reestimateCount": 1,
+            "estimateRevision": 3,
+            "estimate": {
+              "optimisticSeconds": 600,
+              "likelySeconds": 1200,
+              "pessimisticSeconds": 2400,
+              "confidence": "low",
+              "basis": "same camera fit at 430 width; reuses the wide-viewport fix, adds narrow capture and bbox check",
+              "updatedAt": 1794027925254
+            },
+            "owner": "FitCameraAfterLevels",
+            "visibleAt": 1794011864911
+          }
+        },
+        {
+          "content": "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor",
+          "status": "in_progress",
+          "schedule": {
+            "firstRequirementAt": 1793990656712,
+            "dependencies": [
+              "Facility labels after rotation: leaders cross the building"
+            ],
+            "reestimateCount": 2,
+            "estimateRevision": 7,
+            "estimate": {
+              "optimisticSeconds": 900,
+              "likelySeconds": 1800,
+              "pessimisticSeconds": 3000,
+              "confidence": "low",
+              "basis": "floor-buttons spec exists; scene level selection fix ~15 min + floor-buttons e2e 10 min",
+              "updatedAt": 1794027925254
+            },
+            "progress": {
+              "at": 1794012686836,
+              "evidence": "audit fail at df00a2a3fa4b: Delivered change is not in HEAD df00a2a3fa4b7cc52acab8fd3611f377efe4b97e (ROOT clean). `git merge-base --is-ancestor 7754ad4c9 HEAD` exited 1. `git cherry -v HEAD 7754ad4c9` lists four lane commits, all '+' (no patch-equivalent in HEAD): 9a02c25fe 'Report a Facility floor ready only after its scene paints' (the actual Level 2/3 fix for Maksim's 2026-11-06 report), beef45862 'Register first-frame readiness before the Facility builder yields', a9c3fa50f 'Assert painted labels follow selected floor', and 7754ad4c9 'Name each Facility storey on its own floor view'. 7754ad4c9 is only on branch levels-11mw-floors (worktree /home/kom/proj/sunbim/wt/Levels11Mw). The evidence says it is 'being picked into AdaptiveBatch', but that pick is not in HEAD. At HEAD the fix code is missing. src/packages/datacenter/facilityScene/dataCenterMaksimReferenceScene.ts:526 still creates `reference-level-${level}` with an empty label list `[]`, so there is no storeyLabelPriority and no Level N label. src/product/facility/facilitySceneDiagnostics.ts has no `retire` handle, and facilityScene.ts does not defer readiness to the first painted frame. The fix's two unit tests are not in HEAD: 'a retired scene reports pending and late deferred work cannot report it ready' and 'an interactive scene reports ready only after its first painted frame'. HEAD's e2e/facility-floor-buttons.spec.ts also lacks the lane's per-click assertions (other-level labels and geometry, `/-l\\d+-/`), so 'spec:377 2/2 at both widths' cannot be re-run at HEAD: that assertion does not exist there. The HEAD diagnostics unit test passes (12/12), but it does not cover this fix. Not checked: no server was running and I did not build or serve HEAD, so there are no screenshots. The verdict rests on the delivered commits and code being absent from HEAD, not on a captured Level 2/3 frame."
+            },
+            "owner": "AdaptiveBatchLand-7",
+            "audit": {
+              "delivery": "[\"Levels11MwRedKeys\",1794010927058,1794011761776]",
+              "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+              "head": "df00a2a3fa4b7cc52acab8fd3611f377efe4b97e",
+              "startedAt": 1794012494389,
+              "verdict": "fail",
+              "agent": "qa-auditor",
+              "attempts": 1,
+              "evidence": "7754ad4c9: spec:377 2/2 at both widths, exit 0; the selected Level N label is painted. Buried-cooling 430 key is shared with base e6eb91a24 (485 > 430). Being picked into AdaptiveBatch by AdaptiveBatchLand-7.",
+              "workerId": "ProductiveWolf",
+              "findings": "Delivered change is not in HEAD df00a2a3fa4b7cc52acab8fd3611f377efe4b97e (ROOT clean). `git merge-base --is-ancestor 7754ad4c9 HEAD` exited 1. `git cherry -v HEAD 7754ad4c9` lists four lane commits, all '+' (no patch-equivalent in HEAD): 9a02c25fe 'Report a Facility floor ready only after its scene paints' (the actual Level 2/3 fix for Maksim's 2026-11-06 report), beef45862 'Register first-frame readiness before the Facility builder yields', a9c3fa50f 'Assert painted labels follow selected floor', and 7754ad4c9 'Name each Facility storey on its own floor view'. 7754ad4c9 is only on branch levels-11mw-floors (worktree /home/kom/proj/sunbim/wt/Levels11Mw). The evidence says it is 'being picked into AdaptiveBatch', but that pick is not in HEAD. At HEAD the fix code is missing. src/packages/datacenter/facilityScene/dataCenterMaksimReferenceScene.ts:526 still creates `reference-level-${level}` with an empty label list `[]`, so there is no storeyLabelPriority and no Level N label. src/product/facility/facilitySceneDiagnostics.ts has no `retire` handle, and facilityScene.ts does not defer readiness to the first painted frame. The fix's two unit tests are not in HEAD: 'a retired scene reports pending and late deferred work cannot report it ready' and 'an interactive scene reports ready only after its first painted frame'. HEAD's e2e/facility-floor-buttons.spec.ts also lacks the lane's per-click assertions (other-level labels and geometry, `/-l\\d+-/`), so 'spec:377 2/2 at both widths' cannot be re-run at HEAD: that assertion does not exist there. The HEAD diagnostics unit test passes (12/12), but it does not cover this fix. Not checked: no server was running and I did not build or serve HEAD, so there are no screenshots. The verdict rests on the delivered commits and code being absent from HEAD, not on a captured Level 2/3 frame.",
+              "at": 1794012686836
+            },
+            "visibleAt": 1794012861880
+          }
+        },
+        {
+          "content": "Levels that cannot fit show as conflict/risk, not silent revert",
+          "status": "in_progress",
+          "schedule": {
+            "firstRequirementAt": 1793992600110,
+            "dependencies": [
+              "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor"
+            ],
+            "owner": "AdaptiveBatchLand-7",
+            "reestimateCount": 2,
+            "estimateRevision": 7,
+            "estimate": {
+              "optimisticSeconds": 1200,
+              "likelySeconds": 2100,
+              "pessimisticSeconds": 3300,
+              "confidence": "low",
+              "basis": "Risk/Levels conflict path partly done in R275 commit 435440718; remaining surfacing ~20 min + journey 10 min",
+              "updatedAt": 1794027925254
+            },
+            "progress": {
+              "at": 1794011849711,
+              "evidence": "a5783b011: facility-floor-buttons 17/17, exit 0; the numeric generator-yard limit is 69 vs 36. Being picked into AdaptiveBatch by AdaptiveBatchLand-7."
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "NumericLevelLimitRisk:1794008444404",
+                "workerName": "NumericLevelLimitRisk",
+                "resolvedModel": "unresolved",
+                "effort": "unresolved",
+                "startedAt": 1794008444404,
+                "finishedAt": 1794008456702,
+                "durationMs": 12295,
+                "terminalStatus": "failed",
+                "deliverablePaths": [],
+                "infraFailureError": "Subagent execution failed: Subagent worker w1 start failed: Subagent worker w1 exited before ready: worker crashed: 12 |   } 13 |   if (!interactive || process.env.BUN_JSC_useGdbJITInfo !== undefined) 14 |     return; 15 |   if (!process.execve) 16 |     return; 17 |   process.execve(process.execPath, args, { ...process.env, BUN_JSC_useGdbJITInfo: \"1\", [REEXEC_MARK]: \"1\" });                      ^ TypeError: Calling process.execve is not supported in workers  code: \"ERR_WORKER_UNSUPPORTED_OPERATION\"       at bootstrapJitDebugInfo2 (/$bunfs/root/chunks/packages/coding-agent/src/cli-kemg567m.js:17:17)       at /$bunfs/root/omp:81:25",
+                "infraFailureLine": "attempt 1 failed: Subagent execution failed: Subagent worker w1 start failed: Subagent worker w1 exited before ready: worker crashed: 12 |   } 13 |   if (!interactive || process.env.BUN_JSC_useGdbJITInfo !== undefined) 14 |     return; 15 |   if (!process.execve) 16 |     return; 17 |   process.execve(process.execPath, args, { ...process.env, BUN_JSC_useGdbJITInfo: \"1\", [REEXEC_MARK]: \"1\" });                      ^ TypeError: Calling process.execve is not supported in workers  code: \"ERR_WORKER_UNSUPPORTED_OPERATION\"       at bootstrapJitDebugInfo2 (/$bunfs/root/chunks/packages/coding-agent/src/cli-kemg567m.js:17:17)       at /$bunfs/root/omp:81:25"
+              },
+              {
+                "attemptId": "NumericLevelLimitRisk-2:1794008498373",
+                "workerName": "NumericLevelLimitRisk-2",
+                "resolvedModel": "unresolved",
+                "effort": "unresolved",
+                "startedAt": 1794008498373,
+                "finishedAt": 1794008524303,
+                "durationMs": 25923,
+                "terminalStatus": "failed",
+                "deliverablePaths": [],
+                "infraFailureError": "Subagent execution failed: Subagent worker w2 start failed: Subagent worker w2 exited before ready: worker crashed: 12 |   } 13 |   if (!interactive || process.env.BUN_JSC_useGdbJITInfo !== undefined) 14 |     return; 15 |   if (!process.execve) 16 |     return; 17 |   process.execve(process.execPath, args, { ...process.env, BUN_JSC_useGdbJITInfo: \"1\", [REEXEC_MARK]: \"1\" });                      ^ TypeError: Calling process.execve is not supported in workers  code: \"ERR_WORKER_UNSUPPORTED_OPERATION\"       at bootstrapJitDebugInfo2 (/$bunfs/root/chunks/packages/coding-agent/src/cli-kemg567m.js:17:17)       at /$bunfs/root/omp:81:25",
+                "infraFailureLine": "attempt 2 failed: Subagent execution failed: Subagent worker w2 start failed: Subagent worker w2 exited before ready: worker crashed: 12 |   } 13 |   if (!interactive || process.env.BUN_JSC_useGdbJITInfo !== undefined) 14 |     return; 15 |   if (!process.execve) 16 |     return; 17 |   process.execve(process.execPath, args, { ...process.env, BUN_JSC_useGdbJITInfo: \"1\", [REEXEC_MARK]: \"1\" });                      ^ TypeError: Calling process.execve is not supported in workers  code: \"ERR_WORKER_UNSUPPORTED_OPERATION\"       at bootstrapJitDebugInfo2 (/$bunfs/root/chunks/packages/coding-agent/src/cli-kemg567m.js:17:17)       at /$bunfs/root/omp:81:25"
+              },
+              {
+                "attemptId": "NumericLevelLimitProof:1794010196467",
+                "workerName": "NumericLevelLimitProof",
+                "resolvedModel": "unresolved",
+                "effort": "unresolved",
+                "startedAt": 1794010196467,
+                "finishedAt": 1794010207844,
+                "durationMs": 11375,
+                "terminalStatus": "failed",
+                "deliverablePaths": [],
+                "infraFailureError": "Subagent execution failed: Subagent worker w7 start failed: Subagent worker w7 exited before ready: worker crashed: 12 |   } 13 |   if (!interactive || process.env.BUN_JSC_useGdbJITInfo !== undefined) 14 |     return; 15 |   if (!process.execve) 16 |     return; 17 |   process.execve(process.execPath, args, { ...process.env, BUN_JSC_useGdbJITInfo: \"1\", [REEXEC_MARK]: \"1\" });                      ^ TypeError: Calling process.execve is not supported in workers  code: \"ERR_WORKER_UNSUPPORTED_OPERATION\"       at bootstrapJitDebugInfo2 (/$bunfs/root/chunks/packages/coding-agent/src/cli-kemg567m.js:17:17)       at /$bunfs/root/omp:81:25",
+                "infraFailureLine": "attempt 3 failed: Subagent execution failed: Subagent worker w7 start failed: Subagent worker w7 exited before ready: worker crashed: 12 |   } 13 |   if (!interactive || process.env.BUN_JSC_useGdbJITInfo !== undefined) 14 |     return; 15 |   if (!process.execve) 16 |     return; 17 |   process.execve(process.execPath, args, { ...process.env, BUN_JSC_useGdbJITInfo: \"1\", [REEXEC_MARK]: \"1\" });                      ^ TypeError: Calling process.execve is not supported in workers  code: \"ERR_WORKER_UNSUPPORTED_OPERATION\"       at bootstrapJitDebugInfo2 (/$bunfs/root/chunks/packages/coding-agent/src/cli-kemg567m.js:17:17)       at /$bunfs/root/omp:81:25"
+              },
+              {
+                "attemptId": "NumericLevelLimitProof-2:1794010336790",
+                "workerName": "NumericLevelLimitProof-2",
+                "resolvedModel": "unresolved",
+                "effort": "unresolved",
+                "startedAt": 1794010336790,
+                "finishedAt": 1794010348790,
+                "durationMs": 11994,
+                "terminalStatus": "failed",
+                "deliverablePaths": [],
+                "infraFailureError": "Subagent execution failed: Subagent worker w8 start failed: Subagent worker w8 exited before ready: worker crashed: 12 |   } 13 |   if (!interactive || process.env.BUN_JSC_useGdbJITInfo !== undefined) 14 |     return; 15 |   if (!process.execve) 16 |     return; 17 |   process.execve(process.execPath, args, { ...process.env, BUN_JSC_useGdbJITInfo: \"1\", [REEXEC_MARK]: \"1\" });                      ^ TypeError: Calling process.execve is not supported in workers  code: \"ERR_WORKER_UNSUPPORTED_OPERATION\"       at bootstrapJitDebugInfo2 (/$bunfs/root/chunks/packages/coding-agent/src/cli-kemg567m.js:17:17)       at /$bunfs/root/omp:81:25",
+                "infraFailureLine": "attempt 4 failed: Subagent execution failed: Subagent worker w8 start failed: Subagent worker w8 exited before ready: worker crashed: 12 |   } 13 |   if (!interactive || process.env.BUN_JSC_useGdbJITInfo !== undefined) 14 |     return; 15 |   if (!process.execve) 16 |     return; 17 |   process.execve(process.execPath, args, { ...process.env, BUN_JSC_useGdbJITInfo: \"1\", [REEXEC_MARK]: \"1\" });                      ^ TypeError: Calling process.execve is not supported in workers  code: \"ERR_WORKER_UNSUPPORTED_OPERATION\"       at bootstrapJitDebugInfo2 (/$bunfs/root/chunks/packages/coding-agent/src/cli-kemg567m.js:17:17)       at /$bunfs/root/omp:81:25"
+              },
+              {
+                "attemptId": "NumericLevelLimitProof-3:1794010374484",
+                "workerName": "NumericLevelLimitProof-3",
+                "resolvedModel": "unresolved",
+                "effort": "unresolved",
+                "startedAt": 1794010374484,
+                "finishedAt": 1794010385603,
+                "durationMs": 11115,
+                "terminalStatus": "failed",
+                "deliverablePaths": [],
+                "infraFailureError": "Subagent execution failed: Subagent worker w9 start failed: Subagent worker w9 exited before ready: worker crashed: 12 |   } 13 |   if (!interactive || process.env.BUN_JSC_useGdbJITInfo !== undefined) 14 |     return; 15 |   if (!process.execve) 16 |     return; 17 |   process.execve(process.execPath, args, { ...process.env, BUN_JSC_useGdbJITInfo: \"1\", [REEXEC_MARK]: \"1\" });                      ^ TypeError: Calling process.execve is not supported in workers  code: \"ERR_WORKER_UNSUPPORTED_OPERATION\"       at bootstrapJitDebugInfo2 (/$bunfs/root/chunks/packages/coding-agent/src/cli-kemg567m.js:17:17)       at /$bunfs/root/omp:81:25",
+                "infraFailureLine": "attempt 5 failed: Subagent execution failed: Subagent worker w9 start failed: Subagent worker w9 exited before ready: worker crashed: 12 |   } 13 |   if (!interactive || process.env.BUN_JSC_useGdbJITInfo !== undefined) 14 |     return; 15 |   if (!process.execve) 16 |     return; 17 |   process.execve(process.execPath, args, { ...process.env, BUN_JSC_useGdbJITInfo: \"1\", [REEXEC_MARK]: \"1\" });                      ^ TypeError: Calling process.execve is not supported in workers  code: \"ERR_WORKER_UNSUPPORTED_OPERATION\"       at bootstrapJitDebugInfo2 (/$bunfs/root/chunks/packages/coding-agent/src/cli-kemg567m.js:17:17)       at /$bunfs/root/omp:81:25"
+              }
+            ],
+            "visibleAt": 1794012861880
+          }
+        }
+      ]
+    }
+  ]
+}

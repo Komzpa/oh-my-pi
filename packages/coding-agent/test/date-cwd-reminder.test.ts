@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, setSystemTime } from "bun:test";
+import { afterEach, describe, expect, it, setSystemTime, spyOn } from "bun:test";
 import type { Api, AssistantMessage, Context, Message, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { clearCustomApis, registerCustomApi } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
@@ -24,6 +24,26 @@ import { createAssistantMessage } from "./helpers/agent-session-setup";
 describe("date-cwd-reminder", () => {
 	afterEach(() => {
 		clearCustomApis();
+	});
+
+	it("restores reminder placements without loading unrelated branch payloads", () => {
+		const manager = SessionManager.inMemory();
+		manager.appendCustomEntry("unrelated", { body: "large archived payload" });
+		const placement: DateCwdReminderPlacement = {
+			conversation: "first",
+			turn: "first",
+			reminder: "remember",
+			placement: "prefix",
+		};
+		manager.appendCustomEntry("date-cwd-reminder", placement);
+		const full = spyOn(manager, "getBranchView").mockImplementation(() => {
+			throw new Error("full branch read");
+		});
+		try {
+			expect(createSessionDateCwdReminderJournal(manager).load()).toEqual([placement]);
+		} finally {
+			full.mockRestore();
+		}
 	});
 
 	describe("DateCwdReminderInjector", () => {

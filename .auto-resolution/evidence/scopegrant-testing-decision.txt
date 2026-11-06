@@ -1,0 +1,3 @@
+DECISION: Yes—copying existing `node_modules` into this lane for local tests is allowed; the brief explicitly permits dependency setup inside the lane’s worktree.
+The copy writes only to this lane. Run focused tests and `bun check` if dependencies are available; report either check as blocked if the copy fails or dependencies are incomplete.
+Approve the code approach: persist the chief-assigned `scope.root`, `cwd`, or explicit task worktree before admission; preserve explicit resource narrowing and nested containment. Route scope requests through `steer` with agent attribution and deduplication, and yield with a clear pending status.

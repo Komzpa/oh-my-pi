@@ -641,7 +641,18 @@ export class SessionEntryIndex {
 	// leaf appends to the issued view in O(1); a leaf change or rebuild starts
 	// a fresh array. Weak ownership lets dropped historical views be collected.
 	#generation = 0;
-	#metadataCache: { generation: number; leaf: string | null | undefined; path: IndexedSessionEntry[] } | undefined;
+	#metadataCache:
+		| {
+				generation: number;
+				leaf: string | null | undefined;
+				path: IndexedSessionEntry[];
+				rootPath?: IndexedSessionEntry[];
+		  }
+		| undefined;
+	#contextSelectionPath: { generation: number; leaf: string | null; path: readonly IndexedSessionEntry[] } | undefined;
+	#contextSelectionCache:
+		| { generation: number; leaf: string | null; providerIds: string[]; displayIds: string[] }
+		| undefined;
 	#branchCache: { leaf: string | null; generation: number; branch: WeakRef<SessionEntry[]> } | undefined;
 	#read?: (entry: IndexedSessionEntry) => SessionEntry;
 	#readerFd?: number;
@@ -650,6 +661,8 @@ export class SessionEntryIndex {
 
 	clear(closeReader = true): void {
 		this.#metadataCache = undefined;
+		this.#contextSelectionCache = undefined;
+		this.#contextSelectionPath = undefined;
 		this.#entriesById.clear();
 		this.#ordered = [];
 		this.#children.clear();
@@ -732,9 +745,26 @@ export class SessionEntryIndex {
 			metadataCache.generation === this.#generation - 1
 		) {
 			metadataCache.path.unshift(indexed);
+			metadataCache.rootPath?.push(indexed);
 			metadataCache.leaf = nextLeaf;
 			metadataCache.generation = this.#generation;
 		}
+		const selectionPath = this.#contextSelectionPath;
+		if (
+			isNew &&
+			nextLeaf === entry.id &&
+			entry.parentId === previousLeaf &&
+			entry.type !== "compaction" &&
+			entry.type !== "reset_boundary" &&
+			selectionPath?.generation === this.#generation - 1 &&
+			selectionPath.leaf === previousLeaf
+		) {
+			this.#contextSelectionPath = {
+				generation: this.#generation,
+				leaf: nextLeaf,
+				path: [indexed, ...selectionPath.path],
+			};
+		} else this.#contextSelectionPath = undefined;
 		const cache = this.#branchCache;
 		const branch = cache?.branch.deref();
 		if (
@@ -820,8 +850,22 @@ export class SessionEntryIndex {
 	hasType(type: SessionEntry["type"]): boolean {
 		return this.#ordered.some(entry => entry.type === type);
 	}
-	*entriesOfType(type?: SessionEntry["type"]): IterableIterator<SessionEntry> {
-		for (const entry of this.#ordered) if (!type || entry.type === type) yield this.get(entry.id, false)!;
+	*entriesOfType(type?: SessionEntry["type"], customType?: string): IterableIterator<SessionEntry> {
+		for (const entry of this.#ordered) {
+			if (type && entry.type !== type) continue;
+			if (customType !== undefined && entry.customType !== customType) continue;
+			yield this.get(entry.id, false)!;
+		}
+	}
+	/** Newest conversation record, read without hydrating administrative history. */
+	latestConversationEntry(): SessionEntry | undefined {
+		for (let i = this.#ordered.length - 1; i >= 0; i--) {
+			const metadata = this.#ordered[i]!;
+			if (!movesConversation(metadata)) continue;
+			const entry = this.get(metadata.id, false)!;
+			if (movesConversation(entry)) return entry;
+		}
+		return undefined;
 	}
 	has(id: string): boolean {
 		return this.#entriesById.has(id);
@@ -942,9 +986,9 @@ export class SessionEntryIndex {
 	// In-place edits are announced through update() (SessionManager.updateEntry) or a
 	// rebuild; both refresh metadata and bump the generation. A per-call rescan of every
 	// exposed entry was O(branch) on each of the many path reads per frame.
-	#metadataLeafPath(id: string | null | undefined = this.#leaf): IndexedSessionEntry[] {
+	#metadataLeafPath(id: string | null | undefined = this.#leaf): readonly IndexedSessionEntry[] {
 		const cache = this.#metadataCache;
-		if (cache?.generation === this.#generation && cache.leaf === id) return cache.path.slice();
+		if (cache?.generation === this.#generation && cache.leaf === id) return cache.path;
 		const path: IndexedSessionEntry[] = [];
 		// A corrupt cyclic parent chain stops at the FIRST repeated id, even
 		// when unrelated entries inflate the index beyond that cycle's length.
@@ -955,28 +999,51 @@ export class SessionEntryIndex {
 			path.push(current);
 			current = current.parentId ? this.#entriesById.get(current.parentId) : undefined;
 		}
-		this.#metadataCache = { generation: this.#generation, leaf: id, path: path.slice() };
+		this.#metadataCache = { generation: this.#generation, leaf: id, path };
 		return path;
 	}
-	metadataPath(id: string | null | undefined = this.#leaf): IndexedSessionEntry[] {
-		return this.#metadataLeafPath(id).reverse();
+	metadataPath(id: string | null | undefined = this.#leaf): readonly IndexedSessionEntry[] {
+		const path = this.#metadataLeafPath(id);
+		const cache = this.#metadataCache!;
+		return (cache.rootPath ??= path.toReversed());
 	}
 	contextLeafPath(options?: BuildSessionContextOptions): SessionEntry[] {
-		const path = this.#metadataLeafPath();
-		const entries = selectSessionContextEntriesFromLeafPath(path, id => this.get(id)!, options);
-		if (!options?.transcript || options.collapseCompactedHistory) {
-			// Retain both provider and collapsed-display dependencies, never the
-			// full transcript requested by an export or historical navigation.
+		if (options?.transcript && !options.collapseCompactedHistory) {
+			return selectSessionContextEntriesFromLeafPath(this.#metadataLeafPath(), id => this.get(id)!, options);
+		}
+		let cache = this.#contextSelectionCache;
+		if (cache?.generation !== this.#generation || cache.leaf !== this.#leaf) {
+			// Ordinary appends cannot restore history excluded by the current cut.
+			// Replay the previous dependency closure plus new metadata; cuts, edits
+			// and branch changes rebuild from the complete metadata path.
+			const selectedPath = this.#contextSelectionPath;
+			const path =
+				selectedPath?.generation === this.#generation && selectedPath.leaf === this.#leaf
+					? selectedPath.path
+					: this.#metadataLeafPath();
+			const provider = selectSessionContextEntriesFromLeafPath(path, id => this.get(id)!);
 			const display = selectSessionContextEntriesFromLeafPath(path, id => this.get(id)!, {
 				transcript: true,
 				collapseCompactedHistory: true,
 			});
-			const provider = options?.transcript
-				? selectSessionContextEntriesFromLeafPath(path, id => this.get(id)!)
-				: entries;
+			cache = {
+				generation: this.#generation,
+				leaf: this.#leaf,
+				providerIds: provider.map(entry => entry.id),
+				displayIds: display.map(entry => entry.id),
+			};
+			this.#contextSelectionCache = cache;
+			const selectedIds = new Set([...cache.providerIds, ...cache.displayIds]);
+			this.#contextSelectionPath = {
+				generation: this.#generation,
+				leaf: this.#leaf,
+				path: path.filter(entry => selectedIds.has(entry.id)),
+			};
+			// Only the current provider/display closure owns payloads strongly.
+			// The reusable selection above contains IDs, never historical payloads.
 			this.#active = new Map([...provider, ...display].map(entry => [entry.id, entry]));
 		}
-		return entries;
+		return (options?.transcript ? cache.displayIds : cache.providerIds).map(id => this.get(id)!);
 	}
 	update(entry: SessionEntry): void {
 		this.#ensureChildren();
@@ -995,6 +1062,8 @@ export class SessionEntryIndex {
 			this.#branchCache = undefined;
 		}
 		this.#metadataCache = undefined;
+		this.#contextSelectionCache = undefined;
+		this.#contextSelectionPath = undefined;
 		const wasLabel = indexed.type === "label";
 		indexed.entry = entry;
 		indexed.revision = (indexed.revision ?? 0) + 1;
@@ -4468,13 +4537,9 @@ export class SessionManager {
 	 * newest change assigned a role, was a retry fallback hop, or none was recorded.
 	 */
 	getSessionLocalModelChange(): ModelChangeEntry | undefined {
-		const branch = this.getBranch();
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index];
-			if (entry.type !== "model_change") continue;
-			return entry.role === "temporary" || entry.role === PREWALK_MODEL_CHANGE_ROLE ? entry : undefined;
-		}
-		return undefined;
+		const entry = this.getLatestBranchMatching(metadata => metadata.type === "model_change");
+		if (entry?.type !== "model_change") return undefined;
+		return entry.role === "temporary" || entry.role === PREWALK_MODEL_CHANGE_ROLE ? entry : undefined;
 	}
 
 	getEntry(id: string): SessionEntry | undefined {
@@ -4687,7 +4752,12 @@ export class SessionManager {
 
 	/** {@link conversationTip} of the session at its active leaf. */
 	getConversationTip(): SessionEntry | undefined {
-		return conversationTip(this.#entries, this.#index.branchView());
+		const latest = this.#index.latestConversationEntry();
+		if (!latest) return undefined;
+		for (const entry of this.iterateBranchMatchingNewestFirst(metadata => movesConversation(metadata))) {
+			if (movesConversation(entry)) return entry.id === latest.id ? entry : undefined;
+		}
+		return undefined;
 	}
 
 	/**
