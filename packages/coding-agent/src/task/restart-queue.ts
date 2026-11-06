@@ -50,6 +50,37 @@ function restartNoticeContent(record: Pick<RestartRequestRecord, "requestId" | "
 	}
 }
 
+export interface RestartStageEstimate {
+	stage: string;
+	estimateMs: number;
+}
+
+/** One immutable request deadline; every stage reserves the work following it. */
+export class RestartBudget {
+	constructor(
+		readonly deadlineAt: number,
+		readonly plan: readonly RestartStageEstimate[],
+		readonly waitDeadlines: Record<string, number> = {},
+	) {}
+
+	startWorkers(now: number, graceMs: number, abortMs: number): void {
+		this.waitDeadlines.worker_grace ??= now + graceMs;
+		this.waitDeadlines.worker_abort ??= now + graceMs + abortMs;
+	}
+
+	remainingEstimate(stage: string): number {
+		const index = this.plan.findIndex(item => item.stage === stage);
+		return index < 0 ? 0 : this.plan.slice(index + 1).reduce((sum, item) => sum + item.estimateMs, 0);
+	}
+
+	stageDeadline(stage: string): number {
+		return Math.min(
+			this.deadlineAt - this.remainingEstimate(stage),
+			this.waitDeadlines[stage] ?? Number.POSITIVE_INFINITY,
+		);
+	}
+}
+
 export interface RestartControlIdentity {
 	instanceId: string;
 	sessionId: string;
@@ -78,6 +109,7 @@ export interface RestartRequestRecord {
 	runningWorkerCount?: number;
 	drainStatus?: RestartDrainStatus;
 	goalModeBefore?: { goalId: string };
+	budget?: { deadlineAt: number; plan: RestartStageEstimate[] };
 }
 
 export interface RestartDrainWorkerStatus {
@@ -90,6 +122,9 @@ export interface RestartDrainStatus {
 	stage?: string;
 	stageStartedAt?: number;
 	stageElapsedMs?: number;
+	stageDeadlineAt?: number;
+	remainingEstimateMs?: number;
+	deadlineAt?: number;
 	abandoned?: RestartDrainWorkerStatus[];
 	runningWorkers: RestartDrainWorkerStatus[];
 	queuedInputCount: number;
@@ -132,6 +167,11 @@ export interface RestartQueueControllerOptions {
 	restoreGoalMode?: (snapshot: { goalId: string }, resumeWork: boolean) => Promise<void>;
 	/** Root wait bound; expiry leaves the restart queued until the safe boundary. */
 	restartRootQuiescenceMs?: number;
+	/** Total request budget. Defaults to the sum of the configured stage estimates. */
+	restartTotalMs?: number;
+	restartWatchdogSlackMs?: number;
+	/** Minimum durability reserves, raised by recent measured durations. */
+	restartStageMinimaMs?: Partial<Record<string, number>>;
 	restartWorkerGraceMs?: number;
 	/** Maximum wait for isolated workers before quiescing and snapshotting them. */
 	restartIsolationWaitMs?: number;
@@ -169,7 +209,8 @@ interface ActiveRestartDrain {
 	runningAgentIds: Set<string>;
 	workerGraceDeadlineAt?: number;
 	notifications: Promise<void>[];
-	childDeadlineAt?: number;
+	budget: RestartBudget;
+	watchdog?: Timer;
 	abandoned: Set<string>;
 	notifiedSessions: Map<AgentSessionHandle, Set<string>>;
 	irreversible: boolean;
@@ -241,6 +282,11 @@ function parseDrainStatus(value: unknown): RestartDrainStatus | undefined {
 	return {
 		runningWorkers,
 		queuedInputCount: value.queuedInputCount,
+		...Object.fromEntries(
+			["stageDeadlineAt", "remainingEstimateMs", "deadlineAt"]
+				.filter(key => typeof value[key] === "number" && Number.isFinite(value[key]))
+				.map(key => [key, value[key]]),
+		),
 		...(typeof value.stage === "string" ? { stage: value.stage } : {}),
 		...(typeof value.stageStartedAt === "number" ? { stageStartedAt: value.stageStartedAt } : {}),
 		...(Array.isArray(value.abandoned)
@@ -261,6 +307,29 @@ function parseDrainStatus(value: unknown): RestartDrainStatus | undefined {
 			? { workerGraceDeadlineAt: value.workerGraceDeadlineAt }
 			: {}),
 	};
+}
+
+function parseBudget(value: unknown): RestartRequestRecord["budget"] {
+	if (
+		!isObject(value) ||
+		typeof value.deadlineAt !== "number" ||
+		!Number.isFinite(value.deadlineAt) ||
+		!Array.isArray(value.plan)
+	)
+		return undefined;
+	const plan: RestartStageEstimate[] = [];
+	for (const item of value.plan) {
+		if (
+			!isObject(item) ||
+			typeof item.stage !== "string" ||
+			typeof item.estimateMs !== "number" ||
+			!Number.isFinite(item.estimateMs) ||
+			item.estimateMs < 0
+		)
+			return undefined;
+		plan.push({ stage: item.stage, estimateMs: item.estimateMs });
+	}
+	return { deadlineAt: value.deadlineAt, plan };
 }
 
 function parseRestartRequestRecord(value: unknown): RestartRequestRecord | undefined {
@@ -306,6 +375,7 @@ function parseRestartRequestRecord(value: unknown): RestartRequestRecord | undef
 		...(typeof value.reason === "string" ? { reason: value.reason } : {}),
 		...(typeof value.error === "string" ? { error: value.error } : {}),
 		rootWasRunning: value.rootWasRunning,
+		...(parseBudget(value.budget) ? { budget: parseBudget(value.budget) } : {}),
 		...(typeof value.runningWorkerCount === "number" ? { runningWorkerCount: value.runningWorkerCount } : {}),
 		...(value.drainStatus !== undefined ? { drainStatus: parseDrainStatus(value.drainStatus)! } : {}),
 		...(isObject(value.goalModeBefore) && typeof value.goalModeBefore.goalId === "string"
@@ -383,11 +453,10 @@ function formatRestartRequestSummary(record: RestartRequestRecord | null, now = 
 
 export function formatRestartRequestStatus(record: RestartRequestRecord | null, now = Date.now()): string {
 	const summary = formatRestartRequestSummary(record, now);
-	if ((record?.state === "queued" || record?.state === "draining") && record.drainStatus?.stage === "root_quiescence")
-		return `${summary} Waiting for the lead's turn to finish.`;
 	const status = record?.drainStatus;
+	const lead = status?.stage === "root_quiescence" ? " Waiting for the lead's turn to finish." : "";
 	return status?.stage && status.stageStartedAt !== undefined
-		? `${summary} Stage: ${status.stage} (${formatDuration(Math.max(0, now - status.stageStartedAt))}); abandoned: ${status.abandoned?.length ?? 0}.`
+		? `${summary}${lead} Stage: ${status.stage} (${formatDuration(Math.max(0, now - status.stageStartedAt))}); deadline: ${status.stageDeadlineAt === undefined ? "unknown" : new Date(status.stageDeadlineAt).toISOString()}; reserved remaining work: ${formatDuration(status.remainingEstimateMs ?? 0)}; abandoned: ${status.abandoned?.length ?? 0}.`
 		: summary;
 }
 
@@ -433,11 +502,16 @@ function canTransition(from: RestartRequestState, to: RestartRequestState): bool
 	return from === "restarting" && to === "completed";
 }
 
-function makeRun(identity: RestartControlIdentity, record: RestartRequestRecord): ActiveRestartDrain {
+function makeRun(
+	identity: RestartControlIdentity,
+	record: RestartRequestRecord,
+	budget: RestartBudget,
+): ActiveRestartDrain {
 	const { promise, resolve } = Promise.withResolvers<void>();
 	return {
 		identity,
 		record,
+		budget,
 		cancelled: false,
 		cancelSignal: promise,
 		resolveCancel: resolve,
@@ -467,9 +541,14 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	readonly #restartWorkerGraceMs: number;
 	readonly #restartRootQuiescenceMs: number;
 	readonly #restartIsolationWaitMs: number;
+	readonly #restartTotalMs: number | undefined;
+	readonly #restartWatchdogSlackMs: number;
+	readonly #stageMinima: Partial<Record<string, number>>;
+	readonly #recentDurations = new Map<string, number[]>();
 	#serial: Promise<void> = Promise.resolve();
 	#run: ActiveRestartDrain | undefined;
 	#restorePromise: Promise<void> | undefined;
+	#restoringRecord: RestartRequestRecord | undefined;
 	#disposed = false;
 
 	constructor(options: RestartQueueControllerOptions) {
@@ -481,6 +560,14 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			options.restartIsolationWaitMs ?? Number(process.env.OMP_RESTART_ISOLATION_WAIT_MS ?? 1_800_000);
 		if (!Number.isFinite(this.#restartIsolationWaitMs) || this.#restartIsolationWaitMs < 0)
 			throw new Error("Invalid isolated restart wait");
+		this.#restartTotalMs =
+			options.restartTotalMs ??
+			(process.env.OMP_RESTART_TOTAL_MS ? Number(process.env.OMP_RESTART_TOTAL_MS) : undefined);
+		this.#restartWatchdogSlackMs = options.restartWatchdogSlackMs ?? 5_000;
+		this.#stageMinima = options.restartStageMinimaMs ?? {};
+		for (const value of [this.#restartTotalMs, this.#restartWatchdogSlackMs, ...Object.values(this.#stageMinima)]) {
+			if (value !== undefined && (!Number.isFinite(value) || value < 0)) throw new Error("Invalid restart budget");
+		}
 		this.#session = options.session;
 		this.#identity = options.identity;
 		this.#restart = options.restart;
@@ -502,7 +589,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	snapshot(): RestartControlSnapshot {
 		const identity = this.#identity();
 		const journal = this.#readJournal(identity.sessionId);
-		return this.#makeSnapshot(identity, this.#run?.record ?? journal.latest?.record ?? null);
+		return this.#makeSnapshot(identity, this.#run?.record ?? this.#restoringRecord ?? journal.latest?.record ?? null);
 	}
 
 	async handle(request: RestartControlRequest): Promise<RestartControlSnapshot> {
@@ -517,7 +604,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			return Promise.resolve(
 				this.#makeSnapshot(
 					identity,
-					this.#run && this.#run.record.requestId === selected?.requestId ? this.#run.record : (selected ?? null),
+					this.#run && this.#run.record.requestId === selected?.requestId
+						? this.#run.record
+						: ((this.#restoringRecord?.requestId === selected?.requestId ? this.#restoringRecord : selected) ??
+								null),
 				),
 			);
 		}
@@ -704,8 +794,50 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			rootWasRunning: this.#session.isStreaming,
 			...(goalModeBefore ? { goalModeBefore } : {}),
 		};
-		const run = makeRun(identity, record);
+		const minima: RestartStageEstimate[] = [
+			["prepare", 1_000],
+			[
+				"isolation",
+				Math.min(this.#restartIsolationWaitMs, this.#restartWorkerGraceMs + this.#restartWorkerAbortGraceMs),
+			],
+			["notifications", 1_000],
+			["root_quiescence", this.#restartRootQuiescenceMs],
+			["worker_grace", this.#restartWorkerGraceMs],
+			["worker_abort", this.#restartWorkerAbortGraceMs],
+			["flush_sessions", 1_000],
+			["snapshot_isolation", 1_000],
+			["capture_children", 1_000],
+			["flush", 1_000],
+			["replace_runtime", 1_000],
+			["restore_children", 1_000],
+		].map(([stage, minimum]) => ({ stage: String(stage), estimateMs: Number(minimum) }));
+		const plan = minima.map(({ stage, estimateMs }) => ({
+			stage,
+			estimateMs: Math.max(this.#stageMinima[stage] ?? estimateMs, ...(this.#recentDurations.get(stage) ?? [])),
+		}));
+		const budget = new RestartBudget(
+			now + (this.#restartTotalMs ?? minima.reduce((sum, item) => sum + item.estimateMs, 0)),
+			plan,
+			{
+				isolation:
+					now +
+					Math.min(this.#restartIsolationWaitMs, this.#restartWorkerGraceMs + this.#restartWorkerAbortGraceMs),
+				root_quiescence: now + this.#restartRootQuiescenceMs,
+			},
+		);
+		record.budget = { deadlineAt: budget.deadlineAt, plan };
+		const run = makeRun(identity, record, budget);
 		this.#run = run;
+		run.watchdog = setTimeout(
+			() => {
+				if (run.cancelled || this.#disposed) return;
+				const stage = run.record.drainStatus?.stage ?? "prepare";
+				const message = `Restart watchdog: stage ${stage} overran request deadline ${new Date(run.budget.deadlineAt).toISOString()}`;
+				logger.error(message, { requestId, stage, deadlineAt: run.budget.deadlineAt });
+				this.#notice("error", message);
+			},
+			Math.max(0, budget.deadlineAt + this.#restartWatchdogSlackMs - Date.now()),
+		);
 		const ack = this.#serialize(async () => {
 			try {
 				await this.#measureStage(run.record, "prepare", () => this.#prepareInitialDrain(run));
@@ -717,6 +849,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				void this.#drain(run).catch(error => this.#reportBackgroundFailure(run, error));
 				return this.#makeSnapshot(identity, run.record);
 			} catch (error) {
+				clearTimeout(run.watchdog);
 				await this.#releaseLeases(run);
 				if (this.#run === run) this.#run = undefined;
 				throw error;
@@ -825,7 +958,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			run.abandoned.add(id);
 			return;
 		}
-		run.childDeadlineAt ??= Date.now() + this.#restartWorkerGraceMs + this.#restartWorkerAbortGraceMs;
+		run.budget.startWorkers(Date.now(), this.#restartWorkerGraceMs, this.#restartWorkerAbortGraceMs);
 		this.#notifySession(run, session);
 		const lease = this.#takeLease(run, session);
 		if (lease.wasRunning) run.runningAgentIds.add(id);
@@ -906,14 +1039,15 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			run.record = await this.#transition(run, "draining");
 			// The wait owns its snapshot deadline; an outer stage timeout would fire while a
 			// slow `git status` pass is still running and fail the restart instead of snapshotting.
-			await this.#measureStage(run.record, "isolation", () => this.#waitForIsolatedWork(run), false);
+			await this.#measureStage(run.record, "isolation", deadline => this.#waitForIsolatedWork(run, deadline));
 			if (run.cancelled || this.#disposed) return;
 			for (const child of getLiveSubagentsForRestart(this.#session))
 				this.#prepareChild(run, child.id, child.status, child.session);
 			const safe = await this.#settleAndFlush(run);
 			if (!safe || run.cancelled || this.#disposed) return;
-			for (const isolated of run.isolations.values())
-				await this.#measureStage(run.record, "snapshot_isolation", () => snapshotRestartIsolation(isolated));
+			await this.#measureStage(run.record, "snapshot_isolation", async () => {
+				for (const isolated of run.isolations.values()) await snapshotRestartIsolation(isolated);
+			});
 			await this.#measureStage(run.record, "capture_children", () =>
 				captureSubagentsForRestart(this.#session, {
 					runningAgentIds: run.runningAgentIds,
@@ -921,7 +1055,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				}),
 			);
 			if (run.cancelled || this.#disposed) return;
-			run.record = await this.#transition(run, "checkpointed");
+			run.record = await this.#measureStage(run.record, "flush", () => this.#transition(run, "checkpointed"));
 			if (run.cancelled || this.#disposed) return;
 			run.irreversible = true;
 			run.record = await this.#transition(run, "restarting");
@@ -945,17 +1079,14 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		} catch (error) {
 			if (!run.cancelled && !this.#disposed) await this.#recordDrainFailure(run, error);
 		} finally {
+			clearTimeout(run.watchdog);
 			if (run.cancelled ? run.cancelNoticeDelivered : !run.callbackStarted || run.record.state === "failed")
 				await this.#releaseLeases(run);
 			if (this.#run === run && (!run.cancelled || run.cancelNoticeDelivered)) this.#run = undefined;
 		}
 	}
 
-	async #waitForIsolatedWork(run: ActiveRestartDrain): Promise<void> {
-		const deadline = Math.min(
-			Date.now() + this.#restartIsolationWaitMs,
-			run.record.requestedAt + this.#restartWorkerGraceMs + this.#restartWorkerAbortGraceMs,
-		);
+	async #waitForIsolatedWork(run: ActiveRestartDrain, deadline: number): Promise<void> {
 		while (!run.cancelled && !this.#disposed && Date.now() < deadline) {
 			const pending: RestartIsolation[] = [];
 			for (const child of getLiveSubagentsForRestart(this.#session)) {
@@ -975,6 +1106,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				{
 					...run.record,
 					drainStatus: {
+						...run.record.drainStatus,
 						runningWorkers: [],
 						queuedInputCount: 0,
 						isolationPendingReason: `Waiting for isolated workers with uncommitted or unpushed work: ${pending.map(item => `${item.name} (${item.id})`).join(", ")}; snapshot deadline ${new Date(deadline).toISOString()}`,
@@ -991,24 +1123,17 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	async #settleAndFlush(run: ActiveRestartDrain): Promise<boolean> {
 		while (true) {
 			if (run.cancelled || this.#disposed) return false;
-			const workerGraceStartedAt =
-				run.childDeadlineAt === undefined
-					? Date.now()
-					: run.childDeadlineAt - this.#restartWorkerGraceMs - this.#restartWorkerAbortGraceMs;
 			const notifications = run.notifications.splice(0);
-			await this.#measureStage(run.record, "notifications", () => Promise.all(notifications), false);
+			await this.#measureStage(run.record, "notifications", () => Promise.all(notifications));
 			// Child drain leases are already active. Count that time toward their grace
 			// instead of granting a second full window after the root finishes.
-			const settled = await this.#measureStage(run.record, "root_quiescence", () => this.#waitForRoot(run), false);
-			if (!settled || run.cancelled || this.#disposed) return false;
-			await this.#measureStage(
-				run.record,
-				"worker_grace",
-				() => this.#waitForWorkerGrace(run, workerGraceStartedAt),
-				false,
+			const settled = await this.#measureStage(run.record, "root_quiescence", deadline =>
+				this.#waitForRoot(run, deadline),
 			);
+			if (!settled || run.cancelled || this.#disposed) return false;
+			await this.#measureStage(run.record, "worker_grace", deadline => this.#waitForWorkerGrace(run, deadline));
 			if (run.cancelled || this.#disposed) return false;
-			await this.#measureStage(run.record, "flush_sessions", () => this.#flushSessions(run), false);
+			await this.#measureStage(run.record, "flush_sessions", () => this.#flushSessions(run));
 			let added = false;
 			for (const child of getLiveSubagentsForRestart(this.#session)) {
 				if (run.children.has(child.id)) continue;
@@ -1019,7 +1144,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		}
 	}
 
-	async #waitForRoot(run: ActiveRestartDrain): Promise<boolean> {
+	async #waitForRoot(run: ActiveRestartDrain, deadline: number): Promise<boolean> {
 		const boundary = Promise.race([
 			this.#rootLease(run)
 				.waitForQuiescence()
@@ -1027,7 +1152,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			run.cancelSignal.then(() => false),
 		]);
 		const expired = Promise.withResolvers<undefined>();
-		const timer = setTimeout(() => expired.resolve(undefined), this.#restartRootQuiescenceMs);
+		const timer = setTimeout(() => expired.resolve(undefined), Math.max(0, deadline - Date.now()));
 		try {
 			const settled = await Promise.race([boundary, expired.promise]);
 			if (settled !== undefined) return settled;
@@ -1046,11 +1171,39 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	async #measureStage<T>(
 		record: RestartRequestRecord | undefined,
 		stage: string,
-		operation: () => Promise<T>,
-		bound = true,
+		operation: (deadline: number) => Promise<T>,
 	): Promise<T> {
 		const started = performance.now();
 		const run = this.#run;
+		const budget =
+			run?.budget ?? (record?.budget ? new RestartBudget(record.budget.deadlineAt, record.budget.plan) : undefined);
+		const deadline = budget?.stageDeadline(stage) ?? Number.POSITIVE_INFINITY;
+		// Successors retain the original request deadline across runtime replacement.
+		let restoreWatchdog: Timer | undefined;
+		if (!run && budget) {
+			const statusRecord: RestartRequestRecord = {
+				...record!,
+				drainStatus: {
+					runningWorkers: [],
+					queuedInputCount: 0,
+					stage,
+					stageStartedAt: Date.now(),
+					stageDeadlineAt: deadline,
+					remainingEstimateMs: budget.remainingEstimate(stage),
+					deadlineAt: budget.deadlineAt,
+				},
+			};
+			this.#restoringRecord = statusRecord;
+			this.#onStateChange?.(statusRecord);
+			restoreWatchdog = setTimeout(
+				() =>
+					this.#notice(
+						"error",
+						`Restart watchdog: stage ${stage} overran request deadline ${new Date(budget.deadlineAt).toISOString()}`,
+					),
+				Math.max(0, budget.deadlineAt + this.#restartWatchdogSlackMs - Date.now()),
+			);
+		}
 		if (run && record?.requestId === run.record.requestId) {
 			run.record = this.#withDrainStatus(
 				{
@@ -1061,6 +1214,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 						queuedInputCount: run.record.drainStatus?.queuedInputCount ?? 0,
 						stage,
 						stageStartedAt: Date.now(),
+						stageDeadlineAt: deadline,
+						remainingEstimateMs: run.budget.remainingEstimate(stage),
+						deadlineAt: run.budget.deadlineAt,
 					},
 				},
 				run,
@@ -1078,16 +1234,15 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		});
 		let outcome = "failed";
 		try {
-			const result = await (bound && run
-				? withTimeout(
-						operation(),
-						this.#restartWorkerGraceMs + this.#restartWorkerAbortGraceMs,
-						`Restart stage ${stage} timed out`,
-					)
-				: operation());
+			const result = await operation(deadline);
 			outcome = "settled";
 			return result;
 		} finally {
+			clearTimeout(restoreWatchdog);
+			this.#restoringRecord = undefined;
+			const samples = this.#recentDurations.get(stage) ?? [];
+			samples.push(Math.ceil(performance.now() - started));
+			this.#recentDurations.set(stage, samples.slice(-5));
 			logger.info("Restart stage finished", {
 				...context,
 				outcome,
@@ -1103,13 +1258,13 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		return lease;
 	}
 
-	async #waitForWorkerGrace(run: ActiveRestartDrain, startedAt: number): Promise<void> {
+	async #waitForWorkerGrace(run: ActiveRestartDrain, deadline: number): Promise<void> {
 		const childLeases = [...run.children.values()]
 			.filter(session => ![...run.children].some(([id, child]) => child === session && run.abandoned.has(id)))
 			.map(session => ({ session, lease: run.leases.get(session) }))
 			.filter((item): item is { session: AgentSessionHandle; lease: RestartDrainLease } => item.lease !== undefined);
 		if (childLeases.length === 0) return;
-		run.workerGraceDeadlineAt = startedAt + this.#restartWorkerGraceMs;
+		run.workerGraceDeadlineAt = deadline;
 		const graceMs = Math.max(0, run.workerGraceDeadlineAt - Date.now());
 		run.record = this.#withDrainStatus(run.record, run);
 		this.#onStateChange?.(run.record);
@@ -1141,7 +1296,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				Bun.sleep(graceMs).then(() => false),
 				run.cancelSignal.then(() => false),
 			]);
-			if (!settled && !run.cancelled) await this.#abortUnsettledWorkers(run, settledSessions);
+			if (!settled && !run.cancelled)
+				await this.#measureStage(run.record, "worker_abort", abortDeadline =>
+					this.#abortUnsettledWorkers(run, settledSessions, abortDeadline),
+				);
 		} finally {
 			if (progressTimer) clearInterval(progressTimer);
 			run.workerGraceDeadlineAt = undefined;
@@ -1151,29 +1309,35 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	async #abortUnsettledWorkers(
 		run: ActiveRestartDrain,
 		settledSessions: ReadonlySet<AgentSessionHandle>,
+		deadline: number,
 	): Promise<void> {
 		const settlement = Promise.all(
 			[...run.children].map(([id, session]) =>
-				this.#boundSession(run, session, async () => {
-					if (settledSessions.has(session) || run.abandoned.has(id)) return;
-					if (!run.runningAgentIds.has(id) && !session.isStreaming) return;
-					if (session.isDisposed) {
-						await session.dispose();
-						return;
-					}
-					const abort = (session as { abort?: AgentSessionHandle["abort"] }).abort;
-					if (typeof abort !== "function")
-						throw new Error(`Restart worker ${id} cannot settle after its grace period`);
-					await abort.call(session, {
-						goalReason: "internal",
-						cancelBackgroundJobs: true,
-						reason:
-							"Restart interrupted this worker; it will continue from its persisted session after relaunch.",
-					});
-					// abort() acknowledgement alone does not prove that tool results and
-					// pending effect receipts have reached the worker's journal.
-					await run.leases.get(session)!.waitForQuiescence();
-				}),
+				this.#boundSession(
+					run,
+					session,
+					async () => {
+						if (settledSessions.has(session) || run.abandoned.has(id)) return;
+						if (!run.runningAgentIds.has(id) && !session.isStreaming) return;
+						if (session.isDisposed) {
+							await session.dispose();
+							return;
+						}
+						const abort = (session as { abort?: AgentSessionHandle["abort"] }).abort;
+						if (typeof abort !== "function")
+							throw new Error(`Restart worker ${id} cannot settle after its grace period`);
+						await abort.call(session, {
+							goalReason: "internal",
+							cancelBackgroundJobs: true,
+							reason:
+								"Restart interrupted this worker; it will continue from its persisted session after relaunch.",
+						});
+						// abort() acknowledgement alone does not prove that tool results and
+						// pending effect receipts have reached the worker's journal.
+						await run.leases.get(session)!.waitForQuiescence();
+					},
+					deadline,
+				),
 			),
 		);
 		await Promise.race([settlement, run.cancelSignal]);
@@ -1193,15 +1357,25 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		);
 	}
 
-	async #boundSession(run: ActiveRestartDrain, session: AgentSessionHandle, work: () => Promise<void>): Promise<void> {
+	async #boundSession(
+		run: ActiveRestartDrain,
+		session: AgentSessionHandle,
+		work: () => Promise<void>,
+		stageDeadline?: number,
+	): Promise<void> {
 		const child = [...run.children].find(([, value]) => value === session);
 		if (child && run.abandoned.has(child[0])) return;
 		const timeout = new Error("Restart session deadline expired");
-		const remaining =
-			child && run.childDeadlineAt !== undefined
-				? Math.max(0, run.childDeadlineAt - Date.now())
-				: this.#restartWorkerGraceMs + this.#restartWorkerAbortGraceMs;
+		const deadline = Math.min(
+			stageDeadline ?? run.budget.stageDeadline(run.record.drainStatus?.stage ?? "prepare"),
+			run.budget.stageDeadline("worker_abort"),
+		);
+		const remaining = Math.max(0, deadline - Date.now());
 		try {
+			if (!child) {
+				await work();
+				return;
+			}
 			await withTimeout(work(), remaining, timeout);
 		} catch (error) {
 			if (!child || error !== timeout) throw error;
@@ -1262,22 +1436,14 @@ class RestartQueueControllerImpl implements RestartQueueController {
 
 	async #persistRecord(identity: RestartControlIdentity, record: RestartRequestRecord): Promise<void> {
 		this.#assertCurrentIdentity(identity);
-		await withTimeout(
-			this.#session.sessionManager.ensureOnDisk(),
-			this.#restartWorkerGraceMs + this.#restartWorkerAbortGraceMs,
-			"Restart journal creation timed out",
-		);
+		await this.#session.sessionManager.ensureOnDisk();
 		this.#assertCurrentIdentity(identity);
 		this.#session.sessionManager.appendCustomEntry(RESTART_REQUEST_TRANSITION_TYPE, {
 			version: RESTART_REQUEST_TRANSITION_VERSION,
 			identity,
 			record,
 		} satisfies RestartRequestTransition);
-		await withTimeout(
-			this.#session.sessionManager.flush(),
-			this.#restartWorkerGraceMs + this.#restartWorkerAbortGraceMs,
-			"Restart journal flush timed out",
-		);
+		await this.#session.sessionManager.flush();
 		this.#assertCurrentIdentity(identity);
 	}
 
@@ -1331,6 +1497,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	}
 
 	async #releaseLeases(run: ActiveRestartDrain): Promise<void> {
+		clearTimeout(run.watchdog);
 		for (const lease of run.leases.values()) {
 			try {
 				lease.release();
