@@ -5,6 +5,7 @@
 ### Fixed
 
 - Keep restored row owners staffed, withdraw stale restart staffing warnings, and refuse duplicate row dispatches ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Keep plan notifications responsive by updating only changed TODO rows ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Run same-project tests concurrently within measured RAM/CPU capacity, with a separate VRAM gate for hardware timing ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 

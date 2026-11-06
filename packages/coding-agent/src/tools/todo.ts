@@ -1,3 +1,4 @@
+import { patchTodoSchedule } from "../session/todo-schedule-patch";
 import { selectBranchEntries, isTodoSelectionEntryMetadata } from "../session/branch-selection";
 import type {
 	TodoArchivePersistedEdit,
@@ -425,6 +426,7 @@ function isTodoPersistedEdit(value: unknown): value is TodoPersistedEdit {
 	) {
 		return false;
 	}
+	if (value.kind === "schedule_patch") return typeof value.task === "string" && isRecord(value.patch);
 	if (value.kind === "op") return typeof value.op === "string" && value.params !== undefined;
 	if (value.kind === "archive") {
 		return (
@@ -485,6 +487,10 @@ function replayTodoEdit(
 	const current = phases ? (options.mutable ? phases : copyTodoData(phases)) : [];
 	if (edit.kind === "op" && edit.healedSelfEdges) healStoredSelfEdges(current);
 	if (edit.kind === "op" && edit.healedDanglingEdges) healStoredDanglingEdges(current, options.archived);
+	if (edit.kind === "schedule_patch") {
+		const updated = patchTodoSchedule(current, edit.task, edit.patch, edit.at);
+		return updated ? { phases: updated, mutable: true } : undefined;
+	}
 	if (edit.kind === "executor") {
 		const updated = applyTodoExecutorObservation(current, {
 			...edit.observation,
