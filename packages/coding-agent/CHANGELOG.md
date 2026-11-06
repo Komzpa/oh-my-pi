@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Workers skip unavailable providers across their configured quality chain and continue after quota failures, including with ordinary retries disabled.
+- Workers skip unavailable providers across their configured quality chain and continue after quota failures, including with ordinary retries disabled ([#98](https://github.com/Komzpa/oh-my-pi/pull/98) by [@Komzpa](https://github.com/Komzpa)).
 
 - Exhausted providers stay excluded in sessions, benchmarks, per-call workers and the auth gateway until their reset or cooldown expires.
 
