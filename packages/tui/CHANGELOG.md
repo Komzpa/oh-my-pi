@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Report consecutive event-loop stalls with the delayed window and active phase.
+
 ### Breaking Changes
 
 - Shell visualization uses the native presentation engine: shell node IDs are opaque strings, and native shell nodes receive presentation data, not raw execution traces.
