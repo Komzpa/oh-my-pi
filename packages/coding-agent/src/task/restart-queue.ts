@@ -18,6 +18,7 @@ import {
 	getLiveSubagentsForRestart,
 	type LiveRestartSubagent,
 	restoreSubagentsAfterRestart,
+	type RestartRecoveryReport,
 	sendRootContinuationOnce,
 } from "./restart-recovery";
 import type { SessionEntry } from "../session/session-entries";
@@ -738,8 +739,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				}
 			}
 			this.#childrenRecovery = async () => {
+				let recoveryReport: RestartRecoveryReport | undefined;
 				if (!stored || record?.state === "completed" || manualHandoff) {
-					await this.#measureStage(record, "restore_children", () =>
+					recoveryReport = await this.#measureStage(record, "restore_children", () =>
 						restoreSubagentsAfterRestart(this.#session, {
 							requestId: record?.requestId,
 							onProgress: this.#onChildProgress,
@@ -758,7 +760,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 					record &&
 					(record.rootWasRunning || this.#session.getRestartPendingInputCount() > 0)
 				) {
-					await sendRootContinuationOnce(this.#session, record.requestId);
+					await sendRootContinuationOnce(this.#session, record.requestId, recoveryReport);
 				}
 			};
 			if (!this.#deferChildren) await this.resumeChildren();
