@@ -258,7 +258,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#nativeDock: readonly Component[] | undefined;
 	#nativeTail: readonly Container[] = [];
 	#allocation: RuntimeChildrenOptions["allocation"];
-
 	/** Cache-driven status line shown until {@link setStatusComponent} mounts the session's. */
 	#startupStatus: StatusLineComponent | undefined;
 	#runtimeMounted = false;
