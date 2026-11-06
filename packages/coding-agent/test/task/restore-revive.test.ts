@@ -20,10 +20,6 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
-import { recoverCrashedRows } from "@oh-my-pi/pi-coding-agent/task/crash-recovery";
-import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
-import { Semaphore } from "@oh-my-pi/pi-coding-agent/task/parallel";
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { restoreSession } from "@oh-my-pi/pi-coding-agent/task/restore";
 import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";
@@ -89,7 +85,7 @@ const thinking = { mode: "effort", efforts: [Effort.Medium, Effort.High] } as co
  * `handoff` records a prewalk handoff to `high` effort before the cut-off call;
  * `fallback` follows that handoff with a retry fallback hop back to the spawn model.
  */
-async function restoreInterruptedChild(options: { transcript?: "handoff" | "fallback"; crash?: boolean } = {}) {
+async function restoreInterruptedChild(options: { transcript?: "handoff" | "fallback" } = {}) {
 	const cwd = path.join(root, "home", "work");
 	await fs.mkdir(cwd, { recursive: true });
 	const notes = path.join(cwd, "notes.txt");
@@ -126,9 +122,7 @@ async function restoreInterruptedChild(options: { transcript?: "handoff" | "fall
 	const servingModel = options.transcript === "handoff" ? HANDOFF_MODEL : SPAWN_MODEL;
 	child.appendMessage({
 		role: "assistant",
-		content: [
-			{ type: "toolCall", id: "call_read", name: "read", arguments: { path: options.crash ? "notes.txt" : notes } },
-		],
+		content: [{ type: "toolCall", id: "call_read", name: "read", arguments: { path: notes } }],
 		api: "mock",
 		provider: "mock",
 		model: servingModel,
@@ -178,32 +172,13 @@ async function restoreInterruptedChild(options: { transcript?: "handoff" | "fall
 		modelRoles: { default: `mock/${SPAWN_MODEL}` },
 		defaultThinkingLevel: Effort.Medium,
 	});
-	let phases: TodoPhase[] = [
-		{
-			name: "Work",
-			tasks: [
-				{
-					content: "Report notes",
-					status: "in_progress",
-					schedule: { owner: AGENT_ID, executor: { workerId: AGENT_ID, startedAt: 1 } },
-				},
-			],
-		},
-	];
-	const taskTool = Object.create(TaskTool.prototype) as TaskTool;
-	Object.defineProperty(taskTool, "recoveryPermit", { value: new Semaphore(1) });
 	const session = {
 		sessionManager: {
 			getSessionFile: () => mainFile,
-			getCwd: () => (options.crash ? root : cwd),
+			getCwd: () => cwd,
 			getArtifactManager: () => undefined,
 		},
 		asyncJobManager: manager,
-		getToolByName: () => taskTool,
-		getTodoPhases: () => phases,
-		commitTodoPhases: (next: TodoPhase[]) => {
-			phases = next;
-		},
 		settings,
 		effectiveExtensionRoots: { explicit: [], mode: "merge", configured: [], configuredLevel: "user" },
 		preparedExtensions: undefined,
@@ -219,8 +194,8 @@ async function restoreInterruptedChild(options: { transcript?: "handoff" | "fall
 	});
 
 	try {
-		const outcome = options.crash ? await recoverCrashedRows(session) : await restoreSession(session);
-		expect(outcome.subagents).toEqual([options.crash ? `${AGENT_ID}-2` : AGENT_ID]);
+		const outcome = await restoreSession(session);
+		expect(outcome.subagents).toEqual([AGENT_ID]);
 		return { delivered: await delivered.promise, readResults, readEfforts };
 	} finally {
 		authStorage.close();
@@ -250,11 +225,4 @@ it("revives a subagent whose handoff target failed over on the spawn model, not 
 	expect(delivered).toContain(`restored: 42 (${SPAWN_MODEL})`);
 	expect(readResults[SPAWN_MODEL]).toHaveLength(1);
 	expect(readResults[HANDOFF_MODEL]).toEqual([]);
-}, 20_000);
-
-it("ordinary resume continues the crashed row from its transcript and original workspace under a new id", async () => {
-	const { delivered, readResults } = await restoreInterruptedChild({ crash: true });
-	expect(delivered).toContain(`restored: 42 (${SPAWN_MODEL})`);
-	expect(readResults[SPAWN_MODEL]).toHaveLength(1);
-	expect(readResults[SPAWN_MODEL]![0]).toContain("the answer is 42");
 }, 20_000);

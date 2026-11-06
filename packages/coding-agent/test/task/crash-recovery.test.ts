@@ -11,6 +11,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import { recoverCrashedRows } from "@oh-my-pi/pi-coding-agent/task/crash-recovery";
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
+import { applyToolProxy } from "../../src/extensibility/tool-proxy";
 import { Semaphore } from "@oh-my-pi/pi-coding-agent/task/parallel";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { SingleResult } from "@oh-my-pi/pi-tui/tools/task";
@@ -147,7 +148,11 @@ describe("kill/replay through ordinary resume", () => {
 			sessionManager: { getSessionFile: () => mainFile },
 			asyncJobManager: manager,
 			settings: Settings.isolated(),
-			getToolByName: () => taskTool,
+			getToolByName: () => {
+				const wrapper = { name: "task" };
+				applyToolProxy(taskTool, wrapper);
+				return wrapper;
+			},
 			getTodoPhases: () => phases,
 			commitTodoPhases: (next: TodoPhase[]) => {
 				phases = next;
