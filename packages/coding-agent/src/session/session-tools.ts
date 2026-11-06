@@ -298,7 +298,7 @@ const PLANNING_CONTROL_TOOLS: Record<string, true> = {
 };
 
 /** Custom entry holding the digest of the base prompt the branch's primary model calls are built from. */
-const SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE = "system-prompt-digest";
+export const SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE = "system-prompt-digest";
 
 /**
  * Least time between two rediscoveries started by `skill://` names no loaded skill owns, so a typo

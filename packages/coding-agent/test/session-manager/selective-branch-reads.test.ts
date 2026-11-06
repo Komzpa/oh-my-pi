@@ -1,5 +1,5 @@
-import { expect, it } from "bun:test";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { expect, it, spyOn } from "bun:test";
+import { SessionEntryIndex, SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
 it("selects branch state in path order and stops a latest read before older checkpoints", async () => {
 	const manager = SessionManager.inMemory();
@@ -62,5 +62,38 @@ it("refreshes announced metadata and parent changes after repeated branch select
 		expect(select()).toEqual([first, middle]);
 	} finally {
 		await manager.close();
+	}
+});
+
+it("reads only requested custom payloads across sibling branches", () => {
+	const index = new SessionEntryIndex();
+	const timestamp = "2026-11-06T00:00:00Z";
+	index.insert({
+		type: "custom",
+		id: "first",
+		parentId: null,
+		timestamp,
+		customType: "lifecycle",
+		data: { action: "spawn" },
+	});
+	index.insert(
+		{ type: "custom", id: "archive", parentId: "first", timestamp, customType: "archive", data: {} },
+		0,
+		100,
+	);
+	index.insert({
+		type: "custom",
+		id: "sibling",
+		parentId: "first",
+		timestamp,
+		customType: "lifecycle",
+		data: { action: "tombstone" },
+	});
+	const read = spyOn(index, "get");
+	try {
+		expect([...index.entriesOfType("custom", "lifecycle")].map(entry => entry.id)).toEqual(["first", "sibling"]);
+		expect(read.mock.calls.map(call => call[0])).toEqual(["first", "sibling"]);
+	} finally {
+		read.mockRestore();
 	}
 });

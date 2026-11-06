@@ -397,8 +397,11 @@ export function selectSessionContextEntriesFromLeafPath(
 		if (resetIdx < 0 && path[i].type === "reset_boundary") resetIdx = i;
 	}
 	const selected = new Set<string>();
-	const selectRange = (start: number, end: number) => {
-		for (let i = start; i < end; i++) selected.add(path[i].id);
+	// All replay ranges form one leaf-prefix. Track its endpoint instead of
+	// allocating an ID for every historical journal record.
+	let rangeEnd = 0;
+	const selectRange = (_start: number, end: number) => {
+		rangeEnd = Math.max(rangeEnd, end);
 	};
 	if (resetIdx >= 0 && (compactionIdx < 0 || resetIdx < compactionIdx)) {
 		selectRange(0, resetIdx + 1);
@@ -467,7 +470,41 @@ export function selectSessionContextEntriesFromLeafPath(
 	// Keep the latest reset marker even when a later compaction wins, so notes
 	// and rollover request attribution retain their original lower bound.
 	if (resetIdx >= 0) selected.add(path[resetIdx].id);
-	return path.filter(entry => selected.has(entry.id)).map(entry => read(entry.id));
+	// Restart notices can outlive the compaction that hid their transition.
+	for (const entry of path) {
+		if (entry.customType === RESTART_REQUEST_TRANSITION_TYPE) selected.add(entry.id);
+	}
+	// Only these records affect context replay. Administrative/custom payloads
+	// can be arbitrarily large; selecting a range is not permission to decode them.
+	// Keep the actual leaf and first-kept anchor so callers can still correlate
+	// snapshots and compaction cuts with journal metadata.
+	const firstKeptId =
+		compactionIdx >= 0 ? (read(path[compactionIdx].id) as CompactionEntry).firstKeptEntryId : undefined;
+	return path
+		.filter(
+			(entry, index) =>
+				(index < rangeEnd || selected.has(entry.id)) &&
+				(entry.id === path[0]?.id ||
+					entry.id === firstKeptId ||
+					entry.type === "message" ||
+					entry.type === "custom_message" ||
+					entry.type === "branch_summary" ||
+					entry.type === "compaction" ||
+					entry.type === "reset_boundary" ||
+					entry.type === "tool_result_prune" ||
+					entry.type === "model_usage" ||
+					entry.type === "model_change" ||
+					entry.type === "thinking_level_change" ||
+					entry.type === "service_tier_change" ||
+					entry.type === "mode_change" ||
+					entry.type === "ttsr_injection" ||
+					(entry.type === "custom" &&
+						(entry.customType === CONTEXT_NOTES_ENTRY_TYPE ||
+							entry.customType === RESTART_REQUEST_TRANSITION_TYPE ||
+							entry.customType === "tool_execution_start" ||
+							entry.customType === "session_exit"))),
+		)
+		.map(entry => read(entry.id));
 }
 
 export function buildSessionContext(
@@ -658,7 +695,8 @@ export function buildSessionContextFromLeafPath(
 			if (
 				entry.type === "custom_message" &&
 				entry.customType === REWIND_REPORT_MESSAGE_TYPE &&
-				previous.type === "branch_summary"
+				previous.type === "branch_summary" &&
+				entry.parentId === previous.id
 			) {
 				rewindSummaryIds.add(previous.id);
 			}

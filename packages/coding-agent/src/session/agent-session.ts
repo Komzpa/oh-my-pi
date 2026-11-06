@@ -528,7 +528,12 @@ import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
-import { promptDigestOfEntry, SessionTools, type SessionToolsHost } from "./session-tools";
+import {
+	promptDigestOfEntry,
+	SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE,
+	SessionTools,
+	type SessionToolsHost,
+} from "./session-tools";
 import { resolveWebsocketPreference } from "./settings-stream-fn";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
@@ -813,22 +818,20 @@ interface BranchPromptCacheObservation {
 }
 
 /**
- * A branch view folded up to `scanned`. The session manager extends its
- * memoized view in place on append and hands out a new array otherwise, so a
- * later read of the same array folds only the appended entries.
+ * A prompt-cache observation folded through one journal leaf. Keep only the
+ * latest cached reply and digest, never a strong reference to branch payloads.
  */
 interface BranchPromptCacheScan {
-	branch: readonly SessionEntry[];
-	scanned: number;
+	leafId: string | null;
+	sessionId: string;
 	/** Newest system prompt digest recorded in the scanned entries. */
 	digest: string | undefined;
 	observation: BranchPromptCacheObservation | undefined;
 }
 
-/** Folds `scan.branch`'s unscanned entries into what the newest reply that read or wrote the prompt cache left. */
-function scanBranchPromptCache(scan: BranchPromptCacheScan): void {
-	const { branch } = scan;
-	for (let index = scan.scanned; index < branch.length; index++) {
+/** Fold selected entries into the latest prompt-cache observation. */
+function scanBranchPromptCache(scan: BranchPromptCacheScan, branch: readonly SessionEntry[]): void {
+	for (let index = 0; index < branch.length; index++) {
 		const entry = branch[index]!;
 		const digest = promptDigestOfEntry(entry);
 		if (digest !== null) {
@@ -860,7 +863,6 @@ function scanBranchPromptCache(scan: BranchPromptCacheScan): void {
 		if (reply.stopReason === "error" || reply.usage.cacheRead + reply.usage.cacheWrite <= 0) continue;
 		scan.observation = { reply, warmedAt: 0, refreshMissed: false, compacted: false, promptDigest: scan.digest };
 	}
-	scan.scanned = branch.length;
 }
 
 type AgentContinueSkipReason =
@@ -4339,7 +4341,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const pendingToolCalls = collectPendingToolCalls(pendingEntries.reverse());
 		if (pendingToolCalls.length === 0) {
 			let hasAssistant = false;
-			for (const entry of this.sessionManager.iterateBranch("message")) {
+			for (const entry of this.sessionManager.getContextBranch()) {
 				if (entry.type === "message" && entry.message.role === "assistant") {
 					hasAssistant = true;
 					break;
@@ -4726,7 +4728,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	#buildPersistedMessageKeySet(): Set<string> {
 		const keys = new Set<string>();
-		for (const entry of this.sessionManager.iterateBranch("message")) {
+		for (const entry of this.sessionManager.getContextBranch()) {
 			if (entry.type !== "message") continue;
 			const key = sessionMessagePersistenceKey(entry.message);
 			if (key !== undefined) keys.add(key);
@@ -4755,7 +4757,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (key === undefined) return false;
 		const keys = this.#ensurePersistedMessageKeys();
 		if (!keys.has(key)) return false;
-		for (const entry of this.sessionManager.iterateBranch("message")) {
+		for (const entry of this.sessionManager.getContextBranch()) {
 			if (entry.type !== "message") continue;
 			if (sessionMessagePersistenceKey(entry.message) !== key) continue;
 			if (!sameMessageContent(entry.message, message)) continue;
@@ -6912,16 +6914,45 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/**
 	 * The branch's newest reply that used the prompt cache, with what followed it
 	 * (the latest warm refresh, a compaction) and the system prompt digest
-	 * recorded before it. Each entry is folded once per branch view.
+	 * recorded before it. Appends fold only the new relevant entries.
 	 */
 	#branchPromptCacheObservation(): BranchPromptCacheObservation | undefined {
-		const branch = this.sessionManager.getBranchView();
+		const leafId = this.sessionManager.getLeafId();
+		const sessionId = this.sessionManager.getSessionId();
 		let scan = this.#branchPromptCacheScan;
-		if (scan?.branch !== branch) {
-			scan = { branch, scanned: 0, digest: undefined, observation: undefined };
+		if (scan?.sessionId === sessionId && scan.leafId === leafId) return scan.observation;
+		let reachedPreviousLeaf = false;
+		let foundReply = false;
+		const entries: SessionEntry[] = [];
+		for (const entry of this.sessionManager.iterateBranchMatchingNewestFirst(metadata => {
+			if (scan?.sessionId === sessionId && metadata.id === scan.leafId) reachedPreviousLeaf = true;
+			return (
+				!reachedPreviousLeaf &&
+				(metadata.customType === SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE ||
+					metadata.type === "reset_boundary" ||
+					(!foundReply &&
+						(metadata.type === "compaction" ||
+							metadata.type === "model_usage" ||
+							metadata.messageRole === "assistant")))
+			);
+		})) {
+			entries.push(entry);
+			if (entry.type === "reset_boundary" || (foundReply && promptDigestOfEntry(entry) !== null)) break;
+			if (
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				entry.message.stopReason !== "error" &&
+				entry.message.usage.cacheRead + entry.message.usage.cacheWrite > 0
+			)
+				foundReply = true;
+		}
+		entries.reverse();
+		if (!scan || scan.sessionId !== sessionId || !reachedPreviousLeaf) {
+			scan = { leafId, sessionId, digest: undefined, observation: undefined };
 			this.#branchPromptCacheScan = scan;
 		}
-		if (scan.scanned < branch.length) scanBranchPromptCache(scan);
+		scanBranchPromptCache(scan, entries);
+		scan.leafId = leafId;
 		return scan.observation;
 	}
 
@@ -8864,7 +8895,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const session = this.#evalToolSession;
 		if (!session) return undefined;
 		let historyHasEval = false;
-		for (const entry of this.sessionManager.iterateBranch("message")) {
+		for (const entry of this.sessionManager.getContextBranch()) {
 			if (entry.type !== "message") continue;
 			const message = entry.message;
 			if (
@@ -14512,7 +14543,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		onPending: () => void = () => {},
 	): Promise<boolean> {
 		if (this.isStreaming || this.#restoringPendingAsk) return false;
-		const branch = this.sessionManager.getBranchView();
+		const branch = this.sessionManager.getBranchMatching(
+			metadata =>
+				metadata.type === "message" ||
+				metadata.customType === "restart_request_transition" ||
+				metadata.customType === "restart_asks_presented" ||
+				metadata.customType === SESSION_EXIT_CUSTOM_TYPE ||
+				metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE,
+		);
 		const asyncPending = findUnansweredAsyncAsks(branch);
 		if (asyncPending && asyncPending.calls.length > 0) {
 			if (!uiContext.askDialog) return false;
@@ -14643,10 +14681,16 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				});
 			}
 			// Close other unknown calls without re-executing their possible side effects.
+			let reachedAnchor = false;
 			for (const result of createInterruptedToolResults(
 				this.sessionManager
-					.getBranchView()
-					.slice(anchorIndex)
+					.getBranchMatching(metadata => {
+						if (metadata.id === anchor.id) reachedAnchor = true;
+						return (
+							reachedAnchor &&
+							(metadata.type === "message" || metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE)
+						);
+					})
 					.filter(
 						entry => entry.id === anchor.id || entry.type !== "message" || entry.message.role !== "assistant",
 					),

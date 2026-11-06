@@ -3436,7 +3436,9 @@ export class TurnRecovery {
 		// A restored session omits the failed turn (and its synthetic results)
 		// from provider context, so — mirroring retry() — the persisted display
 		// transcript decides whether a retryable tool-call tail exists.
-		return abortedToolCallTail(this.#host.sessionManager.buildSessionContext({ transcript: true }).messages);
+		return abortedToolCallTail(
+			this.#host.sessionManager.buildSessionContext({ transcript: true, collapseCompactedHistory: true }).messages,
+		);
 	}
 	/**
 	 * Manually retry the last failed assistant turn.
