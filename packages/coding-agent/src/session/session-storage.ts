@@ -698,7 +698,12 @@ function writeLinesToFileSync(target: string, lines: readonly string[]): void {
 async function writeLinesToFile(target: string, lines: readonly string[]): Promise<void> {
 	const sink = Bun.file(target).writer({ highWaterMark: LINE_STREAM_CHUNK });
 	try {
+		let sliceStart = performance.now();
 		for (const line of lines) {
+			if (performance.now() - sliceStart >= 4) {
+				await Bun.sleep(1);
+				sliceStart = performance.now();
+			}
 			// Backpressured writes can reject after end() has otherwise completed.
 			// Do not publish a partial transcript before every write is confirmed.
 			const written = sink.write(line);
