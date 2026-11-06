@@ -5,6 +5,7 @@
 ### Fixed
 
 - Skipped tools name the pending advisory and the tool to retry; passive notices preserve running waits ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Cancelled queue drains preserve pending input for the next turn without reporting an assistant-role error ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.17.0] - 2026-11-06
 
