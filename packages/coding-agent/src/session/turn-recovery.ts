@@ -26,6 +26,7 @@ import { resolveModelPolicy } from "@oh-my-pi/pi-catalog/compat/resolve";
 import { isFireworksFastModelId, toFireworksBaseModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { isUnexpectedSocketCloseMessage, logger, prompt, sleepLong, sleepUntil } from "@oh-my-pi/pi-utils";
+import { modelSelectorBlacklistError } from "../config/model-resolver";
 import type { ModelRegistry } from "../config/model-registry";
 import { formatModelStringWithRouting, resolveModelOverride } from "../config/model-resolver";
 
@@ -1957,6 +1958,7 @@ export class TurnRecovery {
 		if (!role || !currentModel) return undefined;
 		const configured = this.#host.settings.getModelRole(role);
 		if (!configured) return undefined;
+		if (modelSelectorBlacklistError(configured, this.#host.modelRegistry.getAvailable())) return undefined;
 		const resolved = resolveModelOverride([configured], this.#host.modelRegistry, this.#host.settings);
 		return resolved.model && modelsAreEqual(resolved.model, currentModel) ? role : undefined;
 	}
@@ -1974,7 +1976,7 @@ export class TurnRecovery {
 			currentSelector,
 			currentModel,
 			options,
-		);
+		).filter(candidate => !modelSelectorBlacklistError(candidate.raw, this.#host.modelRegistry.getAvailable()));
 	}
 
 	async #maybeApplyUsageAwareFallback(signal: AbortSignal, confirmer?: UsageFallbackConfirmer): Promise<boolean> {
@@ -2334,6 +2336,7 @@ export class TurnRecovery {
 				// pair of chains naming each other alternates: each hop is a model the walk
 				// has already been refused on, and the budget no longer stops it.
 				if (options?.refusalWalk && this.#refusalWalkTried.has(formatRetryFallbackBaseSelector(selector))) continue;
+				if (modelSelectorBlacklistError(selector.raw, this.#host.modelRegistry.getAvailable())) continue;
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate) continue;
@@ -2591,6 +2594,7 @@ export class TurnRecovery {
 			return false;
 		}
 		if (this.isRetryFallbackSelectorSuppressed(originalSelector)) return false;
+		if (modelSelectorBlacklistError(originalSelector.raw, this.#host.modelRegistry.getAvailable())) return false;
 
 		const resolvedPrimary = resolveModelOverride(
 			[originalSelector.raw],

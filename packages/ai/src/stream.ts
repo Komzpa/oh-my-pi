@@ -1,3 +1,4 @@
+import { assertModelNotBlacklisted } from "./model-blacklist";
 import * as crypto from "node:crypto";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
@@ -644,6 +645,7 @@ function withProviderInFlightLimit<
 	const limit = resolveProviderInFlightLimit(model.provider, options);
 	if (limit === undefined) {
 		options?.beforeDispatch?.();
+		assertModelNotBlacklisted(model);
 		return healLeakedThinking(model, dispatch(false));
 	}
 
@@ -681,6 +683,7 @@ function withProviderInFlightLimit<
 				throw options.signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
 			}
 			options?.beforeDispatch?.();
+			assertModelNotBlacklisted(model);
 			const inner = healLeakedThinking(model, dispatch(true));
 			let terminalEvent: AssistantMessageEvent | undefined;
 			for await (const event of inner) {
@@ -819,7 +822,7 @@ function withResolvedModelHeaders<TApi extends Api>(
 	return outer;
 }
 
-export function stream<TApi extends Api>(
+function streamAllowed<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: OptionsForApi<TApi>,
@@ -1170,6 +1173,7 @@ export function streamSimple<TApi extends Api>(
 	// byte-identical to a non-reasoning model's.
 	const effortRequested =
 		sessionOptions.reasoning !== undefined && !sessionOptions.disableReasoning && !sessionOptions.forceReasoningOff;
+	assertModelNotBlacklisted(model);
 	if (!effortRequested) model = withoutUnverifiedThinking(model);
 	if (!model.requiresGlyphTokenization) {
 		return streamSimpleRequest(model, context, sessionOptions);
@@ -1213,6 +1217,7 @@ function streamSimpleRequest<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+	assertModelNotBlacklisted(model);
 	const requestOptions = withSupportedSamplingParams(
 		model,
 		withTransportFetch(model, (options || {}) as SimpleStreamOptions),
@@ -2383,4 +2388,14 @@ function getGoogleBudget(
 
 	// Unknown model - use dynamic
 	return -1;
+}
+
+/** Enforce the owner's current ban before entering provider-specific streaming work. */
+export function stream<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options?: OptionsForApi<TApi>,
+): AssistantMessageEventStream {
+	assertModelNotBlacklisted(model);
+	return streamAllowed(model, context, options);
 }

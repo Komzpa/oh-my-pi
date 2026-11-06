@@ -68,6 +68,7 @@ export class StandardResponsesWebSocketSession {
 			onSseEvent?: (event: RawSseEvent) => void;
 			/** Reports whether a sent continuation anchor was accepted or definitely rejected as stale. */
 			onChainResult?: (accepted: boolean) => void;
+			beforeDispatch?: () => void;
 		},
 	): AsyncGenerator<ResponseStreamEvent> {
 		this.#completed = false;
@@ -99,6 +100,8 @@ export class StandardResponsesWebSocketSession {
 					{},
 					options.signal,
 					options.onSseEvent,
+					undefined,
+					options.beforeDispatch,
 				)) {
 					const event = raw as unknown as ResponseStreamEvent;
 					const anchorError = event.type === "response.failed" ? event.response.error : raw;

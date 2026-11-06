@@ -2,6 +2,7 @@ import * as path from "node:path";
 import type { ApiKeyResolver, FetchImpl, ResolvedApiKey, UsageProvider } from "@oh-my-pi/pi-ai";
 import { type AuthApiKeyOptions, type AuthPeekOptions, oauthAccountKey } from "@oh-my-pi/pi-ai/auth-storage";
 import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
+import { filterBlacklistedModels, modelBlacklistReason } from "@oh-my-pi/pi-ai/model-blacklist";
 import { registerOAuthProvider, unregisterOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
 import { setCodexAttestationProvider } from "@oh-my-pi/pi-ai/providers/openai-codex-attestation";
@@ -3369,16 +3370,32 @@ export class ModelRegistry {
 	 */
 	getAll(kind: ModelKind | "all" = "chat"): Model<Api>[] {
 		const models = this.#ensureFullSnapshot();
-		if (kind === "all") return models;
+		if (kind === "all") return this.#filterVisibleSnapshot(models);
 		let snapshots = this.#fullKindSnapshots.get(models);
 		if (!snapshots) {
 			snapshots = {};
 			this.#fullKindSnapshots.set(models, snapshots);
 		}
 		const cached = snapshots[kind];
-		if (cached) return cached;
+		if (cached) return this.#filterVisibleSnapshot(cached);
 		const filtered = models.filter(model => modelKind(model) === kind);
 		snapshots[kind] = filtered;
+		return this.#filterVisibleSnapshot(filtered);
+	}
+
+	#visibleModelSnapshots = new WeakMap<Model<Api>[], Model<Api>[]>();
+
+	#filterVisibleSnapshot(models: Model<Api>[]): Model<Api>[] {
+		const filtered = filterBlacklistedModels(models);
+		const previous = this.#visibleModelSnapshots.get(models);
+		if (
+			previous &&
+			previous.length === filtered.length &&
+			previous.every((model, index) => model === filtered[index])
+		) {
+			return previous;
+		}
+		this.#visibleModelSnapshots.set(models, filtered);
 		return filtered;
 	}
 
@@ -3418,6 +3435,10 @@ export class ModelRegistry {
 	 * pass `"all"` when the caller is intentionally selecting across kinds.
 	 */
 	getAvailableForProviders(providers: ReadonlySet<string>, kind: ModelKind | "all" = "chat"): Model<Api>[] {
+		return filterBlacklistedModels(this.#availableForProviders(providers, kind));
+	}
+
+	#availableForProviders(providers: ReadonlySet<string>, kind: ModelKind | "all"): Model<Api>[] {
 		const requested = new Set([...providers].map(provider => provider.trim().toLowerCase()).filter(Boolean));
 		const isProviderAvailable = this.#createProviderAvailabilityCheck();
 		if (this.#hasFullSnapshot) {
@@ -3599,7 +3620,8 @@ export class ModelRegistry {
 	 */
 	find(provider: string, modelId: string): Model<Api> | undefined {
 		if (this.#isProviderDisabled(provider)) return undefined;
-		return resolveProviderModelReference(provider, modelId, this.#modelsForProviderLookup(provider));
+		const model = resolveProviderModelReference(provider, modelId, this.#modelsForProviderLookup(provider));
+		return model && modelBlacklistReason(model) === undefined ? model : undefined;
 	}
 
 	/** Whether settings disable `provider` (`disabledProviders`). */
@@ -3615,7 +3637,7 @@ export class ModelRegistry {
 	 */
 	getProviderModels(provider: string): Model<Api>[] {
 		const normalizedProvider = provider.trim().toLowerCase();
-		return this.#modelsForProviderLookup(provider).filter(
+		return filterBlacklistedModels(this.#modelsForProviderLookup(provider)).filter(
 			model => model.provider.toLowerCase() === normalizedProvider,
 		);
 	}
