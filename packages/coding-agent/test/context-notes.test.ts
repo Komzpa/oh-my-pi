@@ -398,3 +398,35 @@ describe("experimental context notes", () => {
 		}
 	});
 });
+
+it("uses indexed notebook and ancestry reads while unrelated entries advance the leaf", async () => {
+	const manager = SessionManager.inMemory();
+	const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+	manager.appendCustomEntry(CONTEXT_NOTES_ENTRY_TYPE, { version: 1, text: "existing" });
+	manager.appendCustomEntry("unrelated", { text: "historical payload" });
+	const branch = manager.getBranch();
+	Object.assign(manager, {
+		getBranchMatching: (
+			predicate: (metadata: { id: string; type: SessionEntry["type"]; customType?: string }) => boolean,
+		) =>
+			branch.filter(entry =>
+				predicate({
+					id: entry.id,
+					type: entry.type,
+					customType: entry.type === "custom" ? entry.customType : undefined,
+				}),
+			),
+	});
+	const fullRead = vi.spyOn(manager, "getBranch").mockImplementation(() => {
+		throw new Error("unbounded branch read");
+	});
+	try {
+		const tool = new ContextNotesTool(toolSession(settings, manager));
+		expect((await tool.execute("read", { action: "read" })).details?.text).toBe("existing");
+		expect((await tool.execute("write", { action: "replace", text: "updated" })).details?.text).toBe("updated");
+		expect(fullRead).not.toHaveBeenCalled();
+	} finally {
+		fullRead.mockRestore();
+		await manager.close();
+	}
+});
