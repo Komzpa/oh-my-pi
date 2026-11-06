@@ -83,7 +83,10 @@ export class PeerRuntime {
 						if (node.pid) this.#pids.add(node.pid);
 						if (node.state === "ok")
 							for (const redir of node.redirs ?? []) {
-								if ([">", ">>", ">|", "&>", "&>>"].includes(redir.op)) this.touch(redir.target);
+								// Upstream ShellTraceBytes: a non-UTF-8 target arrives as raw bytes and names no trackable path.
+								const target: unknown = redir.target;
+								if (typeof target === "string" && [">", ">>", ">|", "&>", "&>>"].includes(redir.op))
+									this.touch(target);
 							}
 					}
 			}
