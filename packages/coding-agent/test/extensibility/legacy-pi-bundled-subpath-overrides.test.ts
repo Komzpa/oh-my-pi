@@ -33,6 +33,7 @@ async function runRegistryProbe(entries: BundledPiEntry[], source: string): Prom
 // derives every module key from current package exports, so subpaths route to
 // the same `omp-legacy-pi-bundled:` virtual namespace as package roots without
 // a generated registry or duplicate key list.
+
 describe("legacy pi compat compiled-mode subpath overrides (issue #3442)", () => {
 	it("does not evaluate unrelated host modules while loading the registry", async () => {
 		using tempDir = TempDir.createSync("@omp-legacy-pi-loaders-");
@@ -184,6 +185,18 @@ export const observed = buildModel({
 		const overrides = __buildLegacyPiPackageRootOverrides(true, bundledModuleKeys);
 		expect(bundledModuleKeys.has(key)).toBe(true);
 		expect(overrides[key]).toBe(`omp-legacy-pi-bundled:${key}`);
+	});
+	it("bundles nested extension imports from the coding-agent and AI registry exports", () => {
+		const overrides = __buildLegacyPiPackageRootOverrides(true, bundledModuleKeys);
+		const extensionImports = [
+			"@oh-my-pi/pi-coding-agent/registry/agent-registry",
+			"@oh-my-pi/pi-ai/registry/oauth/xiaomi",
+		] as const;
+
+		for (const key of extensionImports) {
+			expect(bundledModuleKeys.has(key)).toBe(true);
+			expect(overrides[key]).toBe(`omp-legacy-pi-bundled:${key}`);
+		}
 	});
 
 	it("keeps coding-agent's root catch-all wildcards (./* / ./*.js) out of the bundle", () => {
