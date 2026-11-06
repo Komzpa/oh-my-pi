@@ -42,6 +42,18 @@ import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
+const dispatchArchiveCache = new WeakMap<object, { revision: unknown; phases: TodoScheduleInput }>();
+
+export function dispatchTodoArchive(ctx: ExtensionContext): TodoScheduleInput {
+  const latest = selectLatestBranchEntry(ctx.sessionManager, isTodoSelectionEntryMetadata);
+  const revision = latest?.id ?? latest;
+  const cached = dispatchArchiveCache.get(ctx.sessionManager);
+  if (cached && cached.revision === revision) return cached.phases;
+  const phases = getLatestTodoArchiveFromEntries(selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata));
+  dispatchArchiveCache.set(ctx.sessionManager, { revision, phases });
+  return phases;
+}
+
 export function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
   const phases = pending.length === 0 ? ctx.getTodoPhases?.() : undefined;
   if (phases !== undefined) return [{ type: "custom", customType: "user_todo_edit", data: { phases } }];
@@ -2540,7 +2552,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return { facilitatorSettled, updaterRejected };
   };
   const touchSprintState = (ctx: ExtensionContext, phases: TodoScheduleInput, jobs: Jobs | null, now: number, deadline: DispatchInput["deadline"], alarms: string[]) => {
-    const tasks = withTodoArchive(phases, getLatestTodoArchiveFromEntries(selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata))).flatMap((phase) => phase.tasks);
+    const tasks = withTodoArchive(phases, dispatchTodoArchive(ctx)).flatMap((phase) => phase.tasks);
     sprintLiveRows = new Set(tasks.map((task) => task.content));
     const open = tasks.filter((task) => isOpenRowStatus(task.status));
     const nonClosed = tasks.filter((task) => isNonClosedRowStatus(task.status));

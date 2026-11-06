@@ -13,6 +13,7 @@ import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/to
 import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
 import type { ActiveGoalRef, DeadlineState, QuotaSnapshot } from "./deadlines";
 import * as deadlineSdk from "./deadlines";
+import { deadlineFormats } from "./deadline-format";
 import wrapUpInstructions from "./goal-deadline-wrap-up.md" with { type: "text" };
 import { appendTimedNote } from "./lead_time_notes";
 
@@ -78,13 +79,7 @@ type PresenceLocalTime = { hour: number; minute: number; weekend: boolean; displ
 type PresenceDeadline = { dueAt: number; state: "on track" | "at risk" | "missed"; display: string };
 
 function presenceLocalTime(now: number, timeZone: string): PresenceLocalTime {
-	const parts = new Intl.DateTimeFormat("en-GB", {
-		timeZone,
-		hour: "2-digit",
-		minute: "2-digit",
-		hourCycle: "h23",
-		weekday: "short",
-	}).formatToParts(new Date(now));
+	const parts = deadlineFormats(timeZone).presence.formatToParts(new Date(now));
 	const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
 	const weekday = values.weekday ?? "";
 	return {
@@ -312,7 +307,7 @@ const SANITY_PAST_SECONDS = 5 * 60;
 const SANITY_AHEAD_SECONDS = 7 * 24 * 3600;
 const SAME_MESSAGE_CORRECTION_SECONDS = 30 * 60;
 function zonedFields(ms: number, timeZone: string): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
-	const parts = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(new Date(ms));
+	const parts = deadlineFormats(timeZone).timestamp.formatToParts(new Date(ms));
 	const f = Object.fromEntries(parts.map(({ type, value }) => [type, Number(value)]));
 	return { year: f.year!, month: f.month!, day: f.day!, hour: f.hour!, minute: f.minute!, second: f.second! };
 }

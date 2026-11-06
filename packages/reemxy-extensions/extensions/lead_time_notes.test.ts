@@ -42,3 +42,19 @@ test("large plan identities do not duplicate the plan in persisted note details"
 	await appendTimedNote(pi, ctx, "todo-dispatch-time-note", "30 open, 5 running", "plan row with blocker".repeat(6000), "03:14", true);
 	expect(sent?.details?.semanticKey.length).toBeLessThanOrEqual(16);
 });
+
+test("a busy note check selects note metadata without hydrating TODO history", async () => {
+	let examined = 0;
+	const entry = { type: "custom_message", customType: "lead-note", details: { semanticKey: Bun.hash("same").toString(16), emittedAt: 1000 }, timestamp: "2026-11-06T00:00:00Z" };
+	const ctx = { sessionManager: {
+		getBranch: () => { throw new Error("hydrated complete journal"); },
+		*iterateBranchMatchingNewestFirst(predicate: (metadata: { type: string }) => boolean) {
+			for (let i = 0; i < 1400; i++) if (predicate({ type: "custom" })) throw new Error("hydrated TODO snapshot");
+			examined++;
+			if (predicate(entry)) yield entry;
+		},
+	} } as never;
+	const pi = { sendMessage: () => { throw new Error("duplicated unchanged note"); } } as never;
+	for (let i = 0; i < 20; i++) expect(await appendTimedNote(pi, ctx, "lead-note", "same", "same", "12:30", true, 2000)).toBe(false);
+	expect(examined).toBe(20);
+});
