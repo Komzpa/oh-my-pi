@@ -82,7 +82,17 @@ export async function runRestartCommand(command: RestartCommandArgs): Promise<vo
 		};
 		let updated = await sendRestartControl(request);
 		if (command.action === "request") {
-			updated = await waitForRestartResult(updated);
+			let previousStatus: string | undefined;
+			updated = await waitForRestartResult(updated, {
+				onProgress: snapshot => {
+					if (command.json) return;
+					const status = snapshot.request;
+					const key = `${status?.state}:${status?.drainStatus?.stage}`;
+					if (key === previousStatus) return;
+					previousStatus = key;
+					process.stderr.write(`${formatRestartRequestStatus(status)}\n`);
+				},
+			});
 			if (updated.request?.state === "failed") {
 				throw new RestartControlError(
 					"handler_failed",

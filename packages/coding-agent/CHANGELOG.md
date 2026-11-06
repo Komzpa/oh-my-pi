@@ -2506,6 +2506,8 @@ Older entries are archived in [packages/coding-agent/CHANGELOG.md@72d5cf31d861](
 
 ### Fixed
 
+- Graceful restart waits for the lead’s current turn without interrupting generation; an expired root wait stays queued and cancellable.
+
 - Pending state notes can replace older notes by key, and unchanged restart queues no longer serialize megabytes of context ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
 - Graceful restart bounds dead-worker waits, preserves workers for revival, and reports the current drain stage and elapsed time ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
