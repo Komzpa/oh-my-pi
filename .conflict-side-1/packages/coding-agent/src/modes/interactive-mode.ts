@@ -167,7 +167,7 @@ import { resolveMarkdownLinkHrefs } from "../internal-urls/hyperlink-targets";
 import type { ResolveContext } from "../internal-urls/index";
 import { modelMentionChipLabel, shiftImageMarkers } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
 import { isTranscriptEntry, type SessionContext } from "../session/session-context";
-import { type DraftEditorState, type DraftImage, SessionManager } from "../session/session-manager";
+import type { DraftEditorState, DraftImage, SessionManager } from "../session/session-manager";
 import { loadPinnedSessionIds } from "../session/session-pins";
 import {
 	canAutoCreateWorktree,
@@ -235,11 +235,9 @@ import { type CfgApproval, type CfgChangeRequest, setCfgApprovalHost } from "../
 import {
 	createTodoHudStateData,
 	getTodoHudVisibility,
-	isTodoStateEntryMetadata,
 	nextActionableTask,
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	type TodoHudStateEntryData,
-	type TodoHudVisibility,
 } from "../tools/todo";
 import {
 	formatPhaseDisplayName,
@@ -5281,24 +5279,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#syncTodoHudState(owner: AgentViewSession): void {
 		this.#cancelTodoAutoClearTimer();
 		const phases = this.todoPhases;
-		const manager = owner.sessionManager;
-		if (manager instanceof SessionManager) {
-			this.#applyTodoHudVisibility(
-				owner,
-				phases,
-				getTodoHudVisibility(manager.getBranchMatching(isTodoStateEntryMetadata), phases),
-			);
-			return;
-		}
 		const persisted = getTodoHudVisibility(owner.sessionManager.getBranch(), phases);
-		this.#applyTodoHudVisibility(owner, phases, persisted);
-	}
-
-	#applyTodoHudVisibility(
-		owner: AgentViewSession,
-		phases: TodoPhase[],
-		persisted: TodoHudVisibility | undefined,
-	): void {
 		this.#todoHudHidden = persisted === "dismissed";
 		if (persisted || phases.length === 0) return;
 		const tasks = phases.flatMap(phase => phase.tasks);
