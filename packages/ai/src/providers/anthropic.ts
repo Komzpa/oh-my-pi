@@ -3812,6 +3812,9 @@ const streamAnthropicOnce = (
 			});
 			output.stopReason = result.stopReason;
 			output.errorStatus = result.status;
+			output.errorType = result.errorType;
+			output.errorCode = result.errorCode;
+			output.errorResetAt = result.errorResetAt;
 			output.errorId = result.id;
 			output.errorMessage = transport ? result.message : maybeAddReplayUnsignedThinkingHint(model, result.message);
 			output.duration = performance.now() - startTime;
