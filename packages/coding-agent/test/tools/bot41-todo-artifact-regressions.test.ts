@@ -439,7 +439,7 @@ describe("PR 41 todo artifact regressions", () => {
 			const persisted = getLatestRequirements(manager.getBranch());
 			expect(persisted[0]?.rowVerdicts?.[row]?.status).toBe("unverifiable");
 			expect(persisted[0]?.rowVerdicts?.[neighborRow]?.status).toBe("pass");
-			expect(countRequirements(persisted)).toEqual({ total: 1, passed: 0, failed: 0, open: 1 });
+			expect(countRequirements(persisted)).toEqual({ total: 1, passed: 0, failed: 0, open: 1, legacyUnverified: 0 });
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

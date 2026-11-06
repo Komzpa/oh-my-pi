@@ -911,7 +911,7 @@ describe("canonical requirements ledger", () => {
 		};
 		requirements[4] = { ...requirements[4]!, classification: "not-a-requirement", reason: "question" };
 		requirements[5] = { ...requirements[5]!, classification: "merged", mergeInto: "R2" };
-		expect(countRequirements(requirements)).toEqual({ total: 4, passed: 1, open: 2, failed: 1 });
+		expect(countRequirements(requirements)).toEqual({ total: 4, passed: 1, open: 2, failed: 1, legacyUnverified: 0 });
 	});
 
 	it("keeps legacy pass receipts parseable but unproven and open", () => {
@@ -925,7 +925,13 @@ describe("canonical requirements ledger", () => {
 		};
 		const ledger = parseRequirementsLedger({ version: 1, requirements });
 		expect(ledger?.requirements[0]?.rawText).toBe("legacy pass");
-		expect(countRequirements(ledger!.requirements)).toEqual({ total: 1, passed: 0, open: 1, failed: 0 });
+		expect(countRequirements(ledger!.requirements)).toEqual({
+			total: 1,
+			passed: 0,
+			open: 1,
+			failed: 0,
+			legacyUnverified: 0,
+		});
 		expect(getRequirementVerdictStaleness(ledger!.requirements[0]!, [{ row: "Row", head: sha, dirty: false }])).toBe(
 			'no authenticated qa-auditor identity for row "Row"',
 		);

@@ -84,6 +84,7 @@ import {
 	bindRequirementRowArtifact,
 	getLatestTodoPhasesFromEntries,
 	getCompletedTodoRows,
+	getClosedTodoRows,
 	getAcceptedTodoRows,
 	getRequirementRowArtifact,
 	getTodoRowChanges,
@@ -1179,6 +1180,7 @@ export class RequirementsLedgerRuntime {
 				phases.flatMap(phase => phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content)),
 			),
 			getAcceptedTodoRows(branch),
+			getClosedTodoRows(branch),
 		);
 		const staleRows = this.#staleGateRows(open);
 		const invalidated = invalidateStaleRequirementVerdicts(requirements, open);

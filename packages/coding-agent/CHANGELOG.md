@@ -247,6 +247,8 @@
 - Prewalk no longer hands a subagent to its cheap model when the subagent messages its parent or another agent (`write agent://…`) before its first file edit ([#18322](https://github.com/can1357/oh-my-pi/pull/18322) by [@1vivy](https://github.com/1vivy))
 ### Fixed
 
+- Completed passing requirements stay settled when HEAD moves; unaudited closed history is shown as legacy unverified without blocking delivery ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 - Fixed requirement audits reopening after unrelated commits, retained owner acceptance, and bounded concurrent auditors ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.17.0] - 2026-11-06

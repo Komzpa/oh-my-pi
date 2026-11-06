@@ -81,7 +81,7 @@ describe("bot review receipt and completion regressions", () => {
 			dirty: false,
 		}));
 		const next = invalidateStaleRequirementVerdicts([r], open);
-		expect(countRequirements(next)).toEqual({ total: 1, passed: 0, failed: 0, open: 1 });
+		expect(countRequirements(next)).toEqual({ total: 1, passed: 0, failed: 0, open: 1, legacyUnverified: 0 });
 		expect(countRequirements([r]).passed).toBe(1);
 	});
 	it("requires dirty receipt HEAD and content fingerprint before row history", () => {

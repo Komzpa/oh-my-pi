@@ -23,6 +23,9 @@ import {
 
 import {
 	getCompletionTargets,
+	getCompletedTodoRows,
+	getClosedTodoRows,
+	getAcceptedTodoRows,
 	getRequirementRowArtifact,
 	getTodoRowChanges,
 	type RequirementRowArtifact,
@@ -450,10 +453,12 @@ export class TodoCommandController {
 				lastChange: changes.get(row),
 			}),
 			getPersistedRequirementAuditRejections(branch, this.ctx.sessionManager.getHeader()?.id ?? null),
-			new Set(),
+			getCompletedTodoRows(branch),
 			new Set(
 				current.flatMap(phase => phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content)),
 			),
+			getAcceptedTodoRows(branch),
+			getClosedTodoRows(branch),
 		);
 		const currentBranch = this.ctx.sessionManager.getBranch();
 		if (

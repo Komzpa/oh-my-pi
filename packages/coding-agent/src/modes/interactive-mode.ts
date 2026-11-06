@@ -10065,7 +10065,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return text([
 			span("TODO", "accent strong"),
 			span(
-				` · requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed`,
+				` · requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed${counts.legacyUnverified ? ` · ${counts.legacyUnverified} legacy unverified` : ""}`,
 				"dim",
 			),
 			span(this.#todoRowHudSummary(), "dim"),
@@ -10082,7 +10082,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		if (showRequirements) {
 			const title = theme.bold(theme.fg("accent", "TODO"));
-			const requirementText = `requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed`;
+			const requirementText = `requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed${counts.legacyUnverified ? ` · ${counts.legacyUnverified} legacy unverified` : ""}`;
 			const requirementSummary = theme.fg("dim", ` · ${requirementText}`);
 			if (compact) {
 				const hasVisibleTasks = !wasHidden && this.todoPhases.some(phase => phase.tasks.length > 0);
@@ -10109,7 +10109,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const title = theme.bold(theme.fg("accent", "TODO"));
 		const requirementSummary = theme.fg(
 			"dim",
-			` · requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed${this.#todoRowHudSummary()}`,
+			` · requirements ${counts.total}: ${counts.passed} passed · ${counts.open} open · ${counts.failed} failed${counts.legacyUnverified ? ` · ${counts.legacyUnverified} legacy unverified` : ""}${this.#todoRowHudSummary()}`,
 		);
 		if (lines.length === 0) return ["", truncateToWidth(`${title}${requirementSummary}`, width)];
 
