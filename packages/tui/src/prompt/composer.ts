@@ -617,15 +617,6 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	 * retirement, resize replay and hover bands are ANSI concerns.
 	 */
 	describeSurface(cx: DescribeContext): NativeSurface {
-		this.#statusHost.beginFrame();
-		try {
-			return this.#describeSurface(cx);
-		} finally {
-			this.#statusHost.endFrame();
-		}
-	}
-
-	#describeSurface(cx: DescribeContext): NativeSurface {
 		if (!this.#started || this.#stopped) return this.#nativeSurface;
 		const main: NativeChild[] = [...this.#header.children];
 		const dock: NativeChild[] = [];
