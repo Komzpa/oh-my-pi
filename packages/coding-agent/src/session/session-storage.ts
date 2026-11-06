@@ -147,10 +147,13 @@ export class SessionLockError extends Error {
  * backend MUST check `expectedSize` and call `commitGuard()` synchronously
  * immediately before it makes the staged content visible at `path`. Failed
  * preconditions leave the target untouched. Backends MUST NOT yield between
- * the checks and publishing the write.
+ * the checks and publishing the write, unless the caller explicitly holds
+ * a mutation fence through `fencedAsyncPublish`.
  */
 export interface WriteTextAtomicOptions extends SessionStorageWriteOptions {
 	commitGuard?: () => boolean;
+	/** Caller fences all mutations, including synchronous supersession, until publication resolves. */
+	fencedAsyncPublish?: boolean;
 }
 
 export interface SessionStorage {
@@ -700,7 +703,12 @@ function writeLinesToFileSync(target: string, lines: readonly string[]): void {
 async function writeLinesToFile(target: string, lines: readonly string[]): Promise<void> {
 	const sink = Bun.file(target).writer({ highWaterMark: LINE_STREAM_CHUNK });
 	try {
+		let sliceStart = performance.now();
 		for (const line of lines) {
+			if (performance.now() - sliceStart >= 4) {
+				await Bun.sleep(1);
+				sliceStart = performance.now();
+			}
 			// Backpressured writes can reject after end() has otherwise completed.
 			// Do not publish a partial transcript before every write is confirmed.
 			const written = sink.write(line);
@@ -1141,7 +1149,7 @@ export class FileSessionStorage implements SessionStorage {
 		await this.#publishAtomic(fpath, tempPath => writeLinesToFile(tempPath, lines), options);
 	}
 
-	/** Async {@link #publishSync}: stages via `stage`, then guard-checks and publishes without yielding. */
+	/** Stage a replacement, then publish under the freshness lock and the caller's mutation fence. */
 	async #publishAtomic(
 		fpath: string,
 		stage: (tempPath: string) => Promise<void>,
@@ -1156,7 +1164,7 @@ export class FileSessionStorage implements SessionStorage {
 		try {
 			await stage(tempPath);
 		} catch (err) {
-			this.#discardTemp(tempPath, target);
+			await this.#discardTempAsync(tempPath, target);
 			throw toError(err);
 		}
 		// Guard-check + rename MUST NOT be separated by an await. A concurrent
@@ -1164,7 +1172,34 @@ export class FileSessionStorage implements SessionStorage {
 		// publish a fresh body between the check and the rename, and this stale
 		// staged body would overwrite it. Sync rename closes that window.
 		if (options?.commitGuard && !options.commitGuard()) {
-			this.#discardTemp(tempPath, target);
+			await this.#discardTempAsync(tempPath, target);
+			return;
+		}
+		if (options?.fencedAsyncPublish) {
+			const lockPath = this.#publishLockPath(target);
+			let gate: NativeFileLock | undefined;
+			try {
+				gate = this.#acquireOsPublishLock(target, this.#osGatePath(lockPath));
+				this.#acquirePublishLock(target, lockPath);
+				try {
+					this.#assertExpectedSize(target, options.expectedSize);
+					if (options.commitGuard && !options.commitGuard()) return;
+					try {
+						await this.rename(tempPath, target);
+					} catch (error) {
+						if (!hasFsCode(error, "EPERM")) throw error;
+						await this.#replaceFencedSessionFileAfterEperm(tempPath, target, error);
+					}
+				} finally {
+					await fs.promises.unlink(lockPath).catch(error => {
+						if (!isEnoent(error))
+							logger.warn("Failed to remove session publish lock", { target, error: String(error) });
+					});
+				}
+			} finally {
+				gate?.release();
+				await this.#discardTempAsync(tempPath, target);
+			}
 			return;
 		}
 		try {
@@ -1182,7 +1217,7 @@ export class FileSessionStorage implements SessionStorage {
 				}
 			});
 		} catch (err) {
-			this.#discardTemp(tempPath, target);
+			await this.#discardTempAsync(tempPath, target);
 			throw toError(err);
 		}
 	}
@@ -1194,6 +1229,45 @@ export class FileSessionStorage implements SessionStorage {
 	 */
 	renameSync(source: string, target: string): void {
 		fs.renameSync(source, target);
+	}
+
+	/** Fenced async counterpart of the synchronous Windows replacement fallback. */
+	async #replaceFencedSessionFileAfterEperm(tempPath: string, target: string, original: unknown): Promise<void> {
+		const backup = `${target}.${Snowflake.next()}.bak`;
+		try {
+			await this.rename(target, backup);
+		} catch (error) {
+			if (!isEnoent(error)) throw original;
+			await this.rename(tempPath, target);
+			return;
+		}
+		try {
+			await this.rename(tempPath, target);
+		} catch (error) {
+			try {
+				await this.rename(backup, target);
+			} catch (rollback) {
+				throw new Error(
+					`Failed to replace session file after EPERM (retry: ${String(error)}; rollback: ${String(rollback)})`,
+					{ cause: original },
+				);
+			}
+			throw error;
+		}
+		await this.#discardTempAsync(backup, target);
+	}
+
+	async #discardTempAsync(tempPath: string, targetPath: string): Promise<void> {
+		try {
+			await fs.promises.unlink(tempPath);
+		} catch (error) {
+			if (!isEnoent(error))
+				logger.warn("Failed to remove session rewrite temp file", {
+					sessionFile: targetPath,
+					tempPath,
+					error: String(error),
+				});
+		}
 	}
 
 	#discardTemp(tempPath: string, targetPath: string): void {
