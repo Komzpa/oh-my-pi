@@ -54,7 +54,7 @@ async function fixture(dir: string): Promise<string> {
 		if (i % 1024 === 0) await writer.flush();
 	}
 	writer.write(
-		`${JSON.stringify({ type: "custom", id: "todo", parentId: `e${entries - 1}`, timestamp, customType: "user_todo_edit", data: { phases: [{ name: "Benchmark", tasks: Array.from({ length: extended ? 250 : 1 }, (_, index) => ({ content: index ? `work ${index}` : "work", status: index ? "pending" : "in_progress", ...(extended ? { estimate: { optimistic: 1, mostLikely: 2, pessimistic: 5 }, workerType: "task" } : {}) })) }] } })}\n`,
+		`${JSON.stringify({ type: "custom", id: "todo", parentId: `e${entries - 1}`, timestamp, customType: "user_todo_edit", data: { phases: [{ name: "Benchmark", tasks: Array.from({ length: extended ? 250 : 1 }, (_, index) => ({ content: index ? `work ${index}` : "work", status: index ? "pending" : "in_progress", ...(extended ? { schedule: { agentProfile: "task", dependencies: [], resources: [], owner: "task", estimate: { optimisticSeconds: 1, likelySeconds: 2, pessimisticSeconds: 5, confidence: "high", basis: "synthetic benchmark", updatedAt: Date.now() } } } : {}) })) }] } })}\n`,
 	);
 	if (extended) {
 		writer.write(
@@ -372,13 +372,19 @@ export async function runJournalFrameBenchmark(): Promise<void> {
 		}
 		await Bun.sleep(120);
 		const progressWindowPositionedReads = totalPositionedReads - beforeProgressWindow;
+		const actualWorkerFiles = (await fs.readdir(file.slice(0, -6))).length;
+		const workerDirectoryBytes = await directoryBytes(file.slice(0, -6));
+		if (extended) {
+			expect(actualWorkerFiles).toBe(workerFiles);
+			expect(workerDirectoryBytes).toBeGreaterThanOrEqual(2_600_000_000);
+		}
 		const result = {
 			shape: extended ? "dc" : "original",
-			workerFiles,
+			workerFiles: actualWorkerFiles,
 			journalBytes,
 			journalEntries: manager.getEntryCount(),
 			workerTranscripts: workers,
-			workerTranscriptBytes: await directoryBytes(file.slice(0, -6)),
+			workerTranscriptBytes: workerDirectoryBytes,
 			retainedRegistryRefs: registry.list().length,
 			startupMs,
 			startupReadyMs,
