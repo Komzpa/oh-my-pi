@@ -4,6 +4,10 @@ import {
 	restoreRestartIsolation,
 	type RestartIsolation,
 } from "@oh-my-pi/pi-coding-agent/task/restart-isolation";
+import {
+	launchRestartSnapshots,
+	smokeTestRestartSnapshotWorker,
+} from "@oh-my-pi/pi-coding-agent/task/restart-snapshot-worker";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { $ } from "bun";
 import * as fs from "node:fs/promises";
@@ -347,3 +351,49 @@ it("retains a clean second attempt first registered during the final drain flush
 		controller.dispose();
 	}
 });
+
+it("background capture survives its caller and gates recovery on dirty bytes and unpublished history", async () => {
+	const cwd = path.join(temp!.path(), "background-worker");
+	await $`git init ${cwd}`.quiet();
+	await Bun.write(path.join(cwd, "work"), "unpublished commit");
+	await $`git -C ${cwd} add .`.quiet();
+	await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.com commit -m unpublished`.quiet();
+	const head = (await $`git -C ${cwd} rev-parse HEAD`.text()).trim();
+	await Bun.write(path.join(cwd, "work"), "dirty bytes\0");
+	const item: RestartIsolation = {
+		id: "background",
+		name: "Background",
+		cwd,
+		marker: path.join(temp!.path(), "background.json"),
+	};
+	const capture = await launchRestartSnapshots([item], "background", Date.now() + 30_000);
+	try {
+		// The returned descriptor owns a pending capture, not a completed filesystem copy.
+		expect(item.snapshotPath).toBeUndefined();
+		await restoreRestartIsolation(item);
+		expect(await Bun.file(path.join(item.snapshotPath!, "work")).text()).toBe("dirty bytes\0");
+		await fs.rm(cwd, { recursive: true });
+		await restoreRestartIsolation(item);
+		expect(await Bun.file(path.join(cwd, "work")).text()).toBe("dirty bytes\0");
+		expect((await $`git -C ${cwd} rev-parse HEAD`.text()).trim()).toBe(head);
+		expect(await $`git -C ${cwd} show HEAD:work`.text()).toBe("unpublished commit");
+	} finally {
+		await capture?.stop();
+	}
+}, 40_000);
+
+it("unfinished or failed captures prevent a worker from resuming even when its workspace exists", async () => {
+	const item: RestartIsolation = {
+		id: "expired",
+		name: "Expired",
+		cwd: temp!.path(),
+		marker: path.join(temp!.path(), "expired.json"),
+		captureDeadlineAt: Date.now() - 1,
+	};
+	await expect(restoreRestartIsolation(item)).rejects.toThrow("deadline expired");
+	delete item.captureDeadlineAt;
+	item.captureError = "snapshot filesystem failure";
+	await expect(restoreRestartIsolation(item)).rejects.toThrow("snapshot filesystem failure");
+});
+
+it("snapshot worker CLI entry executes and acknowledges an isolated smoke job", smokeTestRestartSnapshotWorker, 40_000);

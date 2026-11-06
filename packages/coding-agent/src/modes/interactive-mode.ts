@@ -2289,6 +2289,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#subagentHudKey = "";
 	#subagentSessionCosts = new WeakMap<object, AgentCostSnapshot>();
 	#subagentCostHydratedRoot?: string;
+	#subagentCostHydrationReady = false;
 	#mcpStatusOrder: string[] = [];
 	#mcpPendingServers = new Set<string>();
 	#mcpConnectedServers = new Set<string>();
@@ -3347,18 +3348,20 @@ export class InteractiveMode implements InteractiveModeContext {
 				});
 			}
 			setTimeout(() => {
-				void this.#restartQueueController
-					?.resumeChildren()
+				void (this.#restartQueueController?.resumeChildren() ?? Promise.resolve())
 					.catch(error =>
 						this.showWarning(`Worker recovery failed: ${error instanceof Error ? error.message : String(error)}`),
 					)
-					.finally(() =>
-						this.sessionManager
+					.finally(() => {
+						// Roster discovery is background work; captured workers resume first.
+						this.#subagentCostHydrationReady = true;
+						this.syncRunningSubagentBadge();
+						return this.sessionManager
 							.writeIndexHandoff()
 							.catch(error =>
 								logger.debug("Background restart index preparation failed", { error: String(error) }),
-							),
-					);
+							);
+					});
 			}, 0);
 		});
 		this.#eventBusUnsubscribers.push(stopRecoveryPaint);
@@ -5217,7 +5220,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * being opened first. Once per on-disk root; registry changes re-sync the cost.
 	 */
 	#hydratePersistedSubagentCosts(rootSessionFile: string | undefined): void {
-		if (!rootSessionFile || this.#subagentCostHydratedRoot === rootSessionFile) return;
+		if (!this.#subagentCostHydrationReady || !rootSessionFile || this.#subagentCostHydratedRoot === rootSessionFile)
+			return;
 		if (!this.sessionManager.isSessionOnDisk()) return;
 		this.#subagentCostHydratedRoot = rootSessionFile;
 		registerPersistedSubagents(AgentRegistry.global(), rootSessionFile, {
@@ -9138,6 +9142,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						identity: () => this.#restartControlIdentity(),
 						restartSuccessor: process.env.OMP_RESTART_SESSION_ID === this.sessionManager.getSessionId(),
 						deferChildren: this.#restartControlInitializing,
+						backgroundSnapshots: true,
 						onChildProgress: (id, completed, total) =>
 							this.showStatus(`Restart: ${id} restored (${completed}/${total})`),
 						restart: () => this.#executeRestart(),

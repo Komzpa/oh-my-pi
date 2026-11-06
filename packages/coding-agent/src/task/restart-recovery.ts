@@ -816,7 +816,10 @@ export async function restoreSubagentsAfterRestart(
 	}
 	const restoreChild = async (child: RestartChildSnapshot): Promise<void> => {
 		const retained = await readRestartIsolation(child.sessionFile, child.id);
-		if (retained?.id === child.id && retained.snapshotPath) {
+		if (
+			retained?.id === child.id &&
+			(retained.snapshotPath || retained.captureDeadlineAt !== undefined || retained.captureError)
+		) {
 			try {
 				await restoreRestartIsolation(retained);
 			} catch (error) {

@@ -29,3 +29,6 @@ export const STATS_ACTIVITY_WORKER_ARG = "__omp_worker_stats_activity";
 export const TEXT_PREDICT_WORKER_ARG = "__omp_worker_text_predict";
 /** Terminal-output selector shared by the CLI dispatcher and worker launcher. */
 export const TERMINAL_OUTPUT_WORKER_ARG = "__omp_worker_terminal_output";
+
+/** Isolation copies that must outlive replacement of the interactive runtime. */
+export const RESTART_SNAPSHOT_WORKER_ARG = "__omp_worker_restart_snapshot";
