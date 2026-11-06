@@ -2619,27 +2619,46 @@ export class SessionTools {
 		};
 	}
 
+	/** Indexed backends skip archive payloads; older backends retain the same branch semantics. */
+	#latestConversationContext(
+		manager: SessionManager,
+		customType: string,
+		matches: (details: Record<string, unknown>) => boolean,
+	): SessionEntry | undefined {
+		const indexed = manager as SessionManager & {
+			iterateBranchMatchingNewestFirst?: (
+				predicate: (metadata: { type: SessionEntry["type"] }) => boolean,
+			) => Iterable<SessionEntry>;
+		};
+		const entries = indexed.iterateBranchMatchingNewestFirst
+			? indexed.iterateBranchMatchingNewestFirst(
+					metadata => metadata.type === "reset_boundary" || metadata.type === "custom_message",
+				)
+			: manager.getBranch().toReversed();
+		for (const entry of entries) {
+			if (entry.type === "reset_boundary") break;
+			if (
+				entry.type === "custom_message" &&
+				entry.customType === customType &&
+				isRecord(entry.details) &&
+				matches(entry.details)
+			)
+				return entry;
+		}
+		return undefined;
+	}
+
 	/** Stages memory prompt injection; the owning turn commits it together with extension policy. */
 	async buildSystemPromptForAgentStart(
 		promptText: string,
 		isCurrent: () => boolean,
 		signal?: AbortSignal,
 	): Promise<SystemPromptPreparation> {
-		const entries = this.#host.sessionManager.getBranch();
-		const reset = entries.findLastIndex(entry => entry.type === "reset_boundary");
 		const cwd = this.#host.sessionManager.getCwd();
 		const startup = this.#getStartupContext?.();
-		const startupDelivered = entries
-			.slice(reset + 1)
-			.some(
-				entry =>
-					entry.type === "custom_message" &&
-					entry.customType === "startup-context" &&
-					entry.details !== null &&
-					typeof entry.details === "object" &&
-					"cwd" in entry.details &&
-					entry.details.cwd === cwd,
-			);
+		const startupDelivered =
+			startup &&
+			this.#latestConversationContext(this.#host.sessionManager, "startup-context", details => details.cwd === cwd);
 		const startupContext = startup && !startupDelivered ? { content: startup, details: { cwd } } : undefined;
 		const backend = await resolveMemoryBackend(this.#host.settings);
 		if (!isCurrent() || !this.#host.memoryBackendSession().memoryEnabled)
@@ -2651,22 +2670,11 @@ export class SessionTools {
 			const owner = this.#host.memoryBackendSession();
 			const cwd = owner.sessionManager.getCwd();
 			const scope = backend.conversationScope?.(owner);
-			const entries = owner.sessionManager.getBranch();
-			const reset = entries.findLastIndex(entry => entry.type === "reset_boundary");
-			const delivered = entries
-				.slice(reset + 1)
-				.findLast(
-					entry =>
-						entry.type === "custom_message" &&
-						entry.customType === "memory-context" &&
-						entry.details !== null &&
-						typeof entry.details === "object" &&
-						"backend" in entry.details &&
-						entry.details.backend === backend.id &&
-						"cwd" in entry.details &&
-						entry.details.cwd === cwd &&
-						("scope" in entry.details ? entry.details.scope : undefined) === scope,
-				);
+			const delivered = this.#latestConversationContext(
+				owner.sessionManager,
+				"memory-context",
+				details => details.backend === backend.id && details.cwd === cwd && details.scope === scope,
+			);
 			const newRecall =
 				memory?.context &&
 				(delivered?.type !== "custom_message" ||
