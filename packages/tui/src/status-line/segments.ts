@@ -1056,11 +1056,18 @@ const cacheSegment: StatusLineSegment = {
 	},
 };
 
+const currentWorkSnapshotTitles = new WeakMap<object, string>();
+
 /** Display current structured work without rewriting the persisted session name. */
 export function currentWorkTitle(session: StatusLineSession): string | undefined {
-	const phases = session.getTodoSnapshot?.() ?? session.getTodoPhases?.() ?? [];
-	const active = phases.find(phase => phase.tasks.some(task => task.status === "in_progress"));
-	const activeName = active ? sanitizeStatusText(active.name) : "";
+	const snapshot = session.getTodoSnapshot?.();
+	let activeName = snapshot ? currentWorkSnapshotTitles.get(snapshot) : undefined;
+	if (activeName === undefined) {
+		const phases = snapshot ?? session.getTodoPhases?.() ?? [];
+		const active = phases.find(phase => phase.tasks.some(task => task.status === "in_progress"));
+		activeName = active ? sanitizeStatusText(active.name) : "";
+		if (snapshot) currentWorkSnapshotTitles.set(snapshot, activeName);
+	}
 	if (activeName) return activeName;
 	const goal = session.getGoalModeState?.()?.goal;
 	if (goal?.status === "active" && goal.objective) return goal.objective;
