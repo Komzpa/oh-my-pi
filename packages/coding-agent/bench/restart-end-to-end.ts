@@ -33,7 +33,16 @@ async function benchmark(): Promise<void> {
 	setAgentDir(path.join(root, "agent"));
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline restart benchmark"));
 	vi.spyOn(AgentSession.prototype, "prewarmModelConnection").mockImplementation(() => {});
-	if (process.env.OMP_RESTART_BENCH_PROFILE) logger.startTiming();
+	if (process.env.OMP_RESTART_BENCH_PROFILE) {
+		logger.startTiming();
+		const getBranch = SessionManager.prototype.getBranch;
+		vi.spyOn(SessionManager.prototype, "getBranch").mockImplementation(function (
+			this: SessionManager,
+			fromId?: string,
+		) {
+			return logger.time("benchmark:materializeBranch", () => getBranch.call(this, fromId));
+		});
+	}
 	logger.setTransports({ file: path.join(root, "runtime.log"), console: false });
 	const events = path.join(root, "e2e.jsonl");
 	function mark(event: string, id?: string): void {
@@ -58,24 +67,28 @@ async function benchmark(): Promise<void> {
 	const model = models.find("anthropic", "claude-sonnet-4-5");
 	if (!model) throw new Error("missing bundled fixture model");
 	function session(manager: SessionManager, id?: string): AgentSession {
-		return new AgentSession({
-			agent: new Agent({
-				initialState: {
-					model,
-					systemPrompt: ["offline benchmark"],
-					tools: [],
-					messages: manager.buildSessionContext().messages,
-				},
-				streamFn: () => {
-					mark("worker_continuing", id);
-					// The model transport is local and never makes a provider request.
-					return new AssistantMessageEventStream();
-				},
-			}),
-			sessionManager: manager,
-			settings: Settings.isolated({ "spelling.autocomplete": "off" }),
-			modelRegistry: models,
-		});
+		return logger.time(
+			"benchmark:constructSession",
+			() =>
+				new AgentSession({
+					agent: new Agent({
+						initialState: {
+							model,
+							systemPrompt: ["offline benchmark"],
+							tools: [],
+							messages: manager.buildSessionContext().messages,
+						},
+						streamFn: () => {
+							mark("worker_continuing", id);
+							// The model transport is local and never makes a provider request.
+							return new AssistantMessageEventStream();
+						},
+					}),
+					sessionManager: manager,
+					settings: Settings.isolated({ "spelling.autocomplete": "off" }),
+					modelRegistry: models,
+				}),
+		);
 	}
 	const file = path.join(root, "sessions", "large.jsonl");
 	mark("journal_open_started");
@@ -170,6 +183,7 @@ async function benchmark(): Promise<void> {
 		const rows = Bun.JSONL.parse(await Bun.file(events).text()) as Array<{ event: string; id?: string }>;
 		if (receive && new Set(rows.filter(row => row.event === "worker_continuing").map(row => row.id)).size === 4) {
 			mark("all_workers_continuing");
+			if (process.env.OMP_RESTART_BENCH_PROFILE) logger.printTimings();
 			process.exit(0);
 		}
 	}
