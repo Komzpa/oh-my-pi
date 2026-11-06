@@ -156,3 +156,15 @@ test("rows with a live worker are highlighted; idle rows stay dim; owner rows wa
 	for (const line of display.lines.filter(line => line.includes("☐") && line.includes("— needs you")))
 		expect(line.startsWith("<warning>")).toBe(true);
 });
+
+test("working rows name each worker's profile and model", () => {
+	const task = { content: "Row with worker", status: "in_progress", schedule: { executor: { workerId: "W-1" } } };
+	const worker = { id: "W-1", agent: "ui-coder", model: "gpt-6.1-terra:low", startedAt: 0 };
+	const display = renderTodoPlanDisplay(
+		[{ name: "Stage", tasks: [task] }] as never,
+		{ workers: [worker], owners: new Map([["Row with worker", worker]]) },
+		{ now: 3 * 60_000, width: 200, paint },
+	);
+	const row = display.lines.find(line => line.includes("Row with worker"))!;
+	expect(row).toContain("W-1 (ui-coder) gpt-6.1-terra:low 3m");
+});

@@ -2100,6 +2100,8 @@ export type TodoDisplayState =
 export interface TodoDisplayWorker {
 	id: string;
 	agent?: string;
+	/** Short model badge (model and thinking level) the worker runs on, when known. */
+	model?: string;
 	startedAt?: number;
 }
 
@@ -2290,7 +2292,7 @@ export function renderTodoPlanDisplay(
 					]
 				: [];
 			const worker = state.worker
-				? ` · ${rowWorkers.map(worker => `${safeText(worker.id)}${task.schedule?.executor?.workerId === worker.id && task.schedule.executor.resumedAfterCrash ? " (resumed after crash)" : ""}${elapsed(worker)}`).join(", ")}`
+				? ` · ${rowWorkers.map(worker => `${safeText(worker.id)}${worker.agent ? ` (${safeText(worker.agent)})` : ""}${worker.model ? ` ${safeText(worker.model)}` : ""}${task.schedule?.executor?.workerId === worker.id && task.schedule.executor.resumedAfterCrash ? " (resumed after crash)" : ""}${elapsed(worker)}`).join(", ")}`
 				: state.previous
 					? ` · after ${safeText(state.previous)}`
 					: "";
