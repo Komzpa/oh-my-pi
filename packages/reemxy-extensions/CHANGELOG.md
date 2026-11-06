@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Change running workers’ write scope with TODO resources updates, without restarting them ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Apply saved review-page Accept, Redo and Drop decisions to TODO rows once, including after restart ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Tell the lead each row’s next tool call, while runtime verification and genuine waits stay quiet ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

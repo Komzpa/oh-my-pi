@@ -12,6 +12,7 @@
 import type { AgentMessage, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type {
@@ -122,6 +123,10 @@ export class PeerAgentSession implements AgentSessionHandle {
 
 	get messages(): AgentMessage[] {
 		return mainBridge().remote.callSync("readMessages", this);
+	}
+
+	getTodoPhases(): TodoPhase[] {
+		return mainBridge().remote.callSync("readTodoPhases", this);
 	}
 
 	get sessionFile(): string | undefined {

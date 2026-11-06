@@ -6058,6 +6058,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }).trim();
         sendHarnessNotice(USER_REVIEW_CUSTOM_TYPE, update.task, content, { row: update.task, verdict: update.review, reviewPage: update.reviewPage }, content);
       }
+      for (const update of updates) {
+        const patch = update.schedule ?? update;
+        if (!Array.isArray(patch.resources)) continue;
+        const row = todoPhases(ctx).flatMap(phase => phase.tasks).find(row => row.content === (update.task ?? update.content));
+        const owner = row?.schedule?.executor?.workerId ?? row?.schedule?.owner;
+        if (typeof owner !== "string") continue;
+        await AgentRegistry.global().get(owner)?.session?.steer(prompt.render(gateNoticeInstructions, { scopeChanged: true, row: JSON.stringify(row.content), resources: JSON.stringify(patch.resources) }).trim());
+      }
       for (const update of updates) if (typeof update.task === "string" && (update.estimate !== undefined || typeof update.evidence === "string")) rescheduledRowsThisTurn.add(update.task);
       for (const update of updates) {
         if (typeof update.owner !== "string" || typeof update.task !== "string") continue;

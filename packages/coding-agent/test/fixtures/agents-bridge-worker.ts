@@ -37,6 +37,7 @@ export interface PeerReport {
 
 /** Operations the test drives on the worker. */
 export interface AgentsProbe {
+	peerResources(id: string): Promise<string[]>;
 	threadId(): Promise<string>;
 	/** Build a real session (mock model) and register it as `id` in the (remote) registry. */
 	open(id: string, options: { sessionFile?: string; gated?: boolean }): Promise<string>;
@@ -120,6 +121,11 @@ function local(id: string): AgentSession {
 }
 
 const probe: AgentsProbe = {
+	peerResources: async id =>
+		AgentRegistry.global()
+			.get(id)
+			?.session?.getTodoPhases()
+			.flatMap(phase => phase.tasks.flatMap(row => row.schedule?.resources ?? [])) ?? [],
 	threadId: async () => threadName,
 	open: async (id, options) => {
 		const session = await makeSession(id, options.gated === true);

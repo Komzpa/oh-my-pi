@@ -533,7 +533,7 @@ describe("agent router", () => {
 		}
 	});
 
-	test("checkout writer scopes stay frozen when the canonical plan changes", async () => {
+	test("checkout writer scopes follow the canonical plan while the worker runs", async () => {
 		const { dir, file } = tempStateFile();
 		try {
 			const original = join(dir, "original");
@@ -565,10 +565,11 @@ describe("agent router", () => {
 			running = [{ id: "writer-1", type: "task", status: "running" }];
 			tasks[0].schedule.resources = [changed];
 			tasks.push({ content: "Next", status: "pending", schedule: { owner: "writer-2", resources: [original] } });
-			expect((await spawn("writer-2"))?.block).toBe(true);
-			tasks[1].schedule.resources = [changed];
 			expect((await spawn("writer-2"))?.block).toBeUndefined();
-			expect([...state.spawns.values()][0].checkoutScopes).toEqual([`${original}\0.`]);
+			state.spawns.delete("writer-2\u0000coder");
+			tasks[1].schedule.resources = [changed];
+			expect((await spawn("writer-2"))?.block).toBe(true);
+			expect([...state.spawns.values()][0].checkoutScopes).toEqual([`${changed}\0.`]);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -646,7 +647,7 @@ describe("agent router", () => {
 						latestTodo: getLatestTodoPhasesFromEntries,
 					})
 				)?.block,
-			).toBe(true);
+			).toBeUndefined();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -966,7 +967,7 @@ describe("agent router", () => {
 			expect(messages).toHaveLength(2);
 			expect(messages[1]?.content).toContain("WriterR92");
 			expect(messages[1]?.content).toContain("No overlapping writer");
-			expect(messages[1]?.content.split("\n")).toHaveLength(2);
+			expect(messages[1]?.content).toContain("todo schedule resources");
 			const gate = handlers.get("before_subagent_spawn")!(
 				{ agent: "coder", spawnKey: "WriterR93", patterns: [] },
 				context,
