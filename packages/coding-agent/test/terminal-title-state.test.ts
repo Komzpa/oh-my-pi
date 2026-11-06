@@ -391,6 +391,25 @@ describe("disposeTerminalTitleState", () => {
 		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
 	});
 
+	it("does not restore an obsolete queued title after the event loop stalls", () => {
+		let now = Date.now();
+		const clock = spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			setTerminalTitle("first");
+			setTerminalTitle("obsolete");
+			// Move wall time without dispatching the already queued timer.
+			now += 1500;
+			setTerminalTitle("latest");
+			expect(observedTitles(writes, windowsTitleMock).at(-1)).toBe("latest");
+			resetObserved(writes, windowsTitleMock);
+			now += 2000;
+			advanceTitleTime(2000);
+			expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
 	it("ticks at the configured interval, re-arming a live spinner on change", () => {
 		setTerminalTitleSpinnerInterval(1000);
 		setTerminalTitleState("working");
