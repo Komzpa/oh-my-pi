@@ -108,3 +108,68 @@ test("real extension context persists customer review annotations through sessio
 		authStorage.close();
 	}
 }, 30_000);
+
+test("a passing runtime audit closes its delivered row through the real schedule callback; a fail keeps it open", async () => {
+	using dir = TempDir.createSync("@omp-todo-audit-close-");
+	const authStorage = await AuthStorage.create(dir.join("auth.db"));
+	const manager = SessionManager.create(dir.path(), dir.path());
+	const executor = { workerId: "PowerFocusFrame-2", startedAt: 10, finishedAt: 20, outcome: "completed" as const };
+	const phases: TodoPhase[] = [
+		{
+			name: "Work",
+			tasks: [
+				{ content: "No red focus frame", status: "in_progress", schedule: { owner: executor.workerId, executor } },
+				{ content: "Edges only in package", status: "in_progress", schedule: { owner: "UxGraphEdges", executor } },
+			],
+		},
+	];
+	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+	const { session } = await createAgentSession({
+		cwd: dir.path(),
+		agentDir: dir.path(),
+		sessionManager: manager,
+		modelRegistry: new ModelRegistry(authStorage),
+		authStorage,
+		model: getBundledModel("openai", "gpt-4o-mini"),
+		settings: Settings.isolated({ "browser.enabled": false, "computer.enabled": false, "autolearn.enabled": false }),
+		disableExtensionDiscovery: true,
+		skills: [],
+		contextFiles: [],
+		promptTemplates: [],
+		slashCommands: [],
+		enableMCP: false,
+		enableLsp: false,
+		skipPythonPreflight: true,
+		toolNames: [],
+		restrictToolNames: true,
+	});
+	try {
+		const ctx = session.extensionRunner!.createContext();
+		const audit = {
+			delivery: JSON.stringify([executor.workerId, 10, 20]),
+			repoPath: dir.path(),
+			head: "c64ec5fe6",
+			startedAt: 30,
+		};
+		expect(ctx.updateTodoSchedule!("No red focus frame", { audit: { ...audit, verdict: "pass", at: 40 } })).toBe(
+			true,
+		);
+		expect(
+			ctx.updateTodoSchedule!("Edges only in package", {
+				audit: { ...audit, verdict: "fail", findings: "Settings edge still listed", at: 40 },
+			}),
+		).toBe(true);
+		await manager.ensureOnDisk();
+		manager.flushSync();
+		const reopened = await SessionManager.open(manager.getSessionFile()!);
+		const [closed, open] = getLatestTodoPhasesFromEntries(reopened.getBranch())[0].tasks;
+		expect(closed.status).toBe("completed");
+		expect(typeof closed.schedule?.finishedAt).toBe("number");
+		expect(closed.schedule?.audit?.verdict).toBe("pass");
+		expect(open.status).toBe("in_progress");
+		expect(open.schedule?.audit?.findings).toBe("Settings edge still listed");
+	} finally {
+		await session.dispose();
+		authStorage.close();
+	}
+}, 30_000);
