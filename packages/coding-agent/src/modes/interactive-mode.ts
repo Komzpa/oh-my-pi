@@ -227,7 +227,7 @@ import {
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	type TodoHudStateEntryData,
 } from "../tools/todo";
-import { readTodoDisplayLedgerFromManager } from "../tools/todo-plan-display";
+import { readTodoDisplayArchive, readTodoDisplayLedgerFromManager } from "../tools/todo-plan-display";
 import { todoMatchesObservedWorker } from "../tools/todo-executor";
 import {
 	formatPhaseDisplayName,
@@ -5678,9 +5678,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		const deadlineAt = deadline?.deadlineAt;
 		const hasScheduleData =
 			deadlineAt !== undefined || livePhases.some(phase => phase.tasks.some(task => task.schedule));
-		const archiveSummary = getTodoArchiveSummaryFromEntries(
-			selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
-		);
+		const archive = readTodoDisplayArchive(owner.sessionManager);
+		const archiveSummary = archive.summary;
 		if (!hasScheduleData) {
 			this.#todoForecast = undefined;
 			this.#todoForecastCacheKey = undefined;
@@ -5702,9 +5701,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				cache.archiveFromAt === (archiveSummary?.fromAt ?? 0) &&
 				cache.archiveToAt === (archiveSummary?.toAt ?? 0);
 			if (!cacheHit) {
-				const archived = getLatestTodoArchiveFromEntries(
-					selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
-				);
+				const archived = archive.phases;
 				this.#todoForecast = forecastTodoLivePlan(livePhases, archived, {
 					now,
 					capacity,
