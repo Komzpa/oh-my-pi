@@ -8062,6 +8062,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * that `#restorePendingRestartMessages` would replay on the next resume.
 	 */
 	#supersedeRestartCheckpoint(): void {
+		this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(this.#pendingNextTurnMessages);
 		if (!this.#restartPendingQueuesCheckpointActive || this.#restartDrainLeaseCount > 0 || this.#isDisposed) return;
 		const checkpoint: RestartPendingQueues = {
 			...this.agent.snapshotPendingQueues(),
