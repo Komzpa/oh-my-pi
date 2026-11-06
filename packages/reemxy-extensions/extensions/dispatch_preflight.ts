@@ -1,3 +1,4 @@
+import { $ } from "bun";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -34,6 +35,7 @@ export function fileToolTargets(input: Record<string, unknown>): string[] {
 }
 export interface TestProcess {
 	pid: number;
+	ppid?: number;
 	cwd: string;
 	command: string;
 	argv?: string[];
@@ -41,10 +43,14 @@ export interface TestProcess {
 export interface HostTestResources {
 	memAvailableKiB?: number;
 	processes: TestProcess[];
+	cpus: number;
+	gpuFreeMiB?: number[];
 }
 export interface HostResourceProbes {
 	meminfo: () => Promise<string>;
 	processes: () => Promise<TestProcess[]>;
+	cpus?: () => number;
+	gpuFreeMiB?: () => Promise<number[]>;
 }
 
 /** Tokenize shell syntax outside quotes, then reuse the central quote decoder. */
@@ -171,11 +177,12 @@ const RUNNERS = new Set(["vitest", "jest", "pytest", "nextest"]);
 export function launchesTestProcess(argv: readonly string[]): boolean {
 	argv = unwrap([...argv]);
 	const executable = path.basename(argv[0] ?? "");
-	if (BROWSERS.has(executable) || RUNNERS.has(executable)) return true;
+	if (BROWSERS.has(executable)) return !argv.some(arg => arg.startsWith("--type="));
+	if (RUNNERS.has(executable)) return true;
 	if (executable === "playwright") return argv[1] === "test" || argv[1] === "screenshot";
 	if (
 		["bun", "npm", "pnpm", "yarn", "cargo"].includes(executable) &&
-		(argv[1] === "test" || (argv[1] === "run" && argv[2] === "test"))
+		(/^test(?::|$)/.test(argv[1] ?? "") || (argv[1] === "run" && /^test(?::|$)/.test(argv[2] ?? "")))
 	)
 		return true;
 	if (["npx", "bunx"].includes(executable)) return launchesTestProcess(argv.slice(1));
@@ -190,26 +197,73 @@ export function launchesTestProcess(argv: readonly string[]): boolean {
 
 async function testProcesses(): Promise<TestProcess[]> {
 	const found: TestProcess[] = [];
+	const parents = new Map<number, number>();
 	for (const pid of await fs.readdir("/proc")) {
 		if (!Number.isInteger(Number(pid))) continue;
 		try {
 			const argv = (await Bun.file(`/proc/${pid}/cmdline`).text()).split("\0").filter(Boolean);
+			const stat = await Bun.file(`/proc/${pid}/stat`).text();
+			const ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+			parents.set(Number(pid), ppid);
 			if (!launchesTestProcess(argv)) continue;
-			found.push({ pid: Number(pid), argv, command: argv.join(" "), cwd: await fs.readlink(`/proc/${pid}/cwd`) });
+			found.push({
+				pid: Number(pid),
+				ppid,
+				argv,
+				command: argv.join(" "),
+				cwd: await fs.readlink(`/proc/${pid}/cwd`),
+			});
 		} catch {
 			/* exited or inaccessible */
 		}
 	}
-	return found;
+	// A runner, its worker and Chromium descendants are one run, not three slots.
+	const launches = new Set(found.map(proc => proc.pid));
+	return found.filter(proc => {
+		let parent = proc.ppid;
+		const visited = new Set<number>();
+		while (parent && !visited.has(parent)) {
+			if (launches.has(parent)) return false;
+			visited.add(parent);
+			parent = parents.get(parent);
+		}
+		return true;
+	});
+}
+
+// RAM budget: 4 GiB, rounded above 2x the measured 1.58 GiB fixture peak.
+// See browser-capacity.md. GPU runs reserve 1 GiB plus a 1 GiB device floor.
+export const TEST_RUN_KIB = 4 * 1024 ** 2;
+export const GPU_RUN_MIB = 1024;
+export const GPU_FLOOR_MIB = 1024;
+
+export function requiresHardwareGpu(argv: readonly string[]): boolean {
+	return argv.some(
+		arg => arg === "OMP_TEST_GPU=1" || /(?:^|[\/_.-])(?:perf|performance|timing|frame-cap)(?:[\/_.=-]|$)/i.test(arg),
+	);
+}
+
+async function gpuFreeMemory(): Promise<number[]> {
+	const result = await $`nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits`.quiet().nothrow();
+	if (result.exitCode !== 0) throw new Error("nvidia-smi unavailable");
+	const values = result.text().trim().split("\n").map(Number);
+	if (!values.length || values.some(value => !Number.isFinite(value) || value < 0))
+		throw new Error("Invalid GPU memory probe");
+	return values;
 }
 
 export async function probeHostTestResources(
 	probes: HostResourceProbes = {
 		meminfo: () => Bun.file("/proc/meminfo").text(),
 		processes: testProcesses,
+		gpuFreeMiB: gpuFreeMemory,
 	},
 ): Promise<HostTestResources> {
-	const [memory, processes] = await Promise.allSettled([probes.meminfo(), probes.processes()]);
+	const [memory, processes, gpu] = await Promise.allSettled([
+		probes.meminfo(),
+		probes.processes(),
+		probes.gpuFreeMiB?.(),
+	]);
 	const fields =
 		memory.status === "fulfilled"
 			? memory.value
@@ -218,7 +272,9 @@ export async function probeHostTestResources(
 					?.split(/\s+/)
 			: undefined;
 	return {
-		memAvailableKiB: fields ? Number(fields[1]) : undefined,
+		memAvailableKiB: fields && Number.isFinite(Number(fields[1])) ? Number(fields[1]) : undefined,
+		cpus: Math.max(1, probes.cpus?.() ?? os.availableParallelism()),
+		gpuFreeMiB: gpu.status === "fulfilled" ? gpu.value : undefined,
 		processes: processes.status === "fulfilled" ? processes.value : [],
 	};
 }
@@ -305,9 +361,22 @@ export async function workerToolPreflight(
 	);
 	const available = resources.memAvailableKiB;
 	const minimum = ramThresholdGiB();
-	if ((available === undefined || available >= minimum * 1024 ** 2) && running.length === 0) return;
+	const capacity =
+		available === undefined
+			? 0
+			: Math.min(resources.cpus, Math.floor(Math.max(0, available - minimum * 1024 ** 2) / TEST_RUN_KIB));
+	const gpuRun =
+		input.gpu === true ||
+		actions.some(action => requiresHardwareGpu(action.argv)) ||
+		(typeof input.command === "string" && /(?:^|\s)OMP_TEST_GPU=1(?:\s|$)/.test(input.command));
+	const gpuCapacity =
+		resources.gpuFreeMiB?.reduce(
+			(sum, free) => sum + Math.floor(Math.max(0, free - GPU_FLOOR_MIB) / GPU_RUN_MIB),
+			0,
+		) ?? 0;
+	if (running.length < capacity && (!gpuRun || gpuCapacity > 0)) return;
 	return {
 		block: true,
-		reason: `Queue it behind the running suite or free memory before launching. MemAvailable=${available === undefined ? "unknown" : `${(available / 1024 ** 2).toFixed(2)} GiB (${available} KiB)`}; minimum=${minimum} GiB; same-project test processes=${running.length} (PIDs ${running.map(proc => proc.pid).join(", ")}); project=${root}.`,
+		reason: `Test capacity refused: MemAvailable=${available === undefined ? "unknown" : `${(available / 1024 ** 2).toFixed(2)} GiB (${available} KiB)`}; minimum=${minimum} GiB; budget=4 GiB/run; CPUs=${resources.cpus}; N=${capacity}; same-project test processes=${running.length} (PIDs ${running.map(proc => proc.pid).join(", ")}); project=${root}. ${gpuRun ? `Hardware GPU free MiB per device=${JSON.stringify(resources.gpuFreeMiB ?? "unknown")}; GPU budget=${GPU_RUN_MIB} MiB/run; device floor=${GPU_FLOOR_MIB} MiB; additional GPU slots=${gpuCapacity}. ` : ""}Retry when running count is below N and MemAvailable covers the floor plus one 4 GiB run${gpuRun ? " and a hardware GPU has at least 2048 MiB free" : ""}; a listed PID exiting releases its run, but admission re-probes memory and CPUs. Wait 30–60 s or do independent work; never stop another run.`,
 	};
 }
