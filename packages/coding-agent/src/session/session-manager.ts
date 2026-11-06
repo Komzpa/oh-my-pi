@@ -3699,6 +3699,7 @@ export class SessionManager {
 	appendSessionInit(init: {
 		systemPrompt: string[];
 		task: string;
+		row?: string;
 		tools: string[];
 		mountedTools?: string[];
 		agent?: string;
@@ -4770,6 +4771,7 @@ export function hasConversationalHistory(entries: readonly FileEntry[]): boolean
 export interface PersistedSessionInit {
 	systemPrompt: string[];
 	task: string;
+	row?: string;
 	tools: string[];
 	mountedTools?: string[];
 	agent?: string;
@@ -4802,6 +4804,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 		init = {
 			systemPrompt: typeof entry.systemPrompt === "string" ? [entry.systemPrompt] : entry.systemPrompt,
 			task: entry.task,
+			row: entry.row,
 			tools: entry.tools,
 			mountedTools: entry.mountedTools,
 			agent: entry.agent,

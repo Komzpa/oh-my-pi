@@ -1353,6 +1353,24 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(linked.byTask.get(tasks[3])?.id).toBe("Shared");
 	});
 
+	it("keeps two recorded workers on one row out of the unassigned list", () => {
+		const task = {
+			content: "Shared row",
+			status: "in_progress" as const,
+			schedule: {
+				owner: "Landing",
+				workerIds: ["Measuring", "Landing"],
+				executor: { workerId: "Landing", startedAt: 2 },
+			},
+		};
+		const linked = linkTodoWorkers(
+			[{ name: "Work", tasks: [task] }],
+			[makeSession({ id: "Measuring" }), makeSession({ id: "Landing" })],
+		);
+		expect(linked.unassigned).toEqual([]);
+		expect(linked.byTask.has(task)).toBe(true);
+	});
+
 	it("links a collision-suffixed restarted worker to its stale-owner todo row", () => {
 		const task = {
 			content: "Restore systems cue interaction",

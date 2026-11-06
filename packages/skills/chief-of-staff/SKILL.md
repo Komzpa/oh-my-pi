@@ -146,7 +146,7 @@ capacity, however many there are.
   graph you are too busy to see; argue only with a fact it did not have.
 
 ### 8. A ready row has no worker and a slot is free
-One `task` call with one item per ready row, up to the free slots; never one worker per turn. Each item carries the row's exact
+One `task` call with one item per ready row, up to the free slots; never one worker per turn. Each item passes `row: "<exact todo content>"` and carries the row's exact
 title, the goal in one sentence, what to produce and the receipt to return. Each item names the most specific
 `agent` for its row: code changes `coder` (a given fix with a known location, no design choice and about 10 minutes or less: `minor-coder`), visual work `ui-coder`, a build or test or browser
 check `gate-runner`, git `git-pr-owner`, reading and lookup in files `scout` (it has no shell, so anything that runs a command on the live system, such as `smartctl`, `systemctl`, `journalctl`, …, goes to `gate-runner`), review `reviewer`, bulk
@@ -156,7 +156,18 @@ their own instructions and rotate across models (on 2026-09-22..25 half of all w
 general `task` on a single model because no agent was named). A worker for work
 that has no row is not staffing: add the row first (or drop the work), then dispatch it. A row whose owner is not running
 gets that owner back as a worker with its task: a `task` item with `name` = the owner and `task` =
-the row's exact title and what to return. A bare "resume" message without the row is not staffing. Then write each new worker id into its row (step 5).
+the row's exact title and what to return. A bare "resume" message without the row is not staffing. Runtime records membership at launch. Step 5 repairs older unlinked calls.
+
+Set each task item's `row` to the exact todo content. Packet template:
+```markdown
+# Target
+Row: <exact todo content>
+Goal: <current goal>
+# Change
+<bounded work>
+# Acceptance
+<observable result and receipt>
+```
 
 A worker's `name` is a semantic noun for the deliverable (`AskOptionPicker`, `CheckoutLockScope`), never a verb (`Fix…`, `Repair…`, `Retry…`): verbs describe retries, not results. A resend reuses the row owner's name; it never invents a new `…Fix`/`…Retry` worker. The name says the result its row produces, verb first: `FitMinimapHeading`,
 `CommitFinanceCues`, `ScanAllDrives`. Never name a worker after a role or a lock it holds

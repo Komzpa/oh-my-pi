@@ -2249,6 +2249,8 @@ export interface TaskItem {
 	/** Inline instructions; exactly one of task or taskFile is required. */
 	task?: string;
 	taskFile?: string;
+	/** Exact open todo content. */
+	row?: string;
 	previewIntegration?: { task: string; kind: "refresh" | "integration" };
 	/** How open-ended the work is; required by the schema and the child's sole `auto` thinking classification input. */
 	solutionSpace?: string;
@@ -2285,6 +2287,8 @@ export interface TaskParams {
 	task?: string;
 	/** Absolute path or local:// URL to a UTF-8 file (flat form), mutually exclusive with task. */
 	taskFile?: string;
+	/** Exact open todo content. */
+	row?: string;
 	/** How open-ended the work is (flat form); see {@link TaskItem.solutionSpace}. */
 	solutionSpace?: string;
 	/** Chief's one-line rejection reason for redispatching a completed row. */

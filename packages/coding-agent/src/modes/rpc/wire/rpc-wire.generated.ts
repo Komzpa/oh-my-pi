@@ -1201,6 +1201,7 @@ export interface SubagentLifecyclePayload {
 	resolvedThinkingLevel?: string;
 	description?: string;
 	taskText?: string;
+	row?: string;
 	sessionFile?: string;
 	parentToolCallId?: string;
 	/** The subagent runs as a detached background job. */

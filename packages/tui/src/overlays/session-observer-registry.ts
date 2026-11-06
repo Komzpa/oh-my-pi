@@ -31,6 +31,7 @@ export interface SubagentLifecyclePayload {
 	resolvedThinkingLevel?: string;
 	description?: string;
 	taskText?: string;
+	row?: string;
 	status: "started" | "completed" | "failed" | "aborted";
 	sessionFile?: string;
 	parentToolCallId?: string;

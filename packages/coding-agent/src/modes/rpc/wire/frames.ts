@@ -66,6 +66,7 @@ export const frameDefs = {
 		"resolvedThinkingLevel?": "string",
 		"description?": "string",
 		"taskText?": "string",
+		"row?": "string",
 		status: "SubagentLifecycleStatus",
 		"sessionFile?": "string",
 		"parentToolCallId?": "string",

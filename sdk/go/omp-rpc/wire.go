@@ -5200,6 +5200,7 @@ type SubagentLifecyclePayload struct {
 	ResolvedThinkingLevel *string  `json:"resolvedThinkingLevel,omitempty"`
 	Description           *string  `json:"description,omitempty"`
 	TaskText              *string  `json:"taskText,omitempty"`
+	Row                   *string  `json:"row,omitempty"`
 	SessionFile           *string  `json:"sessionFile,omitempty"`
 	ParentToolCallID      *string  `json:"parentToolCallId,omitempty"`
 	// The subagent runs as a detached background job.
@@ -5223,6 +5224,7 @@ func (v *SubagentLifecyclePayload) decodeFrom(raw map[string]json.RawMessage) er
 	d.optional("resolvedThinkingLevel", &out.ResolvedThinkingLevel)
 	d.optional("description", &out.Description)
 	d.optional("taskText", &out.TaskText)
+	d.optional("row", &out.Row)
 	d.optional("sessionFile", &out.SessionFile)
 	d.optional("parentToolCallId", &out.ParentToolCallID)
 	d.optional("detached", &out.Detached)
