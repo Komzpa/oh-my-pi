@@ -2909,8 +2909,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 		this.syncRunningSubagentBadge();
-		this.#observerRegistry.onChange((kind, id) => {
-			this.#subagentTreeCostIndex.invalidate(id);
+		this.#observerRegistry.onChange((_kind, id) => this.#subagentTreeCostIndex.invalidate(id));
+		this.#observerRegistry.onChange(kind => {
 			this.#scheduleObserverUiSync(kind);
 		});
 		// `/pause` stops the live-preview tick (the fullscreen pause screen covers
