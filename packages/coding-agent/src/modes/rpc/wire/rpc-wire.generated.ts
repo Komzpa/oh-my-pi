@@ -1197,6 +1197,7 @@ export interface SubagentLifecyclePayload {
 	agentSource: AgentSource;
 	status: SubagentLifecycleStatus;
 	index: number;
+	followUpTurn?: boolean;
 	/** Wall clock of the emitted lifecycle transition, in Unix milliseconds. */
 	at?: number;
 	resolvedModelIdentity?: string;
@@ -1217,6 +1218,7 @@ export interface SubagentProgressPayload {
 	task: string;
 	/** Raw `AgentProgress` record. */
 	progress: Record<string, unknown>;
+	followUpTurn?: boolean;
 	parentToolCallId?: string;
 	assignment?: string;
 	sessionFile?: string;

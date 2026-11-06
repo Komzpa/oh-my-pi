@@ -1312,6 +1312,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const event = data as Partial<SubagentLifecyclePayload>;
 				if (typeof event.id !== "string" || typeof event.agent !== "string") return;
 				if (this.#reflectingWorkers.has(event.id)) return;
+				if (event.followUpTurn) {
+					this.session.sessionManager?.appendCustomEntry("task_worker_activity", {
+						workerId: event.id,
+						status: event.status,
+						at: event.at ?? Date.now(),
+						taskText: event.taskText,
+					});
+					return;
+				}
 				if (event.status === "started") {
 					const observed: TodoExecutorObservation = {
 						workerId: event.id,
@@ -1340,6 +1349,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const stopProgress = bus.on(TASK_SUBAGENT_PROGRESS_CHANNEL, data => {
 				if (!data || typeof data !== "object") return;
 				const event = data as Partial<SubagentProgressPayload>;
+				if (event.followUpTurn) return;
 				const workerId = event.progress?.id;
 				if (typeof workerId !== "string") return;
 				if (this.#reflectingWorkers.has(workerId)) return;
@@ -1914,12 +1924,35 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					buildDetails: buildAsyncDetails,
 					onUpdate,
 					onSettled: failed => {
+						const prior = this.#todoExecutors.get(spawn.agentId);
+						if (prior) {
+							this.#persistTodoExecutor({
+								...prior,
+								finishedAt: Date.now(),
+								outcome: failed ? "failed" : "completed",
+							});
+							this.#todoExecutors.delete(spawn.agentId);
+						}
 						settledCount += 1;
 						if (failed) failedCount += 1;
 					},
 				});
 				if (started.length === 0) primaryJobId = jobId;
 				started.push({ agentId: spawn.agentId, jobId });
+				// Register ownership before returning the spawn result, even when the
+				// executor is still waiting for a permit or session initialization.
+				if (!this.#todoExecutors.has(spawn.agentId)) {
+					const observed: TodoExecutorObservation = {
+						workerId: spawn.agentId,
+						agentProfile: spawn.progress.agent,
+						row: spawn.item.row,
+						description: spawn.progress.description,
+						taskText: spawn.item.task,
+						startedAt: Date.now(),
+					};
+					this.#todoExecutors.set(spawn.agentId, observed);
+					this.#persistTodoExecutor(observed);
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				// An adopted run already executes; without its job nothing would own it.

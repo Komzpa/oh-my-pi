@@ -11,12 +11,20 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { getLatestTodoPhasesFromEntries, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
 import type { SingleResult, TaskParams } from "@oh-my-pi/pi-tui/tools/task";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { attachIrcWakeTurnMonitor } from "@oh-my-pi/pi-coding-agent/task/executor";
+import { createAssistantMessage } from "../helpers/agent-session-setup";
+import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { createSessionDefaults } from "../helpers/session-defaults";
+import { classifyTodoDisplayRow } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import type { TodoPersistedEdit, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 const ROW = "Render r7 with working zoompan and remastered mix";
@@ -62,6 +70,7 @@ function createSession(manager: AsyncJobManager, phases: TodoPhase[], edits: Tod
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
 		asyncJobManager: manager,
+		eventBus: new EventBus(),
 		getTodoPhases: () => current,
 		setTodoPhases: (next: TodoPhase[]) => {
 			current = next;
@@ -101,6 +110,123 @@ describe("task respawn keeps the TODO owner linked", () => {
 		managers.push(manager);
 		return manager;
 	}
+
+	it("binds a newly named row before the spawn result and executor startup", async () => {
+		const gate = Promise.withResolvers<void>();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			await gate.promise;
+			return makeResult(options.id ?? "?");
+		});
+		const manager = createManager();
+		const edits: TodoPersistedEdit[] = [];
+		const { session, owner } = createSession(manager, plan("OldOwner"), edits);
+		const tool = await TaskTool.create(session);
+		try {
+			await tool.execute("new-row", {
+				agent: "task",
+				name: "LeadersRotationProof",
+				row: ROW,
+				task: "Run the proof.",
+			} as TaskParams);
+			expect(owner()).toBe("LeadersRotationProof");
+			const phases = session.getTodoPhases!();
+			const row = phases[0]!.tasks[0]!;
+			const workers = manager.getRunningJobs().map(job => ({ id: job.agentId ?? job.id }));
+			const ownerWorker = workers.find(worker => worker.id === row.schedule?.owner);
+			expect(
+				classifyTodoDisplayRow(row, phases, {
+					workers,
+					owners: new Map(ownerWorker ? [[row.content, ownerWorker]] : []),
+				}).state,
+			).toBe("working");
+			expect(session.getTodoPhases!()[0]!.tasks[0]!.schedule?.executor).toMatchObject({
+				workerId: "LeadersRotationProof",
+			});
+			expect(edits.some(edit => edit.kind === "executor")).toBe(true);
+		} finally {
+			gate.resolve();
+		}
+	});
+
+	it("keeps a row executor and owner through an autonomous IRC reply and records activity", async () => {
+		const manager = createManager();
+		const edits: TodoPersistedEdit[] = [];
+		const phases = plan("CoolingTrunksBuild-8");
+		phases[0]!.tasks[0]!.schedule!.executor = { workerId: "CoolingTrunksBuild-8", startedAt: 100 };
+		const { session } = createSession(manager, phases, edits);
+		const notes: unknown[] = [];
+		session.sessionManager = {
+			appendCustomEntry: (kind: string, data: unknown) => {
+				notes.push({ kind, data });
+			},
+		} as unknown as ToolSession["sessionManager"];
+		await TaskTool.create(session);
+		let observer: ((records: unknown[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined;
+		const listeners: Array<(event: AgentSessionEvent) => void> = [];
+		const worker = {
+			...createSessionDefaults(),
+			getToolByName: () => undefined,
+			getLastAssistantMessage: () => ({
+				role: "assistant",
+				content: [{ type: "text", text: "Acknowledged." }],
+				stopReason: "stop",
+			}),
+			subscribe: (listener: (event: AgentSessionEvent) => void) => {
+				listeners.push(listener);
+				return () => {};
+			},
+			trackIrcReply: () => {},
+			setIrcWakeTurnObserver: (value: typeof observer) => {
+				observer = value;
+			},
+		} as unknown as AgentSession;
+		attachIrcWakeTurnMonitor(worker, {
+			id: "CoolingTrunksBuild-8",
+			structured: false,
+			agent: { name: "task", description: "Task", systemPrompt: "Run", source: "bundled" },
+			eventBus: session.eventBus,
+		});
+		session.eventBus!.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "CoolingTrunksBuild-8",
+			agent: "task",
+			status: "started",
+			at: 100,
+		});
+		edits.length = 0;
+		const before = structuredClone(session.getTodoPhases!());
+		const finish = observer!([]);
+		for (const listener of listeners)
+			listener({ type: "message_end", message: createAssistantMessage("Acknowledged.") });
+		await finish?.();
+		expect(session.getTodoPhases!()).toEqual(before);
+		expect(edits).toEqual([]);
+		const current = session.getTodoPhases!();
+		const row = current[0]!.tasks[0]!;
+		const live = { id: "CoolingTrunksBuild-8" };
+		expect(
+			classifyTodoDisplayRow(row, current, { workers: [live], owners: new Map([[row.content, live]]) }).state,
+		).toBe("working");
+		// The real assignment can still finish after the conversational turn.
+		session.eventBus!.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: live.id,
+			agent: "task",
+			status: "completed",
+			at: 200,
+		});
+		expect(session.getTodoPhases!()[0]!.tasks[0]!.schedule?.executor).toMatchObject({
+			startedAt: 100,
+			finishedAt: 200,
+			outcome: "completed",
+		});
+		expect(notes).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					kind: "task_worker_activity",
+					data: expect.objectContaining({ status: "completed" }),
+				}),
+			]),
+		);
+	});
 
 	it("moves the row from the settled job to its -2 respawn before the call returns", async () => {
 		const gate = Promise.withResolvers<void>();
