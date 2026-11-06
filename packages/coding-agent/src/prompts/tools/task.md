@@ -21,6 +21,7 @@ Shared edits need one integration owner; give each task its files. Set interface
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name.{{#if structured}} `outputSchema` overrides agent/session schemas.{{/if}}
 `solutionSpace`: describe how open-ended the child's problem is: whether the fix or design is given, or which causes or designs remain open. Volume of work does not widen it; NEVER mention sibling agents or coordination. (`one fix: rename, names given`; `one fix: slice end in paginate`; `single-flight cache load; races easy to miss`; `several retry API shapes; error classes to choose`; `deadlock cause open, no repro`)
 {{#if seanceGuidance}}{{seanceGuidance}}{{/if}}
+`row`: exact open todo content. Pass it for every planned worker; runtime links ownership at launch. Unknown, ambiguous or closed rows are refused. Several workers may share a row.
 `rework`: explicitly reject a completed result using its `name` and a one-line rejection reason. Completed preparation, implementation-to-QA handoff, and ordinary continuation are not rejection: omit `rework` and use ordinary routing. Omit it for first dispatches and infrastructure retries (failed, aborted, timeout, provider error). An already exhausted row never runs again and needs no approval: split it with todo op=append into 2-4 smaller rows, then dispatch the new rows.
 {{#if evalToolsEnabled}}`tools`: eval-defined, run in your kernel.
 {{/if}}{{#if effortEnabled}}`effort`: `"lo"`|`"med"`|`"hi"` by how open-ended the problem is.
@@ -34,8 +35,6 @@ Shared edits need one integration owner; give each task its files. Set interface
 
 {{#if batchEnabled}}`context`: shared (`# Goal`, `# Constraints`, `# Contract` interfaces); NEVER repeat per task.
 {{/if}}`task`{{#if file}} or the contents of `taskFile`{{/if}}: self-contained (`# Target` files/non-goals, `# Change` steps/APIs, `# Acceptance` observable result).
-
-`row`: exact open todo content. Pass it for every planned worker; runtime links ownership at launch. Unknown, ambiguous or closed rows are refused. Several workers may share a row.
 
 # Available Agents
 
