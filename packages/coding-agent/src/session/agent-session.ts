@@ -970,6 +970,23 @@ function customMessageSupersedes(message: CustomMessage): string | undefined {
 	return (message as CustomMessage & { supersedes?: string }).supersedes;
 }
 
+/** Keep recent hidden machine context bounded even when no prompt consumes it.
+ * User-authored and visible messages remain lossless. Only recent hidden runtime
+ * context accompanies the next provider request. */
+function boundHiddenNextTurnMessages(messages: CustomMessage[]): CustomMessage[] {
+	let remaining = 32;
+	return messages
+		.toReversed()
+		.filter(
+			message =>
+				message.display !== false ||
+				message.attribution === "user" ||
+				isUserAuthoredMessage(message) ||
+				remaining-- > 0,
+		)
+		.reverse();
+}
+
 type PendingNextTurnDelivery = {
 	boundary: CustomMessage;
 	messages: CustomMessage[];
@@ -2314,7 +2331,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 *  settle step replays it once idle — never appended into a live streamMessage. */
 	#preserveAdvisorCard(card: CustomMessage): void {
 		if (this.#abortInProgress && this.isStreaming) {
-			this.#pendingNextTurnMessages.push(card);
+			this.#pendingNextTurnMessages = boundHiddenNextTurnMessages([...this.#pendingNextTurnMessages, card]);
 			return;
 		}
 		this.#recordWithoutTurn([card]);
@@ -2452,7 +2469,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#reseedTokenRate();
 		this.agent.setQueuedMessageGrouping(
 			(previous, next) =>
-				isHiddenUserCompanion(previous) && (isHiddenUserCompanion(next) || isUserQueuedMessage(next)),
+				(isHiddenUserCompanion(previous) || (previous.role === "custom" && !isUserAuthoredMessage(previous))) &&
+				(isHiddenUserCompanion(next) || next.role === "custom" || isUserQueuedMessage(next)),
 		);
 		this.sessionManager = config.sessionManager;
 		// Only a recorded approval may turn a draft file into an execution reference.
@@ -3437,6 +3455,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#watchModelAvailabilitySettings();
 		// Last: makes the session addressable by its instance key (and, on a worker, published to main).
 		registerLocalSession(this);
+		// Queue installation precedes all listeners. Restored idle roots need the same
+		// wake as enqueue; defer through the ordinary scheduler after construction.
+		if (this.agent.hasQueuedMessages()) {
+			this.#schedulePostPromptTask(async () => this.#scheduleIdleQueueDrain(), { delayMs: 1 });
+		}
 	}
 
 	/** Registers teardown to run when this session is disposed (e.g. handle listeners bound to it). */
@@ -4675,7 +4698,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 		}
 		if (!committed && this.sessionManager.getSessionId() === delivery.sessionId) {
-			this.#pendingNextTurnMessages = [...delivery.messages, ...this.#pendingNextTurnMessages];
+			this.#pendingNextTurnMessages = boundHiddenNextTurnMessages([
+				...delivery.messages,
+				...this.#pendingNextTurnMessages,
+			]);
 		}
 	}
 
@@ -8272,7 +8298,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			const keepMessage = (message: AgentMessage): boolean =>
 				message.role !== "custom" || keepRestartNotice(message);
 			this.agent.replaceQueues(entry.data.steering.filter(keepMessage), entry.data.followUp.filter(keepMessage));
-			this.#pendingNextTurnMessages = entry.data.pendingNextTurn.filter(keepRestartNotice);
+			this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(
+				entry.data.pendingNextTurn.filter(keepRestartNotice),
+			);
 			this.#lastRestartPendingQueuesSignature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(entry.data)}`;
 			this.#restartPendingQueuesCheckpointActive = true;
 			return;
