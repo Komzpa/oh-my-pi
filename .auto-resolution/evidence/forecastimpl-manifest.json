@@ -1,0 +1,352 @@
+{
+  "prs": [
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16643,
+      "branch": "upstream/output-id-collision-chain"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16644,
+      "branch": "upstream/yield-args-stray-closer"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16646,
+      "branch": "upstream/xiaomi-token-plan-request-host"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16651,
+      "branch": "upstream/queue-message-behind-child-brief"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16661,
+      "branch": "upstream/tui-stream-sole-waited-worker"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16664,
+      "branch": "upstream/task-effort-guidance"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16541,
+      "branch": "upstream/jfind-cancel-initial-scans"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16530,
+      "branch": "upstream/task-eval-tools-builtin-names"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16535,
+      "branch": "upstream/soft-requirement-skip"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16516,
+      "branch": "upstream/tui-compact-skill-reads"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16521,
+      "branch": "upstream/skill-read-unchanged-stub"
+    },
+    {
+      "number": 150,
+      "branch": "fix/retry-stream-incomplete-error-event"
+    },
+    {
+      "branch": "feat/peer-session-messages",
+      "number": 23
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16526,
+      "branch": "upstream/extension-context-copy-on-write"
+    },
+    {
+      "branch": "feat/tui-fps-meter",
+      "number": 29
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16542,
+      "branch": "upstream/tui-keypress-render-lag"
+    },
+    {
+      "branch": "feat/subagent-time-signals",
+      "number": 39
+    },
+    {
+      "branch": "feat/requirements-ledger",
+      "number": 41
+    },
+    {
+      "branch": "fix/extension-builtin-resolution",
+      "number": 81
+    },
+    {
+      "branch": "topic/natives-process",
+      "number": 88
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16523,
+      "branch": "upstream/isolated-worktrees-clean-head"
+    },
+    {
+      "branch": "topic/task-runtime-fixes",
+      "number": 90
+    },
+    {
+      "branch": "topic/rt-agent-runtime-core",
+      "number": 92
+    },
+    {
+      "branch": "topic/rt-restart-queue",
+      "number": 93
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16531,
+      "branch": "upstream/tab-title-project"
+    },
+    {
+      "branch": "fix/impl-worker-effort-cap",
+      "number": 95
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16532,
+      "branch": "upstream/provider-exhaustion-cooldown"
+    },
+    {
+      "branch": "fix/bash-service-async-env",
+      "number": 99
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16514,
+      "branch": "upstream/read-raster-raw-lines"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 15637,
+      "branch": "upstream/semicolon-internal-url-lists"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16538,
+      "branch": "upstream/edit-reject-invalid-put"
+    },
+    {
+      "branch": "fix/yield-terminal-once",
+      "number": 108
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16524,
+      "branch": "upstream/readonly-agent-reply"
+    },
+    {
+      "branch": "fix/isolated-merge-back",
+      "number": 112
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 15632,
+      "branch": "upstream/tool-env-no-node-channel"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16540,
+      "branch": "upstream/models-last-good-retention"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16518,
+      "branch": "upstream/model-id-explicit-fail-closed"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16528,
+      "branch": "upstream/spawn-model-fail-closed"
+    },
+    {
+      "branch": "fix/task-fallback-trigger-attribution",
+      "number": 120
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16543,
+      "branch": "upstream/oversized-tool-call-args"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16525,
+      "branch": "upstream/responses-heartbeat-idle"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16527,
+      "branch": "upstream/parallel-check-runner"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16533,
+      "branch": "upstream/worker-workspace-dependency-owner"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16512,
+      "branch": "upstream/bun-discovery-chunk-paths"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16522,
+      "branch": "upstream/scrapers-discourse-gitlab"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16520,
+      "branch": "upstream/todo-open-panel"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16647,
+      "branch": "upstream/subagent-progress-redraw-unchanged"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16659,
+      "branch": "upstream/ephemeral-turn-history-detach"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16510,
+      "branch": "upstream/custom-answer-note-key"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 15988,
+      "branch": "upstream/sixel-chip-thumbnails"
+    },
+    {
+      "branch": "fix/sixel-viewport-scroll",
+      "number": 136
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16515,
+      "branch": "upstream/services-survive-client-restart"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16534,
+      "branch": "upstream/persisted-history-off-thread"
+    },
+    {
+      "number": 140,
+      "branch": "fix/prune-active-history"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 16511,
+      "branch": "upstream/cache-available-provider-models"
+    },
+    {
+      "number": 146,
+      "branch": "topic/task-coordination-advisory-ownership"
+    },
+    {
+      "number": 147,
+      "branch": "feat/session-model-preset"
+    },
+    {
+      "number": 148,
+      "branch": "feat/model-role-pools"
+    },
+    {
+      "number": 149,
+      "branch": "topic/task-agent-fixed-effort"
+    },
+    {
+      "branch": "topic/owner-model-blacklist",
+      "number": 152
+    },
+    {
+      "number": 155,
+      "branch": "fix/auth-db-salvage-credentials"
+    },
+    {
+      "number": 156,
+      "branch": "fix/free-pool-account-cooldown"
+    },
+    {
+      "number": 157,
+      "branch": "fix/goal-no-auto-pause"
+    },
+    {
+      "number": 158,
+      "branch": "fix/codex-ws-limit-reconnect"
+    },
+    {
+      "number": 159,
+      "branch": "fix/paste-blank-image"
+    },
+    {
+      "number": 161,
+      "branch": "fix/muse-402-fallback"
+    },
+    {
+      "number": 162,
+      "branch": "fix/instruction-file-refresh"
+    },
+    {
+      "repository": "can1357/oh-my-pi",
+      "number": 13210,
+      "branch": "fix/libei-device-discovery-readiness"
+    },
+    {
+      "number": 163,
+      "branch": "feat/task-project-agents-md"
+    },
+    {
+      "number": 164,
+      "branch": "fix/persisted-revive-extension-roots"
+    },
+    {
+      "number": 165,
+      "branch": "fix/status-current-work-title"
+    },
+    {
+      "number": 166,
+      "branch": "upstream/stable-system-prompt-prefix"
+    },
+    {
+      "number": 167,
+      "branch": "fix/session-rewrite-latency"
+    },
+    {
+      "number": 168,
+      "branch": "topic/usage-shared-backoff"
+    },
+    {
+      "number": 169,
+      "branch": "fix/anthropic-thread-cache-budget"
+    },
+    {
+      "number": 170,
+      "branch": "fix/tui-job-control-raw-mode"
+    },
+    {
+      "number": 171,
+      "branch": "fix/anthropic-thinking-drop-diagnostics"
+    }
+  ],
+  "version": 1
+}

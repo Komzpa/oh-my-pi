@@ -1,0 +1,103 @@
+{
+  "phases": [
+    {
+      "name": "Follow-ups",
+      "tasks": [
+        {
+          "content": "Facility orbit paints 30 fps: labels stop blocking frames",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793963741407,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [],
+            "owner": "OrbitM1Call",
+            "reestimateCount": 0,
+            "estimateRevision": 3,
+            "estimate": {
+              "optimisticSeconds": 1561,
+              "likelySeconds": 1800,
+              "pessimisticSeconds": 3122,
+              "confidence": "low",
+              "basis": "MacCallAttrib-3 stand reused: 3 call runs base + 3 candidate ~2 min each + build/scp + analysis; profiler floor 27m",
+              "updatedAt": 1793969719121
+            },
+            "progress": {
+              "at": 1793969719121,
+              "evidence": "OrbitFps24-2 55e7f5db6: CPU-throttle oracle 25.3 fps / 77 ms gap (base 21.6/84.8); skips depth pass while camera moves (also one GPU pass less). Darafei 16:4x: contention is GPU, not CPU -> acceptance on M1 with WebRTC call encode/decode"
+            },
+            "riskEstimateMeanSeconds": 2983.3333333333335,
+            "executor": {
+              "workerId": "OrbitM1Call",
+              "agentProfile": "profiler",
+              "resolvedModel": "anthropic/claude-opus-5-5",
+              "thinkingLevel": "medium",
+              "startedAt": 1793969943484,
+              "finishedAt": 1793970767312,
+              "outcome": "completed"
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "OrbitLabelStall:1793964866178",
+                "workerName": "OrbitLabelStall",
+                "resolvedModel": "codex-lb/gpt-6.1-sol",
+                "effort": "medium",
+                "startedAt": 1793964866178,
+                "finishedAt": 1793965135111,
+                "durationMs": 276870,
+                "terminalStatus": "aborted",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/OrbitLabelStall.md"
+                ],
+                "infraFailureError": "BLOCKED: awaiting lead answer: authorize the host-exclusive browser slot and confirm writes to the packet-required e2e/facility-frame-cap.spec.ts and doc/product-requirements.md. Asked Main twice and waited; no answer. Asked active gate-runner JoyousMouse whether it holds the performance slot; no answer. All reachable read-only investigation completed; no tracked files changed, no server started, no commits or patch. Baseline fetched from real Bitbucket and installed: c64ec5fe6. Confirmed 8 ms scheduler slices at facilityScene.ts:11751\u201311761, all-paint blocking gate at 14399, 30/15 cap at 14420 and painted-frame counter at 14873. Existing PRD:354 explicitly requires pending searches not to pause rendering while retaining bounded label motion. Existing frame-cap spec can host new oracle; project chromium is eligible. Assigned scene-budget limit is 260 draw calls at product-root.spec.ts:3397\u20133401. Existing label interaction regressions and unit negative controls identified. All implementation and requested behavioral proof remain open. Retro: preserved documented label physics through investigation; no weaker acceptance substituted. Unable to safely start exclusive performance proof or scope-dependent edits without the requested lead answer.",
+                "infraFailureLine": "attempt 1 failed: BLOCKED: awaiting lead answer: authorize the host-exclusive browser slot and confirm writes to the packet-required e2e/facility-frame-cap.spec.ts and doc/product-requirements.md. Asked Main twice and waited; no answer. Asked active gate-runner JoyousMouse whether it holds the performance slot; no answer. All reachable read-only investigation completed; no tracked files changed, no server started, no commits or patch. Baseline fetched from real Bitbucket and installed: c64ec5fe6. Confirmed 8 ms scheduler slices at facilityScene.ts:11751\u201311761, all-paint blocking gate at 14399, 30/15 cap at 14420 and painted-frame counter at 14873. Existing PRD:354 explicitly requires pending searches not to pause rendering while retaining bounded label motion. Existing frame-cap spec can host new oracle; project chromium is eligible. Assigned scene-budget limit is 260 draw calls at product-root.spec.ts:3397\u20133401. Existing label interaction regressions and unit negative controls identified. All implementation and requested behavioral proof remain open. Retro: preserved documented label physics through investigation; no weaker acceptance substituted. Unable to safely start exclusive performance proof or scope-dependent edits without the requested lead answer."
+              },
+              {
+                "attemptId": "OrbitLabelStall-3:1793965577804",
+                "workerName": "OrbitLabelStall-3",
+                "resolvedModel": "codex-lb/gpt-6.1-sol",
+                "effort": "medium",
+                "startedAt": 1793965577804,
+                "finishedAt": 1793967306531,
+                "durationMs": 1729757,
+                "terminalStatus": "aborted",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/OrbitLabelStall-3.md"
+                ],
+                "infraFailureError": "Final measured checkpoint returned under Main's explicit permission to commit/report if fps remains <24 and user's stop-at-next-checkable-point instruction. HEAD2b8411e1a45923b48578fa16f116569591edcabf; prior6391fee469e60ff5083a679c4e830b345e67e77b; basec64ec5fe6648263eaf1414f5c76da9b47e090e76. Real author/committer Darafei Praliaskouski<me@komzpa.net>. Two absolute patches in /home/kom/.omp/wt/t82b540008/m/tmp/orbit-labels/patches/:0001-Keep-Facility-painting-during-label-batches.patch,0002-Pace-Facility-target-preparation-before-camera-searc.patch. Changed scene scheduling,real-consumer contention oracle,release allow-list,PRD:356. Removed whole-batch render blockade;2ms moving/8ms resting slices;100ms moving cadence before preparation;kept caps and collision/motion limits. Actual baseline16.6883fps/194.1ms max gap;final22.5488fps/81.5ms underCDP4x,10s right-drag. >=24fps remains FAIL; <=100ms and cap PASS. Final cadence runner1,expected1/unexpected1;idle30.0016fps pass. Final build,13 unit tests,tsc,lint all0. Historical label regression base14pass4fail,candidate15pass3fail,no new keys;shared:195 fire room,:224/:256 unrendered camera,:843 unrelated controls. Baseline-only60MW layer switch:584 passed candidate. Exact Heat budget key failed both at product-root:2991;<=260 assertion3401 not reached;pre-existing per Main,not a blocker. All report.json/exit-code.txt/served.txt receipts in tmp/orbit-labels;full structured receipt previously supplied with literal serving contents,stats,execution lines and file metadata. All own PIDs stopped,wrappers removed,tracked tree clean,no push. Retro: maximum gap repaired without removing contention; registration/stale-snapshot oracle errors corrected;live-wrapper edit caused shellEOF after runner receipt completed;final preparation throttle still misses fps target. Not an accepted complete performance fix; further fps reduction and final-source label rerun remain open.",
+                "infraFailureLine": "attempt 2 failed: Final measured checkpoint returned under Main's explicit permission to commit/report if fps remains <24 and user's stop-at-next-checkable-point instruction. HEAD2b8411e1a45923b48578fa16f116569591edcabf; prior6391fee469e60ff5083a679c4e830b345e67e77b; basec64ec5fe6648263eaf1414f5c76da9b47e090e76. Real author/committer Darafei Praliaskouski<me@komzpa.net>. Two absolute patches in /home/kom/.omp/wt/t82b540008/m/tmp/orbit-labels/patches/:0001-Keep-Facility-painting-during-label-batches.patch,0002-Pace-Facility-target-preparation-before-camera-searc.patch. Changed scene scheduling,real-consumer contention oracle,release allow-list,PRD:356. Removed whole-batch render blockade;2ms moving/8ms resting slices;100ms moving cadence before preparation;kept caps and collision/motion limits. Actual baseline16.6883fps/194.1ms max gap;final22.5488fps/81.5ms underCDP4x,10s right-drag. >=24fps remains FAIL; <=100ms and cap PASS. Final cadence runner1,expected1/unexpected1;idle30.0016fps pass. Final build,13 unit tests,tsc,lint all0. Historical label regression base14pass4fail,candidate15pass3fail,no new keys;shared:195 fire room,:224/:256 unrendered camera,:843 unrelated controls. Baseline-only60MW layer switch:584 passed candidate. Exact Heat budget key failed both at product-root:2991;<=260 assertion3401 not reached;pre-existing per Main,not a blocker. All report.json/exit-code.txt/served.txt receipts in tmp/orbit-labels;full structured receipt previously supplied with literal serving contents,stats,execution lines and file metadata. All own PIDs stopped,wrappers removed,tracked tree clean,no push. Retro: maximum gap repaired without removing contention; registration/stale-snapshot oracle errors corrected;live-wrapper edit caused shellEOF after runner receipt completed;final preparation throttle still misses fps target. Not an accepted complete performance fix; further fps reduction and final-source label rerun remain open."
+              },
+              {
+                "attemptId": "OrbitFps24:1793967569451",
+                "workerName": "OrbitFps24",
+                "resolvedModel": "codex-lb/gpt-6-astra",
+                "effort": "medium",
+                "startedAt": 1793967569451,
+                "finishedAt": 1793967690095,
+                "durationMs": 122452,
+                "terminalStatus": "aborted",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/OrbitFps24.md"
+                ],
+                "infraFailureError": "BLOCKED: awaiting lead answer: Which authorized M1-with-Google-Meet measurement runtime/access should I use, and should implementation go to a separate lane? Two questions delivered to Main and two waits produced no answer. Changed: nothing; clean tracked checkout, no processes launched. Evidence checked: repository entrypoint docs, performance skill, actual checkout HEAD 54b0302adce79d0e7a344a7c44859f625c5b2013 and Linux x86_64 host. Requested artifact is 2b8411e1a45923b48578fa16f116569591edcabf; no qualified runtime/access was supplied. Baseline metric/n/median/p90, renderer, frame attribution and trace paths remain unmeasured. Remaining: qualified base profiling, optimization by authorized implementation role, oracle and interaction comparison, tsc/lint, commit and patch. My role explicitly prohibits artifact edits; no safe workaround can create actual M1-call evidence from this host without runtime access. Retro: preserved artifact and contention requirement; role/runtime dispatch mismatch prevented execution. Receipt validator also rejected a successfully executed identity command; reported through report_issue.",
+                "infraFailureLine": "attempt 3 failed: BLOCKED: awaiting lead answer: Which authorized M1-with-Google-Meet measurement runtime/access should I use, and should implementation go to a separate lane? Two questions delivered to Main and two waits produced no answer. Changed: nothing; clean tracked checkout, no processes launched. Evidence checked: repository entrypoint docs, performance skill, actual checkout HEAD 54b0302adce79d0e7a344a7c44859f625c5b2013 and Linux x86_64 host. Requested artifact is 2b8411e1a45923b48578fa16f116569591edcabf; no qualified runtime/access was supplied. Baseline metric/n/median/p90, renderer, frame attribution and trace paths remain unmeasured. Remaining: qualified base profiling, optimization by authorized implementation role, oracle and interaction comparison, tsc/lint, commit and patch. My role explicitly prohibits artifact edits; no safe workaround can create actual M1-call evidence from this host without runtime access. Retro: preserved artifact and contention requirement; role/runtime dispatch mismatch prevented execution. Receipt validator also rejected a successfully executed identity command; reported through report_issue."
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "item": {
+    "name": "LandOrbitFix",
+    "agent": "task",
+    "task": "# Target\nRow: Facility orbit paints 30 fps: labels stop blocking frames. Land three patches on PR 112.\n# Change\n1. Isolated worktree: `git fetch git@bitbucket-sunbim:sunbim/xmova-app.git +refs/heads/repo-cleanup-2026-11-05:refs/remotes/bb/pr112`; `git checkout -B land-orbit bb/pr112` (verify == f73f78a61); `npm ci`.\n2. `git am -3` /home/kom/.omp/wt/t2c449ef6c/m/tmp/orbit/patches/0001-*.patch 0002-*.patch 0003-Defer-resting-body-depth-pass-during-camera-motion.patch. If 0001/0002 are already present in PR 112 content (check `git log bb/pr112 --oneline -30` for 'Keep Facility painting during label batches' / 'Pace target preparation'), skip those. Resolve conflicts preserving both sides; doc/product-requirements.md clauses must not duplicate.\n3. Gates in the worktree: `npx tsc -b`, `npm run lint`, `npm run docs:lint-terms`, `npm run test:precommit`, `npm run build`, then Playwright chromium workers=1 on prebuilt preview: e2e/facility-frame-cap.spec.ts and e2e/facility-label-interaction.spec.ts with `--reporter=list,json` into run dir tmp/land-orbit/<spec>/ with report.json, exit-code.txt, served.txt (cwd + HEAD). Known pre-existing label-interaction failures at base: tests at lines 182, 213, 316, 781 - run the same spec on bb/pr112 base build too and report only NEW failures. Kill your preview PID.\n4. If no new failures: `git push git@bitbucket-sunbim:sunbim/xmova-app.git land-orbit:repo-cleanup-2026-11-05` (fast-forward only; if remote moved, fetch and rebase, rerun tsc+lint+frame-cap, push). Read back remote head with `git ls-remote`.\n# Return\nNew head SHA, commits added, gate exit codes table, new vs pre-existing e2e failures, remote readback, PID killed.",
+    "solutionSpace": "one fix: apply given patches, gate, push",
+    "resources": [],
+    "isolated": true
+  }
+}

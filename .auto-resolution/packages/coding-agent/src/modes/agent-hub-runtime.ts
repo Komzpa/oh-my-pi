@@ -1,0 +1,179 @@
+import * as fs from "node:fs";
+import type { AgentHubDeps, AgentHubRemote } from "@oh-my-pi/pi-tui/overlays/agent-hub";
+import type { AgentRecordLike } from "@oh-my-pi/pi-tui/overlays/agent-hub-types";
+import { type AgentCostSnapshot, aggregateCost } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
+import type { AgentTranscriptSource } from "@oh-my-pi/pi-tui/overlays/agent-transcript-viewer";
+import type { ObservableSession, SessionObserverRegistry } from "@oh-my-pi/pi-tui/overlays/session-observer-registry";
+import { AgentActivityIndex } from "../activity";
+import { getRoleInfo } from "../config/model-roles";
+import type { Settings } from "../config/settings";
+import { IrcBus, type IrcBusApi } from "../irc/bus";
+import { type AgentLifecycleApi, AgentLifecycleManager } from "../registry/agent-lifecycle";
+import { type AgentRef, AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
+import { registerPersistedSubagents, sessionFileBelongsToRoot } from "../registry/persisted-agents";
+import { normalizeAssistantUsage, parseSessionEntries } from "../session/session-loader";
+
+/** Filesystem and parser used by local and host-backed transcript viewers. */
+export const agentTranscriptSource: AgentTranscriptSource = {
+	fs,
+	parseEntries: text => {
+		const entries = parseSessionEntries(text).filter(
+			entry => entry.type === "message" || entry.type === "model_change",
+		);
+		for (const entry of entries) {
+			if (entry.type === "message" && entry.message.role === "assistant") normalizeAssistantUsage(entry.message);
+		}
+		return entries;
+	},
+};
+
+/** Host services used by the roster, without exposing runtime implementation to tui. */
+export function createAgentHubRuntime(
+	options: {
+		registry?: AgentRegistryApi;
+		lifecycle?: AgentLifecycleApi;
+		irc?: IrcBusApi;
+		activity?: AgentActivityIndex;
+		remote?: AgentHubRemote;
+		settings?: Settings;
+		sessionFile?: string | null;
+	} = {},
+): Pick<
+	AgentHubDeps<AgentRef>,
+	| "registry"
+	| "inSession"
+	| "lifecycle"
+	| "irc"
+	| "activity"
+	| "manageActivityLive"
+	| "transcript"
+	| "loadPersisted"
+	| "getRoleInfo"
+> {
+	const registry = options.registry ?? AgentRegistry.global();
+	const rootSessionFile = options.sessionFile?.endsWith(".jsonl") ? options.sessionFile : undefined;
+	const copied = new Set<AgentRecordLike>();
+	return {
+		registry,
+		// Local roster only: a collab guest mirrors the host's registry, whose
+		// transcript paths never sit under the guest's replica session.
+		inSession:
+			rootSessionFile && !options.remote
+				? ref => !ref.sessionFile || sessionFileBelongsToRoot(ref.sessionFile, rootSessionFile) || copied.has(ref)
+				: undefined,
+		lifecycle: () => options.lifecycle ?? AgentLifecycleManager.global(),
+		irc: options.irc ?? IrcBus.global(),
+		activity: options.activity ?? new AgentActivityIndex({ remote: options.remote }),
+		manageActivityLive: !options.activity,
+		transcript: agentTranscriptSource,
+		loadPersisted: shouldContinue =>
+			registerPersistedSubagents(registry, options.sessionFile, {
+				shouldContinue,
+				onCopiedRef: ref => copied.add(ref),
+			}),
+		getRoleInfo: options.settings ? role => getRoleInfo(role, options.settings!) : undefined,
+	};
+}
+
+/**
+ * Agent Hub cost total for the main session's subagent tree (descendants
+ * included). Excludes the main session's own advisors, which the status line
+ * bills separately. Refs with a transcript count only inside `rootSessionFile`'s
+ * artifacts tree (the process-global registry keeps earlier sessions' agents);
+ * file-less refs count only while this session's observer tracks them.
+ */
+const treeMembership = new WeakMap<AgentRef, { root: string; file: string; included: boolean }>();
+
+function costRefBelongsToRoot(ref: AgentRef, root: string): boolean {
+	const file = ref.sessionFile!;
+	const previous = treeMembership.get(ref);
+	if (previous?.root === root && previous.file === file) return previous.included;
+	const included = sessionFileBelongsToRoot(file, root);
+	treeMembership.set(ref, { root, file, included });
+	return included;
+}
+
+export interface SubagentTreeCostInputs {
+	refs: readonly AgentRef[];
+	observers: SessionObserverRegistry;
+	rootSessionFile: string | undefined;
+	sessionCosts: WeakMap<object, AgentCostSnapshot>;
+}
+
+export function sumSubagentTreeCost(args: SubagentTreeCostInputs): number {
+	const { observers, rootSessionFile, sessionCosts } = args;
+	const rows: AgentRef[] = [];
+	const observedById = new Map<string, ObservableSession>();
+	for (const ref of args.refs) {
+		if (ref.id === MAIN_AGENT_ID) continue;
+		if (ref.kind === "advisor" && (ref.parentId ?? MAIN_AGENT_ID) === MAIN_AGENT_ID) continue;
+		const observed = observers.getSession(ref.id);
+		const inTree = ref.sessionFile
+			? rootSessionFile !== undefined && costRefBelongsToRoot(ref, rootSessionFile)
+			: observed !== undefined;
+		if (!inTree) continue;
+		rows.push(ref);
+		if (observed) observedById.set(ref.id, observed);
+	}
+	return aggregateCost({ rows, observedById, sessionCosts });
+}
+
+/** Retains finished-worker totals; progress only revisits the worker that changed. */
+export class SubagentTreeCostIndex {
+	#costs = new Map<object, number>();
+	#dirty = new Set<string>();
+	#root: string | undefined;
+	#refs: readonly AgentRef[] | undefined;
+	#groups = new Map<object, AgentRef[]>();
+	#keys = new Map<string, object>();
+	#unsubscribers: (() => void)[] = [];
+	#total = 0;
+
+	invalidate(id?: string): void {
+		if (id) this.#dirty.add(id);
+		else this.#refs = undefined;
+	}
+
+	dispose(): void {
+		for (const unsubscribe of this.#unsubscribers) unsubscribe();
+		this.#unsubscribers = [];
+		this.#refs = undefined;
+		this.#groups.clear();
+		this.#keys.clear();
+		this.#dirty.clear();
+		this.#costs.clear();
+	}
+
+	read(args: SubagentTreeCostInputs): number {
+		if (args.refs !== this.#refs || args.rootSessionFile !== this.#root) {
+			this.dispose();
+			this.#refs = args.refs;
+			this.#root = args.rootSessionFile;
+			this.#total = 0;
+			for (const ref of args.refs) {
+				const key = ref.session ?? ref;
+				let group = this.#groups.get(key);
+				if (!group) {
+					group = [];
+					this.#groups.set(key, group);
+					if (ref.session) this.#unsubscribers.push(ref.session.subscribe(() => this.invalidate(ref.id)));
+				}
+				group.push(ref);
+				this.#keys.set(ref.id, key);
+				this.#dirty.add(ref.id);
+			}
+		}
+		const changed = new Set<object>();
+		for (const id of this.#dirty) {
+			const key = this.#keys.get(id);
+			if (key) changed.add(key);
+		}
+		for (const key of changed) {
+			const cost = sumSubagentTreeCost({ ...args, refs: this.#groups.get(key)! });
+			this.#total += cost - (this.#costs.get(key) ?? 0);
+			this.#costs.set(key, cost);
+		}
+		this.#dirty.clear();
+		return this.#total;
+	}
+}
