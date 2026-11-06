@@ -53,6 +53,8 @@ function session(
 			manager.appendCustomMessageEntry(notice.customType, notice.content, notice.display, notice.details);
 		},
 		deliverIrcMessage: async () => "woken",
+		getTodoPhases: () => [],
+		commitTodoPhases: () => {},
 		emitNotice: () => {},
 	} as unknown as AgentSession;
 }
@@ -228,4 +230,91 @@ describe("restart isolation recovery", () => {
 		},
 		10_000,
 	);
+});
+
+it("retains a clean second attempt first registered during the final drain flush", async () => {
+	const cwd = path.join(temp!.path(), "late-worker");
+	await fs.mkdir(cwd);
+	await $`git init ${cwd}`.quiet();
+	await Bun.write(path.join(cwd, "work.txt"), "baseline");
+	await $`git -C ${cwd} add work.txt`.quiet();
+	await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.com commit -m baseline`.quiet();
+	const root = track(SessionManager.create(temp!.path(), path.join(temp!.path(), "sessions")));
+	root.appendMessage({ role: "user", content: "restart", timestamp: Date.now() });
+	await root.ensureOnDisk();
+	const rootFile = root.getSessionFile()!;
+	const child = track(
+		await SessionManager.open(path.join(rootFile.slice(0, -6), "Adaptive60Mw3Levels-2.jsonl"), undefined, undefined, {
+			initialCwd: cwd,
+			parentSession: rootFile,
+			suppressBreadcrumb: true,
+		}),
+	);
+	child.appendSessionInit({
+		systemPrompt: ["worker"],
+		task: "unfinished assignment",
+		tools: ["read"],
+		isolated: true,
+	});
+	child.appendMessage({ role: "user", content: "continue", timestamp: Date.now() });
+	await child.ensureOnDisk();
+	await child.flush();
+	const rootSession = session(root, { quiescence: Promise.resolve() });
+	const worker = session(child, { quiescence: Promise.resolve(), wasRunning: true });
+	const registry = AgentRegistry.global();
+	registry.register({
+		id: MAIN_AGENT_ID,
+		displayName: MAIN_AGENT_ID,
+		kind: "main",
+		session: rootSession,
+		sessionFile: rootFile,
+		status: "idle",
+	});
+	let registered = false;
+	Object.assign(rootSession, {
+		flushRestartJournal: async () => {
+			await root.flush();
+			if (registered) return;
+			registered = true;
+			registry.register({
+				id: "Adaptive60Mw3Levels-2",
+				displayName: "Adaptive60Mw3Levels-2",
+				kind: "sub",
+				parentId: MAIN_AGENT_ID,
+				session: worker,
+				sessionFile: child.getSessionFile()!,
+				status: "running",
+			});
+		},
+	});
+	const terminal = Promise.withResolvers<RestartRequestRecord>();
+	const identity = { instanceId: "late", sessionId: root.getSessionId(), generation: 1 };
+	const controller = createRestartQueueController({
+		session: rootSession,
+		identity: () => identity,
+		restart: async () => {},
+		onStateChange: record => {
+			if (record.state === "completed" || record.state === "failed") terminal.resolve(record);
+		},
+	});
+	try {
+		await controller.handle({ identity, op: "request", requestId: "late-worker" });
+		const result = await terminal.promise;
+		expect(result.error).toBeUndefined();
+		expect(result.state).toBe("completed");
+		const marker = await Bun.file(
+			path.join(rootFile.slice(0, -6), "Adaptive60Mw3Levels-2.restart-isolation.json"),
+		).json();
+		expect(marker).toMatchObject({ id: "Adaptive60Mw3Levels-2", cwd });
+		expect(await $`tar -xOzf ${marker.snapshotPath} work.txt`.text()).toBe("baseline");
+		expect(
+			root
+				.getEntries()
+				.findLast(entry => entry.type === "custom" && entry.customType === "subagent_restart_handoff"),
+		).toMatchObject({
+			data: { children: [expect.objectContaining({ id: "Adaptive60Mw3Levels-2", status: "running" })] },
+		});
+	} finally {
+		controller.dispose();
+	}
 });
