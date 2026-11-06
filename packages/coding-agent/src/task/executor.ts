@@ -354,10 +354,7 @@ function resolveSubagentInheritedRetryFallbackChain(
 	const disabledProviders = new Set(cfgDisabledProviders.get(settings));
 	return fallbackChain.filter(entry => {
 		const resolved = resolveModelOverride([entry], modelRegistry, settings);
-		return (
-			!resolved.model ||
-			(!disabledProviders.has(resolved.model.provider) && !isProviderExhausted(resolved.model.provider))
-		);
+		return !resolved.model || !disabledProviders.has(resolved.model.provider);
 	});
 }
 
@@ -2813,6 +2810,10 @@ async function driveSessionToResult(
 				}
 			} else if (lastAssistant.stopReason === "error") {
 				exitCode = 1;
+				if (lastAssistant.errorCode === "provider_chain_unavailable") {
+					failureKind = "infrastructure";
+					error = lastAssistant.errorMessage;
+				}
 				const unavailableClass = classifyProviderFailure({
 					status: lastAssistant.errorStatus,
 					type: lastAssistant.errorType,
@@ -2822,7 +2823,7 @@ async function driveSessionToResult(
 				});
 				if (unavailableClass) {
 					failureKind = "infrastructure";
-					error = `provider unavailable (${unavailableClass})`;
+					error ??= `provider unavailable (${unavailableClass})`;
 				} else {
 					error ??= attributeSubagentError(lastAssistant.errorMessage, lastAssistant);
 				}
@@ -4748,12 +4749,20 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 						)
 					: undefined;
 			const exclusions: ProviderExhaustionExclusion[] = [];
-			const availableModelPatterns = configuredModelPatterns.filter(pattern => {
+			// Availability applies to the complete quality chain, including a pinned
+			// worker's inherited tail. Do not fail on the pin before consulting it.
+			const qualityChain = [...new Set([...configuredModelPatterns, ...(inheritedRetryFallbackChain ?? [])])];
+			const availableModelPatterns = qualityChain.filter(pattern => {
 				const provider =
 					parseRetryFallbackSelector(pattern)?.provider ??
 					resolveModelRoleValue(pattern, modelRegistry.getAll(), { settings }).model?.provider;
 				const exclusion = provider ? providerExhaustionExclusion(provider) : undefined;
 				if (!exclusion) return true;
+				const alternative =
+					parseRetryFallbackSelector(pattern)?.provider === exclusion.provider
+						? undefined
+						: resolveModelOverride([pattern], modelRegistry, settings).model;
+				if (alternative && alternative.provider !== exclusion.provider) return true;
 				exclusions.push(exclusion);
 				return false;
 			});
@@ -4763,11 +4772,19 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					throw new ProviderUnavailableError(
 						exclusions[0]!.provider,
 						providerExhaustionRecord(exclusions[0]!.provider)?.class ?? "discovery",
+						exclusions,
 					);
 				}
 			}
 			// Unchanged requests keep their original patterns so alias resolution stays exactly as before.
 			const startupModelPatterns = exclusions.length > 0 ? availableModelPatterns : modelPatterns;
+			if (exclusions.length > 0 && availableModelPatterns.length > 0) {
+				logger.info("Substituting unavailable worker model within its quality chain", {
+					requested: modelPatterns,
+					replacement: availableModelPatterns[0],
+					exclusions,
+				});
+			}
 			const parentResolved = options.parentActiveModelPattern
 				? resolveModelOverride([options.parentActiveModelPattern], modelRegistry, settings)
 				: undefined;
@@ -4833,7 +4850,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			const retryFallbackRole = installSubagentRetryFallbackChain({
 				settings: subagentSettings,
 				id,
-				candidates: resolveSubagentRetryFallbackCandidates(modelPatterns, modelRegistry, subagentSettings),
+				candidates: resolveSubagentRetryFallbackCandidates(qualityChain, modelRegistry, subagentSettings),
 				inheritedFallbackChain: inheritedRetryFallbackChain,
 				model,
 				authFallbackUsed,

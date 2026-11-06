@@ -1701,7 +1701,7 @@ export function resolveModelOverride(
 	options?: { exactOnly?: boolean },
 ): { model?: Model<Api>; thinkingLevel?: ConfiguredThinkingLevel; explicitThinkingLevel: boolean; warning?: string } {
 	if (modelPatterns.length === 0) return { explicitThinkingLevel: false };
-	const availableModels = modelRegistry.getAvailable();
+	const availableModels = modelRegistry.getAvailable().filter(model => !isProviderExhausted(model.provider));
 	if (options?.exactOnly) {
 		const find = (selector: string) => availableModels.find(model => `${model.provider}/${model.id}` === selector);
 		const exact = (selector: string) => {

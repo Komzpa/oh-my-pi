@@ -5149,6 +5149,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// replayed. Visible/side-effecting output then remains terminal while its
 			// credential is still blocked or rotated exactly once.
 			await this.#recovery.recordUsageLimitOutcome(msg);
+			if (await this.#recovery.handleUnavailableProvider(msg)) {
+				await emitAgentEndNotification({ willContinue: true });
+				return;
+			}
 
 			let compactionResult = COMPACTION_CHECK_NONE;
 			let checkedCompaction = false;

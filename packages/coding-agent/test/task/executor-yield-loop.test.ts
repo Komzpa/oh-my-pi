@@ -192,7 +192,10 @@ describe("runSubprocess incremental yield loops", () => {
 		);
 		expect(result.exitCode).toBe(1);
 		expect(result.failureKind).toBe("infrastructure");
-		expect(result.error).toBe("codex-lb: provider unavailable (discovery)");
+		expect(JSON.parse(result.error!)).toMatchObject({
+			code: "provider_chain_unavailable",
+			providers: [{ provider: "codex-lb", reason: "provider unavailable (discovery)" }],
+		});
 		expect(create).not.toHaveBeenCalled();
 	});
 

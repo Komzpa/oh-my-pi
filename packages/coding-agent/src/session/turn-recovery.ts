@@ -86,7 +86,12 @@ import {
 	validateRetryFallbackChains,
 } from "./retry-fallback-chains";
 import { ProviderUnavailableError } from "./provider-unavailable-error";
-import { recordProviderFailure, recordProviderSuccess, providerExhaustionRecord } from "./provider-exhaustion";
+import {
+	recordProviderFailure,
+	recordProviderSuccess,
+	providerExhaustionRecord,
+	providerExhaustionExclusion,
+} from "./provider-exhaustion";
 import { describeUsageFallback } from "./retry-fallback-reason";
 import { getLatestCompactionEntry } from "./session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
@@ -379,6 +384,7 @@ type RetrySagaEnd = Omit<Extract<AgentSessionEvent, { type: "auto_retry_end" }>,
 
 /** How {@link TurnRecovery.handleRetryableError} may recover a failed turn. */
 type RetryPolicyOptions = {
+	availabilityFallback?: boolean;
 	allowModelFallback?: boolean;
 	fireworksFastFallback?: boolean;
 	hardErrorFallback?: boolean;
@@ -970,6 +976,41 @@ export class TurnRecovery {
 	/** Applies model fallback policy from live usage health before a turn starts. */
 	maybeApplyUsageAwareFallback(signal: AbortSignal, confirmer?: UsageFallbackConfirmer): Promise<boolean> {
 		return this.#maybeApplyUsageAwareFallback(signal, confirmer);
+	}
+
+	/** Provider state is a routing constraint even when ordinary retries are disabled. */
+	async handleUnavailableProvider(message: AssistantMessage): Promise<boolean> {
+		if (message.stopReason !== "error" || !this.#host.isSubagent?.()) return false;
+		await this.recordProviderAvailabilityOutcome(message);
+		if (!providerExhaustionRecord(message.provider)) return false;
+		const recovered = await this.#handleRetryableError(message, {
+			availabilityFallback: true,
+			preserveFailedTurn: this.#hasReplayUnsafeOutput(message),
+		});
+		if (!recovered) {
+			const model = this.#host.model();
+			const selector = model && formatRetryFallbackSelector(model, this.#host.thinkingLevel());
+			const providers = new Set([message.provider]);
+			if (model && selector) {
+				for (const role of this.retryFallbackChainKeys(selector, model)) {
+					for (const candidate of getRetryFallbackEffectiveChain(
+						this.#getRetryFallbackResolutionContext(),
+						role,
+						selector,
+						model,
+						false,
+					))
+						providers.add(candidate.provider);
+				}
+			}
+			const exclusions = [...providers].flatMap(provider => {
+				const exclusion = providerExhaustionExclusion(provider);
+				return exclusion ? [exclusion] : [];
+			});
+			message.errorCode = "provider_chain_unavailable";
+			message.errorMessage = new ProviderUnavailableError(message.provider, "quota", exclusions).message;
+		}
+		return recovered;
 	}
 
 	/** Applies automatic retry, credential rotation, and model fallback policy. */
@@ -2347,7 +2388,7 @@ export class TurnRecovery {
 					continue;
 				}
 				if (stale()) return undefined;
-				if (!apiKey) continue;
+				if (!apiKey || this.isRetryFallbackSelectorSuppressed(candidate)) continue;
 				return { role, selector: candidate, apiKey };
 			}
 		}
@@ -2409,7 +2450,7 @@ export class TurnRecovery {
 		if (!apiKey) {
 			throw new Error(`No API key for retry fallback ${selector.raw}`);
 		}
-		if (options?.signal?.aborted) return false;
+		if (options?.signal?.aborted || this.isRetryFallbackSelectorSuppressed(selector)) return false;
 
 		// Capture the configured selector (auto-aware) so a fallback chain preserves
 		// `auto` instead of collapsing it to the level it resolved to this turn.
@@ -2862,7 +2903,7 @@ export class TurnRecovery {
 		// The Fireworks Fast→base degrade is an intrinsic model-selection safety net,
 		// not a retry loop, so it runs even when the user disabled retries: it switches
 		// the model once and lets the base turn proceed.
-		if (!retrySettings.enabled && !options?.fireworksFastFallback) return false;
+		if (!retrySettings.enabled && !options?.fireworksFastFallback && !options?.availabilityFallback) return false;
 		const classifierRefusal = this.isClassifierRefusal(message);
 
 		const generation = this.#host.promptGeneration();
@@ -3185,8 +3226,9 @@ export class TurnRecovery {
 			const refusalWalkRepeats = classifierRefusal && this.#refusalWalkTried.has(refusalWalkKey);
 			if (
 				allowModelFallback &&
-				retrySettings.modelFallback &&
-				retryFallbackAdmits(retrySettings.fallbackOn, AIError.is(id, AIError.Flag.UsageLimit)) &&
+				(options?.availabilityFallback ||
+					(retrySettings.modelFallback &&
+						retryFallbackAdmits(retrySettings.fallbackOn, AIError.is(id, AIError.Flag.UsageLimit)))) &&
 				!thinkingLoop &&
 				!sameModelSteerReplay &&
 				!waitForSiblingCredential &&
@@ -3286,9 +3328,9 @@ export class TurnRecovery {
 		// failing model for an error the generic classifier wouldn't retry —
 		// surface it instead.
 		if (
-			(options?.fireworksFastFallback || options?.hardErrorFallback) &&
+			(options?.fireworksFastFallback || options?.hardErrorFallback || options?.availabilityFallback) &&
 			!switchedModel &&
-			!this.isRetryableError(message)
+			(options?.availabilityFallback || !this.isRetryableError(message))
 		) {
 			// Same auto_retry_end backstop as the classifier-refusal branch above.
 			if (this.#retryAttempt > 1) {

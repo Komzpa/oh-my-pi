@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Workers skip unavailable providers across their configured quality chain and continue after quota failures, including with ordinary retries disabled.
+
 - Exhausted providers stay excluded in sessions, benchmarks, per-call workers and the auth gateway until their reset or cooldown expires.
 
 ### Added
