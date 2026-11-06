@@ -4,11 +4,13 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model, Usage } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import * as treeRuntime from "@oh-my-pi/pi-coding-agent/modes/agent-hub-runtime";
 import { sumSubagentTreeCost } from "@oh-my-pi/pi-coding-agent/modes/agent-hub-runtime";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import * as persistedAgents from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentMetricsSummary, AgentRef } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { AgentSessionEventListener } from "@oh-my-pi/pi-coding-agent/session/agent-session-events";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -76,6 +78,37 @@ describe("sumSubagentTreeCost", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
+	it("does not read finished workers on unchanged paints or another worker's usage event", () => {
+		const workers = Array.from({ length: 58 }, (_, i) => ref(`Worker${i}`, { cost: 1 }));
+		const observers = new SessionObserverRegistry();
+		const reads = spyOn(observers, "getSession");
+		const args = {
+			refs: workers,
+			observers,
+			rootSessionFile: root,
+			sessionCosts: new WeakMap<object, AgentCostSnapshot>(),
+		};
+		// The fallback runs the same call-count contract against the pre-index implementation.
+		const index = treeRuntime.SubagentTreeCostIndex
+			? new treeRuntime.SubagentTreeCostIndex()
+			: {
+					read: sumSubagentTreeCost,
+					invalidate: (_id?: string) => {},
+					dispose: () => {},
+				};
+		expect(index.read(args)).toBe(58);
+		reads.mockClear();
+		for (let i = 0; i < 100; i++) expect(index.read(args)).toBe(58);
+		expect(reads).toHaveBeenCalledTimes(0);
+		workers[0]!.history!.metrics!.cost = 3;
+		index.invalidate(workers[0]!.id);
+		expect(index.read(args)).toBe(60);
+		expect(reads).toHaveBeenCalledTimes(1);
+		// Switching roots must discard the old total.
+		expect(index.read({ ...args, rootSessionFile: path.resolve("sessions", "other.jsonl") })).toBe(0);
+		index.dispose();
+	});
+
 	it("reuses indexed tree membership on progress without freezing live billing", () => {
 		const worker = ref("Progress", { cost: 1 });
 		const args = {
@@ -204,6 +237,14 @@ describe("sumSubagentTreeCost", () => {
 				sessionCosts: new WeakMap<object, AgentCostSnapshot>(),
 			};
 			expect(sumSubagentTreeCost(args)).toBeCloseTo(0.8);
+			const changes: AgentSessionEventListener[] = [];
+			const unsubscribe = vi.fn();
+			spyOn(parent, "subscribe").mockImplementation(listener => {
+				changes.push(listener);
+				return unsubscribe;
+			});
+			const index = new treeRuntime.SubagentTreeCostIndex();
+			expect(index.read(args)).toBeCloseTo(0.8); // aliases bill one session once
 			const tail = assistant(model, 0, 3);
 			parent.agent.appendMessage(tail);
 			for (let i = 0; i < 3; i++) {
@@ -228,6 +269,10 @@ describe("sumSubagentTreeCost", () => {
 			parentManager.appendCompaction("Earlier work", undefined, retained, 100, { tokensAfter: 15 });
 			parent.agent.replaceMessages(parentManager.buildSessionContext().messages);
 			expect(sumSubagentTreeCost(args)).toBeCloseTo(1.2);
+			for (const changed of changes) changed({ type: "model_changed" });
+			expect(index.read(args)).toBeCloseTo(1.2);
+			index.dispose();
+			expect(unsubscribe).toHaveBeenCalledTimes(1);
 			parentManager.appendModelUsage(
 				{
 					purpose: "task-completion-probe",
