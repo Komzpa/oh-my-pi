@@ -11,6 +11,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
 import { getLatestTodoArchiveFromEntries, withTodoArchive, isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -1289,7 +1290,7 @@ function isDeliveredReview(task: { status: string; schedule?: unknown }): boolea
 }
 
 /** A review row is closed only when an artifact was actually delivered. */
-export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; schedule?: unknown }> }>(phases: P[]): P[] {
+export function deliveredRowsClosed<P extends { tasks: Array<{ status: string; schedule?: unknown }> }>(phases: readonly P[]): P[] {
   return phases.map((phase) => phase.tasks.some((task) => isDeliveredReview(task) && !todoRowAfterWorker(task) && isNonClosedRowStatus(task.status))
     ? { ...phase, tasks: phase.tasks.map((task) => isDeliveredReview(task) && !todoRowAfterWorker(task) && isNonClosedRowStatus(task.status) ? { ...task, status: "completed" } : task) }
     : phase);
