@@ -434,7 +434,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 	let session: AgentSession;
 	try {
 		({ session } = await createAgentSession({
-			cwd: restoredSeance?.cwd ?? spec.root.sessionManager.getCwd(),
+			cwd: restoredSeance?.cwd ?? reopened.getCwd(),
 			costGate: spec.costGate,
 			authStorage: spec.authStorage,
 			// Revived agents join the root session tree, so their observability

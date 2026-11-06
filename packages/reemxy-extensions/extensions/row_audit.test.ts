@@ -124,15 +124,17 @@ function harness(
 				row.status = "completed";
 			return true;
 		},
-		runRowAudit: (task: string, agent: string) =>
-			new Promise((resolve, reject) => {
+		runRowAudit: (task: string, agent: string, _signal, onStarted) => {
+			onStarted?.("HelpfulVole");
+			return new Promise((resolve, reject) => {
 				launches.push({
 					task,
 					agent,
 					resolve: output => resolve({ details: { results: [{ output: JSON.stringify(output) }] } }),
 					reject,
 				});
-			}),
+			});
+		},
 	};
 	const options = {
 		now: () => live.now,
@@ -426,4 +428,25 @@ test("verdicts from the old gate-runner fallback are void: those rows reopen to 
 	expect(await h.check()).toBe(1);
 	expect(h.launches[0].agent).toBe("qa-auditor");
 	for (const row of bogus) expect(h.launches[0].task).toContain(JSON.stringify(row.content));
+});
+
+test("every row in a running batched audit names its verifier in the HUD", async () => {
+	const h = harness();
+	await h.check();
+	const worker = { id: "HelpfulVole", agent: "qa-auditor", startedAt: live.now };
+	const display = renderTodoPlanDisplay(
+		h.phases,
+		{ workers: [worker], owners: new Map() },
+		{ now: live.now, paint: (_tone, text) => text },
+	);
+	for (const content of AUDITED) {
+		expect(h.rows().find(row => row.content === content).schedule.audit.workerId).toBe("HelpfulVole");
+		const state = classifyTodoDisplayRow(
+			h.rows().find(row => row.content === content),
+			h.phases,
+			{ workers: [worker], owners: new Map() },
+		);
+		expect(state).toMatchObject({ state: "verifying", worker: { id: "HelpfulVole" } });
+	}
+	expect(display.lines.filter(line => line.includes("verifying · HelpfulVole"))).toHaveLength(AUDITED.length);
 });

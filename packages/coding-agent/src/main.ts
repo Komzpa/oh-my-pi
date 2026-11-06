@@ -139,6 +139,7 @@ import {
 } from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { type RestoreOutcome, restoreSession } from "./task/restore";
+import { recoverCrashedRows } from "./task/crash-recovery";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { cfgTelemetryOtlpExportEnabled } from "./telemetry-settings";
 import { registerLocalInferenceApi } from "./tiny/local-inference-api";
@@ -2881,7 +2882,11 @@ export async function runRootCommand(
 						startDeferredStartupWork,
 						startupLease,
 						initialArgs.goal,
-						parsedArgs.restore ? () => restoreSession(session, { eventBus, subagentEventBus }) : undefined,
+						parsedArgs.restore
+							? () => restoreSession(session, { eventBus, subagentEventBus })
+							: parsedArgs.resume || parsedArgs.continue
+								? () => recoverCrashedRows(session, { eventBus, subagentEventBus })
+								: undefined,
 						refreshScopedModelsAfterLogin,
 					);
 				} finally {

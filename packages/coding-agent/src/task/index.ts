@@ -1507,6 +1507,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		return this.#launch({ toolCallId, params: spawn, index, agentId, detached });
 	}
 
+	/** The same capacity gate is used by crash recovery and ordinary task calls. */
+	get recoveryPermit(): SpawnPermit {
+		return this.#permit;
+	}
+
 	#getSpawnSemaphore(): Semaphore {
 		const max = cfgTaskMaxConcurrency.get(this.session.settings);
 		if (this.#spawnSemaphore) {
