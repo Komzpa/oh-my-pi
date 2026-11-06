@@ -904,7 +904,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		try {
 			if (run.cancelled) return;
 			run.record = await this.#transition(run, "draining");
-			await this.#measureStage(run.record, "isolation", () => this.#waitForIsolatedWork(run));
+			// The wait owns its snapshot deadline; an outer stage timeout would fire while a
+			// slow `git status` pass is still running and fail the restart instead of snapshotting.
+			await this.#measureStage(run.record, "isolation", () => this.#waitForIsolatedWork(run), false);
 			if (run.cancelled || this.#disposed) return;
 			for (const child of getLiveSubagentsForRestart(this.#session))
 				this.#prepareChild(run, child.id, child.status, child.session);
