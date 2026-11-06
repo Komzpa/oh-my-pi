@@ -20,8 +20,10 @@ import { resolveAgentModelPatterns, resolveModelOverride } from "@oh-my-pi/pi-co
 import { cfgTaskAgentModelOverrides, cfgTaskMaxEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { cfgDefaultThinkingLevel } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { clampThinkingLevelToCeiling, resolveThinkingLevelForModel } from "@oh-my-pi/pi-tui/thinking";
+import { readTodoDisplayLedger } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-display";
+import { renderLeadRowInstructions } from "./lead-row-instructions";
 import { checkRowAudits } from "./row_audit";
-import { todoRowAfterWorker, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { classifyTodoDisplayRow, todoRowAfterWorker, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -3736,6 +3738,19 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     return kept.filter(item => !item.received);
   };
+  const leadDisplayContext = (ctx, phases, decision) => {
+    const rowWorkers = (ctx.getAsyncJobSnapshot()?.running ?? []).filter(job => job.type === "task" && job.status === "running")
+      .map(job => ({ id: job.agentId ?? job.id, agent: job.agent, startedAt: job.startTime }));
+    const rowOwners = new Map(phases.flatMap(phase => phase.tasks).flatMap(row => {
+      const worker = rowWorkers.find(worker => worker.id === row.schedule?.owner || worker.id === row.schedule?.executor?.workerId);
+      return worker ? [[row.content, worker]] : [];
+    }));
+    return {
+      workers: rowWorkers, owners: rowOwners,
+      ...readTodoDisplayLedger(selectBranchEntries(ctx.sessionManager, metadata => metadata.type === "custom" && (metadata.customType === "requirements_ledger" || metadata.customType === "requirements_auditor_assignments")), new Set(rowWorkers.map(worker => worker.id))),
+      capacityFull: decision.capacity > 0 && decision.activeTaskCount >= decision.capacity,
+    };
+  };
   const announceGates = (ctx: ExtensionContext, pending: unknown[] = [], now = Date.now(), measured?: DispatchDecision) => {
     if (singleWriterLane || !isMain(ctx) || typeof pi.sendMessage !== "function" || typeof pi.appendEntry !== "function") return;
     const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending));
@@ -3761,7 +3776,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     });
     if (unverified.length) notice("audit", JSON.stringify(unverified), { audit: true, rows: unverified.join("; ") });
     const decision = measured ?? currentDecision(ctx, now, pending);
-    const rows = decision.dispatchableReady ?? [];
+    const displayContext = leadDisplayContext(ctx, phases, decision);
+    const rows = (decision.dispatchableReady ?? []).filter(row => {
+      const task = phases.flatMap(phase => phase.tasks).find(task => task.content === row.content);
+      return task && classifyTodoDisplayRow(task, phases, displayContext).state === "needs worker";
+    });
     const continuations = rows.filter(row => row.previous).map(row =>
       `${JSON.stringify(row.content)} from agent://${row.previous} (${row.reason}${row.findings ? `: ${shorten(row.findings)}` : ""})`);
     if (rows.length) notice("staffing", JSON.stringify(rows.map(row => [row.content, row.owner, row.ownership, row.previous ?? null])), {
@@ -3771,13 +3790,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       away: true, rows: decision.awayWorkList.join(" "),
     });
     for (const row of decision.forecast?.rows ?? []) {
-      if (!isOpenRowStatus(row.status) || !row.owner) continue;
+      const task = phases.flatMap(phase => phase.tasks).find(task => task.content === row.content);
+      if (!isOpenRowStatus(row.status) || !row.owner || !task || classifyTodoDisplayRow(task, phases, displayContext).state !== "working") continue;
       const key = `${row.content}:${row.owner}:${row.estimateRevision}`;
       const data = { row: JSON.stringify(row.content), owner: row.owner };
       if (row.reestimateCount >= 2) notice("cap", key, { ...data, cap: true });
       const start = row.estimateUpdatedAt ?? row.startedAt;
       const finish = row.resourceFinish;
-      if (row.status === "in_progress" && start !== undefined && finish !== undefined && finish > start && now >= start + 0.8 * (finish - start))
+      if (row.reestimateCount < 2 && row.status === "in_progress" && start !== undefined && finish !== undefined && finish > start && now >= finish)
         notice("eta", key, { ...data, eta: true });
     }
 
@@ -6108,7 +6128,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 
   const appendLeadTimeNote = async (ctx: ExtensionContext) => {
     const now = Date.now();
-    if (singleWriterLane || isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)), now / 1_000)) return;
+    if (singleWriterLane) return;
     const decision = currentDecision(ctx, now);
     const chief = isMain(ctx) && pi.getActiveTools().includes("task");
     if (!decision.prompt && !chief) return;
@@ -6126,15 +6146,24 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const facts = chief ? await integrationFacts(ctx, now) : "";
     const notice = isMain(ctx) ? returnNotice : null;
+    const reviewAnswers = new Set(phases.flatMap(phase => phase.tasks).filter(row => row.schedule?.review === "user" && (latestUserRequestAt ?? (latestDeadlineUserMessage(ctx.sessionManager.getBranch())?.at ?? 0) * 1_000) > (row.schedule.firstDeliveredAt ?? Infinity)).map(row => row.content));
+    const userBlockAsked = new Set(phases.flatMap(phase => phase.tasks).filter(row => {
+      const wait = parseUserWait(row.blocker);
+      return wait && userUnblockWasAsked(ctx, row.content, wait.question);
+    }).map(row => row.content));
+    const displayContext = leadDisplayContext(ctx, phases, decision);
+    const rowInstructions = chief ? renderLeadRowInstructions(phases, displayContext, { now, forecast: decision.forecast, reviewAnswers, userBlockAsked }) : "";
+    const visibleRows = chief ? phases.flatMap(phase => phase.tasks).filter(row => isNonClosedRowStatus(row.status) || isTodoAwaitingReview(row)).map(row => classifyTodoDisplayRow(row, phases, displayContext)) : [];
     const content = [
       ...(notice && !notice.shown ? [notice.text] : []),
       ...(chief ? [prompt.render(leadTimeSummary, {
         open: decision.forecast?.rows.filter(row => row.status !== "completed" && row.status !== "abandoned").length ?? 0,
         running: decision.activeTaskCount ?? 0,
         ready: decision.readyCandidates.filter(row => row.ownership === "unassigned" || row.ownership === "unverified").length,
-        lost: decision.lostOwners?.length ?? 0,
+        lost: visibleRows.filter(row => row.state === "needs worker" && row.reason === "lost").length,
         forecast: decision.forecast ? sdk.formatPlanForecast(decision.forecast, now) : null,
       }).trim()] : []),
+      ...(rowInstructions ? [rowInstructions] : []),
       ...(facts ? [facts] : []),
       ...(chief && lastTaskDispatchRefused ? ["The last task dispatch was refused; bounded work is open to you until the ready row can be dispatched."] : []),
       ...(chief && activeDemand ? [`NEXT STEP (advice; no call is skipped or refused for it): ${activeDemand}`] : []),
@@ -6148,6 +6177,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       refused: chief && lastTaskDispatchRefused,
       activeDemand: chief ? activeDemand : null,
       retroDue,
+      rowInstructions,
       plan: decision.key,
       alarms: decision.alarms.filter((alarm) => !alarm.startsWith("overdue-todo-minute:")),
       deadline: decision.deadline ?? null,

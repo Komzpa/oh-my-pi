@@ -1,8 +1,12 @@
-`todo` NEVER takes a turn of its own: emit it in the same response as your next real tool call (parallel tool calls), `init` beside the first read or action, `done`/`start` beside the next action or check. A response whose only call is `todo` wastes a full model round trip.
+`todo` tracks the work. Batch routine updates with the next real tool call when one is ready; an explicit row NEXT ACTION to close, re-estimate, or record a user decision is itself the work for that turn.
 Tasks identified by verbatim content, NEVER generated IDs (task-1). Unique, stable task/phase names; lost text: view, NEVER guess.
 Before work, init for 3+ steps, requested task sets, or new instructions. MUST list EVERY user item separately (phased/numbered/bulleted/N); NEVER omit or remember leftovers.
 After successful mutation: no active means earliest pending starts (phase order); multiple active means only earliest stays. Blocked NEVER starts automatically; unblock returns pending. Done out of order may rewind pointer but NEVER reopen completed. Mark done immediately; follow phase order.
-External waits (user/agent/service): block with optional reason suppresses stop reminder, starts next pending. Unblock when actionable; append a clearing task for agent-actionable blocker.
+Delegated rows: keep each exact row linked to its worker with `schedule updates:[{task,owner}]`; running workers and dependency waits need no duplicate dispatch.
+Delivered rows enter runtime verification: the runtime audits, re-audits after HEAD moves, and closes passing deliveries; wait for its result.
+Findings-only, failed/aborted/refused/lost workers and failed audits need `task tasks:[{name,agent,task}]` continuing the prior output and findings; follow the row's per-turn NEXT ACTION.
+A ready-to-close row uses `todo {op:"done",task:"<exact row>"}` with evidence; a user review answer uses `schedule updates:[{task,review:"accepted"|"redo"|"drop",evidence}]` quoting their decision.
+External user/service gates: block with the concrete actor/condition, ask once, then wait; `unblock` when the condition clears. Never block a delivered row merely because reconciliation remains.
 **Tasks: verbatim content strings, NEVER auto-generated IDs; no "task-1"/"task-N". Pass content in `task`.**
 
 After each successful status/list-changing op (not `view` or `schedule`): if nothing is `in_progress`, the earliest `pending` task auto-promotes; if several are `in_progress`, only the earliest stays. Blocked tasks NEVER auto-promote—`unblock` first. Out-of-order completion may move the focus pointer back to an earlier phase—expected; completed tasks NEVER revert.
@@ -40,7 +44,7 @@ Use the critical path and total/free float to choose late starts and recovery or
 ## Rules
 
 - Mark tasks done immediately after real completion; express prerequisites with schedule dependency edges, never phase order.
-- NEVER make a todo call the turn's only tool call. Batch with real work: `init` with first reads/edits; each `done`/`start` with next action. Solo todo turns waste a round trip.
+- Batch routine updates with real work when available. Act on explicit row closure, re-estimation and review instructions immediately; do not invent another tool call to accompany them.
 - Blocking is not a way to avoid planning or reminders. First try safe agent-actionable unblocking work and split unfinished unblocking work into tasks. Block only while a real external gate still prevents safe progress; state the gate and its actor or concrete condition concisely (≤160 normalized characters), e.g. `Awaiting approval from the user` or `Waiting for production access permission`. Do not block vague internal prerequisites or lengthy explanations; preserve genuine user-authorized approval/permission gates.
 - Keep introduced `task`/`phase` strings stable.
 - Lost exact task text: `view` echoes list; NEVER guess from memory.
