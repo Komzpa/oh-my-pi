@@ -2,6 +2,7 @@ import type { SessionEntry } from "./session-entries";
 
 /** Consumer metadata contract; the optional indexed APIs are supplied by the session backend. */
 export type SessionContextEntryMetadata = {
+	id?: string;
 	type: SessionEntry["type"];
 	customType?: string;
 	messageRole?: string;
@@ -9,6 +10,7 @@ export type SessionContextEntryMetadata = {
 };
 export function sessionContextEntryMetadata(entry: SessionEntry): SessionContextEntryMetadata {
 	return {
+		id: entry.id,
 		type: entry.type,
 		customType: entry.type === "custom" ? entry.customType : undefined,
 		messageRole: entry.type === "message" ? entry.message.role : undefined,
