@@ -200,6 +200,7 @@ console.log(
 		workers: workers.length,
 	}),
 );
+if (process.env.OMP_RESTART_FIXTURE_ONLY) process.exit(0);
 for (let run = 0; run < RUNS; run++) {
 	await measured("bun_exec_floor", run, async () => {
 		const child = Bun.spawn([process.execPath, "-e", "process.exit(0)"], { stdout: "ignore", stderr: "inherit" });

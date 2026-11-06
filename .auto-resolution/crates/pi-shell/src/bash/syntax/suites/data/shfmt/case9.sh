@@ -1,1 +1,0 @@
-case $x in a|b) c;; *) d;; esac
