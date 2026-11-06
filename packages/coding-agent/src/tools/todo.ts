@@ -2243,7 +2243,16 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 				isError: true,
 			};
 		}
-		const entry = structuredClone(resolved);
+		const entry = resolved;
+		const op = entry.op;
+		const now = Date.now();
+		const todoEntries = getTodoBranchEntries(this.session.sessionManager);
+		const healedRows = healStoredSelfEdges(previousPhases);
+		const healedEdges = healStoredDanglingEdges(previousPhases, getLatestTodoArchiveFromEntries(todoEntries));
+		const manager = this.session.sessionManager;
+		const deadline = manager
+			? readGoalDeadlineFromManager(manager, this.session.cwd, { includePaused: true })
+			: readGoalDeadline(todoEntries, this.session.cwd, { includePaused: true });
 		const skippedEstimates: string[] = [];
 		if (entry.op === "schedule") {
 			const changed = (entry.updates ?? []).flatMap(update => {
@@ -2259,17 +2268,13 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			const skipped = new Set(
 				changed.filter(row => counts.get(key(row.estimate))! > IDENTICAL_ESTIMATE_LIMIT).map(row => row.task),
 			);
-			for (const update of entry.updates ?? []) if (skipped.has(update.task)) delete update.estimate;
+			entry.updates = entry.updates?.map(update => {
+				if (!skipped.has(update.task)) return update;
+				const accepted = { ...update };
+				delete accepted.estimate;
+				return accepted;
+			});
 		}
-		const op = entry.op;
-		const now = Date.now();
-		const todoEntries = getTodoBranchEntries(this.session.sessionManager);
-		const healedRows = healStoredSelfEdges(previousPhases);
-		const healedEdges = healStoredDanglingEdges(previousPhases, getLatestTodoArchiveFromEntries(todoEntries));
-		const manager = this.session.sessionManager;
-		const deadline = manager
-			? readGoalDeadlineFromManager(manager, this.session.cwd, { includePaused: true })
-			: readGoalDeadline(todoEntries, this.session.cwd, { includePaused: true });
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
