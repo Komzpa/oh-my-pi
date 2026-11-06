@@ -1651,7 +1651,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * focus attach.
 	 */
 	#todoPhasesOwner?: AgentViewSession;
-	#todoLivePhasesKey: string | undefined;
+	#todoLiveSnapshot: readonly TodoPhase[] | undefined;
 	#todoForecast: TodoPlanForecast | undefined;
 	#todoForecastRowsByContent = new Map<string, TodoTaskForecast>();
 	#todoForecastCacheKey:
@@ -5658,11 +5658,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#syncTodoForecastRefreshTimer(false);
 			if (running.length === 0) return;
 		}
-		const liveSnapshot = this.#todoPhasesOwner?.getTodoPhases();
-		const liveKey = JSON.stringify(liveSnapshot);
-		if (liveSnapshot && liveKey !== this.#todoLivePhasesKey) {
-			this.todoPhases = liveSnapshot;
-			this.#todoLivePhasesKey = liveKey;
+		const immutableSnapshot = this.#todoPhasesOwner?.getTodoSnapshot?.();
+		const liveSnapshot = immutableSnapshot ?? this.#todoPhasesOwner?.getTodoPhases();
+		if (liveSnapshot && liveSnapshot !== this.#todoLiveSnapshot) {
+			this.todoPhases = immutableSnapshot ? this.#todoPhasesOwner!.getTodoPhases() : (liveSnapshot as TodoPhase[]);
+			this.#todoLiveSnapshot = liveSnapshot;
 		}
 		const sourcePhases = this.todoPhases;
 		const livePhases = this.#todoHudHidden ? [] : sourcePhases.filter(phase => phase.tasks.length > 0);
@@ -6173,7 +6173,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		);
 		this.todoPhases = source.getTodoPhases();
 		this.#todoPhasesOwner = source;
-		this.#todoLivePhasesKey = JSON.stringify(source.getTodoPhases());
+		this.#todoLiveSnapshot = source.getTodoSnapshot?.();
 		this.#syncTodoHudState(source);
 		this.#renderTodoList();
 	}
@@ -10541,7 +10541,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			];
 		}
 		this.#todoPhasesOwner = this.viewSession;
-		this.#todoLivePhasesKey = JSON.stringify(this.viewSession.getTodoPhases());
+		this.#todoLiveSnapshot = this.viewSession.getTodoSnapshot?.();
 		this.#syncTodoHudState(this.viewSession);
 		this.#renderTodoList();
 		this.ui.requestRender();

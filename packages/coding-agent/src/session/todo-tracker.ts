@@ -90,6 +90,13 @@ export interface TodoTrackerHost {
 	consumeLastServedToolChoiceLabel(): string | undefined;
 }
 
+/** Freeze only detached plan data, once when its owner replaces it. */
+function freezeTodoSnapshot(value: unknown): void {
+	if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+	Object.freeze(value);
+	for (const child of Object.values(value)) freezeTodoSnapshot(child);
+}
+
 /** Owns canonical todo state, eager preludes, and completion reminders. */
 export class TodoTracker {
 	readonly #host: TodoTrackerHost;
@@ -102,11 +109,17 @@ export class TodoTracker {
 
 	constructor(host: TodoTrackerHost) {
 		this.#host = host;
+		freezeTodoSnapshot(this.#phases);
 	}
 
 	/** Returns a defensive clone of the current todo phases. */
 	get phases(): TodoPhase[] {
 		return this.#clonePhases(this.#phases);
+	}
+
+	/** Stable immutable view; consumers can compare identity without cloning every frame. */
+	get snapshot(): readonly TodoPhase[] {
+		return this.#phases;
 	}
 
 	/** Current whole-plan obligations, including blocked unfinished tasks. */
@@ -138,6 +151,7 @@ export class TodoTracker {
 	/** Replaces todo phases with a defensive clone. */
 	setPhases(phases: TodoPhase[]): void {
 		this.#phases = this.#clonePhases(phases);
+		freezeTodoSnapshot(this.#phases);
 		// Legacy restores close accepted rows on load; persist that once so resume replays it.
 		if (takeTodoMigrationCheckpoint(phases)) {
 			this.#host.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: this.#clonePhases(phases) });
