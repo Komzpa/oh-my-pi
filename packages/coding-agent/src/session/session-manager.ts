@@ -5370,7 +5370,8 @@ export class SessionManager {
 		storage: SessionStorage,
 		options?: { throwIfMissing?: boolean },
 	): Promise<IndexedSessionLoadResult> {
-		if (!(storage instanceof FileSessionStorage)) return loadSessionFile(filePath, storage, options);
+		if (!(storage instanceof FileSessionStorage))
+			return loadSessionFile(filePath, storage, { ...options, compactExecutorObservations: true });
 		const index = new SessionEntryIndex();
 		const blobs = new BlobStore(getBlobsDir());
 		// A stale or incompatible handoff is only a cache miss. The journal remains authoritative.
@@ -5442,7 +5443,7 @@ export class SessionManager {
 						normalizeAssistantUsage(entry.message);
 					index.insert(entry, position.offset, position.length, position);
 				},
-				options,
+				{ ...options, compactExecutorObservations: true },
 			);
 			if (sourceFd !== undefined) index.setFileReader(path.resolve(filePath), blobs, true, sourceFd);
 			index.finishLoading();
