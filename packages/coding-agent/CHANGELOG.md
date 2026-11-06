@@ -2434,7 +2434,7 @@ Older entries are archived in [packages/coding-agent/CHANGELOG.md@72d5cf31d861](
 - Subagents receive task instructions with their blank lines, Markdown hard breaks, and table spacing intact, whether given inline or via `taskFile`.
 - Graceful restarts retain late and idle isolated workers for revival; unrecoverable assignments keep their previous worker and transcript.
 - Graceful restarts preserve dirty isolated workers without waiting for commits or pushes, reuse journal indexes, and restore workers after input becomes ready.
-- Large sessions keep the HUD responsive while workers report progress, turns end, and saved agents load ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
+- Large sessions and worker-history directories keep the HUD responsive while workers report progress, turns end, and saved agents load ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
 - Graceful restart stages share a request deadline, reserve remaining recovery work, and report deadline progress without interrupting the lead turn.
 
