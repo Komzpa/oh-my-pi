@@ -257,6 +257,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	readonly #statusHost = new StatusHost();
 	readonly #exit: (code: number) => void;
 	readonly #now: () => number;
+	#renderVersion: RuntimeChildrenOptions["renderVersion"];
+	#belowRootCache = new WeakMap<
+		Component,
+		{ version: unknown; width: number; themeEpoch: number; lines: string[]; spans: ViewportClickSpan[] }
+	>();
 	#preferences: ComposerPreferences;
 	#welcome: WelcomeComponent | undefined;
 	#version = "";
@@ -267,11 +272,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#nativeDock: readonly Component[] | undefined;
 	#nativeTail: readonly Container[] = [];
 	#allocation: RuntimeChildrenOptions["allocation"];
-	#renderVersion: RuntimeChildrenOptions["renderVersion"];
-	#belowRootCache = new WeakMap<
-		Component,
-		{ version: unknown; width: number; themeEpoch: number; lines: string[]; spans: ViewportClickSpan[] }
-	>();
+
 	/** Cache-driven status line shown until {@link setStatusComponent} mounts the session's. */
 	#startupStatus: StatusLineComponent | undefined;
 	#runtimeMounted = false;
