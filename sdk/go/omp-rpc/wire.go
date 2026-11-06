@@ -5227,11 +5227,12 @@ func (v *SubagentLifecycleStatus) UnmarshalJSON(data []byte) error {
 }
 
 type SubagentLifecyclePayload struct {
-	ID          string                  `json:"id"`
-	Agent       string                  `json:"agent"`
-	AgentSource AgentSource             `json:"agentSource"`
-	Status      SubagentLifecycleStatus `json:"status"`
-	Index       int64                   `json:"index"`
+	ID           string                  `json:"id"`
+	Agent        string                  `json:"agent"`
+	AgentSource  AgentSource             `json:"agentSource"`
+	Status       SubagentLifecycleStatus `json:"status"`
+	Index        int64                   `json:"index"`
+	FollowUpTurn *bool                   `json:"followUpTurn,omitempty"`
 	// Wall clock of the emitted lifecycle transition, in Unix milliseconds.
 	At                    *float64 `json:"at,omitempty"`
 	ResolvedModelIdentity *string  `json:"resolvedModelIdentity,omitempty"`
@@ -5257,6 +5258,7 @@ func (v *SubagentLifecyclePayload) decodeFrom(raw map[string]json.RawMessage) er
 	d.required("agentSource", &out.AgentSource)
 	d.required("status", &out.Status)
 	d.required("index", &out.Index)
+	d.optional("followUpTurn", &out.FollowUpTurn)
 	d.optional("at", &out.At)
 	d.optional("resolvedModelIdentity", &out.ResolvedModelIdentity)
 	d.optional("resolvedThinkingLevel", &out.ResolvedThinkingLevel)
@@ -5280,6 +5282,7 @@ type SubagentProgressPayload struct {
 	Task        string      `json:"task"`
 	// Raw `AgentProgress` record.
 	Progress         map[string]json.RawMessage `json:"progress"`
+	FollowUpTurn     *bool                      `json:"followUpTurn,omitempty"`
 	ParentToolCallID *string                    `json:"parentToolCallId,omitempty"`
 	Assignment       *string                    `json:"assignment,omitempty"`
 	SessionFile      *string                    `json:"sessionFile,omitempty"`
@@ -5298,6 +5301,7 @@ func (v *SubagentProgressPayload) decodeFrom(raw map[string]json.RawMessage) err
 	d.required("agentSource", &out.AgentSource)
 	d.required("task", &out.Task)
 	d.required("progress", &out.Progress)
+	d.optional("followUpTurn", &out.FollowUpTurn)
 	d.optional("parentToolCallId", &out.ParentToolCallID)
 	d.optional("assignment", &out.Assignment)
 	d.optional("sessionFile", &out.SessionFile)

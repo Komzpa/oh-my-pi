@@ -243,6 +243,8 @@
 
 ### Fixed
 
+- Keep TODO workers assigned through IRC replies and show row ownership as soon as a task spawns ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Preserve JavaScript function names for debugger attachment to a stuck Linux CLI ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Avoid copying archived TODO rows on worker lifecycle updates and plan reads ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

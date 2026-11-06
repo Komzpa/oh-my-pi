@@ -62,6 +62,7 @@ export const frameDefs = {
 	),
 	SubagentLifecycleStatus: "'started' | 'completed' | 'failed' | 'aborted'",
 	SubagentLifecyclePayload: {
+		"followUpTurn?": "boolean",
 		id: "string",
 		agent: "string",
 		agentSource: "AgentSource",
@@ -78,6 +79,7 @@ export const frameDefs = {
 		"detached?": doc("boolean", "The subagent runs as a detached background job."),
 	},
 	SubagentProgressPayload: {
+		"followUpTurn?": "boolean",
 		index: "number.integer",
 		agent: "string",
 		agentSource: "AgentSource",

@@ -1425,6 +1425,7 @@ class SubagentLifecyclePayload:
     agent_source: AgentSource
     status: SubagentLifecycleStatus
     index: int
+    follow_up_turn: bool | None = None
     at: float | None = None
     """Wall clock of the emitted lifecycle transition, in Unix milliseconds."""
     resolved_model_identity: str | None = None
@@ -1446,6 +1447,7 @@ class SubagentProgressPayload:
     task: str
     progress: JsonObject
     """Raw `AgentProgress` record."""
+    follow_up_turn: bool | None = None
     parent_tool_call_id: str | None = None
     assignment: str | None = None
     session_file: str | None = None
@@ -2965,6 +2967,7 @@ def parse_subagent_lifecycle_payload(value: object, path: str = "SubagentLifecyc
         agent_source=required(payload, "agentSource", _decode_agent_source, path),
         status=required(payload, "status", _decode_subagent_lifecycle_status, path),
         index=required(payload, "index", decode_int, path),
+        follow_up_turn=optional(payload, "followUpTurn", decode_bool, path),
         at=optional(payload, "at", decode_float, path),
         resolved_model_identity=optional(payload, "resolvedModelIdentity", decode_str, path),
         resolved_thinking_level=optional(payload, "resolvedThinkingLevel", decode_str, path),
@@ -2985,6 +2988,7 @@ def parse_subagent_progress_payload(value: object, path: str = "SubagentProgress
         agent_source=required(payload, "agentSource", _decode_agent_source, path),
         task=required(payload, "task", decode_str, path),
         progress=required(payload, "progress", decode_json_object, path),
+        follow_up_turn=optional(payload, "followUpTurn", decode_bool, path),
         parent_tool_call_id=optional(payload, "parentToolCallId", decode_str, path),
         assignment=optional(payload, "assignment", decode_str, path),
         session_file=optional(payload, "sessionFile", decode_str, path),

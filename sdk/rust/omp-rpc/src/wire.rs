@@ -4437,6 +4437,8 @@ pub struct SubagentLifecyclePayload {
 	pub agent_source: AgentSource,
 	pub status: SubagentLifecycleStatus,
 	pub index: i64,
+	#[serde(rename = "followUpTurn", default, skip_serializing_if = "Option::is_none")]
+	pub follow_up_turn: Option<bool>,
 	/// Wall clock of the emitted lifecycle transition, in Unix milliseconds.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub at: Option<f64>,
@@ -4468,6 +4470,8 @@ pub struct SubagentProgressPayload {
 	pub task: String,
 	/// Raw `AgentProgress` record.
 	pub progress: Map<String, Value>,
+	#[serde(rename = "followUpTurn", default, skip_serializing_if = "Option::is_none")]
+	pub follow_up_turn: Option<bool>,
 	#[serde(rename = "parentToolCallId", default, skip_serializing_if = "Option::is_none")]
 	pub parent_tool_call_id: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
