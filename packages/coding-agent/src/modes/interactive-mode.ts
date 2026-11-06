@@ -239,6 +239,7 @@ import {
 	nextActionableTask,
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	type TodoHudStateEntryData,
+	type TodoHudVisibility,
 } from "../tools/todo";
 import {
 	formatPhaseDisplayName,
@@ -5281,9 +5282,23 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelTodoAutoClearTimer();
 		const phases = this.todoPhases;
 		const manager = owner.sessionManager;
-		const entries =
-			manager instanceof SessionManager ? manager.getBranchMatching(isTodoStateEntryMetadata) : manager.getBranch();
-		const persisted = getTodoHudVisibility(entries, phases);
+		if (manager instanceof SessionManager) {
+			this.#applyTodoHudVisibility(
+				owner,
+				phases,
+				getTodoHudVisibility(manager.getBranchMatching(isTodoStateEntryMetadata), phases),
+			);
+			return;
+		}
+		const persisted = getTodoHudVisibility(owner.sessionManager.getBranch(), phases);
+		this.#applyTodoHudVisibility(owner, phases, persisted);
+	}
+
+	#applyTodoHudVisibility(
+		owner: AgentViewSession,
+		phases: TodoPhase[],
+		persisted: TodoHudVisibility | undefined,
+	): void {
 		this.#todoHudHidden = persisted === "dismissed";
 		if (persisted || phases.length === 0) return;
 		const tasks = phases.flatMap(phase => phase.tasks);
