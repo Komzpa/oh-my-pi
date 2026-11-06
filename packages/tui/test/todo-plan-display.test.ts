@@ -125,3 +125,25 @@ test("settled rows are verifying or need a worker; stuck names why nothing can a
 	expect(display.lines.join("\n")).toContain("findings — needs worker: findings · after Probe");
 	expect(display.lines.join("\n")).toContain("blocked — stuck: awaiting vendor reply");
 });
+
+test("a crash continuation is visibly working under its new worker id", () => {
+	const worker = { id: "ContinentalSnail-2", startedAt: 1 };
+	const input: TodoScheduleInput = [
+		{
+			name: "Work",
+			tasks: [
+				{
+					content: "Power source",
+					status: "in_progress",
+					schedule: { owner: worker.id, executor: { workerId: worker.id, startedAt: 1, resumedAfterCrash: true } },
+				},
+			],
+		},
+	];
+	const output = renderTodoPlanDisplay(
+		input,
+		{ workers: [worker], owners: new Map([["Power source", worker]]) },
+		{ now: 2, paint },
+	);
+	expect(output.lines.join("\n")).toContain("working · ContinentalSnail-2 (resumed after crash)");
+});

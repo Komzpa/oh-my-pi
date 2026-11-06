@@ -1599,6 +1599,7 @@ export function acceptedSpeculativeMergeDemand(phases: DispatchTodoPhases): stri
 /** Match explicit dispatch metadata before worker ownership, then all named rows. */
 export function speculativeTaskRows(item: Record<string, unknown>, phases: DispatchTodoPhases): Array<Record<string, unknown>> {
   const rows = phases.flatMap((phase) => phase.tasks);
+  if (typeof item.row === "string") return rows.filter(row => row.content === item.row);
   const preview = item.previewIntegration as { task?: string } | undefined;
   if (typeof preview?.task === "string") return rows.filter((row) => row.content === preview.task);
   if (typeof item.name === "string") {
@@ -2830,9 +2831,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     healPlanTicker(ctx);
   });
   pi.on("turn_start", (_event, ctx) => {
+    sprintState.lastNotices = Object.fromEntries(Object.entries(sprintState.lastNotices).filter(([key]) => !key.startsWith("todo-gate-staffing\0")));
+    announceGates(ctx);
     idlePlanDemandedThisTurn = false;
     healPlanTicker(ctx);
-    announceGates(ctx);
   });
   let presenceCache: { minute: number; entries: number; presence: Presence } | null = null;
   const presenceOf = (branch: readonly unknown[], now: number): Presence => {
@@ -3760,9 +3762,20 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (sprintState.lastNotices[noticeKey(type, key)] === noticeDigest(content)) return;
       sendHarnessNotice(type, key, content, undefined, content, { interruptWait });
     };
+    if (pauseGate?.paused || gateSwitchedOff(ctx)) return;
+    const decision = measured ?? currentDecision(ctx, now, pending);
+    const displayContext = leadDisplayContext(ctx, phases, decision);
+    const rows = phases.flatMap(phase => phase.tasks).filter(task => isOpenRowStatus(task.status)).flatMap(task => {
+      const state = classifyTodoDisplayRow(task, phases, displayContext);
+      return state.state === "needs worker" ? [{ content: task.content, owner: task.schedule?.owner, previous: state.previous, reason: state.reason, findings: todoRowAfterWorker(task)?.findings }] : [];
+    });
+    const continuations = rows.filter(row => row.previous).map(row =>
+      `${JSON.stringify(row.content)} from agent://${row.previous} (${row.reason}${row.findings ? `: ${shorten(row.findings)}` : ""})`);
+    if (rows.length) notice("staffing", JSON.stringify(rows.map(row => [row.content, row.owner, row.previous ?? null])), {
+      staffing: true, rows: rows.map(row => JSON.stringify(row.content)).join(", "), continuations: continuations.join("; "),
+    });
     const tasks = [...new Set(getTodoPlanningIssues(phases).map(issue => issue.task))];
     if (tasks.length) notice("schedule", JSON.stringify(tasks), { schedule: true, rows: tasks.map(task => JSON.stringify(task)).join(", "), tasks });
-    if (pauseGate?.paused || gateSwitchedOff(ctx)) return;
     for (const item of activeRecoveries(ctx, pending)) notice("recovery", JSON.stringify([item.kind, item.row, item.owner, item.at]), {
       recovery: true, action: recoveryAction(item), owner: item.owner, recoveryCap: item.kind === "cap",
     }, true);
@@ -3775,17 +3788,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return [];
     });
     if (unverified.length) notice("audit", JSON.stringify(unverified), { audit: true, rows: unverified.join("; ") });
-    const decision = measured ?? currentDecision(ctx, now, pending);
-    const displayContext = leadDisplayContext(ctx, phases, decision);
-    const rows = (decision.dispatchableReady ?? []).filter(row => {
-      const task = phases.flatMap(phase => phase.tasks).find(task => task.content === row.content);
-      return task && classifyTodoDisplayRow(task, phases, displayContext).state === "needs worker";
-    });
-    const continuations = rows.filter(row => row.previous).map(row =>
-      `${JSON.stringify(row.content)} from agent://${row.previous} (${row.reason}${row.findings ? `: ${shorten(row.findings)}` : ""})`);
-    if (rows.length) notice("staffing", JSON.stringify(rows.map(row => [row.content, row.owner, row.ownership, row.previous ?? null])), {
-      staffing: true, rows: rows.map(row => JSON.stringify(row.content)).join(", "), continuations: continuations.join("; "),
-    });
     if (decision.presence === "away" && !rows.length && decision.awayWorkList?.length) notice("away", decision.key, {
       away: true, rows: decision.awayWorkList.join(" "),
     });
@@ -5174,6 +5176,25 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (singleWriterLane) return;
     const badWorkerName = refusePlanningFailureWorkerName(event as { toolName: string; input?: unknown }, ctx);
     if (badWorkerName) return badWorkerName;
+    if (event.toolName === "task" && isMain(ctx) && !pauseGate?.paused) {
+      const decision = currentDecision(ctx);
+      const phases = todoPhases(ctx);
+      const display = leadDisplayContext(ctx, phases, decision);
+      const needy = phases.flatMap(phase => phase.tasks).filter(row => isOpenRowStatus(row.status) && classifyTodoDisplayRow(row, phases, display).state === "needs worker");
+      const previous = needy.filter(row => classifyTodoDisplayRow(row, phases, display).previous);
+      const priority = previous.length ? previous : needy;
+      const jobs = ctx.getAsyncJobSnapshot();
+      const capacity = ctx.getTaskMaxConcurrency?.();
+      const active = jobs?.running.filter(job => job.type === "task" && job.status === "running" && !job.queued).length ?? 0;
+      if (jobs && priority.length && capacity !== undefined && (capacity === 0 || active < capacity) &&
+          taskItems(event.input).some(item => !speculativeTaskRows(item, phases).some(row => priority.some(candidate => candidate.content === row.content)))) {
+        announceGates(ctx);
+        return { block: true, reason: prompt.render(gateNoticeInstructions, { staffing: true,
+          rows: priority.map(row => JSON.stringify(row.content)).join(", "),
+          continuations: priority.map(row => { const previous = classifyTodoDisplayRow(row, phases, display).previous; return previous ? `${JSON.stringify(row.content)} from agent://${previous}` : JSON.stringify(row.content); }).join("; "),
+        }).trim() };
+      }
+    }
     if (event.toolName === "task") lastTaskDispatchRefused = false;
     const gitOwnerConflict = refuseConcurrentGitPrOwner(event as { toolName: string; input?: unknown }, ctx);
     if (gitOwnerConflict) return gitOwnerConflict;

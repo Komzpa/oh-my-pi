@@ -95,6 +95,7 @@ export interface TodoSchedule {
 	executor?: {
 		gitCommits?: { commit: string; repoPath: string }[];
 		workerId: string;
+		resumedAfterCrash?: boolean;
 		agentProfile?: string;
 		resolvedModel?: string;
 		thinkingLevel?: string;
@@ -110,6 +111,7 @@ export interface TodoSchedule {
  * "unavailable" (no auditor profile resolved) keep the row verifying.
  */
 export interface TodoRowAudit {
+	workerId?: string;
 	/** `todoRowDeliveryKey` of the executor run being audited; a newer run invalidates this record. */
 	delivery: string;
 	repoPath: string;
@@ -2105,6 +2107,9 @@ export function classifyTodoDisplayRow(
 	context: TodoDisplayContext,
 ): TodoDisplayRowState {
 	if (isTodoAwaitingReview(task)) return { state: "needs you" };
+	const rowAuditor = task.schedule?.audit?.verdict === "pending" ? task.schedule.audit.workerId : undefined;
+	const verifier = context.workers.find(worker => worker.id === rowAuditor);
+	if (verifier) return { state: "verifying", worker: verifier };
 	const auditorId = context.auditors?.get(task.content);
 	const auditor = context.workers.find(worker => worker.id === auditorId);
 	const owner = context.owners.get(task.content);
@@ -2249,7 +2254,7 @@ export function renderTodoPlanDisplay(
 					]
 				: [];
 			const worker = state.worker
-				? ` · ${rowWorkers.map(worker => `${safeText(worker.id)}${elapsed(worker)}`).join(", ")}`
+				? ` · ${rowWorkers.map(worker => `${safeText(worker.id)}${task.schedule?.executor?.workerId === worker.id && task.schedule.executor.resumedAfterCrash ? " (resumed after crash)" : ""}${elapsed(worker)}`).join(", ")}`
 				: state.previous
 					? ` · after ${safeText(state.previous)}`
 					: "";

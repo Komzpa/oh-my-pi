@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Resume interrupted TODO workers after a crash, prioritize rows needing workers, and name batched auditors on every covered row ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Link task workers to explicit TODO rows and show concurrent workers together across resume ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Avoid reloading the full session history on TODO HUD refreshes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

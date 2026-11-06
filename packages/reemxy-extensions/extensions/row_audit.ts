@@ -301,7 +301,18 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		void (async () => {
 			let retry = false;
 			try {
-				const result = await ctx.runRowAudit!(rowAuditTask(batch, requirementsFor), agent);
+				const result = await ctx.runRowAudit!(rowAuditTask(batch, requirementsFor), agent, undefined, workerId => {
+					for (const [content, audit] of records) {
+						if (audit.workerId === workerId) continue;
+						audit.workerId = workerId;
+						const current = ctx
+							.getTodoPhases?.()
+							?.flatMap(phase => phase.tasks)
+							.find(row => row.content === content)?.schedule?.audit;
+						if (current?.delivery === audit.delivery && current.startedAt === audit.startedAt)
+							ctx.updateTodoSchedule!(content, { audit: { ...audit } });
+					}
+				});
 				const details = result?.details as { results?: Array<{ output?: unknown }> } | undefined;
 				const verdicts = parseRowAuditVerdicts(details?.results?.[0]?.output) ?? [];
 				const head = (await readHead(batch.repoPath)) ?? "unknown";
