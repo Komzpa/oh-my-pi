@@ -159,7 +159,20 @@ it("invalidates the ANSI component cache and refreshes native preview titles as 
 });
 
 it("reads a live snapshot for frame titles without copying an unchanged plan", () => {
-	let phases = [{ name: "Implementation", tasks: [{ status: "in_progress" }] }];
+	let inspections = 0;
+	let phases = [
+		{
+			name: "Implementation",
+			tasks: [
+				{
+					get status() {
+						inspections++;
+						return "in_progress";
+					},
+				},
+			],
+		},
+	];
 	let copies = 0;
 	const session = {
 		getTodoSnapshot: () => phases,
@@ -173,6 +186,7 @@ it("reads a live snapshot for frame titles without copying an unchanged plan", (
 	for (let frame = 0; frame < 100; frame++)
 		expect(Bun.stripANSI(renderSegment("session_name", context).content)).toBe("Implementation");
 	expect(copies).toBe(0);
+	expect(inspections).toBe(1);
 	phases = [{ name: "Verification", tasks: [{ status: "in_progress" }] }];
 	expect(Bun.stripANSI(renderSegment("session_name", context).content)).toBe("Verification");
 	expect(copies).toBe(0);
