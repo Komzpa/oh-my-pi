@@ -97,7 +97,7 @@ export interface AgentSessionAdvisorOverview {
 /** The surface other agents' code uses on a session obtained from the registry, lifecycle, or IRC delivery. */
 export interface AgentSessionHandle {
 	readonly isDisposed: boolean;
-	beginRestartDrain(): RestartDrainLease;
+	beginRestartDrain(options?: { interruptProvider?: boolean }): RestartDrainLease;
 	getRestartPendingInputCount(): number;
 	getRestartBranchEntries(): Promise<SessionEntry[]>;
 	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void>;

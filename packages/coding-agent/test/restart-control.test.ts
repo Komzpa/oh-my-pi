@@ -12,7 +12,11 @@ import {
 	waitForRestartResult,
 	type RestartControlSource,
 } from "../src/restart-control";
-import type { RestartControlIdentity, RestartControlSnapshot } from "../src/task/restart-queue";
+import {
+	formatRestartRequestStatus,
+	type RestartControlIdentity,
+	type RestartControlSnapshot,
+} from "../src/task/restart-queue";
 
 const tempDirs: string[] = [];
 const publications: Array<{ dispose(): Promise<void> }> = [];
@@ -41,6 +45,54 @@ function fixture(identity: RestartControlIdentity): { source: RestartControlSour
 }
 
 describe("restart-control local IPC", () => {
+	it("reports a busy lead through IPC polling until the queued restart completes", async () => {
+		const runtimeDir = await setupDir();
+		const identity = { instanceId: "instance-busy-root", sessionId: "root", generation: 1 };
+		const accepted: RestartControlSnapshot = {
+			identity,
+			pid: process.pid,
+			cwd: "/workspace",
+			request: {
+				version: 1,
+				requestId: "busy-root",
+				sessionId: "root",
+				state: "draining",
+				requestedAt: Date.now(),
+				updatedAt: Date.now(),
+				rootWasRunning: true,
+				drainStatus: {
+					stage: "root_quiescence",
+					stageStartedAt: Date.now(),
+					runningWorkers: [],
+					queuedInputCount: 0,
+				},
+			},
+		};
+		let polls = 0;
+		publications.push(
+			await publishRestartControl(
+				{
+					snapshot: () => accepted,
+					handle: async () => ({
+						...accepted,
+						request: { ...accepted.request!, state: ++polls === 1 ? "queued" : "completed" },
+					}),
+				},
+				{ runtimeDir },
+			),
+		);
+		const progress: string[] = [];
+		const completed = await waitForRestartResult(accepted, {
+			runtimeDir,
+			onProgress: snapshot => progress.push(formatRestartRequestStatus(snapshot.request)),
+		});
+		expect(completed.request?.state).toBe("completed");
+		expect(progress[0]).toContain("Waiting for the lead's turn to finish");
+		expect(progress.some(status => status.includes("queued") && status.includes("Waiting for the lead's turn"))).toBe(
+			true,
+		);
+	});
+
 	it("discovers an exact target without probing an unrelated endpoint", async () => {
 		const runtimeDir = await setupDir();
 		const identity = { instanceId: "instance-target-1234", sessionId: "target", generation: 1 };

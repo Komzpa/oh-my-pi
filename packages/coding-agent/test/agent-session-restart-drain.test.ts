@@ -47,6 +47,44 @@ describe("AgentSession restart drain", () => {
 		removeSyncWithRetries(fixtureDir);
 	});
 
+	it("lets the root provider finish its response before quiescing", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const started = Promise.withResolvers<void>();
+		let providerSignal: AbortSignal | undefined;
+		const mock = createMockModel({ responses: [{ content: ["complete root response"], delayMs: 100 }] });
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [] },
+			streamFn: (...args) => {
+				providerSignal = args[2]?.signal;
+				started.resolve();
+				return mock.stream(...args);
+			},
+			convertToLlm,
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.create(fixtureDir, fixtureDir),
+			settings: Settings.isolated({ "launch.enabled": false }),
+			modelRegistry,
+		});
+		const run = session.prompt("Finish this response");
+		await started.promise;
+		const lease = session.beginRestartDrain({ interruptProvider: false });
+		expect(providerSignal?.aborted).toBe(false);
+		await lease.waitForQuiescence();
+		await run;
+		expect(providerSignal?.aborted).toBe(false);
+		expect(
+			session.messages.some(
+				message =>
+					message.role === "assistant" &&
+					message.content.some(block => block.type === "text" && block.text === "complete root response"),
+			),
+		).toBe(true);
+		lease.release();
+	});
+
 	it("interrupts only the provider during drain and preserves queued input on cancel", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const started = Promise.withResolvers<void>();
