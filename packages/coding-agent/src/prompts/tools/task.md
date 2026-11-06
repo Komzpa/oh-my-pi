@@ -16,7 +16,6 @@ Use most specific agent.{{#if scoutAvailable}} Read-only research MUST use `scou
 Shared edits need one integration owner; give each task its files. Set interfaces in {{#if batchEnabled}}`context`{{else}}the task{{/if}}. Every task MUST skip build/lint/tests/formatters mid-flight; run once afterward.
 
 # Inputs
-`row`: exact open todo content. Pass it for every planned worker; runtime links ownership at launch. Unknown, ambiguous or closed rows are refused. Several workers may share a row.
 {{#if file}}`taskFile`: absolute path or `local://` file; contents become the task, read once at dispatch. Exactly one of `task`/`taskFile`.
 {{/if}}
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name.{{#if structured}} `outputSchema` overrides agent/session schemas.{{/if}}
@@ -35,6 +34,8 @@ Shared edits need one integration owner; give each task its files. Set interface
 
 {{#if batchEnabled}}`context`: shared (`# Goal`, `# Constraints`, `# Contract` interfaces); NEVER repeat per task.
 {{/if}}`task`{{#if file}} or the contents of `taskFile`{{/if}}: self-contained (`# Target` files/non-goals, `# Change` steps/APIs, `# Acceptance` observable result).
+
+`row`: exact open todo content. Pass it for every planned worker; runtime links ownership at launch. Unknown, ambiguous or closed rows are refused. Several workers may share a row.
 
 # Available Agents
 

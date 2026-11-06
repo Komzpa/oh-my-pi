@@ -3709,7 +3709,6 @@ export class SessionManager {
 		perCallThinkingLevel?: ConfiguredThinkingLevel | null;
 		retryFallback?: RetryFallbackRole;
 		row?: string;
-		row?: string;
 		readOnly?: boolean;
 		outputSchema?: unknown;
 		outputSchemaMode?: StructuredSubagentSchemaMode;
