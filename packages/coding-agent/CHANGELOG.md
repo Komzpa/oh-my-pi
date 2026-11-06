@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Avoid copying archived TODO rows on worker lifecycle updates and plan reads ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Keep worker billing and terminal titles responsive in sessions with many finished agents ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Ask for unapproved product decisions before closing TODO rows, without repeating answered questions or asking about verified owner-requested fixes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

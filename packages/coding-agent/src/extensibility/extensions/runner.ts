@@ -827,6 +827,7 @@ export class ExtensionRunner {
 		private readonly getTodoPhases?: ExtensionContext["getTodoPhases"],
 		private readonly updateTodoSchedule?: ExtensionContext["updateTodoSchedule"],
 		private readonly applyReviewPageAnswer?: ExtensionContext["applyReviewPageAnswer"],
+		private readonly getTodoSnapshot?: ExtensionContext["getTodoSnapshot"],
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -1828,6 +1829,7 @@ export class ExtensionRunner {
 					},
 				),
 			getTodoPhases: () => this.getTodoPhases?.(),
+			getTodoSnapshot: () => this.getTodoSnapshot?.() ?? this.getTodoPhases?.(),
 			applyReviewPageAnswer: answer => this.applyReviewPageAnswer?.(answer) ?? Promise.resolve(false),
 			updateTodoSchedule: (task, patch) => this.updateTodoSchedule?.(task, patch) ?? false,
 			setSubagentFastMode: this.#setSubagentFastModeFn,

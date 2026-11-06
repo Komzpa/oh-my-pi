@@ -1,4 +1,4 @@
-import { todoNeedsOwnerDecision } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { patchTodoSchedule } from "./session/todo-schedule-patch";
 import { selectBranchNewestFirst } from "./session/branch-selection";
 import * as path from "node:path";
 import {
@@ -2718,6 +2718,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
 			getTodoPhases: () => session.getTodoPhases(),
+			getTodoSnapshot: () => session.getTodoSnapshot(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
 			persistTodoPhases: (phases, edit) => {
 				if (edit) {
@@ -3789,40 +3790,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				...(options.parentAgentId ? { parentId: options.parentAgentId } : {}),
 			}),
 			createAnnotationsAPI,
-			() => (hasSession ? structuredClone(session.getTodoPhases()) : undefined),
+			() => (hasSession ? session.getTodoPhases() : undefined),
 			(task, patch) => {
 				if (!hasSession) return false;
-				const phases = structuredClone(session.getTodoPhases());
-				const matches = phases.flatMap(phase => phase.tasks).filter(row => row.content === task);
-				if (matches.length !== 1) return false;
-				const row = matches[0];
-				row.schedule = { ...row.schedule, ...structuredClone(patch) };
-				if (patch.deliveryCritic?.verdict === "defects" && patch.review === "redo") {
-					row.status = "pending";
-					row.blocker = undefined;
-				}
-				if (todoNeedsOwnerDecision(row.schedule) && row.schedule.executor?.outcome === "completed") {
-					row.schedule.review = "user";
-					row.schedule.firstDeliveredAt ??= Date.now();
-					row.schedule.reviewPagePending = !row.schedule.reviewPage;
-				}
-				// A passing runtime audit of the delivered run is the row's done receipt.
-				if (
-					patch.audit?.verdict === "pass" &&
-					!todoNeedsOwnerDecision(row.schedule) &&
-					(row.status === "pending" || row.status === "in_progress")
-				) {
-					row.status = "completed";
-					row.blocker = undefined;
-					row.schedule.finishedAt ??= Date.now();
-				}
+				const at = Date.now();
+				const phases = patchTodoSchedule(session.getTodoSnapshot(), task, patch, at);
+				if (!phases) return false;
 				// The callback merges into fresh hydrated state synchronously. A canonical
-				// append-only snapshot keeps extension annotations on the normal resume path.
-				sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				// append-only delta keeps extension annotations on the normal resume path.
+				sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+					edit: { v: 1, kind: "schedule_patch", at, task, patch: structuredClone(patch) },
+				});
 				session.setTodoPhases(phases);
 				return true;
 			},
 			answer => (hasSession ? new TodoTool(toolSession).applyReviewPageAnswer(answer) : Promise.resolve(false)),
+			() => (hasSession ? session.getTodoSnapshot() : undefined),
 		);
 		// A dialog waits for the user, not the agent: the session lets the display sleep while one is open.
 		const trackUserWait: UserWaitTracker = dialog => (hasSession ? session.waitForUser(dialog) : dialog());

@@ -6,6 +6,7 @@ import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-c
 import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
@@ -57,20 +58,39 @@ export function dispatchTodoArchive(ctx: ExtensionContext): TodoScheduleInput {
   return phases;
 }
 
+// Only these synthetic arrays carry a native immutable owner snapshot. Durable
+// entries and mutable legacy getter results must still go through host replay.
+const liveTodoEntrySnapshots = new WeakMap<object, readonly TodoPhase[]>();
+
+export function readDispatchTodoPhases(entries: object, replay: (entries: never) => TodoPhase[]): TodoPhase[] {
+  const snapshot = liveTodoEntrySnapshots.get(entries);
+  return deliveredRowsClosed(snapshot ?? replay(entries as never));
+}
+
 export function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
-  const phases = pending.length === 0 ? ctx.getTodoPhases?.() : undefined;
-  if (phases !== undefined) return [{ type: "custom", customType: "user_todo_edit", data: { phases } }];
+  const snapshot = pending.length === 0 ? ctx.getTodoSnapshot?.() : undefined;
+  const phases = snapshot ?? (pending.length === 0 ? ctx.getTodoPhases?.() : undefined);
+  if (phases !== undefined) {
+    const entries = [{ type: "custom", customType: "user_todo_edit", data: { phases } }];
+    if (snapshot !== undefined) liveTodoEntrySnapshots.set(entries, snapshot);
+    return entries;
+  }
   const branch = selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata);
   return pending.length ? [...branch, ...pending] : branch;
 }
 
 export function dispatchStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
-  const phases = pending.length === 0 ? ctx.getTodoPhases?.() : undefined;
+  const snapshot = pending.length === 0 ? ctx.getTodoSnapshot?.() : undefined;
+  const phases = snapshot ?? (pending.length === 0 ? ctx.getTodoPhases?.() : undefined);
   const branch = selectBranchEntries(ctx.sessionManager, (metadata) =>
     (phases === undefined && isTodoSelectionEntryMetadata(metadata)) || isDeadlineStateEntryMetadata(metadata) || isGoalLifecycleEntryMetadata(metadata) ||
     (metadata.type === "message" && metadata.messageRole === "user"),
   );
-  if (phases !== undefined) return [...branch, { type: "custom", customType: "user_todo_edit", data: { phases } }];
+  if (phases !== undefined) {
+    const entries = [...branch, { type: "custom", customType: "user_todo_edit", data: { phases } }];
+    if (snapshot !== undefined) liveTodoEntrySnapshots.set(entries, snapshot);
+    return entries;
+  }
   return pending.length ? [...branch, ...pending] : branch;
 }
 
@@ -1524,21 +1544,22 @@ const POST_DEADLINE_RELEASED_CUSTOM_TYPE = "todo-post-deadline-released";
 type DispatchTodoPhases = Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
 
 function todoPhases(ctx: ExtensionContext): DispatchTodoPhases {
-  return (ctx.getTodoPhases?.() ?? []) as Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
+  return ((ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.()) ?? []) as Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
 }
 
-function updateTodoSchedule(ctx: ExtensionContext, update: (phases: DispatchTodoPhases) => DispatchTodoPhases): void {
-  if (!ctx.getTodoPhases || !ctx.updateTodoSchedule) return;
+export function updateTodoSchedule(ctx: ExtensionContext, update: (phases: DispatchTodoPhases) => DispatchTodoPhases): void {
+  if ((!ctx.getTodoSnapshot && !ctx.getTodoPhases) || !ctx.updateTodoSchedule) return;
   const before = todoPhases(ctx);
-  const next = update(structuredClone(before));
+  const next = update(before);
+  const previousByContent = new Map(before.flatMap((phase) => phase.tasks.map((row) => [row.content, row] as const)));
   for (const phase of next) for (const row of phase.tasks) {
-    const previous = before.flatMap((entry) => entry.tasks).find((candidate) => candidate.content === row.content);
-    if (!previous || JSON.stringify(previous.schedule) === JSON.stringify(row.schedule)) continue;
+    const previous = previousByContent.get(row.content);
+    if (!previous || row === previous || row.schedule === previous.schedule) continue;
     const patch = {} as Record<string, unknown>;
     for (const key of ["deliveryCritic", "handoffPending", "progress", "review", "reviewSummary", "firstRequirementAt", "firstDeliveredAt", "speculativeOn", "visibleAt", "previewPending", "previewTracked", "previewIdentityMissing", "previewPartial"]) {
       if (row.schedule?.[key] !== previous.schedule?.[key]) patch[key] = row.schedule?.[key];
     }
-    ctx.updateTodoSchedule(String(row.content), patch);
+    if (Object.keys(patch).length > 0) ctx.updateTodoSchedule(String(row.content), patch);
   }
 }
 
@@ -2358,14 +2379,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const config = previewConfig(ctx);
     if (!config.enabled) {
-      for (const row of (ctx.getTodoPhases?.() ?? []).flatMap(phase => phase.tasks))
+      for (const row of ((ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.()) ?? []).flatMap(phase => phase.tasks))
         if (row.schedule?.previewTracked) ctx.updateTodoSchedule?.(row.content, { previewTracked: false, previewPending: false });
       return [];
     }
     if (previewPoll) return previewPoll;
     previewPoll = (async () => {
       const before = previewRecords(ctx);
-      const phases = ctx.getTodoPhases?.() ?? [];
+      const phases = (ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.()) ?? [];
       const captured = await capturePreviewWorkerHeads(ctx, phases, before);
       const records = await refreshPreviewVisibility(phases, config, captured, Date.now());
       if (JSON.stringify(before) !== JSON.stringify(records)) pi.appendEntry(PREVIEW_ENTRY_TYPE, { records });
@@ -2394,7 +2415,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     formatTaskForecast: hostSdk.formatTaskForecast,
     getTodoPlanningIssues: hostSdk.getTodoPlanningIssues,
     readGoalDeadline: hostSdk.readGoalDeadline ?? readGoalDeadline,
-    getLatestTodoPhasesFromEntries: ((entries: never) => deliveredRowsClosed(host.getLatestTodoPhasesFromEntries(entries))) as typeof host.getLatestTodoPhasesFromEntries,
+    getLatestTodoPhasesFromEntries: ((entries: never) => readDispatchTodoPhases(entries, host.getLatestTodoPhasesFromEntries)) as typeof host.getLatestTodoPhasesFromEntries,
   };
   // Rows the lead declared mission-critical (irreversible/public/needs their hands) in a todo call; only these may wait on the user.
   const missionCriticalRows = new Set<string>();
@@ -5156,7 +5177,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const visibility = await pollPreview(ctx);
     if (previewConfig(ctx).enabled && isMain(ctx)) {
-      const phases = ctx.getTodoPhases?.() ?? [];
+      const phases = (ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.()) ?? [];
       if (event.toolName === "todo") {
         const profiles = new Map<string, string | undefined>();
         for (const job of ctx.getAsyncJobSnapshot()?.running ?? []) {
@@ -5490,7 +5511,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let lastPlanProblems = "";
   const planCheck = async (ctx: ExtensionContext, pending: unknown[] = [], problemsOnly = false): Promise<string | null> => {
     const visibility = await pollPreview(ctx);
-    const visibilityProblem = previewPlanProblem(overduePreviewRows(ctx.getTodoPhases?.() ?? [], visibility, previewConfig(ctx), Date.now()));
+    const visibilityProblem = previewPlanProblem(overduePreviewRows((ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.()) ?? [], visibility, previewConfig(ctx), Date.now()));
     if (visibilityProblem) return visibilityProblem;
     // Finish I/O before reading or mutating plan state. A worker may finish or
     // a todo result may arrive while Git is pending; judge the fresh snapshot.
@@ -6003,7 +6024,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (Array.isArray(results)) {
         const records = previewRecords(ctx);
         const next = [...records];
-        const rows = (ctx.getTodoPhases?.() ?? []).flatMap(phase => phase.tasks);
+        const rows = ((ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.()) ?? []).flatMap(phase => phase.tasks);
         for (const result of results) {
           if (result?.exitCode !== 0 || typeof result.branchName !== "string" || typeof result.branchBaseSha !== "string") continue;
           const matchingRows = rows.filter(row => row.schedule?.executor?.workerId === result.id || row.schedule?.attemptHistory?.some(attempt => attempt.workerName === result.id) || (!row.schedule?.executor && typeof row.schedule?.owner === "string" && liveJobMatchesOwner({ id: result.id }, row.schedule.owner)));
