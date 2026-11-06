@@ -1,4 +1,4 @@
-import { readRestartIsolation } from "./restart-isolation";
+import { preserveRestartIsolation, restartIsolation, readRestartIsolation } from "./restart-isolation";
 import { prompt } from "@oh-my-pi/pi-utils";
 import isolationRecoveryPrompt from "../prompts/restart-isolation-recovery.md" with { type: "text" };
 import { selectRestartBranchEntries } from "./restart-branch-selection";
@@ -619,7 +619,7 @@ function emitReportNotice(session: AgentSession, report: RestartRecoveryReport):
 		rows.push(`${pending.displayName} (${pending.id}): unresolved tool calls ${formatPendingCalls(pending.calls)}.`);
 	}
 	for (const failure of report.failures.slice(0, Math.max(0, MAX_NOTICE_ROWS - rows.length))) {
-		rows.push(`${failure.id}: ${failure.reason}`);
+		rows.push(`${failure.id}: ${failure.reason} Continue from history://${failure.id}.`);
 	}
 	const total = report.pendingToolCalls.length + report.failures.length;
 	if (total > rows.length) rows.push(`${total - rows.length} more restart recovery item(s) need attention.`);
@@ -654,12 +654,20 @@ export async function captureSubagentsForRestart(
 	const candidates = rootSubagentRefs(rootSession, registry);
 	const resumable: AgentRef[] = [];
 	for (const ref of candidates) {
-		// Parked children have a durable transcript and are restored lazily by
-		// persisted-agents. They do not need a restart handoff slot.
-		if (!ref.session || (ref.status !== "running" && ref.status !== "idle")) continue;
+		// A drain may have disposed the session already. Its original running
+		// identity still owns a handoff slot; unrelated parked history does not.
+		const wasRunning = options?.runningAgentIds?.has(ref.id) === true;
+		if (!wasRunning && (!ref.session || (ref.status !== "running" && ref.status !== "idle"))) continue;
+		// Retention is per attempt, including clean workers registered after the
+		// isolation pass and accepted idle workers available for later IRC wakes.
+		const isolation = await restartIsolation(ref);
+		if (isolation) {
+			const retained = await readRestartIsolation(ref.sessionFile!, ref.id);
+			if (retained?.id !== ref.id || retained.cwd !== isolation.cwd) await preserveRestartIsolation(isolation);
+		}
 		// Accepted idle children have no work to resume. Their transcripts remain
 		// available through lazy revival, just like already parked children.
-		if (ref.status === "idle" && ref.lifecycle?.acceptedAt !== undefined && !ref.session.isStreaming) continue;
+		if (ref.status === "idle" && ref.lifecycle?.acceptedAt !== undefined && !ref.session?.isStreaming) continue;
 		if (!ref.sessionFile)
 			throw new Error(`Cannot restart safely: root-owned subagent ${ref.id} has no durable session file.`);
 		if (await isTombstoned(ref.sessionFile)) continue;
@@ -833,6 +841,10 @@ export async function restoreSubagentsAfterRestart(
 	}
 	const restoreChild = async (child: RestartChildSnapshot): Promise<void> => {
 		if (snapshotOnly.has(child.id)) {
+			report.failures.push({
+				id: child.id,
+				reason: "retained workspace is unavailable; recover from its isolation snapshot",
+			});
 			report.parked.push(child.id);
 			return;
 		}
@@ -993,6 +1005,46 @@ export async function restoreSubagentsAfterRestart(
 		}),
 	);
 
+	if (report.failures.length) {
+		const failures = new Map(report.failures.map(failure => [failure.id, failure.reason]));
+		rootSession.commitTodoPhases(
+			rootSession.getTodoPhases().map(phase => ({
+				...phase,
+				tasks: phase.tasks.map(row => {
+					if (row.status === "completed" || row.status === "abandoned" || !("schedule" in row)) return row;
+					const schedule = row.schedule;
+					if (!schedule || typeof schedule !== "object") return row;
+					const executor = "executor" in schedule ? schedule.executor : undefined;
+					const worker =
+						executor && typeof executor === "object" && "workerId" in executor
+							? executor.workerId
+							: "owner" in schedule
+								? schedule.owner
+								: undefined;
+					if (typeof worker !== "string" || !failures.has(worker)) return row;
+					const note = `Restart recovery needs worker: previous=${worker}; history://${worker}; ${failures.get(worker)}`;
+					return {
+						...row,
+						status: "pending" as const,
+						notes: [
+							...(row.notes ?? []).filter(note => !note.startsWith("Restart recovery needs worker:")),
+							note,
+						],
+						schedule: {
+							...schedule,
+							executor: {
+								...(executor && typeof executor === "object" ? executor : {}),
+								workerId: worker,
+								outcome: "failed",
+								finishedAt: Date.now(),
+							},
+						},
+					};
+				}),
+			})),
+		);
+		await rootSession.sessionManager.flush();
+	}
 	emitReportNotice(rootSession, report);
 	return report;
 }

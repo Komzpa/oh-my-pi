@@ -16,6 +16,7 @@ import type { AgentSession } from "../session/agent-session";
 import {
 	captureSubagentsForRestart,
 	getLiveSubagentsForRestart,
+	type LiveRestartSubagent,
 	restoreSubagentsAfterRestart,
 	sendRootContinuationOnce,
 } from "./restart-recovery";
@@ -943,6 +944,14 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		run.record = this.#withDrainStatus({ ...run.record, runningWorkerCount: run.runningAgentIds.size }, run);
 	}
 
+	async #retainIsolation(run: ActiveRestartDrain, child: LiveRestartSubagent): Promise<void> {
+		if (run.isolations.has(child.id)) return;
+		const isolated = await restartIsolation(child);
+		if (!isolated) return;
+		await preserveRestartIsolation(isolated);
+		run.isolations.set(child.id, isolated);
+	}
+
 	#prepareChild(run: ActiveRestartDrain, id: string, status: string, session: AgentSessionHandle): void {
 		const priorSession = run.children.get(id);
 		if (priorSession) {
@@ -1041,8 +1050,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			// slow `git status` pass is still running and fail the restart instead of snapshotting.
 			await this.#measureStage(run.record, "isolation", deadline => this.#waitForIsolatedWork(run, deadline));
 			if (run.cancelled || this.#disposed) return;
-			for (const child of getLiveSubagentsForRestart(this.#session))
+			for (const child of getLiveSubagentsForRestart(this.#session)) {
+				await this.#retainIsolation(run, child);
 				this.#prepareChild(run, child.id, child.status, child.session);
+			}
 			const safe = await this.#settleAndFlush(run);
 			if (!safe || run.cancelled || this.#disposed) return;
 			await this.#measureStage(run.record, "snapshot_isolation", async () => {
@@ -1137,6 +1148,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			let added = false;
 			for (const child of getLiveSubagentsForRestart(this.#session)) {
 				if (run.children.has(child.id)) continue;
+				await this.#retainIsolation(run, child);
 				this.#prepareChild(run, child.id, child.status, child.session);
 				added = true;
 			}
