@@ -840,7 +840,7 @@ describe("audit and handoff display precedence", () => {
 		row.schedule!.executor!.finishedAt = 4;
 		expect(classify(row).state).toBe("audit queued");
 	});
-	it("treats legacy missing-verdict findings as omitted rather than exhausting retries", () => {
+	it("returns legacy missing-verdict audits to a worker after one retry", () => {
 		const row = delivered();
 		row.schedule!.audit = {
 			delivery: todoRowDeliveryKey(row.schedule),
@@ -852,9 +852,9 @@ describe("audit and handoff display precedence", () => {
 			attempts: 2,
 			findings: "auditor returned no verdict for this row",
 		};
-		expect(classify(row).state).toBe("audit queued");
+		expect(classify(row).state).toBe("needs worker");
 	});
-	it("queues omitted rows without treating batch omission as inconclusive exhaustion", () => {
+	it("returns omitted rows to a worker after one retry", () => {
 		const row = delivered();
 		row.schedule!.audit = {
 			delivery: todoRowDeliveryKey(row.schedule),
@@ -865,7 +865,7 @@ describe("audit and handoff display precedence", () => {
 			agent: "qa-auditor",
 			attempts: 2,
 		};
-		expect(classify(row).state).toBe("audit queued");
+		expect(classify(row).state).toBe("needs worker");
 	});
 	it("restarts exhausted audit verification after new worker evidence", () => {
 		const row = delivered();

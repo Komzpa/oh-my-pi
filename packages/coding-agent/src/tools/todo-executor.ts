@@ -110,6 +110,9 @@ function findTodoExecutorTarget(
 	const existing = open.filter(task => todoMatchesObservedWorker(task, observation));
 	if (existing.length > 0) return existing.length === 1 ? existing[0] : undefined;
 
+	// Runtime reviews mention the row as their subject, not as an execution assignment.
+	// An explicit row/owner binding above still permits a deliberately staffed review row.
+	if (["reviewer", "qa-auditor"].includes(observation.agentProfile ?? "")) return undefined;
 	const openTasks = open.filter(task => !isOwnedByAnotherRunningWorker(task, observation));
 	const description = observation.description?.trim();
 	if (description) {

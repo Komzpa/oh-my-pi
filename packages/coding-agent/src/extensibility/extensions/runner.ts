@@ -1811,7 +1811,7 @@ export class ExtensionRunner {
 			runDeliveryCritic: (task, signal) =>
 				this.invokeNativeTool(
 					"task",
-					{ agent: "gate-runner", task, effort: "lo" },
+					{ agent: "reviewer", task, effort: "lo" },
 					{ signal, waitForCompletion: true },
 				),
 			runRowAudit: (task, agent, signal, onStarted) =>

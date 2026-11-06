@@ -226,7 +226,7 @@ test("audit pass closes the row; audit fail returns it to needs worker carrying 
 	const silent = h.rows().find(row => row.content === AUDITED[0]);
 	expect(silent.status).toBe("in_progress");
 	// It was recorded inconclusive and immediately relaunched once (attempt 2).
-	expect(silent.schedule.audit).toMatchObject({ verdict: "pending", attempts: 1 });
+	expect(silent.schedule.audit).toMatchObject({ verdict: "pending", attempts: 2 });
 	expect(todoRowAfterWorker(silent)).toMatchObject({ kind: "verify", via: "audit" });
 	const decision = replay(h.phases).decision;
 	const staffed = decision.dispatchableReady.find(row => row.content === AUDITED[3]);
@@ -491,7 +491,7 @@ test("new deliveries at the same head launch concurrently without duplicating a 
 	expect(h.launches.at(-1).task).toContain('"over cap"');
 });
 
-test("an omitted row immediately gets a single-row audit without consuming its inconclusive allowance", async () => {
+test("an omitted row retries once alone, then asks for proof instead of a third audit", async () => {
 	const delivered = clone()
 		.flatMap(phase => phase.tasks)
 		.filter(row => AUDITED.slice(0, 2).includes(row.content));
@@ -500,16 +500,11 @@ test("an omitted row immediately gets a single-row audit without consuming its i
 	await h.settle(0, { rows: [verdict(delivered[0].content, "pass")] });
 	expect(h.launches).toHaveLength(2);
 	expect(h.launches[1].task.match(/- Row:/g)).toHaveLength(1);
-	expect(delivered[1].schedule.audit).toMatchObject({ verdict: "pending", attempts: 1 });
+	expect(delivered[1].schedule.audit).toMatchObject({ verdict: "pending", attempts: 2 });
+	await h.settle(1, { rows: [] });
 	expect(await h.check()).toBe(0);
-	await h.settle(1, { rows: [verdict(delivered[1].content, "inconclusive", "need a 430px screenshot")] });
-	expect(h.launches).toHaveLength(3);
-	expect(delivered[1].schedule.audit.attempts).toBe(2);
-	await h.settle(2, { rows: [verdict(delivered[1].content, "inconclusive", "need a 430px screenshot")] });
-	expect(todoRowAfterWorker(delivered[1])).toMatchObject({
-		kind: "needs-worker",
-		findings: "need a 430px screenshot",
-	});
+	expect(h.launches).toHaveLength(2);
+	expect(todoRowAfterWorker(delivered[1])).toMatchObject({ kind: "needs-worker", reason: "audit-inconclusive" });
 });
 
 test("the lead gate names an unsent review page and the evidence worker's missing check", () => {
@@ -570,12 +565,27 @@ test("18:55 HUD replay: six idle deliveries have zero phantom verifiers and laun
 		phases,
 		Object.fromEntries(phases[0].tasks.map(row => [row.artifactCwd, row.schedule.audit.head])),
 	);
-	expect(await h.check()).toBe(ROW_AUDIT_CAP);
+	expect(await h.check()).toBe(1); // exhausted missing-verdict rows now return to staffing
 	expect(await h.check()).toBe(0);
 	const workers = [{ id: "HelpfulVole", agent: "qa-auditor" }];
 	for (const row of h.rows()) {
 		const state = classifyTodoDisplayRow(row, phases, { workers, owners: new Map() });
 		if (state.state === "verifying") expect(row.schedule.audit.workerId).toBe("HelpfulVole");
 	}
-	expect(h.launches.filter(launch => launch.task.match(/- Row:/g)?.length === 1).length).toBeGreaterThanOrEqual(3);
+	expect(h.rows().filter(row => todoRowAfterWorker(row)?.kind === "needs-worker")).toHaveLength(5);
+});
+
+test("timestamp-only evidence updates cannot restart an exhausted audit", async () => {
+	const delivered = clone()
+		.flatMap(phase => phase.tasks)
+		.find(row => row.content === AUDITED[1]);
+	const h = harness([{ name: "Same proof", tasks: [delivered] }]);
+	await h.check();
+	await h.settle(0, { rows: [verdict(delivered.content, "inconclusive", "run focused browser checks")] });
+	await h.settle(1, { rows: [verdict(delivered.content, "inconclusive", "run focused browser checks")] });
+	delivered.schedule.progress.at = live.now + 60_000;
+	expect(await h.check()).toBe(0);
+	expect(todoRowAfterWorker(delivered)).toMatchObject({ kind: "needs-worker" });
+	delivered.schedule.progress.evidence = "New executable receipt at abc1234: bun test, exit 0";
+	expect(await h.check()).toBe(1);
 });
