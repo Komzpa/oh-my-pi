@@ -3,7 +3,7 @@ import { resetDeliveryCriticTimers, queueDeliveryCritic, type DeliveryRow, type 
 import { openReviewPages, probeReviewPage, ReviewAnswerPoller } from "./todo_review_opener";
 import { PREVIEW_ENTRY_TYPE, refreshPreviewVisibility, overduePreviewRows, previewScheduleRefusal, previewDispatchRefusal, previewPlanProblem, previewReason, type PreviewRecord } from "./todo_preview";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
-import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
+import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry, type BranchSource } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
@@ -48,14 +48,40 @@ import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from ".
 
 const dispatchArchiveCache = new WeakMap<object, { revision: unknown; phases: TodoScheduleInput }>();
 
+// Archive replay needs edits predating the latest full live snapshot. Retain only
+// the folded archive state, and inspect just the appended tail once warm.
 export function dispatchTodoArchive(ctx: ExtensionContext): TodoScheduleInput {
-  const latest = selectLatestBranchEntry(ctx.sessionManager, isTodoSelectionEntryMetadata);
+  const source = ctx.sessionManager;
+  const latest = selectLatestBranchEntry(source, isTodoSelectionEntryMetadata);
   const revision = latest?.id ?? latest;
-  const cached = dispatchArchiveCache.get(ctx.sessionManager);
+  const cached = dispatchArchiveCache.get(source);
   if (cached && cached.revision === revision) return cached.phases;
-  const phases = getLatestTodoArchiveFromEntries(selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata));
-  dispatchArchiveCache.set(ctx.sessionManager, { revision, phases });
+  const tail = [];
+  let extendsCached = false;
+  for (const entry of selectBranchNewestFirst(source, isTodoSelectionEntryMetadata)) {
+    if (cached && (entry.id ?? entry) === cached.revision) {
+      extendsCached = true;
+      break;
+    }
+    const edit = entry.type === "custom" ? entry.data?.edit : entry.message?.details?.edit;
+    if (edit !== undefined) tail.push(entry);
+  }
+  const seed = extendsCached ? [{ type: "custom", customType: "user_todo_edit", data: { edit: { v: 1, kind: "archive", at: 0, archivedPhases: cached.phases } } }] : [];
+  const entries = [...seed, ...tail.reverse()];
+  const phases = getLatestTodoArchiveFromEntries(entries);
+  dispatchArchiveCache.set(source, { revision, phases });
   return phases;
+}
+
+function latestTodoStateEntries(source: BranchSource) {
+  const entries = [];
+  for (const entry of selectBranchNewestFirst(source, isTodoSelectionEntryMetadata)) {
+    entries.push(entry);
+    if (entry.type === "custom" && Array.isArray(entry.data?.phases)) break;
+    if (entry.type === "message" && entry.message.role === "toolResult" && !entry.message.isError
+      && entry.message.details?.op !== "view" && Array.isArray(entry.message.details?.phases)) break;
+  }
+  return entries.reverse();
 }
 
 // Only these synthetic arrays carry a native immutable owner snapshot. Durable
@@ -68,30 +94,30 @@ export function readDispatchTodoPhases(entries: object, replay: (entries: never)
 }
 
 export function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
-  const snapshot = pending.length === 0 ? ctx.getTodoSnapshot?.() : undefined;
-  const phases = snapshot ?? (pending.length === 0 ? ctx.getTodoPhases?.() : undefined);
+  const snapshot = ctx.getTodoSnapshot?.();
+  const phases = snapshot ?? ctx.getTodoPhases?.();
   if (phases !== undefined) {
-    const entries = [{ type: "custom", customType: "user_todo_edit", data: { phases } }];
-    if (snapshot !== undefined) liveTodoEntrySnapshots.set(entries, snapshot);
+    const entries = [{ type: "custom", customType: "user_todo_edit", data: { phases } }, ...pending];
+    if (snapshot !== undefined && pending.length === 0) liveTodoEntrySnapshots.set(entries, snapshot);
     return entries;
   }
-  const branch = selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata);
+  const branch = latestTodoStateEntries(ctx.sessionManager);
   return pending.length ? [...branch, ...pending] : branch;
 }
 
 export function dispatchStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
-  const snapshot = pending.length === 0 ? ctx.getTodoSnapshot?.() : undefined;
-  const phases = snapshot ?? (pending.length === 0 ? ctx.getTodoPhases?.() : undefined);
+  const snapshot = ctx.getTodoSnapshot?.();
+  const phases = snapshot ?? ctx.getTodoPhases?.();
   const branch = selectBranchEntries(ctx.sessionManager, (metadata) =>
-    (phases === undefined && isTodoSelectionEntryMetadata(metadata)) || isDeadlineStateEntryMetadata(metadata) || isGoalLifecycleEntryMetadata(metadata) ||
+    isDeadlineStateEntryMetadata(metadata) || isGoalLifecycleEntryMetadata(metadata) ||
     (metadata.type === "message" && metadata.messageRole === "user"),
   );
   if (phases !== undefined) {
-    const entries = [...branch, { type: "custom", customType: "user_todo_edit", data: { phases } }];
-    if (snapshot !== undefined) liveTodoEntrySnapshots.set(entries, snapshot);
+    const entries = [...branch, { type: "custom", customType: "user_todo_edit", data: { phases } }, ...pending];
+    if (snapshot !== undefined && pending.length === 0) liveTodoEntrySnapshots.set(entries, snapshot);
     return entries;
   }
-  return pending.length ? [...branch, ...pending] : branch;
+  return [...branch, ...latestTodoStateEntries(ctx.sessionManager), ...pending];
 }
 
 type DispatchForecastApi = Pick<
@@ -1584,10 +1610,15 @@ export function userUnblockAskDue(askedAt: unknown, lastUserMessageAt?: number):
   return typeof lastUserMessageAt === "number" && lastUserMessageAt > askedAt;
 }
 
+function latestBranchUserMessage(source: BranchSource) {
+  for (const entry of selectBranchNewestFirst(source, metadata => metadata.type === "message" && metadata.messageRole === "user")) {
+    const user = latestDeadlineUserMessage([entry]);
+    if (user) return user;
+  }
+}
+
 function lastUserUnblockAsk(ctx: ExtensionContext, row: string): number | undefined {
-  const branch = ctx.sessionManager.getBranch() as Array<Record<string, unknown>>;
-  for (let index = branch.length - 1; index >= 0; index -= 1) {
-    const entry = branch[index]!;
+  for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom_message")) {
     if (entry.type !== "custom_message" || entry.customType !== USER_UNBLOCK_CUSTOM_TYPE) continue;
     const details = (entry.details ?? entry.data) as { row?: unknown; at?: unknown } | undefined;
     if (details?.row === row && typeof details.at === "number") return details.at;
@@ -1596,11 +1627,11 @@ function lastUserUnblockAsk(ctx: ExtensionContext, row: string): number | undefi
 }
 
 function userUnblockWasAsked(ctx: ExtensionContext, row: string, question: string): boolean {
-  return (ctx.sessionManager.getBranch() as Array<Record<string, unknown>>).some((entry) => {
+  for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === USER_UNBLOCK_CUSTOM_TYPE)) {
     const details = entry.data as { row?: unknown; question?: unknown; asked?: unknown } | undefined;
-    return entry.type === "custom" && entry.customType === USER_UNBLOCK_CUSTOM_TYPE
-      && details?.row === row && details.question === question && details.asked === true;
-  });
+    if (details?.row === row && details.question === question && details.asked === true) return true;
+  }
+  return false;
 }
 
 function speculativeRows(phases: DispatchTodoPhases, review: string): Array<Record<string, unknown>> {
@@ -6214,7 +6245,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     const facts = chief ? await integrationFacts(ctx, now) : "";
     const notice = isMain(ctx) ? returnNotice : null;
-    const reviewAnswers = new Set(phases.flatMap(phase => phase.tasks).filter(row => row.schedule?.review === "user" && (latestUserRequestAt ?? (latestDeadlineUserMessage(ctx.sessionManager.getBranch())?.at ?? 0) * 1_000) > (row.schedule.firstDeliveredAt ?? Infinity)).map(row => row.content));
+    const reviewAnswers = new Set(phases.flatMap(phase => phase.tasks).filter(row => row.schedule?.review === "user" && (latestUserRequestAt ?? (latestBranchUserMessage(ctx.sessionManager)?.at ?? 0) * 1_000) > (row.schedule.firstDeliveredAt ?? Infinity)).map(row => row.content));
     const userBlockAsked = new Set(phases.flatMap(phase => phase.tasks).filter(row => {
       const wait = parseUserWait(row.blocker);
       return wait && userUnblockWasAsked(ctx, row.content, wait.question);
