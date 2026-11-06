@@ -449,6 +449,7 @@ export async function visitEntriesFromFileStream(
 		sink.consume(consumed);
 		offset += consumed;
 	};
+	if (maxBytes === 0) return titleSlot;
 	let source: AsyncIterable<Uint8Array>;
 	try {
 		if (options.sourceFd === undefined && options.startOffset === undefined) {
@@ -478,7 +479,7 @@ export async function visitEntriesFromFileStream(
 			sink.append(chunk);
 			if (chunk.includes(0x0a)) await drain();
 			await yieldToMacrotask();
-			if (unread === 0) break;
+			if (unread === 0 && options.sourceFd === undefined) break;
 		}
 	} catch (err) {
 		if (!options.throwIfMissing && isEnoent(err) && sourceBytes === 0) return undefined;
