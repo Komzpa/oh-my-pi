@@ -37,7 +37,6 @@ export interface PeerReport {
 
 /** Operations the test drives on the worker. */
 export interface AgentsProbe {
-	peerResources(id: string): Promise<string[]>;
 	threadId(): Promise<string>;
 	/** Build a real session (mock model) and register it as `id` in the (remote) registry. */
 	open(id: string, options: { sessionFile?: string; gated?: boolean }): Promise<string>;
@@ -65,6 +64,7 @@ export interface AgentsProbe {
 	adopt(id: string): Promise<void>;
 	/** Whether the local session of `key` was disposed. */
 	disposed(key: string): Promise<boolean>;
+	peerResources(id: string): Promise<string[]>;
 	/** Whether the worker's lifecycle proxy manages the worker's registry proxy. */
 	manages(): Promise<boolean>;
 }
@@ -121,11 +121,6 @@ function local(id: string): AgentSession {
 }
 
 const probe: AgentsProbe = {
-	peerResources: async id =>
-		AgentRegistry.global()
-			.get(id)
-			?.session?.getTodoPhases()
-			.flatMap(phase => phase.tasks.flatMap(row => row.schedule?.resources ?? [])) ?? [],
 	threadId: async () => threadName,
 	open: async (id, options) => {
 		const session = await makeSession(id, options.gated === true);
@@ -218,6 +213,11 @@ const probe: AgentsProbe = {
 		if (!session) throw new Error(`no session ${key}`);
 		return session.isDisposed;
 	},
+	peerResources: async id =>
+		AgentRegistry.global()
+			.get(id)
+			?.session?.getTodoPhases()
+			.flatMap(phase => phase.tasks.flatMap(row => row.schedule?.resources ?? [])) ?? [],
 	manages: async () => AgentLifecycleManager.global().manages(AgentRegistry.global()),
 };
 
