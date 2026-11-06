@@ -4709,16 +4709,34 @@ export class SessionManager {
 		}
 	}
 
-	/** Matching payloads only; a journal extension may project its append-only overlays. */
+	#branchSelections = new WeakMap<
+		(metadata: SessionContextEntryMetadata) => boolean,
+		{ path: readonly SessionContextEntryMetadata[]; length: number; revision: number; entries: SessionEntry[] }
+	>();
+
+	/** Reuse selected payloads until metadata or an in-place body changes. */
 	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
 		const path = this.#index.metadataPath();
-		const selected = new Set<string>();
-		for (const metadata of path) {
-			if (predicate(metadata)) selected.add(metadata.id);
+		const cached = this.#branchSelections.get(predicate);
+		if (cached?.path === path && cached.revision === this.#bodyRevision && cached.length === path.length)
+			return cached.entries.slice();
+		const incremental =
+			cached &&
+			cached.revision === this.#bodyRevision &&
+			cached.length <= path.length &&
+			path[cached.length - 1]?.id === cached.path[cached.length - 1]?.id &&
+			!path.slice(cached.length).some(metadata => metadata.type === "tool_result_prune");
+		const entries = incremental ? cached.entries.slice() : [];
+		if (incremental) {
+			for (let i = cached.length; i < path.length; i++) {
+				const metadata = path[i]!;
+				if (predicate(metadata)) entries.push(this.#index.get(metadata.id, true)!);
+			}
+		} else {
+			entries.push(...[...this.#iterateSelectedBranch(path, predicate, true)].reverse());
 		}
-		// The returned array already retains these entries; reuse them on subsequent
-		// selections while callers still hold them instead of decoding them again.
-		return [...this.#iterateSelectedBranch(path, metadata => selected.has(metadata.id), true)].reverse();
+		this.#branchSelections.set(predicate, { path, length: path.length, revision: this.#bodyRevision, entries });
+		return entries.slice();
 	}
 
 	/** Matching entries newest first; excluded payloads are never read. */
