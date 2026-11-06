@@ -1,0 +1,2 @@
+Requirement audits: {{count}} open requirements across {{rows}} rows. Use at most {{maxAuditors}} concurrent requirement auditors. Group many rows sharing a checkout/area into each auditor, with explicit requirementIds; keep the rest queued. Never launch one worker per requirement. Inspect todo view for row artifacts and failure evidence. Real failures require a fix and fresh audit unless the owner accepts the row.
+Classification pending: {{candidates}}. Awaiting owner check: {{awaitingUser}}. Handle these through todo before closure.

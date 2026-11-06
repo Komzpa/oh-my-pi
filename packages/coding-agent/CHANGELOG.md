@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed requirement audits reopening after unrelated commits, retained owner acceptance, and bounded concurrent auditors ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 ## [18.17.0] - 2026-11-06
 ### Fixed
 

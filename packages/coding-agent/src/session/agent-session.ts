@@ -361,6 +361,7 @@ import {
 	buildAsyncResultBatchMessage,
 } from "./async-job-delivery";
 import { type BashExecuteOptions, BashRunner, type BashRunnerHost } from "./bash-runner";
+import { cfgRequirementAuditors } from "../task/settings";
 import {
 	RequirementsLedgerRuntime,
 	type PreparedRequirementCandidate,
@@ -2719,6 +2720,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#agentRegistry = config.agentRegistry;
 		this.#agentKind = config.agentKind ?? "main";
 		this.#requirementsLedger = new RequirementsLedgerRuntime({
+			maxRequirementAuditors: () => cfgRequirementAuditors.get(this.settings),
 			agent: this.agent,
 			agentKind: () => this.#agentKind,
 			cwd: () => this.sessionManager.getCwd(),

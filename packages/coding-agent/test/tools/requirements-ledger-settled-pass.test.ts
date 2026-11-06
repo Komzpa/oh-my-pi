@@ -39,8 +39,8 @@ function requirement(): RequirementLedgerItem {
 // The checkout HEAD has moved from A to B since the passes were recorded.
 const movedHead = async () => ({ cwd: "/tmp", head: SHA_B, dirty: false });
 
-describe("a pass on an already completed row survives a later checkout move", () => {
-	it("keeps the completed row's pass when a sweep covers it but is not closing it", async () => {
+describe("completion alone cannot bypass artifact relevance", () => {
+	it("requires fresh evidence when delivery scope is unknown", async () => {
 		const requirements = [requirement()];
 		const sweep = await evaluateRequirementDoneGate(
 			requirements,
@@ -49,11 +49,13 @@ describe("a pass on an already completed row survives a later checkout move", ()
 			new Map(),
 			new Set([DONE_ROW]),
 		);
-		expect(sweep).toEqual([]);
-		expect(invalidateStaleRequirementVerdicts(requirements, sweep)).toEqual(requirements);
+		expect(sweep).toHaveLength(1);
+		expect(invalidateStaleRequirementVerdicts(requirements, sweep)[0]!.rowVerdicts![DONE_ROW]!.status).toBe(
+			"unverifiable",
+		);
 	});
 
-	it("restores a settled row an older sweep already demoted to unverifiable for staleness alone", async () => {
+	it("does not restore a demoted receipt without a successful freshness check", async () => {
 		const demoted = requirement();
 		demoted.rowVerdicts = {
 			[DONE_ROW]: {
@@ -63,7 +65,7 @@ describe("a pass on an already completed row survives a later checkout move", ()
 			},
 		};
 		const sweep = await evaluateRequirementDoneGate([demoted], [DONE_ROW], movedHead, new Map(), new Set([DONE_ROW]));
-		expect(sweep).toEqual([]);
+		expect(sweep).toHaveLength(1);
 		// a real unverifiable verdict (other evidence) is still reported
 		demoted.rowVerdicts[DONE_ROW] = { ...demoted.rowVerdicts[DONE_ROW]!, evidence: "Could not reproduce the screen" };
 		const still = await evaluateRequirementDoneGate([demoted], [DONE_ROW], movedHead, new Map(), new Set([DONE_ROW]));

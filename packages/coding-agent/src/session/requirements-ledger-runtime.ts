@@ -84,6 +84,7 @@ import {
 	bindRequirementRowArtifact,
 	getLatestTodoPhasesFromEntries,
 	getCompletedTodoRows,
+	getAcceptedTodoRows,
 	getRequirementRowArtifact,
 	getTodoRowChanges,
 	getTodoActionRows,
@@ -254,6 +255,7 @@ export interface RequirementsLedgerRuntimeHost {
 	onSettledAssistantMessage(message: AssistantMessage): void;
 	queueModelNotice?(notice: string): void | Promise<void>;
 	setTodoPhases?(phases: TodoPhase[]): void;
+	maxRequirementAuditors?(): number;
 	setAuditStatus?(text: string | undefined): void;
 	setPublicationGate?(gate: RequirementPublicationGate | undefined): void;
 }
@@ -548,6 +550,15 @@ export class RequirementsLedgerRuntime {
 					"Read the task file, then retry qa-auditor with inline task text instead of taskFile.",
 					"Requirement audit admission and image enrichment require inline task text before dispatch.",
 				),
+			);
+		this.#restorePendingAuditors();
+		const limit = this.#host.maxRequirementAuditors?.() ?? 4;
+		const requested = items.filter(item => isRecord(item) && item.agent === "qa-auditor").length;
+		const active =
+			this.#pendingAuditors.size + [...this.#auditCalls.values()].reduce((sum, calls) => sum + calls.length, 0);
+		if (requested && active + requested > limit)
+			throw new Error(
+				`Requirement audits allow at most ${limit} concurrent auditors (${active} active). Group rows sharing a checkout/area in one auditor; wait for active audits before dispatching more.`,
 			);
 		const revised = [...items];
 		const assignments: RequirementAuditAssignment[] = [];
@@ -1105,6 +1116,7 @@ export class RequirementsLedgerRuntime {
 						...item,
 						awaitingUser: item.issues.every(issue => awaitingUserIssues.has(issue)),
 					})),
+					this.#host.maxRequirementAuditors?.() ?? 4,
 				);
 				await this.#host.queueModelNotice?.(
 					missingTools.length
@@ -1166,6 +1178,7 @@ export class RequirementsLedgerRuntime {
 			new Set(
 				phases.flatMap(phase => phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content)),
 			),
+			getAcceptedTodoRows(branch),
 		);
 		const staleRows = this.#staleGateRows(open);
 		const invalidated = invalidateStaleRequirementVerdicts(requirements, open);
@@ -1223,22 +1236,16 @@ export class RequirementsLedgerRuntime {
 			lastChange?: { at: string; id: string };
 		}[],
 	): Promise<void> {
-		for (const { requirement, row, artifact, verdict, lastChange } of staleRows) {
-			const artifactText = formatRequirementGateArtifact(artifact, row);
-			const key = JSON.stringify([
+		if (!staleRows.length) return;
+		const limit = this.#host.maxRequirementAuditors?.() ?? 4;
+		await this.#announceFlowNotice(
+			JSON.stringify([
 				"stale",
-				requirement.id,
-				row,
-				requirementArtifactState(artifact),
-				verdict,
-				lastChange,
-			]);
-			await this.#announceFlowNotice(
-				key,
-				`Re-audit ${requirement.id} for ${JSON.stringify(row)} before done or publishing.`,
-				`The saved pass for ${verdict.artifact} is stale for this row artifact (${artifactText}). Call task({agent:"qa-auditor",name:"qa-auditor",requirementIds:${JSON.stringify([requirement.id])},task:${JSON.stringify(`Audit ${requirement.id} for TODO row ${JSON.stringify(row)} at its current artifact; return one receipt row for this exact ID.`)}}).`,
-			);
-		}
+				staleRows.map(item => [item.requirement.id, item.row, requirementArtifactState(item.artifact)]),
+			]),
+			`Re-audit changed row artifacts with at most ${limit} concurrent requirement auditors.`,
+			`Group rows sharing a checkout/area in one auditor. Inspect todo view for scoped requirement IDs and current artifacts; keep the remaining rows queued.`,
+		);
 	}
 
 	#openRequirements(

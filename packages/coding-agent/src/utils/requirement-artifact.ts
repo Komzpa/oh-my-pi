@@ -2,7 +2,7 @@ import * as fsSync from "node:fs";
 import type { Dirent, Stats } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isEnoent, isRecord } from "@oh-my-pi/pi-utils";
 import { type VcsGitRepo } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { probeRequirementDeployment, type RequirementDeploymentIdentity } from "./requirement-deployment";
@@ -929,6 +929,67 @@ export async function requirementArtifactBase(
 	let base = defaultBranch ? await repo.mergeBase(defaultBranch, revision) : null;
 	if (!base || base === revision) base = await repo.resolveRef(`${revision}^`);
 	return { revision, base: base ?? null };
+}
+
+/** Recheck the delivered diff, rather than unrelated later commits in the checkout. */
+export async function checkRequirementDeliveredIdentity(
+	identity: RequirementIdentity,
+	signal?: AbortSignal,
+	snapshots?: RequirementGitStatusSnapshots,
+): Promise<RequirementIdentityCheck> {
+	if (identity.kind === "git") {
+		try {
+			const repo = vcs.git(identity.repo);
+			if (repo) {
+				let paths = identity.paths;
+				if (!paths) {
+					const { revision, base } = await requirementArtifactBase(identity);
+					if (base) paths = await repo.changedFiles({ base, head: revision }, signal);
+				}
+				if (paths?.length) {
+					const head = await repo.headSha(signal);
+					if (!head) throw new Error("missing HEAD");
+					const changes = await repo.changedFiles({ base: identity.commit, head, files: paths }, signal);
+					if (changes.length)
+						return {
+							state: "stale",
+							kind: "git",
+							location: identity.repo,
+							expected: identity.commit,
+							observed: head,
+						};
+					const present: string[] = [];
+					for (const relative of paths) {
+						if (await repo.treeEntry(identity.commit, relative, signal)) present.push(relative);
+						else {
+							try {
+								await fs.lstat(path.join(identity.repo, relative));
+								return {
+									state: "stale",
+									kind: "git",
+									location: relative,
+									expected: "(deleted)",
+									observed: "(present)",
+								};
+							} catch (error) {
+								if (!isEnoent(error)) throw error;
+							}
+						}
+					}
+					const check = present.length
+						? await checkRequirementIdentity({ ...identity, paths: present }, signal, snapshots)
+						: { state: "fresh" as const };
+					if ((await repo.headSha(signal)) !== head) throw new Error("HEAD changed during relevance probe");
+					return check;
+				}
+			}
+		} catch {
+			signal?.throwIfAborted();
+			// Unknown delivery scope retains the old whole-checkout check for this receipt.
+		}
+	}
+
+	return checkRequirementIdentity(identity, signal, snapshots);
 }
 
 /** Compare the artifact to its default-branch merge base, or its parent in a standalone repo. */

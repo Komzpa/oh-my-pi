@@ -21,7 +21,7 @@ import type { SessionEntry } from "../session/session-entries";
 
 import { AgentRegistry } from "../registry/agent-registry";
 import {
-	checkRequirementIdentity,
+	checkRequirementDeliveredIdentity,
 	currentRequirementIdentity,
 	currentRequirementGitStatus,
 	formatRequirementIdentity,
@@ -183,7 +183,19 @@ export async function getRequirementRowArtifact(
 	phases: readonly TodoPhase[],
 	checkoutCache?: Map<string, Promise<RequirementRowArtifact>>,
 ): Promise<RequirementRowArtifact> {
-	const artifact = await resolveRequirementRowArtifact(ctx, row, phases, checkoutCache);
+	let artifact = await resolveRequirementRowArtifact(ctx, row, phases, checkoutCache);
+	if (ctx.receipt && artifact.head && !artifact.identityCheck && !artifact.reason) {
+		const parsed = parseRequirementReceiptIdentities(ctx.receipt);
+		if ("legacy" in parsed && parsed.commits.length === 1) {
+			const check = await checkRequirementDeliveredIdentity(
+				{ kind: "git", repo: artifact.cwd, commit: parsed.commits[0]! },
+				ctx.signal,
+				ctx.gitStatusSnapshots,
+			);
+			if (check.state === "fresh") artifact = { ...artifact, identityCheck: { artifact: ctx.receipt } };
+		}
+	}
+
 	const tasks = phases.flatMap(phase => phase.tasks).filter(task => task.content === row);
 	const pending = tasks.length === 1 ? tasks[0]!.awaitingUser : undefined;
 	return pending?.action.trim() ? { ...artifact, awaitingUser: pending } : artifact;
@@ -420,7 +432,7 @@ async function resolveTypedRequirementArtifact(
 	);
 	if (coverageIssue) return reject(coverageIssue);
 	for (const identity of receiptIdentities.identities) {
-		const check = await checkRequirementIdentity(identity, ctx.signal, ctx.gitStatusSnapshots);
+		const check = await checkRequirementDeliveredIdentity(identity, ctx.signal, ctx.gitStatusSnapshots);
 		if (check.state === "stale")
 			return reject(`stale ${check.kind} ${check.location}: expected ${check.expected}, observed ${check.observed}`);
 		if (check.state === "unverifiable")
@@ -1116,6 +1128,20 @@ export function getCompletedTodoRows(entries: SessionEntry[]): Set<string> {
 		}
 	});
 	return completed;
+}
+
+/** Owner acceptance survives plan pruning; a later explicit review replaces it. */
+export function getAcceptedTodoRows(entries: SessionEntry[]): Set<string> {
+	const accepted = new Set<string>();
+	observeLatestTodoPhases(entries, phases => {
+		for (const task of phases.flatMap(phase => phase.tasks)) {
+			const schedule = "schedule" in task && isRecord(task.schedule) ? task.schedule : undefined;
+			const review = schedule?.review;
+			if (review === "accepted") accepted.add(task.content);
+			else if (review !== undefined) accepted.delete(task.content);
+		}
+	});
+	return accepted;
 }
 
 function resolveTaskOrError(
@@ -1846,6 +1872,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 						phase.tasks.filter(task => task.status !== "abandoned").map(task => task.content),
 					),
 				),
+				getAcceptedTodoRows(branch),
 			);
 			if (JSON.stringify(getLatestRequirements(sessionManager.getBranch())) !== requirementSnapshot) {
 				return {
