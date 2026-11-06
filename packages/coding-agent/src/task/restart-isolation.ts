@@ -15,7 +15,9 @@ export interface RestartIsolation {
 	snapshotPath?: string;
 }
 
-export async function restartIsolation(child: LiveRestartSubagent): Promise<RestartIsolation | undefined> {
+export async function restartIsolation(
+	child: Pick<LiveRestartSubagent, "id" | "displayName" | "sessionFile">,
+): Promise<RestartIsolation | undefined> {
 	if (!child.sessionFile) return undefined;
 	const peek = await SessionManager.peekSessionInit(child.sessionFile);
 	if (!peek?.init?.isolated) return undefined;

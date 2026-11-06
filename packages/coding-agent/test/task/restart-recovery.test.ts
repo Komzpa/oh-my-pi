@@ -13,6 +13,8 @@ import {
 	captureSubagentsForRestart,
 	restoreSubagentsAfterRestart,
 } from "@oh-my-pi/pi-coding-agent/task/restart-recovery";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { readRestartIsolation } from "@oh-my-pi/pi-coding-agent/task/restart-isolation";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -91,6 +93,8 @@ function makeTestSession(
 			return "woken" as const;
 		},
 		dispose: async () => manager.close(),
+		getTodoPhases: () => [],
+		commitTodoPhases: () => {},
 		emitNotice: (level: string, message: string, source?: string) => notices.push({ level, message, source }),
 	} as unknown as AgentSession;
 	return {
@@ -827,11 +831,163 @@ describe("subagent restart recovery", () => {
 			sessionFile: isolated.sessionFile,
 			status: "running",
 		});
-		await expect(captureSubagentsForRestart(rootSession.session)).rejects.toThrow(/isolation/);
-		expect(
-			rootManager
-				.getEntries()
-				.some(entry => entry.type === "custom" && entry.customType === "subagent_restart_handoff"),
-		).toBe(false);
+		await captureSubagentsForRestart(rootSession.session);
+		expect(await Bun.file(path.join(rootArtifactDir, `${isolated.id}.restart-isolation.json`)).json()).toMatchObject({
+			id: isolated.id,
+			cwd,
+		});
 	});
+});
+
+// The replacement process has no executor closure; only the durable marker and
+// transcript can authorize revival of these isolated assignments.
+it.each([
+	{ id: "LateWorker", status: "running" as const, running: true },
+	{ id: "IdleWorker", status: "idle" as const, running: false },
+	{ id: "Adaptive60Mw3Levels-2", status: "parked" as const, running: true },
+])("retains and resumes $id after dispose during drain without duplicate revival", async ({ id, status, running }) => {
+	const cwd = makeTempDir("@pi-late-restart-worker-");
+	const { manager, file } = await createRootSession(cwd, path.join(cwd, "sessions"));
+	const root = makeTestSession(manager).session;
+	registerRoot(AgentRegistry.global(), root, file);
+	// The isolation snapshot pass has already finished with no children.
+	await captureSubagentsForRestart(root);
+	const child = await createTranscript(cwd, file.slice(0, -6), {
+		task: "continue the unfinished assignment",
+		isolated: true,
+	});
+	const childFile = path.join(file.slice(0, -6), `${id}.jsonl`);
+	await fs.rename(child.sessionFile, childFile);
+	const childManager = track(await SessionManager.open(childFile));
+	childManager.appendCustomEntry("omp:restart-pending-queues", {
+		steering: [],
+		followUp: [],
+		pendingNextTurn: [
+			{
+				role: "custom",
+				customType: "restart-queued",
+				content: "Restart claude-dc-lag5 is draining…",
+				details: { requestId: "claude-dc-lag5", state: "draining" },
+			},
+		],
+	});
+	childManager.appendCustomEntry(SESSION_EXIT_CUSTOM_TYPE, {
+		reason: "dispose",
+		kind: "normal",
+		recordedAt: "2026-11-06T15:08:39Z",
+	});
+	await childManager.flush();
+	AgentRegistry.global().register({
+		id,
+		displayName: id,
+		kind: "sub",
+		parentId: MAIN_AGENT_ID,
+		session: status === "parked" ? null : makeTestSession(childManager).session,
+		sessionFile: childFile,
+		status,
+	});
+	await captureSubagentsForRestart(root, { runningAgentIds: new Set(running ? [id] : []) });
+	expect(await readRestartIsolation(childFile, id)).toMatchObject({ id, cwd });
+	await childManager.close();
+	AgentRegistry.resetGlobalForTests();
+	AgentLifecycleManager.resetGlobalForTests();
+	IrcBus.resetGlobalForTests();
+	registerRoot(AgentRegistry.global(), root, file);
+	let revivals = 0;
+	const deliveries: IrcMessage[] = [];
+	AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+		async ref => {
+			const retained = await readRestartIsolation(ref.sessionFile!, ref.id);
+			if (retained?.id !== ref.id || retained.cwd !== cwd) return undefined;
+			return async () => {
+				revivals++;
+				const reopened = track(await SessionManager.open(ref.sessionFile!));
+				expect(
+					reopened
+						.getEntries()
+						.find(entry => entry.type === "session_init" && entry.task === "continue the unfinished assignment"),
+				).toBeDefined();
+				expect(
+					reopened
+						.getEntries()
+						.find(
+							entry =>
+								entry.type === "message" &&
+								entry.message.role === "user" &&
+								entry.message.content === "Begin the durable assignment",
+						),
+				).toBeDefined();
+				return makeTestSession(reopened, { onDelivery: message => deliveries.push(message) }).session;
+			};
+		},
+		() => 0,
+	);
+	if (!running) {
+		await ensurePersistedRoster(AgentRegistry.global(), file);
+		expect(AgentRegistry.global().get(id)?.status).toBe("parked");
+		await IrcBus.global().send({ from: MAIN_AGENT_ID, to: id, body: "Continue the idle assignment" });
+	}
+	const report = await restoreSubagentsAfterRestart(root);
+	expect(report.failures).toEqual([]);
+	expect(running ? report.resumed : report.restoredIdle).toEqual([id]);
+	await restoreSubagentsAfterRestart(root);
+	await IrcBus.global().send({ from: MAIN_AGENT_ID, to: id, body: "Continue" });
+	expect(revivals).toBe(1);
+	expect(deliveries.filter(message => message.body.includes("persisted session_init"))).toHaveLength(running ? 1 : 0);
+});
+
+it("persists an unrevivable row as needing a worker with its previous transcript", async () => {
+	const cwd = makeTempDir("@pi-restart-needs-worker-");
+	const { manager, file } = await createRootSession(cwd, path.join(cwd, "sessions"));
+	const root = makeTestSession(manager).session;
+	registerRoot(AgentRegistry.global(), root, file);
+	const child = await createTranscript(cwd, file.slice(0, -6), { task: "unfinished" });
+	const live = track(await SessionManager.open(child.sessionFile));
+	AgentRegistry.global().register({
+		id: child.id,
+		displayName: child.id,
+		kind: "sub",
+		parentId: MAIN_AGENT_ID,
+		session: makeTestSession(live).session,
+		sessionFile: child.sessionFile,
+		status: "idle",
+	});
+	await captureSubagentsForRestart(root);
+	await live.close();
+	AgentRegistry.resetGlobalForTests();
+	AgentLifecycleManager.resetGlobalForTests();
+	registerRoot(AgentRegistry.global(), root, file);
+	let phases: TodoPhase[] = [
+		{
+			name: "Work",
+			tasks: [
+				Object.assign(
+					{ content: "unfinished", status: "in_progress" as const },
+					{ schedule: { owner: child.id, executor: { workerId: child.id, startedAt: 1 } } },
+				),
+			],
+		},
+	];
+	Object.assign(root, {
+		getTodoPhases: () => phases,
+		commitTodoPhases: (next: TodoPhase[]) => {
+			phases = next;
+			manager.appendCustomEntry("user_todo_edit", { phases });
+		},
+	});
+	AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+		async () => undefined,
+		() => 0,
+	);
+	const report = await restoreSubagentsAfterRestart(root);
+	expect(report.failures.map(failure => failure.id)).toEqual([child.id]);
+	expect(phases[0]!.tasks[0]).toMatchObject({
+		status: "pending",
+		schedule: { executor: { workerId: child.id, outcome: "failed" } },
+	});
+	expect(phases[0]!.tasks[0]!.notes).toEqual([expect.stringContaining(`previous=${child.id}; history://${child.id}`)]);
+	const persisted = track(await SessionManager.open(file));
+	expect(
+		persisted.getEntries().findLast(entry => entry.type === "custom" && entry.customType === "user_todo_edit"),
+	).toMatchObject({ data: { phases } });
 });
