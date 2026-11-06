@@ -424,6 +424,8 @@ export async function loadSystemPromptFiles(options: LoadContextFilesOptions = {
 export const DEFAULT_SYSTEM_PROMPT_TOOL_NAMES = ["read", "bash", "edit", "write"] as const;
 
 export interface SystemPromptToolMetadata {
+	/** Tool-owned project catalog, kept outside native schemas and agent policy. */
+	projectInstructions?: string;
 	label: string;
 	description: string;
 	/** Tool name the model sees on the provider wire. Defaults to the internal tool name. */
@@ -491,6 +493,9 @@ export function projectSystemPromptToolMetadata(
 		}
 		if ((override?.readsSkillUris ?? toolReadsSkillUris(tool)) === true) metadataEntry.readsSkillUris = true;
 
+		if ("projectInstructions" in tool && typeof tool.projectInstructions === "string") {
+			metadataEntry.projectInstructions = tool.projectInstructions;
+		}
 		metadata.set(name, metadataEntry);
 	};
 
@@ -507,6 +512,8 @@ export function projectSystemPromptToolMetadata(
 }
 
 export interface BuildSystemPromptOptions {
+	/** Stable task-agent role, before project context. */
+	agentRolePrompt?: string;
 	/** Custom system prompt (replaces default). */
 	customPrompt?: string;
 	/** Already-loaded custom system prompt text; bypasses path resolution. */
@@ -622,10 +629,18 @@ export interface BuildSystemPromptOptions {
 	subagent?: boolean;
 }
 
+export interface PromptLayerIndex {
+	global: number;
+	agent: number;
+	project: number;
+}
+
 /** Result of building provider-facing system prompt messages. */
 export interface BuildSystemPromptResult {
 	/** Ordered system prompt blocks. Providers should preserve entries as distinct messages/blocks. */
 	systemPrompt: string[];
+	/** End offsets in systemPrompt.join("\n\n"); dynamic context starts at project. */
+	layers?: PromptLayerIndex;
 	/** Mutable workspace snapshot for the first conversation turn. */
 	conversationContext?: string;
 	/**
@@ -1000,6 +1015,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 
 	const environment = getEnvironmentInfo();
 	const data = {
+		toolProjectInstructions: [...(tools?.values() ?? [])].map(tool => tool.projectInstructions).filter(Boolean),
 		systemPromptCustomization: effectiveSystemPromptCustomization,
 		customPrompt: resolvedCustomPrompt,
 		appendPrompt: resolvedAppendPrompt ?? "",
@@ -1054,7 +1070,12 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		: (resolvedSystemPromptTemplate ?? systemPromptTemplate);
 	let rendered: string;
 	try {
-		rendered = prompt.render(selectedTemplate, data);
+		rendered = prompt.render(
+			selectedTemplate,
+			resolvedCustomPrompt || resolvedSystemPromptTemplate
+				? data
+				: { ...data, agentOnly: true, skills: [], rules: [], alwaysApplyRules: [] },
+		);
 	} catch (error) {
 		if (resolvedSystemPromptTemplate === undefined) throw error;
 		if (!hasDiscoveredTemplate) {
@@ -1064,20 +1085,40 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 			error: String(error),
 		});
 		resolvedSystemPromptTemplate = undefined;
-		rendered = prompt.render(systemPromptTemplate, data);
+		rendered = prompt.render(systemPromptTemplate, {
+			...data,
+			agentOnly: true,
+			skills: [],
+			rules: [],
+			alwaysApplyRules: [],
+		});
 	}
-	const systemPrompt = [rendered];
+	const bundled = !resolvedCustomPrompt && !resolvedSystemPromptTemplate;
+	const systemPrompt = bundled
+		? [prompt.render(systemPromptTemplate, { globalOnly: true }).trim(), rendered.trim()]
+		: [rendered];
+	const globalEnd = bundled ? systemPrompt[0].length : 0;
 	for (const prelude of evalPreludes) {
 		const guidance = prelude.guidance?.trim();
 		if (guidance) systemPrompt.push(guidance);
 	}
-	// Working-directory content (context files with their paths, workspace
-	// tree/roots, active repo) and session append text form one trailing
+	if (options.agentRolePrompt?.trim()) systemPrompt.push(options.agentRolePrompt.trim());
+	const agentEnd = systemPrompt.join("\n\n").length;
+	// Project instructions, skills, rules, cwd and repo facts form one trailing
 	// `<project-context>` block after every static block, so sessions in
 	// different directories share the static prefix and the Anthropic head
 	// cache breakpoint lands right before this block.
 	const projectPrompt = prompt
-		.render(projectPromptTemplate, { ...data, activeRepoContext: activeRepoContextPrompt })
+		.render(projectPromptTemplate, {
+			...data,
+			...(bundled
+				? {
+						appendPrompt: "",
+						skillsAndRules: prompt.render(systemPromptTemplate, { ...data, agentOnly: true, catalogOnly: true }),
+					}
+				: { skills: [], rules: [], alwaysApplyRules: [] }),
+			activeRepoContext: activeRepoContextPrompt,
+		})
 		.trim();
 	if (projectPrompt) {
 		systemPrompt.push(projectPrompt);
@@ -1093,6 +1134,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	return {
 		systemPrompt,
 		xdevCatalogNames,
+		layers: bundled ? { global: globalEnd, agent: agentEnd, project: systemPrompt.join("\n\n").length } : undefined,
 		conversationContext: prompt.render(workspaceContextTemplate, data).trim() || undefined,
 	};
 }
