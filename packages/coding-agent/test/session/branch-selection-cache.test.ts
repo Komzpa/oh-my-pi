@@ -41,3 +41,24 @@ test("ordinary selection observes changed predicate closure state", () => {
 	kind = "b";
 	expect(manager.getBranchMatching(predicate)[0]).toMatchObject({ customType: "b" });
 });
+
+test("a prune append invalidates cached tool output without modifying its raw body", () => {
+	const manager = SessionManager.inMemory();
+	const id = manager.appendMessage({
+		role: "toolResult",
+		toolCallId: "call",
+		toolName: "read",
+		content: [{ type: "text", text: "large body" }],
+		isError: false,
+		timestamp: 1,
+	});
+	const predicate = (entry: { type: string }) => entry.type === "message";
+	expect(manager.getCachedBranchMatching(predicate)[0]).toMatchObject({
+		message: { content: [{ text: "large body" }] },
+	});
+	manager.appendToolResultPrune([{ entryId: id, notice: "[pruned]" }], 2);
+	expect(manager.getCachedBranchMatching(predicate)[0]).toMatchObject({
+		message: { content: [{ text: "[pruned]" }] },
+	});
+	expect(manager.getEntry(id)).toMatchObject({ message: { content: [{ text: "large body" }] } });
+});
