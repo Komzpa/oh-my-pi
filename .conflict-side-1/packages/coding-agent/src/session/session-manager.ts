@@ -4719,29 +4719,33 @@ export class SessionManager {
 		{ path: readonly SessionContextEntryMetadata[]; length: number; revision: number; entries: SessionEntry[] }
 	>();
 
-	/** Memoized selection for stable, pure metadata predicates. */
+	/** Frozen read-only snapshot for stable, pure metadata predicates; unrelated appends retain identity. */
 	getCachedBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
 		const path = this.#index.metadataPath();
 		const cached = this.#branchSelections.get(predicate);
 		if (cached?.path === path && cached.revision === this.#bodyRevision && cached.length === path.length)
-			return cached.entries.slice();
+			return cached.entries;
 		const incremental =
 			cached &&
 			cached.revision === this.#bodyRevision &&
 			cached.length <= path.length &&
 			path[cached.length - 1]?.id === cached.path[cached.length - 1]?.id &&
 			!path.slice(cached.length).some(metadata => metadata.type === "tool_result_prune");
-		const entries = incremental ? cached.entries.slice() : [];
+		let entries = incremental ? cached.entries : [];
 		if (incremental) {
 			for (let i = cached.length; i < path.length; i++) {
 				const metadata = path[i]!;
-				if (predicate(metadata)) entries.push(this.#index.get(metadata.id, true)!);
+				if (predicate(metadata)) {
+					if (entries === cached.entries) entries = entries.slice();
+					entries.push(this.#index.get(metadata.id, true)!);
+				}
 			}
 		} else {
 			entries.push(...[...this.#iterateSelectedBranch(path, predicate, true)].reverse());
 		}
+		Object.freeze(entries);
 		this.#branchSelections.set(predicate, { path, length: path.length, revision: this.#bodyRevision, entries });
-		return entries.slice();
+		return entries;
 	}
 
 	/** Arbitrary predicates are evaluated afresh, including caller-owned closure state. */

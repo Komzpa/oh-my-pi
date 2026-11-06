@@ -13,10 +13,12 @@ test("unchanged frames retain selected plans, appends scan only new metadata, ed
 	for (let i = 0; i < 100; i++) expect(manager.getCachedBranchMatching(predicate)).toEqual(initial);
 	expect(visits).toBe(1);
 	// Mutating the returned array must not corrupt the next consumer's snapshot.
-	initial.length = 0;
+	expect(() => {
+		initial.length = 0;
+	}).toThrow();
 	expect(manager.getCachedBranchMatching(predicate)).toHaveLength(1);
 	manager.appendCustomEntry("progress", { elapsed: 1 });
-	expect(manager.getCachedBranchMatching(predicate)).toHaveLength(1);
+	expect(manager.getCachedBranchMatching(predicate)).toBe(initial);
 	expect(visits).toBe(2);
 	manager.appendCustomEntry("plan", { status: "completed" });
 	expect(manager.getCachedBranchMatching(predicate).at(-1)).toMatchObject({ data: { status: "completed" } });

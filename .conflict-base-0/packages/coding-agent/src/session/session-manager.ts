@@ -2567,6 +2567,7 @@ export class SessionManager {
 		this.#titleUpdatedAt = timestamp;
 
 		this.#entries = [];
+		this.#branchSelections = new WeakMap();
 		this.#index.clear();
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
@@ -2604,6 +2605,7 @@ export class SessionManager {
 		this.#titleUpdatedAt = header.timestamp;
 		const repairedUsage = normalizeLoadedUsage(entries);
 		if (repairedUsage > 0) logger.warn("Loaded assistant messages with incomplete usage", { count: repairedUsage });
+		this.#branchSelections = new WeakMap();
 		this.#index.rebuild(entries);
 	}
 
@@ -2669,6 +2671,7 @@ export class SessionManager {
 		}
 		const restoredLeaf = retainedAncestor(batch.externalLeafChanged ? batch.externalLeafId : batch.preBatchLeafId);
 		this.#entries = retained;
+		this.#branchSelections = new WeakMap();
 		this.#index.rebuild(retained);
 		this.#index.setLeaf(restoredLeaf && this.#index.has(restoredLeaf) ? restoredLeaf : null);
 	}
@@ -2951,6 +2954,7 @@ export class SessionManager {
 
 			this.#applyEntries(header, fileEntries.slice(1) as SessionEntry[]);
 			if (loaded.index) {
+				this.#branchSelections = new WeakMap();
 				this.#index.clear();
 				this.#index = loaded.index;
 				this.#indexHandoffBase = loaded.handoffBase;
@@ -3662,6 +3666,7 @@ export class SessionManager {
 	releaseRetainedEntries(): void {
 		this.seal();
 		this.#entries = [];
+		this.#branchSelections = new WeakMap();
 		this.#index.clear();
 		this.#inMemoryArtifacts = null;
 		this.#closeWriterEventually();
@@ -4928,6 +4933,7 @@ export class SessionManager {
 				leafId = child.id;
 			}
 			this.#entries = this.getEntries().filter(candidate => candidate.id !== entryId);
+			this.#branchSelections = new WeakMap();
 			this.#index.rebuild(this.#entries);
 			if (entry.type === "message" && entry.message.role === "assistant") {
 				const { api, provider, model, usage, stopReason, errorMessage } = entry.message;
@@ -5043,6 +5049,7 @@ export class SessionManager {
 		this.#titleSource = header.titleSource;
 		this.#titleUpdatedAt = timestamp;
 		this.#hasTitleSlot = true;
+		this.#branchSelections = new WeakMap();
 		this.#index.rebuild(this.#entries);
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
