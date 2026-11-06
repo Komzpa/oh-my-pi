@@ -90,6 +90,10 @@
 
 - Simplified Bash previews for redirection to /dev/null by showing a single icon in the Nerd Font symbol preset.
 
+### Added
+
+- Render gaps longer than two seconds now log a bounded pipeline timeline for diagnosis.
+
 ### Fixed
 
 - Fixed streaming and scrolling display issues in terminals without synchronized output, including duplicated rows and blank screens or status lines.
