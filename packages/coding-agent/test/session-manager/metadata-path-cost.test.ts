@@ -41,7 +41,14 @@ test("path reads after the whole branch was exposed stay independent of branch l
 	const index = new SessionEntryIndex();
 	const timestamp = "2026-11-06T00:00:00Z";
 	for (let i = 0; i < 1400; i++)
-		index.insert({ type: "custom", id: `row-${i}`, parentId: i ? `row-${i - 1}` : null, timestamp, customType: "user_todo_edit", data: {} });
+		index.insert({
+			type: "custom",
+			id: `row-${i}`,
+			parentId: i ? `row-${i - 1}` : null,
+			timestamp,
+			customType: "user_todo_edit",
+			data: {},
+		});
 	expect(index.branchView().length).toBe(1400);
 	const retained = spyOn(index, "retainedEntry");
 	try {
@@ -51,7 +58,12 @@ test("path reads after the whole branch was exposed stay independent of branch l
 		if (middle.type !== "custom") throw new Error("expected custom entry");
 		middle.customType = "checkpoint";
 		index.update(middle);
-		expect(index.metadataPath().filter(entry => entry.customType === "checkpoint").map(entry => entry.id)).toEqual(["row-700"]);
+		expect(
+			index
+				.metadataPath()
+				.filter(entry => entry.customType === "checkpoint")
+				.map(entry => entry.id),
+		).toEqual(["row-700"]);
 	} finally {
 		retained.mockRestore();
 	}
