@@ -1,0 +1,3 @@
+DECISION: Yes—implement the #92 core fix and omit the signed-thinking change.
+
+The journal evidence says raw provider payloads contain no usable output, and the existing empty guard already covers unsigned thinking. The bypass is the coupling between `silentAssistantTurn` and accepting empty stops when `actionDemand` is present. Test that demanded wakes execute a tool and expose the cap; preserve acceptance for idle silent wakes.

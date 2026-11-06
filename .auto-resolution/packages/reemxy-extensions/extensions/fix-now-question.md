@@ -1,0 +1,1 @@
+{{#if late}}The plan missed its deadline. Which scope should we cut, or what new deadline do you choose?{{else}}Row “{{{row}}}” keeps failing or being re-estimated. Which scope should we split or block?{{/if}}
