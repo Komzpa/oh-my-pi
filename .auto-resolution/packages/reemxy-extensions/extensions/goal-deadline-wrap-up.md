@@ -1,0 +1,1 @@
+The user's hard deadline has passed. Reforecast the remaining requested rows now, put the most valuable shippable piece first, and drop or split rows that cannot land. Continue executing the open requested work and ship the next usable piece; report the verified delta and what remains. Keep the recorded deadline unchanged and visibly missed during the replan.

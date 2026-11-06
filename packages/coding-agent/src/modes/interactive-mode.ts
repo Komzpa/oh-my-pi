@@ -171,7 +171,7 @@ import { resolveMarkdownLinkHrefs } from "../internal-urls/hyperlink-targets";
 import type { ResolveContext } from "../internal-urls/index";
 import { modelMentionChipLabel, shiftImageMarkers } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
 import { isTranscriptEntry, type SessionContext } from "../session/session-context";
-import type { DraftEditorState, DraftImage, SessionManager } from "../session/session-manager";
+import { type DraftEditorState, type DraftImage, SessionManager } from "../session/session-manager";
 import { loadPinnedSessionIds } from "../session/session-pins";
 import {
 	canAutoCreateWorktree,
@@ -242,6 +242,7 @@ import {
 	getLatestTodoArchiveFromEntries,
 	getTodoArchiveSummaryFromEntries,
 	getTodoHudVisibility,
+	isTodoStateEntryMetadata,
 	nextActionableTask,
 	TODO_HUD_STATE_CUSTOM_TYPE,
 	type TodoHudStateEntryData,

@@ -1,0 +1,31 @@
+{
+  "source": "evidence/settle",
+  "heartbeatMs": 10,
+  "unit": "milliseconds",
+  "turns": [
+    {
+      "start": 1794086552459,
+      "end": 1794086554992,
+      "maxIntervalMs": 54.1571299999996,
+      "rcharAtMax": 367,
+      "sampleEnd": 1794086552483
+    },
+    {
+      "start": 1794086555003,
+      "end": 1794086564970,
+      "maxIntervalMs": 32.23536400000012,
+      "rcharAtMax": 1439945,
+      "sampleEnd": 1794086557034
+    },
+    {
+      "start": 1794086564979,
+      "end": 1794086575027,
+      "maxIntervalMs": 10,
+      "rcharAtMax": 0,
+      "sampleEnd": null
+    }
+  ],
+  "p50TurnMaxMs": 32.23536400000012,
+  "maxTurnMs": 54.1571299999996,
+  "tools": []
+}
