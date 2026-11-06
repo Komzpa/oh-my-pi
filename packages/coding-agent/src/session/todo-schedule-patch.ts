@@ -1,4 +1,4 @@
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { TodoSchedulePatchPersistedEdit, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { todoNeedsOwnerDecision, type TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 
 /** Copy only the edited row; archived rows and their histories stay shared. */
@@ -35,4 +35,21 @@ export function patchTodoSchedule(
 			? { ...phase, tasks: phase.tasks.map(candidate => (candidate === previous ? row : candidate)) }
 			: phase,
 	);
+}
+
+/** Preserve field clearing when JSON drops undefined object properties. */
+export function buildTodoSchedulePatchEdit(
+	task: string,
+	patch: Partial<TodoSchedule>,
+	at = Date.now(),
+): TodoSchedulePatchPersistedEdit {
+	const cleared = (Object.keys(patch) as Array<keyof TodoSchedule>).filter(key => patch[key] === undefined);
+	return {
+		v: 1,
+		kind: "schedule_patch",
+		at,
+		task,
+		patch: structuredClone(patch),
+		...(cleared.length ? { cleared } : {}),
+	};
 }

@@ -1,4 +1,4 @@
-import { patchTodoSchedule } from "./session/todo-schedule-patch";
+import { buildTodoSchedulePatchEdit, patchTodoSchedule } from "./session/todo-schedule-patch";
 import { selectBranchNewestFirst } from "./session/branch-selection";
 import * as path from "node:path";
 import {
@@ -3797,7 +3797,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				// The callback merges into fresh hydrated state synchronously. A canonical
 				// append-only delta keeps extension annotations on the normal resume path.
 				sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
-					edit: { v: 1, kind: "schedule_patch", at, task, patch: structuredClone(patch) },
+					edit: buildTodoSchedulePatchEdit(task, patch, at),
 				});
 				session.setTodoPhases(phases);
 				return true;
