@@ -113,6 +113,7 @@ export interface TodoExecutorPersistedEdit {
 	kind: "executor";
 	at: number;
 	observation: {
+		row?: string;
 		workerId: string;
 		agentProfile?: string;
 		description?: string;

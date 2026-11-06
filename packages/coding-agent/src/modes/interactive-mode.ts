@@ -1115,7 +1115,10 @@ export function linkTodoWorkers(
 			// several: byTask maps item→session, so one session may own many rows.
 			// A row already claimed by another explicit owner keeps its first claimant.
 			for (const task of explicit) {
-				if (byTask.has(task)) continue;
+				if (byTask.has(task)) {
+					linked = true;
+					continue;
+				}
 				byTask.set(task, session);
 				linked = true;
 			}
@@ -5348,13 +5351,22 @@ export class InteractiveMode implements InteractiveModeContext {
 	/** HUD row with forecast and linked-worker detail from the render in flight. */
 	#formatTodoLine(todo: TodoItem, prefix: string, matched: boolean): string {
 		const context = this.#todoLineContext;
-		return this.#formatForecastTodoLine(
+		const line = this.#formatForecastTodoLine(
 			todo,
 			prefix,
 			matched,
 			context?.now ?? Date.now(),
 			context?.workers.get(todo),
 		);
+		const others = this.#observerRegistry
+			.getSessions()
+			.filter(
+				session =>
+					isHudSubagent(session) &&
+					session.id !== context?.workers.get(todo)?.id &&
+					todo.schedule?.workerIds?.includes(session.id),
+			);
+		return [line, ...others.map(worker => this.#formatInlineWorker(worker))].join(" ");
 	}
 
 	#formatPlainTodoLine(todo: TodoItem, prefix: string, matched: boolean, overdue = false): string {
@@ -5755,9 +5767,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			const owners = new Map<string, TodoDisplayWorker>();
 			const runningWorkerIds = new Set(liveWorkers.map(worker => worker.id));
 			for (const task of livePhases.flatMap(phase => phase.tasks)) {
-				const worker = liveWorkers.find(worker =>
-					todoMatchesObservedWorker(task, { workerId: worker.id, runningWorkerIds }),
-				);
+				const worker =
+					liveWorkers.find(worker => worker.id === task.schedule?.executor?.workerId) ??
+					liveWorkers.find(worker => todoMatchesObservedWorker(task, { workerId: worker.id, runningWorkerIds }));
 				if (worker) owners.set(task.content, worker);
 			}
 			const ledger = readTodoDisplayLedgerFromManager(owner.sessionManager, runningWorkerIds);

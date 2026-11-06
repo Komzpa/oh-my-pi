@@ -2073,6 +2073,7 @@ export function buildTodoExecutorPersistedEdit(
 		at,
 		observation: {
 			workerId: observation.workerId,
+			...(observation.row !== undefined ? { row: observation.row } : {}),
 			...(observation.agentProfile ? { agentProfile: observation.agentProfile } : {}),
 			...(observation.description ? { description: observation.description } : {}),
 			...(observation.taskText ? { taskText: observation.taskText } : {}),

@@ -8,6 +8,7 @@ import { stripOmpCollisionSuffixChain } from "../task/id-collision";
 
 export interface TodoExecutorObservation {
 	workerId: string;
+	row?: string;
 	agentProfile?: string;
 	description?: string;
 	taskText?: string;
@@ -35,7 +36,7 @@ function isOwnedByAnotherRunningWorker(
 }
 
 function getRecordedTodoWorkerIds(task: TodoPhase["tasks"][number]): string[] {
-	const ids = [task.schedule?.executor?.workerId, task.schedule?.owner].filter(
+	const ids = [...(task.schedule?.workerIds ?? []), task.schedule?.executor?.workerId, task.schedule?.owner].filter(
 		(workerId): workerId is string => typeof workerId === "string" && workerId.length > 0,
 	);
 	return [...new Set(ids)];
@@ -61,7 +62,6 @@ export function todoMatchesObservedWorker(
 	task: TodoPhase["tasks"][number],
 	observation: Pick<TodoExecutorObservation, "workerId" | "runningWorkerIds">,
 ): boolean {
-	if (isOwnedByAnotherRunningWorker(task, observation)) return false;
 	return getRecordedTodoWorkerIds(task).some(workerId => matchesRecordedTodoWorkerId(workerId, observation));
 }
 
@@ -73,16 +73,44 @@ function selectUniqueLongest<T extends { content: string }>(tasks: T[]): T | und
 	return longestTasks.length === 1 ? longestTasks[0] : undefined;
 }
 
+/** Resolve our packet's Row line, including legacy packets with trailing prose. */
+export function taskPacketRow(taskText: string | undefined, contents: readonly string[]): string | undefined {
+	const target = taskText?.split(/^# Target\s*$/m)[1]?.split(/^# /m)[0];
+	const line = target?.match(/^Row:\s*(.+)$/m)?.[1]?.trim();
+	if (!line) return undefined;
+	if (contents.includes(line)) return line;
+	return selectUniqueLongest(contents.filter(content => line.startsWith(`${content}. `)).map(content => ({ content })))
+		?.content;
+}
+
+export function validateTodoExecutorRow(phases: readonly TodoPhase[], row: string): string | undefined {
+	const matches = phases.flatMap(phase => phase.tasks).filter(task => task.content === row);
+	if (!matches.length) return `Task row does not exist: ${row}`;
+	if (matches.length !== 1) return `Task row is ambiguous: ${row}`;
+	if (!isOpenStatus(matches[0].status)) return `Task row is closed: ${row}`;
+	return undefined;
+}
+
 function findTodoExecutorTarget(
 	phases: readonly TodoPhase[],
 	observation: TodoExecutorObservation,
 ): TodoPhase["tasks"][number] | undefined {
-	const openTasks = phases
-		.flatMap(phase => phase.tasks)
-		.filter(task => isOpenStatus(task.status) && !isOwnedByAnotherRunningWorker(task, observation));
-	const existing = openTasks.filter(task => todoMatchesObservedWorker(task, observation));
+	const allTasks = phases.flatMap(phase => phase.tasks);
+	const row =
+		observation.row ??
+		taskPacketRow(
+			observation.taskText,
+			allTasks.map(task => task.content),
+		);
+	if (row !== undefined) {
+		const matches = allTasks.filter(task => task.content === row && isOpenStatus(task.status));
+		return matches.length === 1 ? matches[0] : undefined;
+	}
+	const open = allTasks.filter(task => isOpenStatus(task.status));
+	const existing = open.filter(task => todoMatchesObservedWorker(task, observation));
 	if (existing.length > 0) return existing.length === 1 ? existing[0] : undefined;
 
+	const openTasks = open.filter(task => !isOwnedByAnotherRunningWorker(task, observation));
 	const description = observation.description?.trim();
 	if (description) {
 		const exactDescription = openTasks.filter(task => task.content.trim() === description);
@@ -108,13 +136,6 @@ export function applyTodoExecutorObservation(
 	const target = findTodoExecutorTarget(phases, observation);
 	if (!target) return undefined;
 	const previous = target.schedule?.executor;
-	if (
-		previous &&
-		previous.workerId !== observation.workerId &&
-		(observation.runningWorkerIds?.has(previous.workerId) ?? false)
-	) {
-		return undefined;
-	}
 	const carriedPrevious =
 		previous?.workerId === observation.workerId && previous.startedAt === observation.startedAt
 			? previous
@@ -138,16 +159,24 @@ export function applyTodoExecutorObservation(
 			? { outcome: observation.outcome ?? carriedPrevious?.outcome }
 			: {}),
 	};
+	const keepPrevious =
+		previous &&
+		previous.workerId !== observation.workerId &&
+		(observation.finishedAt !== undefined || previous.startedAt > observation.startedAt);
 	const owner = target.schedule?.owner;
 	const shouldSetOwner =
-		owner === undefined || owner === observation.workerId || !(observation.runningWorkerIds?.has(owner) ?? false);
+		observation.finishedAt === undefined ||
+		owner === undefined ||
+		owner === observation.workerId ||
+		!(observation.runningWorkerIds?.has(owner) ?? false);
 	const nextSchedule = {
 		...target.schedule,
 		...(target.schedule?.riskEstimateMeanSeconds === undefined && target.schedule?.estimate
 			? { riskEstimateMeanSeconds: todoEstimateMeanSeconds(target.schedule.estimate) }
 			: {}),
-		...(shouldSetOwner ? { owner: observation.workerId } : {}),
-		executor,
+		...(!keepPrevious && shouldSetOwner ? { owner: observation.workerId } : {}),
+		workerIds: [...new Set([...getRecordedTodoWorkerIds(target), observation.workerId])],
+		executor: keepPrevious ? previous : executor,
 	};
 	const nextStatus = target.status === "pending" ? "in_progress" : target.status;
 	if (target.status === nextStatus && JSON.stringify(target.schedule ?? null) === JSON.stringify(nextSchedule)) {
@@ -206,7 +235,7 @@ function respawnCollisionBase(id: string): string {
 }
 export function findRespawnOwnerRows(
 	phases: readonly TodoPhase[],
-	respawn: { requestedName: string; workerId: string; runningWorkerIds: ReadonlySet<string> },
+	respawn: { requestedName: string; workerId: string; row?: string; runningWorkerIds: ReadonlySet<string> },
 ): string[] {
 	const { requestedName, workerId, runningWorkerIds } = respawn;
 	if (requestedName === workerId || runningWorkerIds.has(requestedName)) return [];

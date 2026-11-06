@@ -1431,6 +1431,7 @@ class SubagentLifecyclePayload:
     resolved_thinking_level: str | None = None
     description: str | None = None
     task_text: str | None = None
+    row: str | None = None
     session_file: str | None = None
     parent_tool_call_id: str | None = None
     detached: bool | None = None
@@ -2969,6 +2970,7 @@ def parse_subagent_lifecycle_payload(value: object, path: str = "SubagentLifecyc
         resolved_thinking_level=optional(payload, "resolvedThinkingLevel", decode_str, path),
         description=optional(payload, "description", decode_str, path),
         task_text=optional(payload, "taskText", decode_str, path),
+        row=optional(payload, "row", decode_str, path),
         session_file=optional(payload, "sessionFile", decode_str, path),
         parent_tool_call_id=optional(payload, "parentToolCallId", decode_str, path),
         detached=optional(payload, "detached", decode_bool, path),

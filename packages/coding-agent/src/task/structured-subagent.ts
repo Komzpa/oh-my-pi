@@ -130,6 +130,7 @@ export interface StructuredSubagentRequest {
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
+	row?: string;
 	context?: string;
 	agent?: string;
 	/** Saved source session selected for the bundled seance agent. */
@@ -806,6 +807,7 @@ function buildExecutorOptions(
 		agent: policy.effectiveAgent,
 		task: request.assignment,
 		assignment: request.assignment,
+		row: request.row,
 		preparedSession,
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
