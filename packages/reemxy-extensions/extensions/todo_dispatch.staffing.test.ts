@@ -80,3 +80,32 @@ test("staffing is the first notice each turn and new rows cannot jump failed wor
 	const full = await invoke({ name: "NewOrbit", task: fresh.content, agent: "task" });
 	expect(full?.reason ?? "").not.toContain("Staff ");
 });
+
+test("a batch that staffs every priority row may also staff a new row; a partial batch names only the missing rows", async () => {
+	const second = structuredClone(failed);
+	second.content = "Repair cooling trunks";
+	second.schedule.owner = "CoolingTrunks";
+	second.schedule.executor = { workerId: "CoolingTrunks", startedAt: 1, finishedAt: 2, outcome: "failed" };
+	const h = await harness([structuredClone(failed), second, structuredClone(fresh)]);
+	await h.hooks.get("turn_start")({}, h.ctx);
+	const invoke = input => h.hooks.get("tool_call")({ toolName: "task", input }, h.ctx);
+	const full = await invoke({
+		agent: "task",
+		tasks: [
+			{ name: "ContinentalSnail", row: failed.content, task: failed.content },
+			{ name: "CoolingTrunks", row: second.content, task: second.content },
+			{ name: "NewOrbit", row: fresh.content, task: fresh.content },
+		],
+	});
+	expect(full?.reason ?? "").not.toContain("Staff ");
+	const partial = await invoke({
+		agent: "task",
+		tasks: [
+			{ name: "ContinentalSnail", row: failed.content, task: failed.content },
+			{ name: "NewOrbit", row: fresh.content, task: fresh.content },
+		],
+	});
+	expect(partial?.block).toBe(true);
+	expect(partial.reason).toContain("Repair cooling trunks");
+	expect(partial.reason).not.toContain(`Staff "Repair power source frame"`);
+});
