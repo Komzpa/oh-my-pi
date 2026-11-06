@@ -175,12 +175,12 @@ describe("SYSTEM.md prompt assembly", () => {
 		expect(promptText).not.toContain("Discovered project SYSTEM prompt");
 	});
 
-	it("renders active child repo context in the main system prompt", async () => {
+	it("delivers active child repo context outside the stable system prompt", async () => {
 		const parentDir = path.join(tempDir, "parent-cwd");
 		fs.mkdirSync(path.join(parentDir, "active-project", ".git"), { recursive: true });
 		fs.writeFileSync(path.join(parentDir, "active-project", ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
 
-		const { systemPrompt } = await buildSystemPrompt({
+		const { systemPrompt, conversationContext } = await buildSystemPrompt({
 			cwd: parentDir,
 			contextFiles: [],
 			skills: [],
@@ -196,7 +196,8 @@ describe("SYSTEM.md prompt assembly", () => {
 		});
 
 		const promptText = systemPrompt.join("\n\n");
-		expect(promptText).toContain("`active-project/`");
+		expect(promptText).not.toContain("`active-project/`");
+		expect(conversationContext).toContain("`active-project/`");
 	});
 
 	it("prefers project SYSTEM.md over user SYSTEM.md", async () => {
