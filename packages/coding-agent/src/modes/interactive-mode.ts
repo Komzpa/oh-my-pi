@@ -3110,7 +3110,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					deadlineAt: request.budget?.deadlineAt,
 				});
 			}
-			setTimeout(() => {
+			queueMicrotask(() => {
 				void (this.#restartQueueController?.resumeChildren() ?? Promise.resolve())
 					.catch(error =>
 						this.showWarning(`Worker recovery failed: ${error instanceof Error ? error.message : String(error)}`),
@@ -3125,7 +3125,7 @@ export class InteractiveMode implements InteractiveModeContext {
 								logger.debug("Background restart index preparation failed", { error: String(error) }),
 							);
 					});
-			}, 0);
+			});
 		});
 		this.#eventBusUnsubscribers.push(stopRecoveryPaint);
 		// Publish native send readiness even when no user input triggers another frame.
