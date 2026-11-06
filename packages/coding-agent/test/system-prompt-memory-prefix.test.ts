@@ -57,7 +57,7 @@ async function start(cwd: string, manager: SessionManager, memory: string, menta
 		agent,
 		sessionManager: manager,
 		settings,
-		modelRegistry: { getApiKey: async () => "test" } as never,
+		modelRegistry: { getApiKey: async () => "test", hasConfiguredAuth: () => true } as never,
 		rebuildSystemPrompt: render,
 		getStartupContext: () => startupContext,
 	});
