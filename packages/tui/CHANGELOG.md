@@ -67,7 +67,7 @@
 ### Fixed
 
 <!-- Fork-only change: this attribution links to the PR that carries it. -->
-- Status bar titles follow the active TODO phase or current goal ([#165](https://github.com/Komzpa/oh-my-pi/pull/165) by [@Komzpa](https://github.com/Komzpa)).
+- Status bar titles stay responsive with large TODO plans and follow the active phase or current goal ([#165](https://github.com/Komzpa/oh-my-pi/pull/165) by [@Komzpa](https://github.com/Komzpa)).
 
 - Tern acknowledgements and visibility reports no longer appear as text in the editor when they arrive during a paste, including through Windows ConPTY.
 - The `find` card marks searches cut short by its 20 s budget as `timed out` ([#18161](https://github.com/can1357/oh-my-pi/pull/18161) by [@will-bogusz](https://github.com/will-bogusz))
