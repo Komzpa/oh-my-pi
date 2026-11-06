@@ -601,6 +601,22 @@ interface IndexedSessionEntry extends Omit<PositionedSessionEntry, "offset" | "l
 	revision?: number;
 }
 
+/** Only metadata and byte ranges cross exec; transcript payloads stay in the journal. */
+interface SessionIndexHandoff {
+	version: 1;
+	stamp: string;
+	header: SessionHeader;
+	titleSlot?: SessionTitleUpdate;
+	ordered: IndexedSessionEntry[];
+	labels: [string, string][];
+	leaf: string | null;
+	usage: UsageStatistics;
+}
+
+function journalStamp(stat: fs.BigIntStats): string {
+	return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+}
+
 // A caller retaining a context payload also retains its plain owning entry;
 // historical reads and branch arrays themselves are only weakly memoized.
 const readerRegistry = new FinalizationRegistry<number>(fd => {
@@ -616,6 +632,7 @@ export class SessionEntryIndex {
 	#entriesById = new Map<string, IndexedSessionEntry>();
 	#ordered: IndexedSessionEntry[] = [];
 	#children = new Map<string | null, string[]>();
+	#childrenLoaded = true;
 	#labels = new Map<string, string>();
 	#leaf: string | null = null;
 	#usage = emptyUsageStatistics();
@@ -636,6 +653,7 @@ export class SessionEntryIndex {
 		this.#entriesById.clear();
 		this.#ordered = [];
 		this.#children.clear();
+		this.#childrenLoaded = true;
 		this.#labels.clear();
 		this.#leaf = null;
 		this.#usage = emptyUsageStatistics();
@@ -689,6 +707,7 @@ export class SessionEntryIndex {
 	}
 
 	insert(entry: SessionEntry, offset?: number, length?: number, position?: PositionedSessionEntry): void {
+		this.#ensureChildren();
 		const previousLeaf = this.#leaf;
 		const isNew = !this.#entriesById.has(entry.id);
 		const indexed: IndexedSessionEntry = position ?? {
@@ -747,6 +766,55 @@ export class SessionEntryIndex {
 		addUsage(this.#usage, usage);
 		if (usage && entry.type === "message" && entry.message.role === "toolResult")
 			this.#usage.subagentCost += usage.cost.total;
+	}
+
+	/** Snapshot the existing index without reading historical payloads. */
+	handoff(
+		header: SessionHeader,
+		titleSlot: SessionTitleUpdate | undefined,
+		stamp: string,
+	): SessionIndexHandoff | undefined {
+		const ordered: IndexedSessionEntry[] = [];
+		for (const source of this.#ordered) {
+			if (source.offset === undefined || source.length === undefined || source.entry) return undefined;
+			const { entry: _entry, weak: _weak, revision: _revision, ...metadata } = source;
+			ordered.push(metadata);
+		}
+		return {
+			version: 1,
+			stamp,
+			header,
+			titleSlot,
+			ordered,
+			labels: [...this.#labels],
+			leaf: this.#leaf,
+			usage: this.#usage,
+		};
+	}
+
+	/** Restore ranges without journal reads. Child lists are needed only by explicit tree navigation. */
+	restoreHandoff(snapshot: SessionIndexHandoff, sourceSize: number): void {
+		this.clear();
+		this.#ordered = snapshot.ordered;
+		for (const entry of snapshot.ordered) {
+			if (
+				typeof entry.id !== "string" ||
+				typeof entry.type !== "string" ||
+				(entry.parentId !== null && typeof entry.parentId !== "string") ||
+				!Number.isSafeInteger(entry.offset) ||
+				!Number.isSafeInteger(entry.length) ||
+				entry.offset! < 0 ||
+				entry.length! <= 0 ||
+				entry.offset! + entry.length! > sourceSize ||
+				entry.entry !== undefined
+			)
+				throw new Error("Invalid journal index handoff range");
+			this.#entriesById.set(entry.id, entry);
+		}
+		this.#childrenLoaded = false;
+		this.#labels = new Map(snapshot.labels);
+		this.#leaf = snapshot.leaf;
+		this.#usage = snapshot.usage;
 	}
 
 	hasType(type: SessionEntry["type"]): boolean {
@@ -819,7 +887,18 @@ export class SessionEntryIndex {
 		this.#branchCache = undefined;
 	}
 
+	#ensureChildren(): void {
+		if (this.#childrenLoaded) return;
+		for (const entry of this.#ordered) {
+			const bucket = this.#children.get(entry.parentId);
+			if (bucket) bucket.push(entry.id);
+			else this.#children.set(entry.parentId, [entry.id]);
+		}
+		this.#childrenLoaded = true;
+	}
+
 	childrenOf(parentId: string): SessionEntry[] {
+		this.#ensureChildren();
 		return (this.#children.get(parentId) ?? []).map(id => this.get(id)!);
 	}
 
@@ -900,6 +979,7 @@ export class SessionEntryIndex {
 		return entries;
 	}
 	update(entry: SessionEntry): void {
+		this.#ensureChildren();
 		const indexed = this.#entriesById.get(entry.id);
 		if (!indexed) throw new Error(`Session entry ${entry.id} not found`);
 		if (indexed.parentId !== entry.parentId || indexed.type !== entry.type) {
@@ -3238,6 +3318,44 @@ export class SessionManager {
 		if (this.#diskFailure) throw this.#diskFailure;
 	}
 
+	/** Prepare the current journal index for the replacement runtime after the final write. */
+	async writeIndexHandoff(): Promise<boolean> {
+		await this.flush();
+		const sessionFile = this.#sessionFile;
+		if (
+			!(this.#storage instanceof FileSessionStorage) ||
+			!sessionFile ||
+			!this.#fileIsCurrent ||
+			this.#rewriteRequired
+		)
+			return false;
+		const before = fs.statSync(sessionFile, { bigint: true });
+		if (Number(before.size) !== this.#expectedDiskSize) return false;
+		const stamp = journalStamp(before);
+		const snapshot = this.#index.handoff(
+			this.#header,
+			this.#hasTitleSlot
+				? {
+						title: this.#sessionName,
+						source: this.#titleSource,
+						updatedAt: this.#titleUpdatedAt,
+					}
+				: undefined,
+			stamp,
+		);
+		if (!snapshot) return false;
+		const target = `${sessionFile}.index-handoff`;
+		const temporary = `${target}.${process.pid}.tmp`;
+		try {
+			await Bun.write(temporary, JSON.stringify(snapshot));
+			if (journalStamp(fs.statSync(sessionFile, { bigint: true })) !== stamp) return false;
+			await fs.promises.rename(temporary, target);
+			return true;
+		} finally {
+			await fs.promises.rm(temporary, { force: true });
+		}
+	}
+
 	/**
 	 * Synchronously makes the current append-only session durable. Avoid rewriting
 	 * an already-current file: large restored sessions can contain GiB of compacted
@@ -4980,6 +5098,44 @@ export class SessionManager {
 		if (!(storage instanceof FileSessionStorage)) return loadSessionFile(filePath, storage, options);
 		const index = new SessionEntryIndex();
 		const blobs = new BlobStore(getBlobsDir());
+		// A stale or incompatible handoff is only a cache miss. The journal remains authoritative.
+		let handoffFd: number | undefined;
+		try {
+			handoffFd = fs.openSync(filePath, "r");
+			const before = fs.fstatSync(handoffFd, { bigint: true });
+			const snapshot = (await Bun.file(`${filePath}.index-handoff`).json()) as SessionIndexHandoff;
+			if (
+				snapshot.version === 1 &&
+				snapshot.stamp === journalStamp(before) &&
+				snapshot.header?.type === "session" &&
+				typeof snapshot.header.id === "string" &&
+				(snapshot.leaf === null || typeof snapshot.leaf === "string") &&
+				snapshot.usage !== null &&
+				typeof snapshot.usage === "object" &&
+				Array.isArray(snapshot.labels) &&
+				Array.isArray(snapshot.ordered) &&
+				journalStamp(fs.statSync(filePath, { bigint: true })) === snapshot.stamp
+			) {
+				index.restoreHandoff(snapshot, Number(before.size));
+				index.setFileReader(path.resolve(filePath), blobs, true, handoffFd);
+				handoffFd = undefined;
+				return {
+					entries: [snapshot.header],
+					titleSlot: snapshot.titleSlot,
+					malformedRecords: 0,
+					sourceSize: Number(before.size),
+					invalidHeader: false,
+					migrated: false,
+					index,
+				};
+			}
+		} catch {
+			index.clear();
+			// Interrupted writes, old formats, and changed journals fall back to canonical loading.
+		} finally {
+			if (handoffFd !== undefined) fs.closeSync(handoffFd);
+		}
+
 		try {
 			const { sourceFd, ...loaded } = await visitSessionFileForResume(
 				filePath,

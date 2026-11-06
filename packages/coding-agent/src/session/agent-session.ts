@@ -8001,9 +8001,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	async sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void> {
 		await this.sendCustomMessage(message, { deliverAs: "nextTurn", triggerTurn: false });
 	}
-	async flushRestartJournal(): Promise<void> {
+	async flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void> {
 		await this.sessionManager.ensureOnDisk();
 		await this.sessionManager.flush();
+		if (options?.handoffIndex) await this.sessionManager.writeIndexHandoff();
 	}
 
 	beginRestartDrain(options?: { interruptProvider?: boolean }): RestartDrainLease {
