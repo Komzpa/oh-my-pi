@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { setImmediate as yieldImmediate } from "node:timers/promises";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import * as path from "node:path";
 import {
@@ -11,6 +12,7 @@ import {
 	parseJsonlLenient,
 	peekFile,
 	tryParseJson,
+	withLoopPhase,
 } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { Semaphore } from "../task/parallel";
@@ -122,6 +124,8 @@ export interface VisitEntriesFromFileStreamOptions {
 	yieldEveryBytes?: number;
 	/** Yield to the macrotask queue after this many entries have been visited. */
 	yieldEveryEntries?: number;
+	/** Skip canonical single-line records of other types before decoding their payloads. */
+	entryTypes?: readonly FileEntry["type"][];
 	/** Called once for every malformed JSONL record skipped by the stream. */
 	onMalformedRecord?: () => void;
 	/** Rethrow missing source instead of visiting nothing (fork backstop). */
@@ -265,6 +269,7 @@ export async function visitEntriesFromFileStream(
 	visit: (entry: FileEntry) => void | boolean,
 	options: VisitEntriesFromFileStreamOptions = {},
 ): Promise<SessionTitleUpdate | undefined> {
+	let lastYield = performance.now();
 	let titleSlot: SessionTitleUpdate | undefined;
 	let sawFirstLine = false;
 	let sawFirstEntry = false;
@@ -284,11 +289,13 @@ export async function visitEntriesFromFileStream(
 	const yieldToMacrotask = async (): Promise<void> => {
 		if (
 			(yieldEveryBytes > 0 && bytesSinceYield >= yieldEveryBytes) ||
-			(yieldEveryEntries > 0 && entriesSinceYield >= yieldEveryEntries)
+			(yieldEveryEntries > 0 && entriesSinceYield >= yieldEveryEntries) ||
+			performance.now() - lastYield >= 16
 		) {
 			bytesSinceYield = 0;
 			entriesSinceYield = 0;
-			await Bun.sleep(0);
+			await yieldImmediate();
+			lastYield = performance.now();
 		}
 	};
 	// Fast path: a record that is valid JSON on its own physical line. Anything
@@ -309,7 +316,9 @@ export async function visitEntriesFromFileStream(
 				applyTitleSlot(entry, titleSlot);
 			}
 			options.onEntryPosition?.(entry, offset + start, Math.min(end - start, sourceBytes - offset - start));
-			stopped = visit(entry) === false;
+			stopped =
+				(!options.entryTypes || options.entryTypes.includes(entry.type)) &&
+				withLoopPhase("session-journal:visit", () => visit(entry) === false);
 			recordsSeen++;
 			entriesSinceYield++;
 			if (recordsSeen >= maxRecords) stopped = true;
@@ -327,6 +336,7 @@ export async function visitEntriesFromFileStream(
 			if (recordsSeen >= maxRecords) stopped = true;
 		};
 		while (consumed < view.length && !stopped) {
+			await yieldToMacrotask();
 			if (recordsSeen >= maxRecords || options.shouldContinue?.() === false) {
 				stopped = true;
 				break;
@@ -348,9 +358,20 @@ export async function visitEntriesFromFileStream(
 				consumed = firstNewline + 1;
 				continue;
 			}
+			// Session writers put `type` first. Only skip that canonical shape;
+			// imported/reordered and multiline JSON still uses the normal parser.
+			if (options.entryTypes) {
+				const type = /^\{\s*"type"\s*:\s*"([^"\\]+)"/.exec(firstLine)?.[1];
+				if (type && !options.entryTypes.includes(type as FileEntry["type"]) && firstLine.endsWith("}")) {
+					consumed = firstNewline + 1;
+					recordsSeen++;
+					entriesSinceYield++;
+					continue;
+				}
+			}
 			let lineEntry: FileEntry | undefined;
 			try {
-				lineEntry = JSON.parse(firstLine) as FileEntry;
+				lineEntry = withLoopPhase("session-journal:parse", () => JSON.parse(firstLine) as FileEntry);
 			} catch {}
 			if (lineEntry) {
 				consumed = firstNewline + 1;

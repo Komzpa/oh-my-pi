@@ -1013,15 +1013,18 @@ export async function restoreSubagentsAfterRestart(
 							...(row.notes ?? []).filter(note => !note.startsWith("Restart recovery needs worker:")),
 							note,
 						],
-						schedule: {
-							...schedule,
-							executor: {
-								...(executor && typeof executor === "object" ? executor : {}),
-								workerId: worker,
-								outcome: "failed",
-								finishedAt: Date.now(),
-							},
-						},
+						schedule:
+							executor && typeof executor === "object"
+								? {
+										...schedule,
+										executor: {
+											...executor,
+											workerId: worker,
+											outcome: "failed" as const,
+											finishedAt: Date.now(),
+										},
+									}
+								: schedule,
 					};
 				}),
 			})),

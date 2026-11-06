@@ -270,7 +270,7 @@ const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
 const EVAL_PRELUDE_NOTICE_MESSAGE_TYPE = "eval-prelude-notice";
 
 /** Custom entry holding the digest of the base prompt the branch's primary model calls are built from. */
-const SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE = "system-prompt-digest";
+export const SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE = "system-prompt-digest";
 
 /** Equal digests mean equal prompt blocks. */
 function systemPromptDigest(blocks: readonly string[]): string {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
+import { setImmediate as yieldImmediate } from "node:timers/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { FileEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
@@ -76,6 +77,73 @@ function messageTexts(entries: FileEntry[]): string[] {
 }
 
 describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
+	it("keeps lifecycle records while avoiding unrelated payload parsing, including imported JSON", async () => {
+		const custom = { type: "custom", id: "spawn", parentId: null, timestamp: ISO, customType: "vibe", data: {} };
+		const content = [
+			JSON.stringify(HEADER),
+			JSON.stringify(msg("large", "s1", "payload".repeat(100_000))),
+			JSON.stringify(custom),
+			JSON.stringify({
+				id: "reordered",
+				type: custom.type,
+				parentId: null,
+				timestamp: ISO,
+				customType: "vibe",
+				data: {},
+			}),
+			JSON.stringify({ ...custom, id: "multiline" }, null, 2),
+		].join("\n");
+		const file = await writeTemp(content);
+		const parsed = spyOn(JSON, "parse");
+		const visited: FileEntry[] = [];
+		try {
+			await sessionLoader.visitEntriesFromFileStream(
+				file,
+				entry => {
+					visited.push(entry);
+				},
+				{ entryTypes: ["custom"] },
+			);
+			expect(entryIds(visited)).toEqual(["spawn", "reordered", "multiline"]);
+			expect(parsed.mock.calls.some(([value]) => typeof value === "string" && value.includes('"id":"large"'))).toBe(
+				false,
+			);
+		} finally {
+			parsed.mockRestore();
+		}
+	});
+
+	it("yields to a queued render during CPU-heavy visits even below byte and entry thresholds", async () => {
+		const file = await writeTemp(
+			[
+				JSON.stringify(HEADER),
+				...Array.from({ length: 40 }, (_, i) => JSON.stringify(msg(`m${i}`, "s1", "text"))),
+			].join("\n"),
+		);
+		let renderedAt = 0;
+		let visited = 0;
+		let render: Promise<void> | undefined;
+		await sessionLoader.visitEntriesFromFileStream(
+			file,
+			() => {
+				visited++;
+				if (!render)
+					render = yieldImmediate().then(() => {
+						renderedAt = visited;
+					});
+				const until = performance.now() + 2;
+				while (performance.now() < until) {
+					/* Simulate expensive summary projection. */
+				}
+			},
+			{ yieldEveryBytes: 0, yieldEveryEntries: 0 },
+		);
+		await render;
+		expect(visited).toBe(41);
+		expect(renderedAt).toBeGreaterThan(0);
+		expect(renderedAt).toBeLessThan(41);
+	});
+
 	it("visits entries incrementally while skipping malformed lines", async () => {
 		const slotLine = serializeTitleSlot({ title: "Visitor", source: "user", updatedAt: ISO });
 		const content = [

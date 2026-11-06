@@ -4354,7 +4354,7 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 			suppressBreadcrumb: true,
 			throwIfMissing: true,
 		});
-		if (!hasConversationalHistory(reopened.getEntries())) {
+		if (!hasConversationalHistory(reopened.iterateEntries("message"))) {
 			await reopened.close();
 			throw new Error(
 				`Cannot revive subagent "${id}": session file "${capture.sessionFile}" has no message history ` +
