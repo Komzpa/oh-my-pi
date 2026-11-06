@@ -862,9 +862,13 @@ export class SessionEntryIndex {
 		return branch;
 	}
 
-	#metadataLeafPath(id: string | null | undefined = this.#leaf): IndexedSessionEntry[] {
-		// Only exposed payloads can change behind the index. Disk-only history is immutable.
-		// Keep the shared-reference mutation contract without rechecking the entire journal.
+	/**
+	 * Only exposed payloads can change behind the index; disk-only history is immutable.
+	 * Keeps the shared-reference mutation contract, but a whole exposed branch makes this set
+	 * as large as the journal, and a frame asks for the path many times: compare the few
+	 * metadata fields in place and rebuild an entry's metadata only when one of them changed.
+	 */
+	#syncMutableMetadata(): void {
 		for (const entryId of this.#mutableMetadata) {
 			const retained = this.retainedEntry(entryId);
 			if (!retained) {
@@ -872,13 +876,26 @@ export class SessionEntryIndex {
 				continue;
 			}
 			const indexed = this.#entriesById.get(entryId)!;
-			if (indexed.parentId !== retained.parentId || indexed.type !== retained.type) {
+			const structural = indexed.parentId !== retained.parentId || indexed.type !== retained.type;
+			if (structural) {
 				this.#metadataCache = undefined;
 				this.#branchCache = undefined;
 			}
-			Object.assign(indexed, sessionContextEntryMetadata(retained));
-			indexed.firstKeptEntryId = retained.type === "compaction" ? retained.firstKeptEntryId : undefined;
+			if (
+				structural ||
+				(retained.type === "custom" && indexed.customType !== retained.customType) ||
+				(retained.type === "compaction" && indexed.firstKeptEntryId !== retained.firstKeptEntryId) ||
+				(retained.type === "model_usage" && indexed.activeLeafId !== retained.activeLeafId) ||
+				(retained.type === "message" && indexed.messageRole !== retained.message.role)
+			) {
+				Object.assign(indexed, sessionContextEntryMetadata(retained));
+				indexed.firstKeptEntryId = retained.type === "compaction" ? retained.firstKeptEntryId : undefined;
+			}
 		}
+	}
+
+	#metadataLeafPath(id: string | null | undefined = this.#leaf): IndexedSessionEntry[] {
+		this.#syncMutableMetadata();
 		const cache = this.#metadataCache;
 		if (cache?.generation === this.#generation && cache.leaf === id) return cache.path.slice();
 		const path: IndexedSessionEntry[] = [];
