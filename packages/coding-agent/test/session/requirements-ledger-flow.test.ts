@@ -247,7 +247,7 @@ describe("requirements ledger flow notices", () => {
 			} as never);
 			// Linked-row notices are queued off the tool's turn; wait for delivery.
 			await runtime.settleBackgroundNotices();
-			expect(notices[0]).toContain('requirementIds:["R1"]');
+			expect(notices[0]).toContain('"requirementIds":["R1"]');
 			expect(notices[0]).toContain("current artifact");
 			const before = notices.length;
 			await runtime.beforeTodoCall?.("todo", { op: "done", task: "Build artifact" });
@@ -303,7 +303,7 @@ describe("requirements ledger flow notices", () => {
 			git(cwd, "commit", "-m", "change audited artifact");
 			await runtime.beforeTodoCall?.("todo", { op: "done", task: "Build artifact" });
 			expect(notices.join("\n")).toContain("fresh qa-auditor verdict");
-			expect(notices.some(notice => notice.includes("Re-audit R1"))).toBe(false);
+			expect(notices.some(notice => notice.includes("Re-audit changed row artifacts"))).toBe(false);
 			const todo = todoTool(cwd, manager);
 			const done = await todo.execute("stale-done-flow", { op: "done", task: "Build artifact" });
 			expect(done.isError).toBe(true);
@@ -313,7 +313,9 @@ describe("requirements ledger flow notices", () => {
 				result: done,
 				isError: true,
 			} as never);
-			expect(notices.find(notice => notice.includes("Re-audit R1"))).toContain("Re-audit R1");
+			expect(notices.find(notice => notice.includes("Re-audit changed row artifacts"))).toContain(
+				"Re-audit changed row artifacts",
+			);
 			const doneRefusal = done.content.flatMap(part => (part.type === "text" ? [part.text] : [])).join("\n");
 			expect(doneRefusal).toContain("Re-audit R1");
 			const publicationGate = gate();
@@ -322,9 +324,9 @@ describe("requirements ledger flow notices", () => {
 				{ role: "assistant", content: [{ type: "text", text: "Done." }], stopReason: "stop" } as never,
 				new AbortController().signal,
 			);
-			const staleNotice = notices.find(notice => notice.includes("Re-audit R1"));
-			expect(staleNotice).toContain("Re-audit R1");
-			expect(staleNotice).toContain('requirementIds:["R1"]');
+			const staleNotice = notices.find(notice => notice.includes("Re-audit changed row artifacts"));
+			expect(staleNotice).toContain("Re-audit changed row artifacts");
+			expect(staleNotice).toContain("current artifacts");
 			expect(refusal).toBeUndefined();
 			const retained = getLatestRequirements(manager.getBranch()).find(requirement => requirement.id === "R1");
 			expect(retained?.rows).toEqual(["Build artifact"]);
@@ -338,9 +340,9 @@ describe("requirements ledger flow notices", () => {
 				new AbortController().signal,
 			);
 			expect(notices.length).toBe(noticesAfterInvalidation);
-			expect(notices.filter(notice => notice.startsWith("Requirements flow: Re-audit R1"))).toEqual([
-				notices.find(notice => notice.includes("Re-audit R1"))!,
-			]);
+			expect(
+				notices.filter(notice => notice.startsWith("Requirements flow: Re-audit changed row artifacts")),
+			).toEqual([notices.find(notice => notice.includes("Re-audit changed row artifacts"))!]);
 			for (const notice of notices.filter(item => item.startsWith("Requirements flow:")))
 				expect(notice.split("\n")).toHaveLength(2);
 		} finally {
