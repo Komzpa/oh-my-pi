@@ -4714,8 +4714,8 @@ export class SessionManager {
 		{ path: readonly SessionContextEntryMetadata[]; length: number; revision: number; entries: SessionEntry[] }
 	>();
 
-	/** Reuse selected payloads until metadata or an in-place body changes. */
-	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+	/** Memoized selection for stable, pure metadata predicates. */
+	getCachedBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
 		const path = this.#index.metadataPath();
 		const cached = this.#branchSelections.get(predicate);
 		if (cached?.path === path && cached.revision === this.#bodyRevision && cached.length === path.length)
@@ -4737,6 +4737,11 @@ export class SessionManager {
 		}
 		this.#branchSelections.set(predicate, { path, length: path.length, revision: this.#bodyRevision, entries });
 		return entries.slice();
+	}
+
+	/** Arbitrary predicates are evaluated afresh, including caller-owned closure state. */
+	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+		return [...this.#iterateSelectedBranch(this.#index.metadataPath(), predicate, true)].reverse();
 	}
 
 	/** Matching entries newest first; excluded payloads are never read. */
