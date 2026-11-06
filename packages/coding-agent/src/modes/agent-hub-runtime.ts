@@ -82,6 +82,17 @@ export function createAgentHubRuntime(
  * artifacts tree (the process-global registry keeps earlier sessions' agents);
  * file-less refs count only while this session's observer tracks them.
  */
+const treeMembership = new WeakMap<AgentRef, { root: string; file: string; included: boolean }>();
+
+function costRefBelongsToRoot(ref: AgentRef, root: string): boolean {
+	const file = ref.sessionFile!;
+	const previous = treeMembership.get(ref);
+	if (previous?.root === root && previous.file === file) return previous.included;
+	const included = sessionFileBelongsToRoot(file, root);
+	treeMembership.set(ref, { root, file, included });
+	return included;
+}
+
 export function sumSubagentTreeCost(args: {
 	refs: readonly AgentRef[];
 	observers: SessionObserverRegistry;
@@ -96,7 +107,7 @@ export function sumSubagentTreeCost(args: {
 		if (ref.kind === "advisor" && (ref.parentId ?? MAIN_AGENT_ID) === MAIN_AGENT_ID) continue;
 		const observed = observers.getSession(ref.id);
 		const inTree = ref.sessionFile
-			? rootSessionFile !== undefined && sessionFileBelongsToRoot(ref.sessionFile, rootSessionFile)
+			? rootSessionFile !== undefined && costRefBelongsToRoot(ref, rootSessionFile)
 			: observed !== undefined;
 		if (!inTree) continue;
 		rows.push(ref);
