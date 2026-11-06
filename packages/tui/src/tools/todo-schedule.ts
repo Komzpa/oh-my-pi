@@ -22,6 +22,17 @@ export function isTodoAwaitingReview(task: { status: string; schedule?: TodoSche
 	);
 }
 
+/** A review decision was actually handed to the user, rather than merely prepared. */
+export function isTodoReviewHandedOff(task: { status: string; schedule?: TodoSchedule }): boolean {
+	const schedule = task.schedule;
+	return (
+		isTodoAwaitingReview(task) &&
+		schedule?.handoffPending !== true &&
+		schedule?.reviewPagePending !== true &&
+		(!!schedule?.reviewPage?.trim() || (schedule?.handoffPending === false && !!schedule.reviewSummary?.trim()))
+	);
+}
+
 export type TodoScheduleStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
 
 /** A qualitative, user-maintained estimate. All durations are seconds; `updatedAt` is Unix milliseconds. */
@@ -106,9 +117,9 @@ export interface TodoSchedule {
 }
 
 /**
- * One batched audit of delivered rows at one repository head. A pass closes the row; only a defect
- * observed at the head ("fail") returns it to a worker. "inconclusive" (nothing was verified) and
- * "unavailable" (no auditor profile resolved) keep the row verifying.
+ * One batched audit of delivered rows at one repository head. A pass verifies the row; a defect
+ * or two genuinely inconclusive audits return it to a worker.
+ * Omitted batch rows and unavailable auditors remain queued, without consuming a real retry.
  */
 export interface TodoRowAudit {
 	workerId?: string;
@@ -117,9 +128,9 @@ export interface TodoRowAudit {
 	repoPath: string;
 	head: string;
 	startedAt: number;
-	verdict: "pending" | "pass" | "fail" | "inconclusive" | "unavailable";
+	verdict: "pending" | "pass" | "fail" | "inconclusive" | "omitted" | "unavailable";
 	agent?: string;
-	/** Audit launches for this delivery at this head; an inconclusive audit is relaunched once. */
+	/** Real audit attempts for this delivery at this head; omitted rows consume no attempt. */
 	attempts?: number;
 	findings?: string;
 	at?: number;
@@ -401,7 +412,7 @@ function analyzeDependencies(
 			nodes.push({
 				index: nodes.length,
 				content: task.content,
-				status: isTodoAwaitingReview(task) ? "completed" : task.status,
+				status: isTodoAwaitingReview(task) && !todoRowAfterWorker(task) ? "completed" : task.status,
 				schedule: task.schedule,
 				estimate: task.schedule?.estimate,
 				predecessors: [],
@@ -2011,23 +2022,24 @@ export type TodoRowAfterWorker =
 	| { kind: "verify"; via: "critic" | "audit"; worker: string; audit?: TodoRowAudit }
 	| {
 			kind: "needs-worker";
-			reason: "findings" | "aborted" | "failed" | "lost" | "audit-failed";
+			reason: "findings" | "aborted" | "failed" | "lost" | "audit-failed" | "audit-inconclusive";
 			worker: string;
 			findings?: string;
 	  };
 
 /**
  * Post-completion lifecycle of an open row whose recorded executor is not running (callers check
- * liveness). A delivered result is verified, never re-staffed; a result without a deliverable, an
- * aborted or lost run, or a failed audit needs a worker that continues from the previous output.
- * Rows waiting on the user, or never started, return undefined.
+ * liveness). A delivered result is audited; a result without a deliverable, an aborted or lost run,
+ * a failed audit, or exhausted inconclusive audits needs a worker continuing the previous output.
+ * Verified results, accepted rows, and rows never started return undefined.
  */
 export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWorker | undefined {
-	if (task.status !== "pending" && task.status !== "in_progress") return undefined;
+	if (task.status === "abandoned") return undefined;
 	const schedule = task.schedule;
 	const executor = schedule?.executor;
 	if (!schedule || !executor?.workerId) return undefined;
-	if (schedule.review === "user" || schedule.review === "accepted" || isTodoAwaitingReview(task)) return undefined;
+	if (task.status === "completed" && !schedule.audit) return undefined;
+	if (schedule.review === "accepted") return undefined;
 	const worker = executor.workerId;
 	const delivery = todoRowDeliveryKey(schedule);
 	const critic = schedule.deliveryCritic;
@@ -2041,6 +2053,14 @@ export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWor
 		schedule.audit?.delivery === delivery && schedule.audit.agent === TODO_ROW_AUDITOR ? schedule.audit : undefined;
 	if (audit?.verdict === "fail")
 		return { kind: "needs-worker", reason: "audit-failed", worker, findings: audit.findings };
+	if (audit?.verdict === "pass") return undefined;
+	if (
+		audit?.verdict === "inconclusive" &&
+		audit.findings?.trim() !== "auditor returned no verdict for this row" &&
+		(audit.attempts ?? 1) >= 2 &&
+		(schedule.progress?.at ?? 0) <= (audit.at ?? audit.startedAt)
+	)
+		return { kind: "needs-worker", reason: "audit-inconclusive", worker, findings: audit.findings };
 	const deliverable = todoRowHasDeliverable(task);
 	const profile = String(executor.agentProfile ?? "").toLowerCase();
 	const auditRun = TODO_AUDIT_PROFILES.includes(profile);
@@ -2063,6 +2083,8 @@ export type TodoDisplayState =
 	| "waiting"
 	| "auditing"
 	| "verifying"
+	| "audit queued"
+	| "handoff pending"
 	| "ready to close"
 	| "needs you"
 	| "needs worker"
@@ -2087,6 +2109,8 @@ export interface TodoDisplayContext {
 	owners: ReadonlyMap<string, TodoDisplayWorker>;
 	requirements?: readonly TodoDisplayRequirement[];
 	auditors?: ReadonlyMap<string, string>;
+	/** Row audit selected to launch in this runtime tick. */
+	auditLaunching?: ReadonlySet<string>;
 	/** Every Task slot is taken: rows that need a worker cannot get one now. */
 	capacityFull?: boolean;
 }
@@ -2106,15 +2130,15 @@ export function classifyTodoDisplayRow(
 	phases: TodoScheduleInput,
 	context: TodoDisplayContext,
 ): TodoDisplayRowState {
-	if (isTodoAwaitingReview(task)) return { state: "needs you" };
+	const owner = context.owners.get(task.content);
+	if (owner && owner.agent !== "qa-auditor") return { state: "working", worker: owner };
 	const rowAuditor = task.schedule?.audit?.verdict === "pending" ? task.schedule.audit.workerId : undefined;
 	const verifier = context.workers.find(worker => worker.id === rowAuditor);
 	if (verifier) return { state: "verifying", worker: verifier };
 	const auditorId = context.auditors?.get(task.content);
 	const auditor = context.workers.find(worker => worker.id === auditorId);
-	const owner = context.owners.get(task.content);
 	if (auditor || owner?.agent === "qa-auditor") return { state: "auditing", worker: auditor ?? owner };
-	if (owner) return { state: "working", worker: owner };
+	if (context.auditLaunching?.has(task.content)) return { state: "verifying" };
 	const tasks = phases.flatMap(phase => phase.tasks);
 	const visited = new Set<string>([task.content]);
 	const findDependency = (dependencies: readonly string[]): TodoDisplayRowState | undefined => {
@@ -2136,17 +2160,22 @@ export function classifyTodoDisplayRow(
 	};
 	const waiting = findDependency(task.schedule?.dependencies ?? []);
 	if (waiting) return waiting;
-	const linked = context.requirements?.filter(requirement => requirement.rows.includes(task.content));
-	if (linked?.length && linked.every(requirement => requirement.rowVerdicts?.[task.content]?.status === "pass"))
-		return { state: "ready to close" };
-	if (task.status === "blocked") return { state: "stuck", reason: task.blocker ?? "blocked" };
 	const after = todoRowAfterWorker(task);
 	if (after?.kind === "verify")
-		return after.audit?.verdict === "inconclusive" && (after.audit.attempts ?? 1) >= 2
-			? { state: "verifying", reason: `inconclusive — ${after.audit.findings ?? "nothing verified"}` }
-			: after.audit?.verdict === "unavailable"
-				? { state: "verifying", reason: "auditor unavailable" }
-				: { state: "verifying" };
+		return {
+			state: "audit queued",
+			reason: after.audit?.verdict === "unavailable" ? "auditor unavailable" : undefined,
+		};
+	if (!after && isTodoReviewHandedOff(task)) return { state: "needs you" };
+	if (!after && isTodoAwaitingReview(task)) return { state: "handoff pending" };
+	const linked = context.requirements?.filter(requirement => requirement.rows.includes(task.content));
+	if (
+		!after &&
+		(isTodoAwaitingReview(task) ||
+			(linked?.length && linked.every(requirement => requirement.rowVerdicts?.[task.content]?.status === "pass")))
+	)
+		return { state: "ready to close" };
+	if (task.status === "blocked") return { state: "stuck", reason: task.blocker ?? "blocked" };
 	const needsWorker = (reason: string, previous?: string): TodoDisplayRowState =>
 		context.capacityFull
 			? { state: "stuck", reason: "cap full", previous }
@@ -2187,7 +2216,7 @@ export function renderTodoPlanDisplay(
 	const count = (state: TodoDisplayState): number => [...states.values()].filter(row => row.state === state).length;
 	const archived = options.archived ?? 0;
 	const eta = formatTodoDisplayEta(options.forecast?.resourceFinish ?? options.forecast?.knownWorkFinish, now);
-	const header = `${open.length} open — ${count("working")} working · ${count("waiting")} waiting · ${count("auditing")} auditing · ${count("verifying")} verifying · ${count("ready to close")} ready to close · ${count("needs you")} need you · ${count("needs worker")} need worker · ${count("stuck")} stuck · ${tasks.length - open.length + archived} closed (${archived} archived)${eta ? ` · ${eta}` : ""}`;
+	const header = `${open.length} open — ${count("working")} working · ${count("waiting")} waiting · ${count("auditing")} auditing · ${count("verifying")} verifying · ${count("audit queued")} audit queued · ${count("ready to close")} ready to close · ${count("handoff pending")} handoff pending · ${count("needs you")} need you · ${count("needs worker")} need worker · ${count("stuck")} stuck · ${tasks.length - open.length + archived} closed (${archived} archived)${eta ? ` · ${eta}` : ""}`;
 	const lines = [header];
 	const owners: (string | undefined)[] = [undefined];
 	const push = (line: string, worker?: TodoDisplayWorker): void => {

@@ -10,6 +10,7 @@ import {
 	todoRowAfterWorker,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import live from "./fixtures/dc-rowclose-1645.json";
+import auditStall from "./fixtures/auditstall-1855.json";
 import gateNotices from "./gate-notices.md" with { type: "text" };
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +25,7 @@ import {
 	ROW_AUDIT_CAP,
 	settleRowAuditVerdict,
 } from "./row_audit";
+import { renderLeadRowInstructions } from "./lead-row-instructions";
 import { decideTodoDispatch } from "./todo_dispatch";
 
 const REPO = "/home/user/proj/sunbim/datacenter-decision-graph";
@@ -40,6 +42,7 @@ const AUDITED = [
 	"Mau standup transcript into plans, requirements, knowledgebase",
 	"Land focus, UX graph, standup patches on PR 112",
 	"Integrate finished lanes onto consolidated branch",
+	"Power source rows: title size and indent match sibling rows",
 ];
 const DELIVERED = [...AUDITED, CRITIC];
 const NEEDS_WORKER = [
@@ -157,9 +160,9 @@ beforeEach(() => resetRowAuditsForTest());
 test("DC 16:45 replay: delivered rows verify, finished-without-change rows need a worker, nothing is stuck", () => {
 	const after = replay();
 	expect(after.decision.dispatchableReady.map(row => row.content).sort()).toEqual([...NEEDS_WORKER].sort());
-	for (const content of DELIVERED) expect(after.states.get(content)).toBe("verifying");
+	for (const content of DELIVERED) expect(after.states.get(content)).toBe("audit queued");
 	for (const content of NEEDS_WORKER) expect(after.states.get(content)).toBe("needs worker");
-	expect(after.display.lines[0]).toContain("8 verifying");
+	expect(after.display.lines[0]).toContain("9 audit queued");
 	expect(after.display.lines[0]).toContain("3 need worker");
 	expect(after.display.lines[0]).toContain("0 stuck");
 	// The aborted gate-runner row waits on its verifying dependency instead of being re-staffed.
@@ -195,7 +198,7 @@ test("DC replay launches one batched audit per head, persists it first, and a re
 	expect(await h.check()).toBe(0);
 	expect(h.launches).toHaveLength(1);
 	// The display still shows the rows as verifying while their audit is pending.
-	expect(replay(h.phases).states.get(DELIVERED[0])).toBe("verifying");
+	expect(replay(h.phases).states.get(DELIVERED[0])).toBe("audit queued");
 });
 
 test("audit pass closes the row; audit fail returns it to needs worker carrying the findings", async () => {
@@ -223,17 +226,17 @@ test("audit pass closes the row; audit fail returns it to needs worker carrying 
 	const silent = h.rows().find(row => row.content === AUDITED[0]);
 	expect(silent.status).toBe("in_progress");
 	// It was recorded inconclusive and immediately relaunched once (attempt 2).
-	expect(silent.schedule.audit).toMatchObject({ verdict: "pending", attempts: 2 });
+	expect(silent.schedule.audit).toMatchObject({ verdict: "pending", attempts: 1 });
 	expect(todoRowAfterWorker(silent)).toMatchObject({ kind: "verify", via: "audit" });
 	const decision = replay(h.phases).decision;
 	const staffed = decision.dispatchableReady.find(row => row.content === AUDITED[3]);
 	expect(staffed).toMatchObject({ previous: "UxGraphEdges", reason: "audit-failed" });
 	expect(decision.dispatchableReady.some(row => row.content === AUDITED[1])).toBe(false);
 	// Inconclusive rows were relaunched once naming the missing piece; settled rows were not.
-	expect(h.launches).toHaveLength(2);
+	expect(h.launches).toHaveLength(5); // omitted rows retry singly, up to the cap
 	expect(h.launches[1].task).not.toContain(JSON.stringify(AUDITED[1]));
 	expect(h.launches[1].task).not.toContain(JSON.stringify(AUDITED[3]));
-	expect(h.launches[1].task).toContain("Previous audit was inconclusive: auditor returned no verdict for this row");
+	expect(h.launches[1].task.match(/- Row:/g)).toHaveLength(1);
 });
 
 test("a head move while the audit runs discards its verdicts and re-audits once at the new head", async () => {
@@ -348,7 +351,16 @@ test("DivineRoadrunner replay: a yield of unverified 'fail' verdicts is inconclu
 	expect(
 		settleRowAuditVerdict({ ...yielded[0], checks: [{ command: "git rev-parse HEAD", exitCode: 0 }] }).verdict,
 	).toBe("inconclusive");
-	const h = harness();
+	const audited = AUDITED.filter(content => yielded.some(item => item.row === content));
+	const h = harness([
+		{
+			name: "Inconclusive",
+			tasks: clone()
+				.flatMap(phase => phase.tasks)
+				.filter(row => audited.includes(row.content))
+				.map(row => ({ ...row, schedule: { ...row.schedule, dependencies: [] } })),
+		},
+	]);
 	await h.check();
 	await h.settle(0, divineRoadrunner);
 	expect(h.launches).toHaveLength(2); // relaunched once with the missing piece named
@@ -359,15 +371,15 @@ test("DivineRoadrunner replay: a yield of unverified 'fail' verdicts is inconclu
 	expect(h.launches).toHaveLength(2); // a second inconclusive goes to the lead, not a third launch
 	expect(await h.check()).toBe(0);
 	const after = replay(h.phases);
-	for (const content of AUDITED) {
-		expect(after.states.get(content)).toBe("verifying");
-		expect(after.decision.dispatchableReady.some(row => row.content === content)).toBe(false);
+	for (const content of audited) {
+		expect(after.states.get(content)).toBe("needs worker");
+		expect(after.decision.dispatchableReady.some(row => row.content === content)).toBe(true);
 	}
 	expect(after.display.lines.join("\n")).toContain(
-		'Power source rows: remove red selection frame and grey boxes — verifying: inconclusive — "fail" without a check',
+		"Power source rows: remove red selection frame and grey boxes — needs worker",
 	);
 	const notice = prompt.render(gateNotices, { audit: true, rows: '"row" (inconclusive: x)' });
-	expect(notice).toContain("Do not staff a new worker for a delivered row");
+	expect(notice).toContain("staff a worker to produce the missing check command or screenshot");
 	// New evidence the lead records on the row reruns its audit.
 	const row = h.rows().find(candidate => candidate.content === AUDITED[1]);
 	row.schedule.progress = { at: live.now + 1, evidence: "f1ee6e909: run bunx playwright test e2e/power-rows.spec.ts" };
@@ -385,7 +397,7 @@ test("no auditor profile: nothing launches, never a gate-runner substitute, rows
 	}
 	const after = replay(h.phases);
 	expect(after.display.lines.join("\n")).toContain(
-		"Mau standup transcript into plans, requirements, knowledgebase — verifying: auditor unavailable",
+		"Mau standup transcript into plans, requirements, knowledgebase — audit queued: auditor unavailable",
 	);
 	expect(after.decision.dispatchableReady.some(row => AUDITED.includes(row.content))).toBe(false);
 });
@@ -422,7 +434,7 @@ test("verdicts from the old gate-runner fallback are void: those rows reopen to 
 	const states = replay(phases).states;
 	for (const row of bogus) {
 		expect(todoRowAfterWorker(row)).toMatchObject({ kind: "verify", via: "audit" });
-		expect(states.get(row.content)).toBe("verifying");
+		expect(states.get(row.content)).toBe("audit queued");
 	}
 	const h = harness(phases);
 	expect(await h.check()).toBe(1);
@@ -449,4 +461,121 @@ test("every row in a running batched audit names its verifier in the HUD", async
 		expect(state).toMatchObject({ state: "verifying", worker: { id: "HelpfulVole" } });
 	}
 	expect(display.lines.filter(line => line.includes("verifying · HelpfulVole"))).toHaveLength(AUDITED.length);
+});
+
+test("new deliveries at the same head launch concurrently without duplicating a row or exceeding the cap", async () => {
+	const delivered = clone()
+		.flatMap(phase => phase.tasks)
+		.find(row => row.content === AUDITED[1]);
+	const h = harness([{ name: "Concurrent", tasks: [delivered] }]);
+	for (let index = 0; index < ROW_AUDIT_CAP; index++) {
+		if (index)
+			h.phases[0].tasks.push({
+				...structuredClone(delivered),
+				content: `delivered ${index}`,
+				schedule: { ...structuredClone(delivered.schedule), audit: undefined },
+			});
+		expect(await h.check()).toBe(1);
+		expect(await h.check()).toBe(0);
+	}
+	h.phases[0].tasks.push({
+		...structuredClone(delivered),
+		content: "over cap",
+		schedule: { ...structuredClone(delivered.schedule), audit: undefined },
+	});
+	expect(await h.check()).toBe(0);
+	expect(h.launches).toHaveLength(ROW_AUDIT_CAP);
+	for (const launch of h.launches) expect(launch.task.match(/- Row:/g)).toHaveLength(1);
+	await h.settle(0, { rows: [verdict(delivered.content, "pass")] });
+	expect(await h.check()).toBe(1);
+	expect(h.launches.at(-1).task).toContain('"over cap"');
+});
+
+test("an omitted row immediately gets a single-row audit without consuming its inconclusive allowance", async () => {
+	const delivered = clone()
+		.flatMap(phase => phase.tasks)
+		.filter(row => AUDITED.slice(0, 2).includes(row.content));
+	const h = harness([{ name: "Omission", tasks: delivered }]);
+	await h.check();
+	await h.settle(0, { rows: [verdict(delivered[0].content, "pass")] });
+	expect(h.launches).toHaveLength(2);
+	expect(h.launches[1].task.match(/- Row:/g)).toHaveLength(1);
+	expect(delivered[1].schedule.audit).toMatchObject({ verdict: "pending", attempts: 1 });
+	expect(await h.check()).toBe(0);
+	await h.settle(1, { rows: [verdict(delivered[1].content, "inconclusive", "need a 430px screenshot")] });
+	expect(h.launches).toHaveLength(3);
+	expect(delivered[1].schedule.audit.attempts).toBe(2);
+	await h.settle(2, { rows: [verdict(delivered[1].content, "inconclusive", "need a 430px screenshot")] });
+	expect(todoRowAfterWorker(delivered[1])).toMatchObject({
+		kind: "needs-worker",
+		findings: "need a 430px screenshot",
+	});
+});
+
+test("the lead gate names an unsent review page and the evidence worker's missing check", () => {
+	const page = "http://localhost:8767/review/grid/";
+	const delivered = {
+		content: "Use grid",
+		status: "completed",
+		schedule: { review: "user", handoffPending: true, reviewPage: page },
+	};
+	const missing = clone()
+		.flatMap(phase => phase.tasks)
+		.find(row => row.content === AUDITED[1]);
+	missing.schedule.audit = {
+		delivery: JSON.stringify([
+			missing.schedule.executor.workerId,
+			missing.schedule.executor.startedAt,
+			missing.schedule.executor.finishedAt,
+		]),
+		repoPath: REPO,
+		head: "h",
+		startedAt: live.now,
+		at: live.now,
+		agent: "qa-auditor",
+		verdict: "inconclusive",
+		attempts: 2,
+		findings: "produce screenshot at 430px",
+	};
+	const phases = [{ name: "Gate", tasks: [delivered, missing] }];
+	const text = renderLeadRowInstructions(phases, { workers: [], owners: new Map() }, { now: live.now });
+	expect(text).toContain(`send review page ${page} for rows "Use grid"`);
+	expect(text).toContain("produce screenshot at 430px");
+	expect(text).toContain("call task");
+});
+
+test("a new worker delivery invalidates the previous pass and starts a fresh audit", async () => {
+	const delivered = clone()
+		.flatMap(phase => phase.tasks)
+		.find(row => row.content === AUDITED[1]);
+	const h = harness([{ name: "New delivery", tasks: [delivered] }]);
+	await h.check();
+	await h.settle(0, { rows: [verdict(delivered.content, "pass")] });
+	delivered.status = "in_progress";
+	delivered.schedule.executor = {
+		...delivered.schedule.executor,
+		workerId: "EvidenceWorker",
+		startedAt: live.now + 1,
+		finishedAt: live.now + 2,
+	};
+	expect(await h.check()).toBe(1);
+	expect(delivered.schedule.audit).toMatchObject({ verdict: "pending", attempts: 1 });
+});
+
+test("18:55 HUD replay: six idle deliveries have zero phantom verifiers and launch only within capacity", async () => {
+	const phases = structuredClone(auditStall);
+	const before = replay(phases);
+	expect([...before.states.values()].filter(state => state === "verifying")).toHaveLength(0);
+	const h = harness(
+		phases,
+		Object.fromEntries(phases[0].tasks.map(row => [row.artifactCwd, row.schedule.audit.head])),
+	);
+	expect(await h.check()).toBe(ROW_AUDIT_CAP);
+	expect(await h.check()).toBe(0);
+	const workers = [{ id: "HelpfulVole", agent: "qa-auditor" }];
+	for (const row of h.rows()) {
+		const state = classifyTodoDisplayRow(row, phases, { workers, owners: new Map() });
+		if (state.state === "verifying") expect(row.schedule.audit.workerId).toBe("HelpfulVole");
+	}
+	expect(h.launches.filter(launch => launch.task.match(/- Row:/g)?.length === 1).length).toBeGreaterThanOrEqual(3);
 });

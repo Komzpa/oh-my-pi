@@ -1,5 +1,9 @@
 import { describe, expect, it } from "bun:test";
 import {
+	classifyTodoDisplayRow,
+	todoRowAfterWorker,
+	todoRowDeliveryKey,
+	renderTodoPlanDisplay,
 	forecastTodoPlan,
 	formatTaskForecast,
 	formatTaskForecastDisplay,
@@ -747,4 +751,179 @@ it("separates a certain 64 minute miss from P95 risk and keeps scope triage visi
 	const risk = forecastTodoPlan(phases(uncertain), { now, deadlineAt: due });
 	expect(risk.expectedResourceFinish).toBeLessThanOrEqual(due);
 	expect(risk.deadlineStatus).toBe("at-risk");
+});
+
+describe("audit and handoff display precedence", () => {
+	const idle = { workers: [], owners: new Map() };
+	const delivered = (): TodoScheduleInputTask => ({
+		content: "delivered",
+		status: "in_progress",
+		schedule: {
+			review: "user",
+			handoffPending: true,
+			firstDeliveredAt: 1,
+			reviewPage: "https://review.example/row",
+			executor: { workerId: "coder", startedAt: 1, finishedAt: 2, outcome: "completed" },
+		},
+	});
+	const classify = (row: TodoScheduleInputTask) => classifyTodoDisplayRow(row, phases(row), idle);
+	it("replays the recorded rows without falsely requesting user review", async () => {
+		const input = (await Bun.file(
+			new URL("./todo-display-1856.fixture.json", import.meta.url),
+		).json()) as TodoScheduleInput;
+		const rows = input.flatMap(phase => phase.tasks);
+		expect(rows).toHaveLength(4);
+		expect(rows.map(row => classifyTodoDisplayRow(row, input, idle).state)).toEqual([
+			"handoff pending",
+			"audit queued",
+			"audit queued",
+			"audit queued",
+		]);
+		const display = renderTodoPlanDisplay(input, idle, { now: NOW, paint: (_tone, text) => text });
+		expect(display.lines[0]).toContain("0 need you");
+	});
+	it("shows only a live or launching audit as verifying", () => {
+		const row = delivered();
+		row.schedule!.audit = {
+			delivery: todoRowDeliveryKey(row.schedule),
+			repoPath: "/repo",
+			head: "head",
+			startedAt: 3,
+			verdict: "pending",
+			agent: "qa-auditor",
+			workerId: "audit",
+		};
+		expect(classify(row).state).toBe("audit queued");
+		expect(classifyTodoDisplayRow(row, phases(row), { ...idle, auditLaunching: new Set([row.content]) }).state).toBe(
+			"verifying",
+		);
+		expect(classifyTodoDisplayRow(row, phases(row), { ...idle, workers: [{ id: "audit" }] }).state).toBe("verifying");
+	});
+	it("keeps an active worker ahead of stale review flags and audit records", () => {
+		const row = delivered();
+		row.schedule!.audit = {
+			delivery: todoRowDeliveryKey(row.schedule),
+			repoPath: "/repo",
+			head: "head",
+			startedAt: 3,
+			verdict: "pending",
+			agent: "qa-auditor",
+			workerId: "audit",
+		};
+		expect(
+			classifyTodoDisplayRow(row, phases(row), {
+				workers: [{ id: "coder" }, { id: "audit" }],
+				owners: new Map([[row.content, { id: "coder" }]]),
+			}).state,
+		).toBe("working");
+	});
+	it("returns two inconclusive audits to a worker with findings and resets on a new delivery", () => {
+		const row = delivered();
+		row.schedule!.audit = {
+			delivery: todoRowDeliveryKey(row.schedule),
+			repoPath: "/repo",
+			head: "head",
+			startedAt: 3,
+			verdict: "inconclusive",
+			agent: "qa-auditor",
+			attempts: 1,
+			findings: "missing keyboard proof",
+		};
+		expect(classify(row).state).toBe("audit queued");
+		row.schedule!.audit.attempts = 2;
+		expect(todoRowAfterWorker(row)).toMatchObject({
+			kind: "needs-worker",
+			reason: "audit-inconclusive",
+			findings: "missing keyboard proof",
+		});
+		expect(classify(row).state).toBe("needs worker");
+		row.schedule!.executor!.finishedAt = 4;
+		expect(classify(row).state).toBe("audit queued");
+	});
+	it("treats legacy missing-verdict findings as omitted rather than exhausting retries", () => {
+		const row = delivered();
+		row.schedule!.audit = {
+			delivery: todoRowDeliveryKey(row.schedule),
+			repoPath: "/repo",
+			head: "head",
+			startedAt: 3,
+			verdict: "inconclusive",
+			agent: "qa-auditor",
+			attempts: 2,
+			findings: "auditor returned no verdict for this row",
+		};
+		expect(classify(row).state).toBe("audit queued");
+	});
+	it("queues omitted rows without treating batch omission as inconclusive exhaustion", () => {
+		const row = delivered();
+		row.schedule!.audit = {
+			delivery: todoRowDeliveryKey(row.schedule),
+			repoPath: "/repo",
+			head: "head",
+			startedAt: 3,
+			verdict: "omitted",
+			agent: "qa-auditor",
+			attempts: 2,
+		};
+		expect(classify(row).state).toBe("audit queued");
+	});
+	it("restarts exhausted audit verification after new worker evidence", () => {
+		const row = delivered();
+		row.schedule!.audit = {
+			delivery: todoRowDeliveryKey(row.schedule),
+			repoPath: "/repo",
+			head: "head",
+			startedAt: 3,
+			at: 4,
+			verdict: "inconclusive",
+			agent: "qa-auditor",
+			attempts: 2,
+		};
+		row.schedule!.progress = { at: 5, evidence: "worker supplied keyboard proof" };
+		expect(classify(row).state).toBe("audit queued");
+	});
+	it("allows a handed-off question with no implementation audit or review page", () => {
+		const row: TodoScheduleInputTask = {
+			content: "choose scope",
+			status: "completed",
+			schedule: { review: "user", handoffPending: false, reviewSummary: "Which scope?" },
+		};
+		expect(classify(row).state).toBe("needs you");
+		row.schedule!.handoffPending = true;
+		expect(classify(row).state).toBe("handoff pending");
+	});
+	it("keeps failed review-flagged deliveries open in the forecast until verification passes", () => {
+		const row = task("repair", 60, { status: "in_progress" });
+		row.schedule = { ...row.schedule, ...delivered().schedule };
+		row.schedule!.audit = {
+			delivery: todoRowDeliveryKey(row.schedule),
+			repoPath: "/repo",
+			head: "head",
+			startedAt: 3,
+			verdict: "fail",
+			agent: "qa-auditor",
+		};
+		expect(forecastTodoPlan(phases(row), { now: NOW }).rows[0]!.status).toBe("in_progress");
+		row.schedule!.audit.verdict = "pass";
+		expect(forecastTodoPlan(phases(row), { now: NOW }).rows[0]!.status).toBe("completed");
+	});
+	it("requires an audit pass and completed handoff before asking for review", () => {
+		const row = delivered();
+		row.schedule!.audit = {
+			delivery: todoRowDeliveryKey(row.schedule),
+			repoPath: "/repo",
+			head: "head",
+			startedAt: 3,
+			verdict: "fail",
+			agent: "qa-auditor",
+			findings: "broken",
+		};
+		expect(classify(row).state).toBe("needs worker");
+		row.schedule!.audit.verdict = "pass";
+		expect(classify(row).state).toBe("handoff pending");
+		row.schedule!.handoffPending = false;
+		expect(classify(row).state).toBe("needs you");
+		row.schedule!.reviewPagePending = true;
+		expect(classify(row).state).toBe("handoff pending");
+	});
 });

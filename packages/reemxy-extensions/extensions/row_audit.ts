@@ -105,38 +105,43 @@ function rowRepo(row: RowAuditRow, cwd: string): string {
 }
 
 /**
- * Delivered rows whose audit must be (re)launched, one batch per repository head. A row whose
+ * Delivered rows whose audit must be (re)launched, batches grouped by repository head. A row whose
  * pending audit already runs at the current head (`inFlight`) is skipped; a pending audit at an
- * older head, or one no longer running in this process, is audited again at the current head. An
- * inconclusive audit is relaunched once naming the missing piece, and again only after the lead
- * records new evidence on the row.
+ * older head, or one no longer running in this process, is audited again at the current head. Omitted verdicts retry individually without consuming an attempt; two inconclusive verdicts
+ * return the row to staffing for the missing evidence.
  */
 export function planRowAudits(
 	rows: readonly RowAuditRow[],
 	heads: ReadonlyMap<string, string>,
 	cwd: string,
 	isLive: (row: RowAuditRow) => boolean,
-	inFlight: (repoPath: string, head: string) => boolean,
+	inFlight: (repoPath: string, head: string, row: RowAuditRow) => boolean,
 ): RowAuditBatch[] {
 	const batches = new Map<string, RowAuditBatch>();
 	for (const row of rows) {
 		if (isLive(row)) continue;
 		const after = todoRowAfterWorker(row);
-		if (after?.kind !== "verify" || after.via !== "audit") continue;
+		if (
+			!(after?.kind === "verify" && after.via === "audit") &&
+			!(after?.kind === "needs-worker" && after.reason === "audit-inconclusive")
+		)
+			continue;
 		const repoPath = rowRepo(row, cwd);
 		const head = heads.get(repoPath) ?? "unknown";
-		const audit = after.audit?.head === head ? after.audit : undefined;
+		const previous = after.kind === "verify" ? after.audit : row.schedule?.audit;
+		const audit = previous?.head === head ? previous : undefined;
 		if (audit?.verdict === "pass") continue;
-		let attempt = audit?.attempts ?? 1;
+		const omitted = audit?.verdict === "omitted" || audit?.findings === "auditor returned no verdict for this row";
+		let attempt = omitted ? (audit?.verdict === "omitted" ? (audit.attempts ?? 0) + 1 : 1) : (audit?.attempts ?? 1);
 		let retry: string | undefined;
-		if (audit?.verdict === "inconclusive") {
+		if (audit?.verdict === "inconclusive" && !omitted) {
 			const newEvidence = (row.schedule?.progress?.at ?? 0) > (audit.at ?? Infinity);
 			if (attempt >= 2 && !newEvidence) continue;
 			attempt = newEvidence ? 1 : attempt + 1;
 			retry = audit.findings;
 		}
-		if (inFlight(repoPath, head)) continue;
-		const key = JSON.stringify([repoPath, head]);
+		if (inFlight(repoPath, head, row)) continue;
+		const key = JSON.stringify([repoPath, head, ...(omitted ? [row.content] : [])]);
 		const batch = batches.get(key) ?? { repoPath, head, rows: [] };
 		batch.rows.push({ ...row, attempt, ...(retry ? { retry } : {}) });
 		batches.set(key, batch);
@@ -209,7 +214,7 @@ export interface RowAuditOptions {
 }
 
 /** In-flight batches survive extension reloads in this process; a new process relaunches each once. */
-const inFlight = new Set<string>();
+const inFlight = new Map<string, Set<string>>();
 const failedAt = new Map<string, number>();
 
 export function resetRowAuditsForTest(): void {
@@ -221,8 +226,8 @@ export function resetRowAuditsForTest(): void {
  * Runtime-owned post-completion step: every delivered, unverified row is audited at its repository
  * head by the registry's qa-auditor, in batches (at most ROW_AUDIT_CAP at once). A pass closes the
  * row through the schedule callback; only a defect observed at the head returns it to "needs
- * worker". Inconclusive audits keep the row verifying and relaunch once naming the missing piece.
- * Without an auditor profile nothing launches and the rows stay "verifying: auditor unavailable".
+ * worker". Inconclusive audits relaunch once, then return the missing evidence to staffing.
+ * Without an auditor profile nothing launches and rows show the audit queue.
  * A head that moved while the audit ran discards its verdicts and re-audits once at the new head.
  */
 export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOptions = {}): Promise<number> {
@@ -230,7 +235,9 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	const now = options.now ?? Date.now;
 	const readHead = options.readHead ?? execGit;
 	const session = ctx.sessionManager.getHeader()?.id ?? "";
-	const batchKey = (repoPath: string, head: string) => JSON.stringify([session, repoPath, head]);
+	const rowKey = (row: RowAuditRow) => JSON.stringify([session, row.content]);
+	const batchKey = (batch: RowAuditBatch) =>
+		JSON.stringify([session, batch.repoPath, batch.head, batch.rows.map(rowKey).sort()]);
 	const rows = (ctx.getTodoPhases() ?? []).flatMap(phase => phase.tasks) as RowAuditRow[];
 	const jobs = ctx.getAsyncJobSnapshot?.()?.running ?? [];
 	const liveIds = new Set(jobs.flatMap(job => [job.id, job.agentId].filter((id): id is string => !!id)));
@@ -238,17 +245,23 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		[row.schedule?.owner, row.schedule?.executor?.workerId].some(id => typeof id === "string" && liveIds.has(id));
 	const candidates = rows.filter(row => {
 		const after = isLive(row) ? undefined : todoRowAfterWorker(row);
-		return after?.kind === "verify" && after.via === "audit";
+		return (
+			(after?.kind === "verify" && after.via === "audit") ||
+			(after?.kind === "needs-worker" && after.reason === "audit-inconclusive")
+		);
 	});
 	if (!candidates.length) return 0;
 	const heads = new Map<string, string>();
 	for (const repoPath of new Set(candidates.map(row => rowRepo(row, ctx.cwd))))
 		heads.set(repoPath, (await readHead(repoPath)) ?? "unknown");
-	const busy = (repoPath: string, head: string) => {
-		const key = batchKey(repoPath, head);
-		return inFlight.has(key) || now() - (failedAt.get(key) ?? -Infinity) < ROW_AUDIT_RETRY_MS;
+	const busy = (_repoPath: string, _head: string, row: RowAuditRow) => {
+		const key = rowKey(row);
+		return (
+			[...inFlight.values()].some(rows => rows.has(key)) ||
+			now() - (failedAt.get(key) ?? -Infinity) < ROW_AUDIT_RETRY_MS
+		);
 	};
-	const running = () => [...inFlight].filter(key => key.startsWith(`[${JSON.stringify(session)},`)).length;
+	const running = () => [...inFlight.keys()].filter(key => key.startsWith(`[${JSON.stringify(session)},`)).length;
 	const batches = planRowAudits(candidates, heads, ctx.cwd, isLive, busy);
 	if (!batches.length) return 0;
 	const agent = await (options.resolveAuditor ?? (() => registryAuditor(ctx.cwd)))();
@@ -279,7 +292,9 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	let launched = 0;
 	for (const batch of batches) {
 		if (running() >= ROW_AUDIT_CAP) break;
-		const key = batchKey(batch.repoPath, batch.head);
+		// Recheck after asynchronous registry resolution: another tick may have claimed these rows.
+		batch.rows = batch.rows.filter(row => !busy(batch.repoPath, batch.head, row));
+		const key = batchKey(batch);
 		const startedAt = now();
 		const records = new Map<string, TodoRowAudit>();
 		for (const row of batch.rows) {
@@ -296,7 +311,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 			if (ctx.updateTodoSchedule(row.content, { audit })) records.set(row.content, audit);
 		}
 		if (!records.size) continue;
-		inFlight.add(key);
+		inFlight.set(key, new Set(batch.rows.map(rowKey)));
 		launched++;
 		void (async () => {
 			let retry = false;
@@ -330,13 +345,18 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 					)
 						continue;
 					const at = now();
-					const settled = settleRowAuditVerdict(
-						verdicts.find(item => item.row === content),
-						fileExists,
-					);
+					const verdict = verdicts.find(item => item.row === content);
+					if (!verdict) {
+						ctx.updateTodoSchedule!(content, {
+							audit: { ...audit, verdict: "omitted", attempts: Math.max(0, (audit.attempts ?? 1) - 1), at },
+						});
+						retry = true;
+						continue;
+					}
+					const settled = settleRowAuditVerdict(verdict, fileExists);
 					const record: TodoRowAudit = { ...audit, verdict: settled.verdict, findings: settled.findings, at };
 					if (settled.verdict === "inconclusive") {
-						// Nothing was verified: the row stays verifying and the evidence the lead recorded stays.
+						// A second inconclusive result returns the findings to staffing through todoRowAfterWorker.
 						if ((audit.attempts ?? 1) < 2) retry = true;
 						ctx.updateTodoSchedule!(content, { audit: record });
 						continue;
@@ -350,7 +370,14 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 					});
 				}
 			} catch (error) {
-				failedAt.set(key, now());
+				for (const row of batch.rows) {
+					failedAt.set(rowKey(row), now());
+					const audit = records.get(row.content);
+					if (audit)
+						ctx.updateTodoSchedule!(row.content, {
+							audit: { ...audit, verdict: "unavailable", findings: String(error), at: now() },
+						});
+				}
 				logger.warn("Row audit did not run", { repo: batch.repoPath, head: batch.head, error: String(error) });
 			} finally {
 				inFlight.delete(key);

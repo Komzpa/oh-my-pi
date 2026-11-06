@@ -37,6 +37,8 @@ export const expectedDisplayActions: Record<TodoDisplayState, "wait" | "task" | 
 	waiting: "wait",
 	auditing: "wait",
 	verifying: "wait",
+	"audit queued": "wait",
+	"handoff pending": "ask",
 	"ready to close": "todo",
 	"needs you": "wait",
 	"needs worker": "task",
@@ -80,6 +82,35 @@ function cases(now: number): Case[] {
 	work.schedule!.executor = { ...work.schedule!.executor!, outcome: undefined, finishedAt: undefined };
 	work.schedule!.deliveryCritic = undefined;
 	const owner = work.schedule!.owner!;
+	const auditedReview = change(delivered, {
+		schedule: {
+			...delivered.schedule,
+			review: "user",
+			firstDeliveredAt: now - 1000,
+			reviewPage: "http://review.invalid/card",
+			handoffPending: false,
+			reviewPagePending: false,
+		},
+	});
+	auditedReview.schedule!.audit = {
+		agent: schedule.TODO_ROW_AUDITOR,
+		delivery: schedule.todoRowDeliveryKey(auditedReview.schedule),
+		repoPath: "/fixture",
+		head: "abc1234",
+		startedAt: now,
+		verdict: "pass",
+	};
+	const verifying = change(delivered);
+	verifying.schedule!.audit = {
+		agent: schedule.TODO_ROW_AUDITOR,
+		delivery: schedule.todoRowDeliveryKey(verifying.schedule),
+		repoPath: "/fixture",
+		head: "abc1234",
+		startedAt: now,
+		verdict: "pending",
+		workerId: "RowAudit",
+	};
+
 	const output: Case[] = [
 		{ id: "working", row: work, state: "working", expected: null, workers: [{ id: owner }] },
 		{
@@ -89,7 +120,20 @@ function cases(now: number): Case[] {
 			expected: null,
 			workers: [{ id: "DependencyWorker" }],
 		},
-		{ id: "verifying", row: change(delivered), state: "verifying", expected: null },
+		{
+			id: "verifying",
+			row: verifying,
+			state: "verifying",
+			expected: null,
+			workers: [{ id: "RowAudit", agent: "qa-auditor" }],
+		},
+		{ id: "audit-queued", row: change(delivered), state: "audit queued", expected: null },
+		{
+			id: "handoff-pending",
+			row: change(auditedReview, { schedule: { ...auditedReview.schedule, handoffPending: true } }),
+			state: "handoff pending",
+			expected: { tool: "text", args: { reviewPage: "http://review.invalid/card" } },
+		},
 		{
 			id: "auditing",
 			row: change(delivered),
@@ -115,14 +159,7 @@ function cases(now: number): Case[] {
 		},
 		{
 			id: "needs-you",
-			row: change(delivered, {
-				schedule: {
-					...delivered.schedule,
-					review: "user",
-					firstDeliveredAt: now - 1000,
-					reviewPage: "http://review.invalid/card",
-				},
-			}),
+			row: change(auditedReview),
 			state: "needs you",
 			expected: null,
 		},
@@ -157,7 +194,7 @@ function cases(now: number): Case[] {
 		startedAt: now,
 		verdict: "pending",
 	};
-	output.push({ id: "head-moved", row: moved, state: "verifying", expected: null });
+	output.push({ id: "head-moved", row: moved, state: "audit queued", expected: null });
 	const late = change(work);
 	late.schedule!.startedAt = now - 600_000;
 	late.schedule!.estimate!.updatedAt = now - 600_000;
@@ -168,9 +205,7 @@ function cases(now: number): Case[] {
 		workers: [{ id: owner }],
 		expected: { tool: "todo", args: { op: "schedule", updates: [{ task: late.content }] } },
 	});
-	const answered = change(delivered, {
-		schedule: { ...delivered.schedule, review: "user", firstDeliveredAt: now - 1000 },
-	});
+	const answered = change(auditedReview);
 	output.push({
 		id: "user-answered-review",
 		row: answered,
