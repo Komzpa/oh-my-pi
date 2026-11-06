@@ -114,6 +114,7 @@ async function restoreInterruptedChild(options: { transcript?: "handoff" | "fall
 		task: "report what notes.txt says",
 		tools: ["read"],
 		agent: "task",
+		isolated: true,
 		resolvedModel: `mock/${SPAWN_MODEL}`,
 	});
 	child.appendMessage({ role: "user", content: "report what notes.txt says", timestamp: Date.now() });
@@ -204,7 +205,7 @@ async function restoreInterruptedChild(options: { transcript?: "handoff" | "fall
 			phases = next;
 		},
 		settings,
-		effectiveExtensionRoots: { explicit: [], mode: "merge", configured: [], configuredLevel: "user" },
+		effectiveExtensionRoots: () => ({ explicit: [], mode: "merge", configured: [], configuredLevel: "user" }),
 		preparedExtensions: undefined,
 		restoreInterruptedTurn: async () => false,
 	} as unknown as AgentSession;
@@ -226,7 +227,7 @@ async function restoreInterruptedChild(options: { transcript?: "handoff" | "fall
 	}
 }
 
-it("ordinary resume continues the crashed row from its transcript and original workspace under a new id", async () => {
+it("ordinary resume continues the crashed row from its transcript and retained isolated workspace under a new id", async () => {
 	const { delivered, readResults } = await restoreInterruptedChild({ crash: true });
 	expect(delivered).toContain(`restored: 42 (${SPAWN_MODEL})`);
 	expect(readResults[SPAWN_MODEL]).toHaveLength(1);
