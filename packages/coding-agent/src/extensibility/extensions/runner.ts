@@ -1887,6 +1887,8 @@ export class ExtensionRunner {
 					{ agent: "gate-runner", task, effort: "lo" },
 					{ signal, waitForCompletion: true },
 				),
+			runRowAudit: (task, agent, signal) =>
+				this.invokeNativeTool("task", { agent, task }, { signal, waitForCompletion: true }),
 			getTodoPhases: () => this.getTodoPhases?.(),
 			updateTodoSchedule: (task, patch) => this.updateTodoSchedule?.(task, patch) ?? false,
 			setSubagentFastMode: this.#setSubagentFastModeFn,

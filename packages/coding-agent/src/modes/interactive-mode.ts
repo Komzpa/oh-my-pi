@@ -5761,9 +5761,11 @@ export class InteractiveMode implements InteractiveModeContext {
 				if (worker) owners.set(task.content, worker);
 			}
 			const ledger = readTodoDisplayLedgerFromManager(owner.sessionManager, runningWorkerIds);
+			const taskCap = cfgTaskMaxConcurrency.get(owner.settings);
+			const runningTasks = (owner.getAsyncJobSnapshot()?.running ?? []).filter(job => job.type === "task").length;
 			const display = renderTodoPlanDisplay(
 				phases,
-				{ workers: liveWorkers, owners, ...ledger },
+				{ workers: liveWorkers, owners, ...ledger, capacityFull: taskCap > 0 && runningTasks >= taskCap },
 				{
 					now,
 					width: Math.max(0, width - 2),

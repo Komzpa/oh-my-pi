@@ -74,6 +74,8 @@ export interface TodoSchedule {
 		timedOut?: boolean;
 		evidence?: string;
 	};
+	/** Runtime-owned audit of a delivered worker result; `delivery` binds it to one executor run. */
+	audit?: TodoRowAudit;
 	/** Published decision artifact, probed at the idle lead boundary. */
 	reviewPage?: string;
 	/** A refused handoff remains pending until its published row card resolves. */
@@ -98,6 +100,19 @@ export interface TodoSchedule {
 		finishedAt?: number;
 		outcome?: "completed" | "failed" | "aborted";
 	};
+}
+
+/** One batched audit of delivered rows at one repository head. A pass closes the row; a fail returns it to a worker. */
+export interface TodoRowAudit {
+	/** `todoRowDeliveryKey` of the executor run being audited; a newer run invalidates this record. */
+	delivery: string;
+	repoPath: string;
+	head: string;
+	startedAt: number;
+	verdict: "pending" | "pass" | "fail";
+	agent?: string;
+	findings?: string;
+	at?: number;
 }
 
 /** One immutable terminal worker attempt attached to its owning todo row. */
@@ -1945,7 +1960,99 @@ export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): 
 	return parts.join(" · ");
 }
 
-export type TodoDisplayState = "working" | "waiting" | "auditing" | "ready to close" | "needs you" | "stuck";
+/** Read-only profiles whose run verifies a delivery rather than producing one. */
+export const TODO_AUDIT_PROFILES: readonly string[] = ["qa-auditor", "reviewer", "gate-runner"];
+/** Investigation profiles: their run answers a question; the change it calls for is a next worker's. */
+export const TODO_FINDINGS_PROFILES: readonly string[] = [
+	"researcher",
+	"profiler",
+	"scout",
+	"architect",
+	"business-analyst",
+];
+
+/** Identity of one executor run; audits and critic verdicts are bound to it. */
+export function todoRowDeliveryKey(schedule: TodoSchedule | undefined): string {
+	const executor = schedule?.executor;
+	return JSON.stringify([executor?.workerId, executor?.startedAt, executor?.finishedAt]);
+}
+
+// A commit id: 7-40 hex characters with at least one digit and one letter, so plain numbers and
+// hex-looking words are not commits.
+const COMMIT_ID = /(?<![0-9A-Za-z])(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![0-9A-Za-z])/;
+
+/** The row carries a deliverable: commit receipts, a pinned git resource, a review page, or a
+ * commit id in the evidence the lead recorded on the row. Worker output prose is never read. */
+export function todoRowHasDeliverable(task: { schedule?: TodoSchedule }): boolean {
+	const schedule = task.schedule;
+	if (!schedule) return false;
+	if (schedule.executor?.gitCommits?.length) return true;
+	const last = schedule.attemptHistory?.at(-1);
+	if (last?.terminalStatus === "completed" && last.gitCommits?.length) return true;
+	if (schedule.resources?.some(resource => /^git:.+@[0-9a-f]{40}$/.test(resource))) return true;
+	if (schedule.reviewPage) return true;
+	return COMMIT_ID.test(schedule.progress?.evidence ?? "");
+}
+
+/** What a row needs after its last worker settled, decided from row state only. */
+export type TodoRowAfterWorker =
+	| { kind: "verify"; via: "critic" | "audit"; worker: string; audit?: TodoRowAudit }
+	| {
+			kind: "needs-worker";
+			reason: "findings" | "aborted" | "failed" | "lost" | "audit-failed";
+			worker: string;
+			findings?: string;
+	  };
+
+/**
+ * Post-completion lifecycle of an open row whose recorded executor is not running (callers check
+ * liveness). A delivered result is verified, never re-staffed; a result without a deliverable, an
+ * aborted or lost run, or a failed audit needs a worker that continues from the previous output.
+ * Rows waiting on the user, or never started, return undefined.
+ */
+export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWorker | undefined {
+	if (task.status !== "pending" && task.status !== "in_progress") return undefined;
+	const schedule = task.schedule;
+	const executor = schedule?.executor;
+	if (!schedule || !executor?.workerId) return undefined;
+	if (schedule.review === "user" || schedule.review === "accepted" || isTodoAwaitingReview(task)) return undefined;
+	const worker = executor.workerId;
+	const delivery = todoRowDeliveryKey(schedule);
+	const critic = schedule.deliveryCritic;
+	if (critic?.key === delivery) {
+		if (critic.verdict === "defects")
+			return { kind: "needs-worker", reason: "audit-failed", worker, findings: critic.evidence };
+		if (critic.verdict === "pending" && !critic.timedOut) return { kind: "verify", via: "critic", worker };
+	}
+	const audit = schedule.audit?.delivery === delivery ? schedule.audit : undefined;
+	if (audit?.verdict === "fail")
+		return { kind: "needs-worker", reason: "audit-failed", worker, findings: audit.findings };
+	const deliverable = todoRowHasDeliverable(task);
+	const profile = String(executor.agentProfile ?? "").toLowerCase();
+	const auditRun = TODO_AUDIT_PROFILES.includes(profile);
+	const finished = typeof executor.finishedAt === "number";
+	if (executor.outcome === "completed" && finished) {
+		return deliverable && !TODO_FINDINGS_PROFILES.includes(profile)
+			? { kind: "verify", via: "audit", worker, audit }
+			: { kind: "needs-worker", reason: "findings", worker };
+	}
+	// A lost audit run of a delivered result is re-audited; the delivery stays done.
+	if (auditRun && deliverable && executor.outcome === undefined)
+		return { kind: "verify", via: "audit", worker, audit };
+	if (executor.outcome === "aborted" || executor.outcome === "failed")
+		return { kind: "needs-worker", reason: executor.outcome, worker };
+	return { kind: "needs-worker", reason: "lost", worker };
+}
+
+export type TodoDisplayState =
+	| "working"
+	| "waiting"
+	| "auditing"
+	| "verifying"
+	| "ready to close"
+	| "needs you"
+	| "needs worker"
+	| "stuck";
 
 export interface TodoDisplayWorker {
 	id: string;
@@ -1966,12 +2073,18 @@ export interface TodoDisplayContext {
 	owners: ReadonlyMap<string, TodoDisplayWorker>;
 	requirements?: readonly TodoDisplayRequirement[];
 	auditors?: ReadonlyMap<string, string>;
+	/** Every Task slot is taken: rows that need a worker cannot get one now. */
+	capacityFull?: boolean;
 }
 
 export interface TodoDisplayRowState {
 	state: TodoDisplayState;
 	worker?: TodoDisplayWorker;
 	dependency?: string;
+	/** Why a "stuck" or "needs worker" row is not moving. */
+	reason?: string;
+	/** Settled worker whose output the next worker continues from. */
+	previous?: string;
 }
 
 export function classifyTodoDisplayRow(
@@ -2009,7 +2122,21 @@ export function classifyTodoDisplayRow(
 	const linked = context.requirements?.filter(requirement => requirement.rows.includes(task.content));
 	if (linked?.length && linked.every(requirement => requirement.rowVerdicts?.[task.content]?.status === "pass"))
 		return { state: "ready to close" };
-	return { state: "stuck" };
+	if (task.status === "blocked") return { state: "stuck", reason: task.blocker ?? "blocked" };
+	const after = todoRowAfterWorker(task);
+	if (after?.kind === "verify") return { state: "verifying" };
+	const needsWorker = (reason: string, previous?: string): TodoDisplayRowState =>
+		context.capacityFull
+			? { state: "stuck", reason: "cap full", previous }
+			: { state: "needs worker", reason, previous };
+	for (const dependency of task.schedule?.dependencies ?? []) {
+		const prerequisite = tasks.find(row => row.content === dependency);
+		if (!prerequisite || prerequisite.status === "completed" || prerequisite.status === "abandoned") continue;
+		return prerequisite.status === "blocked"
+			? { state: "stuck", reason: `blocked dependency ${dependency}` }
+			: { state: "waiting", dependency };
+	}
+	return after ? needsWorker(after.reason, after.worker) : needsWorker("not started");
 }
 
 export function formatTodoDisplayEta(at: number | undefined, now: number): string {
@@ -2038,7 +2165,7 @@ export function renderTodoPlanDisplay(
 	const count = (state: TodoDisplayState): number => [...states.values()].filter(row => row.state === state).length;
 	const archived = options.archived ?? 0;
 	const eta = formatTodoDisplayEta(options.forecast?.resourceFinish ?? options.forecast?.knownWorkFinish, now);
-	const header = `${open.length} open — ${count("working")} working · ${count("waiting")} waiting · ${count("auditing")} auditing · ${count("ready to close")} ready to close · ${count("needs you")} need you · ${count("stuck")} stuck · ${tasks.length - open.length + archived} closed (${archived} archived)${eta ? ` · ${eta}` : ""}`;
+	const header = `${open.length} open — ${count("working")} working · ${count("waiting")} waiting · ${count("auditing")} auditing · ${count("verifying")} verifying · ${count("ready to close")} ready to close · ${count("needs you")} need you · ${count("needs worker")} need worker · ${count("stuck")} stuck · ${tasks.length - open.length + archived} closed (${archived} archived)${eta ? ` · ${eta}` : ""}`;
 	const lines = [header];
 	const owners: (string | undefined)[] = [undefined];
 	const push = (line: string, worker?: TodoDisplayWorker): void => {
@@ -2094,11 +2221,13 @@ export function renderTodoPlanDisplay(
 				continue;
 			}
 			const label = state.state === "waiting" ? `waiting on ${safeText(state.dependency!)}` : state.state;
-			const blocker =
-				state.state === "stuck" && task.blocker
-					? `: ${truncateToWidth(safeText(task.blocker), TRUNCATE_LENGTHS.TITLE)}`
+			const why = state.reason ?? (state.state === "stuck" ? task.blocker : undefined);
+			const blocker = why ? `: ${truncateToWidth(safeText(why), TRUNCATE_LENGTHS.TITLE)}` : "";
+			const worker = state.worker
+				? ` · ${safeText(state.worker.id)}${elapsed(state.worker)}`
+				: state.previous
+					? ` · after ${safeText(state.previous)}`
 					: "";
-			const worker = state.worker ? ` · ${safeText(state.worker.id)}${elapsed(state.worker)}` : "";
 			const row = options.forecast?.rows.find(row => row.content === task.content);
 			const rowEta = formatTodoDisplayEta(row?.resourceFinish, now);
 			const attempts = task.schedule?.attemptHistory?.length ?? 0;

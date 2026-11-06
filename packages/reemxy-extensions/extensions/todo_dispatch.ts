@@ -20,7 +20,8 @@ import { resolveAgentModelPatterns, resolveModelOverride } from "@oh-my-pi/pi-co
 import { cfgTaskAgentModelOverrides, cfgTaskMaxEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
 import { cfgDefaultThinkingLevel } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { clampThinkingLevelToCeiling, resolveThinkingLevelForModel } from "@oh-my-pi/pi-tui/thinking";
-import { isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { checkRowAudits } from "./row_audit";
+import { todoRowAfterWorker, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -1190,7 +1191,9 @@ export interface DispatchDecision {
     owner: string | null;
     ownership: "unassigned" | "unverified" | "live-owned" | "shared-live-owner" | "idle-live-owner" | "restored-owner";
   }>;
-  dispatchableReady?: Array<DispatchDecision["readyCandidates"][number]>;
+  dispatchableReady?: Array<DispatchDecision["readyCandidates"][number] & { previous?: string; reason?: string; findings?: string }>;
+  /** Delivered rows whose verification the runtime owns (critic or batched audit). */
+  verifyingRows?: string[];
   todoOwnerIds?: string[];
   ownerRunStates?: Array<{ content: string; owner: string | null; running: boolean; progressing?: boolean; outcome?: string }>;
   /** In-progress rows whose recorded owner matches no live task job, parked child or external wait. */
@@ -1887,6 +1890,7 @@ export function decideTodoDispatch(
       livePersistedChildForOwner(owner) !== undefined ||
       externalOwners.get(owner) === true
     );
+  const openTasksByContentEarly = new Map(open.map(({ task }) => [task.content, task]));
   const ownerRunStates = open.map(({ task }) => {
     const owner = typeof task.schedule?.owner === "string" ? task.schedule.owner : null;
     const executorId = task.schedule?.executor?.workerId;
@@ -1902,10 +1906,18 @@ export function decideTodoDispatch(
       })
       .map(({ task }) => task.content),
   );
+  // Post-completion lifecycle from row state: a delivered result is verified by the runtime audit,
+  // never re-staffed; findings-only, aborted or lost runs and failed audits need a worker that
+  // continues from the previous output (live DC 2026-11-06: 9 delivered/finished rows re-demanded).
+  const afterWorker = new Map(ownerRunStates.map((row) => {
+    const task = openTasksByContentEarly.get(row.content);
+    return [row.content, row.running || ownerHasActiveTask(row.owner) || !task ? undefined : todoRowAfterWorker(task)] as const;
+  }));
+  const verifyingContents = new Set([...afterWorker].filter(([, after]) => after?.kind === "verify").map(([content]) => content));
   const lostOwners = jobs !== null
     ? open.flatMap(({ task }) => {
         const owner = task.schedule?.owner;
-        return task.status === "in_progress" && typeof owner === "string" && !ownerHasActiveTask(owner)
+        return task.status === "in_progress" && typeof owner === "string" && !ownerHasActiveTask(owner) && !verifyingContents.has(task.content)
           ? [{ content: task.content, owner }]
           : [];
       })
@@ -1950,7 +1962,7 @@ export function decideTodoDispatch(
                   : "unverified" as const;
       return { content: row.content, owner, ownership };
     });
-  const ownerlessReady = readyCandidates.filter((row) => row.ownership !== "live-owned");
+  const ownerlessReady = readyCandidates.filter((row) => row.ownership !== "live-owned" && !verifyingContents.has(row.content));
   const resourceExecutableContents = new Set(
     forecast.rows
       .filter((row) => row.ready && typeof row.resourceStart === "number" && row.resourceStart <= now)
@@ -2005,7 +2017,12 @@ export function decideTodoDispatch(
       resourceExecutableContents.has(candidate.content) &&
       !(candidate.ownership === "idle-live-owner" && candidate.owner !== null && input.idleResumeAttempts?.has(candidate.owner)) &&
       !(candidate.owner === null && (input.restoredChildren?.length ?? 0) > 0),
-  );
+  ).map((candidate) => {
+    const after = afterWorker.get(candidate.content);
+    return after?.kind === "needs-worker"
+      ? { ...candidate, previous: after.worker, reason: after.reason, ...(after.findings ? { findings: after.findings } : {}) }
+      : candidate;
+  });
   const actionableReadyContents = new Set(
     staffingSnapshotComplete && taskEnabled && !goalPaused && capacity !== undefined &&
       (startableCapacity === undefined
@@ -2177,6 +2194,7 @@ export function decideTodoDispatch(
     `Nonclosed row timing (${forecastRows.length}/${obligated.length}; CPM ES/EF/LS/LF, float, resource, PERT):`,
     ...(forecastLines.length ? forecastLines : ["- none"]),
     `Missing estimates (${missing.length}): ${missing.length ? missing.map((content) => JSON.stringify(content)).join(", ") : "none"}; stale (${stale.length}): ${stale.length ? stale.map((content) => JSON.stringify(content)).join(", ") : "none"}`,
+    ...(verifyingContents.size ? [`Delivered rows under runtime audit (${verifyingContents.size}; do not staff, the audit closes or returns them): ${[...verifyingContents].map((content) => JSON.stringify(content)).join(", ")}`] : []),
     `Ready rows needing distinct live workers (${ownerlessReady.length}/${readyCandidates.length}): ${ownerlessReady.length ? ownerlessReady.map((row) => `${JSON.stringify(row.content)} [${row.ownership}; owner=${JSON.stringify(row.owner)}]`).join(", ") : "none"}`,
     ...(lostOwners.length
       ? [`Lost/unstaffed in-progress owners (${lostOwners.length}): ${lostOwners.map((row) => `${JSON.stringify(row.content)} [owner=${JSON.stringify(row.owner)}; not running]`).join(", ")}. No live task job or parked child matches these owners after resume; re-staff each row under its owner name or a new owner.`]
@@ -2228,6 +2246,7 @@ export function decideTodoDispatch(
     readyCandidates,
     deadline,
     dispatchableReady,
+    verifyingRows: [...verifyingContents],
     capacity,
     activeTaskCount: activeTaskJobs.length + activeRestoredTaskIds.size,
     staffingSnapshotComplete,
@@ -2296,6 +2315,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const deliveryKey = (row) => JSON.stringify([row.content, row.schedule?.executor?.workerId, row.schedule?.executor?.startedAt, row.schedule?.executor?.finishedAt]);
   const checkDeliveries = (ctx: ExtensionContext) => {
     if (!isMain(ctx)) return;
+    if (!singleWriterLane) void checkRowAudits(ctx).catch(() => {});
     const previews = previewRecords(ctx);
     for (const phase of todoPhases(ctx)) for (const row of phase.tasks) {
       if (row.schedule?.deliveryCritic || !priorDeliveries.has(deliveryKey(row)))
@@ -3733,8 +3753,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }, true);
     const decision = measured ?? currentDecision(ctx, now, pending);
     const rows = decision.dispatchableReady ?? [];
-    if (rows.length) notice("staffing", JSON.stringify(rows.map(row => [row.content, row.owner, row.ownership])), {
-      staffing: true, rows: rows.map(row => JSON.stringify(row.content)).join(", "),
+    const continuations = rows.filter(row => row.previous).map(row =>
+      `${JSON.stringify(row.content)} from agent://${row.previous} (${row.reason}${row.findings ? `: ${shorten(row.findings)}` : ""})`);
+    if (rows.length) notice("staffing", JSON.stringify(rows.map(row => [row.content, row.owner, row.ownership, row.previous ?? null])), {
+      staffing: true, rows: rows.map(row => JSON.stringify(row.content)).join(", "), continuations: continuations.join("; "),
     });
     if (decision.presence === "away" && !rows.length && decision.awayWorkList?.length) notice("away", decision.key, {
       away: true, rows: decision.awayWorkList.join(" "),
@@ -3780,7 +3802,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
     const tasks = phases.flatMap((phase) => phase.tasks);
     const userWaits = new Set((decision.userWaits ?? []).map((row) => row.content));
-    const runningRows = new Set((decision.ownerRunStates ?? []).filter((row) => row.running).map((row) => row.content));
+    const runningRows = new Set([...(decision.ownerRunStates ?? []).filter((row) => row.running).map((row) => row.content), ...(decision.verifyingRows ?? [])]);
     const tasksByContent = new Map(tasks.map((task) => [task.content, task] as const));
     const waitsOnProgress = (content: string, visiting = new Set<string>()): boolean => {
       if (visiting.has(content)) return false;

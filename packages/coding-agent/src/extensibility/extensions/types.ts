@@ -795,10 +795,12 @@ export interface ExtensionLiveSession {
 export interface ExtensionContext {
 	/** Launch the delivery critic through the native task pool. */
 	runDeliveryCritic?(task: string, signal?: AbortSignal): Promise<AgentToolResult>;
+	/** Launch one batched audit of delivered TODO rows through the native task pool. */
+	runRowAudit?(task: string, agent: string, signal?: AbortSignal): Promise<AgentToolResult>;
 	getTodoPreviewConfig?(): { openReviewPages?: boolean; enabled: boolean; paths: string[]; thresholdMinutes: number };
 	/** Current hydrated plan, without replaying the session journal. Undefined before session initialization. */
 	getTodoPhases?(): TodoPhase[] | undefined;
-	/** Merge a schedule annotation into one exact row and append its durable snapshot. Critic redo reopens its row; attempt history is preserved. */
+	/** Merge a schedule annotation into one exact row and append its durable snapshot. Critic redo reopens its row; an audit pass closes it; attempt history is preserved. */
 	updateTodoSchedule?(
 		task: string,
 		patch: Pick<
@@ -806,6 +808,7 @@ export interface ExtensionContext {
 			| "review"
 			| "reviewSummary"
 			| "deliveryCritic"
+			| "audit"
 			| "handoffPending"
 			| "progress"
 			| "reviewPagePending"
