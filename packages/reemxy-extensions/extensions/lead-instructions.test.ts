@@ -25,7 +25,7 @@ const contracts: Record<string, { tool?: string; operation?: string; wait?: bool
 	aborted: { tool: "task" },
 	failed: { tool: "task" },
 	refused: { tool: "task" },
-	"estimate-cap": { tool: "write" },
+	"estimate-cap": { tool: "todo", operation: "append" },
 	"external-blocker": { wait: true },
 	"lost-after-restart": { tool: "task" },
 	"audit-fail": { tool: "task" },
@@ -95,7 +95,7 @@ for (const id of Object.keys(contracts)) {
 		} else {
 			expect(notice).toContain("Which endpoint?");
 		}
-		if (id === "eta-reached") {
+		if (id === "eta-reached" || id === "estimate-cap") {
 			for (const text of scenario.notices) expect(text).not.toContain("/kill");
 		}
 		if (contract.wait) {

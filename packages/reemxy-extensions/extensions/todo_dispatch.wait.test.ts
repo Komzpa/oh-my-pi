@@ -1342,7 +1342,7 @@ test("an unstaffed ready row announces staffing before wait and chief-work refus
 	} finally { h.shutdown(); }
 });
 
-test("80-percent ETA notice and second-reestimate warning precede consistent schedule refusals", async () => {
+test("reached ETA and second-reestimate notices preserve the live owner", async () => {
 	const previousLane = process.env.OMP_LANE_UNIT;
 	delete process.env.OMP_LANE_UNIT;
 	let now = Date.now();
@@ -1358,88 +1358,97 @@ test("80-percent ETA notice and second-reestimate warning precede consistent sch
 		const out = forecastTodoPlan(phases, options);
 		Object.assign(out.rows[0], { startedAt: origin, resourceFinish: origin + 100_000, estimateUpdatedAt: origin,
 			estimateRangeSeconds: { optimistic: 60, likely: 100, pessimistic: 140 },
-			estimateRevision: row.schedule.estimateRevision, reestimateCount: row.schedule.reestimateCount,
-			overdue: now > origin + 100_000 });
+			estimateRevision: row.schedule.estimateRevision,
+			reestimateCount: row.schedule.reestimateCount,
+			overdue: now > origin + 100_000,
+		});
 		return out;
 	};
 	const h = await noticeHarness(phases, now + 3600_000, [], 0, forecast);
-	h.ctx.getAsyncJobSnapshot = () => ({ running: [{ id: "worker-a", type: "task", status: "running", label: row.content, startTime: origin - 3600_000 }], recent: [], nonJobAgents: [] });
+	h.ctx.getAsyncJobSnapshot = () => ({
+		running: [{ id: "worker-a", type: "task", status: "running", label: row.content, startTime: origin - 3600_000 }],
+		recent: [],
+		nonJobAgents: [],
+	});
 	try {
 		expect(h.notices.filter(n => n.customType === "todo-gate-eta")).toHaveLength(0);
-		now = origin + 80_000;
+		now = origin + 100_000;
 		await h.tick();
 		const eta = h.notices.filter(n => n.customType === "todo-gate-eta");
 		expect(eta).toHaveLength(1);
 		expect(eta[0].content).toContain('"Polish amber chart"');
-		expect(eta[0].content).toContain("evidence + a new estimate");
-		expect(eta[0].content).toContain("third same-owner reestimate is refused");
+		expect(eta[0].content).toContain("evidence and a new remaining estimate");
 		now = origin + 101_000;
-		const input = { op: "schedule", updates: [{ task: row.content, estimate: { likelySeconds: 300, updatedAt: now } }] };
+		const input = {
+			op: "schedule",
+			updates: [{ task: row.content, estimate: { likelySeconds: 300, updatedAt: now } }],
+		};
 		const missed = await h.handlers.get("tool_call")!({ toolName: "todo", input }, h.ctx);
 		actionable(missed.reason, "Polish amber chart");
 		expect(missed.reason).toContain("evidence");
-		expect(await h.handlers.get("tool_call")!({ toolName: "todo", input: { ...input, updates: [{ ...input.updates[0], evidence: "Renderer now returns a partial artifact; integration remains." }] } }, h.ctx)).toBeUndefined();
+		expect(
+			await h.handlers.get("tool_call")!(
+				{
+					toolName: "todo",
+					input: {
+						...input,
+						updates: [
+							{ ...input.updates[0], evidence: "Renderer now returns a partial artifact; integration remains." },
+						],
+					},
+				},
+				h.ctx,
+			),
+		).toBeUndefined();
 		row.schedule.reestimateCount = 2;
 		row.schedule.estimateRevision = 3;
-		await h.handlers.get("tool_result")!({ toolName: "todo", content: [], details: { phases }, isError: false }, h.ctx);
+		await h.handlers.get("tool_result")!(
+			{ toolName: "todo", content: [], details: { phases }, isError: false },
+			h.ctx,
+		);
 		const caps = () => h.notices.filter(n => n.customType === "todo-gate-cap");
 		expect(caps()).toHaveLength(1);
 		expect(caps()[0].content).toContain("next same-owner reestimate is refused");
-		expect(caps()[0].content).toContain("proc://worker-a/kill");
+		expect(caps()[0].content).not.toContain("/kill");
+		expect(caps()[0].content).toContain("preserve the running owner");
 		const cap = await h.handlers.get("tool_call")!({ toolName: "todo", input }, h.ctx);
 		actionable(cap.reason, "Polish amber chart");
-		expect(cap.reason).toContain("proc://worker-a/kill");
+		expect(cap.reason).toContain("Split remainder");
 		await h.tick();
 		expect(caps()).toHaveLength(1);
 		for (const notice of [...eta, ...caps()]) expect(notice.content.split("\n").length).toBeLessThanOrEqual(2);
 	} finally { h.shutdown(); nowSpy.mockRestore(); if (previousLane === undefined) delete process.env.OMP_LANE_UNIT; else process.env.OMP_LANE_UNIT = previousLane; }
 });
-
-
-test("cap refusal blocks main wait through check-ins and owner edits until kill plus reassignment", async () => {
+test("cap refusal preserves a progressing owner and permits waiting for its result", async () => {
 	const now = Date.now();
 	const phases = chainedPlan(1, now);
-	const row = phases[0].tasks[0];
-	row.content = "Publish cobalt map";
-	const forecast = (phases, options) => {
+	phases[0].tasks[0].schedule.reestimateCount = 2;
+	const h = await noticeHarness(phases, now + 3600000, [], 0, (phases, options) => {
 		const out = forecastTodoPlan(phases, options);
-		Object.assign(out.rows[0], { estimateUpdatedAt: now, reestimateCount: 2,
-			estimateRangeSeconds: { optimistic: 60, likely: 180, pessimistic: 420 } });
+		Object.assign(out.rows[0], { estimateUpdatedAt: now, reestimateCount: 2 });
 		return out;
-	};
-	const h = await noticeHarness(phases, now + 3600_000, [], 0, forecast);
-	let running = [{ id: "worker-a", type: "task", status: "running", label: row.content, startTime: now }];
-	h.ctx.getAsyncJobSnapshot = () => ({ running, recent: [], nonJobAgents: [] });
+	});
+	h.ctx.getAsyncJobSnapshot = () => ({
+		running: [{ id: "worker-a", type: "task", status: "running", label: "Row 1", startTime: now - 20 * 60000 }],
+		recent: [],
+		nonJobAgents: [],
+	});
 	const call = (toolName, input = {}) => h.handlers.get("tool_call")!({ toolName, input }, h.ctx);
-	const killResult = (isError = false) => h.handlers.get("tool_result")!({ toolName: "write", isError,
-		input: { path: "proc://worker-a/kill" }, content: [],
-		details: { proc: { op: "cancel", cancelled: [{ id: "worker-a", status: "cancelled" }] } } }, h.ctx);
 	try {
-		const cap = await call("todo", { op: "schedule", updates: [{ task: row.content, estimate: { likelySeconds: 200 } }] });
+		const cap = await call("todo", {
+			op: "schedule",
+			updates: [{ task: "Row 1", estimate: { likelySeconds: 200, updatedAt: now + 1 } }],
+		});
 		expect(cap?.block).toBe(true);
-		const blocked = await call("wait");
-		expect(blocked?.block).toBe(true);
-		expect(blocked.reason.split("\n")[0]).toContain('Kill worker-a; reassign "Publish cobalt map" before wait.');
-		expect(blocked.reason.split("\n")[0].length).toBeLessThanOrEqual(100);
-		expect(await call("read", { path: "proc://worker-a" })).toBeUndefined();
-		await call("write", { path: "agent://worker-a", content: "Report progress" });
-		expect((await call("wait"))?.block).toBe(true);
-		const header = h.ctx.sessionManager.getHeader;
-		h.ctx.sessionManager.getHeader = () => ({ id: "child", parentSession: "main" });
+		expect(cap.reason).toContain("Split remainder");
+		expect(cap.reason).not.toContain("/kill");
 		expect((await call("wait"))?.block).not.toBe(true);
-		h.ctx.sessionManager.getHeader = header;
-		row.schedule.owner = "worker-b";
-		running.push({ ...running[0], id: "worker-b" });
-		expect((await call("wait"))?.block).toBe(true); // renaming alone must not orphan the old worker
-		await killResult(true);
-		expect((await call("wait"))?.block).toBe(true);
-		running = running.filter(job => job.id !== "worker-a");
-		await killResult();
+		await call("write", { path: "agent://worker-a", content: "Continue current work" });
 		expect((await call("wait"))?.block).not.toBe(true);
-		const notices = h.notices.filter(n => n.customType === "todo-gate-recovery");
-		expect(notices).toHaveLength(1);
-		expect(notices[0].content).toContain("wait will be refused");
-	} finally { h.shutdown(); }
+		expect(h.notices.filter(n => n.customType === "todo-gate-recovery")).toEqual([]);
+	} finally {
+		h.shutdown();
+	}
 });
 
 test("sixty-minute escalation refuses repeated waits, ignores lead check-ins, and accepts a newer worker yield", async () => {
@@ -1478,7 +1487,7 @@ test("cap recovery clears when its worker is gone and the row has a running new 
 	const call = (toolName, input = {}) => h.handlers.get("tool_call")!({ toolName, input }, h.ctx);
 	try {
 		await call("todo", { op: "schedule", updates: [{ task: "Row 1", estimate: { updatedAt: now + 1 } }] });
-		expect((await call("wait"))?.reason).toContain("reassign");
+		expect((await call("wait"))?.block).not.toBe(true);
 		// Live runtime 2026-10-28: after a restart the old worker was absent and its kill said "not found".
 		phases[0].tasks[0].schedule.owner = "worker-b";
 		running = [{ id: "worker-b", type: "task", status: "running", label: "Row 1", startTime: now }];
@@ -1500,7 +1509,7 @@ test("a deferred row with a finished worker does not demand killing it before wa
 	const call = (toolName, input = {}) => h.handlers.get("tool_call")!({ toolName, input }, h.ctx);
 	try {
 		await call("todo", { op: "schedule", updates: [{ task: "Row 1", estimate: { updatedAt: now + 1 } }] });
-		expect((await call("wait"))?.reason).toContain("Kill worker-a");
+		expect((await call("wait"))?.block).not.toBe(true);
 		phases[0].tasks[0].status = "blocked";
 		phases[0].tasks[0].blocker = "User deferred this work";
 		running = [{ id: "worker-b", type: "task", status: "running", label: "Row 2", startTime: now }];
@@ -1543,45 +1552,26 @@ test("stuck escalation clears on kill with a new running owner; a sub-hour quiet
 }, 60_000);
 
 
-test("cap recovery survives session restore, requires reassign after kill, and permits a blocked, closed or dropped row", async () => {
+test("restoring an obsolete cap recovery never requires killing a healthy owner", async () => {
 	const now = Date.now();
-	const phases = chainedPlan(1, now);
-	const forecast = (phases, options) => {
-		const out = forecastTodoPlan(phases, options);
-		for (const row of out.rows) Object.assign(row, { estimateUpdatedAt: now, reestimateCount: 2 });
-		return out;
-	};
-	let h = await noticeHarness(phases, now + 3600_000, [], 0, forecast);
-	let running = [{ id: "worker-a", type: "task", status: "running", label: "Row 1", startTime: now }];
-	const snapshot = () => ({ running, recent: [], nonJobAgents: [] });
-	const call = (toolName, input = {}) => h.handlers.get("tool_call")!({ toolName, input }, h.ctx);
-	const cap = () => call("todo", { op: "schedule", updates: [{ task: "Row 1", estimate: { updatedAt: now + 1 } }] });
-	h.ctx.getAsyncJobSnapshot = snapshot;
+	const h = await noticeHarness(chainedPlan(1, now), now + 3600000, [], 0, undefined, [
+		{
+			type: "custom",
+			customType: "todo-dispatch-sprint-state",
+			data: { version: 1, recoveryWaits: [{ kind: "cap", row: "Row 1", owner: "worker-a", at: now - 1000 }] },
+		},
+	]);
+	h.ctx.getAsyncJobSnapshot = () => ({
+		running: [{ id: "worker-a", type: "task", status: "running", label: "Row 1", startTime: now }],
+		recent: [],
+		nonJobAgents: [],
+	});
 	try {
-		await cap();
-		expect((await call("wait"))?.block).toBe(true);
-		await Promise.resolve();
-		const entries = [...h.entries];
+		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).not.toBe(true);
+		expect(h.notices.filter(n => n.customType === "todo-gate-recovery")).toEqual([]);
+	} finally {
 		h.shutdown();
-		h = await noticeHarness(phases, now + 3600_000, [], 0, forecast, entries);
-		h.ctx.getAsyncJobSnapshot = snapshot;
-		expect((await call("wait"))?.block).toBe(true);
-		running = [];
-		await h.handlers.get("tool_result")!({ toolName: "write", isError: false, input: { path: "proc://worker-a/kill" }, content: [],
-			details: { proc: { op: "cancel", cancelled: [{ id: "worker-a", status: "cancelled" }] } } }, h.ctx);
-		expect((await call("wait"))?.reason).toContain("reassign");
-		phases[0].tasks[0].status = "blocked";
-		phases[0].tasks[0].blocker = "Waiting for map layout";
-		expect((await call("wait"))?.reason ?? "").not.toContain("reassign");
-		phases[0].tasks[0].status = "completed";
-		expect((await call("wait"))?.block).not.toBe(true);
-		phases[0].tasks[0].status = "in_progress";
-		running = [{ id: "worker-a", type: "task", status: "running", label: "Row 1", startTime: now + 10 }];
-		await cap();
-		expect((await call("wait"))?.block).toBe(true);
-		phases[0].tasks.splice(0, 1);
-		expect((await call("wait"))?.block).not.toBe(true);
-	} finally { h.shutdown(); }
+	}
 });
 
 test("stuck wait requires a fresh successful yield or completed result, never old receipts or failed yields", async () => {
@@ -1839,19 +1829,30 @@ test("critical split: switching sessions resets the once-per-plan acknowledgemen
 	} finally { h.shutdown(); }
 });
 
-test("recovery gates request wait interruption while startup advice stays passive", async () => {
- const now = Date.now();
- // A cap recovery outlives its worker; a stuck one only lives while its worker runs.
- const h = await noticeHarness(chainedPlan(1, now), now + 3600_000, [], 0, undefined, [{ type: "custom", customType: "todo-dispatch-sprint-state", data: {
-  version: 1, recoveryWaits: [{ kind: "cap", row: "Row 1", owner: "worker-a", at: now - 1000 }]
- } }]);
- try {
-  const info = h.notices.find(notice => notice.customType === "todo-gate-worker-names");
-  const recovery = h.notices.find(notice => notice.customType === "todo-gate-recovery");
-	expect(info?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: false, interruptWait: false });
-  expect(recovery?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: false, interruptWait: true });
-  expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
- } finally { h.shutdown(); }
+test("obsolete cap recovery stays passive alongside startup advice", async () => {
+	const now = Date.now();
+	// A cap recovery outlives its worker; a stuck one only lives while its worker runs.
+	const h = await noticeHarness(chainedPlan(1, now), now + 3600_000, [], 0, undefined, [
+		{
+			type: "custom",
+			customType: "todo-dispatch-sprint-state",
+			data: {
+				version: 1,
+				recoveryWaits: [{ kind: "cap", row: "Row 1", owner: "worker-a", at: now - 1000 }],
+			},
+		},
+	]);
+	try {
+		const info = h.notices.find(notice => notice.customType === "todo-gate-worker-names");
+		const recovery = h.notices.find(notice => notice.customType === "todo-gate-recovery");
+		expect(info?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: false, interruptWait: false });
+		expect(recovery).toBeUndefined();
+		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.reason ?? "").not.toContain(
+			"/kill",
+		);
+	} finally {
+		h.shutdown();
+	}
 });
 
 
@@ -1868,7 +1869,7 @@ async function absenceHarness() {
 	row.schedule.resources = [];
 	// A far deadline and long estimates keep plan-check escalations out of the way.
 	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
-	const absent = () => h.notices.filter((notice) => notice.customType === "todo-user-absent");
+	const absent = () => h.notices.filter(notice => notice.customType === "todo-user-absent");
 	const minutes = async (count: number) => {
 		// One tick per minute around the 30 minute boundary, one per 10 minutes over long stretches.
 		const step = count > 35 ? 10 : 1;
@@ -1877,15 +1878,34 @@ async function absenceHarness() {
 			await h.tick();
 		}
 	};
-	const user = () => h.handlers.get("message_start")!({ message: { role: "user", content: [{ type: "text", text: "continue" }] } }, h.ctx);
-	const tool = async (toolName: string, input: unknown = {}) => { try { await h.handlers.get("tool_call")!({ toolName, input }, h.ctx); } catch {} };
+	const user = () =>
+		h.handlers.get("message_start")!(
+			{ message: { role: "user", content: [{ type: "text", text: "continue" }] } },
+			h.ctx,
+		);
+	const tool = async (toolName: string, input: unknown = {}) => {
+		try {
+			await h.handlers.get("tool_call")!({ toolName, input }, h.ctx);
+		} catch {}
+	};
 	const done = () => {
 		h.shutdown();
 		nowSpy.mockRestore();
 		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
 		else process.env.OMP_LANE_UNIT = previousLane;
 	};
-	return { h, absent, minutes, user, tool, done, phases, advance: (ms: number) => { now += ms; } };
+	return {
+		h,
+		absent,
+		minutes,
+		user,
+		tool,
+		done,
+		phases,
+		advance: (ms: number) => {
+			now += ms;
+		},
+	};
 }
 
 test("an idle lead with open rows and a silent user gets the user-absent wake at 30 minutes", async () => {

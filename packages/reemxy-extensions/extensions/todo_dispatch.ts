@@ -773,10 +773,10 @@ export function slipReestimateRefusal(args: {
     const overBudget = typeof row.startedAt === "number" && budgetMs !== undefined && args.now - row.startedAt > budgetMs;
     const exhausted = row.reestimateCount >= 2;
     const startedAt = args.runningStartedAt?.get(row.owner);
-    // A freshly started owner is a new attempt after crash recovery (658): its
-    // reestimate replans the remainder, it does not slip the old ETA. Only the
-    // exhausted cap still applies to fresh owners.
+    // Legacy snapshots may carry the previous owner's count. A fresh attempt
+    // can always replan; the launch path resets its persisted counter.
     const freshOwner = startedAt !== undefined && args.now - startedAt < FRESH_OWNER_MS;
+    if (freshOwner) continue;
     const slipping = !freshOwner && row.status === "in_progress" && args.runningProfiles.has(row.owner) && (row.overdue || overBudget);
     if (!exhausted && !slipping) continue;
     // A slipping row may be reestimated under the same owner when the update
@@ -791,7 +791,7 @@ export function slipReestimateRefusal(args: {
       return `Reestimate ${actionTarget(content)} with evidence + estimate.\nRefusing todo schedule: ${JSON.stringify(content)} is past its ETA under running owner ${row.owner}. Exactly: todo schedule the row with evidence (the failure reason) plus a new estimate, or with a new owner${strong ? ` (${strong})` : ""} or split the remainder into new rows.`;
     }
     const why = `has ${row.reestimateCount} reestimates under owner ${row.owner}`;
-    return `Kill ${shorten(row.owner, 32)}; reassign ${actionTarget(content)}.\nRefusing todo schedule: ${JSON.stringify(content)} ${why}. Exactly: write proc://${row.owner}/kill (empty content), read its receipt, then todo schedule the row with a new owner${strong ? ` (${strong})` : ""} or split the remainder into new rows.`;
+    return `Split remainder of ${actionTarget(content)}.\nRefusing todo schedule: ${JSON.stringify(content)} ${why}. Exactly: use todo op:"append" for independently executable remainder with disjoint resources; preserve ${row.owner} and its current output. If unsplittable, wait for this worker to finish, then schedule a successor. A worker is stalled only with no progress past its budget; an estimate cap alone is not a stall.`;
   }
   return undefined;
 }
@@ -3708,37 +3708,26 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     persistSprintState();
   };
   const recoveryAction = (item: RecoveryWait) => item.kind === "cap"
-    ? `Kill ${shorten(item.owner, 24)}; reassign ${actionTarget(item.row, 42)} before wait.`
+    ? `Split remainder of ${actionTarget(item.row, 42)}; preserve ${shorten(item.owner, 24)}.`
     : `Kill ${shorten(item.owner, 48)} or get its new receipt before wait.`;
   const recoveryNotice = (item: RecoveryWait) => prompt.render(gateNoticeInstructions, {
     recovery: true, action: recoveryAction(item), owner: item.owner, recoveryCap: item.kind === "cap",
   }).trim();
   const activeRecoveries = (ctx: ExtensionContext, pending: unknown[] = []) => {
-    const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending));
-    const tasks = phases.flatMap(phase => phase.tasks);
     const jobs = ctx.getAsyncJobSnapshot();
     const previous = sprintState.recoveryWaits ?? [];
     const kept = previous.flatMap((item): RecoveryWait[] => {
-      const row = tasks.find(task => task.content === item.row);
       const matches = (job: Jobs["running"][number]) => job.type === "task" && (job.id === item.owner || job.agentId === item.owner);
       const running = jobs?.running.some(job => matches(job) && job.status === "running");
       const killed = item.killed || jobs?.recent.some(job => matches(job) && job.status === "cancelled" && (job.endTime ?? 0) > item.at);
-      if (item.kind === "cap") {
-        if (!row || !isNonClosedRowStatus(row.status)) return [];
-        // A deliberately blocked row has no work to reassign once its old worker
-        // is absent. Preserve the blocker and let unrelated workers continue.
-        if (row.status === "blocked" && jobs && !running) return [];
-        // A worker gone from the job table counts as stopped: its kill can only answer "not found".
-        if ((killed || jobs) && !running && row.schedule?.owner && row.schedule.owner !== item.owner) return [];
-      } else {
-        // A stuck escalation targets a live attempt. Once that worker is gone from the job table
-        // (finished before a restart, reaped), no kill or receipt can ever satisfy it.
-        if (!running && (killed || jobs)) return [];
-        const received = item.received || jobs?.recent.some(job => matches(job) && (job.status === "completed" || job.status === "failed") && (job.endTime ?? 0) > item.at)
-          || (workerTrace(ctx, item.owner).receiptAt ?? 0) > item.at;
-        // Retain the acknowledged escalation for this attempt so the next tick cannot rearm it.
-        if (received) return running ? [{ ...item, received: true }] : [];
-      }
+      if (item.kind === "cap") return [];
+      // A stuck escalation targets a live attempt. Once that worker is gone from the job table
+      // (finished before a restart, reaped), no kill or receipt can ever satisfy it.
+      if (!running && (killed || jobs)) return [];
+      const received = item.received || jobs?.recent.some(job => matches(job) && (job.status === "completed" || job.status === "failed") && (job.endTime ?? 0) > item.at)
+        || (workerTrace(ctx, item.owner).receiptAt ?? 0) > item.at;
+      // Retain the acknowledged escalation for this attempt so the next tick cannot rearm it.
+      if (received) return running ? [{ ...item, received: true }] : [];
       return [{ ...item, ...(killed ? { killed: true } : {}) }];
     });
     if (JSON.stringify(kept) !== JSON.stringify(previous)) {
@@ -5256,13 +5245,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           now: Date.now(),
         });
         if (slip) {
-          for (const row of rows) {
-            if (row.reestimateCount < 2 || !row.owner) continue;
-            if (slipReestimateRefusal({ updates, rows: [row], runningProfiles, runningStartedAt, now: Date.now() }) === slip) {
-              requireRecovery(ctx, { kind: "cap", row: row.content, owner: row.owner, at: Date.now(), startTime: runningStartedAt.get(row.owner) });
-              break;
-            }
-          }
           announceGates(ctx);
           gateTrace(ctx, "slip-reestimate-refused", {});
           return { block: true, reason: slip };
