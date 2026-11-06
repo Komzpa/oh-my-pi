@@ -1,3 +1,6 @@
+import { checkPeerSessionHandover } from "./peer-runtime";
+import { type PeerScope } from "./peer-coordination";
+import { cfgTaskPeerAwareness } from "./settings";
 /**
  * Subagent execution.
  *
@@ -375,6 +378,9 @@ export interface IrcPeerRosterRow {
 	kind: string;
 	status: string;
 	activity?: string;
+	task?: string;
+	profile?: string;
+	scope?: string;
 }
 
 export interface IrcPeerRosterData {
@@ -390,6 +396,7 @@ export function collectIrcPeerRoster(
 	registry: AgentRegistryApi,
 	selfId: string,
 	rootSessionFile?: string,
+	peerAwareness = false,
 ): IrcPeerRosterData {
 	// Running before idle, then newest activity
 	// first — so the cap keeps the newest relevant siblings, not an
@@ -408,6 +415,13 @@ export function collectIrcPeerRoster(
 		kind: peer.kind,
 		status: peer.status,
 		activity: peer.activity,
+		...(peerAwareness && peer.history?.peerCoordination
+			? {
+					task: peer.history.peerCoordination.task.slice(0, 160),
+					profile: peer.history.peerCoordination.profile.slice(0, 80),
+					scope: JSON.stringify(peer.history.peerCoordination.scope).slice(0, 600),
+				}
+			: {}),
 	}));
 	let parkedCount = 0;
 	for (const ref of registry.list()) {
@@ -425,6 +439,8 @@ export function collectIrcPeerRoster(
 
 /** Options for subagent execution */
 export interface ExecutorOptions {
+	peerScope?: PeerScope;
+	peerTask?: string;
 	cwd: string;
 	/** Cost gate of the parent session tree; the subagent's requests count toward it. */
 	costGate?: CostGateApi;
@@ -2769,6 +2785,18 @@ async function driveSessionToResult(
 			await awaitAbortable(session.waitForIdle());
 		}
 
+		if (!structured) {
+			const refusal = await checkPeerSessionHandover(session);
+			if (refusal) {
+				await dispatchPrompt(refusal, { attribution: "agent", synthetic: true }, "peer deconfliction");
+				await awaitAbortable(session.waitForIdle());
+				const unresolved = await checkPeerSessionHandover(session);
+				if (unresolved) {
+					exitCode = 1;
+					error = unresolved;
+				}
+			}
+		}
 		const lastAssistant = session.getLastAssistantMessage();
 		if (lastAssistant) {
 			if (lastAssistant.stopReason === "aborted") {
@@ -2889,6 +2917,9 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	const structured = args.structured !== false;
 	let rawOutput = structured ? monitor.rawOutput() : (monitor.lastReportTurnText() ?? "");
 	const yieldItems = progress.extractedToolData?.yield as YieldItem[] | undefined;
+	const deconfliction = (progress.extractedToolData?.yield ?? []).flatMap(entry =>
+		isRecord(entry) && Array.isArray(entry.deconfliction) ? entry.deconfliction : [],
+	);
 	// Breadcrumb the synchronous yield-payload shaping (O(rawOutput)) so a block
 	// here is attributed to this subagent rather than logged as "unknown".
 	pushLoopPhase(`subagent:${id}`);
@@ -3052,6 +3083,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	emitSubagentFrame(args.eventBus, args.subagentEventBus, TASK_SUBAGENT_LIFECYCLE_CHANNEL, settledPayload);
 
 	return {
+		...(deconfliction.length ? { deconfliction } : {}),
 		index,
 		id,
 		agent: agent.name,
@@ -4101,7 +4133,12 @@ function buildSubagentSessionOptions(
 				: inputs.reviving && inputs.ircRoster
 					? inputs.ircRoster
 					: (heldIrcRoster(inputs, defaultPrompt) ??
-						collectIrcPeerRoster(AgentRegistry.global(), inputs.id, inputs.ircRoot.sessionFile));
+						collectIrcPeerRoster(
+							AgentRegistry.global(),
+							inputs.id,
+							inputs.ircRoot.sessionFile,
+							cfgTaskPeerAwareness.get(settings),
+						));
 			const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
 				agent: inputs.agentSystemPrompt,
 				context: inputs.context,
@@ -4971,6 +5008,17 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					parentAgentId: options.parentAgentId,
 					agentId: id,
 					agentDisplayName: agent.name,
+					peerCoordination: cfgTaskPeerAwareness.get(settings)
+						? {
+								task: (options.peerTask ?? options.description ?? id).slice(0, 160),
+								profile: agent.name,
+								scope: {
+									...options.peerScope,
+									root: path.resolve(cwd, worktree ?? options.peerScope?.root ?? cwd),
+								},
+								touched: [],
+							}
+						: undefined,
 					agentName: agent.name,
 					enableLsp: lspEnabled,
 					enableIrc: options.enableIrc,
@@ -5178,6 +5226,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				// so read it back from the settings both install paths write.
 				retryFallback: getRetryFallbackRole(subagentSettings, subagentRetryFallbackRole(id)),
 				readOnly: isReadOnlyAgent(agent),
+				peerCoordination: AgentRegistry.global().get(id)?.history?.peerCoordination,
 				spawns: spawnsEnv,
 				readSummarize: agent.readSummarize,
 				advisor: advisorSelection ? (advisorRolePattern ?? "on") : undefined,

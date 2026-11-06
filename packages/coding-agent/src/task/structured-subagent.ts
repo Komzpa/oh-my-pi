@@ -1,3 +1,4 @@
+import type { PeerScope } from "./peer-coordination";
 /**
  * Shared policy resolution and execution for task and eval subagents.
  *
@@ -129,6 +130,7 @@ export interface StructuredSubagentRequest {
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
+	scope?: PeerScope;
 	context?: string;
 	agent?: string;
 	/** Saved source session selected for the bundled seance agent. */
@@ -775,6 +777,8 @@ function buildExecutorOptions(
 		preparedSession,
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
+		peerScope: request.scope,
+		peerTask: request.assignment.trim().slice(0, 160),
 		// Task `name` is the spawn handle (id allocation). Eval `label` is a
 		// real UI description. Copy it only for eval so generateTaskLabel can run.
 		description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,

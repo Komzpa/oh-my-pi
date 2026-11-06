@@ -83,6 +83,7 @@ import { appendToolResult, createTaskWidgetInputs } from "./widget-inputs";
 import { cfgAsyncEnabled } from "../tools/settings";
 import {
 	cfgTaskBatch,
+	cfgTaskPeerAwareness,
 	cfgTaskDisabledAgents,
 	cfgTaskEnableEffort,
 	cfgTaskEnableLsp,
@@ -153,6 +154,7 @@ export {
 } from "./types";
 
 interface TaskDescriptionOptions {
+	peerAwareness?: boolean;
 	agents: AgentDefinition[];
 	sessionAgents: readonly AgentDefinition[];
 	isolationEnabled: boolean;
@@ -206,6 +208,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	const scoutAvailable = isScoutSpawnable(options.disabledAgents, options.parentSpawns);
 	return prompt.render(taskDescriptionTemplate, {
 		agents: renderedAgents,
+		peerAwareness: options.peerAwareness,
 		scoutAvailable,
 		spawningDisabled,
 		defaultAgent: defaultAgentFor(spawnPolicy, options.planMode),
@@ -393,6 +396,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
 	if ("schemaMode" in params) item.schemaMode = params.schemaMode;
 	if ("tools" in params) item.tools = params.tools;
+	if ("scope" in params) item.scope = params.scope;
 	if ("effort" in params) item.effort = params.effort;
 	if ("isolated" in params) item.isolated = params.isolated;
 	if ("sourceSession" in params) item.sourceSession = params.sourceSession;
@@ -459,6 +463,7 @@ function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent
 	const spawn: SpawnParams = { agent: item.agent?.trim() || defaultAgent };
 	if (item.name !== undefined) spawn.name = item.name;
 	if (item.task !== undefined) spawn.task = item.task;
+	if (item.scope !== undefined) spawn.scope = item.scope;
 	if (item.taskFile !== undefined) spawn.taskFile = item.taskFile;
 	if (item.taskFileSha256 !== undefined) spawn.taskFileSha256 = item.taskFileSha256;
 	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
@@ -605,17 +610,15 @@ export function buildSpecializationAdvisory(
 }
 
 /**
- * Suggestion — never a rejection — nudging the spawner to coordinate via the
- * peer messages when one call creates ≥2 live siblings and it still holds spawn
- * capacity. Returns undefined when there is nothing to coordinate or peer
- * messaging is unavailable.
+ * Non-blocking writer-ownership guidance while multiple siblings run and spawn capacity remains.
+ * Ownership applies independently of the peer messaging transport.
  */
 export function buildCoordinationAdvisory(
 	items: TaskItem[],
 	depthCapacity: boolean,
-	ircEnabled: boolean,
+	_ircEnabled: boolean,
 ): string | undefined {
-	if (!depthCapacity || !ircEnabled || items.length < 2) return undefined;
+	if (!depthCapacity || items.length < 2) return undefined;
 	return prompt.render(taskCoordinationAdvisoryTemplate, { count: items.length }).trim();
 }
 
@@ -864,6 +867,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
 		const isolationEnabled = !planMode && cfgTaskIsolationEnabled.get(this.session.settings);
 		return getTaskSchema({
+			peerAwareness: cfgTaskPeerAwareness.get(this.session.settings),
 			isolationEnabled,
 			batchEnabled: this.#isBatchEnabled(),
 			effortEnabled: cfgTaskEnableEffort.get(this.session.settings),
@@ -918,6 +922,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			structured: this.#isStructured(),
 			file: cfgTaskFile.get(this.session.settings),
 			asyncEnabled: cfgAsyncEnabled.get(this.session.settings),
+			peerAwareness: cfgTaskPeerAwareness.get(this.session.settings),
 			ircEnabled: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
 			planMode,
 			asyncGuidance: this.delegationGuidance,
@@ -1925,6 +1930,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				session: this.session,
 				invocationKind: "task",
 				assignment,
+				scope: params.scope,
 				context,
 				agent: params.agent,
 				sourceSession: params.sourceSession,

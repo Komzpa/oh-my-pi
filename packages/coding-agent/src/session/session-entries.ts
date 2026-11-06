@@ -10,6 +10,7 @@ import type {
 import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { CompactionMethod } from "./compaction-methods";
+import type { PeerCoordinationState } from "../task/peer-coordination";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { RetryFallbackRole } from "./retry-fallback-chains";
 import type { RuntimeIdentity } from "./runtime-identity";
@@ -275,6 +276,7 @@ export interface CredentialPinEntry extends SessionEntryBase {
 
 /** Session init entry - captures initial context for subagent sessions (debugging/replay). */
 export interface SessionInitEntry extends SessionEntryBase {
+	peerCoordination?: PeerCoordinationState;
 	type: "session_init";
 	/** System prompt blocks exactly as sent to the model; files written before blocks were kept store one joined string. */
 	systemPrompt: string[] | string;
