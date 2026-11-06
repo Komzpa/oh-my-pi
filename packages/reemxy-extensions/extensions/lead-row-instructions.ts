@@ -1,4 +1,5 @@
 import {
+	todoNeedsOwnerDecision,
 	classifyTodoDisplayRow,
 	TODO_AUDIT_PROFILES,
 	type TodoScheduleInputTask,
@@ -28,6 +29,7 @@ export function renderLeadRowInstructions(
 	const externalGates = new Set<string | undefined>();
 	return phases
 		.flatMap(phase => phase.tasks)
+		.sort((a, b) => Number(todoNeedsOwnerDecision(b.schedule)) - Number(todoNeedsOwnerDecision(a.schedule)))
 		.flatMap(row => {
 			if ((row.status === "completed" || row.status === "abandoned") && !isTodoAwaitingReview(row)) return [];
 			const display = classifyTodoDisplayRow(row, phases, context);

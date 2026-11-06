@@ -227,7 +227,7 @@ test("attempt two dispatches speculatively with a queued handoff, then honors co
   const phases = [{ name: "Work", tasks: [{
     content: "Implement header navigation",
     status: "pending",
-    schedule: { owner: "NavWorker", dependencies: [], attemptHistory: [{ attemptId: "1", terminalStatus: "completed" }] },
+    schedule: { decision: "owner", owner: "NavWorker", dependencies: [], attemptHistory: [{ attemptId: "1", terminalStatus: "completed" }] },
   }] }];
   const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
   const beforeHandoff = { tasks: [{ agent: "Coder", task: "Implement header navigation" }] };
@@ -300,7 +300,7 @@ async function reviewHookHarness(initialPhases: unknown, jobs: unknown, branchEn
 
 test("completed worker result without a page requests publication before user handoff", async () => {
   const harness = await reviewHookHarness(
-    [{ name: "Work", tasks: [{ content: "Implement header navigation", status: "in_progress", schedule: { owner: "NavWorker", dependencies: [], startedAt: now - 5_000 } }] }],
+    [{ name: "Work", tasks: [{ content: "Implement header navigation", status: "in_progress", schedule: { decision: "owner", owner: "NavWorker", dependencies: [], startedAt: now - 5_000 } }] }],
     { running: [], recent: [{ id: "NavWorker", agentId: "NavWorker", type: "task", status: "completed", label: "Implement header navigation" }], nonJobAgents: [] },
   );
   await harness.handlers.get("tool_result")!({ toolName: "task", toolCallId: "done", isError: false, details: { results: [{ id: "NavWorker", status: "completed", output: "Implemented the header controls.\n\nUpdated src/reader-header.ts and commit abcdef123456." }] } }, harness.ctx);
@@ -804,7 +804,7 @@ test("runtime completion queues one delivery critic before the batch and clean r
   const deferred = Promise.withResolvers();
   const records = [];
   const row = { content: "Rack tiles fit panel height at 1568, no scrollbar", status: "completed", schedule: {
-    owner: "RackInputHeight-2", executor: { workerId: "RackInputHeight-2", startedAt: now - 5000, finishedAt: now, outcome: "completed",
+    decision: "owner", owner: "RackInputHeight-2", executor: { workerId: "RackInputHeight-2", startedAt: now - 5000, finishedAt: now, outcome: "completed",
     gitCommits: [{ commit: "a".repeat(40), repoPath: "/project" }] }, dependencies: [] } };
   const harness = await reviewHookHarness([{ name: "Final handoff", tasks: [row] }], { running: [], recent: [] }, [], "", { deliveryCriticRecord: async (_row, verdict) => { records.push(verdict); } });
   let spawns = 0;
@@ -820,4 +820,20 @@ test("runtime completion queues one delivery critic before the batch and clean r
   await deferred.promise; await Bun.sleep(0);
   expect(harness.phases()[0].tasks[0].schedule.handoffPending).toBe(true);
   expect(records).toEqual([{ verdict: "clean", findings: [] }]);
+});
+
+for (const answered of [false, true]) test(`restaffing does not request review for ${answered ? "answered product content" : "an owner-specified cosmetic fix"}`, async () => {
+ const row = { content: "Power source rows: remove red frame", status: "pending", schedule: { owner: "FrameWorker", dependencies: [], attemptHistory: [{ attemptId: "1", terminalStatus: "completed" }], ...(answered ? { decision: "owner", reviewAnswers: ["page/card/hash/accept"] } : {}) } };
+ const h = await reviewHookHarness([{ name: "Work", tasks: [row] }], { running: [], recent: [], nonJobAgents: [] });
+ await h.handlers.get("tool_call")({ toolName: "task", input: { tasks: [{ agent: "Coder", task: row.content }] } }, h.ctx);
+ expect(h.phases()[0].tasks[0].schedule.review).toBeUndefined();
+ expect(h.phases()[0].tasks[0].schedule.reviewPagePending).toBeUndefined();
+});
+
+for (const answered of [false, true]) test(`worker completion without critic does not ask about ${answered ? "answered product content" : "an owner-specified cosmetic fix"}`, async () => {
+  const row = { content: "Power source rows: remove red frame", status: "in_progress", schedule: { owner: "FrameWorker", dependencies: [], ...(answered ? { decision: "owner", reviewAnswers: ["page/card/hash/accept"] } : {}) } };
+  const h = await reviewHookHarness([{ name: "Work", tasks: [row] }], { running: [], recent: [{ id: "FrameWorker", agentId: "FrameWorker", type: "task", status: "completed" }], nonJobAgents: [] });
+  await h.handlers.get("tool_result")({ toolName: "task", toolCallId: "frame-done", isError: false, details: { results: [{ id: "FrameWorker", status: "completed", output: "Inspected screenshot; frame removed." }] } }, h.ctx);
+  expect(h.phases()[0].tasks[0].schedule.review).toBeUndefined();
+  expect(h.sent.some(message => message.customType === "todo-user-review")).toBe(false);
 });

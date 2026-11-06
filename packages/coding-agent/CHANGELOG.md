@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Ask for unapproved product decisions before closing TODO rows, without repeating answered questions or asking about verified owner-requested fixes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Reset TODO reestimate counts when a successor starts and expose role publication limits before staffing ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Apply saved review-page Accept, Redo and Drop decisions to TODO rows once, including after restart ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

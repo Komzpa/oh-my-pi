@@ -98,6 +98,7 @@ test("evidenced defect becomes redo with the critic evidence as the next brief a
 });
 test("preview-only delivery joins the batch after clean and displays the verdict", async () => {
 	const h = harness("completed", true);
+	h.row.schedule.decision = "owner";
 	h.row.schedule.reviewPage = undefined;
 	h.queue(10, "https://preview.example/rack");
 	await h.finish({ verdict: "clean", findings: [] });
@@ -107,8 +108,9 @@ test("preview-only delivery joins the batch after clean and displays the verdict
 	expect(formatTaskForecastDisplay(forecast, Date.now())).toContain("shadow: clean");
 	expect(h.records).toHaveLength(1);
 });
-test("15-minute timeout releases handoff while keeping the pending verdict", () => {
+test("15-minute timeout releases owner decision while keeping the pending verdict", () => {
 	const h = harness();
+	h.row.schedule.decision = "owner";
 	h.queue();
 	expect(h.delay()).toBe(CRITIC_TIMEOUT_MS);
 	h.timeout();
@@ -165,6 +167,7 @@ test("delivery ledger appends kind and evidence in the tasks-loop prediction sha
 test("restored pending critic keeps its deadline and never starts a second task", () => {
 	const h = harness();
 	h.queue(10);
+	h.row.schedule.decision = "owner";
 	resetDeliveryCriticTimers(h.ctx);
 	h.queue(10 + 60000);
 	expect(h.calls()).toBe(1);
@@ -196,4 +199,20 @@ for (const review of ["accepted", "redo", "drop"] as const)
 		expect(h.row.schedule.review).toBe(review);
 		expect(h.row.schedule.handoffPending).toBe(false);
 		if (review !== "redo") expect(h.queue()).toBe(false);
+	});
+
+for (const answered of [false, true])
+	test(`critic clean and timeout do not ask about ${answered ? "answered content" : "an owner-specified cosmetic fix"}`, async () => {
+		const h = harness();
+		if (answered) {
+			h.row.schedule.decision = "owner";
+			h.row.schedule.reviewAnswers = ["page/card/hash/accept"];
+		}
+		h.queue();
+		h.timeout();
+		expect(h.row.schedule.review).toBeUndefined();
+		expect(h.row.schedule.handoffPending).toBe(false);
+		await h.finish({ verdict: "clean", findings: [] });
+		expect(h.row.schedule.review).toBeUndefined();
+		expect(h.row.schedule.handoffPending).toBe(false);
 	});

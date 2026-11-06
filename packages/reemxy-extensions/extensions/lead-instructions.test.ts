@@ -1,4 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
+import { renderLeadRowInstructions } from "./lead-row-instructions";
+import type { TodoScheduleInputTask } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import type { TodoDisplayState } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import {
 	expectedDisplayActions,
@@ -13,6 +15,7 @@ beforeAll(async () => {
 });
 
 const contracts: Record<string, { tool?: string; operation?: string; wait?: boolean; handoff?: boolean }> = {
+	"unseen-product-decision": { handoff: true },
 	working: { wait: true },
 	waiting: { wait: true },
 	verifying: { wait: true },
@@ -114,3 +117,24 @@ for (const id of Object.keys(contracts)) {
 		}
 	});
 }
+
+test("unseen product decisions precede confirmations and saved answers do not ask again", () => {
+	const make = (content: string): TodoScheduleInputTask => ({
+		content,
+		status: "in_progress",
+		schedule: { review: "user", firstDeliveredAt: 1, handoffPending: true },
+	});
+	const confirmation = make("Confirm the release date");
+	const product = make("Showcase scenario");
+	product.schedule!.decision = "owner";
+	const answered = make("Answered scenario");
+	answered.schedule!.decision = "owner";
+	answered.schedule!.reviewAnswers = ["page/card/hash/accept"];
+	const text = renderLeadRowInstructions(
+		[{ name: "Review", tasks: [confirmation, answered, product] }],
+		{ workers: [], owners: new Map() },
+		{ now: 100 },
+	);
+	expect(text.indexOf('Row "Showcase scenario"')).toBeLessThan(text.indexOf('Row "Confirm the release date"'));
+	expect(text).not.toContain('publish a review page for rows "Answered scenario"');
+});
