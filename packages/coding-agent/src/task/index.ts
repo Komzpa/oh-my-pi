@@ -420,7 +420,6 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 		return params.tasks;
 	}
 	const item: TaskItem = { name: params.name, agent: params.agent, task: params.task, taskFile: params.taskFile };
-	if ("row" in params) item.row = params.row;
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
 	if ("rework" in params) item.rework = params.rework;
 	if ("outputSchema" in params) item.outputSchema = params.outputSchema;
@@ -430,6 +429,7 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if ("isolated" in params) item.isolated = params.isolated;
 	if ("sourceSession" in params) item.sourceSession = params.sourceSession;
 	if ("model" in params) item.model = params.model;
+	if ("row" in params) item.row = params.row;
 	return [item];
 }
 

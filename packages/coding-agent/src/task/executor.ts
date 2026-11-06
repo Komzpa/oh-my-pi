@@ -441,7 +441,6 @@ export interface ExecutorOptions {
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
-	row?: string;
 	preparedSession?: PreparedSeanceSession;
 	/** Shared background from the task call (`task.batch`), rendered into the subagent's system prompt. */
 	context?: string;
@@ -453,6 +452,7 @@ export interface ExecutorOptions {
 	planReference?: { path: string; content: string };
 	/** Pre-set UI label (e.g. eval bridge label). When absent, a tiny-model label is generated from the assignment. */
 	description?: string;
+	row?: string;
 	index: number;
 	id: string;
 	parentToolCallId?: string;
