@@ -2026,15 +2026,26 @@ describe("todo schedule rejects copied estimates", () => {
 		return view.details?.phases[0]?.tasks.find(row => row.content === task)?.schedule?.estimate;
 	}
 
-	it("refuses three rows with one O/L/P triple in a single call and applies none of them", async () => {
+	it("skips copied estimates while applying other fields and valid rows", async () => {
 		const tool = new TodoTool(createSession());
-		await tool.execute("init", { op: "init", list: [{ phase: "Work", items: rows }] });
-		const outcome = await schedule(tool, "same", [
-			triple(1200, 2400, 3600),
-			triple(1200, 2400, 3600),
-			triple(1200, 2400, 3600),
-		]);
-		expect(outcome.ok).toBe(false);
+		const initial = await tool.execute("init", { op: "init", list: [{ phase: "Work", items: rows }] });
+		const outcome = await tool
+			.execute("same", {
+				op: "schedule",
+				updates: rows.map((task, index) => ({
+					task,
+					owner: `worker-${task}`,
+					dependencies: index ? ["a"] : [],
+					evidence: `progress ${task}`,
+					estimate: index < 3 ? triple(1200, 2400, 3600) : triple(60, 120, 240),
+				})),
+			})
+			.then(result => ({
+				result,
+				ok: !result.isError,
+				text: result.content.map(part => (part.type === "text" ? part.text : "")).join("\n"),
+			}));
+		expect(outcome.ok).toBe(true);
 		const firstLine = outcome.text.split("\n")[0]!;
 		expect(firstLine.length).toBeLessThanOrEqual(100);
 		expect(firstLine).toContain('Re-estimate "a" individually');
@@ -2045,8 +2056,25 @@ describe("todo schedule rejects copied estimates", () => {
 		);
 		expect(outcome.text).toContain('"a", "b", "c"');
 		expect(outcome.text).toContain("estimate each row separately");
-		// Atomic: not even the rows' dependencies are written.
+		const view = await tool.execute("view", { op: "view" });
+		for (const row of view.details!.phases[0]!.tasks) {
+			expect(row.schedule?.owner).toBe(`worker-${row.content}`);
+			expect(row.schedule?.progress?.evidence).toBe(`progress ${row.content}`);
+		}
+		expect(view.details!.phases[0]!.tasks[1]!.schedule?.dependencies).toEqual(["a"]);
+		expect(await estimateOf(tool, "d")).toMatchObject({ likelySeconds: 120 });
 		expect(await estimateOf(tool, "a")).toBeUndefined();
+		const entries = [initial, outcome.result].map((result, index) => ({
+			type: "message",
+			id: String(index),
+			parentId: index ? "0" : null,
+			timestamp: new Date().toISOString(),
+			message: { role: "toolResult", toolName: "todo", toolCallId: String(index), ...result, timestamp: Date.now() },
+		})) as SessionEntry[];
+		const restored = getLatestTodoPhasesFromEntries(entries)[0]!.tasks;
+		expect(restored[0]!.schedule?.owner).toBe("worker-a");
+		expect(restored[0]!.schedule?.estimate).toBeUndefined();
+		expect(restored[3]!.schedule?.estimate?.likelySeconds).toBe(120);
 	});
 
 	it("accepts two rows that share a triple and three rows with distinct triples", async () => {

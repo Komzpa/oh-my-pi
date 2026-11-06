@@ -1251,7 +1251,7 @@ function identicalEstimateErrors(changed: ReadonlyArray<{ task: string; estimate
 		if (tasks.length <= IDENTICAL_ESTIMATE_LIMIT) continue;
 		const firstTask = tasks[0]!.replace(/\s+/g, " ").slice(0, 24);
 		errors.push(
-			`Re-estimate "${firstTask}" individually${tasks.length > 1 ? ` (+${tasks.length - 1} more rows)` : ""}, then resend schedule.\n${tasks.length} rows in this schedule call share the same optimistic/likely/pessimistic estimate ${key} s (${tasks.map(task => `"${task}"`).join(", ")}). An identical triple is a copied default; estimate each row separately from its own scope, history and risk.`,
+			`Re-estimate "${firstTask}" individually${tasks.length > 1 ? ` (+${tasks.length - 1} more rows)` : ""}, only the skipped estimates were not applied.\n${tasks.length} rows in this schedule call share the same optimistic/likely/pessimistic estimate ${key} s (${tasks.map(task => `"${task}"`).join(", ")}). An identical triple is a copied default; estimate each row separately from its own scope, history and risk.`,
 		);
 	}
 	return errors;
@@ -2243,7 +2243,24 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 				isError: true,
 			};
 		}
-		const entry = resolved;
+		const entry = structuredClone(resolved);
+		const skippedEstimates: string[] = [];
+		if (entry.op === "schedule") {
+			const changed = (entry.updates ?? []).flatMap(update => {
+				const estimate = update.estimate;
+				const previous = findTaskByContent(previousPhases, update.task)?.task.schedule?.estimate;
+				return estimate && !isSameAcceptedEstimate(previous, estimate) ? [{ task: update.task, estimate }] : [];
+			});
+			skippedEstimates.push(...identicalEstimateErrors(changed));
+			const counts = new Map<string, number>();
+			const key = (estimate: AcceptedEstimateFields) =>
+				`${estimate.optimisticSeconds}/${estimate.likelySeconds}/${estimate.pessimisticSeconds}`;
+			for (const row of changed) counts.set(key(row.estimate), (counts.get(key(row.estimate)) ?? 0) + 1);
+			const skipped = new Set(
+				changed.filter(row => counts.get(key(row.estimate))! > IDENTICAL_ESTIMATE_LIMIT).map(row => row.task),
+			);
+			for (const update of entry.updates ?? []) if (skipped.has(update.task)) delete update.estimate;
+		}
 		const op = entry.op;
 		const now = Date.now();
 		const todoEntries = getTodoBranchEntries(this.session.sessionManager);
@@ -2395,6 +2412,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 				{
 					type: "text",
 					text: [
+						...skippedEstimates,
 						summary,
 						...(archiveSummary ? [formatTodoArchiveSummary(archiveSummary)] : []),
 						...(healedEdges.length ? [`Healed stored dangling edges: ${healedEdges.join("; ")}`] : []),
