@@ -754,6 +754,7 @@ export class MCPManager implements MCPManagerApi {
 	}
 
 	async #discoverAndConnect(options?: MCPDiscoverOptions): Promise<MCPLoadResult> {
+		const discoveryEpoch = this.#epoch;
 		this.#discoverOptions = options ? { ...options } : undefined;
 		let loadedConfigs: LoadMCPConfigsResult;
 		try {
@@ -770,6 +771,9 @@ export class MCPManager implements MCPManagerApi {
 			this.#emitConnectionStatus({ type: "failed", serverName: ".mcp.json", error: message });
 			throw error;
 		}
+		// Config loading may outlive disconnect/reload. Starting those old
+		// configs under the new connection epoch would resurrect removed servers.
+		if (this.#epoch !== discoveryEpoch) throw new Error("MCP discovery superseded by disconnect/reload");
 		const { configs, exaApiKeys, sources } = loadedConfigs;
 		const result = await this.connectServers(configs, sources, options?.onStatus, options?.startupTimeoutMs);
 		result.exaApiKeys = exaApiKeys;

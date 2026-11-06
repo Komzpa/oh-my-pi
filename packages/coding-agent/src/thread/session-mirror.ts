@@ -1,3 +1,4 @@
+import type { PeerCommandReceipt } from "../collab/peer-commands";
 /**
  * Wire model of agent sessions homed on another thread.
  *
@@ -235,6 +236,7 @@ export interface SessionAbortOptions {
  * event-stream watch toggle.
  */
 export type SessionHostProtocol = {
+	executePeerSlashCommand: RpcMethod<[text: string], PeerCommandReceipt | null>;
 	prompt: RpcMethod<[text: string, options?: PromptOptions], boolean>;
 	steer: RpcMethod<[text: string, images?: ImageContent[], options?: SteerOptions], void>;
 	abort: RpcMethod<[options?: SessionAbortOptions], void>;
@@ -321,6 +323,7 @@ export type SessionBridgeProtocol = {
 	hasQueuedIrcFrom: RpcMethod<[session: AgentSessionHandle, from: string], boolean>;
 	subscribe: RpcMethod<[session: AgentSessionHandle, listener: AgentSessionEventListener], () => void>;
 	subscribeRunState: RpcMethod<[session: AgentSessionHandle, listener: (state: SessionRunState) => void], () => void>;
+	executePeerSlashCommand: RpcMethod<[session: AgentSessionHandle, text: string], PeerCommandReceipt | null>;
 	prompt: RpcMethod<[session: AgentSessionHandle, text: string, options?: PromptOptions], boolean>;
 	steer: RpcMethod<[session: AgentSessionHandle, text: string, images?: ImageContent[], options?: SteerOptions], void>;
 	abort: RpcMethod<[session: AgentSessionHandle, options?: SessionAbortOptions], void>;

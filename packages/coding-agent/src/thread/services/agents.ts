@@ -234,6 +234,7 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 			bridge.forward(listener, forward => session.subscribe(event => forward(toWireData(event)))),
 		subscribeRunState: (bridge, session, listener) =>
 			bridge.forward(listener, forward => session.subscribeRunState(forward)),
+		executePeerSlashCommand: (_bridge, session, text) => session.executePeerSlashCommand(text),
 		prompt: (_bridge, session, text, options) => session.prompt(text, options),
 		steer: (_bridge, session, text, images, options) => session.steer(text, images, options),
 		abort: (_bridge, session, options) => session.abort(options),
@@ -287,6 +288,7 @@ function serveLifecycle(bridge: MainSessionBridge): RpcServe<AgentLifecycleManag
 function serveBus(bridge: MainSessionBridge): RpcServe<IrcBus, IrcBusProtocol> {
 	return {
 		send: (bus, msg) => bus.send(msg),
+		resolveShellReplyTarget: (bus, recipient) => bus.resolveShellReplyTarget(recipient),
 		sentSince: (bus, from, to, sinceTs) => bus.sentSince(from, to, sinceTs),
 		unansweredSends: (bus, from, sinceTs) => bus.unansweredSends(from, sinceTs),
 		// A wait parked by a dead worker must not swallow the next message for its agent.

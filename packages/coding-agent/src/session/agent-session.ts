@@ -136,6 +136,8 @@ import {
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily, isServiceTierForFamily, serviceTierSettingToTier } from "../config/service-tier";
 import { combine, type SettingsScope } from "../config/registry";
+import { executePeerSlashCommand, type PeerCommandReceipt } from "../collab/peer-commands";
+import type { MCPLoadResult } from "../mcp/manager";
 import { type Settings, withActiveSettings } from "../config/settings";
 import { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
 import { getEditStore } from "../edit/store";
@@ -1209,6 +1211,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#asyncDeliveryEpoch = 0;
 
 	readonly #irc: IrcBridge;
+	#peerInboxDrainer: (() => Promise<void>) | undefined;
+	#peerInboxDrain: Promise<void> | undefined;
 	#ircWakeTurnObserver:
 		| ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
 		| undefined;
@@ -1305,6 +1309,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#sideStreamFn: StreamFn;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#disconnectOwnedMcpManager: (() => Promise<void>) | undefined;
+	#reloadOwnedMcpManager: (() => Promise<MCPLoadResult>) | undefined;
+	#mcpReloadInFlight: Promise<MCPLoadResult> | undefined;
 
 	readonly #ttsr: TtsrCoordinator;
 	readonly #stats: SessionStatsTracker;
@@ -2640,6 +2646,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			skillsReloadable: config.skillsReloadable,
 		});
 		this.#disconnectOwnedMcpManager = config.disconnectOwnedMcpManager;
+		this.#reloadOwnedMcpManager = config.reloadOwnedMcpManager;
 		const ttsrHost: TtsrCoordinatorHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -2729,7 +2736,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
 		});
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
-		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
+		this.agent.afterToolCall = async ctx => {
+			await this.#drainPeerInbox();
+			return this.#afterToolCall(ctx);
+		};
 		// Pre-scheduling tool_call wiring: extension handlers run at arg-prep
 		// time so a block/revision lands before concurrency resolution,
 		// tool_execution_start, and the wrapper's approval gate.
@@ -4781,7 +4791,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 		}
 
-		if (event.type === "turn_end") this.#ttsr.onTurnEnd();
+		if (event.type === "turn_end") {
+			await this.#drainPeerInbox();
+			this.#ttsr.onTurnEnd();
+		}
 		// Finalize the tool-choice queue's in-flight yield after tools have executed.
 		// This must happen at turn_end (not message_end) because onInvoked handlers
 		// run during tool execution, which happens between message_end and turn_end.
@@ -7534,6 +7547,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#tools.refreshBaseSystemPrompt(commitIf);
 	}
 
+	executePeerSlashCommand(text: string): Promise<PeerCommandReceipt | null> {
+		return executePeerSlashCommand(this, text);
+	}
+
+	/** Actual owned-runtime reload, never a command-metadata refresh or global lookup. */
+	reloadMCPRuntime(): Promise<MCPLoadResult> {
+		if (this.isDisposed) throw new Error("Cannot reload MCP on a disposed session");
+		if (this.isStreaming || this.isBashRunning || this.isEvalRunning)
+			throw new Error("MCP reload requires an idle session");
+		if (!this.#reloadOwnedMcpManager) throw new Error("This session does not own an MCP runtime");
+		if (this.#mcpReloadInFlight) return this.#mcpReloadInFlight;
+		const pending = this.#reloadOwnedMcpManager();
+		this.#mcpReloadInFlight = pending;
+		void pending
+			.finally(() => {
+				if (this.#mcpReloadInFlight === pending) this.#mcpReloadInFlight = undefined;
+			})
+			.catch(() => {});
+		return pending;
+	}
+
 	/** Replaces connected MCP tools and enables them immediately. */
 	refreshMCPTools(mcpTools: CustomTool[]): Promise<void> {
 		return this.#tools.refreshMCPTools(mcpTools);
@@ -8521,13 +8555,17 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// Handle extension commands first (execute immediately, even during streaming)
 		if (expandPromptTemplates && text.startsWith("/")) {
 			if (options?.runCommands !== false) {
-				const handled = await this.#tryExecuteExtensionCommand(text, options?.onPromptAdmitted);
+				const handled = await this.#tryExecuteExtensionCommand(
+					text,
+					options?.onPromptAdmitted,
+					options?.throwOnCommandError,
+				);
 				if (handled) {
 					return false;
 				}
 
 				// Try custom commands (TypeScript slash commands)
-				const customResult = await this.#tryExecuteCustomCommand(text);
+				const customResult = await this.#tryExecuteCustomCommand(text, options?.throwOnCommandError);
 				if (customResult !== null) {
 					if (customResult === "") {
 						return false;
@@ -9409,7 +9447,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Try to execute an extension command. Returns true if command was found and executed.
 	 * `onRouted` fires once the command is found, before its handler runs.
 	 */
-	async #tryExecuteExtensionCommand(text: string, onRouted?: () => void): Promise<boolean> {
+	async #tryExecuteExtensionCommand(text: string, onRouted?: () => void, throwOnError = false): Promise<boolean> {
 		if (!this.#extensionRunner) return false;
 
 		// Parse command name and args
@@ -9434,6 +9472,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				event: "command",
 				error: err instanceof Error ? err.message : String(err),
 			});
+			if (throwOnError) throw err;
 			return true;
 		}
 	}
@@ -9529,7 +9568,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Try to execute a custom command. Returns the prompt string if found, null otherwise.
 	 * If the command returns void, returns empty string to indicate it was handled.
 	 */
-	async #tryExecuteCustomCommand(text: string): Promise<string | null> {
+	async #tryExecuteCustomCommand(text: string, throwOnError = false): Promise<string | null> {
 		if (this.#customCommands.length === 0 && this.#mcpPromptCommands.length === 0) return null;
 
 		// Parse command name and args
@@ -9570,6 +9609,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				const message = err instanceof Error ? err.message : String(err);
 				logger.error("Custom command failed", { commandName, error: message });
 			}
+			if (throwOnError) throw err;
 			return ""; // Command was handled (with error)
 		}
 	}
@@ -13044,6 +13084,26 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	// =========================================================================
 	// IRC Delivery
 	// =========================================================================
+
+	/** Installs the durable cross-process peer inbox owned by the active publication. */
+	setPeerInboxDrainer(drainer: (() => Promise<void>) | undefined): void {
+		this.#peerInboxDrainer = drainer;
+	}
+
+	async #drainPeerInbox(): Promise<void> {
+		const drainer = this.#peerInboxDrainer;
+		if (!drainer) return;
+		if (this.#peerInboxDrain) return this.#peerInboxDrain;
+		const pending = drainer()
+			.catch(error => {
+				logger.warn("Failed to drain durable peer inbox", { error: String(error) });
+			})
+			.finally(() => {
+				if (this.#peerInboxDrain === pending) this.#peerInboxDrain = undefined;
+			});
+		this.#peerInboxDrain = pending;
+		return pending;
+	}
 
 	/** Surfaces and consumes every pending IRC record before automatic injection (see {@link IrcBridge.drainInboxMessages}). */
 	drainPendingIrcInboxMessages(agentId: string, opts?: { ifAny?: (msg: IrcMessage) => boolean }): IrcMessage[] {

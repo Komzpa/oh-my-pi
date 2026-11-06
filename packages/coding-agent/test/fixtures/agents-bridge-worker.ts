@@ -1,3 +1,5 @@
+import type { PeerCommandReceipt } from "../../src/collab/peer-commands";
+import { IrcBus } from "../../src/irc/bus";
 /**
  * Subagent worker entry for the agents-bridge tests: the real link wiring of
  * `subagent-worker-entry` with only the identity and agents services, plus a
@@ -37,6 +39,8 @@ export interface PeerReport {
 
 /** Operations the test drives on the worker. */
 export interface AgentsProbe {
+	peerCommand(id: string, text: string): Promise<PeerCommandReceipt | null>;
+	shellReplyTarget(id: string): Promise<string>;
 	threadId(): Promise<string>;
 	/** Build a real session (mock model) and register it as `id` in the (remote) registry. */
 	open(id: string, options: { sessionFile?: string; gated?: boolean }): Promise<string>;
@@ -120,6 +124,8 @@ function local(id: string): AgentSession {
 }
 
 const probe: AgentsProbe = {
+	peerCommand: async (id, text) => AgentRegistry.global().get(id)!.session!.executePeerSlashCommand(text),
+	shellReplyTarget: async id => IrcBus.global().resolveShellReplyTarget(id),
 	threadId: async () => threadName,
 	open: async (id, options) => {
 		const session = await makeSession(id, options.gated === true);
