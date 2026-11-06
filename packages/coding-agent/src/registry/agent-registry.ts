@@ -71,7 +71,9 @@ export interface AgentRef {
 	kind: AgentKind;
 	parentId?: string;
 	status: AgentStatus;
-	/** Null exactly when parked/aborted. */
+	/** Executor owns this generation while its session is being constructed. */
+	starting?: boolean;
+	/** Null while starting, parked or aborted. */
 	session: AgentSessionHandle | null;
 	sessionFile: string | null;
 	createdAt: number;
@@ -123,6 +125,7 @@ export interface RegisterInput {
 	session: AgentSessionHandle | null;
 	sessionFile?: string | null;
 	status?: AgentStatus;
+	starting?: boolean;
 	/** Last persisted task summary, when restoring a historical agent. */
 	activity?: string;
 	/** Original registration timestamp, when known from persisted history. */
@@ -142,7 +145,7 @@ export interface AgentRegistryApi {
 	readonly awaits: AgentAwaitsApi;
 	/** Register (or replace) the ref for `input.id`; always mints a new generation. */
 	register(input: RegisterInput): AgentRef;
-	/** Register an absent id, or reuse the exact detached `parked` ref `expected`. */
+	/** Register an absent id, or reuse the exact parked/starting ref `expected`. */
 	registerIfAvailable(input: RegisterInput, expected: AgentRef | null): AgentRef | undefined;
 	/** Start a fresh `parked` generation for the killed ref `expected`. */
 	reopen(id: string, expected: AgentRef): AgentRef | undefined;
@@ -173,7 +176,7 @@ export interface AgentRegistryApi {
 	list(): AgentRef[];
 	/** Every alive non-advisor agent except `id`. */
 	listVisibleTo(id: string): AgentRef[];
-	/** Whether a ref's claimed running state is corroborated by its attached live session. */
+	/** Whether a ref has a live turn or an executor-owned startup in flight. */
 	isRunning(ref: AgentRef): boolean;
 	/** Mirror a session's run-state notifications into ref `id`; returns the unsubscribe function. */
 	syncSessionStatus(id: string, session: AgentSessionHandle): () => void;
@@ -227,6 +230,7 @@ export class AgentRegistry implements AgentRegistryApi {
 			kind: input.kind,
 			parentId: input.parentId,
 			status: input.status ?? "running",
+			starting: input.starting,
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
 			createdAt: input.createdAt ?? now,
@@ -243,14 +247,18 @@ export class AgentRegistry implements AgentRegistryApi {
 
 	/**
 	 * Register a new id only when it is absent, or reuse the exact detached
-	 * `parked` ref a revival was authorized to revive. A missing, replaced, or
+	 * `parked` ref a revival was authorized to revive, or its own startup reservation. A missing, replaced, or
 	 * terminal expected ref is a failed CAS: delayed revivers must never claim an
 	 * id after its prior generation disappeared or was hard-killed.
 	 */
 	registerIfAvailable(input: RegisterInput, expected: AgentRef | null): AgentRef | undefined {
 		const current = this.#refs.get(input.id);
 		if (expected === null) return current ? undefined : this.register(input);
-		return current === expected && current.status === "parked" && !current.session ? current : undefined;
+		return current === expected &&
+			(current.status === "parked" || (current.status === "running" && current.starting === true)) &&
+			!current.session
+			? current
+			: undefined;
 	}
 
 	/**
@@ -441,6 +449,7 @@ export class AgentRegistry implements AgentRegistryApi {
 		// createAgentSession after an explicit kill.
 		if (!ref || ref.status === "aborted" || !this.#matchesExpected(ref, expected)) return false;
 		ref.session = session;
+		delete ref.starting;
 		if (sessionFile !== undefined) {
 			// A replacement transcript starts a new cumulative-cost identity.
 			if (ref.sessionFile !== sessionFile && ref.history?.directCost !== undefined) {
@@ -449,6 +458,7 @@ export class AgentRegistry implements AgentRegistryApi {
 			ref.sessionFile = sessionFile;
 		}
 		ref.lastActivity = Date.now();
+		this.#emit({ type: "metadata_changed", ref });
 		return true;
 	}
 
@@ -501,10 +511,10 @@ export class AgentRegistry implements AgentRegistryApi {
 		);
 	}
 
-	/** Whether a ref's claimed running state is corroborated by its attached live session. */
+	/** Whether a ref has a live turn or an executor-owned startup in flight. */
 	isRunning(ref: AgentRef): boolean {
 		if (ref.status !== "running") return false;
-		return ref.session?.isStreaming === true;
+		return ref.starting === true || ref.session?.isStreaming === true;
 	}
 
 	/** Mirror a session's authoritative run-state notifications into its owned registry ref. */

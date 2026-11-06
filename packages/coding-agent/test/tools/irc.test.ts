@@ -105,6 +105,25 @@ describe("IRC", () => {
 	});
 
 	describe("IrcBus", () => {
+		it("fails a startup steer when that generation is killed or replaced", async () => {
+			for (const replacement of [false, true]) {
+				const ref = registry.register({
+					id: "Starting",
+					displayName: "task",
+					kind: "sub",
+					session: null,
+					starting: true,
+				});
+				const delivery = bus.send({ from: "Main", to: "Starting", body: "old correction" });
+				const next = makeFakeSession();
+				if (replacement)
+					registry.register({ id: "Starting", displayName: "task", kind: "sub", session: next.session });
+				else registry.setStatus("Starting", "aborted", ref);
+				expect((await delivery).outcome).toBe("failed");
+				expect(next.delivered).toEqual([]);
+			}
+		});
+
 		it("send delivers to a live recipient and reports the session outcome", async () => {
 			const sub = makeFakeSession();
 			registry.register({ id: "0-Sub", displayName: "task", kind: "sub", session: sub.session });
