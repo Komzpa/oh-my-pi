@@ -1,8 +1,15 @@
-import { expect, test } from "bun:test";
+import { expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { AgentSessionHandle } from "@oh-my-pi/pi-coding-agent/session/agent-session-handle";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import agentRouter from "./agent_router";
 import { workerToolPreflight, type TestProcess } from "./dispatch_preflight";
 const ctx = { cwd: "/project", agent: { kind: "sub" } } as ExtensionContext;
@@ -16,7 +23,7 @@ const call = (toolName: string, input: unknown, context = ctx, probes = low) =>
 test("write behavior blocks outside cwd without telltale prose and cannot be bypassed by retry", async () => {
 	for (let retry = 0; retry < 3; retry++)
 		expect((await call("write", { path: "/elsewhere/a", content: "plain" }))?.reason).toContain(
-			"Outside your worktree: ask your lead with write agent://Main before writing /elsewhere/a",
+			"add /elsewhere/a to row",
 		);
 	expect(await call("write", { path: "a", content: "Write roots: /elsewhere. Run playwright test" })).toBeUndefined();
 	expect(await call("read", { path: "/elsewhere/a" })).toBeUndefined();
@@ -114,4 +121,61 @@ test("patch payload targets cannot escape through pathless edit formats", async 
 		await call("edit", { input: "*** Begin Patch\n*** Add File: /elsewhere/a\n+hello\n*** End Patch" }),
 	).toMatchObject({ block: true });
 	expect(await call("edit", { input: "[/elsewhere/a]\n1: update" })).toMatchObject({ block: true });
+});
+
+test("a running worker reads live parent resources on every write, including revocation", async () => {
+	const registry = new AgentRegistry();
+	const spy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+	let resources = ["/project"];
+	const manager = SessionManager.inMemory();
+	const todo = new TodoTool({
+		cwd: "/project",
+		settings: Settings.isolated(),
+		sessionManager: manager,
+		getSessionFile: () => null,
+		getTodoPhases: () => [
+			{
+				name: "Work",
+				tasks: [{ content: "Fix pipes", status: "in_progress", schedule: { owner: "Pipes", resources } }],
+			},
+		],
+		setTodoPhases: (phases: TodoPhase[]) => {
+			resources = phases[0]!.tasks[0]!.schedule!.resources!;
+		},
+	} as unknown as ToolSession);
+	registry.register({
+		id: "Lead",
+		displayName: "Lead",
+		kind: "main",
+		session: {
+			activeToolExecutionUpdates() {},
+			getTodoPhases: () => [
+				{
+					name: "Work",
+					tasks: [{ content: "Fix pipes", status: "in_progress", schedule: { owner: "Pipes", resources } }],
+				},
+			],
+		} as unknown as AgentSessionHandle,
+	});
+	try {
+		const context = { ...ctx, agent: { kind: "sub", id: "Pipes", parentId: "Lead" } } as ExtensionContext;
+		const denied = await call("write", { path: "/new-worktree/a" }, context);
+		expect(denied?.reason).toContain(
+			'add /new-worktree/a to row "Fix pipes" resources via todo schedule; applies to the running worker',
+		);
+		expect(denied?.reason).not.toMatch(/kill|redispatch/);
+		await todo.execute("live-scope", {
+			op: "schedule",
+			updates: [{ task: "Fix pipes", resources: ["/new-worktree"] }],
+		});
+		expect(await call("write", { path: "/new-worktree/a" }, context)).toBeUndefined();
+		expect(await call("write", { path: "/project/a" }, context)).toMatchObject({ block: true });
+		resources = ["ambiguous"];
+		expect((await call("write", { path: "/new-worktree/a" }, context))?.reason).toContain(
+			"replacement absolute worktree path",
+		);
+	} finally {
+		await manager.close();
+		spy.mockRestore();
+	}
 });

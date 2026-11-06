@@ -2,6 +2,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { parseCommandArgs } from "@oh-my-pi/pi-coding-agent/utils/command-args";
 
 export function fileToolTargets(input: Record<string, unknown>): string[] {
@@ -248,6 +250,20 @@ function bashWriteTargets(argv: string[]): string[] {
 	return [];
 }
 
+/** Read the parent's current plan, never the child's copied TODO snapshot. */
+export function liveWorkerRows(ctx: ExtensionContext) {
+	const parent = ctx.agent?.parentId ? AgentRegistry.global().get(ctx.agent.parentId)?.session : undefined;
+	const phases: TodoScheduleInput = parent?.getTodoPhases() ?? [];
+	return phases
+		.flatMap(phase => phase.tasks)
+		.filter(
+			row =>
+				row.status !== "completed" &&
+				row.status !== "abandoned" &&
+				(row.schedule?.owner === ctx.agent?.id || row.schedule?.executor?.workerId === ctx.agent?.id),
+		);
+}
+
 export async function workerToolPreflight(
 	event: { toolName: string; input?: unknown },
 	ctx: ExtensionContext,
@@ -257,21 +273,27 @@ export async function workerToolPreflight(
 	const input = (event.input ?? {}) as Record<string, unknown>;
 	const actions =
 		event.toolName === "bash" && typeof input.command === "string" ? shellActions(input.command, ctx.cwd) : [];
-	const targets = event.toolName === "edit" || event.toolName === "write" ? fileToolTargets(input) : [];
+	const targets = ["edit", "write", "ast_edit"].includes(event.toolName) ? fileToolTargets(input) : [];
 	for (const action of actions)
 		targets.push(
 			...[...action.targets, ...bashWriteTargets(action.argv)].map(target => path.resolve(action.cwd, target)),
 		);
 	const root = await canonical(path.resolve(ctx.cwd));
+	const rows = liveWorkerRows(ctx);
+	const declared = rows
+		.flatMap(row => row.schedule?.resources ?? [])
+		.map(resource => resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "").replace(/:[^/]+$/, ""))
+		.filter(resource => path.isAbsolute(resource));
+	const roots = declared.length ? await Promise.all(declared.map(canonical)) : [root];
 	for (const target of targets) {
 		if (target.includes("://")) continue;
 		const resolved = await canonical(
 			path.resolve(ctx.cwd, target.startsWith("~/") ? path.join(os.homedir(), target.slice(2)) : target),
 		);
-		if (!inside(root, resolved))
+		if (!roots.some(allowed => inside(allowed, resolved)))
 			return {
 				block: true,
-				reason: `Outside your worktree: ask your lead with write agent://Main before writing ${resolved}.`,
+				reason: `Outside your worktree: add ${resolved} to row ${JSON.stringify(rows.map(row => row.content).join(", ") || ctx.agent?.id || "<worker row>")} resources via todo schedule; applies to the running worker. Use an absolute path. If its worktree disappeared, restore it or put the replacement absolute worktree path in that row resources, then retry.`,
 			};
 	}
 	const app = input.app as { relay?: boolean; cdp_url?: string } | undefined;

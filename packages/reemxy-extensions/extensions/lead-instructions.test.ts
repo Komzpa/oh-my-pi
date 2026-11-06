@@ -4,6 +4,7 @@ import {
 	expectedDisplayActions,
 	leadInstructionScenarios,
 	type LeadInstructionScenario,
+	verifyLeadRoundTrip,
 } from "./lead-instructions.scenarios";
 
 let scenarios: LeadInstructionScenario[];
@@ -33,6 +34,12 @@ const contracts: Record<string, { tool?: string; operation?: string; wait?: bool
 	"user-answered-review": { tool: "todo", operation: "schedule" },
 	"blocked-on-user": {},
 	"blocked-user-already-asked": { wait: true },
+	"review-page-accept": {},
+	"review-page-redo": { tool: "task" },
+	"review-page-drop": {},
+	"owner-question-telegram": { tool: "todo", operation: "schedule" },
+	"never-handed-to-owner": { handoff: true },
+	"running-worker-scope": { wait: true },
 	"capacity-full": { wait: true },
 };
 
@@ -45,9 +52,14 @@ test("every consumer display state and scenario has an instruction contract", ()
 });
 
 for (const id of Object.keys(contracts)) {
-	test(`${id}: lead receives a row-specific next action without conflicting turn notices`, () => {
+	test(`${id}: lead receives a row-specific next action without conflicting turn notices`, async () => {
 		const scenario = scenarios.find(scenario => scenario.id === id)!;
 		const contract = contracts[id]!;
+		if (id === "review-page-accept" || id === "review-page-drop") {
+			expect(await verifyLeadRoundTrip(scenario, [])).toBe(true);
+			for (const notice of scenario.notices) expect(notice).not.toContain("until the user responds");
+			return;
+		}
 		expect(scenario.state).toBe(scenario.expectedState);
 		const notice = scenario.notices.find(
 			text => text.includes(JSON.stringify(scenario.row)) && (text.includes("NEXT ACTION") || text.includes("WAIT")),

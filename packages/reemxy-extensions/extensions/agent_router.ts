@@ -162,12 +162,26 @@ function activeWriteWorker(
 	state: RouterState,
 	ctx: ExtensionContext,
 	checkoutScopes?: string[],
+	latestTodo?: () => TodoScheduleInput,
 ): SpawnState | undefined {
 	const runningJobs = ctx.getAsyncJobSnapshot?.()?.running ?? [];
 	const cwdFallback = sessionCwdScopes(ctx);
 	const incoming = checkoutScopes ?? cwdFallback;
 	return [...state.spawns.values()].find(spawn => {
 		if (spawn.recordedOutcome || spawn.isolated || !WRITE_CAPABLE_WORKERS.has(spawn.agent)) return false;
+		let phases: TodoScheduleInput | undefined;
+		try {
+			phases = latestTodo?.();
+		} catch {
+			/* Keep the recorded scope when the plan is unavailable. */
+		}
+		const rows = phases
+			?.flatMap(phase => phase.tasks)
+			.filter(
+				row => row.status !== "completed" && row.status !== "abandoned" && row.schedule?.owner === spawn.spawnKey,
+			);
+		if (rows?.length)
+			spawn.checkoutScopes = checkoutScopesFromResources(rows.flatMap(row => row.schedule?.resources ?? []));
 		const held = spawn.checkoutScopes ?? cwdFallback;
 		if (incoming !== undefined && held !== undefined && !checkoutScopesOverlap(incoming, held)) return false;
 		return runningJobs.some(job => {
@@ -413,7 +427,7 @@ export function routeSubagentSpawn(
 	// "files are done" detection) need edit-intent tracking the spawn event
 	// does not carry.
 	if (WRITE_CAPABLE_WORKERS.has(agent) && agent !== "git-pr-owner" && event.isolated !== true) {
-		const activeWriter = activeWriteWorker(state, ctx, checkoutScopes);
+		const activeWriter = activeWriteWorker(state, ctx, checkoutScopes, latestTodo);
 		if (activeWriter) {
 			const heldScopes = activeWriter.checkoutScopes ?? sessionCwdScopes(ctx);
 			const heldFirst = heldScopes?.[0]?.split("\0") ?? [];
