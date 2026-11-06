@@ -1,4 +1,9 @@
-import { isolationHasWork } from "@oh-my-pi/pi-coding-agent/task/restart-isolation";
+import {
+	isolationHasWork,
+	snapshotRestartIsolation,
+	restoreRestartIsolation,
+	type RestartIsolation,
+} from "@oh-my-pi/pi-coding-agent/task/restart-isolation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { $ } from "bun";
 import * as fs from "node:fs/promises";
@@ -95,141 +100,165 @@ describe("restart isolation recovery", () => {
 		expect(await isolationHasWork(cwd)).toBe(true);
 	});
 
-	it.each([0, 2_000])(
-		"snapshots dirty isolation after a %s ms late wake and recovers its settled bytes once",
-		async lateWakeMs => {
-			const cwd = path.join(temp!.path(), "worker");
-			await fs.mkdir(cwd);
-			await $`git init ${cwd}`.quiet();
-			await Bun.write(path.join(cwd, "tracked.txt"), "committed\n");
-			await $`git -C ${cwd} add tracked.txt`.quiet();
-			await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.com commit -m baseline`.quiet();
-			await Bun.write(path.join(cwd, "tracked.txt"), "dirty tracked bytes\n");
-			await Bun.write(path.join(cwd, "untracked.txt"), "untracked bytes\n");
-			const root = track(SessionManager.create(temp!.path(), path.join(temp!.path(), "sessions")));
-			root.appendMessage({ role: "user", content: "restart", timestamp: Date.now() });
-			await root.ensureOnDisk();
-			const rootFile = root.getSessionFile()!;
-			const child = track(SessionManager.create(cwd, rootFile.slice(0, -6)));
-			child.appendSessionInit({
-				systemPrompt: ["worker"],
-				task: "Row: Adaptive Facility: no crash, callout leaders clear of hall",
-				tools: ["read", "yield"],
-				isolated: true,
-			});
-			child.appendMessage({ role: "user", content: "work", timestamp: Date.now() });
-			await child.ensureOnDisk();
-			await child.flush();
-			const childFile = child.getSessionFile()!;
-			const childId = "FacilityBlitFix";
-			const quiet = Promise.withResolvers<void>();
-			const pending = Promise.withResolvers<RestartRequestRecord>();
-			const terminal = Promise.withResolvers<RestartRequestRecord>();
-			let leases = 0;
-			let aborts = 0;
-			let restarts = 0;
-			const rootSession = session(root, { quiescence: Promise.resolve() });
-			const worker = session(child, {
-				wasRunning: true,
-				quiescence: quiet.promise,
-				onLease: () => {
-					leases++;
-				},
-				abort: async () => {
-					aborts++;
-					await Bun.write(path.join(cwd, "tracked.txt"), "settled tracked bytes\n");
-					quiet.resolve();
-				},
-			});
-			const registerRoot = () =>
-				AgentRegistry.global().register({
-					id: MAIN_AGENT_ID,
-					displayName: MAIN_AGENT_ID,
-					kind: "main",
-					session: rootSession,
-					sessionFile: rootFile,
-					status: "idle",
-				});
-			registerRoot();
-			AgentRegistry.global().register({
-				id: childId,
-				displayName: "FacilityBlitFix",
-				kind: "sub",
-				parentId: MAIN_AGENT_ID,
-				session: worker,
-				sessionFile: childFile,
-				status: "running",
-			});
-			const identity = { instanceId: "isolated", sessionId: root.getSessionId(), generation: 1 };
-			const controller = createRestartQueueController({
-				session: rootSession,
-				identity: () => identity,
-				restartIsolationWaitMs: 60_000,
-				restartWorkerAbortGraceMs: 1_000,
-				restartWorkerGraceMs: 1,
-				restart: async () => {
-					restarts++;
-				},
-				onStateChange: record => {
-					if (record.drainStatus?.isolationPendingReason) {
-						pending.resolve(record);
-						if (lateWakeMs) {
-							const wakeAt = record.drainStatus.stageDeadlineAt! + lateWakeMs;
-							// Replay a blocked event loop, including the wait's timer waking late.
-							while (Date.now() < wakeAt) {
-								/* synchronous lag */
-							}
-						}
-					}
-					if (record.state === "completed" || record.state === "failed") terminal.resolve(record);
-				},
-			});
-			try {
-				const started = Date.now();
-				await controller.handle({ identity, op: "request", requestId: "dirty-isolation" });
-				const waiting = await pending.promise;
-				expect(waiting.drainStatus?.isolationPendingReason).toContain("FacilityBlitFix");
-				expect(waiting.drainStatus?.isolationPendingReason).toContain(childId);
-				expect(controller.snapshot().request?.drainStatus?.isolationPendingReason).toContain(
-					"uncommitted or unpushed",
-				);
-				expect(leases).toBe(0);
-				expect(aborts).toBe(0);
-				expect(restarts).toBe(0);
-				const result = await terminal.promise;
-				expect(result.error).toBeUndefined();
-				expect(result.state).toBe("completed");
-				expect(Date.now() - started).toBeLessThan(4_000 + lateWakeMs);
-				expect(aborts).toBe(1);
-				expect(leases).toBe(1);
-				expect(restarts).toBe(1);
-				const markerPath = path.join(path.dirname(childFile), `${childId}.restart-isolation.json`);
-				const marker: { id: string; cwd: string; snapshotPath: string } = await Bun.file(markerPath).json();
-				expect(marker.id).toBe(childId);
-				expect(marker.cwd).toBe(cwd);
-				expect(await $`tar -xOzf ${marker.snapshotPath} tracked.txt`.text()).toBe("settled tracked bytes\n");
-				expect(await $`tar -xOzf ${marker.snapshotPath} untracked.txt`.text()).toBe("untracked bytes\n");
-				await fs.rm(cwd, { recursive: true });
-				AgentLifecycleManager.resetGlobalForTests();
-				AgentRegistry.resetGlobalForTests();
-				registerRoot();
-				const restored = await restoreSubagentsAfterRestart(rootSession, { requestId: "dirty-isolation" });
-				expect(restored.parked).toContain(childId);
-				await restoreSubagentsAfterRestart(rootSession, { requestId: "dirty-isolation" });
-				const notices = root
-					.getEntries()
-					.filter(entry => entry.type === "custom_message" && entry.customType === "restart-isolation-snapshots");
-				expect(notices).toHaveLength(1);
-				const notice = JSON.stringify(notices[0]);
-				expect(notice).toContain("FacilityBlitFix");
-				expect(notice).toContain(childId);
-				expect(notice).toContain(marker.snapshotPath);
-			} finally {
-				controller.dispose();
-			}
+	it.each(["linked", "alternates"])(
+		"recovers staged, unstaged, deleted and unpushed work without its original %s repository",
+		async kind => {
+			const source = path.join(temp!.path(), "source");
+			const cwd = path.join(temp!.path(), "linked");
+			await $`git init ${source}`.quiet();
+			await Bun.write(path.join(source, "tracked"), "baseline");
+			await Bun.write(path.join(source, "deleted"), "delete me");
+			await $`git -C ${source} add .`.quiet();
+			await $`git -C ${source} -c user.name=Test -c user.email=test@example.com commit -m baseline`.quiet();
+			if (kind === "linked") await $`git -C ${source} worktree add -b worker ${cwd}`.quiet();
+			else await $`git clone --shared ${source} ${cwd}`.quiet();
+			await Bun.write(path.join(cwd, "tracked"), "unpublished commit");
+			await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.com commit -am unpublished`.quiet();
+			const head = (await $`git -C ${cwd} rev-parse HEAD`.text()).trim();
+			await Bun.write(path.join(cwd, "tracked"), "staged");
+			await $`git -C ${cwd} add tracked`.quiet();
+			await Bun.write(path.join(cwd, "tracked"), "dirty bytes\0\n");
+			await Bun.write(path.join(cwd, "untracked"), "new bytes");
+			await Bun.write(path.join(cwd, ".gitignore"), "ignored/\n");
+			await Bun.write(path.join(cwd, "ignored/output.bin"), "ignored worker output\0");
+			await fs.mkdir(path.join(cwd, "empty-directory"));
+			await fs.rm(path.join(cwd, "deleted"));
+			await fs.symlink("tracked", path.join(cwd, "link"));
+			const before = await $`git -C ${cwd} status --porcelain=v1`.text();
+			const item: RestartIsolation = {
+				id: "worker",
+				name: "Worker",
+				cwd,
+				marker: path.join(temp!.path(), "marker.json"),
+			};
+			await snapshotRestartIsolation(item, path.join(temp!.path(), "snapshots"));
+			await Bun.write(path.join(cwd, "tracked"), "later worker write");
+			await fs.rm(cwd, { recursive: true });
+			await fs.rm(source, { recursive: true });
+			await restoreRestartIsolation(item);
+			expect(await Bun.file(path.join(cwd, "tracked")).text()).toBe("dirty bytes\0\n");
+			expect(await Bun.file(path.join(cwd, "untracked")).text()).toBe("new bytes");
+			expect(await fs.readlink(path.join(cwd, "link"))).toBe("tracked");
+			expect(await Bun.file(path.join(cwd, "ignored/output.bin")).text()).toBe("ignored worker output\0");
+			expect((await fs.stat(path.join(cwd, "empty-directory"))).isDirectory()).toBe(true);
+			expect(await $`git -C ${cwd} status --porcelain=v1`.text()).toBe(before);
+			expect((await $`git -C ${cwd} rev-parse HEAD`.text()).trim()).toBe(head);
+			expect(await $`git -C ${cwd} show HEAD:tracked`.text()).toBe("unpublished commit");
+			expect(await $`git -C ${cwd} show :tracked`.text()).toBe("staged");
+			// Negative controls: the same observable checks detect a lost dirty file and lost history.
+			await fs.rm(path.join(cwd, "tracked"));
+			expect(await $`git -C ${cwd} status --porcelain=v1`.text()).not.toBe(before);
+			await fs.rm(path.join(cwd, ".git/objects"), { recursive: true });
+			expect((await $`git -C ${cwd} show HEAD:tracked`.quiet().nothrow()).exitCode).not.toBe(0);
 		},
-		10_000,
 	);
+
+	it("snapshots dirty isolation without the configured cleanliness wait", async () => {
+		const cwd = path.join(temp!.path(), "worker");
+		await fs.mkdir(cwd);
+		await $`git init ${cwd}`.quiet();
+		await Bun.write(path.join(cwd, "tracked.txt"), "committed\n");
+		await $`git -C ${cwd} add tracked.txt`.quiet();
+		await $`git -C ${cwd} -c user.name=Test -c user.email=test@example.com commit -m baseline`.quiet();
+		await Bun.write(path.join(cwd, "tracked.txt"), "dirty tracked bytes\n");
+		await Bun.write(path.join(cwd, "untracked.txt"), "untracked bytes\n");
+		const root = track(SessionManager.create(temp!.path(), path.join(temp!.path(), "sessions")));
+		root.appendMessage({ role: "user", content: "restart", timestamp: Date.now() });
+		await root.ensureOnDisk();
+		const rootFile = root.getSessionFile()!;
+		const child = track(SessionManager.create(cwd, rootFile.slice(0, -6)));
+		child.appendSessionInit({
+			systemPrompt: ["worker"],
+			task: "Row: Adaptive Facility: no crash, callout leaders clear of hall",
+			tools: ["read", "yield"],
+			isolated: true,
+		});
+		child.appendMessage({ role: "user", content: "work", timestamp: Date.now() });
+		await child.ensureOnDisk();
+		await child.flush();
+		const childFile = child.getSessionFile()!;
+		const childId = "FacilityBlitFix";
+		const quiet = Promise.withResolvers<void>();
+
+		const terminal = Promise.withResolvers<RestartRequestRecord>();
+		let leases = 0;
+		let aborts = 0;
+		let restarts = 0;
+		const rootSession = session(root, { quiescence: Promise.resolve() });
+		const worker = session(child, {
+			wasRunning: true,
+			quiescence: quiet.promise,
+			onLease: () => {
+				leases++;
+			},
+			abort: async () => {
+				aborts++;
+				await Bun.write(path.join(cwd, "tracked.txt"), "settled tracked bytes\n");
+				quiet.resolve();
+			},
+		});
+		const registerRoot = () =>
+			AgentRegistry.global().register({
+				id: MAIN_AGENT_ID,
+				displayName: MAIN_AGENT_ID,
+				kind: "main",
+				session: rootSession,
+				sessionFile: rootFile,
+				status: "idle",
+			});
+		registerRoot();
+		AgentRegistry.global().register({
+			id: childId,
+			displayName: "FacilityBlitFix",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: worker,
+			sessionFile: childFile,
+			status: "running",
+		});
+		const identity = { instanceId: "isolated", sessionId: root.getSessionId(), generation: 1 };
+		const controller = createRestartQueueController({
+			session: rootSession,
+			identity: () => identity,
+			restartIsolationWaitMs: 60_000,
+			restartWorkerAbortGraceMs: 1_000,
+			restartWorkerGraceMs: 1,
+			restart: async () => {
+				restarts++;
+			},
+			onStateChange: record => {
+				if (record.state === "completed" || record.state === "failed") terminal.resolve(record);
+			},
+		});
+		try {
+			const started = Date.now();
+			await controller.handle({ identity, op: "request", requestId: "dirty-isolation" });
+			const result = await terminal.promise;
+			expect(result.error).toBeUndefined();
+			expect(result.state).toBe("completed");
+			const elapsed = Date.now() - started;
+			expect(aborts).toBe(1);
+			expect(leases).toBe(1);
+			expect(restarts).toBe(1);
+			const markerPath = path.join(path.dirname(childFile), `${childId}.restart-isolation.json`);
+			const marker: { id: string; cwd: string; snapshotPath: string } = await Bun.file(markerPath).json();
+			expect(marker.id).toBe(childId);
+			expect(marker.cwd).toBe(cwd);
+			expect(await Bun.file(path.join(marker.snapshotPath, "tracked.txt")).text()).toBe("settled tracked bytes\n");
+			expect(await Bun.file(path.join(marker.snapshotPath, "untracked.txt")).text()).toBe("untracked bytes\n");
+			await fs.rm(cwd, { recursive: true });
+			AgentLifecycleManager.resetGlobalForTests();
+			AgentRegistry.resetGlobalForTests();
+			registerRoot();
+			const restored = await restoreSubagentsAfterRestart(rootSession, { requestId: "dirty-isolation" });
+			expect(restored.parked).not.toContain(childId);
+			expect(await Bun.file(path.join(cwd, "tracked.txt")).text()).toBe("settled tracked bytes\n");
+			expect(await Bun.file(path.join(cwd, "untracked.txt")).text()).toBe("untracked bytes\n");
+			expect(elapsed).toBeLessThan(1_000);
+		} finally {
+			controller.dispose();
+		}
+	}, 10_000);
 });
 
 it("retains a clean second attempt first registered during the final drain flush", async () => {
@@ -306,7 +335,7 @@ it("retains a clean second attempt first registered during the final drain flush
 			path.join(rootFile.slice(0, -6), "Adaptive60Mw3Levels-2.restart-isolation.json"),
 		).json();
 		expect(marker).toMatchObject({ id: "Adaptive60Mw3Levels-2", cwd });
-		expect(await $`tar -xOzf ${marker.snapshotPath} work.txt`.text()).toBe("baseline");
+		expect(await Bun.file(path.join(marker.snapshotPath, "work.txt")).text()).toBe("baseline");
 		expect(
 			root
 				.getEntries()

@@ -236,8 +236,8 @@ export class PeerAgentSession implements AgentSessionHandle {
 	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void> {
 		return mainBridge().remote.call("sendRestartNotice", this, message);
 	}
-	flushRestartJournal(): Promise<void> {
-		return mainBridge().remote.call("flushRestartJournal", this);
+	flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void> {
+		return mainBridge().remote.call("flushRestartJournal", this, options);
 	}
 
 	abort(options?: SessionAbortOptions): Promise<void> {

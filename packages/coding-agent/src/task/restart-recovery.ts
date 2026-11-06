@@ -1,4 +1,10 @@
-import { preserveRestartIsolation, restartIsolation, readRestartIsolation } from "./restart-isolation";
+import {
+	preserveRestartIsolation,
+	restartIsolation,
+	readRestartIsolation,
+	restoreRestartIsolation,
+	type RestartIsolation,
+} from "./restart-isolation";
 import { prompt } from "@oh-my-pi/pi-utils";
 import isolationRecoveryPrompt from "../prompts/restart-isolation-recovery.md" with { type: "text" };
 import { selectRestartBranchEntries } from "./restart-branch-selection";
@@ -743,7 +749,7 @@ export async function captureSubagentsForRestart(
  */
 export async function restoreSubagentsAfterRestart(
 	rootSession: AgentSession,
-	options?: { requestId?: string },
+	options?: { requestId?: string; onProgress?: (id: string, completed: number, total: number) => void },
 ): Promise<RestartRecoveryReport> {
 	const report: RestartRecoveryReport = {
 		resumed: [],
@@ -765,38 +771,7 @@ export async function restoreSubagentsAfterRestart(
 	const saved = latestHandoff(rootEntries, identity, options?.requestId);
 	if (!saved) return report;
 	const { handoff, entryId } = saved;
-	const snapshotOnly = new Set<string>();
-	const snapshotWorkers = [];
-	for (const child of handoff.children) {
-		const retained = await readRestartIsolation(child.sessionFile, child.id);
-		if (!retained || retained.id !== child.id || !retained.snapshotPath) continue;
-		try {
-			await fs.stat(retained.cwd);
-		} catch {
-			snapshotOnly.add(child.id);
-			snapshotWorkers.push(retained);
-		}
-	}
-	const snapshotNoticeType = "restart-isolation-snapshots";
-	if (
-		snapshotWorkers.length &&
-		!rootSession.sessionManager
-			.getEntries()
-			.some(
-				entry =>
-					entry.type === "custom_message" &&
-					entry.customType === snapshotNoticeType &&
-					(entry.details as { handoffId?: string } | undefined)?.handoffId === entryId,
-			)
-	) {
-		await rootSession.sendRestartNotice({
-			customType: snapshotNoticeType,
-			content: prompt.render(isolationRecoveryPrompt, { workers: snapshotWorkers }),
-			display: true,
-			details: { handoffId: entryId },
-		});
-		await rootSession.sessionManager.flush();
-	}
+	const snapshotWorkers: RestartIsolation[] = [];
 	for (const omitted of handoff.omittedChildren ?? []) report.failures.push(omitted);
 	const registry = AgentRegistry.global();
 	try {
@@ -831,7 +806,7 @@ export async function restoreSubagentsAfterRestart(
 		})
 		.slice(0, MAX_RESTART_SUBAGENTS);
 	for (const child of handoff.children) {
-		if (child.status === "parked" || snapshotOnly.has(child.id)) continue;
+		if (child.status === "parked") continue;
 		if (!childrenToRestore.includes(child)) {
 			report.failures.push({
 				id: child.id,
@@ -840,13 +815,19 @@ export async function restoreSubagentsAfterRestart(
 		}
 	}
 	const restoreChild = async (child: RestartChildSnapshot): Promise<void> => {
-		if (snapshotOnly.has(child.id)) {
-			report.failures.push({
-				id: child.id,
-				reason: "retained workspace is unavailable; recover from its isolation snapshot",
-			});
-			report.parked.push(child.id);
-			return;
+		const retained = await readRestartIsolation(child.sessionFile, child.id);
+		if (retained?.id === child.id && retained.snapshotPath) {
+			try {
+				await restoreRestartIsolation(retained);
+			} catch (error) {
+				snapshotWorkers.push(retained);
+				report.parked.push(child.id);
+				report.failures.push({
+					id: child.id,
+					reason: `Workspace recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+				});
+				return;
+			}
 		}
 		const priorReceipt = receipts.get(child.id);
 		try {
@@ -996,11 +977,13 @@ export async function restoreSubagentsAfterRestart(
 	// Refill each free slot immediately: a slow child must not hold the next
 	// group behind a batch barrier. Keep the same four-session memory bound.
 	let nextChild = 0;
+	let completedChildren = 0;
 	await Promise.all(
 		Array.from({ length: Math.min(4, childrenToRestore.length) }, async () => {
 			while (nextChild < childrenToRestore.length) {
 				const child = childrenToRestore[nextChild++]!;
 				await restoreChild(child);
+				options?.onProgress?.(child.id, ++completedChildren, childrenToRestore.length);
 			}
 		}),
 	);
@@ -1045,6 +1028,28 @@ export async function restoreSubagentsAfterRestart(
 		);
 		await rootSession.sessionManager.flush();
 	}
+
+	const snapshotNoticeType = "restart-isolation-snapshots";
+	if (
+		snapshotWorkers.length &&
+		!rootSession.sessionManager
+			.getEntries()
+			.some(
+				entry =>
+					entry.type === "custom_message" &&
+					entry.customType === snapshotNoticeType &&
+					(entry.details as { handoffId?: string } | undefined)?.handoffId === entryId,
+			)
+	) {
+		await rootSession.sendRestartNotice({
+			customType: snapshotNoticeType,
+			content: prompt.render(isolationRecoveryPrompt, { workers: snapshotWorkers }),
+			display: true,
+			details: { handoffId: entryId },
+		});
+		await rootSession.sessionManager.flush();
+	}
+
 	emitReportNotice(rootSession, report);
 	return report;
 }

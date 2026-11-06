@@ -876,8 +876,8 @@ export class RemoteAgentSession implements AgentViewSession {
 	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void> {
 		return this.#command("sendRestartNotice", message);
 	}
-	flushRestartJournal(): Promise<void> {
-		return this.#command("flushRestartJournal");
+	flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void> {
+		return this.#command("flushRestartJournal", options);
 	}
 
 	abort(options?: SessionAbortOptions): Promise<void> {

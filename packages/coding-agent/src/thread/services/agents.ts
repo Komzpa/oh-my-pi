@@ -242,7 +242,7 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 		beginRestartDrain: (_bridge, session) => session.beginRestartDrain(),
 		getRestartBranchEntries: (_bridge, session) => session.getRestartBranchEntries(),
 		sendRestartNotice: (_bridge, session, message) => session.sendRestartNotice(message),
-		flushRestartJournal: (_bridge, session) => session.flushRestartJournal(),
+		flushRestartJournal: (_bridge, session, options) => session.flushRestartJournal(options),
 		waitForIrcReplies: (_bridge, session) => session.waitForIrcReplies(),
 		setWorkPoolYieldItems: (_bridge, session, items) => session.setWorkPoolYieldItems(items),
 		emitIrcRelayObservation: (_bridge, session, record) => session.emitIrcRelayObservation(record),

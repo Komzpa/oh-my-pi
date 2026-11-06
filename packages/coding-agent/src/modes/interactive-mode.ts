@@ -3094,6 +3094,29 @@ export class InteractiveMode implements InteractiveModeContext {
 		// above, so it submits the restored draft once. An active dialog
 		// retains focus and receives its own keys.
 		this.composer.releaseHeldInput();
+		// Recovery starts only after an actual input-ready paint, not just a render request.
+		const stopRecoveryPaint = this.ui.addPaintListener(() => {
+			stopRecoveryPaint();
+			const request = this.#restartQueueController?.snapshot().request;
+			if (process.env.OMP_RESTART_SESSION_ID && request) {
+				logger.info("Restart successor input-ready frame painted", {
+					requestId: request.requestId,
+					sessionId: request.sessionId,
+					stage: "first_frame",
+					requestElapsedMs: Date.now() - request.requestedAt,
+					remainingEstimateMs: request.budget?.plan.find(item => item.stage === "restore_children")?.estimateMs,
+					deadlineAt: request.budget?.deadlineAt,
+				});
+			}
+			setTimeout(() => {
+				void this.#restartQueueController
+					?.resumeChildren()
+					.catch(error =>
+						this.showWarning(`Worker recovery failed: ${error instanceof Error ? error.message : String(error)}`),
+					);
+			}, 0);
+		});
+		this.#eventBusUnsubscribers.push(stopRecoveryPaint);
 		// Publish native send readiness even when no user input triggers another frame.
 		this.ui.requestRender();
 		if (process.env.OMP_RESTART_SESSION_ID) {
@@ -8495,6 +8518,9 @@ export class InteractiveMode implements InteractiveModeContext {
 						session: this.session,
 						identity: () => this.#restartControlIdentity(),
 						restartSuccessor: process.env.OMP_RESTART_SESSION_ID === this.sessionManager.getSessionId(),
+						deferChildren: this.#restartControlInitializing,
+						onChildProgress: (id, completed, total) =>
+							this.showStatus(`Restart: ${id} restored (${completed}/${total})`),
 						restart: () => this.#executeRestart(),
 						captureGoalMode: () => {
 							const state = this.session.getGoalModeState();
@@ -8647,6 +8673,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Keys typed while the checkpoint flushed reached the editor after the snapshot; stopping the
 		// UI drains stdin, so persist the final text now or those keys are lost with the old process.
 		await this.#persistLateDraft(draftAtSnapshot);
+		await this.sessionManager.writeIndexHandoff();
 		this.ui.stop();
 		await this.#relaunch(cmd, sessionId, sessionFile);
 	}

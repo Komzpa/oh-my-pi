@@ -101,7 +101,7 @@ export interface AgentSessionHandle {
 	getRestartPendingInputCount(): number;
 	getRestartBranchEntries(): Promise<SessionEntry[]>;
 	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void>;
-	flushRestartJournal(): Promise<void>;
+	flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void>;
 
 	/** Cross-thread identity token: `${homeThreadId}:${snowflake}`, unique per session object. */
 	readonly instanceKey: string;

@@ -595,7 +595,7 @@ export const SESSION_HOST_SERVE: RpcServe<SessionPublisher, SessionHostProtocol>
 	beginRestartDrain: publisher => publisher.session.beginRestartDrain(),
 	getRestartBranchEntries: publisher => publisher.session.getRestartBranchEntries(),
 	sendRestartNotice: (publisher, message) => settle(publisher, publisher.session.sendRestartNotice(message)),
-	flushRestartJournal: publisher => settle(publisher, publisher.session.flushRestartJournal()),
+	flushRestartJournal: (publisher, options) => settle(publisher, publisher.session.flushRestartJournal(options)),
 	flushSession: async publisher => settle(publisher, publisher.session.sessionManager.flush()),
 	ensureOnDisk: async publisher => settle(publisher, publisher.session.sessionManager.ensureOnDisk()),
 	getArtifactPath: (publisher, id) => publisher.session.sessionManager.getArtifactPath(id),
