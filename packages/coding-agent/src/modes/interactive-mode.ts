@@ -3113,6 +3113,13 @@ export class InteractiveMode implements InteractiveModeContext {
 					?.resumeChildren()
 					.catch(error =>
 						this.showWarning(`Worker recovery failed: ${error instanceof Error ? error.message : String(error)}`),
+					)
+					.finally(() =>
+						this.sessionManager
+							.writeIndexHandoff()
+							.catch(error =>
+								logger.debug("Background restart index preparation failed", { error: String(error) }),
+							),
 					);
 			}, 0);
 		});

@@ -801,9 +801,10 @@ export class SessionEntryIndex {
 		header: SessionHeader,
 		titleSlot: SessionTitleUpdate | undefined,
 		stamp: string,
+		start = 0,
 	): SessionIndexHandoff | undefined {
 		const ordered: IndexedSessionEntry[] = [];
-		for (const source of this.#ordered) {
+		for (const source of this.#ordered.slice(start)) {
 			if (source.offset === undefined || source.length === undefined || source.entry) return undefined;
 			const { entry: _entry, weak: _weak, revision: _revision, ...metadata } = source;
 			ordered.push(metadata);
@@ -1385,6 +1386,9 @@ export class SessionManager {
 	#loadedMalformedRecords = 0;
 	/** Byte length this manager last loaded or durably wrote; `null` means the path was absent. */
 	#expectedDiskSize: number | null = null;
+	#indexHandoffWrite: Promise<boolean> | undefined;
+	#indexHandoffInvalidated = false;
+	#indexHandoffBase: { stamp: string; count: number; file: string; currentStamp: string } | undefined;
 	/**
 	 * Generation of the latest deferred publish queued on a `defersSyncPublish`
 	 * backend. A deferred-rewrite confirmation older than the latest queued
@@ -1999,10 +2003,13 @@ export class SessionManager {
 			const entry = JSON.parse(line) as SessionEntry;
 			this.#index.setPosition(entry.id, offset, length);
 			this.#index.setFileReader(this.#sessionFile, this.#blobs);
+			this.#updateIndexHandoff();
 		}
 	}
 
 	#recordFullRewrite(body: SessionFileBody, source: string): void {
+		this.#indexHandoffBase = undefined;
+		this.#indexHandoffInvalidated = false;
 		this.#expectedDiskSize = body.bytes;
 		if (this.#storage instanceof FileSessionStorage && this.#sessionFile) {
 			// Pair every published byte range with the replacement reader before
@@ -2406,6 +2413,15 @@ export class SessionManager {
 		// A mid-close writer leaves `#writer` undefined, so `#appendWriter` simply
 		// opens a fresh append handle and the entry still lands.
 		try {
+			const base = this.#indexHandoffBase;
+			if (
+				base &&
+				(base.file !== this.#sessionFile ||
+					journalStamp(fs.statSync(base.file, { bigint: true })) !== base.currentStamp)
+			) {
+				this.#indexHandoffBase = undefined;
+				this.#indexHandoffInvalidated = true;
+			}
 			const writer = this.#appendWriter();
 			const line = this.#lineFor(entry);
 			if (writer.appendSync && !this.#storage.defersSyncPublish) {
@@ -3381,9 +3397,47 @@ export class SessionManager {
 		if (this.#diskFailure) throw this.#diskFailure;
 	}
 
+	/** Publish only metadata appended since the prepared base; journal stamps reject external edits. */
+	#updateIndexHandoff(): boolean {
+		const base = this.#indexHandoffBase;
+		if (!base || base.file !== this.#sessionFile) return false;
+		try {
+			const stat = fs.statSync(base.file, { bigint: true });
+			if (Number(stat.size) !== this.#expectedDiskSize) return false;
+			const snapshot = this.#index.handoff(
+				this.#header,
+				this.#hasTitleSlot
+					? { title: this.#sessionName, source: this.#titleSource, updatedAt: this.#titleUpdatedAt }
+					: undefined,
+				journalStamp(stat),
+				base.count,
+			);
+			if (!snapshot) return false;
+			fs.appendFileSync(
+				`${base.file}.index-handoff-tail`,
+				`${JSON.stringify({ baseStamp: base.stamp, snapshot })}\n`,
+				{ mode: 0o600 },
+			);
+			base.count += snapshot.ordered.length;
+			base.currentStamp = snapshot.stamp;
+			return true;
+		} catch (error) {
+			// A cache failure must never fail the authoritative journal append.
+			logger.debug("Incremental index handoff unavailable", { error: String(error) });
+			return false;
+		}
+	}
+
 	/** Prepare the current journal index for the replacement runtime after the final write. */
-	async writeIndexHandoff(): Promise<boolean> {
+	writeIndexHandoff(): Promise<boolean> {
+		return (this.#indexHandoffWrite ??= this.#writeIndexHandoff().finally(() => {
+			this.#indexHandoffWrite = undefined;
+		}));
+	}
+
+	async #writeIndexHandoff(): Promise<boolean> {
 		await this.flush();
+		if (this.#indexHandoffInvalidated) return false;
 		const sessionFile = this.#sessionFile;
 		if (
 			!(this.#storage instanceof FileSessionStorage) ||
@@ -3395,6 +3449,15 @@ export class SessionManager {
 		const before = fs.statSync(sessionFile, { bigint: true });
 		if (Number(before.size) !== this.#expectedDiskSize) return false;
 		const stamp = journalStamp(before);
+		const base = this.#indexHandoffBase;
+		if (base?.file === sessionFile) {
+			if (base.currentStamp !== stamp) {
+				this.#indexHandoffInvalidated = true;
+				this.#indexHandoffBase = undefined;
+				return false;
+			}
+			return this.#updateIndexHandoff();
+		}
 		const snapshot = this.#index.handoff(
 			this.#header,
 			this.#hasTitleSlot
@@ -3413,6 +3476,8 @@ export class SessionManager {
 			await Bun.write(temporary, JSON.stringify(snapshot));
 			if (journalStamp(fs.statSync(sessionFile, { bigint: true })) !== stamp) return false;
 			await fs.promises.rename(temporary, target);
+			fs.writeFileSync(`${sessionFile}.index-handoff-tail`, "", { mode: 0o600 });
+			this.#indexHandoffBase = { stamp, count: snapshot.ordered.length, file: sessionFile, currentStamp: stamp };
 			return true;
 		} finally {
 			await fs.promises.rm(temporary, { force: true });
@@ -5192,6 +5257,23 @@ export class SessionManager {
 			handoffFd = fs.openSync(filePath, "r");
 			const before = fs.fstatSync(handoffFd, { bigint: true });
 			const snapshot = (await Bun.file(`${filePath}.index-handoff`).json()) as SessionIndexHandoff;
+			if (snapshot.stamp !== journalStamp(before)) {
+				const baseStamp = snapshot.stamp;
+				const tails = Bun.JSONL.parse(await Bun.file(`${filePath}.index-handoff-tail`).text()) as Array<{
+					baseStamp: string;
+					snapshot: SessionIndexHandoff;
+				}>;
+				for (const tail of tails) {
+					if (tail.baseStamp !== baseStamp || tail.snapshot.version !== 1)
+						throw new Error("Invalid incremental index base");
+					for (const row of tail.snapshot.ordered) snapshot.ordered.push(row);
+					snapshot.stamp = tail.snapshot.stamp;
+					snapshot.leaf = tail.snapshot.leaf;
+					snapshot.labels = tail.snapshot.labels;
+					snapshot.usage = tail.snapshot.usage;
+					snapshot.titleSlot = tail.snapshot.titleSlot;
+				}
+			}
 			if (
 				snapshot.version === 1 &&
 				snapshot.stamp === journalStamp(before) &&
