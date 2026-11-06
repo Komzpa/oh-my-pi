@@ -77,6 +77,14 @@ for (const id of Object.keys(contracts)) {
 		} else {
 			expect(notice).toContain("Which endpoint?");
 		}
+		if (id === "eta-reached") {
+			for (const text of scenario.notices) expect(text).not.toContain("/kill");
+		}
+		if (contract.wait) {
+			const summary = scenario.notices.find(text => text.includes("TODO status:"));
+			expect(summary).toContain("0 ready without a verified owner");
+			expect(summary).toContain("0 lost owners");
+		}
 		if (id === "audit-fail") expect(notice).toContain("Settings still exposes the wrong return edge");
 		if (contract.tool !== "task") {
 			for (const text of scenario.notices.filter(text => text.startsWith("Staff ")))

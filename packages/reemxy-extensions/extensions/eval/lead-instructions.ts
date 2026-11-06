@@ -63,13 +63,13 @@ const { values } = parseArgs({
 		output: { type: "string", default: "reports/lead-instructions/current.json" },
 		model: { type: "string", default: "codex-lb/gpt-6-luna" },
 		"budget-file": { type: "string", default: "reports/lead-instructions/budget.json" },
-		"max-calls": { type: "string", default: "110" },
-		"max-tokens": { type: "string", default: "4000000" },
+		"max-calls": { type: "string", default: "140" },
+		"max-tokens": { type: "string", default: "5000000" },
 	},
 });
 if (values.help) {
 	console.log(
-		"bun run eval:lead-instructions [--model provider/id] [--contexts scenarios.json] [--output receipt.json] [--budget-file shared-before-after-budget.json] [--max-calls 110] [--max-tokens 4000000]",
+		"bun run eval:lead-instructions [--model provider/id] [--contexts scenarios.json] [--output receipt.json] [--budget-file shared-before-after-budget.json] [--max-calls 140] [--max-tokens 5000000]",
 	);
 	process.exit(0);
 }

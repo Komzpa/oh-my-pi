@@ -30,6 +30,7 @@ REQUIRED STATE CHANGE: the same actionable TODO state has survived repeated idle
 {{#if renamedRow}}Row "{{renamedRow}}" continues "{{predecessor}}" on the same resources. Prior attempts remain recorded on the predecessor; handoff state is retained; dropping and renaming work does not bypass handoff.{{/if}}
 
 {{#if rowInstruction}}Row {{row}} [{{state}}].
+{{#if waitCapacity}}WAIT: all worker slots are busy. Preserve this row and prior output; the runtime wakes you when capacity changes. End this turn without tools if no other row has a NEXT ACTION.{{/if}}
 {{#if waitWorker}}WAIT: nothing to do for this row; its worker is running. Results arrive automatically.{{/if}}
 {{#if waitDependency}}WAIT: nothing to do for this row until {{dependency}} settles; do independent ready work.{{/if}}
 {{#if waitAudit}}WAIT: nothing to do for this row; the runtime launches/restarts the audit, discards verdicts if HEAD moved, and closes passing deliveries. Do not dispatch task or call todo done for this row while verification is pending.{{/if}}
@@ -41,5 +42,5 @@ REQUIRED STATE CHANGE: the same actionable TODO state has survived repeated idle
 {{#if estimateAction}}{{#if capReached}}NEXT ACTION: call write {path:"proc://{{owner}}/kill",content:""}, read the kill receipt, then call todo {op:"schedule",updates:[{task:{{row}},owner:"<new owner>",dependencies:[],estimate:{optimisticSeconds:O,likelySeconds:L,pessimisticSeconds:P,confidence:"medium",basis:"observed remaining work"},evidence:"<receipt and changed strategy>"}]} or split the row with todo op:"append".{{else}}NEXT ACTION: call todo {op:"schedule",updates:[{task:{{row}},estimate:{optimisticSeconds:O,likelySeconds:L,pessimisticSeconds:P,confidence:"medium",basis:"observed remaining work"},evidence:"<why ETA was reached and artifact evidence>"}]}. Preserve the running owner and the user's deadline.{{/if}}{{/if}}
 {{#if reviewAction}}NEXT ACTION: interpret the user's actual answer for this row, then call todo {op:"schedule",updates:[{task:{{row}},review:"accepted|redo|drop",evidence:"<quote the actual answer and decision>"}]}. Select one verdict; never infer acceptance from an unrelated message.{{/if}}
 {{#if askUser}}NEXT ACTION: reply in text naming {{row}} and asking {{question}} with your proposal and its reason. Preserve any required approval; after asking once, wait on this row.{{/if}}
-{{#if waitExternal}}WAIT: external gate {{reason}} still holds. Wait until it clears, then call todo {op:"unblock",task:"<each exact row above>"} for each affected row.{{/if}}
+{{#if waitExternal}}WAIT: external gate {{reason}} still holds. Wait until it clears, then call todo {op:"unblock",task:"<each exact row above>"} for each affected row. Until then, end this turn without tools if no other row has a NEXT ACTION.{{/if}}
 {{/if}}

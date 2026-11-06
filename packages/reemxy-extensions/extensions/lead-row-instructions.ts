@@ -71,7 +71,9 @@ export function renderLeadRowInstructions(
 						data.askUser = !options.userBlockAsked?.has(row.content);
 						data.waitUser = !data.askUser;
 						data.question = userWait.question;
-					} else if (display.reason === "cap full" || display.reason?.startsWith("blocked dependency")) {
+					} else if (display.reason === "cap full") {
+						data.waitCapacity = true;
+					} else if (display.reason?.startsWith("blocked dependency")) {
 						data.waitDependency = true;
 						data.dependency = display.reason;
 					} else {
