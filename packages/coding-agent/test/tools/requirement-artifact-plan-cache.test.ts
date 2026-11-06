@@ -1,9 +1,12 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { SessionManager } from "../../src/session/session-manager";
 import type { SessionEntry } from "../../src/session/session-entries";
 import type { RequirementEntryMetadata } from "../../src/session/requirements-branch-selection";
 import {
+	bindRequirementRowArtifact,
 	getRequirementRowArtifact,
+	getRequirementArtifactTodoPhases,
 	type RequirementRowArtifact,
 	USER_TODO_EDIT_CUSTOM_TYPE,
 } from "../../src/tools/todo";
@@ -107,4 +110,66 @@ it("does not retain stale artifact bindings for a compatibility manager without 
 	expect(
 		(await getRequirementRowArtifact({ cwd: "/missing-session", sessionManager: manager }, "Ship", phases)).cwd,
 	).toBe(cwd);
+});
+
+it("shares TODO snapshots without full branch reads and refreshes after a plan append", () => {
+	let selectedEntries: SessionEntry[] = [];
+	const manager = Object.assign(SessionManager.inMemory("/tmp"), { getCachedBranchMatching: () => selectedEntries });
+	const firstId = manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+		phases: [{ name: "Plan", tasks: [{ content: "Ship", status: "pending" }] }],
+	});
+	selectedEntries = [manager.getEntry(firstId)!];
+	spyOn(manager, "getBranch").mockImplementation(() => {
+		throw new Error("full branch read forbidden");
+	});
+	const selected = spyOn(manager, "getCachedBranchMatching");
+	const clone = spyOn(globalThis, "structuredClone");
+	const first = getRequirementArtifactTodoPhases(manager);
+	expect(first[0]?.tasks[0]?.status).toBe("pending");
+	const firstClones = clone.mock.calls.length;
+	getRequirementArtifactTodoPhases(manager);
+	expect(selected).toHaveBeenCalledTimes(1);
+	expect(clone.mock.calls.length).toBe(firstClones);
+	manager.appendCustomEntry("unrelated", { ignored: true });
+	getRequirementArtifactTodoPhases(manager);
+	expect(clone.mock.calls.length).toBe(firstClones);
+	const nextId = manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+		phases: [{ name: "Plan", tasks: [{ content: "Ship", status: "completed" }] }],
+	});
+	selectedEntries = [...selectedEntries, manager.getEntry(nextId)!];
+	expect(getRequirementArtifactTodoPhases(manager)[0]?.tasks[0]?.status).toBe("completed");
+	expect(first[0]?.tasks[0]?.status).toBe("pending");
+});
+
+it("persists a worker checkout without mutating the shared selected plan or reading the full branch", async () => {
+	let selectedEntries: SessionEntry[] = [];
+	const manager = Object.assign(SessionManager.inMemory("/tmp"), { getCachedBranchMatching: () => selectedEntries });
+	const id = manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+		phases: [{ name: "Plan", tasks: [{ content: "Ship", status: "pending", schedule: { owner: "Worker" } }] }],
+	});
+	selectedEntries = [manager.getEntry(id)!];
+	spyOn(manager, "getBranch").mockImplementation(() => {
+		throw new Error("full branch read forbidden");
+	});
+	const phases = getRequirementArtifactTodoPhases(manager);
+	await bindRequirementRowArtifact(
+		{
+			cwd: "/tmp",
+			sessionManager: manager,
+			executionCheckout: { owner: "Worker", cwd: "/missing-worker-checkout" },
+		},
+		"Ship",
+		phases,
+		{
+			appendEntry(type, data) {
+				const appended = manager.appendCustomEntry(type, data);
+				selectedEntries = [...selectedEntries, manager.getEntry(appended)!];
+			},
+		},
+	);
+	expect(phases[0]?.tasks[0]?.artifactCwd).toBeUndefined();
+	expect(getRequirementArtifactTodoPhases(manager)[0]?.tasks[0]).toMatchObject({
+		artifactCwd: "/missing-worker-checkout",
+		artifactOwner: "Worker",
+	});
 });

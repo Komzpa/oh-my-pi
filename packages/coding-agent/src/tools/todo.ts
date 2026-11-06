@@ -455,6 +455,7 @@ async function resolveTypedRequirementArtifact(
 }
 
 interface RequirementArtifactPlan {
+	phases: readonly TodoPhase[];
 	latest: Map<string, TodoItem[]>;
 	historical: Map<string, TodoItem | null>;
 }
@@ -492,8 +493,9 @@ function requirementArtifactPlan(
 		requirementArtifactPlans.set(manager, { leaf, revision, count, entries, plan: cached.plan });
 		return cached.plan;
 	}
+	const phases = getLatestTodoPhasesFromEntries(entries);
 	const latest = new Map<string, TodoItem[]>();
-	for (const phase of getLatestTodoPhasesFromEntries(entries)) {
+	for (const phase of phases) {
 		for (const task of phase.tasks) {
 			const matches = latest.get(task.content) ?? [];
 			matches.push(task);
@@ -507,9 +509,17 @@ function requirementArtifactPlan(
 			for (const task of phase.tasks) rows.set(task.content, rows.has(task.content) ? null : task);
 		for (const [row, task] of rows) historical.set(row, task ? cloneTask(task) : null);
 	});
-	const plan = { latest, historical };
+	const plan = { phases, latest, historical };
 	if (cacheable) requirementArtifactPlans.set(manager, { leaf, revision, count, entries, plan });
 	return plan;
+}
+
+/** Read the active TODO snapshot through the append-aware artifact-plan selection cache.
+ * Treat returned phases as shared state; persist edits with copied rows instead. */
+export function getRequirementArtifactTodoPhases(
+	manager: NonNullable<RequirementRowArtifactContext["sessionManager"]>,
+): readonly TodoPhase[] {
+	return requirementArtifactPlan(manager).phases;
 }
 
 /** Resolve a row's persisted checkout, then read its current HEAD and dirty state without blocking the CLI. */
@@ -801,7 +811,7 @@ export async function bindRequirementRowArtifact(
 		nodePath.resolve(ctx.executionCheckout.cwd) === nodePath.resolve(artifact.cwd);
 	if ((artifact.reason || (!artifact.head && !artifact.sha256)) && !executionCheckoutIsAuthoritative) return artifact;
 
-	const currentPhases = getLatestTodoPhasesFromEntries(ctx.sessionManager.getBranch());
+	const currentPhases = getRequirementArtifactTodoPhases(ctx.sessionManager);
 	let current: TodoItem | undefined;
 	for (const phase of currentPhases) {
 		for (const task of phase.tasks) {
@@ -821,10 +831,12 @@ export async function bindRequirementRowArtifact(
 	const owner = (current as TodoItem & { schedule?: { owner?: unknown } }).schedule?.owner;
 	const artifactOwner = typeof owner === "string" ? owner : "main";
 	if (original.artifactCwd === artifact.cwd && original.artifactOwner === artifactOwner) return artifact;
-	current.artifactCwd = artifact.cwd;
-	current.artifactOwner = artifactOwner;
-	pi.appendEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: currentPhases });
-	ctx.setTodoPhases?.(currentPhases);
+	const boundPhases = currentPhases.map(phase => ({
+		...phase,
+		tasks: phase.tasks.map(task => (task === current ? { ...task, artifactCwd: artifact.cwd, artifactOwner } : task)),
+	}));
+	pi.appendEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: boundPhases });
+	ctx.setTodoPhases?.(boundPhases);
 	return artifact;
 }
 
