@@ -1,15 +1,17 @@
 // @ts-nocheck -- exercises registered hooks with disposable plan state.
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch from "./todo_dispatch";
+import * as reviewPages from "./todo_review_opener";
 import { STATE_ENTRY } from "./deadlines";
 
 const roots = [];
 afterEach(async () => {
+	vi.restoreAllMocks();
 	for (const root of roots.splice(0)) await fs.rm(root, { recursive: true, force: true });
 });
 async function harness({ worker = false, lane = false, autoOpen, preview = false, thresholdMinutes = 15 } = {}) {
@@ -161,7 +163,9 @@ test("wait preview gap is refused once per revision even with live owners", asyn
 
 test("lead default opens a 200 review URL once and opens its replacement", async () => {
 	const h = await harness();
+	vi.spyOn(reviewPages, "pendingReviewVersion").mockResolvedValue("unanswered-card-version");
 	const row = h.phases[0].tasks[0];
+	row.schedule.review = "user";
 	row.schedule.reviewPage = "https://review.example/first";
 	const poll = () => h.hooks.get("tool_call")({ toolName: "read", input: {} }, h.ctx);
 	await poll();
@@ -182,37 +186,81 @@ for (const mode of [{ worker: true }, { lane: true }, { autoOpen: false }]) {
 }
 
 for (const boundary of ["wait", "session_stop"]) {
- test(`${boundary}: 11:04 versus 10:00 refuses; visible triage, crashing and safe overlap repair the fixed deadline`, async () => {
-  for (const remedy of ["triage", "crash", "overlap"]) {
-   const h = await harness();
-   const now = Date.now();
-   const due = Math.floor((now + 13 * 60_000) / 1000) * 1000;
-   const start = due - 13 * 60_000;
-   const row = (content, minutes, owner, dependencies = []) => ({ content, status: "pending", schedule: { owner, dependencies, resources: [], estimate: { optimisticSeconds: minutes * 60, likelySeconds: minutes * 60, pessimisticSeconds: minutes * 60, confidence: "high", basis: "Live 09:47 / 10:00 / 11:04 plan", updatedAt: start } } });
-   h.phases[0].tasks = [row("Fix Adaptive 60 MW callout leaders", 8, "worker"), row("PDU B callout", 69, "worker", [])];
-   // The canonical user constraint, not a todo operation, owns the due time.
-   h.ctx.sessionManager.getBranch().push({ type: "custom", customType: STATE_ENTRY, data: { version: 1, goalId: "dc", goalStartedAt: start / 1000, timezone: "Asia/Tbilisi", active: true, baselineDeadlineAt: due / 1000, stages: [], userConstraint: { messageId: "user-due", quote: "by 10:00", recordedAt: start / 1000 } } });
-   const run = () => boundary === "wait" ? h.hooks.get("tool_call")({ toolName: "wait", input: {} }, h.ctx) : h.hooks.get("session_stop")({}, h.ctx);
-   expect((await run())?.reason).toContain("64m");
-   expect((await run())?.reason).toContain("still required");
-   if (remedy === "triage") h.phases[0].tasks[1].schedule.postDeadline = true;
-   else if (remedy === "crash") {
-    // Nine independently staffed regions retain all 69 minutes of callout work.
-    h.phases[0].tasks.splice(1, 1, ...Array.from({ length: 9 }, (_, i) => row(`PDU B region ${i}`, 69 / 9, `worker-${i}`)));
-   } else {
-    // Evidence-based decomposition leaves two eight-minute dependent deliverables.
-    h.phases[0].tasks[1].schedule.estimate = row("", 8, "").schedule.estimate;
-    h.phases[0].tasks[1].schedule.owner = "second-worker";
-    h.phases[0].tasks[1].schedule.dependencies = ["Fix Adaptive 60 MW callout leaders"];
-    expect(schedule.forecastTodoPlan(h.phases, { now, deadlineAt: due }).deadlineStatus).toBe("will-miss");
-    h.phases[0].tasks[1].schedule.dependencies = [];
-    h.phases[0].tasks[1].schedule.progress = { at: now, evidence: "Independent callout inputs measured; overlap is safe" };
-   }
-   const repaired = await run();
-   expect(repaired?.reason ?? "").not.toContain("WAIT/STOP REFUSED");
-   expect(schedule.forecastTodoPlan(h.phases, { now, deadlineAt: due }).deadlineStatus).toBe("on-track");
-  }
- });
+	test(`${boundary}: 11:04 versus 10:00 refuses; visible triage, crashing and safe overlap repair the fixed deadline`, async () => {
+		for (const remedy of ["triage", "crash", "overlap"]) {
+			const h = await harness();
+			const now = Date.now();
+			const due = Math.floor((now + 13 * 60_000) / 1000) * 1000;
+			const start = due - 13 * 60_000;
+			const row = (content, minutes, owner, dependencies = []) => ({
+				content,
+				status: "pending",
+				schedule: {
+					owner,
+					dependencies,
+					resources: [],
+					estimate: {
+						optimisticSeconds: minutes * 60,
+						likelySeconds: minutes * 60,
+						pessimisticSeconds: minutes * 60,
+						confidence: "high",
+						basis: "Live 09:47 / 10:00 / 11:04 plan",
+						updatedAt: start,
+					},
+				},
+			});
+			h.phases[0].tasks = [
+				row("Fix Adaptive 60 MW callout leaders", 8, "worker"),
+				row("PDU B callout", 69, "worker", []),
+			];
+			// The canonical user constraint, not a todo operation, owns the due time.
+			h.ctx.sessionManager
+				.getBranch()
+				.push({
+					type: "custom",
+					customType: STATE_ENTRY,
+					data: {
+						version: 1,
+						goalId: "dc",
+						goalStartedAt: start / 1000,
+						timezone: "Asia/Tbilisi",
+						active: true,
+						baselineDeadlineAt: due / 1000,
+						stages: [],
+						userConstraint: { messageId: "user-due", quote: "by 10:00", recordedAt: start / 1000 },
+					},
+				});
+			const run = () =>
+				boundary === "wait"
+					? h.hooks.get("tool_call")({ toolName: "wait", input: {} }, h.ctx)
+					: h.hooks.get("session_stop")({}, h.ctx);
+			expect((await run())?.reason).toContain("64m");
+			expect((await run())?.reason).toContain("still required");
+			if (remedy === "triage") h.phases[0].tasks[1].schedule.postDeadline = true;
+			else if (remedy === "crash") {
+				// Nine independently staffed regions retain all 69 minutes of callout work.
+				h.phases[0].tasks.splice(
+					1,
+					1,
+					...Array.from({ length: 9 }, (_, i) => row(`PDU B region ${i}`, 69 / 9, `worker-${i}`)),
+				);
+			} else {
+				// Evidence-based decomposition leaves two eight-minute dependent deliverables.
+				h.phases[0].tasks[1].schedule.estimate = row("", 8, "").schedule.estimate;
+				h.phases[0].tasks[1].schedule.owner = "second-worker";
+				h.phases[0].tasks[1].schedule.dependencies = ["Fix Adaptive 60 MW callout leaders"];
+				expect(schedule.forecastTodoPlan(h.phases, { now, deadlineAt: due }).deadlineStatus).toBe("will-miss");
+				h.phases[0].tasks[1].schedule.dependencies = [];
+				h.phases[0].tasks[1].schedule.progress = {
+					at: now,
+					evidence: "Independent callout inputs measured; overlap is safe",
+				};
+			}
+			const repaired = await run();
+			expect(repaired?.reason ?? "").not.toContain("WAIT/STOP REFUSED");
+			expect(schedule.forecastTodoPlan(h.phases, { now, deadlineAt: due }).deadlineStatus).toBe("on-track");
+		}
+	});
 }
 
 test("P95-only deadline risk permits wait", async () => {

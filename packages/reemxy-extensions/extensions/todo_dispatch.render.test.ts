@@ -9,21 +9,54 @@ import { slipReestimateRefusal } from "./todo_dispatch";
 test("the collapsed Todo error card keeps the recovery action and row visible", async () => {
 	const now = Date.now();
 	const title = "Publish amber panel";
-	const phases = [{ name: "Delivery", tasks: [{ content: title, status: "in_progress" as const, schedule: {
-		owner: "PanelOwner", dependencies: [], reestimateCount: 2,
-		estimate: { optimisticSeconds: 30, likelySeconds: 60, pessimisticSeconds: 90, confidence: "medium" as const, basis: "known remaining panel", updatedAt: now },
-	} }] }];
-	const reason = slipReestimateRefusal({ updates: [{ task: title, estimate: { likelySeconds: 120, updatedAt: now + 1 } }], rows: forecastTodoPlan(phases, { now }).rows, runningProfiles: new Map([["PanelOwner", "coder"]]), now });
+	const phases = [
+		{
+			name: "Delivery",
+			tasks: [
+				{
+					content: title,
+					status: "in_progress" as const,
+					schedule: {
+						owner: "PanelOwner",
+						dependencies: [],
+						reestimateCount: 2,
+						estimate: {
+							optimisticSeconds: 30,
+							likelySeconds: 60,
+							pessimisticSeconds: 90,
+							confidence: "medium" as const,
+							basis: "known remaining panel",
+							updatedAt: now,
+						},
+					},
+				},
+			],
+		},
+	];
+	const reason = slipReestimateRefusal({
+		updates: [{ task: title, estimate: { likelySeconds: 120, updatedAt: now + 1 } }],
+		rows: forecastTodoPlan(phases, { now }).rows,
+		runningProfiles: new Map([["PanelOwner", "coder"]]),
+		now,
+	});
 	expect(reason).toBeDefined();
 	const action = reason!.split("\n")[0]!;
 	expect(action.length).toBeLessThanOrEqual(100);
 	expect(action).toContain(title);
-	expect(action).toContain("Kill PanelOwner");
+	expect(action).toContain("Split remainder");
+	expect(reason).not.toContain("/kill");
 	const loaded = await getThemeByName("dark");
 	if (!loaded) throw new Error("dark theme unavailable");
 	setThemeInstance(loaded);
 	const ui: ToolExecutionUi = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} };
-	const component = new ToolExecutionComponent("todo", { op: "schedule" }, { showImages: false }, undefined, ui, process.cwd());
+	const component = new ToolExecutionComponent(
+		"todo",
+		{ op: "schedule" },
+		{ showImages: false },
+		undefined,
+		ui,
+		process.cwd(),
+	);
 	component.updateResult({ content: [{ type: "text", text: reason! }], isError: true }, false);
 	const lines = component.render(120).map(stripVTControlCharacters);
 	expect(lines.some(line => line.includes(action))).toBe(true);
@@ -53,4 +86,44 @@ test("accepted open rows render as closing without overdue error colour", async 
 		expect(text).not.toContain("overdue");
 		expect(colours.filter(call => call.colour === "error" && (call.text.includes("Accepted panel") || call.text.includes("closing")))).toEqual([]);
 	} finally { spy.mockRestore(); }
+});
+
+test("a two-minute successor can replan despite a legacy inherited cap", () => {
+	const now = Date.now();
+	const rows = forecastTodoPlan(
+		[
+			{
+				name: "Work",
+				tasks: [
+					{
+						content: "Adaptive levels",
+						status: "in_progress",
+						schedule: {
+							owner: "Adaptive-7",
+							reestimateCount: 4,
+							dependencies: [],
+							estimate: {
+								optimisticSeconds: 30,
+								likelySeconds: 60,
+								pessimisticSeconds: 90,
+								confidence: "medium",
+								basis: "old attempt",
+								updatedAt: now - 3600000,
+							},
+						},
+					},
+				],
+			},
+		],
+		{ now },
+	).rows;
+	expect(
+		slipReestimateRefusal({
+			updates: [{ task: "Adaptive levels", estimate: { likelySeconds: 120 } }],
+			rows,
+			runningProfiles: new Map([["Adaptive-7", "ui-coder"]]),
+			runningStartedAt: new Map([["Adaptive-7", now - 120000]]),
+			now,
+		}),
+	).toBeUndefined();
 });

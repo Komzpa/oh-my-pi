@@ -148,11 +148,45 @@ test("missed ETA notice names every late row, owner, and overrun", () => {
 });
 
 function reviewPlan() {
-  return [{ name: "Work", tasks: [
-    { content: "Delivered UI", status: "blocked" as const, blocker: "waits for user: accept, redo, or drop", schedule: { owner: "Coder", review: "user" as const, firstDeliveredAt: now, reviewSummary: "UI delivered", dependencies: [], executor: { workerId: "Coder", startedAt: now } } },
-    { content: "Verify UI", status: "pending" as const, schedule: { owner: "Verifier", dependencies: ["Delivered UI"] } },
-    { content: "Independent docs", status: "pending" as const, schedule: { owner: "Docs", dependencies: [] } },
-  ] }];
+	return [
+		{
+			name: "Work",
+			tasks: [
+				{
+					content: "Delivered UI",
+					status: "blocked" as const,
+					blocker: "waits for user: accept, redo, or drop",
+					schedule: {
+						owner: "Coder",
+						review: "user" as const,
+						firstDeliveredAt: now,
+						reviewSummary: "UI delivered",
+						dependencies: [],
+						executor: {
+							workerId: "Coder",
+							startedAt: now,
+							finishedAt: now + 1,
+							outcome: "completed",
+							gitCommits: ["abcdef123456"],
+						},
+						audit: {
+							agent: "qa-auditor",
+							verdict: "pass",
+							delivery: JSON.stringify(["Coder", now, now + 1]),
+							startedAt: now,
+							at: now + 2,
+						},
+					},
+				},
+				{
+					content: "Verify UI",
+					status: "pending" as const,
+					schedule: { owner: "Verifier", dependencies: ["Delivered UI"] },
+				},
+				{ content: "Independent docs", status: "pending" as const, schedule: { owner: "Docs", dependencies: [] } },
+			],
+		},
+	];
 }
 
 test("proof work proceeds only when marked speculative; independent work stays unblocked", () => {
@@ -340,29 +374,42 @@ test("negated review words do not authorize publication or abandon dependent wor
 });
 
 test("handed-off attempt can continue speculatively while the customer is absent", async () => {
-  const phases = reviewPlan();
-  phases[0].tasks[0].schedule.attemptHistory = [{ attemptId: "1", terminalStatus: "completed" }];
-  const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
-  const call = { tasks: [{ agent: "Coder", task: "Delivered UI" }] };
-  const result = await harness.handlers.get("tool_call")({ toolName: "task", input: call }, harness.ctx);
-  expect(result?.block).not.toBe(true);
-  expect(call.tasks[0].task).toContain("SPECULATIVE");
-  expect(harness.phases()[0].tasks[0].schedule.speculativeOn).toBe("Delivered UI");
+	const phases = reviewPlan();
+	phases[0].tasks[0].schedule.attemptHistory = [{ attemptId: "1", terminalStatus: "completed" }];
+	const harness = await reviewHookHarness(phases, {
+		running: [
+			{ id: "Docs", agentId: "Docs", type: "task", status: "running", label: "Independent docs", startTime: now },
+		],
+		recent: [],
+		nonJobAgents: [],
+	});
+	const call = { tasks: [{ agent: "Coder", task: "Delivered UI" }] };
+	const result = await harness.handlers.get("tool_call")({ toolName: "task", input: call }, harness.ctx);
+	expect(result?.block).not.toBe(true);
+	expect(call.tasks[0].task).toContain("SPECULATIVE");
+	expect(harness.phases()[0].tasks[0].schedule.speculativeOn).toBe("Delivered UI");
 });
 
-async function recordReview(harness, verdict, evidence = "Customer decision recorded from the conversation", task = "Delivered UI") {
-  const session = {
-    cwd: process.cwd(), hasUI: false, getSessionFile: () => null,
-    settings: Settings.isolated({}),
-    getTodoPhases: () => harness.phases(),
-    setTodoPhases: (phases) => harness.ctx.setTodoPhases(phases),
-    persistTodoPhases: () => undefined,
-  };
-  const input = { op: "schedule", updates: [{ task, review: verdict, evidence }] };
-  const result = await new TodoTool(session as never).execute("record-review", input);
-  expect(result.isError).not.toBe(true);
-  const hook = await harness.handlers.get("tool_result")({ toolName: "todo", input, ...result }, harness.ctx);
-  return { result, hook };
+async function recordReview(
+	harness,
+	verdict,
+	evidence = "Customer decision recorded from the conversation",
+	task = "Delivered UI",
+) {
+	const session = {
+		cwd: process.cwd(),
+		hasUI: false,
+		getSessionFile: () => null,
+		settings: Settings.isolated({}),
+		getTodoPhases: () => harness.phases(),
+		setTodoPhases: phases => harness.ctx.setTodoPhases(phases),
+		persistTodoPhases: () => undefined,
+	};
+	const input = { op: "schedule", updates: [{ task, review: verdict, evidence }] };
+	const result = await new TodoTool(session as never).execute("record-review", input);
+	expect(result.isError).not.toBe(true);
+	const hook = await harness.handlers.get("tool_result")({ toolName: "todo", input, ...result }, harness.ctx);
+	return { result, hook };
 }
 
 
@@ -471,13 +518,18 @@ test("a delivered review:user row is closed for the HUD blocked count, dispatch 
 });
 
 test("the delivery notice is information, not a question, and the plan-check no longer demands a verdict", async () => {
-  const phases = reviewPlan();
-  const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
-  await harness.handlers.get("turn_end")({ toolResults: [] }, harness.ctx);
-  const handoff = harness.sent.find((message) => String(message.content).startsWith("Handoff required:"));
-  expect(String(handoff.content)).not.toContain("Accept, redo, or drop?");
-  const result = await harness.handlers.get("tool_result")({ toolName: "todo", toolCallId: "x", isError: false, details: { op: "schedule" }, content: [] }, harness.ctx);
-  expect(JSON.stringify(result ?? "")).not.toContain("ask accept / redo / drop");
+	const phases = reviewPlan();
+	delete phases[0].tasks[0].blocker;
+	const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
+	await harness.handlers.get("turn_end")({ toolResults: [] }, harness.ctx);
+	const handoff = harness.sent.find(message => String(message.content).startsWith("Handoff required:"));
+	expect(handoff).toBeUndefined();
+	expect(harness.sent.filter(message => String(message.content).includes("Ask the user now: Delivered UI"))).toEqual([]);
+	const result = await harness.handlers.get("tool_result")(
+		{ toolName: "todo", toolCallId: "x", isError: false, details: { op: "schedule" }, content: [] },
+		harness.ctx,
+	);
+	expect(JSON.stringify(result ?? "")).not.toContain("ask accept / redo / drop");
 });
 
 
@@ -632,27 +684,49 @@ test("customer verdicts pass admission on a user-review wait while ordinary wait
 // Captured DC calls 73631–73694, 2026-11-05T05:25–05:26Z, against c532dce8c.
 
 test("DC audit dispatch survives all five refused calls and the intervening remedies", async () => {
-  for (const capture of speculativeReplay) {
-    const harness = await reviewHookHarness(capture.phases, { running: [], recent: [], nonJobAgents: [] });
-    const result = await harness.handlers.get("tool_call")({ toolName: "task", input: structuredClone(capture.input) }, harness.ctx);
-    expect(result?.block).not.toBe(true);
-    for (const item of capture.input.tasks) expect(missingSpeculativeReview(item, capture.phases)).toBeUndefined();
-  }
+	for (const capture of speculativeReplay) {
+		const targets = new Set(capture.input.tasks.map(item => item.row ?? item.task));
+		const running = capture.phases
+			.flatMap(phase => phase.tasks)
+			.filter(row => row.schedule?.owner && !targets.has(row.content))
+			.map(row => ({
+				id: row.schedule.owner,
+				agentId: row.schedule.owner,
+				type: "task",
+				status: "running",
+				label: row.content,
+				startTime: now,
+			}));
+		const harness = await reviewHookHarness(capture.phases, { running, recent: [], nonJobAgents: [] });
+		const result = await harness.handlers.get("tool_call")(
+			{ toolName: "task", input: structuredClone(capture.input) },
+			harness.ctx,
+		);
+		expect(result?.block).not.toBe(true);
+		for (const item of capture.input.tasks) expect(missingSpeculativeReview(item, capture.phases)).toBeUndefined();
+	}
 });
 
 test("coder marks each bound row speculative automatically", async () => {
-  const phases = reviewPlan();
-  const call = { name: "Verifier", agent: "coder", task: "Delivered UI and Verify UI" };
-  expect(missingSpeculativeReview(call, phases)).toBe("Delivered UI");
-  const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
-  const dispatch = () => harness.handlers.get("tool_call")({ toolName: "task", input: { tasks: [structuredClone(call)] } }, harness.ctx);
-  expect((await dispatch())?.block).not.toBe(true);
-  expect(harness.phases()[0].tasks[1].schedule.speculativeOn).toBe("Delivered UI");
-  expect((await dispatch())?.block).not.toBe(true);
-  expect(missingSpeculativeReview({ task: "Verify UI" }, harness.phases())).toBeUndefined();
-  delete harness.phases()[0].tasks[1].schedule.speculativeOn;
-  harness.phases()[0].tasks[0].status = "completed";
-  expect(missingSpeculativeReview(call, harness.phases())).toBeUndefined();
+	const phases = reviewPlan();
+	const call = { name: "Verifier", agent: "coder", task: "Delivered UI and Verify UI" };
+	expect(missingSpeculativeReview(call, phases)).toBe("Delivered UI");
+	const harness = await reviewHookHarness(phases, {
+		running: [
+			{ id: "Docs", agentId: "Docs", type: "task", status: "running", label: "Independent docs", startTime: now },
+		],
+		recent: [],
+		nonJobAgents: [],
+	});
+	const dispatch = () =>
+		harness.handlers.get("tool_call")({ toolName: "task", input: { tasks: [structuredClone(call)] } }, harness.ctx);
+	expect((await dispatch())?.block).not.toBe(true);
+	expect(harness.phases()[0].tasks[1].schedule.speculativeOn).toBe("Delivered UI");
+	expect((await dispatch())?.block).not.toBe(true);
+	expect(missingSpeculativeReview({ task: "Verify UI" }, harness.phases())).toBeUndefined();
+	delete harness.phases()[0].tasks[1].schedule.speculativeOn;
+	harness.phases()[0].tasks[0].status = "completed";
+	expect(missingSpeculativeReview(call, harness.phases())).toBeUndefined();
 });
 
 test("structured row binding ignores other titles in a multi-row brief", () => {

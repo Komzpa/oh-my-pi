@@ -2879,15 +2879,35 @@ test("an overdue row's evidence-backed reestimate still meets the measured previ
   expect(bare?.reason).toContain("previous attempt took 30m");
 });
 
-test("R2 (case B): the sixth reestimate under the same owner is refused, overdue or not", async () => {
-  const fresh = Date.now() - 60_000;
-  const jobs = slipJobs("FixR8LastFails", "coder", fresh);
-  const refused = await slipCall([slipRow("Report r8 REQ-7 and REQ-11 fails fixed", "FixR8LastFails", 5, fresh)], jobs, reestimateCall("Report r8 REQ-7 and REQ-11 fails fixed"));
-  expect(refused?.block).toBe(true);
-  expect(refused?.reason).toContain("reestimates");
-  expect(refused?.reason).toContain("Exactly: write proc://FixR8LastFails/kill");
-  // Negative control: the second same-owner reestimate still passes.
-  expect(await slipCall([slipRow("Report r8 REQ-7 and REQ-11 fails fixed", "FixR8LastFails", 1, fresh)], jobs, reestimateCall("Report r8 REQ-7 and REQ-11 fails fixed"))).toBeUndefined();
+test("R2 (case B): an established capped owner gets a split action, never a kill", async () => {
+	const fresh = Date.now() - 20 * 60_000;
+	const jobs = slipJobs("FixR8LastFails", "coder", fresh);
+	const refused = await slipCall(
+		[slipRow("Report r8 REQ-7 and REQ-11 fails fixed", "FixR8LastFails", 5, fresh)],
+		jobs,
+		reestimateCall("Report r8 REQ-7 and REQ-11 fails fixed"),
+	);
+	expect(refused?.block).toBe(true);
+	expect(refused?.reason).toContain("reestimates");
+	expect(refused?.reason).toContain("Split remainder");
+	expect(refused?.reason).not.toContain("/kill");
+	// Negative control: a fresh successor can replan inherited counts.
+	jobs.running[0].startTime = Date.now() - 120000;
+	expect(
+		await slipCall(
+			[slipRow("Report r8 REQ-7 and REQ-11 fails fixed", "FixR8LastFails", 5, fresh)],
+			jobs,
+			reestimateCall("Report r8 REQ-7 and REQ-11 fails fixed"),
+		),
+	).toBeUndefined();
+	// The second same-owner reestimate still passes.
+	expect(
+		await slipCall(
+			[slipRow("Report r8 REQ-7 and REQ-11 fails fixed", "FixR8LastFails", 1, fresh)],
+			jobs,
+			reestimateCall("Report r8 REQ-7 and REQ-11 fails fixed"),
+		),
+	).toBeUndefined();
 });
 
 test("owner recovery: five reestimates under A do not exhaust the next schedule under B", async () => {
@@ -2925,7 +2945,7 @@ test("owner recovery negative control: the same owner at three reestimates stays
   const content = "Settle facility plaques together with camera stop";
   const refused = await slipCall(
     [slipRow(content, "SettleAdmissionFirstDivergence", 3, now - 60_000)],
-    slipJobs("SettleAdmissionFirstDivergence", "coder", now),
+    slipJobs("SettleAdmissionFirstDivergence", "coder", now - 20 * 60_000),
     reestimateCall(content, { owner: "SettleAdmissionFirstDivergence", evidence: "A failure reason does not bypass exhaustion." }),
   );
   expect(refused?.block).toBe(true);

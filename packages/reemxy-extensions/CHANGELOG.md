@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep fresh and progressing workers alive at estimate caps, and guide sequential collateral staffing within role authority ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Stop delivered rows cycling through read-only reviews; return missing verification proof to an execution worker after one audit retry ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Change running workers’ write scope with TODO resources updates, without restarting them ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

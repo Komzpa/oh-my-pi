@@ -927,3 +927,21 @@ describe("audit and handoff display precedence", () => {
 		expect(classify(row).state).toBe("handoff pending");
 	});
 });
+
+it("collateral ownership error supplies a schedule update that the validator accepts", () => {
+	const first = task('Maksi "levels"', 60, { owner: "FitCameraAfterLevels" });
+	const second = task('Collateral for "Maksi levels"', 90, { owner: "FitCameraAfterLevels" });
+	const issue = forecastTodoPlan(phases(first, second), { now: NOW }).planningIssues.find(
+		issue => issue.code === "owner-overlap",
+	)!;
+	const update = JSON.parse(issue.message.split("Exactly: todo ")[1]!);
+	expect(update.op).toBe("schedule");
+	expect(update.updates[0].task).toBe(second.content);
+	second.schedule!.dependencies = update.updates[0].dependencies;
+	expect(
+		forecastTodoPlan(phases(first, second), { now: NOW }).planningIssues.filter(
+			issue => issue.code === "owner-overlap",
+		),
+	).toEqual([]);
+	expect(second.schedule!.dependencies).toEqual([first.content]);
+});

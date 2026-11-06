@@ -266,9 +266,11 @@ test("5. when the user writes while away, one notice lists the waiting rows with
 		expect(first).toContain("THE USER IS BACK");
 		expect(first).toContain(`${JSON.stringify(APPROVE)}: approve the 3m budget — your proposal: approve 3m`);
 		expect(first).toContain(`proceeded on it: ${JSON.stringify(DEPLOY)}`);
-		expect(first).toContain(`${JSON.stringify(COPY)}: the Copy JSON from the dashboard only the user can open — no proposal recorded`);
+		expect(first).toContain(
+			`${JSON.stringify(COPY)}: the Copy JSON from the dashboard only the user can open — no proposal recorded`,
+		);
 		expect(first).toContain("todo unblock");
-		expect(first.split("\nROLE:")[0]).not.toContain(JSON.stringify(RESTART));
+		expect(first.split("\nTODO status:")[0]).not.toContain(JSON.stringify(RESTART));
 		// Same turn: still the one notice, not a second one.
 		expect(await s.context()).not.toContain("THE USER IS BACK");
 		await s.handlers.get("agent_end")!({}, s.ctx);

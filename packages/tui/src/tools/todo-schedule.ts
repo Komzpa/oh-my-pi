@@ -819,7 +819,7 @@ function collectTodoPlanningIssues(phases: TodoScheduleInput, analysis: Dependen
 			issues.push({
 				task: other.content,
 				code: "owner-overlap",
-				message: `Worker ${owner} owns two open rows without a sequential dependency: ${node.content}; ${other.content}. Schedule the second after the first or assign another worker.`,
+				message: `Worker ${owner} owns two open rows without a sequential dependency: ${node.content}; ${other.content}. Exactly: todo ${JSON.stringify({ op: "schedule", updates: [{ task: other.content, dependencies: [...new Set([...(other.schedule?.dependencies ?? []), node.content])] }] })}`,
 			});
 		}
 	}
