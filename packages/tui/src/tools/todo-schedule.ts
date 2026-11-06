@@ -2239,7 +2239,20 @@ export function renderTodoPlanDisplay(
 	const states = new Map(open.map(task => [task, classifyTodoDisplayRow(task, phases, context)]));
 	const count = (state: TodoDisplayState): number => [...states.values()].filter(row => row.state === state).length;
 	const archived = options.archived ?? 0;
-	const eta = formatTodoDisplayEta(options.forecast?.resourceFinish ?? options.forecast?.knownWorkFinish, now);
+	// Plan-wide forecast first (2026-11-06 "where is global ETA?"): the risk model's P80 finish for ALL open rows,
+	// on-time probability and the deadline; the last running row's ETA alone hid unstarted work.
+	const forecast = options.forecast;
+	const eta = forecast?.risk
+		? [
+				`P80 ${displayTimestamp(forecast.risk.p80Finish, now)}`,
+				forecast.risk.onTimeProbability === undefined
+					? ""
+					: `P(on time) ${Math.round(forecast.risk.onTimeProbability * 100)}%`,
+				forecast.deadlineAt === undefined ? "" : `due ${displayTimestamp(forecast.deadlineAt, now)}`,
+			]
+				.filter(Boolean)
+				.join(" · ")
+		: formatTodoDisplayEta(forecast?.resourceFinish ?? forecast?.knownWorkFinish, now);
 	const header = `${open.length} open — ${count("working")} working · ${count("waiting")} waiting · ${count("auditing")} auditing · ${count("verifying")} verifying · ${count("audit queued")} audit queued · ${count("ready to close")} ready to close · ${count("handoff pending")} handoff pending · ${count("needs you")} need you · ${count("needs worker")} need worker · ${count("stuck")} stuck · ${tasks.length - open.length + archived} closed (${archived} archived)${eta ? ` · ${eta}` : ""}`;
 	const lines = [header];
 	const owners: (string | undefined)[] = [undefined];
