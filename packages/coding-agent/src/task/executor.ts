@@ -148,6 +148,7 @@ import { yieldSectionShapes } from "./yield-assembly";
 import { assertPerCallModelApproved, PerCallModelError, type PerCallModelGrants } from "./model-approval";
 import { assembleYieldResult } from "@oh-my-pi/pi-tui/tools/task-yield-assembly";
 import {
+	cfgTaskAgentsMd,
 	cfgTaskPrewalk,
 	cfgTaskAgentPrewalk,
 	cfgTaskMaxEffort,
@@ -4806,6 +4807,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				effortLevel ?? (explicitThinkingLevel ? explicitLevel : (thinkingLevel ?? resolvedThinkingLevel));
 			resolvedAt = performance.now();
 			const effectiveCwd = worktree ?? cwd;
+			const projectAgentsMd = (agent.agentsMd ?? cfgTaskAgentsMd.get(settings)) === "project";
 			const fork = preparedSession?.fork;
 			if (fork && !subtaskSessionFile) {
 				throw new Error("The prepared session fork requires a persisted child session file.");
@@ -4948,10 +4950,11 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					outputSchemaMode: options.outputSchemaMode,
 					restrictToolNames,
 					requireYieldTool: structured,
-					contextFiles: options.contextFiles,
+					contextFiles: projectAgentsMd ? undefined : options.contextFiles,
 					noContextFiles: options.noContextFiles,
-					// Subagents never receive AGENTS.md, including from additional workspace roots they rediscover.
-					excludeAgentsMd: true,
+					// Apply the same policy to pinned files, rediscovery and additional roots.
+					excludeAgentsMd: !projectAgentsMd,
+					projectAgentsMd,
 					skills: options.skills,
 					promptTemplates: options.promptTemplates,
 					workspaceTree: options.workspaceTree,
