@@ -32,6 +32,8 @@ async function benchmark(): Promise<void> {
 		throw new Error("Run through restart-end-to-end.py: HOME and TMPDIR must be isolated before imports");
 	setAgentDir(path.join(root, "agent"));
 	vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("offline restart benchmark"));
+	vi.spyOn(AgentSession.prototype, "prewarmModelConnection").mockImplementation(() => {});
+	if (process.env.OMP_RESTART_BENCH_PROFILE) logger.startTiming();
 	logger.setTransports({ file: path.join(root, "runtime.log"), console: false });
 	const events = path.join(root, "e2e.jsonl");
 	function mark(event: string, id?: string): void {
@@ -71,7 +73,7 @@ async function benchmark(): Promise<void> {
 				},
 			}),
 			sessionManager: manager,
-			settings: Settings.isolated(),
+			settings: Settings.isolated({ "spelling.autocomplete": "off" }),
 			modelRegistry: models,
 		});
 	}
@@ -147,6 +149,7 @@ async function benchmark(): Promise<void> {
 	mark("init_started");
 	await mode.init();
 	mark("init_complete");
+	if (process.env.OMP_RESTART_BENCH_PROFILE) logger.printTimings();
 	if (!receive) await Bun.sleep(150);
 	if (!receive) {
 		// Prepare before the request; compare both versions with the same warm-runtime setup.
