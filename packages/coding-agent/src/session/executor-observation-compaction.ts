@@ -69,12 +69,12 @@ export class ExecutorObservationCompactor {
 
 	constructor(
 		readonly references: ReadonlySet<string>,
-		readonly emit?: (entry: FileEntry) => void,
+		readonly emit?: (entry: FileEntry, compacted: boolean) => void,
 	) {}
 
-	#retain(entry: FileEntry): void {
+	#retain(entry: FileEntry, compacted = false): void {
 		this.#last = entry;
-		if (this.emit) this.emit(entry);
+		if (this.emit) this.emit(entry, compacted);
 		else this.entries.push(entry);
 	}
 
@@ -154,7 +154,7 @@ export class ExecutorObservationCompactor {
 				this.#parent = binding.id;
 			}
 			this.#pending.parentId = this.#parent;
-			this.#retain(this.#pending);
+			this.#retain(this.#pending, true);
 			this.#pending = undefined;
 		}
 		this.#key = undefined;
