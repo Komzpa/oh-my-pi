@@ -111,6 +111,8 @@ export interface AgentSessionHandle {
 	readonly messages: AgentMessage[];
 	/** Current TODO rows, read from the home thread on each call. */
 	getTodoPhases(): TodoPhase[];
+	/** Stable immutable local plan view, when supported by this handle. */
+	getTodoSnapshot?(): readonly TodoPhase[];
 	/** Current transcript path, or undefined when sessions are disabled. */
 	readonly sessionFile: string | undefined;
 	/** Current model, when selected. */
