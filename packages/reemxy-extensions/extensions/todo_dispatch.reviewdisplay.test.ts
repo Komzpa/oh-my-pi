@@ -20,6 +20,15 @@ test("DC delivered legacy status is closed consistently; a late undelivered neig
 	phases[0].tasks[1].schedule.postDeadline = false;
 	const delivered = phases[0].tasks[0];
 	delivered.schedule.reviewPage = url;
+	delivered.schedule.handoffPending = false;
+	delivered.schedule.audit = {
+		delivery: schedule.todoRowDeliveryKey(delivered.schedule),
+		repoPath: "/repo",
+		head: "h",
+		startedAt: now,
+		agent: "qa-auditor",
+		verdict: "pass",
+	};
 	const forecast = forecastTodoPlan(phases, { now });
 	expect(isClosedTodo(delivered)).toBe(true);
 	expect(forecast.rows[0].status).toBe("completed");

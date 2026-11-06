@@ -60,7 +60,7 @@ test("review and audit pass require a lead action; stale ETA is overdue", () => 
 	).toBe("ready to close");
 	expect(
 		classifyTodoDisplayRow({ ...row, schedule: { review: "user", reviewPagePending: true } }, input, context).state,
-	).toBe("needs you");
+	).toBe("handoff pending");
 	expect(formatTodoDisplayEta(0, 5 * 60000)).toBe("overdue 5m");
 	expect(formatTodoDisplayEta(10 * 60000, 5 * 60000)).toStartWith("ETA ");
 });
@@ -85,7 +85,7 @@ test("a live worker keeps a blocked row neutral and a narrow title leaves the st
 	expect(display.lines[0]).toContain("1 open — 1 working");
 });
 
-test("settled rows are verifying or need a worker; stuck names why nothing can act", () => {
+test("settled rows queue audits or need a worker; stuck names why nothing can act", () => {
 	const executor = { workerId: "Fix-2", startedAt: 1, finishedAt: 2, outcome: "completed" as const };
 	const delivered = {
 		content: "delivered",
@@ -105,7 +105,7 @@ test("settled rows are verifying or need a worker; stuck names why nothing can a
 	const dependent = { content: "dependent", status: "pending" as const, schedule: { dependencies: ["blocked"] } };
 	const input = [{ name: "Work", tasks: [delivered, findings, blocked, dependent] }];
 	const idle = { workers: [], owners: new Map() };
-	expect(classifyTodoDisplayRow(delivered, input, idle).state).toBe("verifying");
+	expect(classifyTodoDisplayRow(delivered, input, idle).state).toBe("audit queued");
 	expect(classifyTodoDisplayRow(findings, input, idle)).toEqual({
 		state: "needs worker",
 		reason: "findings",
@@ -120,7 +120,7 @@ test("settled rows are verifying or need a worker; stuck names why nothing can a
 		reason: "blocked dependency blocked",
 	});
 	const display = renderTodoPlanDisplay(input, idle, { now: 0, width: 120, paint });
-	expect(display.lines[0]).toContain("1 verifying");
+	expect(display.lines[0]).toContain("1 audit queued");
 	expect(display.lines[0]).toContain("1 need worker · 2 stuck");
 	expect(display.lines.join("\n")).toContain("findings — needs worker: findings · after Probe");
 	expect(display.lines.join("\n")).toContain("blocked — stuck: awaiting vendor reply");

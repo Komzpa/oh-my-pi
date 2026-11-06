@@ -48,6 +48,11 @@ export function renderLeadRowInstructions(
 					data.waitDependency = true;
 					data.dependency = display.dependency;
 					break;
+				case "handoff pending":
+					data.handoffAction = true;
+					data.reviewPage = row.schedule?.reviewPage;
+					break;
+				case "audit queued":
 				case "auditing":
 				case "verifying":
 					data.waitAudit = true;
