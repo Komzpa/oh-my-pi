@@ -5183,12 +5183,17 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const jobs = ctx.getAsyncJobSnapshot();
       const capacity = ctx.getTaskMaxConcurrency?.();
       const active = jobs?.running.filter(job => job.type === "task" && job.status === "running" && !job.queued).length ?? 0;
-      if (jobs && priority.length && capacity !== undefined && (capacity === 0 || active < capacity) &&
-          taskItems(event.input).some(item => !speculativeTaskRows(item, phases).some(row => priority.some(candidate => candidate.content === row.content)))) {
+      // Priority rows must not be skipped, but a batch that staffs all of them may also staff other rows.
+      // Refusing the whole batch for one extra row made the lead resend the same batch for minutes (2026-11-06).
+      const items = taskItems(event.input);
+      const targeted = new Set(items.flatMap(item => speculativeTaskRows(item, phases).map(row => row.content)));
+      const missing = priority.filter(row => !targeted.has(row.content));
+      const onlyPriority = items.every(item => speculativeTaskRows(item, phases).some(row => priority.some(candidate => candidate.content === row.content)));
+      if (jobs && missing.length && !onlyPriority && capacity !== undefined && (capacity === 0 || active < capacity)) {
         announceGates(ctx);
         return { block: true, reason: prompt.render(gateNoticeInstructions, { staffing: true,
-          rows: priority.map(row => JSON.stringify(row.content)).join(", "),
-          continuations: priority.map(row => { const previous = classifyTodoDisplayRow(row, phases, display).previous; return previous ? `${JSON.stringify(row.content)} from agent://${previous}` : JSON.stringify(row.content); }).join("; "),
+          rows: missing.map(row => JSON.stringify(row.content)).join(", "),
+          continuations: missing.map(row => { const previous = classifyTodoDisplayRow(row, phases, display).previous; return previous ? `${JSON.stringify(row.content)} from agent://${previous}` : JSON.stringify(row.content); }).join("; "),
         }).trim() };
       }
     }
