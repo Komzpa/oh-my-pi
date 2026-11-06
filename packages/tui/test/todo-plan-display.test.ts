@@ -147,3 +147,12 @@ test("a crash continuation is visibly working under its new worker id", () => {
 	);
 	expect(output.lines.join("\n")).toContain("working · ContinentalSnail-2 (resumed after crash)");
 });
+
+test("rows with a live worker are highlighted; idle rows stay dim; owner rows warn", () => {
+	const display = renderTodoPlanDisplay(phases, context, { now: 363264, archived: 444, paint });
+	const auditing = display.lines.filter(line => line.includes("— auditing ·"));
+	expect(auditing.length).toBe(3);
+	for (const line of auditing) expect(line.startsWith("<accent>")).toBe(true);
+	for (const line of display.lines.filter(line => line.includes("☐") && line.includes("— needs you")))
+		expect(line.startsWith("<warning>")).toBe(true);
+});

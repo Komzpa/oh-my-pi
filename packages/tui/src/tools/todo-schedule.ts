@@ -2300,8 +2300,10 @@ export function renderTodoPlanDisplay(
 				Math.max(0, (options.width ?? Infinity) - Bun.stringWidth(suffix) - 4),
 			);
 			push(
+				// Highlight rows a live worker is on, so "who is running" reads at a glance;
+				// rows needing the owner or stuck are warnings, everything idle stays dim.
 				paint(
-					state.state === "stuck" ? "warning" : state.state === "needs you" ? "accent" : "dim",
+					state.state === "stuck" || state.state === "needs you" ? "warning" : state.worker ? "accent" : "dim",
 					`  ☐ ${title}${suffix}`,
 				),
 				state.worker,
