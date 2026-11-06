@@ -2805,35 +2805,31 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	 * usage aggregation, VCS probing, or segment getters run on a cache hit.
 	 * Fills `target` in place so the per-frame probe allocates nothing.
 	 */
-	#externalProbeFrame: object | undefined;
+	#externalProbeFrame = false;
+	#externalProbeRead = false;
+	#externalProbeMemo = new StatusLineExternalInputs();
 
 	/** Share the external snapshot only within one synchronous compositor paint. */
 	beginFrame(): void {
-		this.#externalProbeFrame = {};
+		this.#externalProbeFrame = true;
+		this.#externalProbeRead = false;
 	}
 
 	endFrame(): void {
-		this.#externalProbeFrame = undefined;
-		this.#externalProbeMemo = undefined;
+		this.#externalProbeFrame = false;
+		this.#externalProbeRead = false;
 	}
 
-	#externalProbeMemo: { session: StatusLineSession; revision: unknown; inputs: StatusLineExternalInputs } | undefined;
-
 	#readStatusLineExternalInputs(target: StatusLineExternalInputs): void {
-		const revision = this.#externalProbeFrame;
 		const memo = this.#externalProbeMemo;
-		if (revision !== undefined && memo?.session === this.session && memo.revision === revision) {
-			Object.assign(target, memo.inputs);
+		if (this.#externalProbeFrame && this.#externalProbeRead && memo.sessionRef === this.session) {
+			Object.assign(target, memo);
 		} else {
 			this.#readSessionExternalInputs(target);
-			this.#externalProbeMemo =
-				revision === undefined
-					? undefined
-					: {
-							session: this.session,
-							revision,
-							inputs: Object.assign(new StatusLineExternalInputs(), target),
-						};
+			if (this.#externalProbeFrame) {
+				Object.assign(memo, target);
+				this.#externalProbeRead = true;
+			}
 		}
 		// Settings, workspace and theme have independent owners and remain live.
 		target.themeRef = theme;
