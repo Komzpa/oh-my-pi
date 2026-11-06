@@ -4003,9 +4003,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			toolName: event.toolName,
 			startedAt: new Date().toISOString(),
 		};
-		const branch = this.sessionManager.getBranch();
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index];
+		const seen = new Set<string>();
+		for (
+			let entry = this.sessionManager.getLeafEntry();
+			entry && !seen.has(entry.id);
+			entry = entry.parentId ? this.sessionManager.getEntry(entry.parentId) : undefined
+		) {
+			seen.add(entry.id);
 			if (entry.type !== "message") continue;
 			if (entry.message.role === "user") break;
 			if (entry.message.role !== "assistant") continue;
