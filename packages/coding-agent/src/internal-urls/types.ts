@@ -376,6 +376,8 @@ export interface ProtocolHandler {
 	 * @throws Error with user-friendly message if resolution fails
 	 */
 	resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource>;
+	/** Render a large virtual document to a private file for bounded read/search paging. */
+	materialize?(url: InternalUrl, context?: ResolveContext): Promise<string | null>;
 	/**
 	 * Handler-owned write hook: present exactly when `spec.write.via` is
 	 * `"handler"` (the router enforces this at registration). The write tool

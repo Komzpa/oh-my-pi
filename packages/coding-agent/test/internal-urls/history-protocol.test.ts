@@ -29,6 +29,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { CURRENT_SESSION_VERSION, type SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { InternalUrl } from "@oh-my-pi/pi-coding-agent/internal-urls/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { removeWithRetries, TempDir } from "@oh-my-pi/pi-utils";
@@ -498,12 +499,80 @@ describe("history:// protocol", () => {
 		).rejects.toThrow("Invalid history://current route");
 	});
 
+	it("materialized history preserves bytes across append and rewind without rereading the old prefix", async () => {
+		const handler = new HistoryProtocolHandler();
+		let branch = currentBranchFixture();
+		const getSessionBranch = () => branch;
+		const context = { experimentalContextManagement: true, getSessionBranch };
+		const url = new URL("history://current/full") as InternalUrl;
+		url.rawHost = "current";
+		const first = await handler.materialize(url, context);
+		expect(await Bun.file(first!).text()).toBe(formatCurrentBranchFullHistory(branch));
+		const old = branch;
+		branch = new Proxy(branch, {
+			get(target, property, receiver) {
+				if (property === "0") throw new Error("Old payload hydrated again");
+				return Reflect.get(target, property, receiver);
+			},
+		});
+		expect(await handler.materialize(url, context)).toBe(first);
+		branch = [
+			...old,
+			{
+				type: "custom",
+				id: "appended",
+				parentId: old.at(-1)!.id,
+				timestamp: "2026-11-08T00:00:00Z",
+				customType: "probe",
+				data: { text: "added after cached history" },
+			},
+		];
+		await Promise.all([handler.materialize(url, context), handler.materialize(url, context)]);
+		expect(await Bun.file(first!).text()).toBe(formatCurrentBranchFullHistory(branch));
+		branch = old.slice(0, 1);
+		await handler.materialize(url, context);
+		expect(await Bun.file(first!).text()).toBe(formatCurrentBranchFullHistory(branch));
+	});
+
+	it("keeps a consistent history snapshot when the live branch appends during materialization", async () => {
+		const handler = new HistoryProtocolHandler();
+		const branch = currentBranchFixture();
+		const expected = formatCurrentBranchFullHistory(branch);
+		let appended = false;
+		const live = new Proxy(branch, {
+			get(target, property, receiver) {
+				if (property === "0" && !appended) {
+					appended = true;
+					target.push({
+						type: "custom",
+						id: "live-append",
+						parentId: target.at(-1)!.id,
+						timestamp: "2026-11-08T00:00:00Z",
+						customType: "probe",
+						data: { text: "arrived while writing" },
+					});
+				}
+				return Reflect.get(target, property, receiver);
+			},
+		});
+		const context = { experimentalContextManagement: true, getSessionBranch: () => live };
+		const url = new URL("history://current/full") as InternalUrl;
+		url.rawHost = "current";
+		const file = await handler.materialize(url, context);
+		expect(await Bun.file(file!).text()).toBe(expected);
+		await handler.materialize(url, context);
+		expect(await Bun.file(file!).text()).toBe(formatCurrentBranchFullHistory(branch));
+	});
+
 	it("read applies selectors to caller-bound full history", async () => {
 		const settings = Settings.isolated();
 		cfgCompactionExperimentalContextManagement.set(settings, true);
 		const branch = currentBranchFixture();
 		const manager = {
-			getBranch: () => branch,
+			getBranch: () => {
+				throw new Error("Eager full-history hydration");
+			},
+			getBranchView: () => branch,
 			getSessionId: () => "current-session",
 		} as unknown as NonNullable<ToolSession["sessionManager"]>;
 		const tool = new ReadTool(

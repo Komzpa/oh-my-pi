@@ -298,6 +298,8 @@ export class InternalUrlRouter {
 		if (!handler) return null;
 		const url = parseInternalUrl(bare);
 		const spec = handler.spec;
+		const materialized = await handler.materialize?.(url, context);
+		if (materialized) return { kind: "file", url, spec: { ...spec, immutable: true }, path: materialized, sel };
 		if (spec.backing === "file" && handler.locate) {
 			const located = await handler.locate(url, context);
 			if (located !== null) return { kind: "file", url, spec, path: located, sel };
