@@ -47,6 +47,28 @@ import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
+import { wakeDemand, countsAsWakeAction, type WakeReceipt } from "./dispatch_wake";
+import dispatchWakeInstructions from "./dispatch-wake.md" with { type: "text" };
+
+function pendingWorkerQuestions(ctx: ExtensionContext): Array<{ worker: string; question: string }> {
+  const questions: Array<{ worker: string; question: string }> = [];
+    for (const job of [...(ctx.getAsyncJobSnapshot()?.running ?? []), ...(ctx.getAsyncJobSnapshot()?.recent ?? [])].filter(job => job.type === "task")) {
+      const session = AgentRegistry.global().get(job.agentId ?? job.id)?.session;
+      const messages = session?.messages?.slice(-100) ?? [];
+      for (let index = messages.length - 1; index >= 0; index--) {
+        const message = messages[index];
+        if (message.role !== "toolResult" || message.toolName !== "ask" || !message.details?.pending || message.details.workingDefaults) continue;
+        const pending = message.details.pending;
+        for (const question of pending.questions ?? []) {
+          const answered = messages.slice(index + 1).some(reply => reply.role === "user" && JSON.stringify(reply.content).includes(`Answer to ${pending.id} [${question.id}]:`));
+          if (!answered && typeof question.question === "string") questions.push({ worker: job.agentId ?? job.id, question: question.question });
+        }
+        break;
+      }
+    }
+  return questions;
+}
+
 export function dispatchTodoArchive(ctx: ExtensionContext): TodoScheduleInput {
   return readTodoArchiveState(ctx.sessionManager).phases;
 }
@@ -2481,6 +2503,25 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let lastWakeKey: string | null = null;
   let persistedChildren: PersistedChild[] = [];
   let sprintState: SprintState = blankSprintState();
+  let wakeContext: ExtensionContext | undefined;
+  let wakeTurn: { before: TodoScheduleInput; toolCalls: number; mutations: number; target?: string } | undefined;
+  let wakeJobs: string | undefined;
+  let wakeHasEvent = false;
+  const prepareWake = (ctx: ExtensionContext) => {
+    const before = todoPhases(ctx);
+    const jobs = (ctx.getAsyncJobSnapshot()?.recent ?? []).filter(job => job.type === "task").map(job => [job.id, job.status]);
+    const stamp = JSON.stringify(jobs);
+    const realUpdate = wakeHasEvent || (wakeJobs !== undefined && stamp !== wakeJobs && jobs.length > 0);
+    wakeJobs = stamp;
+    wakeHasEvent = false;
+    wakeTurn = { before: structuredClone(before), toolCalls: 0, mutations: 0 };
+    const receipt = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-demand")?.data as WakeReceipt | undefined;
+    const decision = currentDecision(ctx);
+    const demand = wakeDemand(before, runningOwnerNames(ctx), Date.now(), decision.deadline?.deadlineAt, decision.forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx));
+    if (demand?.churn) wakeTurn.target = demand.row;
+    const misses = demand && receipt?.key === demand.key ? receipt.misses : 0;
+    return { silentAssistant: !realUpdate, ...(demand ? { actionDemand: prompt.render(dispatchWakeInstructions, { ...demand, misses, escalation: misses > 0 }).trim() } : {}) };
+  };
   const requirementRowsSeen = new Set<string>();
   let latestUserRequestAt: number | undefined;
   const rescheduledRowsThisTurn = new Set<string>();
@@ -2521,6 +2562,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   const reset = () => {
     clearIdleTimer();
+    wakeTurn = undefined;
+    wakeJobs = undefined;
+    wakeHasEvent = false;
     cachedStatic = null;
     cachedDecision = null;
     requirementRowsSeen.clear();
@@ -2567,6 +2611,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     persistSprintState();
     // Replace pending state by subject, independently of the digest used to suppress emissions.
     // The queue owns replacement across nextTurn and steering, including while the lead is busy.
+    const wake = delivery.triggerTurn && wakeContext ? prepareWake(wakeContext) : undefined;
+    if (wake?.actionDemand) content += `\n${wake.actionDemand}`;
+    if (wake) details = { ...((details as Record<string, unknown>) ?? {}), ...wake };
     const sent = kind === "todo-plan-check" ? { ...((details as Record<string, unknown> | undefined) ?? {}), supersedesQueued: true } : details;
     const stateNote = kind === "todo-gate-steering" || kind === "todo-plan-check";
     const options = { deliverAs: stateNote ? "steer" as const : "nextTurn" as const, triggerTurn: false, interruptWait: false, supersedes: kind === "todo-plan-check" ? kind : key, ...delivery };
@@ -2949,6 +2996,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
 
   const currentDecision = (ctx: ExtensionContext, now = Date.now(), pending: unknown[] = [], refreshSnapshot = false, forceRefresh = false) => {
+    wakeContext = ctx;
     // `pending`: entries not yet on the branch, such as the todo result a tool_result hook is amending.
     const branch = dispatchStateEntries(ctx, pending);
     const header = ctx.sessionManager.getHeader();
@@ -3891,6 +3939,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const refusedChatChoices = new Set<string>();
   pi.on("message_start", (event, ctx) => {
     inFlightAssistantHasText = false;
+    if (event.message?.role === "user") { wakeTurn = undefined; wakeHasEvent = true; }
+    if (event.message?.role === "custom" && typeof event.message.details?.silentAssistant !== "boolean" && !event.message.customType.startsWith("todo-")) { wakeTurn = undefined; wakeHasEvent = true; }
     if (event.message?.role === "assistant") rescheduledRowsThisTurn.clear();
     const user = latestDeadlineUserMessage([{ type: "message", message: event.message }]);
     if (user) announceHuman(ctx, user);
@@ -3960,6 +4010,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       persistSprintState();
       pi.sendMessage({
         customType: "todo-idle-plan-demand",
+        details: prepareWake(ctx),
         content: `No work is currently ready. Recheck the open blockers and dependencies once, continue any independently actionable work, and otherwise wait for the relevant change without repeating status. Open: ${openList}. Blockers: ${blockers.length ? blockers.join("; ") : "none recorded"}.`,
         display: false,
         attribution: "agent",
@@ -3979,8 +4030,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       pi.sendMessage(
         {
           customType: "todo-idle-plan-escalation",
+          details: { silentAssistant: true },
           content: `PLAN STATUS: after 3 idle turns, the assistant has not staffed ready work ${rowList(readyRows)} or addressed overdue ready work ${rowList(overdueRows)}. Work remains open.`,
-          display: true,
+          display: false,
           attribution: "agent",
         },
         { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false },
@@ -3995,7 +4047,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         content: demand,
         display: false,
         attribution: "agent",
-        details: { overdueRows, readyRows, openRows: uncoveredRows.map((row) => row.content), idleDemand: count + 1 },
+        details: { ...prepareWake(ctx), overdueRows, readyRows, openRows: uncoveredRows.map((row) => row.content), idleDemand: count + 1 },
       },
       { deliverAs: "nextTurn", triggerTurn: true, interruptWait: false },
     );
@@ -5238,6 +5290,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return undefined;
   };
   pi.on("tool_call", async (event, ctx) => {
+    if (wakeTurn) wakeTurn.toolCalls += 1;
     // A non-read tool call (a todo change, a task dispatch, an edit, a command) is progress for the absence wake.
     if (!READ_ONLY_TOOLS.has(event.toolName) && !(event.toolName === "todo" && ["view", undefined].includes((event.input as { op?: string } | undefined)?.op))) progressEvents += 1;
     if (event.toolName === "todo" && isMain(ctx)) {
@@ -6052,7 +6105,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (!gateSwitchedOff(ctx)) await refreshPush(ctx);
       await refreshLiveWorkerModels(ctx);
       if (!gateSwitchedOff(ctx)) absenceTick(ctx, Date.now());
-      const check = await planCheck(ctx, [], true);
+      let check = await planCheck(ctx, [], true);
+      const urgent = wakeDemand(todoPhases(ctx), runningOwnerNames(ctx), Date.now(), currentDecision(ctx).deadline?.deadlineAt, currentDecision(ctx).forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx));
+      if (!check && urgent) check = prompt.render(dispatchWakeInstructions, { ...urgent, misses: 0 }).trim();
       if (!check) return planTrace(ctx, "no-problems");
       if (check === PLAN_CHECK_CLEAN) return planTrace(ctx, "plan-clean");
       // Once per distinct problem list. Minutes and timestamps change every tick; the problem list is the
@@ -6071,7 +6126,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never).flatMap((phase) => phase.tasks.map((task) => `${task.content}:${task.status}`)),
       ]);
       const unchanged = key === lastIdlePlanCheck && eventStamp === lastPlanEventStamp;
-      if (pendingSizingNoticeIds.length === 0 && unchanged) return planTrace(ctx, "same-problems-already-delivered");
+      if (pendingSizingNoticeIds.length === 0 && unchanged && !urgent) return planTrace(ctx, "same-problems-already-delivered");
       lastPlanEventStamp = eventStamp;
       if (!unchanged) lastIdlePlanCheckAt = now;
       lastIdlePlanCheck = key;
@@ -6083,7 +6138,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         .flatMap((phase) => phase.tasks)
         .filter((row) => isOpenRowStatus(row.status))
         .map((row) => row.content);
-      sendHarnessNotice("todo-plan-check", key, check, { planRows }, `${key}|${eventStamp}`, { interruptWait: activeRecoveries(ctx).length > 0, triggerTurn: ctx.isIdle?.() === true });
+      sendHarnessNotice("todo-plan-check", key, check, { planRows }, `${key}|${eventStamp}|${planTickCount}`, { interruptWait: activeRecoveries(ctx).length > 0, triggerTurn: ctx.isIdle?.() === true });
       markSizingNotices();
       planTrace(ctx, "sent", { problems: check.slice(0, 160) });
     } catch (error) {
@@ -6125,6 +6180,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
   };
   pi.on("tool_result", async (event, ctx) => {
+    if (wakeTurn && !event.isError && countsAsWakeAction(event.toolName, event.input, wakeTurn.before, todoPhases(ctx), wakeTurn.target)) wakeTurn.mutations += 1;
     if (event.toolName === "todo" && !event.isError) await refreshPush(ctx, true);
     if (previewConfig(ctx).enabled && isMain(ctx)) {
       if (event.toolName === "todo" && !event.isError) {
@@ -6340,20 +6396,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const visibleRows = chief ? phases.flatMap(phase => phase.tasks).filter(row => isNonClosedRowStatus(row.status) || isTodoAwaitingReview(row)).map(row => classifyTodoDisplayRow(row, phases, displayContext)) : [];
     const questions = phases.flatMap(phase => phase.tasks).filter(row => row.status === "blocked" && row.schedule?.owner && row.blocker && !parseUserWait(row.blocker))
       .map(row => ({ worker: row.schedule.owner, question: row.blocker }));
-    for (const job of [...(ctx.getAsyncJobSnapshot()?.running ?? []), ...(ctx.getAsyncJobSnapshot()?.recent ?? [])].filter(job => job.type === "task")) {
-      const session = AgentRegistry.global().get(job.agentId ?? job.id)?.session;
-      const messages = session?.messages?.slice(-100) ?? [];
-      for (let index = messages.length - 1; index >= 0; index--) {
-        const message = messages[index];
-        if (message.role !== "toolResult" || message.toolName !== "ask" || !message.details?.pending || message.details.workingDefaults) continue;
-        const pending = message.details.pending;
-        for (const question of pending.questions ?? []) {
-          const answered = messages.slice(index + 1).some(reply => reply.role === "user" && JSON.stringify(reply.content).includes(`Answer to ${pending.id} [${question.id}]:`));
-          if (!answered && typeof question.question === "string") questions.push({ worker: job.agentId ?? job.id, question: question.question });
-        }
-        break;
-      }
-    }
+    questions.push(...pendingWorkerQuestions(ctx));
     const planFact = renderPlanFactNote(phases, now, decision.deadline?.deadlineAt, questions,
       decision.forecast?.expectedResourceFinish);
     if (onlyPlanFact && (!planFact || questions.length === 0)) return;
@@ -6402,6 +6445,21 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
 
   pi.on("turn_end", async (_event, ctx) => {
+    if (wakeTurn && isMain(ctx)) {
+      const decision = currentDecision(ctx);
+      const demand = wakeDemand(todoPhases(ctx), runningOwnerNames(ctx), Date.now(), decision.deadline?.deadlineAt, decision.forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx));
+      if (demand && wakeTurn.mutations === 0) {
+        const previous = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-demand")?.data as WakeReceipt | undefined;
+        const misses = Math.min(100, previous?.key === demand.key ? previous.misses + 1 : 1);
+        const receipt: WakeReceipt = { key: demand.key, action: demand.action, misses, toolCalls: wakeTurn.toolCalls, mutations: 0 };
+        pi.appendEntry("todo-dispatch-action-demand", receipt);
+        pi.sendMessage({ customType: "todo-dispatch-action-required", content: prompt.render(dispatchWakeInstructions, { ...receipt, escalation: misses > 1 }).trim(), display: false, attribution: "agent" }, { deliverAs: "steer", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
+      }
+      if (wakeTurn.mutations > 0) pi.appendEntry("todo-dispatch-action-demand", { key: demand?.key ?? "resolved", action: demand?.action ?? "", misses: 0, toolCalls: wakeTurn.toolCalls, mutations: wakeTurn.mutations });
+      wakeTurn.toolCalls = 0;
+      wakeTurn.mutations = 0;
+      wakeTurn.before = structuredClone(todoPhases(ctx));
+    }
     releaseLapsedPostDeadline(ctx);
     checkDeliveries(ctx);
     announceGates(ctx);
