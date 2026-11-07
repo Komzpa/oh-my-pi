@@ -46,3 +46,13 @@ test.skipIf(process.platform !== "linux")("operator can explicitly disable GDB r
 	const { output, pid } = await runProbe(["keep"], { ...cleanEnv(), BUN_JSC_useGdbJITInfo: "0" });
 	expect(output).toEqual({ args: ["keep"], pid, jit: "0", inherited: "0" });
 });
+
+test.skipIf(process.platform !== "linux")("worker threads never restart the process", async () => {
+	const worker = new Worker(`${import.meta.dir}/fixtures/jit-bootstrap-worker.ts`);
+	const result = await new Promise<string>((resolve, reject) => {
+		worker.addEventListener("message", event => resolve(String(event.data)));
+		worker.addEventListener("error", event => reject(new Error(event.message)));
+	});
+	worker.terminate();
+	expect(result).toBe("ok");
+});
