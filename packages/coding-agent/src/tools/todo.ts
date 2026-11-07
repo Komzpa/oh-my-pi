@@ -32,6 +32,7 @@ import {
 	type RowRiskOptions,
 	type TodoSchedule,
 	type TodoPlanForecast,
+	type TodoPlanPrediction,
 	type TodoReworkAttempt,
 	validateTodoDependencies,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -49,6 +50,14 @@ import { cfgTaskMaxConcurrency } from "../task/settings";
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 import { readGoalDeadline, readGoalDeadlineFromManager } from "../goals/deadlines";
 import { applyTodoExecutorObservation, appendTodoReworkAttempt, type TodoExecutorObservation } from "./todo-executor";
+
+import {
+	readTodoPlanHistory,
+	settleTodoPlanRecord,
+	todoPlanCalibrationHistory,
+	todoPlanMembers,
+	TODO_PLAN_HISTORY_CUSTOM_TYPE,
+} from "./todo-plan-history";
 
 export interface ReviewPageAnswer {
 	task: string;
@@ -960,7 +969,13 @@ export function withTodoArchive(phases: TodoPhase[], archived: TodoPhase[]): Tod
 export function forecastTodoLivePlan(
 	phases: TodoPhase[],
 	archived: TodoPhase[],
-	options: { now: number; capacity?: number; deadlineAt?: number; risk?: RowRiskOptions },
+	options: {
+		now: number;
+		capacity?: number;
+		deadlineAt?: number;
+		risk?: RowRiskOptions;
+		history?: readonly TodoPlanPrediction[];
+	},
 ): TodoPlanForecast {
 	const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
 	const forecast = forecastTodoPlan(withTodoArchive(phases, archived), options);
@@ -2430,7 +2445,20 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		if (operation && reviewClosures.length) operation.reviewClosures = reviewClosures;
 		const archiveEdit: TodoArchivePersistedEdit | undefined =
 			newArchive.length > 0 ? { v: 1, kind: "archive", at: now, operation, archivedPhases: newArchive } : undefined;
+		const historyRecords = readTodoPlanHistory(manager);
+		if (operation && !this.#validatingReviewClosure && manager) {
+			for (const record of historyRecords) {
+				const settled = settleTodoPlanRecord(
+					record,
+					withTodoArchive(effective, [...archivedPhases, ...newArchive]),
+					now,
+					op === "init",
+				);
+				if (settled) manager.appendCustomEntry(TODO_PLAN_HISTORY_CUSTOM_TYPE, settled);
+			}
+		}
 		const forecast = forecastTodoLivePlan(effective, [...archivedPhases, ...newArchive], {
+			history: todoPlanCalibrationHistory(historyRecords, now),
 			now,
 			capacity: cfgTaskMaxConcurrency.get(this.session.settings),
 			risk: await loadRowRisk(
@@ -2442,6 +2470,37 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 			),
 			...(deadline === undefined ? {} : { deadlineAt: deadline.deadlineAt }),
 		});
+		if (operation && !this.#validatingReviewClosure && manager?.getSessionId && forecast.rawP50Finish !== undefined) {
+			const sessionId = manager.getSessionId();
+			const hour = Math.floor(now / 3_600_000);
+			const members = [...todoPlanMembers(effective)]
+				.filter(([, row]) => row.status !== "completed" && row.status !== "abandoned")
+				.map(([key]) => key);
+			if (
+				members.length &&
+				!historyRecords.some(
+					record =>
+						record.prediction.sessionId === sessionId &&
+						Math.floor(record.prediction.originAt / 3_600_000) === hour,
+				)
+			) {
+				manager.appendCustomEntry(TODO_PLAN_HISTORY_CUSTOM_TYPE, {
+					prediction: {
+						sessionId,
+						originAt: now,
+						rawP50Finish: forecast.rawP50Finish,
+						capacity: forecast.capacityAssumptions?.requested,
+						provenance: forecast.provenance,
+						predictionVersion: forecast.predictionVersion,
+						membershipFingerprint: forecast.membershipFingerprint,
+						...(forecast.calibratedUpperFinish === undefined
+							? {}
+							: { upperFinish: forecast.calibratedUpperFinish }),
+					},
+					members,
+				});
+			}
+		}
 		const details = attachLiveTodoDetails(
 			{
 				op,

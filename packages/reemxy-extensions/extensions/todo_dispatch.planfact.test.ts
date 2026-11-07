@@ -36,6 +36,9 @@ test("lead idle event persists slip, churn and the exact blocked question withou
     await handlers.get("agent_end")({}, ctx);
     const note = sent.find(item => item.message.customType === "todo-dispatch-time-note");
     expect(note.message.content).toContain("SLIPPED by 15m");
+    expect(note.message.content).toContain("Current set: point unknown; empirical upper unavailable");
+    expect(note.message.content).toContain("External gate: unknown; forecast conditional on unresolved work");
+    expect(note.message.content).not.toContain("P(on time)");
     expect(note.message.content).toContain("PushWorker");
     expect(note.message.content).toContain("May I use /tmp/description.md as PR description?");
     expect(note.message.content).toContain("CHURN");

@@ -18,6 +18,17 @@ export interface DeadlineStage {
 	deliveredArtifact?: string;
 }
 
+export interface DeadlineAnchorEvent {
+	id: string;
+	at: number;
+	kind: "initial-forecast" | "scope-observed" | "new-goal" | "deadline-change" | "timestamp-correction";
+	actor: string;
+	reason: string;
+	oldDeadlineAt?: number;
+	newDeadlineAt?: number;
+	rows?: string[];
+}
+
 export interface DeadlineState {
 	version: 1;
 	goalId: string;
@@ -27,6 +38,11 @@ export interface DeadlineState {
 	stages: DeadlineStage[];
 	auto?: true;
 	autoPlanKey?: string;
+	autoAnchorId?: string;
+	autoInitialForecastFinish?: number;
+	autoMembershipFingerprint?: string;
+	autoPredictionVersion?: string;
+	autoEvents?: DeadlineAnchorEvent[];
 	autoAnchorRows?: string[];
 	autoScopeGrowthRows?: string[];
 	initialQuota?: QuotaSnapshot;
