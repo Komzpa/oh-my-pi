@@ -4968,9 +4968,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			checkAbort();
 
 			if (options.perCallModelGrants) {
-				await awaitAbortable(
-					launchStep("modelRegistry.refresh.wait", () => modelRegistry.awaitBackgroundRefresh()),
-				);
+				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
 			}
 			const configuredModelPatterns = resolveConfiguredModelPatterns(modelPatterns, settings);
 			const inheritedRetryFallbackChain =
@@ -5137,9 +5135,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 							agentPrewalk: resolveAgentPrewalkDefault(agent, cfgTaskPrewalk.get(settings)),
 						});
 			if (prewalkPattern) {
-				await awaitAbortable(
-					launchStep("modelRegistry.refresh.wait", () => modelRegistry.awaitBackgroundRefresh()),
-				);
+				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
 				const resolvedPrewalk = resolveModelOverride([prewalkPattern], modelRegistry, settings);
 				const target = resolvedPrewalk.model;
 				if (!target || !modelRegistry.hasConfiguredAuth(target)) {

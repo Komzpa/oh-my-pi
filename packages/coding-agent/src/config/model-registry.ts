@@ -960,7 +960,7 @@ export class ModelRegistry {
 	async awaitBackgroundRefresh(): Promise<void> {
 		if (this.#owner) return this.#owner.awaitBackgroundRefresh();
 		if (this.#backgroundRefresh) {
-			await this.#backgroundRefresh;
+			await logger.time("modelRegistry.refresh.wait", () => this.#backgroundRefresh);
 		}
 	}
 
