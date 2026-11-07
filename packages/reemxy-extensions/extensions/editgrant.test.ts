@@ -61,7 +61,10 @@ async function fixture() {
 			return true;
 		},
 	} as ExtensionContext;
-	const worker = { cwd: dir, agent: { kind: "sub", id: "BragPrScreenshots", parentId: "Lead" } } as ExtensionContext;
+	const worker = {
+		cwd: path.join(dir, "lead-cwd"),
+		agent: { kind: "sub", id: "BragPrScreenshots", parentId: "Lead" },
+	} as ExtensionContext;
 	return {
 		dir,
 		assigned,
@@ -112,7 +115,7 @@ test("nested children with no own row inherit live ancestor scope and cannot wid
 	try {
 		f.lead.updateTodoSchedule!("Capture screenshots", { resources: [f.assigned] });
 		const child = {
-			cwd: f.dir,
+			cwd: f.worker.cwd,
 			agent: { kind: "sub", id: "BragPrScreenshots.SkillScreens", parentId: "BragPrScreenshots" },
 		} as ExtensionContext;
 		expect(

@@ -41,3 +41,10 @@ Executor startingRef/registerIfAvailable now reserves a generation before SDK co
 - Broad #92 base/candidate batch before fixture repair: both 987 pass / 37 fail, exactly the same 37 unique failure names; ../editgrant-base-task-peer.log, ../editgrant-task-peer.log.
 - Broad 77-PR composite task/todo/peer batch: 1090 pass / 173 fail / 2 skip / 3 errors across 105 files (../editgrant-composite-task-peer.log). These are not green. This broad run was on initial candidate composite before the two #92 fixture repairs. Lane decision above explicitly preserves #93 and hands off its fixture work.
 - Native artifact came pre-supplied; no rebuild or install performed. Scope behavior validated in-process; no live session or desktop proof is claimed.
+
+## Delivery verification
+- Final production/source commit: 53dc68b2098 (descends from original #92 head eb54c7ed64b50d5355988224d30163bf3801c050; no rewritten commits). Follow-up changes only strengthen regression setup and record proof.
+- Final regression fixture uses a distinct lead cwd, so base's first assigned-worktree edit and first nested-child write both receive actual `block: true`; base 0 pass / 3 fail; candidate 3 pass / 0 fail, 21 assertions.
+- Final extension batch: 485 pass / 0 fail, 8596 assertions across 36 files. Final focused core/preflight/router batch: 140 pass / 0 fail. Standalone `bun run check:ts` exit 0.
+- Final 77-head union 60af395931a2b50330ee9dfaccc24d63542819e6 includes source commit 53dc68b2098. Final union `bun run check:ts`: 19/19 passed. Metadata-only/test-fixture follow-up has unchanged production code; exact-head check below.
+- Push target: fork Komzpa/oh-my-pi refs/heads/topic/rt-agent-runtime-core (#92), expected old eb54c7ed64b50d5355988224d30163bf3801c050. Rollback is a separately authorized exact-lease push of that old SHA; no main or upstream target.
