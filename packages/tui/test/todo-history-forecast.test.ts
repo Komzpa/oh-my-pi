@@ -44,6 +44,7 @@ function replay(): TodoScheduleInputTask[] {
 
 test("DC replay cannot turn seven aged, repeatedly revised rows into a two-hour deadline", () => {
 	const plan = forecastTodoPlan([{ name: "DC", tasks: replay() }], { now, capacity: 3 });
+	expect(plan.autoDeadlineForecast?.finish ?? plan.fixedPathP95Finish).toBeGreaterThanOrEqual(now + 10 * hour);
 	expect(plan.autoDeadlineForecast?.rowsPerHour).toBeCloseTo(0.7);
 	expect(plan.autoDeadlineForecast?.finish).toBeGreaterThanOrEqual(now + 10 * hour);
 	expect(plan.autoDeadlineForecast?.winningBound).toBe("throughput");
@@ -110,4 +111,13 @@ test("failed attempts impose a remaining floor and expose capped pessimism in th
 	expect(plan.autoDeadlineForecast?.rowFactors[0]?.remainingFloorSeconds).toBeGreaterThanOrEqual(7200);
 	expect(plan.fixedPathP95Finish).toBeGreaterThanOrEqual(now + 2 * hour);
 	expect(formatPlanForecast(plan, now)).toContain("does not exceed a failed attempt");
+});
+
+test("batch closures count distinct rows rather than timestamp groups, excluding duplicate identities", () => {
+	const tasks = replay();
+	for (const task of tasks.slice(8)) task.schedule!.finishedAt = now;
+	tasks.push(tasks[8]!);
+	const plan = forecastTodoPlan([{ name: "batch", tasks }], { now, capacity: 3 });
+	expect(plan.autoDeadlineForecast?.closureSamples).toBe(8);
+	expect(plan.autoDeadlineForecast?.rowsPerHour).toBeCloseTo(0.7);
 });

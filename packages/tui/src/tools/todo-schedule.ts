@@ -1676,15 +1676,11 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 	}
 	// Inter-completion throughput includes silence since the last closure. A first closure
 	// establishes the clock; it is not counted as work produced in that interval.
-	const closures = [
-		...new Set(
-			phases
-				.flatMap(phase => phase.tasks)
-				.filter(row => row.status === "completed")
-				.map(row => row.schedule?.finishedAt)
-				.filter((at): at is number => finiteTimestamp(at) && at! <= now && at! >= now - 24 * 3_600_000),
-		),
-	].sort((a, b) => a - b);
+	const closures = [...new Map(phases.flatMap(phase => phase.tasks).map(row => [row.content, row])).values()]
+		.filter(row => row.status === "completed")
+		.map(row => row.schedule?.finishedAt)
+		.filter((at): at is number => finiteTimestamp(at) && at! <= now && at! >= now - 24 * 3_600_000)
+		.sort((a, b) => a - b);
 	const windowStartedAt = closures[0];
 	const hours = windowStartedAt === undefined ? 0 : (now - windowStartedAt) / 3_600_000;
 	const rowsPerHour = closures.length >= 3 && hours >= 1 ? (closures.length - 1) / hours : undefined;
