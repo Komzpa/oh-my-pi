@@ -1022,6 +1022,8 @@ export function decideGateCall(
   gates: readonly ActiveGate[],
 ): GateDecision {
   if (READ_TIER.has(call.name)) return { allowed: true, remedyGateIds: [] };
+  // A planning problem must not prevent the lead from delivering an owner question.
+  if (call.name === "ask") return { allowed: true, remedyGateIds: [] };
   if (call.name === "context_notes") return { allowed: true, remedyGateIds: [] };
   if (isKill(call)) return { allowed: true, remedyGateIds: [] };
   // Messaging owns target lookup and rejects unknown ids. Gates must not require a
@@ -1382,7 +1384,7 @@ export function waitsOnUser(owner: unknown, blocker: unknown): boolean {
     && /\b(?:user|user's)\b/i.test(blocker)
     && /\b(?:verdicts?|answers?|repl(?:y|ies)|reviews?|restart|approv\w*|decisions?|responses?|feedback)\b/i.test(blocker);
 }
-export const USER_WAIT_REFUSAL = 'Proceed on your default; the user is never a dependency. Close delivered work with its link, or continue speculatively. Only a mission-critical stop may wait on the user: set missionCritical: "<why: irreversible/public/needs their hands or credential>" on that one row.';
+export const USER_WAIT_REFUSAL = 'Deliver the unresolved owner question through review-questions-page and ask with its verified URL; record card/question ID, URL, default and delivery state in the owning row. If publication fails, keep delivery open with the exact failure and next action. Continue authorized reversible implementation on the default without waiting; preserve unanswered cards after implementation closes and while the user is away. Apply an existing saved answer without asking again. Only a mission-critical action may wait on the user: set missionCritical: "<why: irreversible/public/needs their hands or credential>" on that one row; silence or continue is not approval.';
 function nonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
