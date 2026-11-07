@@ -68,9 +68,8 @@ test("real SDK child reports computed UTF-8 sizes and startup steps after startu
 					expect.objectContaining({ name: "context.history.build" }),
 				]),
 			);
-			const kickoff = summary.spans?.find(
-				(span: { name: string }) => span.name === "sdk.advisorCostRestore.kickoff",
-			);
+			const spans = summary.spans as Array<{ name: string; syncPrefixMs: number }>;
+			const kickoff = spans.find(span => span.name === "sdk.advisorCostRestore.kickoff");
 			expect(kickoff?.syncPrefixMs).toBeGreaterThanOrEqual(40);
 			expect(currentLoopPhase()).toBeUndefined();
 		} finally {
