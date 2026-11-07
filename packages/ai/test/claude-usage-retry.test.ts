@@ -21,6 +21,7 @@ function makeContext(fetchImpl: FetchImpl, retryWait?: UsageFetchContext["retryW
 function baseParams() {
 	return {
 		provider: "anthropic" as const,
+		accountKey: crypto.randomUUID(),
 		credential: {
 			type: "oauth" as const,
 			accessToken: "oat-test",
@@ -125,15 +126,14 @@ describe("claudeUsageProvider retry contract", () => {
 		expect(retryWait.mock.calls[0]?.[0]).toBe(1000);
 	});
 
-	it("aborts the retry sleep when the signal fires mid-backoff", async () => {
+	it("releases a cancelled caller during retry backoff", async () => {
 		let attempt = 0;
 		const fetchMock = (async (_url: string | URL, init?: RequestInit) => {
 			attempt += 1;
 			if (init?.signal?.aborted) throw new Error("AbortError");
 			if (attempt === 1) {
-				// Pretend Anthropic wants us to back off for 60s. Without
-				// `scheduler.wait({ signal })` the provider would stall through
-				// the timeout; with it, the abort rejects the sleep promptly.
+				// Anthropic asks for a long retry delay; caller cancellation
+				// must still release this waiter promptly.
 				return jsonResponse(503, { error: "unavailable" }, { "retry-after": "60" });
 			}
 			return jsonResponse(200, VALID_PAYLOAD);
@@ -145,12 +145,12 @@ describe("claudeUsageProvider retry contract", () => {
 			if (signal?.aborted) throw new Error("AbortError");
 			const { promise, reject } = Promise.withResolvers<void>();
 			const onAbort = () => reject(new Error("AbortError"));
-			signal?.addEventListener("abort", onAbort, { once: true });
+			controller.signal.addEventListener("abort", onAbort, { once: true });
 			queueMicrotask(() => controller.abort());
 			try {
 				await promise;
 			} finally {
-				signal?.removeEventListener("abort", onAbort);
+				controller.signal.removeEventListener("abort", onAbort);
 			}
 		});
 

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude usage polling now shares cached reports and rate-limit backoff across sessions in one process.
+
 ## [18.17.0] - 2026-11-06
 
 ### Added
