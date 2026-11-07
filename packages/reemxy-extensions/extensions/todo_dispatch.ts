@@ -40,7 +40,7 @@ import deadlineMissInstructions from "./deadline-miss.md" with { type: "text" };
 import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
-import { derivePresence, isDeadlineStateEntryMetadata, isGoalLifecycleEntryMetadata, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
+import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
 import { appendTimedNote } from "./lead_time_notes";
 import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
@@ -74,10 +74,8 @@ export function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = [])
 export function dispatchStateEntries(ctx: ExtensionContext, pending: unknown[] = []) {
   const snapshot = ctx.getTodoSnapshot?.();
   const phases = snapshot ?? ctx.getTodoPhases?.();
-  const branch = selectBranchEntries(ctx.sessionManager, (metadata) =>
-    isDeadlineStateEntryMetadata(metadata) || isGoalLifecycleEntryMetadata(metadata) ||
-    (metadata.type === "message" && metadata.messageRole === "user"),
-  );
+  // Each consumer needs current state, not all historical snapshots.
+  const branch = [...latestDeadlineStateEntries(ctx), ...latestGoalLifecycleEntries(ctx), ...latestPresenceEntries(ctx)];
   if (phases !== undefined) {
     const entries = [...branch, { type: "custom", customType: "user_todo_edit", data: { phases } }, ...pending];
     if (snapshot !== undefined && pending.length === 0) liveTodoEntrySnapshots.set(entries, snapshot);
@@ -2863,15 +2861,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     idlePlanDemandedThisTurn = false;
     healPlanTicker(ctx);
   });
-  let presenceCache: { minute: number; entries: number; presence: Presence } | null = null;
+  let presenceCache: { minute: number; entries: readonly unknown[]; presence: Presence } | null = null;
   const presenceOf = (branch: readonly unknown[], now: number): Presence => {
     const minute = Math.floor(now / 60_000);
-    if (presenceCache?.minute === minute && presenceCache.entries === branch.length) return presenceCache.presence;
+    if (presenceCache?.minute === minute && presenceCache.entries.length === branch.length && presenceCache.entries.every((entry, index) => entry === branch[index])) return presenceCache.presence;
     let presence: Presence = "watching";
     try {
       presence = derivePresence(branch, rehydrateDeadlineState(branch), now);
     } catch {}
-    presenceCache = { minute, entries: branch.length, presence };
+    presenceCache = { minute, entries: branch, presence };
     return presence;
   };
   let lastPresence: Presence | null = null;
@@ -3770,7 +3768,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }));
     return {
       workers: rowWorkers, owners: rowOwners,
-      ...readTodoDisplayLedger(selectBranchEntries(ctx.sessionManager, metadata => metadata.type === "custom" && (metadata.customType === "requirements_ledger" || metadata.customType === "requirements_auditor_assignments")), new Set(rowWorkers.map(worker => worker.id))),
+      ...readTodoDisplayLedger(["requirements_ledger", "requirements_auditor_assignments"].flatMap(customType => {
+        const entry = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === customType);
+        return entry ? [entry] : [];
+      }), new Set(rowWorkers.map(worker => worker.id))),
       capacityFull: decision.capacity > 0 && decision.activeTaskCount >= decision.capacity,
     };
   };

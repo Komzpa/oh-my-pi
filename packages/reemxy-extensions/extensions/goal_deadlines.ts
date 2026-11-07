@@ -1,5 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import { selectBranchEntries, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
+import { selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import gateNotices from "./gate-notices.md" with { type: "text" };
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
-import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { getLiveTodoBranchEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-pi-coding-agent-shim";
 import type { ActiveGoalRef, DeadlineState, QuotaSnapshot } from "./deadlines";
 import * as deadlineSdk from "./deadlines";
@@ -34,8 +34,28 @@ export function latestDeadlineStateEntries(ctx: ExtensionContext) {
 	return entry ? [entry] : [];
 }
 
-function userEntries(ctx: ExtensionContext) {
-	return selectBranchEntries(ctx.sessionManager, metadata => metadata.type === "message" && metadata.messageRole === "user");
+/** Goal focus is authoritative over legacy state, even when that state is newer. */
+export function latestGoalLifecycleEntries(ctx: ExtensionContext) {
+	for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata =>
+		metadata.type === "mode_change" || (metadata.type === "custom" && metadata.customType === "pi-goal-focus"),
+	)) {
+		if (entry.type === "custom" || ["goal", "goal_paused", "none"].includes(entry.mode)) return [entry];
+	}
+	const entry = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "pi-goal-state");
+	return entry ? [entry] : [];
+}
+
+export function latestPresenceEntries(ctx: ExtensionContext) {
+	const entry = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "message" && metadata.messageRole === "user");
+	return entry ? [entry] : [];
+}
+
+// Quote lookups are explicit history requests; decode only up to the newest authorizing turn.
+function userEntries(ctx: ExtensionContext, quote?: string) {
+	for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "message" && metadata.messageRole === "user")) {
+		if (deadlineSdk.latestDeadlineUserMessage([entry], quote)) return [entry];
+	}
+	return [];
 }
 
 const PRESENCE_DEFAULTS = {
@@ -455,7 +475,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const host = pi.pi as unknown as { getLatestTodoPhasesFromEntries?: TodoCompletionReducer } | undefined;
 		const reason = livePhases === undefined && typeof host?.getLatestTodoPhasesFromEntries !== "function"
 			? "Restore the TODO reducer before completing this goal."
-			: todoCompletionBlockReason(livePhases ?? host!.getLatestTodoPhasesFromEntries!(selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata)));
+			: todoCompletionBlockReason(livePhases ?? host!.getLatestTodoPhasesFromEntries!(getLiveTodoBranchEntries(ctx.sessionManager)));
 		if (!reason) return;
 		const key = `completion:${activeGoal.id}:${reason}`;
 		if (announcedGateNoticeKeys.has(key)) return;
@@ -463,15 +483,15 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		pi.sendMessage?.({ customType: "goal-completion-gate-notice", content: prompt.render(gateNotices, { completion: true, action: reason.split("\n")[0] }).trim(), display: false, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false });
 	};
 	const focusedGoal = (ctx: ExtensionContext): ActiveGoalRef | null => {
-		const lifecycle = sdk.readFocusedGoal(selectBranchEntries(ctx.sessionManager, isGoalLifecycleEntryMetadata), ctx.cwd);
+		const lifecycle = sdk.readFocusedGoal(latestGoalLifecycleEntries(ctx), ctx.cwd);
 		return lifecycle === undefined ? currentGoal() : lifecycle;
 	};
 
 	const persist = () => pi.appendEntry(sdk.STATE_ENTRY, state);
 	const bindObjectiveDeadline = (ctx: ExtensionContext) => {
 		// An automatic plan must not hide the user's explicit objective clock.
-		if (state?.userConstraint || !activeGoal || !ctx.sessionManager) return;
-		const derived = deadlineStateFromGoalObjective(activeGoal, userEntries(ctx));
+		if (state?.userConstraint || !activeGoal?.objective || !OBJECTIVE_DEADLINE_CLOCK.test(activeGoal.objective) || !ctx.sessionManager) return;
+		const derived = deadlineStateFromGoalObjective(activeGoal, userEntries(ctx, activeGoal.objective));
 		if (!derived) return;
 		state = derived;
 		persist();
@@ -487,21 +507,21 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return;
 		const deadlineState = state?.active && (state.userConstraint || (state.auto && activeGoal?.status !== "active") || (activeGoal?.status === "active" && activeGoal.id === state.goalId)) ? state : null;
 		if (!deadlineState) {
-			ctx.ui.setStatus("goal-deadline", derivePresence(userEntries(ctx), null));
+			ctx.ui.setStatus("goal-deadline", derivePresence(latestPresenceEntries(ctx), null));
 			ctx.ui.setWidget("goal-deadline", undefined);
 			return;
 		}
 		const host = pi.pi as unknown as { getLatestTodoPhasesFromEntries?: TodoCompletionReducer } | undefined;
 		const phases = ctx.getTodoPhases?.() ?? (
 			typeof host?.getLatestTodoPhasesFromEntries === "function"
-				? host.getLatestTodoPhasesFromEntries(selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata))
+				? host.getLatestTodoPhasesFromEntries(getLiveTodoBranchEntries(ctx.sessionManager))
 				: []);
 		const todoShowsDue = (phases ?? []).some(phase =>
 			phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
 		);
 		const lines = renderDeadlineUi(deadlineState, Math.floor(Date.now() / 1000), todoShowsDue);
 		// The widget below the editor already shows the deadline; the status keeps presence brief.
-		ctx.ui.setStatus("goal-deadline", derivePresence(userEntries(ctx), deadlineState));
+		ctx.ui.setStatus("goal-deadline", derivePresence(latestPresenceEntries(ctx), deadlineState));
 		ctx.ui.setWidget("goal-deadline", lines, { placement: "belowEditor" });
 	};
 	const refresh = (ctx: ExtensionContext) => {
@@ -539,7 +559,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const reminder = deadlineState
 			? renderDeadlineReminder(deadlineState, Math.floor(now / 1_000), quota, phases)
 			: activeGoal?.status === "active" ? renderMissingScheduleReminder(activeGoal) : null;
-		const presence = renderPresence(userEntries(ctx), deadlineState, now);
+		const presence = renderPresence(latestPresenceEntries(ctx), deadlineState, now);
 		const content = deadlineState?.userConstraint && deadlineSdk.isUserDeadlineMissed(deadlineState)
 			? [reminder, presence].filter(Boolean).join("\n\n")
 			: [presence, reminder].filter(Boolean).join("\n\n");
@@ -555,7 +575,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 				} : null,
 				activeGoal: activeGoal?.status === "active" ? [activeGoal.id, activeGoal.status] : null,
 				deadlineStatus: deadlineState?.userConstraint ? deadlineSdk.isUserDeadlineMissed(deadlineState, now / 1_000) : null,
-				presence: derivePresence(userEntries(ctx), deadlineState, now),
+				presence: derivePresence(latestPresenceEntries(ctx), deadlineState, now),
 				quota: quota ? [quota.provider, quota.remainingPercent, quota.status] : null,
 			});
 			const workOpen = Boolean(reminder || remaining?.length);
@@ -600,7 +620,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		if (livePhases === undefined && typeof host?.getLatestTodoPhasesFromEntries !== "function") {
 			return { block: true, reason: "Restore the TODO reducer before completing this goal.\nTODO closure cannot be verified without the host reducer." };
 		}
-		const reason = todoCompletionBlockReason(livePhases ?? host!.getLatestTodoPhasesFromEntries!(selectBranchEntries(ctx.sessionManager, isTodoSelectionEntryMetadata)));
+		const reason = todoCompletionBlockReason(livePhases ?? host!.getLatestTodoPhasesFromEntries!(getLiveTodoBranchEntries(ctx.sessionManager)));
 		return reason ? { block: true, reason } : undefined;
 	});
 
@@ -671,7 +691,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 			const params = rawParams as DeadlineToolParams;
 			refresh(ctx);
 			if (params.action === "set") {
-				const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx), params.user_message);
+				const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx, params.user_message), params.user_message);
 				const goalId = params.goal_id ?? activeGoal?.id ?? state?.goalId ?? "session-deadline";
 				const goalStartedAt = params.goal_started_at ?? activeGoal?.createdAt ?? user?.at ?? Math.floor(Date.now() / 1_000);
 				const timezone = deadlineSdk.resolveTimeZone(params.timezone ?? state?.timezone);
@@ -777,7 +797,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 				stage.deliveredArtifact = params.delivered_artifact;
 			} else if (params.action === "clear") {
 				if (state?.userConstraint) {
-					const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx), params.user_message);
+					const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx, params.user_message), params.user_message);
 					const quoted = params.user_message?.trim() && user;
 					if (!user || user.id === state.userConstraint.messageId || user.at < state.userConstraint.recordedAt || !quoted)
 						throw deadlineGateError("Quote a newer real user message.", "user_message must quote a newer real user message");
