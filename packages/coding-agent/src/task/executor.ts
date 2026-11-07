@@ -2751,7 +2751,6 @@ async function driveSessionToResult(
 			exitCode = 1;
 			error ??= refusal.message;
 		}
-
 	} catch (err) {
 		if (abortSignal.aborted && monitor.yieldCalled() && !monitor.runtimeLimitExceeded()) {
 			exitCode = 0;
