@@ -2977,7 +2977,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			sessionId: () => this.sessionId,
 			costGate: () => this.#costGate,
 			localProtocolOptions: () => this.#localProtocolOptions(),
-			transformContext: (messages, signal) => this.#transformContext(messages, signal),
+			transformContext: async (messages, signal) =>
+				this.#filterRestartNotices(await this.#transformContext(messages, signal)),
 			convertToLlm: messages => this.#convertToLlm(messages),
 			onPayload: this.#onPayload,
 			onResponse: this.#onResponse,
@@ -8051,6 +8052,58 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.agent.followUp(message);
 		await this.#persistPendingRestartMessages();
 		await this.sessionManager.flush();
+	}
+
+	#filterRestartNotices(messages: AgentMessage[]): AgentMessage[] {
+		const keep = createRestartNoticeFilter(
+			selectRestartBranchEntries(
+				this.sessionManager,
+				entry => entry.type === "custom" && entry.customType === "restart_request_transition",
+			),
+		);
+		return messages.filter(message => message.role !== "custom" || keep(message));
+	}
+
+	/** Commit the wake to the transcript before acknowledging restart delivery. */
+	async deliverRestartContinuation(requestId: string, content: string): Promise<void> {
+		await this.reconcileRestartNotices();
+		const message: CustomMessage = {
+			role: "custom",
+			customType: "restart-root-continuation",
+			content,
+			display: true,
+			attribution: "agent",
+			details: { requestId, state: "completed" },
+			timestamp: Date.now(),
+		};
+		this.agent.appendMessage(message);
+		this.sessionManager.appendCustomMessageEntry(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+			message.attribution,
+		);
+		await this.sessionManager.ensureOnDisk();
+		await this.sessionManager.flush();
+		const generation = this.#sessionGeneration;
+		this.#schedulePostPromptTask(async signal => {
+			await this.agent.waitForIdle();
+			await this.#drainInFlightEventHandlers();
+			if (signal.aborted || this.#isDisposed || generation !== this.#sessionGeneration) return;
+			// An active turn may finish after the append. Keep the durable wake at
+			// the tail so continue() can start even after that turn's assistant reply.
+			this.agent.replaceMessages(
+				this.agent.state.messages.filter(
+					candidate =>
+						candidate.role !== "custom" ||
+						candidate.customType !== message.customType ||
+						candidate.content !== content,
+				),
+			);
+			this.agent.appendMessage(message);
+			this.#scheduleAgentContinue({ source: "restart-root-continuation" });
+		});
 	}
 
 	/** Reconcile already-loaded model state after the restart journal reaches a terminal state. */

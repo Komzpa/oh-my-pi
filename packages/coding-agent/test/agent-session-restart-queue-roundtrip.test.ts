@@ -1,3 +1,4 @@
+import { sendRootContinuationOnce } from "../src/task/restart-recovery";
 import restartQueuedPrompt from "../src/prompts/restart-queued.md" with { type: "text" };
 import { currentRuntimeIdentity, formatRuntimeIdentity } from "../src/session/runtime-identity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
@@ -61,6 +62,7 @@ describe("AgentSession restart queue round trip", () => {
 		modelInputs?: string[],
 		tools: AgentTool[] = [],
 		asyncJobManager?: AsyncJobManager,
+		transformContext?: (messages: AgentMessage[]) => Promise<AgentMessage[]>,
 	): AgentSession {
 		const mock = createMockModel({ responses });
 		const agent = new Agent({
@@ -71,19 +73,22 @@ describe("AgentSession restart queue round trip", () => {
 				tools,
 				messages: manager.buildSessionContext().messages,
 			},
-			convertToLlm,
+			convertToLlm: messages =>
+				transformContext ? activeSession.convertMessagesToLlm(messages) : convertToLlm(messages),
 			streamFn: (model, context, options) => {
 				modelInputs?.push(JSON.stringify(context.messages));
 				return mock.stream(model, context, options);
 			},
 		});
-		return new AgentSession({
+		const activeSession = new AgentSession({
 			agent,
 			sessionManager: manager,
 			settings: Settings.isolated({ "compaction.enabled": false }),
 			asyncJobManager,
 			modelRegistry,
+			transformContext,
 		});
+		return activeSession;
 	}
 
 	function appendPriorAssistant(manager: SessionManager): void {
@@ -550,6 +555,99 @@ describe("AgentSession restart queue round trip", () => {
 		expect(checkpoint?.type === "custom" ? checkpoint.data : undefined).toMatchObject({ pendingNextTurn: [active] });
 		lease.release();
 	});
+
+	it.each([false, true])(
+		"persists completion before delivery and removes captured queued notices (busy: %s)",
+		async busy => {
+			const manager = currentManager();
+			appendPriorAssistant(manager);
+			const requestId = "claude-dc-1920-batch3";
+			const stale = {
+				...hiddenNextTurnMessage(`Restart ${requestId} is queued. ${restartQueuedPrompt.trim()}`),
+				customType: "restart-queued",
+				details: { requestId, state: "queued" },
+			};
+			manager.appendCustomMessageEntry(stale.customType, stale.content, true, stale.details);
+			const unrelated = hiddenNextTurnMessage("preserve unrelated worker result");
+			manager.appendCustomEntry("omp:restart-pending-queues", {
+				steering: [stale, unrelated],
+				followUp: [stale],
+				pendingNextTurn: [stale],
+			});
+			const transition = (state: string) =>
+				manager.appendCustomEntry("restart_request_transition", {
+					version: 1,
+					identity: { instanceId: "after", sessionId: manager.getSessionId(), generation: 1 },
+					record: { requestId, state },
+				});
+			transition("queued");
+			const entered = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const inputs: string[] = [];
+			let captured = false;
+			session = createSession(
+				manager,
+				Array.from({ length: 6 }, () => ({ content: ["ready"] })),
+				inputs,
+				[],
+				undefined,
+				async messages => {
+					if (busy && !captured) {
+						captured = true;
+						entered.resolve();
+						await release.promise;
+					}
+					return messages;
+				},
+			);
+			AgentRegistry.resetGlobalForTests();
+			IrcBus.resetGlobalForTests();
+			AgentRegistry.global().register({
+				id: MAIN_AGENT_ID,
+				displayName: "Root",
+				kind: "main",
+				session,
+				status: "idle",
+			});
+			let active: Promise<boolean> | undefined;
+			try {
+				if (busy) {
+					active = session.prompt("finish active batch");
+					await entered.promise;
+				}
+				transition("completed");
+				expect(await sendRootContinuationOnce(session, requestId)).toEqual({ state: "delivered" });
+				const entries = manager.getEntries();
+				const wake = entries.findIndex(
+					entry => entry.type === "custom_message" && entry.customType === "restart-root-continuation",
+				);
+				const delivered = entries.findIndex(
+					entry =>
+						entry.type === "custom" &&
+						entry.customType === "root_restart_continuation_receipt" &&
+						(entry.data as { outcome: string }).outcome === "continuation-delivered",
+				);
+				expect(wake).toBeGreaterThan(-1);
+				expect(delivered).toBeGreaterThan(wake);
+				expect(await Bun.file(manager.getSessionFile()!).text()).toContain(`Restart ${requestId} completed`);
+				expect(
+					session.agent.state.messages.some(
+						message => message.role === "custom" && message.customType === "restart-root-continuation",
+					),
+				).toBe(true);
+			} finally {
+				release.resolve();
+				await active;
+				await session.waitForIdle();
+			}
+			expect(inputs.join("\n")).not.toContain(stale.content);
+			expect(inputs.join("\n")).toContain("preserve unrelated worker result");
+			expect(inputs.at(-1)).toContain(`Restart ${requestId} completed`);
+			expect(await sendRootContinuationOnce(session, requestId)).toEqual({ state: "already-delivered" });
+			AgentRegistry.resetGlobalForTests();
+			IrcBus.resetGlobalForTests();
+		},
+	);
 
 	it.each([false, true])(
 		"wakes a completed root once after retiring its checkpoint request (running: %s)",

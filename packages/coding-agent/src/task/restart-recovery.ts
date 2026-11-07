@@ -555,12 +555,10 @@ export async function sendRootContinuationOnce(
 	}
 	await session.sessionManager.ensureOnDisk();
 	await recordRootContinuationReceipt(session, rootSessionId, requestId, "continuation-claimed");
-	let receipt: IrcDeliveryReceipt;
 	try {
-		receipt = await IrcBus.global().send({
-			from: rootRef.id,
-			to: rootRef.id,
-			body: prompt
+		await session.deliverRestartContinuation(
+			requestId,
+			prompt
 				.render(restartRootContinuationPrompt, {
 					requestId,
 					build: formatRuntimeIdentity(currentRuntimeIdentity()),
@@ -582,7 +580,7 @@ export async function sendRootContinuationOnce(
 					lost: report?.failures ?? [],
 				})
 				.trim(),
-		});
+		);
 	} catch (error) {
 		const reason = `root continuation send threw after its durable claim; result is uncertain and it will not be retried: ${error instanceof Error ? error.message : String(error)}`;
 		try {
@@ -598,22 +596,13 @@ export async function sendRootContinuationOnce(
 		session.emitNotice("warning", reason, "restart-recovery");
 		return { state: "blocked", reason };
 	}
-	if (receipt.outcome === "failed") {
-		const reason = `root continuation delivery failed or has an uncertain result after its durable claim; it will not be retried: ${receipt.error ?? "delivery failed"}`;
-		await recordRootContinuationReceipt(session, rootSessionId, requestId, "continuation-failed", {
-			deliveryOutcome: receipt.outcome,
-			reason,
-		});
-		session.emitNotice("warning", reason, "restart-recovery");
-		return { state: "blocked", reason };
-	}
 	try {
 		await recordRootContinuationReceipt(session, rootSessionId, requestId, "continuation-delivered", {
-			deliveryOutcome: receipt.outcome,
+			deliveryOutcome: "persisted",
 		});
 		return { state: "delivered" };
 	} catch (error) {
-		const reason = `root continuation was delivered (${receipt.outcome}) but its receipt could not be persisted; the durable claim will prevent replay: ${error instanceof Error ? error.message : String(error)}`;
+		const reason = `root continuation was persisted but its receipt could not be persisted; the durable claim will prevent replay: ${error instanceof Error ? error.message : String(error)}`;
 		session.emitNotice("error", reason, "restart-recovery");
 		return { state: "blocked", reason };
 	}

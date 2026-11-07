@@ -105,6 +105,11 @@ function makeSession(manager: SessionManager, options: SessionHarnessOptions = {
 			customMessages.push(message);
 			await options.onCustomMessage?.(message);
 		},
+		deliverRestartContinuation: async (requestId: string, content: string) => {
+			manager.appendCustomMessageEntry("restart-root-continuation", content, true, { requestId });
+			await manager.flush();
+			options.onDelivery?.({ id: requestId, from: MAIN_AGENT_ID, to: MAIN_AGENT_ID, body: content, ts: Date.now() });
+		},
 		deliverIrcMessage: async (message: IrcMessage) => {
 			deliveries.push(message);
 			options.onDelivery?.(message);
