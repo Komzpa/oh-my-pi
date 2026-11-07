@@ -1,7 +1,6 @@
 // Model-lineage compat for "openai"; regenerated from the frozen census using class taxonomy selectors.
 
 class "openai" {
-
 	// Replaces the o-series mandatory-reasoning fallback. o-series and GPT-5+
 	// reject explicit sampling params (`temperature`, `top_p`) with a 400 on
 	// every serving host (#5606), whichever API fronts them.
@@ -230,5 +229,4 @@ class "openai" {
 			harness-notice-role "user"
 		}
 	}
-
 }
