@@ -154,6 +154,24 @@ test("all-conflicting call has no job and is a harness refusal", async () => {
 	expect(textOf(result)).toStartWith("REFUSED: no worker was spawned for PrCaptures:");
 	expect(result.isError).toBe(true);
 	expect(result.content[0]).toMatchObject({ harnessNotice: true });
+	const converted = convertWithHarnessNotices(
+		[
+			{
+				role: "toolResult",
+				toolCallId: "blocked",
+				toolName: "task",
+				content: result.content,
+				harnessNotice: result.harnessNotice,
+				isError: true,
+				timestamp: 1,
+			},
+		],
+		"user",
+		convertToLlm,
+	);
+	expect(converted.find(message => message.role === "toolResult")?.content).toEqual([
+		{ type: "text", text: "REFUSED: tool did not run — see harness note" },
+	]);
 	expect(f.jobs.getJob("PrCaptures")).toBeUndefined();
 	expect(f.run).not.toHaveBeenCalled();
 });
