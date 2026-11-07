@@ -113,8 +113,17 @@ export class AgentOutputManager {
 	 * @param id Requested ID (e.g., "Anna")
 	 * @returns Unique ID ("Anna" first, then "Anna-2", "Anna-3", …)
 	 */
-	async allocate(id: string): Promise<string> {
+	async allocate(id: string, attempt?: number): Promise<string> {
 		await this.#ensureInitialized();
+		if (attempt !== undefined) {
+			let ordinal = Math.max(1, attempt);
+			for (const taken of this.#taken) {
+				if (!taken.startsWith(`${id}-`)) continue;
+				const suffix = taken.slice(id.length + 1);
+				if (/^\d+$/.test(suffix)) ordinal = Math.max(ordinal, Number(suffix) + 1);
+			}
+			id = `${id}-${ordinal}`;
+		}
 		return this.#allocateUnique(id);
 	}
 }

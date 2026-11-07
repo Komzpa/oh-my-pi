@@ -1,3 +1,4 @@
+import infraBreakerTemplate from "../../coding-agent/src/prompts/tools/task-infra-breaker.md" with { type: "text" };
 import { createSkippedToolResult, steeringQueueState } from "../../agent/src/agent-loop";
 import type { AgentMessage } from "../../agent/src/types";
 import { Type } from "@sinclair/typebox";
@@ -21,6 +22,7 @@ export const gateScenarioIds = [
 	"harnessrole",
 	"compactloop",
 	"composite-deadlock",
+	"infrabreaker",
 	"advisoryskip",
 ];
 export async function leadGateScenarios(): Promise<LeadInstructionScenario[]> {
@@ -104,7 +106,7 @@ export async function leadGateScenarios(): Promise<LeadInstructionScenario[]> {
 		throw new Error("Unanswered critic action did not become first-priority after two turns");
 	for (const id of gateScenarioIds) {
 		if (id === "advisoryskip") continue;
-		const blocked = id === "spawnconflict" || id === "composite-deadlock";
+		const blocked = id === "spawnconflict" || id === "composite-deadlock" || id === "infrabreaker";
 		const auditor = { ...structuredClone(holder), schedule: { ...holder.schedule, readOnly: !blocked } };
 		const expected = blocked
 			? { tool: "read", args: { path: "agent://AuditPower" } }
@@ -128,9 +130,14 @@ export async function leadGateScenarios(): Promise<LeadInstructionScenario[]> {
 						}
 					: expected.args,
 		};
+		const candidateRow = structuredClone(row);
+		if (id === "infrabreaker") {
+			candidateRow.status = "blocked";
+			candidateRow.blocker = 'Infra breaker: resources held by row "Verify levelled power inventory and incomplete inputs" (owner AuditPower)';
+		}
 		const scenario = await capture({
 			id,
-			row: structuredClone(row),
+			row: candidateRow,
 			extraRows: [auditor],
 			harnessRole: true,
 			state: "needs worker",
@@ -160,6 +167,7 @@ export async function leadGateScenarios(): Promise<LeadInstructionScenario[]> {
 			ctx,
 		);
 		if (conflict) scenario.context += `\n\n${formatSpawnRefusal(conflict, "RestorePreview")}`;
+		if (id === "infrabreaker") scenario.context += `\n\n${prompt.render(infraBreakerTemplate, {row: candidateRow.content, cause: conflict}).trim()}`;
 		if (id === "compactloop")
 			scenario.context = prompt.render(backoff, {
 				model: "fixture",

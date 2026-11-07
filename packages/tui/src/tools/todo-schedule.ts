@@ -1,3 +1,5 @@
+export * from "./todo-infra";
+import { todoWorkAttempts } from "./todo-infra";
 import { drawAttemptChain, riskCells, riskRandom, type RowRiskOptions, type RowRiskForecast } from "./todo-row-risk";
 export * from "./todo-row-risk";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
@@ -1888,7 +1890,7 @@ function simulateRowRisk(
 					node.schedule?.firstEstimate
 						? todoEstimateMeanSeconds(node.estimate!) * (node.calibrationRatio ?? 1)
 						: (node.schedule?.riskEstimateMeanSeconds ?? nodeDurations(node).expected),
-					(node.schedule?.attemptHistory?.length ?? 0) + 1,
+					todoWorkAttempts(node.schedule?.attemptHistory).length + 1,
 					elapsed,
 					random,
 				) * 1000,
@@ -1925,7 +1927,8 @@ function simulateRowRisk(
 						cells.reduce(
 							(sum, cell) =>
 								sum +
-								cell.weight * cell.component.p_redo[Math.min(node.schedule?.attemptHistory?.length ?? 0, 2)],
+								cell.weight *
+									cell.component.p_redo[Math.min(todoWorkAttempts(node.schedule?.attemptHistory).length, 2)],
 							0,
 						) / weight,
 					lastFinishProbability: (lastCounts.get(node) ?? 0) / samples,
@@ -2579,8 +2582,10 @@ export function renderTodoPlanDisplay(
 					: "";
 			const row = options.forecast?.rows.find(row => row.content === task.content);
 			const rowEta = formatTodoDisplayEta(row?.resourceFinish, now);
-			const attempts = task.schedule?.attemptHistory?.length ?? 0;
-			const suffix = ` — ${label}${blocker}${worker}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}`;
+			const history = task.schedule?.attemptHistory ?? [];
+			const attempts = todoWorkAttempts(history).length;
+			const infra = history.length - attempts;
+			const suffix = ` — ${label}${blocker}${worker}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}${infra ? ` · infra failures ${infra}` : ""}`;
 			const title = truncateToWidth(
 				safeText(task.content),
 				Math.max(0, (options.width ?? Infinity) - Bun.stringWidth(suffix) - 4),

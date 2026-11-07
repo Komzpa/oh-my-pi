@@ -1,3 +1,7 @@
+import { stripOmpCollisionSuffixChain } from "./id-collision";
+import { findTodoExecutorTarget } from "../tools/todo-executor";
+import { todoInfraBreaker, todoWorkAttempts, todoAttemptIsInfra } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import infraBreakerTemplate from "../prompts/tools/task-infra-breaker.md" with { type: "text" };
 import { formatSpawnRefusal } from "./spawn-refusal";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import { isTaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
@@ -982,9 +986,60 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	readonly #workerSessions = new Map<string, StructuredSubagentResult>();
 	readonly #reflectingWorkers = new Set<string>();
 
+	#spawnRow(params: SpawnParams) {
+		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.() ?? [];
+		const task = findTodoExecutorTarget(phases, {
+			workerId: params.name ?? "",
+			row: params.row,
+			taskText: params.task,
+			startedAt: 0,
+		});
+		const phase = phases.find(phase => phase.tasks.includes(task!));
+		return task && phase ? { phase: phase.name, task } : undefined;
+	}
+
+	#allocateSpawn(params: SpawnParams): Promise<string> {
+		const row = this.#spawnRow(params)?.task;
+		const history = row?.schedule?.attemptHistory ?? [];
+		const requested = params.name?.trim() || generateTaskName();
+		if (!history.length) return this.#outputManager().allocate(requested);
+		const base = stripOmpCollisionSuffixChain(history[0]!.workerName.split(".").at(-1) ?? requested);
+		return this.#outputManager().allocate(base, history.length + 1);
+	}
+
+	#breaker(params: SpawnParams): string | undefined {
+		const row = this.#spawnRow(params)?.task;
+		const cause = row?.status === "blocked" ? todoInfraBreaker(row.schedule?.attemptHistory) : undefined;
+		return cause ? prompt.render(infraBreakerTemplate, { row: row!.content, cause }).trim() : undefined;
+	}
+
+	#recordRefusal(params: SpawnParams, id: string, cause: string): void {
+		const row = this.#spawnRow(params);
+		if (!row || !this.session.setTodoPhases || !this.session.persistTodoPhases) return;
+		const now = Date.now();
+		this.#appendAttempt(
+			{ phase: row.phase, content: row.task.content },
+			{
+				attemptId: `admission:${id}:${now}:${row.task.schedule?.attemptHistory?.length ?? 0}`,
+				workerName: id,
+				resolvedModel: "unresolved",
+				effort: "unresolved",
+				startedAt: now,
+				finishedAt: now,
+				durationMs: 0,
+				terminalStatus: "failed",
+				deliverablePaths: [],
+				infraFailureError: cause,
+				infraFailureLine: `infra failure: ${cause}`,
+			},
+		);
+	}
+
 	#routeRework(spawn: TaskParams): { route?: ReworkRoute; error?: string } {
 		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.();
 		const name = spawn.name?.trim();
+		const breaker = this.#breaker(spawn);
+		if (breaker) return { error: breaker };
 		if (!phases || !name) return {};
 		const rows = phases.flatMap(phase =>
 			phase.tasks
@@ -1007,7 +1062,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// Vendors already spent on this row: every rejected or model-failed attempt, plus the
 		// attempt being re-dispatched. Infrastructure failures say nothing about the model.
 		const triedModels = history
-			.filter(attempt => attempt.terminalStatus === "completed" || !isInfraFailure(attempt.infraFailureError))
+			.filter(
+				attempt =>
+					attempt.terminalStatus === "completed" ||
+					(!todoAttemptIsInfra(attempt) && !isInfraFailure(attempt.infraFailureError)),
+			)
 			.map(attempt => attempt.resolvedModel);
 		/** Next-vendor model; undefined = no chain (ordinary routing); null = every vendor tried. */
 		const nextVendorModel = (): string | null | undefined => {
@@ -1029,7 +1088,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		};
 		if (previous.outcome !== "completed") {
 			const failed = history.findLast(attempt => attempt.attemptId === `${previous.workerId}:${previous.startedAt}`);
-			const infra = isInfraFailure(failed?.infraFailureError);
+			const infra = (failed && todoAttemptIsInfra(failed)) || isInfraFailure(failed?.infraFailureError);
 			const sameProfile = spawn.agent === undefined || spawn.agent === previous.agentProfile;
 			let model: string | null | undefined;
 			// No resolved model means the worker failed before any model ran (a missing key, a bad
@@ -1044,7 +1103,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					row: { phase, content: task.content },
 					previous,
 					rung: model ? { model } : undefined,
-					failedLine: failed?.infraFailureLine ?? `attempt ${history.length + 1} failed: ${previous.outcome}`,
+					failedLine:
+						failed?.infraFailureLine ??
+						`attempt ${todoWorkAttempts(history).length + 1} failed: ${previous.outcome}`,
 				},
 			};
 		}
@@ -1075,6 +1136,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (!phases || !this.session.setTodoPhases || !this.session.persistTodoPhases) {
 			throw new Error("Rework requires durable Todo persistence.");
 		}
+		const priorCause = todoInfraBreaker(
+			phases.find(phase => phase.name === row.phase)?.tasks.find(task => task.content === row.content)?.schedule
+				?.attemptHistory,
+		);
 		const updated = appendTodoReworkAttempt(phases, row, attempt);
 		if (!updated) {
 			const matches = phases.flatMap(phase =>
@@ -1089,6 +1154,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 		this.session.setTodoPhases(updated);
 		this.session.persistTodoPhases(updated, buildTodoReworkAttemptPersistedEdit(row, attempt));
+		const cause = todoInfraBreaker(
+			updated.find(phase => phase.name === row.phase)?.tasks.find(task => task.content === row.content)?.schedule
+				?.attemptHistory,
+		);
+		if (cause && !priorCause)
+			this.session.steer?.({
+				customType: "todo-infra-breaker",
+				content: prompt.render(infraBreakerTemplate, { row: row.content, cause }).trim(),
+			});
 	}
 
 	#recordFailedAttempt(
@@ -1129,22 +1203,21 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			(result.error ?? result.abortReason ?? result.stderr ?? result.output)
 				.replace(/[\r\n\u2028\u2029]+/gu, " ")
 				.trim() || "worker failed";
-		this.#appendAttempt(
-			{ phase, content: task.content },
-			{
-				attemptId: `${result.id}:${previous.startedAt}`,
-				workerName: result.id,
-				resolvedModel: result.resolvedModelIdentity ?? previous.resolvedModel ?? "unresolved",
-				effort: result.resolvedThinkingLevel ?? previous.thinkingLevel ?? "unresolved",
-				startedAt: previous.startedAt,
-				finishedAt: previous.finishedAt ?? Date.now(),
-				durationMs: result.durationMs,
-				terminalStatus: result.aborted ? "aborted" : "failed",
-				deliverablePaths: result.outputPath ? [result.outputPath] : [],
-				infraFailureError: error,
-				infraFailureLine: `attempt ${(task.schedule?.attemptHistory?.length ?? 0) + 1} failed: ${error}`,
-			},
-		);
+		const attempt: TodoReworkAttempt = {
+			attemptId: `${result.id}:${previous.startedAt}`,
+			workerName: result.id,
+			resolvedModel: result.resolvedModelIdentity ?? previous.resolvedModel ?? "unresolved",
+			effort: result.resolvedThinkingLevel ?? previous.thinkingLevel ?? "unresolved",
+			startedAt: previous.startedAt,
+			finishedAt: previous.finishedAt ?? Date.now(),
+			durationMs: result.durationMs,
+			terminalStatus: result.aborted ? "aborted" : "failed",
+			deliverablePaths: result.outputPath ? [result.outputPath] : [],
+			infraFailureError: error,
+			infraFailureLine: `attempt ${todoWorkAttempts(task.schedule?.attemptHistory).length + 1} failed: ${error}`,
+		};
+		if (todoAttemptIsInfra(attempt)) attempt.infraFailureLine = `infra failure: ${error}`;
+		this.#appendAttempt({ phase, content: task.content }, attempt);
 	}
 
 	async #restoreWorker(route: ReworkRoute, policy: EffectiveSubagentPolicy): Promise<StructuredSubagentResult> {
@@ -1589,7 +1662,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 		const detached =
 			cfgAsyncEnabled.get(this.session.settings) && this.session.asyncJobManager !== undefined && !blocking;
-		const agentId = await this.#outputManager().allocate(spawn.name?.trim() || generateTaskName());
+		const agentId = await this.#allocateSpawn(spawn);
 		if (signal.aborted || (await this.#admitSpawn(spawn, agentId, signal))) return undefined;
 		return this.#launch({ toolCallId, params: spawn, index, agentId, detached });
 	}
@@ -1648,6 +1721,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	}
 
 	async #admitSpawn(params: SpawnParams, id: string, signal?: AbortSignal): Promise<string | undefined> {
+		const breaker = this.#breaker(params);
+		if (breaker) return breaker;
 		try {
 			const policy = await this.#resolveSpawnPreflight(params);
 			if (policy.preparedSession !== undefined) return;
@@ -1669,9 +1744,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				},
 				signal,
 			);
-			if (result?.block) return formatSpawnRefusal(result.reason ?? "Subagent spawn blocked by extension.", id);
+			if (result?.block) {
+				const cause = result.reason ?? "Subagent spawn blocked by extension.";
+				this.#recordRefusal(params, id, cause);
+				return this.#breaker(params) ?? formatSpawnRefusal(cause, id);
+			}
 		} catch (error) {
-			return formatSpawnRefusal(error instanceof Error ? error.message : String(error), id);
+			const cause = error instanceof Error ? error.message : String(error);
+			this.#recordRefusal(params, id, cause);
+			return this.#breaker(params) ?? formatSpawnRefusal(cause, id);
 		}
 	}
 
@@ -1784,6 +1865,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			.map((preflight, index) => ("error" in preflight ? { index, error: preflight.error } : undefined))
 			.filter((failure): failure is { index: number; error: string } => failure !== undefined);
 		if (preflightFailures.length > 0) {
+			for (const failure of preflightFailures)
+				this.#recordRefusal(
+					normalizedSpawnParams[failure.index]!,
+					spawnItems[failure.index]!.name ?? "preflight",
+					failure.error,
+				);
 			if (!batchEnabled) {
 				return createTaskModeError(`Task execution failed: ${preflightFailures[0]!.error}`);
 			}
@@ -1829,10 +1916,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 		const admittedIds = new Map<number, string>();
 		const refused: string[] = [];
-		const outputManager = this.#outputManager();
-		for (const [index, item] of spawnItems.entries()) {
+		for (const index of spawnItems.keys()) {
 			const run = adopted.get(index);
-			const id = run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
+			const id = run?.identity.agentId ?? (await this.#allocateSpawn(normalizedSpawnParams[index]!));
 			const refusal = run ? undefined : await this.#admitSpawn(normalizedSpawnParams[index]!, id, signal);
 			if (refusal) refused.push(refusal);
 			else admittedIds.set(index, id);
