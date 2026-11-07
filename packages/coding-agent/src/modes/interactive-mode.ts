@@ -8624,6 +8624,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async #disposeRestartControl(): Promise<void> {
+		if (this.#restartQueueController?.snapshot().request?.state === "restarting") return;
 		const publication = this.#restartControlPublication;
 		this.#restartControlPublication = undefined;
 		if (publication) {
@@ -8859,7 +8860,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.closeNative();
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
-		if (this.#restartQueueController?.snapshot().request?.state !== "restarting") await this.#disposeRestartControl();
+		await this.#disposeRestartControl();
 		await this.ui.terminal.drainInput(1000);
 		// Stop the run-state spinner interval BEFORE restoring the shell title, so a
 		// pending tick cannot re-emit an OSC title after `popTerminalTitle` hands the
