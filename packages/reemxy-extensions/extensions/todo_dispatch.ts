@@ -53,6 +53,7 @@ import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from ".
 
 import { wakeDemand as stalledWakeDemand, countsAsWakeAction, type WakeReceipt, recoveryDemand, recoveryActionObserved, measuredRecoveryForecast, type RecoveryState } from "./dispatch_wake";
 import dispatchWakeInstructions from "./dispatch-wake.md" with { type: "text" };
+import concurrentRecoveryInstructions from "./dispatch-concurrent-recovery.md" with { type: "text" };
 
 
 export function dispatchTodoArchive(ctx: ExtensionContext): TodoScheduleInput {
@@ -2478,7 +2479,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     formatPlanForecast: hostSdk.formatPlanForecast,
     formatTaskForecast: hostSdk.formatTaskForecast,
     getTodoPlanningIssues: hostSdk.getTodoPlanningIssues,
-    readGoalDeadline: hostSdk.readGoalDeadline ?? readGoalDeadline,
+    // Older native readers do not recognize the extension-owned automatic anchor.
+    readGoalDeadline: (entries, cwd, options) => rehydrateDeadlineState(entries)?.auto === true
+      ? readGoalDeadline(entries, cwd, options)
+      : (hostSdk.readGoalDeadline ?? readGoalDeadline)(entries, cwd, options),
     getLatestTodoPhasesFromEntries: ((entries: never) => readDispatchTodoPhases(entries, host.getLatestTodoPhasesFromEntries)) as typeof host.getLatestTodoPhasesFromEntries,
   };
   // Rows the lead declared mission-critical (irreversible/public/needs their hands) in a todo call; only these may wait on the user.
@@ -2536,7 +2540,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const wakeDemand = (phases, running, now, deadline, finish, questions, ctx) => {
     const strict = ctx ? recoveryFor(ctx) : undefined;
     const usual = stalledWakeDemand(phases, running, now, deadline, finish, questions);
-    return questions?.length ? usual : chainDemand(phases) ?? (usual?.churn ? usual : strict ?? usual);
+    const primary = questions?.length ? usual : chainDemand(phases) ?? (usual?.churn ? usual : undefined);
+    return primary && strict
+      ? { ...primary, action: prompt.render(concurrentRecoveryInstructions, { primary: primary.action, recovery: strict.action }).trim() }
+      : primary ?? strict ?? usual;
   };
   const prepareWake = (ctx: ExtensionContext) => {
     const before = todoPhases(ctx);
@@ -2978,6 +2985,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 	void refreshLiveWorkerModels(ctx);
     refreshRowRisk(ctx);
     releaseLapsedPostDeadline(ctx);
+    if (typeof pi.appendEntry === "function" && !singleWriterLane && !pauseGate?.paused && !gateSwitchedOff(ctx) && isMain(ctx)) recoveryFor(ctx);
     announceGates(ctx);
     void refreshPush(ctx);
   };
