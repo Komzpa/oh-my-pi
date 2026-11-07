@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
+import { selectBranchEntries, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { TodoScheduleInputTask } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import brief from "./requirement-quotes.md" with { type: "text" };
@@ -58,10 +58,10 @@ export function prepareRequirementBrief(
 ): { task: string; refusal?: string } {
 	const quotes = rowRequirementQuotes(ctx, row.content);
 	const conflict = requirementConflict(row);
-	const resolution = selectLatestBranchEntry(
+	const resolution = selectBranchEntries(
 		ctx.sessionManager,
 		m => m.type === "custom" && m.customType === "requirement-contract-resolution",
-	);
+	).findLast(entry => "data" in entry && isRecord(entry.data) && entry.data.row === row.content);
 	const record = resolution && "data" in resolution && isRecord(resolution.data) ? resolution.data : {};
 	const resolved =
 		record.row === row.content &&
@@ -99,9 +99,8 @@ export function installRequirementResolution(pi: ExtensionAPI): void {
 		async execute(_id, params, _signal, _update, ctx) {
 			if (ctx.sessionManager.getHeader()?.parentSession)
 				throw new Error("Only the lead can resolve a requirement conflict");
-			const row = ctx
-				.getTodoPhases?.()
-				.flatMap(p => p.tasks)
+			const row = (ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.())
+				?.flatMap(p => p.tasks)
 				.find(r => r.content === params.row);
 			if (!row) throw new Error("Unknown row");
 			const conflict = requirementConflict(row);
