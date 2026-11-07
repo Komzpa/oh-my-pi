@@ -71,14 +71,13 @@ describe("InteractiveMode restart", () => {
 			// Stand in for a successful exec, which never returns to the caller.
 			throw new Error("execve replaced the process");
 		}) as never);
+		let visibleDuringCleanup = false;
 		vi.spyOn(postmortem, "cleanup").mockImplementation(async () => {
 			const statuses = await listRestartControls();
-			expect(
-				statuses.some(
-					status =>
-						status.identity.sessionId === sessionManager.getSessionId() && status.request?.state === "restarting",
-				),
-			).toBe(true);
+			visibleDuringCleanup = statuses.some(
+				status =>
+					status.identity.sessionId === sessionManager.getSessionId() && status.request?.state === "restarting",
+			);
 		});
 		vi.spyOn(postmortem, "drainStdout").mockResolvedValue();
 		vi.spyOn(postmortem, "quit").mockResolvedValue();
@@ -90,6 +89,7 @@ describe("InteractiveMode restart", () => {
 			// A refused restart reports the reason to the user instead of exiting.
 			lastRestartErrors = showError.mock.calls.map(call => String(call[0]));
 		}
+		if (outcome !== undefined) expect(visibleDuringCleanup).toBe(true);
 		return outcome;
 	}
 
