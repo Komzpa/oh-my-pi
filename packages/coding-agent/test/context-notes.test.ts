@@ -430,3 +430,57 @@ it("uses indexed notebook and ancestry reads while unrelated entries advance the
 		await manager.close();
 	}
 });
+
+it("notebook reads stop at the newest valid revision or reset across 300k older notes", async () => {
+	const settings = Settings.isolated({ "compaction.experimentalContextManagement": true });
+	const history: SessionEntry[] = Array.from({ length: 300_000 }, (_, i) => noteEntry(`old-${i}`, null, "old"));
+	history.push(noteEntry("latest", null, "current notebook"));
+	let decoded = 0;
+	type Predicate = (metadata: { id?: string; type: SessionEntry["type"]; customType?: string }) => boolean;
+	const manager = Object.assign(SessionManager.inMemory(), {
+		getBranchMatching(predicate: Predicate) {
+			return history.filter(entry => {
+				if (
+					!predicate({
+						id: entry.id,
+						type: entry.type,
+						customType: entry.type === "custom" ? entry.customType : undefined,
+					})
+				)
+					return false;
+				decoded++;
+				return true;
+			});
+		},
+		*iterateBranchMatchingNewestFirst(predicate: Predicate) {
+			for (let i = history.length - 1; i >= 0; i--) {
+				const entry = history[i]!;
+				if (
+					!predicate({
+						id: entry.id,
+						type: entry.type,
+						customType: entry.type === "custom" ? entry.customType : undefined,
+					})
+				)
+					continue;
+				decoded++;
+				yield entry;
+			}
+		},
+	});
+	try {
+		const tool = new ContextNotesTool(toolSession(settings, manager));
+		expect((await tool.execute("read", { action: "read" })).details?.text).toBe("current notebook");
+		expect(decoded).toBe(1);
+		history.push({ ...noteEntry("invalid", null, "ignored"), data: { version: 2, text: "invalid" } });
+		decoded = 0;
+		expect((await tool.execute("read", { action: "read" })).details?.text).toBe("current notebook");
+		expect(decoded).toBe(2);
+		history.push(resetEntry("reset", null));
+		decoded = 0;
+		expect((await tool.execute("read", { action: "read" })).details?.text).toBe("");
+		expect(decoded).toBe(1);
+	} finally {
+		await manager.close();
+	}
+});
