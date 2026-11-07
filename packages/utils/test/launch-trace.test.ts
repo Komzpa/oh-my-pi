@@ -193,3 +193,40 @@ test("background completion cannot extend launch attribution beyond readiness", 
 		expect(takeLaunchPhaseCandidates(20, 100)).toEqual([]);
 	});
 });
+
+test("boundary accounting includes entry, repeated spans and tail without double counting nested wall time", async () => {
+	const logs = capture();
+	let now = 0;
+	spyOn(performance, "now").mockImplementation(() => now);
+	await runLaunchTrace({ id: "gaps" }, async () => {
+		now = 10;
+		await launchStep("sdkCreate", async () => {
+			now = 30;
+			launchStep("child", () => {
+				now = 32;
+			});
+			now = 1032;
+			launchStep("child", () => {
+				now = 1034;
+			});
+			now = 1044;
+		});
+		now = 1054;
+	});
+	const summary = logs.mock.calls[0]?.[1];
+	expect(summary?.spans).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ name: "child", count: 2, startOffsetMs: 30, endOffsetMs: 1034, wallMs: 4 }),
+		]),
+	);
+	expect(summary?.boundaryGaps).toEqual(
+		expect.arrayContaining([
+			{ startOffsetMs: 32, wallMs: 1000, before: "child:end", after: "child:start" },
+			{ startOffsetMs: 0, wallMs: 10, before: "launch:start", after: "sdkCreate:start" },
+			{ startOffsetMs: 1044, wallMs: 10, before: "sdkCreate:end", after: "launch:end" },
+		]),
+	);
+	expect(summary?.boundaryGapMs).toBe(1050);
+	expect(summary?.leafIntervalMs).toBe(4);
+	expect(summary?.loopLag).toMatchObject({ count: 1, samples: [{ startOffsetMs: 100, driftMs: 954 }] });
+});
