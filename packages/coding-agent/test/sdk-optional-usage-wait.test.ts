@@ -98,7 +98,7 @@ test("four child launches do not wait for optional quota HTTP while parent disco
 				sdkCreateMs: logs.mock.calls
 					.filter(c => c[0] === "subagent launch spans")
 					.map(c =>
-						(c[1]?.spans as Array<{ name: string; wallMs: number }>).filter(s =>
+						((c[1]?.spans ?? []) as Array<{ name: string; wallMs: number }>).filter(s =>
 							["sdkCreate", "sdk.usageHealth.wait", "resolveModelDiscoveryDeferredRetry"].includes(s.name),
 						),
 					),
