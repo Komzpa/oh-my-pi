@@ -1,3 +1,7 @@
+import * as todo from "../src/tools/todo";
+import type { ToolSession } from "../src/sdk";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { Settings } from "../src/config/settings";
 import { expect, test } from "bun:test";
 import {
 	sessionContextEntryMetadata,
@@ -57,5 +61,95 @@ test("legacy branch sources preserve compact edits after their latest full snaps
 	const manager = { getBranch: () => [entry("old", { phases: [] }), snapshot, delta] };
 	expect(getLatestTodoPhasesFromEntries(getLiveTodoBranchEntries(manager))[0]?.tasks[0]?.schedule?.owner).toBe(
 		"Worker",
+	);
+});
+
+test("50 native todo view/update calls stay off historical payloads after resume", async () => {
+	const history = Array.from({ length: 7000 }, (_, i) => entry(`old-${i}`, { phases: [] }));
+	history.push(
+		entry("archive", {
+			edit: {
+				v: 1,
+				kind: "archive",
+				at: 1,
+				archivedPhases: [{ name: "Done", tasks: [{ content: "Shipped", status: "completed" }] }],
+			},
+		}),
+	);
+	let phases: TodoPhase[] = [{ name: "Ship", tasks: [{ content: "Deliver", status: "pending" }] }];
+	history.push(entry("snapshot", { phases }));
+	let decoded = 0;
+	let rejectFull = false;
+	const manager = {
+		bodyRevision: 0,
+		getBranch() {
+			if (rejectFull) throw new Error("full branch read");
+			return history;
+		},
+		getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean) {
+			if (rejectFull && predicate({ type: "custom", customType: "user_todo_edit" }))
+				throw new Error("full TODO selection");
+			return history.filter(value => predicate(sessionContextEntryMetadata(value)));
+		},
+		getLatestBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean) {
+			return history.findLast(value => predicate(sessionContextEntryMetadata(value)));
+		},
+		*iterateBranchMatchingNewestFirst(predicate: (metadata: SessionContextEntryMetadata) => boolean) {
+			for (const value of history.toReversed())
+				if (predicate(sessionContextEntryMetadata(value))) {
+					decoded++;
+					yield value;
+				}
+		},
+	};
+	const session = {
+		cwd: "/tmp/test",
+		hasUI: false,
+		getSessionFile: () => null,
+		getSessionSpawns: () => "*",
+		settings: Settings.isolated(),
+		getTodoPhases: () => phases,
+		setTodoPhases: (next: TodoPhase[]) => {
+			phases = next;
+		},
+		sessionManager: manager,
+	} as unknown as ToolSession;
+	// Older versions have no archive prewarm API; the first execute must still
+	// expose their unbounded read instead of failing to import the regression.
+	if (todo.getTodoArchiveBranchEntries) todo.getTodoArchiveBranchEntries(manager);
+	const warmDecoded = decoded;
+	rejectFull = true;
+	const tool = new todo.TodoTool(session);
+	for (let cycle = 0; cycle < 50; cycle++) {
+		const result = await tool.execute(
+			`cycle-${cycle}`,
+			cycle % 2 === 0
+				? { op: "view", archive: true }
+				: { op: "schedule", updates: [{ task: "Deliver", owner: `Worker${cycle}` }] },
+		);
+		expect(result.isError).not.toBe(true);
+		if (cycle % 2 === 0) expect(result.details?.archivedPhases?.[0]?.tasks[0]?.content).toBe("Shipped");
+		else history.push(entry(`update-${cycle}`, { phases }));
+	}
+	expect(phases[0]?.tasks[0]?.schedule?.owner).toBe("Worker49");
+	expect(decoded - warmDecoded).toBeLessThanOrEqual(50);
+	manager.bodyRevision++;
+	history[7000] = entry("archive", {
+		edit: {
+			v: 1,
+			kind: "archive",
+			at: 2,
+			archivedPhases: [{ name: "Done", tasks: [{ content: "Rewritten", status: "completed" }] }],
+		},
+	});
+	expect(todo.getLatestTodoArchiveFromEntries(todo.getTodoArchiveBranchEntries(manager))[0]?.tasks[0]?.content).toBe(
+		"Rewritten",
+	);
+	history.push(entry("init", { edit: { v: 1, kind: "op", at: 3, op: "init", params: {} } }));
+	expect(todo.getLatestTodoArchiveFromEntries(todo.getTodoArchiveBranchEntries(manager))).toEqual([]);
+	expect(todo.getTodoArchiveSummaryFromEntries(todo.getTodoArchiveBranchEntries(manager))).toBeUndefined();
+	history.pop();
+	expect(todo.getLatestTodoArchiveFromEntries(todo.getTodoArchiveBranchEntries(manager))[0]?.tasks[0]?.content).toBe(
+		"Rewritten",
 	);
 });

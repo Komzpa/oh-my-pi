@@ -1,7 +1,6 @@
 import { loadRowRisk } from "../task/row-risk";
 import type { RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { getLiveTodoBranchEntries, isTodoSelectionEntryMetadata } from "../tools/todo";
-import { selectBranchEntries } from "../session/branch-selection";
+import { getLiveTodoBranchEntries, getTodoArchiveBranchEntries } from "../tools/todo";
 /**
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
@@ -5944,9 +5943,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// order: down the spine, around the bend, out along the tail.
 		// Clamp so partial progress lights at least one cell; a closed plan fills
 		// the entire path until the configured auto-clear removes the HUD.
-		const archivedSummary = getTodoArchiveSummaryFromEntries(
-			selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
-		);
+		const archivedSummary = getTodoArchiveSummaryFromEntries(getTodoArchiveBranchEntries(owner.sessionManager));
 		const totalTasks = (archivedSummary?.count ?? 0) + phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
 		const closedTasks =
 			(archivedSummary?.count ?? 0) +
@@ -6129,9 +6126,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
 
 		const owner = this.#todoPhasesOwner ?? this.viewSession;
-		const archivedSummary = getTodoArchiveSummaryFromEntries(
-			selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
-		);
+		const archivedSummary = getTodoArchiveSummaryFromEntries(getTodoArchiveBranchEntries(owner.sessionManager));
 		const totalTasks = (archivedSummary?.count ?? 0) + phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
 		const closedTasks =
 			(archivedSummary?.count ?? 0) +

@@ -1,9 +1,8 @@
-import { selectBranchEntries } from "../../session/branch-selection";
 import {
 	formatTodoView,
 	getLiveTodoBranchEntries,
 	getLatestTodoArchiveFromEntries,
-	isTodoSelectionEntryMetadata,
+	getTodoArchiveBranchEntries,
 } from "../../tools/todo";
 import * as fs from "node:fs/promises";
 import {
@@ -221,9 +220,7 @@ export class TodoCommandController {
 		this.ctx.showStatus(
 			formatTodoView(phases, {
 				all,
-				archivedPhases: getLatestTodoArchiveFromEntries(
-					selectBranchEntries(this.ctx.sessionManager, isTodoSelectionEntryMetadata),
-				),
+				archivedPhases: getLatestTodoArchiveFromEntries(getTodoArchiveBranchEntries(this.ctx.sessionManager)),
 				...(typeof capacity === "number" ? { capacity } : {}),
 			}),
 		);

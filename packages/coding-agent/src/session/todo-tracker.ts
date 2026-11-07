@@ -7,7 +7,12 @@ import eagerTodoPrompt from "../prompts/system/eager-todo.md" with { type: "text
 import midRunTodoNudgePrompt from "../prompts/system/mid-run-todo-nudge.md" with { type: "text" };
 import todoCompletionReminderPrompt from "../prompts/system/todo-completion-reminder.md" with { type: "text" };
 import { getTodoPlanningIssues, type TodoPlanningIssue } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { getLatestTodoPhasesFromEntries, getLiveTodoBranchEntries, isTodoPhase } from "../tools/todo";
+import {
+	getLatestTodoPhasesFromEntries,
+	getTodoArchiveBranchEntries,
+	getLiveTodoBranchEntries,
+	isTodoPhase,
+} from "../tools/todo";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { AgentSessionEvent } from "./agent-session-events";
@@ -175,6 +180,7 @@ export class TodoTracker {
 
 	/** Rehydrates todo phases from the current transcript branch. */
 	syncFromBranch(): void {
+		getTodoArchiveBranchEntries(this.#host.sessionManager);
 		this.setPhases(getLatestTodoPhasesFromEntries(getLiveTodoBranchEntries(this.#host.sessionManager)));
 	}
 
