@@ -17,9 +17,15 @@ export function todoWorkAttempts(history: readonly TodoReworkAttempt[] = []): To
 }
 
 export function todoInfraBreaker(history: readonly TodoReworkAttempt[] = []): string | undefined {
-	const tail = history.slice(-3);
-	if (tail.length !== 3 || !tail.every(todoAttemptIsInfra)) return;
+	const latest = history.at(-1);
+	if (!latest || !todoAttemptIsInfra(latest)) return;
 	const signature = (attempt: TodoReworkAttempt) => (attempt.infraFailureError ?? "").replace(/\s+/g, " ").trim();
-	const cause = signature(tail[0]!);
-	if (cause && tail.every(attempt => signature(attempt) === cause)) return cause;
+	const cause = signature(latest);
+	if (!cause) return;
+	let matches = 0;
+	for (let index = history.length - 1; index >= 0; index--) {
+		const attempt = history[index]!;
+		if (!todoAttemptIsInfra(attempt)) break;
+		if (signature(attempt) === cause && ++matches >= 3) return cause;
+	}
 }
