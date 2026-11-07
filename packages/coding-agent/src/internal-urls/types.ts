@@ -295,6 +295,8 @@ export interface ResolveContext {
 	 * file, or on-disk transcript.
 	 */
 	getSessionBranch?: () => readonly SessionEntry[];
+	/** Same branch without the defensive copy; preferred by bounded full-history materialization. */
+	getSessionBranchView?: () => readonly SessionEntry[];
 	/**
 	 * Calling session's `local://` root mapping. When present, the local-protocol
 	 * handler resolves the URL against THIS session's artifacts dir instead of

@@ -415,7 +415,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			throw new Error(
 				"history://current/full is available only when compaction.experimentalContextManagement is enabled",
 			);
-		const source = context.getSessionBranch;
+		const source = context.getSessionBranchView ?? context.getSessionBranch;
 		if (!source) throw new Error("history://current/full requires a bound live session branch");
 		const key = context.session?.sessionManager ?? source;
 		let cache = this.#materialized.get(key);
@@ -556,7 +556,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 				"history://current/full is available only when compaction.experimentalContextManagement is enabled",
 			);
 		}
-		const branch = context.getSessionBranch?.();
+		const branch = (context.getSessionBranchView ?? context.getSessionBranch)?.();
 		if (!branch) {
 			throw new Error("history://current/full requires a bound live session branch");
 		}

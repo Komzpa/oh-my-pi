@@ -46,13 +46,14 @@ export function sessionResolveContext(
 		signal: options.signal,
 		sessionFile: session.getSessionFile() ?? undefined,
 		experimentalContextManagement: cfgCompactionExperimentalContextManagement.get(session.settings) === true,
-		getSessionBranch: () => {
-			const manager = getExperimentalContextSession(session);
-			return manager.getBranchView?.() ?? manager.getBranch();
-		},
+		getSessionBranch: () => getExperimentalContextSession(session).getBranch(),
 		sessionId: session.sessionManager?.getSessionId?.() ?? session.getSessionId?.() ?? undefined,
 		agentRegistry: session.agentRegistry,
 		localProtocolOptions: contextLocalProtocolOptions(session),
+		getSessionBranchView: () => {
+			const manager = getExperimentalContextSession(session);
+			return manager.getBranchView?.() ?? manager.getBranch();
+		},
 		skills: session.skills,
 		containSkillPaths: options.containSkillPaths,
 		rules: session.activeRules,
