@@ -39,11 +39,12 @@ import {
 	type ServingModel,
 	validateRetryFallbackChains,
 } from "@oh-my-pi/pi-coding-agent/session/retry-fallback-chains";
+import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { computerTurnInFlight, registerComputerController } from "@oh-my-pi/pi-coding-agent/tools/computer/supervisor";
 import { convertToLlm, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
-import { TempDir, withTimeout } from "@oh-my-pi/pi-utils";
+import { logger, TempDir, withTimeout } from "@oh-my-pi/pi-utils";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 
@@ -1076,6 +1077,152 @@ describe("AgentSession retry fallback", () => {
 		expect(requestedModels).toEqual([`${fallbackModel.provider}/${fallbackModel.id}`]);
 		expect(session.messages.some(message => message.role === "user")).toBe(true);
 	});
+
+	it.each(["timeout", "no", "yes"] as const)(
+		"reserve deadline: %s releases the turn and preserves the choice on resume",
+		async choice => {
+			const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
+			const fallbackModel = getBundledModel("openai", "gpt-4o-mini");
+			if (!primaryModel || !fallbackModel) throw new Error("Expected bundled reserve fallback models");
+			const requestedModels: string[] = [];
+			const mock = createMockModel({ responses: [{ content: ["continued with full context"] }] });
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: { model: primaryModel, systemPrompt: ["Test"], tools: [], messages: [] },
+				streamFn: (model, context, options) => {
+					requestedModels.push(`${model.provider}/${model.id}`);
+					return mock.stream(model, context, options);
+				},
+			});
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.usageAwareFallback": true,
+				"retry.usageReservePct": 10,
+				"retry.usageConfirmTimeoutMs": 20,
+				"retry.usageReservePolicy": "confirm",
+				"retry.fallbackChains": {
+					default: [`${fallbackModel.provider}/${fallbackModel.id}`],
+				},
+			});
+			settings.setModelRole("default", `${primaryModel.provider}/${primaryModel.id}`);
+			vi.spyOn(modelRegistry.authStorage.health, "model").mockImplementation(async provider =>
+				provider === primaryModel.provider
+					? {
+							state: "reserve",
+							accounts: [
+								{
+									credentialId: 1,
+									credentialType: "oauth",
+									state: "reserve",
+									remainingFraction: 0.08,
+								},
+								{
+									credentialId: 2,
+									credentialType: "oauth",
+									selected: true,
+									state: "reserve",
+									remainingFraction: 0.02,
+								},
+							],
+						}
+					: { state: "healthy", accounts: [] },
+			);
+
+			const manager = SessionManager.create(tempDir.path(), tempDir.join(`reserve-${choice}`));
+			manager.appendModelChange(`${primaryModel.provider}/${primaryModel.id}`, "default");
+			const warning = vi.spyOn(logger, "warn");
+			const confirmationStarted = Promise.withResolvers<void>();
+			const confirmFallback = vi.fn(async (_confirmation: unknown, signal: AbortSignal) => {
+				confirmationStarted.resolve();
+				if (choice !== "timeout") return choice === "yes";
+				const pending = Promise.withResolvers<boolean>();
+				signal.addEventListener("abort", () => pending.resolve(false), { once: true });
+				return pending.promise;
+			});
+			session = new AgentSession({ agent, sessionManager: manager, settings, modelRegistry });
+			session.setUsageFallbackConfirmer(confirmFallback);
+			const pendingPrompt = session.prompt("Continue unattended");
+			await confirmationStarted.promise;
+			if (choice === "timeout") await session.steer("queued while waiting for reserve decision");
+			await withTimeout(pendingPrompt, 2000, "Reserve confirmation wedged the turn");
+			await session.waitForIdle();
+			const expectedModel = choice === "no" ? primaryModel : fallbackModel;
+			expect(requestedModels).toEqual([`${expectedModel.provider}/${expectedModel.id}`]);
+			expect(session.isStreaming).toBe(false);
+			if (choice === "timeout") {
+				expect(confirmFallback.mock.calls[0]?.[1].aborted).toBe(true);
+				expect(warning.mock.calls.some(([message]) => message.includes("automatically choosing Yes"))).toBe(true);
+				expect(
+					session.messages.some(
+						message =>
+							message.role === "user" && JSON.stringify(message.content).includes("queued while waiting"),
+					),
+				).toBe(true);
+			}
+			await manager.flush();
+			const file = manager.getSessionFile();
+			if (!file) throw new Error("Expected persisted session");
+			await session.dispose();
+			session = undefined;
+			const resumedManager = await SessionManager.open(file, tempDir.join(`reserve-${choice}`));
+			const resumed = await createAgentSession({
+				cwd: tempDir.path(),
+				agentDir: tempDir.path(),
+				settings,
+				modelRegistry,
+				authStorage,
+				sessionManager: resumedManager,
+				disableExtensionDiscovery: true,
+				extensions: [],
+				skills: [],
+				rules: [],
+				contextFiles: [],
+				promptTemplates: [],
+				slashCommands: [],
+				enableMCP: false,
+				enableLsp: false,
+				skipPythonPreflight: true,
+				preloadedCustomToolPaths: [],
+				toolNames: [],
+			});
+			session = resumed.session;
+			expect(session.model?.id).toBe(expectedModel.id);
+			const resumedConfirmer = vi.fn(async () => false);
+			session.setUsageFallbackConfirmer(resumedConfirmer);
+			session.agent.streamFn = (model, context, options) => {
+				requestedModels.push(`${model.provider}/${model.id}`);
+				return createMockModel({ responses: [{ content: ["resumed work"] }] }).stream(model, context, options);
+			};
+			await session.prompt("Continue after restart");
+			await session.waitForIdle();
+			expect(resumedConfirmer).not.toHaveBeenCalled();
+			expect(requestedModels).toEqual(Array(2).fill(`${expectedModel.provider}/${expectedModel.id}`));
+			if (choice === "no") {
+				const health = vi.spyOn(modelRegistry.authStorage.health, "model");
+				health.mockResolvedValue({ state: "unknown", accounts: [] });
+				await session.prompt("Unknown quota is not a reset");
+				await session.waitForIdle();
+				expect(resumedConfirmer).not.toHaveBeenCalled();
+				health.mockResolvedValue({
+					state: "healthy",
+					accounts: [{ credentialId: 1, credentialType: "oauth", selected: true, state: "healthy" }],
+				});
+				await session.prompt("Primary quota has recovered");
+				await session.waitForIdle();
+				health.mockImplementation(async provider =>
+					provider === primaryModel.provider
+						? {
+								state: "reserve",
+								accounts: [{ credentialId: 1, credentialType: "oauth", selected: true, state: "reserve" }],
+							}
+						: { state: "healthy", accounts: [] },
+				);
+				await session.prompt("A new reserve episode asks again");
+				await session.waitForIdle();
+				expect(resumedConfirmer).toHaveBeenCalledTimes(1);
+			}
+		},
+	);
 
 	it("lets the computer display sleep while the reserve fallback waits for the user", async () => {
 		const primaryModel = getBundledModel("anthropic", "claude-sonnet-4-5");
