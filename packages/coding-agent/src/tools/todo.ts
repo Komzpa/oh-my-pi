@@ -37,7 +37,12 @@ import {
 	resolveResourceArtifact,
 	sameIdentity,
 } from "../utils/requirement-artifact";
-import { matchingRequirementBranch, type RequirementEntryMetadata } from "../session/requirements-branch-selection";
+import {
+	matchingRequirementBranch,
+	matchingRequirementBranchNewestFirst,
+	latestRequirementsFromSession,
+	type RequirementEntryMetadata,
+} from "../session/requirements-branch-selection";
 import { AsyncLocalStorage } from "node:async_hooks";
 import * as fs from "node:fs";
 
@@ -458,6 +463,7 @@ interface RequirementArtifactPlan {
 	phases: readonly TodoPhase[];
 	latest: Map<string, TodoItem[]>;
 	historical: Map<string, TodoItem | null>;
+	historicalLoaded: boolean;
 }
 const requirementArtifactPlans = new WeakMap<
 	object,
@@ -477,19 +483,42 @@ function isRequirementArtifactTodoMetadata(metadata: RequirementEntryMetadata): 
 	);
 }
 
+/** Latest full snapshot and subsequent edits, never obsolete artifact snapshots. */
+function currentRequirementTodoEntries(
+	manager: Pick<NonNullable<RequirementRowArtifactContext["sessionManager"]>, "getBranch">,
+): SessionEntry[] {
+	const entries: SessionEntry[] = [];
+	for (const entry of matchingRequirementBranchNewestFirst(manager, isRequirementArtifactTodoMetadata)) {
+		entries.push(entry);
+		if (canonicalTodoPhases(entry) !== undefined) break;
+	}
+	return entries.reverse();
+}
+
 function requirementArtifactPlan(
 	manager: NonNullable<RequirementRowArtifactContext["sessionManager"]>,
+	includeHistorical = false,
 ): RequirementArtifactPlan {
 	const leaf = manager.getLeafId?.();
 	const revision = manager.bodyRevision;
 	const count = manager.getEntryCount?.();
 	const cached = requirementArtifactPlans.get(manager);
 	const cacheable = leaf !== undefined && revision !== undefined;
-	if (cacheable && cached?.leaf === leaf && cached.revision === revision && cached.count === count) return cached.plan;
-	const entries =
-		manager.getCachedBranchMatching?.(isRequirementArtifactTodoMetadata) ??
-		matchingRequirementBranch(manager, isRequirementArtifactTodoMetadata);
-	if (cacheable && cached?.revision === revision && cached.entries === entries) {
+	if (
+		cacheable &&
+		cached?.leaf === leaf &&
+		cached.revision === revision &&
+		cached.count === count &&
+		(!includeHistorical || cached.plan.historicalLoaded)
+	)
+		return cached.plan;
+	const entries = currentRequirementTodoEntries(manager);
+	if (
+		cacheable &&
+		cached?.revision === revision &&
+		cached.entries === entries &&
+		(!includeHistorical || cached.plan.historicalLoaded)
+	) {
 		requirementArtifactPlans.set(manager, { leaf, revision, count, entries, plan: cached.plan });
 		return cached.plan;
 	}
@@ -503,13 +532,14 @@ function requirementArtifactPlan(
 		}
 	}
 	const historical = new Map<string, TodoItem | null>();
-	observeLatestTodoPhases(entries, phases => {
-		const rows = new Map<string, TodoItem | null>();
-		for (const phase of phases)
-			for (const task of phase.tasks) rows.set(task.content, rows.has(task.content) ? null : task);
-		for (const [row, task] of rows) historical.set(row, task ? cloneTask(task) : null);
-	});
-	const plan = { phases, latest, historical };
+	if (includeHistorical)
+		observeLatestTodoPhases(matchingRequirementBranch(manager, isRequirementArtifactTodoMetadata), phases => {
+			const rows = new Map<string, TodoItem | null>();
+			for (const phase of phases)
+				for (const task of phase.tasks) rows.set(task.content, rows.has(task.content) ? null : task);
+			for (const [row, task] of rows) historical.set(row, task ? cloneTask(task) : null);
+		});
+	const plan = { phases, latest, historical, historicalLoaded: includeHistorical };
 	if (cacheable) requirementArtifactPlans.set(manager, { leaf, revision, count, entries, plan });
 	return plan;
 }
@@ -539,7 +569,7 @@ async function resolveRequirementRowArtifact(
 	}
 	const archived = !task;
 	if (!task && ctx.sessionManager) {
-		const historical = requirementArtifactPlan(ctx.sessionManager).historical.get(row);
+		const historical = requirementArtifactPlan(ctx.sessionManager, true).historical.get(row);
 		if (historical === null)
 			return unknownRequirementArtifact(`duplicate historical TODO row ${JSON.stringify(row)}`);
 		task = historical;
@@ -1752,7 +1782,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 			this.#executeTodo(_toolCallId, params, _signal, _onUpdate, _context),
 		);
 		if (result.details?.op === "view" && this.session.sessionManager) {
-			const amendments = getLatestRequirements(this.session.sessionManager.getBranch()).flatMap(requirement =>
+			const amendments = latestRequirementsFromSession(this.session.sessionManager).flatMap(requirement =>
 				(requirement.amendments ?? []).map(amendment =>
 					amendment.supersededBy
 						? `${requirement.id} superseded by ${amendment.supersededBy} at ${amendment.at}: ${amendment.oldClassification} -> ${amendment.newClassification}; rows ${JSON.stringify(amendment.oldRows)} -> ${JSON.stringify(amendment.newRows)} (${amendment.reason})`
@@ -1780,7 +1810,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		if (this.session.sessionManager) {
 			mergeCanonicalArtifactBindings(
 				previousPhases,
-				getLatestTodoPhasesFromEntries(this.session.sessionManager.getBranch()),
+				getLatestTodoPhasesFromEntries(currentRequirementTodoEntries(this.session.sessionManager)),
 			);
 		}
 		const storage = this.session.getSessionFile() ? "session" : "memory";
@@ -1801,7 +1831,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const entry = resolved;
 		const sessionManager = this.session.sessionManager;
 		if ((entry.op === "rm" || entry.op === "init") && sessionManager) {
-			const linkedRequirements = getLatestRequirements(sessionManager.getBranch()).filter(
+			const linkedRequirements = latestRequirementsFromSession(sessionManager).filter(
 				requirement => requirement.classification === "linked",
 			);
 			const targetErrors: string[] = [];
@@ -1912,33 +1942,66 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		const selectorErrors: string[] = [];
 		const targets = getCompletionTargets(previousPhases, { task, phase, items }, selectorErrors);
 		if (selectorErrors.length === 0) {
-			// Gate checks need persisted requirements and Todo state, not conversation bodies.
-			const branch = matchingRequirementBranch(
+			const currentRequirements = latestRequirementsFromSession(sessionManager);
+			if (currentRequirements.length === 0) return undefined;
+			const branch = currentRequirementTodoEntries(sessionManager);
+			for (const entry of matchingRequirementBranchNewestFirst(
 				sessionManager,
-				entry =>
-					(entry.type === "custom" &&
-						(entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE ||
-							entry.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE ||
-							entry.customType === USER_TODO_EDIT_CUSTOM_TYPE)) ||
-					(entry.type === "message" && entry.messageRole === "toolResult" && entry.toolName === "todo"),
-			);
-			const changes = getTodoRowChanges(branch);
+				metadata =>
+					metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
+			)) {
+				if (
+					entry.type === "custom" &&
+					isRecord(entry.data) &&
+					entry.data.sessionId === sessionManager.getSessionId?.() &&
+					Array.isArray(entry.data.rejected)
+				) {
+					branch.push(entry);
+					break;
+				}
+			}
+			const liveRows = new Set(previousPhases.flatMap(phase => phase.tasks.map(task => task.content)));
+			const archivedRows = currentRequirements
+				.flatMap(requirement => requirement.rows)
+				.filter(row => !liveRows.has(row));
+			if (archivedRows.length > 0) {
+				const historical = requirementArtifactPlan(sessionManager, true).historical;
+				const tasks = archivedRows.flatMap(row => {
+					const task = historical.get(row);
+					return task ? [task] : [];
+				});
+				branch.unshift({
+					type: "custom",
+					customType: USER_TODO_EDIT_CUSTOM_TYPE,
+					id: "archived-requirement-rows",
+					parentId: null,
+					timestamp: new Date(0).toISOString(),
+					data: { phases: [{ name: "Archived", tasks }] },
+				});
+			}
+			let changes: Map<string, { at: string; id: string }> | undefined;
 			const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 			const gitStatusSnapshots: RequirementGitStatusSnapshots = new Map();
-			const requirements = getLatestRequirements(branch);
+			const requirements = currentRequirements;
 			const requirementSnapshot = JSON.stringify(requirements);
 			const open = await evaluateRequirementDoneGate(
 				requirements,
 				targets.map(target => target.content),
-				async (row, receipt) => ({
-					...(await getRequirementRowArtifact(
+				async (row, receipt) => {
+					const artifact = await getRequirementRowArtifact(
 						{ cwd: this.session.cwd, sessionManager, signal, receipt, gitStatusSnapshots },
 						row,
 						previousPhases,
 						checkoutCache,
-					)),
-					lastChange: changes.get(row),
-				}),
+					);
+					// Saved-change fallback is an explicit legacy receipt lookup; typed identities
+					// and current Git/file artifacts do not need historical row changes.
+					if (!artifact.identityCheck && !artifact.sha256 && (!artifact.head || artifact.dirty))
+						changes ??= getTodoRowChanges(
+							matchingRequirementBranch(sessionManager, isRequirementArtifactTodoMetadata),
+						);
+					return { ...artifact, lastChange: changes?.get(row) };
+				},
 				getPersistedRequirementAuditRejections(branch, sessionManager.getSessionId?.() ?? null),
 				getCompletedTodoRows(branch),
 				new Set(
@@ -1949,7 +2012,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				getAcceptedTodoRows(branch),
 				getClosedTodoRows(branch),
 			);
-			if (JSON.stringify(getLatestRequirements(sessionManager.getBranch())) !== requirementSnapshot) {
+			if (JSON.stringify(latestRequirementsFromSession(sessionManager)) !== requirementSnapshot) {
 				return {
 					content: [
 						{
@@ -2098,7 +2161,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				};
 			}
 		}
-		const requirements = getLatestRequirements(sessionManager.getBranch());
+		const requirements = latestRequirementsFromSession(sessionManager);
 		// A candidate has no prior requirement binding to relink; its first
 		// classification may atomically replace the row's provisional artifact.
 		const initialClassification =
