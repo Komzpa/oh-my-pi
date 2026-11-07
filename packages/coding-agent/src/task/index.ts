@@ -25,7 +25,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolSpeculationPolicy,
 } from "@oh-my-pi/pi-agent-core";
-import type { Usage } from "@oh-my-pi/pi-ai";
+import type { TextContent, Usage } from "@oh-my-pi/pi-ai";
 import { $env, hasFsCode, isRecord, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "..";
 import type { EffectiveExtensionRoots } from "../capability/types";
@@ -1150,11 +1150,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		return restored;
 	}
 
-	async #prepareRework(
-		route: ReworkRoute,
-		policy: EffectiveSubagentPolicy,
-		signal?: AbortSignal,
-	): Promise<string | undefined> {
+	async #prepareRework(route: ReworkRoute, signal?: AbortSignal): Promise<string | undefined> {
 		if (route.failedLine) {
 			route.context = route.failedLine;
 			return undefined;
@@ -1543,17 +1539,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// File bytes must be captured at dispatch, not while arguments stream.
 		if (spawn.taskFile !== undefined) return undefined;
 		if (spawn.tools?.length && this.session.getPlanModeState?.()?.enabled === true) return undefined;
-		let policy;
+		let blocking: boolean;
 		try {
-			policy = await this.#resolveSpawnPreflight(spawn);
+			blocking = (await this.#resolveSpawnPreflight(spawn)).effectiveAgent.blocking === true;
 		} catch {
 			return undefined;
 		}
-		const blocking = policy.effectiveAgent.blocking === true;
 		const detached =
 			cfgAsyncEnabled.get(this.session.settings) && this.session.asyncJobManager !== undefined && !blocking;
 		const agentId = await this.#outputManager().allocate(spawn.name?.trim() || generateTaskName());
-		if (signal.aborted || (await this.#admitSpawn(spawn, policy, agentId, signal))) return undefined;
+		if (signal.aborted || (await this.#admitSpawn(spawn, agentId, signal))) return undefined;
 		return this.#launch({ toolCallId, params: spawn, index, agentId, detached });
 	}
 
@@ -1608,14 +1603,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		});
 	}
 
-	async #admitSpawn(
-		params: SpawnParams,
-		policy: EffectiveSubagentPolicy,
-		id: string,
-		signal?: AbortSignal,
-	): Promise<string | undefined> {
-		if (policy.preparedSession !== undefined) return;
+	async #admitSpawn(params: SpawnParams, id: string, signal?: AbortSignal): Promise<string | undefined> {
 		try {
+			const policy = await this.#resolveSpawnPreflight(params);
+			if (policy.preparedSession !== undefined) return;
 			const result = await this.session.emitBeforeSubagentSpawn?.(
 				{
 					type: "before_subagent_spawn",
@@ -1795,9 +1786,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		for (const [index, item] of spawnItems.entries()) {
 			const run = adopted.get(index);
 			const id = run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
-			const refusal = run
-				? undefined
-				: await this.#admitSpawn(normalizedSpawnParams[index]!, policies[index]!, id, signal);
+			const refusal = run ? undefined : await this.#admitSpawn(normalizedSpawnParams[index]!, id, signal);
 			if (refusal) refused.push(refusal);
 			else admittedIds.set(index, id);
 		}
@@ -1805,6 +1794,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (admittedIds.size === 0)
 			return {
 				content: refusalContent,
+				harnessNotice: refused.join("\n"),
 				isError: true,
 				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
 			};
@@ -1835,17 +1825,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							this.session.getSessionSpawns?.() ?? "*",
 						),
 					});
-			const payload = await this.#executeSyncFanout(
+			const result = await this.#executeSyncFanout(
 				toolCallId,
 				params,
 				spawnItems
 					.map((item, index) => ({ item, index, run: adopted.get(index), preAllocatedId: admittedIds.get(index) }))
 					.filter(spawn => admittedIds.has(spawn.index)),
+				refusalContent,
 				defaultAgent,
 				signal,
 				onUpdate,
 			);
-			const result = { ...payload, content: [...refusalContent, ...payload.content] };
 			if (!advisory) return result;
 			let appended = false;
 			const content = result.content.map(part => {
@@ -2404,6 +2394,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		toolCallId: string,
 		params: TaskParams,
 		spawns: SyncSpawnRef[],
+		refusalContent: TextContent[],
 		defaultAgent: string,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
@@ -2420,7 +2411,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					detached: false,
 				});
 			run.attach({ signal, onUpdate });
-			return await run.result;
+			const result = await run.result;
+			return { ...result, content: [...refusalContent, ...result.content] };
 		}
 
 		const startTime = Date.now();
@@ -2455,7 +2447,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 		const merged = mergeSyncPayloads(spawns, payloads);
 		return {
-			content: [{ type: "text", text: merged.contentParts.join("\n\n") }],
+			content: [...refusalContent, { type: "text", text: merged.contentParts.join("\n\n") }],
 			...(merged.isError ? { isError: true } : {}),
 			details: {
 				projectAgentsDir: merged.projectAgentsDir,
