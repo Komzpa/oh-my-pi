@@ -12,7 +12,6 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import type { ExtensionAskDialogResult, ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { cfgGoalContinuationModes } from "@oh-my-pi/pi-coding-agent/goals/settings";
 import type { SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
-import * as natives from "@oh-my-pi/pi-natives";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 
@@ -254,9 +253,9 @@ describe("InteractiveMode restart", () => {
 				firstInput = input;
 				return input;
 			});
-			vi.useFakeTimers();
 			dialog.resolve(undefined);
-			for (let attempt = 0; attempt < 100 && !mode.goalModeEnabled; attempt++) await Promise.resolve();
+			for (let attempt = 0; attempt < 100 && !mode.goalModeEnabled; attempt++) await Bun.sleep(10);
+			vi.useFakeTimers();
 			expect(mode.goalModeEnabled).toBe(true);
 			for (let attempt = 0; attempt < 10; attempt++) await Promise.resolve();
 			expect(session.goalRuntime.buildContinuationPrompt()).toBeDefined();

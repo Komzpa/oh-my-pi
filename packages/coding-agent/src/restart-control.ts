@@ -1,3 +1,4 @@
+import { beginRestartTerminalHandoff } from "./restart-terminal";
 /** Authenticated local control for exact live session generations. */
 import * as crypto from "node:crypto";
 import * as fsp from "node:fs/promises";
@@ -25,6 +26,7 @@ export interface RestartControlOptions {
 
 export interface RestartControlPublication {
 	dispose(): Promise<void>;
+	prepareHandoff(): Promise<void>;
 }
 
 export type RestartControlErrorCode =
@@ -57,6 +59,7 @@ interface Metadata {
 	pid: number;
 	endpoint: string;
 	token: string;
+	handoff?: RestartControlSnapshot;
 }
 
 interface WireRequest {
@@ -119,6 +122,7 @@ function parseMetadata(text: string): Metadata | null {
 		pid: meta.pid,
 		endpoint: meta.endpoint,
 		token: meta.token,
+		handoff: parseSnapshot(meta.handoff) ?? undefined,
 	};
 }
 
@@ -417,8 +421,25 @@ export async function publishRestartControl(
 			if (!isEnoent(error)) throw error;
 		}
 	};
+	const predecessor = process.env.OMP_RESTART_CONTROL_INSTANCE_ID;
+	if (predecessor && predecessor !== instanceId) {
+		try {
+			const old = await readMetadata(dir, predecessor);
+			if (old.pid === process.pid) {
+				await fsp.rm(path.join(dir, `${predecessor}.json`), { force: true });
+				await fsp.rm(old.endpoint, { force: true });
+			}
+		} catch (error) {
+			if (!isEnoent(error) && !(error instanceof RestartControlError)) throw error;
+		}
+		delete process.env.OMP_RESTART_CONTROL_INSTANCE_ID;
+	}
 	let disposed = false;
 	return {
+		async prepareHandoff(): Promise<void> {
+			meta.handoff = source.snapshot();
+			await Bun.write(metadataPath, JSON.stringify(meta));
+		},
 		async dispose(): Promise<void> {
 			if (disposed) return;
 			disposed = true;
@@ -431,12 +452,38 @@ export async function publishRestartControl(
 	};
 }
 
+async function querySnapshot(
+	meta: Metadata,
+	request: WireRequest | { op: "discover" } | { op: RestartControlRequest["op"]; request: RestartControlRequest },
+): Promise<RestartControlSnapshot | null> {
+	try {
+		return parseSnapshot(await query(meta, request));
+	} catch (error) {
+		const snapshot = meta.handoff;
+		if (
+			snapshot &&
+			(request.op === "discover" || request.op === "status") &&
+			snapshot.pid === meta.pid &&
+			snapshot.identity.instanceId === meta.instanceId &&
+			snapshot.request?.state === "restarting"
+		) {
+			try {
+				process.kill(meta.pid, 0);
+			} catch {
+				throw error;
+			}
+			return snapshot;
+		}
+		throw error;
+	}
+}
+
 export async function getRestartControl(
 	instanceId: string,
 	options?: RestartControlOptions,
 ): Promise<RestartControlSnapshot> {
 	const meta = await readMetadata(options?.runtimeDir ?? runtimeDirectory(), instanceId);
-	const snapshot = parseSnapshot(await query(meta, { op: "discover" }));
+	const snapshot = await querySnapshot(meta, { op: "discover" });
 	if (!snapshot || snapshot.identity.instanceId !== instanceId) throw new RestartControlError("malformed_response");
 	return snapshot;
 }
@@ -480,7 +527,7 @@ export async function sendRestartControl(
 	const dir = options?.runtimeDir ?? runtimeDirectory();
 	const meta = await readMetadata(dir, request.identity.instanceId);
 	if (meta.instanceId !== request.identity.instanceId) throw new RestartControlError("stale_identity");
-	const snapshot = parseSnapshot(await query(meta, { op: request.op, request }));
+	const snapshot = await querySnapshot(meta, { op: request.op, request });
 	if (!snapshot) throw new RestartControlError("malformed_response");
 	if (!sameIdentity(snapshot.identity, request.identity)) throw new RestartControlError("stale_identity");
 	return snapshot;
@@ -532,12 +579,19 @@ export async function waitForRestartResult(
 
 const RESTART_SESSION_ENV = "OMP_RESTART_SESSION_ID";
 /** Replace the runtime in place: preserve the shell's PID/TTY contract without retaining its heap. */
-export function execRestartSuccessor(cmd: string[], sessionId: string): never {
+export function execRestartSuccessor(cmd: string[], sessionId: string, instanceId?: string): never {
 	if (typeof process.execve !== "function")
 		throw new Error("Graceful restart requires process.execve on this platform");
 	const executable = Bun.which(cmd[0]!);
 	if (!executable) throw new Error(`Restart executable not found: ${cmd[0]}`);
-	process.execve(executable, cmd, { ...process.env, [RESTART_SESSION_ENV]: sessionId });
+	const terminal = beginRestartTerminalHandoff();
+	terminal.reclaim();
+	terminal.restore();
+	process.execve(executable, cmd, {
+		...process.env,
+		[RESTART_SESSION_ENV]: sessionId,
+		...(instanceId ? { OMP_RESTART_CONTROL_INSTANCE_ID: instanceId } : {}),
+	});
 	throw new Error("Restart execve unexpectedly returned");
 }
 
