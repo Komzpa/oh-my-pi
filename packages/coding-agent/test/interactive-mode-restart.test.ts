@@ -5,6 +5,7 @@ import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createSessionManager } from "@oh-my-pi/pi-coding-agent/main";
+import { listRestartControls } from "@oh-my-pi/pi-coding-agent/restart-control";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -70,7 +71,15 @@ describe("InteractiveMode restart", () => {
 			// Stand in for a successful exec, which never returns to the caller.
 			throw new Error("execve replaced the process");
 		}) as never);
-		vi.spyOn(postmortem, "cleanup").mockResolvedValue();
+		vi.spyOn(postmortem, "cleanup").mockImplementation(async () => {
+			const statuses = await listRestartControls();
+			expect(
+				statuses.some(
+					status =>
+						status.identity.sessionId === sessionManager.getSessionId() && status.request?.state === "restarting",
+				),
+			).toBe(true);
+		});
 		vi.spyOn(postmortem, "drainStdout").mockResolvedValue();
 		vi.spyOn(postmortem, "quit").mockResolvedValue();
 		const showError = vi.spyOn(mode, "showError");
