@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Let lead instruction evaluations inspect scenario state before acting and discover the configured provider models ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Keep inspection and claim recovery available during zero-active staffing, with executable remedies and bounded refusals ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep read-only audits from blocking writers and allow per-task resource scopes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
