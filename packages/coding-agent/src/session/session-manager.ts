@@ -2282,6 +2282,8 @@ export class SessionManager {
 		const positions: SessionFileBody["positions"] = [];
 		const ranges: SessionFileBody["ranges"] = new Map();
 		const fd = this.#index.openSerializationReader();
+		let lastRaw: { index: number; offset: number; length: number; begin: number; end: number } | undefined;
+
 		try {
 			for (const source of this.#index.serializationSources()) {
 				if (positions.length === entryCount) break;
@@ -2298,20 +2300,36 @@ export class SessionManager {
 				) {
 					const offset = source.offset;
 					length = source.length;
-					// Each lazy piece ends on a UTF-8 boundary. Storage can yield even
-					// inside a 33 MB restart snapshot, and never holds the whole body.
-					for (let begin = 0; begin < length; begin += 256 * 1024) {
-						const pieceStart = begin;
-						const pieceEnd = Math.min(length, begin + 256 * 1024);
-						const recordLength = length;
-						asyncLines.set(lines.length, () =>
-							readSessionUtf8PieceAsync(fd, offset, recordLength, pieceStart, pieceEnd),
-						);
-						Object.defineProperty(lines, lines.length, {
-							enumerable: true,
-							get: () => readSessionUtf8Piece(fd, offset, recordLength, pieceStart, pieceEnd),
-						});
-					}
+					// Coalesce adjacent small records; the I/O and JS metadata stay
+					// bounded without a getter and promise closure for every historical edit.
+					if (
+						lastRaw &&
+						lastRaw.index === lines.length - 1 &&
+						lastRaw.begin === 0 &&
+						lastRaw.end === lastRaw.length &&
+						lastRaw.offset + lastRaw.length === offset &&
+						lastRaw.length + length <= 256 * 1024
+					) {
+						lastRaw.length += length;
+						lastRaw.end += length;
+					} else
+						for (let begin = 0; begin < length; begin += 256 * 1024) {
+							const piece = {
+								index: lines.length,
+								offset,
+								length,
+								begin,
+								end: Math.min(length, begin + 256 * 1024),
+							};
+							lastRaw = piece;
+							asyncLines.set(piece.index, () =>
+								readSessionUtf8PieceAsync(fd, piece.offset, piece.length, piece.begin, piece.end),
+							);
+							Object.defineProperty(lines, piece.index, {
+								enumerable: true,
+								get: () => readSessionUtf8Piece(fd, piece.offset, piece.length, piece.begin, piece.end),
+							});
+						}
 					const recordLength = length;
 					serializedLine = () => readSessionUtf8Piece(fd, offset, recordLength, 0, recordLength);
 				} else {
