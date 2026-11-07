@@ -237,7 +237,10 @@ it("disposal aborts pending baseline and prevents late attribution or further re
 	expect(fixture.registry.get("early")?.history?.peerCoordination?.touched).toEqual([]);
 	expect(fixture.statusSpy).toHaveBeenCalledTimes(1);
 });
-it("reconciles early unhooked edits and deletions without attributing untouched dirty or sibling paths", async () => {
+it("reconciles early unhooked edits and deletions without attributing untouched dirty or sibling paths (opt-in watcher)", async () => {
+	const previousWatch = process.env.OMP_PEER_STARTUP_WATCH;
+	process.env.OMP_PEER_STARTUP_WATCH = "1";
+	try {
 	using temp = TempDir.createSync("@omp-peer-early-");
 	const fixture = startupFixture(temp.path());
 	await Bun.write(temp.join(".gitignore"), "src/ignored.txt\n");
@@ -271,5 +274,9 @@ it("reconciles early unhooked edits and deletions without attributing untouched 
 		expect(await fixture.runtime.checkHandover(undefined)).toContain("src/dirty.txt");
 	} finally {
 		fixture.runtime.dispose();
+	}
+	} finally {
+		if (previousWatch === undefined) delete process.env.OMP_PEER_STARTUP_WATCH;
+		else process.env.OMP_PEER_STARTUP_WATCH = previousWatch;
 	}
 });
