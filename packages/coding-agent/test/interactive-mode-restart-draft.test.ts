@@ -246,12 +246,13 @@ describe("InteractiveMode restart keeps the unsent editor draft", () => {
 		const noImages = createMode(sessionManager);
 		await noImages.init();
 		type(noImages, ..."text only");
-		await restartFrom(noImages);
+		const firstFile = await restartFrom(noImages);
 		const artifacts = sessionManager.getArtifactsDir();
 		if (!artifacts) throw new Error("expected artifacts dir");
 		expect(await Bun.file(path.join(artifacts, "draft-image-0.b64")).exists()).toBe(false);
 		vi.restoreAllMocks();
 
+		sessionManager = await SessionManager.open(firstFile);
 		const mode = createMode(sessionManager);
 		await mode.init();
 		const session = sessions[sessions.length - 1];

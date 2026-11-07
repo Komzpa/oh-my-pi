@@ -7667,6 +7667,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
+	/** Restart must not exec while a timed-out persistence handler is still unwinding. */
+	async finishRestartHandoff(): Promise<void> {
+		await this.agent.waitForIdle();
+		await this.#drainInFlightEventHandlers();
+		await this.sessionManager.finishRestartHandoff();
+	}
+
 	/** Drop the in-memory conversation state after the terminal dispose flush. */
 	#releaseRetainedSessionMemory(): void {
 		this.#releaseQueuedTtsrReservations();
