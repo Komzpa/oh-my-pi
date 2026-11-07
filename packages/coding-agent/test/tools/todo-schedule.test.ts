@@ -167,7 +167,7 @@ describe("native todo schedule operation", () => {
 						task: "ship",
 						owner: "worker",
 						evidence: "Artifact changed",
-						estimate: { ...estimate, basis: "Same numeric estimate after evidence changed" },
+						estimate: { ...estimate, confidence: "high", basis: "Same numeric estimate after evidence changed" },
 					},
 				],
 			});
