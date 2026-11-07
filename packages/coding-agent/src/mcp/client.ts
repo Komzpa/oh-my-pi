@@ -1,3 +1,4 @@
+import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 /**
  * MCP Client.
  *
@@ -212,9 +213,11 @@ export async function connectToServer(
 		// Race the whole handshake against the signal: the steps after `initialize` (the
 		// initialized notification, the SSE listener) do not observe it themselves.
 		if (!isMCPTimeoutEnabled(timeoutMs)) {
-			return await untilAborted(options?.signal, connect());
+			return await launchStep(`mcp.connect.wait:${name}`, () => untilAborted(options?.signal, connect()));
 		}
-		return await withTimeout(connect(), timeoutMs, timeoutError, options?.signal);
+		return await launchStep(`mcp.connect.wait:${name}`, () =>
+			withTimeout(connect(), timeoutMs, timeoutError, options?.signal),
+		);
 	} catch (error) {
 		controller.abort(error);
 		// Close an existing transport; in-flight creation observes the aborted signal.

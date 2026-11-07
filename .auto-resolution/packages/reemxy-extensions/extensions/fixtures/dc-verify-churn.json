@@ -1,0 +1,164 @@
+{
+	"source": "row-snapshots-tail3.jsonl, user_todo_edit, 2026-11-06; row copied verbatim",
+	"row": {
+		"content": "Power source rows: remove red selection frame and grey boxes",
+		"status": "in_progress",
+		"artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+		"artifactOwner": "AuditPowerRows",
+		"schedule": {
+			"firstRequirementAt": 1793956175526,
+			"previewTracked": true,
+			"previewPending": false,
+			"previewIdentityMissing": false,
+			"previewPartial": false,
+			"visibleAt": 1793958012300,
+			"dependencies": [],
+			"owner": "CriminalPlanarian",
+			"reestimateCount": 0,
+			"estimateRevision": 5,
+			"estimate": {
+				"optimisticSeconds": 360,
+				"likelySeconds": 720,
+				"pessimisticSeconds": 1500,
+				"confidence": "medium",
+				"basis": "visual audit at 2 widths + base build; AuditIntegrate-5 took 7.6 min",
+				"updatedAt": 1793961535626
+			},
+			"riskEstimateMeanSeconds": 1850,
+			"executor": {
+				"workerId": "CriminalPlanarian",
+				"agentProfile": "gate-runner",
+				"resolvedModel": "anthropic/claude-opus-5-5",
+				"thinkingLevel": "low",
+				"startedAt": 1793984509607
+			},
+			"progress": {
+				"at": 1793973104139,
+				"evidence": "audit fail at f73f78a6147e: Confirmed requested HEAD f73f78a6147e1e16d26619b39ab698769e66e461 with `git rev-parse HEAD` (exit 0) in ROOT. Inspected FacilityWorkspace.css:118-135: source openers are transparent and borderless, focus outlines are explicitly suppressed, and selection uses a fill and left stripe. Inspected e2e/facility-decisions-list.spec.ts:1250-1345: regression assertions and screenshot capture cover 1440px and 430px, including keyboard focus. However, agent://RandomMule delivered a read-only stakeholder/source review, not passing executable checks or inspected rendered results; its receipt explicitly states that no executable gate ran and rendered focus/phone appearance was not observed. Thus the reported red keyboard-focus rectangle and absence of grey boxes remain unverified at this HEAD. No product files changed, tests ran, or screenshots were inspected in this audit. The next worker must run the focused Power source regression checks on this exact revision and supply passing results plus inspected desktop/phone screenshots covering selected, unselected, hovered and keyboard-focused rows, demonstrating no red rectangle or grey containment boxes; repair any reproduced defect before delivering new revision-bound proof. Earlier evidence at 54b0302 is stale."
+			},
+			"deliveryCritic": {
+				"key": "[\"ReligiousSalmon\",1793984462715,1793984467797]",
+				"startedAt": 1793984507666,
+				"verdict": "pending"
+			},
+			"handoffPending": false,
+			"attemptHistory": [
+				{
+					"attemptId": "RunningWildfowl:1793960399945",
+					"workerName": "RunningWildfowl",
+					"resolvedModel": "codex-lb/gpt-6.1-terra",
+					"effort": "low",
+					"startedAt": 1793960399945,
+					"finishedAt": 1793960400501,
+					"durationMs": 114371,
+					"terminalStatus": "aborted",
+					"deliverablePaths": [
+						"/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/RunningWildfowl.md"
+					],
+					"infraFailureError": "BLOCKED: awaiting lead answer: Which exact delivered commit or frozen artifact should I review? The supplied commit range is empty, the preview is only a checkout path, and the named PowerRowsHead worker is working in a separate worktree. Read all four stakeholder profiles and the stakeholder-shadow skill; no product files changed and no gate was run. Requested clarification twice; wait reported Main cannot reply before this result.",
+					"infraFailureLine": "attempt 1 failed: BLOCKED: awaiting lead answer: Which exact delivered commit or frozen artifact should I review? The supplied commit range is empty, the preview is only a checkout path, and the named PowerRowsHead worker is working in a separate worktree. Read all four stakeholder profiles and the stakeholder-shadow skill; no product files changed and no gate was run. Requested clarification twice; wait reported Main cannot reply before this result."
+				},
+				{
+					"attemptId": "PowerRowsReviewPage:1793978906376",
+					"workerName": "PowerRowsReviewPage",
+					"resolvedModel": "codex-lb/gpt-6.1-sol",
+					"effort": "medium",
+					"startedAt": 1793978906376,
+					"finishedAt": 1793979942258,
+					"durationMs": 1105522,
+					"terminalStatus": "aborted",
+					"deliverablePaths": [
+						"/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/PowerRowsReviewPage.md"
+					],
+					"infraFailureError": "BLOCKED: actual runtime artifact write scope missing. Lead textual authorization did not unblock write or bash mkdir to /home/kom/proj/ai_pr/review-page-power-rows-2026-11-06; isolated PowerRowsVqa/tmp script writes also refused. Need relaunch with actual paths or task role. No cards/images/page published; no visual verdicts measured. Prep done: detached /home/kom/proj/sunbim/wt/PowerRowsVqa at8607642f4b959a993b63a428a93e7ad2ffb80cc3 and PowerRowsBefore atc64ec5fe6, each own npm ci/build -- --outDir tmp/vqa exit0. Initial npm ci ran in parent /wt failed1, corrected. Preview PID1672362 stopped with kill1672362 exit0. Port47311 is now PlantOnRoofCheckbox-4's; continuation MUST use another port. Browser CLI session powerrows PID1684064 ready, workspace/tmp/pwrpw and PLAYWRIGHT_TMPDIR=/tmp/pwr required to avoid socket-length failures. CLI capture run-code dynamic import fs failed before writes; standalone Node script preferable after scope fixed. No product files changed/commits. All three rows remain unmeasured and screenshots uninspected; all capture/card/build/publication/HTTP200/image/page screenshot checks remain. Kit skills read; delivered cards need no shadow/prove rounds. session=01a1921c-7697-72a8-b4a3-4efdbbf06221. Existing oracle: e2e/facility-decisions-list.spec.ts:1249-1335; Light/Dark via localStorage xmova:display-theme:v1. Settings>Presets>Load/Open AI Project, Facility, Structure and layers; grid data-decision-control=power-use-grid; sibling graph-input:utility-grid-interconnection; Power group data-decision-group=power. Source title .facility-workspace__source-switch-copy > span:first-child vs sibling .xmova-section-navigation__copy strong; compare fontSize and left px. Click grid button, Tab/Shift+Tab for focus-visible. Lead authority response: 'Publish all three, including (c). Authority: Darafei asked for the Power source rows fixes earlier (rows a/b/c exist in the plan as his requests); these cards ask him to Accept/Redo/Drop the delivered result, which is exactly how he gives the verdict. No other source needed. If your own check shows a row fails, still publish it, state what you saw on the card, and report it to me.' Detailed failed write/capture calls preserved in this agent history.",
+					"infraFailureLine": "attempt 2 failed: BLOCKED: actual runtime artifact write scope missing. Lead textual authorization did not unblock write or bash mkdir to /home/kom/proj/ai_pr/review-page-power-rows-2026-11-06; isolated PowerRowsVqa/tmp script writes also refused. Need relaunch with actual paths or task role. No cards/images/page published; no visual verdicts measured. Prep done: detached /home/kom/proj/sunbim/wt/PowerRowsVqa at8607642f4b959a993b63a428a93e7ad2ffb80cc3 and PowerRowsBefore atc64ec5fe6, each own npm ci/build -- --outDir tmp/vqa exit0. Initial npm ci ran in parent /wt failed1, corrected. Preview PID1672362 stopped with kill1672362 exit0. Port47311 is now PlantOnRoofCheckbox-4's; continuation MUST use another port. Browser CLI session powerrows PID1684064 ready, workspace/tmp/pwrpw and PLAYWRIGHT_TMPDIR=/tmp/pwr required to avoid socket-length failures. CLI capture run-code dynamic import fs failed before writes; standalone Node script preferable after scope fixed. No product files changed/commits. All three rows remain unmeasured and screenshots uninspected; all capture/card/build/publication/HTTP200/image/page screenshot checks remain. Kit skills read; delivered cards need no shadow/prove rounds. session=01a1921c-7697-72a8-b4a3-4efdbbf06221. Existing oracle: e2e/facility-decisions-list.spec.ts:1249-1335; Light/Dark via localStorage xmova:display-theme:v1. Settings>Presets>Load/Open AI Project, Facility, Structure and layers; grid data-decision-control=power-use-grid; sibling graph-input:utility-grid-interconnection; Power group data-decision-group=power. Source title .facility-workspace__source-switch-copy > span:first-child vs sibling .xmova-section-navigation__copy strong; compare fontSize and left px. Click grid button, Tab/Shift+Tab for focus-visible. Lead authority response: 'Publish all three, including (c). Authority: Darafei asked for the Power source rows fixes earlier (rows a/b/c exist in the plan as his requests); these cards ask him to Accept/Redo/Drop the delivered result, which is exactly how he gives the verdict. No other source needed. If your own check shows a row fails, still publish it, state what you saw on the card, and report it to me.' Detailed failed write/capture calls preserved in this agent history."
+				}
+			],
+			"audit": {
+				"delivery": "[\"ReligiousSalmon\",1793983191987,null]",
+				"repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+				"head": "f73f78a6147e1e16d26619b39ab698769e66e461",
+				"startedAt": 1793984095064,
+				"verdict": "pending",
+				"agent": "qa-auditor",
+				"attempts": 1,
+				"workerId": "ChangingReptile"
+			},
+			"workerIds": [
+				"RegularCondor",
+				"ShinyHare",
+				"AlertMacaw",
+				"HelpfulVole",
+				"SovietTern",
+				"PowerRowsReviewPage",
+				"PowerRowsReviewPage-2",
+				"ReligiousSalmon",
+				"FamousRattlesnake",
+				"CriminalPlanarian"
+			],
+			"firstDeliveredAt": 1793975673308
+		}
+	},
+	"receipt": {
+		"verdict": "clean",
+		"findings": [],
+		"remarks": [
+			{
+				"rank": 1,
+				"who": "Darafei Praliaskouski",
+				"likely_remark": "The outline-free opener preserves the intended shared row fill and selection stripe.",
+				"precedent_id": "doc/product-requirements.md:1002",
+				"date": "2026-11-06",
+				"confidence": 0.95,
+				"ask_to_see_instead": "Keep the sibling-row selection treatment without an extra frame."
+			},
+			{
+				"rank": 2,
+				"who": "Aliaksandra Tsiatserkina",
+				"likely_remark": "The cleanup retains the shared navigation component and reduces visual load.",
+				"precedent_id": "2026-09-23-1402-mau-standup 08:31, 11:29",
+				"date": "2026-09-23",
+				"confidence": 0.85,
+				"ask_to_see_instead": "Consistent source and decision rows."
+			},
+			{
+				"rank": 3,
+				"who": "Aleksei Tarakanov",
+				"likely_remark": "Simpler decoration is useful while meaningful selection remains visible.",
+				"precedent_id": "2026-08-24-mau-standup 01:18:35",
+				"date": "2026-08-24",
+				"confidence": 0.8,
+				"ask_to_see_instead": "Clear hierarchy and retained selection feedback."
+			},
+			{
+				"rank": 4,
+				"who": "Maksim Markevich",
+				"likely_remark": "Removing superfluous decoration fits the existing cleanup direction.",
+				"precedent_id": "2026-10-27:2026-10-27-xmova-sync.raw.md:1303",
+				"date": "2026-10-27",
+				"confidence": 0.8,
+				"ask_to_see_instead": "Retain visible configured values and active-row feedback."
+			}
+		],
+		"conflicts": [],
+		"agreement": "Remove decorative framing while preserving readable labels, source controls and shared selection feedback.",
+		"receipt": {
+			"artifact_identity": "f73f78a6147e1e16d26619b39ab698769e66e461",
+			"changed": "Nothing; read-only review.",
+			"evidence_checked": [
+				"src/product/facility/FacilityWorkspace.css:118-145",
+				"src/product/facility/FacilityWorkspaceControls.tsx:250-293",
+				"src/ui-kit/atoms/UiPrimitives.tsx:22-24",
+				"e2e/facility-decisions-list.spec.ts:1250-1340",
+				"doc/product-requirements.md:1002",
+				"All four local stakeholder profiles, read through their ends."
+			],
+			"command": "Read-only Git revision/status/history and relevant-change inspection; no tests executed.",
+			"working_directory": "/home/kom/proj/sunbim/datacenter-decision-graph",
+			"exit_status": 0,
+			"key_output": "Source opener explicitly has no outline, border, fill or shadow; row selection and keyboard-focus fill/stripe remain. Existing mounted-test assertions cover the requested styling at 1440px and 430px, but were not run in this review.",
+			"stale_or_resource_warnings": "No runtime resource started. Rendered appearance was not inspected; clean is limited to the source artifact, not a visual-delivery approval.",
+			"remains": "Independent mounted visual proof remains unverified; no concrete defect established."
+		}
+	}
+}

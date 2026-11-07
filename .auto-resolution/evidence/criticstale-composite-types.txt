@@ -1,0 +1,129 @@
+$ bun scripts/ci-check-ts.ts
+✓ tool lint (oxlint) (0.6s)
+packages/coding-agent/src/launch/broker.ts:766:22: warning unicorn(no-useless-spread): `Promise.all` accepts an iterable, so it's unnecessary to convert the iterable to an array. help: Consider removing the spread operator.
+packages/coding-agent/test/subagent-mcp-follow.test.ts:21:10: warning eslint(no-unused-vars): Identifier 'createMCPProxyTools' is imported but never used. help: Consider removing this import.
+packages/coding-agent/test/direnv.test.ts:205:4: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+packages/coding-agent/src/thread/services/agents.ts:195:23: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/coding-agent/src/thread/services/agents.ts:213:22: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/coding-agent/src/thread/services/agents-remote.ts:55:27: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/utils/test/env.test.ts:307:6: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+packages/utils/test/env.test.ts:336:17: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+packages/coding-agent/src/modes/interactive-mode.ts:246:2: warning eslint(no-unused-vars): Identifier 'getLatestTodoArchiveFromEntries' is imported but never used. help: Consider removing this import.
+packages/coding-agent/src/modes/acp/acp-agent.ts:59:10: warning eslint(no-unused-vars): Identifier 'buildSkillPromptMessage' is imported but never used. help: Consider removing this import.
+packages/coding-agent/src/thread/peer-agent-session.ts:275:27: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/coding-agent/src/thread/peer-agent-session.ts:288:27: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/coding-agent/src/thread/subagent-worker.ts:477:25: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/catalog/src/provider-models/openai-compat.ts:5604:6: warning unicorn(prefer-string-starts-ends-with): Prefer String#startsWith over a regex with a caret. help: Replace `/^mimo-v2-/.test(modelId)` with `modelId.startsWith('mimo-v2-')`.
+packages/catalog/src/provider-models/openai-compat.ts:5605:9: warning unicorn(prefer-string-starts-ends-with): Prefer String#startsWith over a regex with a caret. help: Replace `/^mimo-v2/.test(modelId)` with `modelId.startsWith('mimo-v2')`.
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:2667:9: warning eslint(no-unused-vars): Variable 'now' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:540:7: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+packages/reemxy-extensions/extensions/eval/lead-instructions.ts:98:13: warning eslint(no-unused-vars): Variable 'budgetLease' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+packages/reemxy-extensions/extensions/todo_dispatch.planfact.test.ts:9:10: warning eslint(no-unused-vars): Identifier 'readGoalDeadline' is imported but never used. help: Consider removing this import.
+packages/reemxy-extensions/extensions/todo_dispatch.planfact.test.ts:16:5: warning eslint(no-unused-vars): Variable 'clock' is assigned a value but never used. Unused variables should start with a '_'. help: Did you mean to use this variable?
+packages/reemxy-extensions/extensions/todo_dispatch.ts:15:15: warning eslint(no-unused-vars): Type 'AgentMessage' is imported but never used. help: Consider removing this import.
+packages/reemxy-extensions/extensions/todo_dispatch.ts:177:7: warning eslint(no-unused-vars): Variable 'TODO_ERROR_ENTRY_TYPE' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+packages/reemxy-extensions/extensions/todo_dispatch.ts:3418:9: warning eslint(no-unused-vars): Variable 'PARALLEL_GATES' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+packages/reemxy-extensions/extensions/todo_dispatch.ts:3942:52: warning eslint(no-unused-vars): Parameter 'pending' is declared but never used. Unused parameters should start with a '_'. help: Consider removing this parameter.
+packages/reemxy-extensions/extensions/todo_dispatch.ts:4391:11: warning eslint(no-unused-vars): Variable 'input' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+packages/reemxy-extensions/extensions/todo_dispatch.ts:6237:7: warning eslint(no-unused-vars): Variable 'lastIdlePlanCheckAt' is assigned a value but never used. Unused variables should start with a '_'. help: Did you mean to use this variable?
+packages/reemxy-extensions/extensions/todo_dispatch.ts:1221:5: warning unicorn(no-useless-spread): `Set` accepts an iterable, so it's unnecessary to convert the iterable to an array. help: Consider removing the spread operator.
+packages/reemxy-extensions/extensions/todo_dispatch.ts:2435:21: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/reemxy-extensions/extensions/todo_dispatch.ts:2705:27: warning unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary help: Spreading falsy values in object literals won't add any unexpected properties, so it's unnecessary to add an empty object as fallback.
+packages/reemxy-extensions/extensions/todo_dispatch.ts:2706:49: warning unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary help: Spreading falsy values in object literals won't add any unexpected properties, so it's unnecessary to add an empty object as fallback.
+packages/reemxy-extensions/extensions/todo_dispatch.ts:3673:115: warning unicorn(no-thenable): Do not add `then` to an object. help: If an object is defined as 'thenable', once it's accidentally used in an await expression, it may cause problems
+packages/reemxy-extensions/extensions/requirement_quotes.test.ts:4:57: warning eslint(no-unused-vars): Identifier 'requirementConflict' is imported but never used. help: Consider removing this import.
+packages/reemxy-extensions/extensions/todo_dispatch.lead-action.test.ts:8:7: warning eslint(no-unused-vars): Variable 'NOW' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+packages/coding-agent/src/task/agents.ts:17:10: warning eslint(no-unused-vars): Identifier 'AUTO_THINKING' is imported but never used. help: Consider removing this import.
+packages/reemxy-extensions/extensions/worker_continue.ts:162:2: warning eslint(no-unused-vars): Parameter 'toolCallId' is declared but never used. Unused parameters should start with a '_'. help: Consider removing this parameter.
+packages/reemxy-extensions/extensions/dispatch_preflight.ts:7:15: warning eslint(no-unused-vars): Type 'TodoScheduleInput' is imported but never used. help: Consider removing this import.
+packages/reemxy-extensions/extensions/dispatch_preflight.ts:76:33: warning eslint(no-useless-escape): Unnecessary escape character '"' help: Replace `\"` with `"`.
+packages/reemxy-extensions/extensions/dispatch_preflight.ts:242:45: warning eslint(no-useless-escape): Unnecessary escape character '/' help: Replace `\/` with `/`.
+packages/reemxy-extensions/extensions/dispatch_preflight.ts:242:93: warning eslint(no-useless-escape): Unnecessary escape character '/' help: Replace `\/` with `/`.
+packages/coding-agent/src/registry/persisted-agents.ts:789:23: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/coding-agent/src/thread/remote-agent-session.ts:989:27: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/coding-agent/src/thread/remote-agent-session.ts:1004:27: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/catalog/test/model-cache-working-set.test.ts:18:8: warning eslint(no-unused-vars): Variable 'connection' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+packages/coding-agent/test/launch/session-daemon-release.test.ts:693:32: warning eslint(no-unsafe-finally): Unsafe `finally` block. help: Control flow inside `try` or `catch` blocks will be overwritten by this statement.
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:16:24: warning eslint(no-unused-vars): Identifier 'noticeDigest' is imported but never used. help: Consider removing this import.
+packages/reemxy-extensions/extensions/todo_dispatch.liveness.test.ts:46:40: warning eslint(no-unused-vars): Identifier 'parseTodoOverride' is imported but never used. help: Consider removing this import.
+packages/coding-agent/src/session/session-tools.ts:408:2: warning eslint(no-unused-private-class-members): 'recordedDigestScan' is defined but never used. help: Remove the declaration or use it in the code.
+packages/coding-agent/src/session/requirements-ledger-runtime.ts:95:2: warning eslint(no-unused-vars): Identifier 'USER_TODO_EDIT_CUSTOM_TYPE' is imported but never used. help: Consider removing this import.
+packages/coding-agent/test/tools/todo.test.ts:16:2: warning eslint(no-unused-vars): Identifier 'forecastTodoLivePlan' is imported but never used. help: Consider removing this import.
+packages/coding-agent/test/tools/todo.test.ts:18:10: warning eslint(no-unused-vars): Identifier 'forecastTodoPlan' is imported but never used. help: Consider removing this import.
+packages/coding-agent/test/rpc-goal.test.ts:488:29: warning eslint(no-unused-vars): Parameter 'options' is declared but never used. Unused parameters should start with a '_'. help: Consider removing this parameter.
+packages/coding-agent/test/tools/bash-interceptor.test.ts:249:4: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+packages/coding-agent/test/tools/bash-interceptor.test.ts:251:4: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+packages/coding-agent/test/tools/bash-interceptor.test.ts:253:4: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+packages/coding-agent/test/tools/bash-interceptor.test.ts:258:32: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+packages/coding-agent/test/tools/bash-interceptor.test.ts:269:16: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+packages/coding-agent/src/session/turn-recovery.ts:950:30: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+packages/coding-agent/src/tools/bash.ts:724:24: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `option.slice` returns a new array. Spreading it into an array expression to create a new array is redundant.
+packages/coding-agent/src/session/agent-session.ts:399:2: warning eslint(no-unused-vars): Identifier 'completedRewindFromEntry' is imported but never used. help: Consider removing this import.
+packages/coding-agent/src/session/agent-session.ts:400:2: warning eslint(no-unused-vars): Identifier 'isSuccessfulCheckpointEntry' is imported but never used. help: Consider removing this import.
+packages/coding-agent/src/session/agent-session.ts:512:15: warning eslint(no-unused-vars): Type 'BuildSessionContextOptions' is imported but never used. help: Consider removing this import.
+
+$ oxlint .
+✓ tool format (oxfmt) (0.6s)
+Checking formatting...
+
+All matched files use the correct format.
+Finished in 525ms on 7036 files using 32 threads.
+
+$ oxfmt --check 'packages/*/src/**/*.{ts,tsx}' 'packages/*/{test,bench,examples,scripts}/**/*.ts' 'packages/*/*.ts' 'scripts/**/*.ts'
+✓ @oh-my-pi/pi-agent-core check:types (0.8s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 612 files [765.17ms]
+✓ @oh-my-pi/pi-ai check:types (2.1s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 3,347 files [1.97s]
+✓ @oh-my-pi/browser-relay check:types (0.1s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 5 files [78.10ms]
+✓ @oh-my-pi/pi-catalog check:types (1.6s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 2,946 files [1438.92ms]
+✓ @oh-my-pi/pi-coding-agent check:types (2.5s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 5,173 files [2.36s]
+✓ @oh-my-pi/collab-web check:types (0.3s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 131 files [284.79ms]
+✓ @oh-my-pi/pi-metaharness check:types (3.2s)
+$ bun check --no-script -p tsconfig.json && bun check --no-script -p src/tb/tsconfig.json && bun check --no-script -p adapters/edit/tsconfig.json && bun check --no-script -p scripts/tsconfig.json
+✓ No type errors in 152 files [284.75ms]
+✓ No type errors in 2,781 files [1.91s]
+✓ No type errors in 2,785 files [444.06ms]
+✓ No type errors in 2,783 files [370.47ms]
+✓ @oh-my-pi/pi-mnemopi check:types (0.7s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 647 files [701.50ms]
+✓ @oh-my-pi/pi-natives check:types (0.1s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 85 files [93.93ms]
+✓ @oh-my-pi/omptype check:types (0.5s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 36 files [403.23ms]
+✓ @oh-my-pi/reemxy-extensions check:types (1.9s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 2,877 files [1.77s]
+✓ @oh-my-pi/snapcompact check:types (0.9s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 506 files [750.43ms]
+✓ @oh-my-pi/omp-stats check:types (1.2s)
+$ bun check --no-script -p tsconfig.json && bun check --no-script -p tsconfig.client.json
+✓ No type errors in 528 files [836.25ms]
+✓ No type errors in 88 files [203.86ms]
+✓ @oh-my-pi/pi-tui check:types (1.1s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 1,435 files [1084.79ms]
+✓ @oh-my-pi/typescript-edit-benchmark check:types (0.9s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 2,785 files [896.36ms]
+✓ @oh-my-pi/pi-utils check:types (0.5s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 257 files [509.02ms]
+✓ @oh-my-pi/pi-wire check:types (0.1s)
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 6 files [56.76ms]
+
+19/19 checks passed; 0 failed; concurrency limit 7.

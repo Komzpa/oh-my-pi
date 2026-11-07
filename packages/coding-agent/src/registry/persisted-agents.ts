@@ -1,3 +1,4 @@
+import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
@@ -698,12 +699,14 @@ export async function ensurePersistedRoster(
 	// still proceeds.
 	const latch: PersistedRosterLatch = { pending: undefined!, settled: false, owned: new Map() };
 	const tail = taggedRegistry[kPersistedRosterScanTail] ?? Promise.resolve();
-	const scan = tail.then(() =>
-		registerPersistedSubagents(registry, root, {
-			hydrateHistory: false,
-			owned: latch.owned,
-			requestedAgentId,
-		}),
+	const scan = launchStep("roster.queue.wait", () => tail).then(() =>
+		launchStep("roster.scan.work", () =>
+			registerPersistedSubagents(registry, root, {
+				hydrateHistory: false,
+				owned: latch.owned,
+				requestedAgentId,
+			}),
+		),
 	);
 	taggedRegistry[kPersistedRosterScanTail] = scan.then(
 		() => {},
