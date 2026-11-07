@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Plan reviews remember lead decisions, suppress unchanged rejected actions and avoid duplicate journal entries ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Start plan reviews for resumed leads using configured extensions and detect urgent plan triggers within a minute while keeping large journals responsive ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Carry the latest row receipt into retry briefs and refuse retries with missing findings ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
