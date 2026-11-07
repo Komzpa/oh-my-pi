@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { installWorkerAskInterrupt, pendingWorkerQuestions } from "./worker_asks";
 import { resetDeliveryCriticTimers, queueDeliveryCritic, type DeliveryRow, type DeliveryVerdict } from "./delivery_critic";
 import { openReviewPages, probeReviewPage, ReviewAnswerPoller } from "./todo_review_opener";
 import { PREVIEW_ENTRY_TYPE, refreshPreviewVisibility, overduePreviewRows, previewScheduleRefusal, previewDispatchRefusal, previewPlanProblem, previewReason, type PreviewRecord } from "./todo_preview";
@@ -50,24 +51,6 @@ import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from ".
 import { wakeDemand as stalledWakeDemand, countsAsWakeAction, type WakeReceipt } from "./dispatch_wake";
 import dispatchWakeInstructions from "./dispatch-wake.md" with { type: "text" };
 
-function pendingWorkerQuestions(ctx: ExtensionContext): Array<{ worker: string; question: string }> {
-  const questions: Array<{ worker: string; question: string }> = [];
-    for (const job of [...(ctx.getAsyncJobSnapshot()?.running ?? []), ...(ctx.getAsyncJobSnapshot()?.recent ?? [])].filter(job => job.type === "task")) {
-      const session = AgentRegistry.global().get(job.agentId ?? job.id)?.session;
-      const messages = session?.messages?.slice(-100) ?? [];
-      for (let index = messages.length - 1; index >= 0; index--) {
-        const message = messages[index];
-        if (message.role !== "toolResult" || message.toolName !== "ask" || !message.details?.pending || message.details.workingDefaults) continue;
-        const pending = message.details.pending;
-        for (const question of pending.questions ?? []) {
-          const answered = messages.slice(index + 1).some(reply => reply.role === "user" && JSON.stringify(reply.content).includes(`Answer to ${pending.id} [${question.id}]:`));
-          if (!answered && typeof question.question === "string") questions.push({ worker: job.agentId ?? job.id, question: question.question });
-        }
-        break;
-      }
-    }
-  return questions;
-}
 
 export function dispatchTodoArchive(ctx: ExtensionContext): TodoScheduleInput {
   return readTodoArchiveState(ctx.sessionManager).phases;
@@ -2410,6 +2393,7 @@ export function syncCriticalFast(
 }
 
 export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe; reviewPageOpener?: (url: string) => void; deliveryCriticRecord?: (row: DeliveryRow, verdict: DeliveryVerdict) => Promise<void> } = {}): Promise<void> {
+  installWorkerAskInterrupt(pi);
   const priorDeliveries = new Set<string>();
   const deliveryKey = (row) => JSON.stringify([row.content, row.schedule?.executor?.workerId, row.schedule?.executor?.startedAt, row.schedule?.executor?.finishedAt]);
   const checkDeliveries = (ctx: ExtensionContext) => {
@@ -2508,7 +2492,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let wakeJobs: string | undefined;
   let wakeHasEvent = false;
   const chainDemand = (phases: TodoScheduleInput) => waitChainDemands(phases).find(demand => !waitChainRejection(demand, phases));
-  const wakeDemand = (phases, ...args) => chainDemand(phases) ?? stalledWakeDemand(phases, ...args);
+  const wakeDemand = (phases, ...args) => args[4]?.length ? stalledWakeDemand(phases, ...args) : chainDemand(phases) ?? stalledWakeDemand(phases, ...args);
   const prepareWake = (ctx: ExtensionContext) => {
     const before = todoPhases(ctx);
     const jobs = (ctx.getAsyncJobSnapshot()?.recent ?? []).filter(job => job.type === "task").map(job => [job.id, job.status]);

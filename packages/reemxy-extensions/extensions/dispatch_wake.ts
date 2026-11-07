@@ -16,7 +16,7 @@ export function wakeDemand(
 	const rows = phases
 		.flatMap(phase => phase.tasks)
 		.filter(row => row.status !== "completed" && row.status !== "abandoned");
-	const churn = rows.find(
+	const churn = questions.length ? undefined : rows.find(
 		row =>
 			(row.schedule?.attemptHistory?.filter(
 				attempt => attempt.terminalStatus !== "completed" || attempt.rejectionReason,
