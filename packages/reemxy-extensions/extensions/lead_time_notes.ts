@@ -1,5 +1,6 @@
+import { formatLocalTimestamp, type DeadlineState } from "./deadlines";
 import { prompt } from "@oh-my-pi/pi-utils";
-import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { TodoScheduleInput, TodoPlanForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import chainInstructions from "./todo_dispatch-chain.md" with { type: "text" };
 import { todoRowAfterWorker } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import planfactNote from "./planfact-note.md" with { type: "text" };
@@ -49,6 +50,7 @@ export async function appendTimedNote(
 	localClock: string,
 	workOpen: boolean,
 	now = Date.now(),
+	forecastIdentity?: { membershipFingerprint?: string; predictionVersion?: string; anchorId?: string },
 ): Promise<boolean> {
 	if (!content.trim()) return false;
 	const identity = Bun.hash(semanticKey).toString(16);
@@ -59,7 +61,7 @@ export async function appendTimedNote(
 			customType,
 			content: `${localClock} · ${content}`.slice(0, LEAD_NOTE_MAX_CHARS),
 			display: false,
-			details: { semanticKey: identity, emittedAt: now },
+			details: { semanticKey: identity, emittedAt: now, ...forecastIdentity },
 			attribution: "agent",
 		},
 		delivery,
@@ -149,4 +151,28 @@ export function waitChainRejection(demand: WaitChainDemand, phases: TodoSchedule
 	if (!reason?.startsWith(`Dependency review ${demand.key}:`)) return;
 	if (!demand.edges.every(edge => reason.split("\n").some(line => line.startsWith(`${edge.task} <- ${edge.dependency}: `) && line.slice(`${edge.task} <- ${edge.dependency}: `.length).trim().length > 0))) return;
 	return reason;
+}
+
+/** Dates are always included so a finish after midnight cannot look earlier than the baseline. */
+export function renderCurrentSetForecast(plan: TodoPlanForecast, anchor: DeadlineState | null, now: number): string {
+	const stamp = (value: number | undefined) => value === undefined ? "unknown" : formatLocalTimestamp(value, anchor?.timezone);
+	const point = plan.unresolvedCount ? undefined : plan.rawP50Finish;
+	const upper = plan.unresolvedCount ? undefined : plan.calibratedUpperFinish;
+	const coverage = plan.calibrationCoverage;
+	const empirical = plan.calibrationStatus === "sufficient" && upper !== undefined
+		? `${stamp(upper)} (experimental; observed coverage ${coverage?.covered ?? 0}/${coverage?.total ?? 0}, ${plan.calibrationSessions} sessions)`
+		: `unavailable (insufficient calibration; ${plan.calibrationOrigins ?? 0} origins, ${plan.calibrationSessions ?? 0} sessions)`;
+	const allowance = upper !== undefined && point !== undefined ? Math.max(0, upper - point) / 3_600_000 : undefined;
+	const baseline = anchor?.baselineDeadlineAt;
+	const lateMinutes = baseline === undefined ? 0 : Math.max(0, Math.ceil((now / 1_000 - baseline) / 60));
+	const endpoint = plan.rows.filter(row => row.status !== "completed" && row.status !== "abandoned" && row.expectedResourceFinish !== undefined)
+		.sort((a, b) => b.expectedResourceFinish! - a.expectedResourceFinish!)[0];
+	const driver = endpoint ? `${endpoint.fixedPath?.join(" → ") || endpoint.content}${endpoint.owner ? ` (owner ${endpoint.owner})` : ""}` : "unknown";
+	return [
+		`Current set: point ${stamp(point)}; empirical upper ${empirical}.`,
+		`Driver: ${driver}; empirical allowance ${allowance === undefined ? "unknown" : `${allowance.toFixed(2)}h`}.`,
+		baseline === undefined ? "Original baseline unknown." : `Original ${anchor?.auto ? "initial forecast" : "baseline"} ${stamp(baseline * 1_000)}, now ${lateMinutes}m late.`,
+		`Scope since anchor: genuine additions unknown; ${anchor?.autoScopeGrowthRows?.length ?? 0} labels with unknown split/addition lineage.`,
+		`External gate: ${plan.unresolvedCount ? "unknown; forecast conditional on unresolved work" : "none recorded"}.`,
+	].join(" ");
 }

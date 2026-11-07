@@ -46,7 +46,7 @@ import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
-import { appendTimedNote, renderPlanFactNote, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
+import { appendTimedNote, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
 import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
@@ -174,6 +174,9 @@ const TODO_ERROR_ENTRY_TYPE = "todo-error-reminder";
 export function autoGoalDeadlineState(input: {
   current: DeadlineState | null;
   planKey: string;
+  goalId?: string;
+  membershipFingerprint?: string;
+  predictionVersion?: string;
   forecastFinish: number | undefined;
   openRows?: string[];
   now: number;
@@ -182,10 +185,6 @@ export function autoGoalDeadlineState(input: {
 }): DeadlineState | undefined {
   const { current, planKey, forecastFinish, now, hasRealGoal, hasRealDeadline } = input;
   if (hasRealGoal || (hasRealDeadline && current?.auto !== true)) return undefined;
-  const currentDue =
-    current?.auto === true && current.baselineDeadlineAt !== undefined
-      ? current.baselineDeadlineAt * 1_000
-      : undefined;
   let anchorRows = current?.autoAnchorRows;
   if (!anchorRows && current?.autoPlanKey) {
     try {
@@ -193,31 +192,37 @@ export function autoGoalDeadlineState(input: {
       if (Array.isArray(saved)) anchorRows = saved.flatMap(phase => Array.isArray(phase?.[1]) ? phase[1].flatMap(row => typeof row === "string" ? [row] : Array.isArray(row) && typeof row[0] === "string" ? [row[0]] : []) : []);
     } catch { /* Opaque legacy keys retain the active-anchor guard. */ }
   }
-  const planReplaced = current?.auto === true && current.autoPlanKey !== planKey;
-  const deadlinePassed = currentDue !== undefined && now >= currentDue;
-  // A forecast is an anchor, not a rolling target. Keep it for this plan even after it slips.
-  if (current?.auto === true && (current.active || (current.baselineDeadlineAt !== undefined && input.openRows?.some(row => anchorRows?.includes(row))))) {
-    const scopeGrowthRows = [...new Set([...(current.autoScopeGrowthRows ?? []), ...(input.openRows?.filter(row => !anchorRows?.includes(row)) ?? [])])];
-    if (input.openRows && anchorRows && (!current.autoAnchorRows || JSON.stringify(scopeGrowthRows) !== JSON.stringify(current.autoScopeGrowthRows ?? [])))
-      return { ...current, active: true, autoAnchorRows: anchorRows, autoScopeGrowthRows: scopeGrowthRows };
-    if (!current.active) return { ...current, active: true };
+  // Row membership and estimate edits cannot establish a new goal or accepted completion.
+  const sameGoal = input.goalId === undefined || input.goalId === current?.goalId;
+  if (current?.auto === true && sameGoal && current.baselineDeadlineAt !== undefined) {
+    const added = input.openRows?.filter(row => !anchorRows?.includes(row) && !current.autoScopeGrowthRows?.includes(row)) ?? [];
+    const scopeGrowthRows = [...new Set([...(current.autoScopeGrowthRows ?? []), ...added])];
+    if (added.length || !current.active || (input.openRows && !current.autoAnchorRows && anchorRows)) return {
+      ...current, active: true, autoAnchorRows: anchorRows, autoScopeGrowthRows: scopeGrowthRows,
+      autoEvents: [...(current.autoEvents ?? []), ...(added.length ? [{
+        id: `${current.autoAnchorId ?? current.goalId}:scope:${now}:${Bun.hash(JSON.stringify(added))}`,
+        at: Math.floor(now / 1_000), kind: "scope-observed" as const, actor: "todo-dispatch",
+        reason: "Observed labels outside original membership; addition or split lineage unknown", rows: added,
+      }] : [])],
+    };
     return undefined;
   }
-  if (
-    forecastFinish === undefined ||
-    !Number.isFinite(forecastFinish) ||
-    forecastFinish <= now + AUTO_GOAL_MIN_LEAD_MS
-  ) {
-    if (current?.auto === true && (planReplaced || deadlinePassed)) {
-      return { ...current, active: false, stages: [], baselineDeadlineAt: undefined, autoPlanKey: planKey };
-    }
-    return undefined;
-  }
+  if (forecastFinish === undefined || !Number.isFinite(forecastFinish) || forecastFinish <= now + AUTO_GOAL_MIN_LEAD_MS) return undefined;
 
   const deadlineAt = Math.ceil(forecastFinish / 1_000);
   return {
     version: 1,
-    goalId: "auto-todo-plan",
+    goalId: input.goalId ?? "auto-todo-plan",
+    autoAnchorId: `${input.goalId ?? "auto-todo-plan"}:${now}`,
+    autoInitialForecastFinish: forecastFinish,
+    autoMembershipFingerprint: input.membershipFingerprint,
+    autoPredictionVersion: input.predictionVersion,
+    autoEvents: [...(current?.autoEvents ?? []), {
+      id: `${input.goalId ?? "auto-todo-plan"}:${now}:initial`,
+      at: Math.floor(now / 1_000), kind: current ? "new-goal" : "initial-forecast",
+      actor: "todo-dispatch", reason: current ? "Explicit new goal identity" : "Initial forecast; not a user commitment",
+      oldDeadlineAt: current?.baselineDeadlineAt, newDeadlineAt: deadlineAt, rows: input.openRows,
+    }],
     goalStartedAt: Math.floor(now / 1_000),
     timezone: resolveTimeZone(),
     active: true,
@@ -228,7 +233,7 @@ export function autoGoalDeadlineState(input: {
     stages: [
       {
         id: "auto-plan-forecast",
-        label: "Finish the TODO plan",
+        label: "Initial forecast for the TODO plan",
         expectedResult: "Complete the current TODO plan",
         deadlineAt,
       },
@@ -3135,6 +3140,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const autoState = autoGoalDeadlineState({
         current: deadlineState,
         planKey,
+        membershipFingerprint: decision.forecast?.membershipFingerprint,
+        predictionVersion: decision.forecast?.predictionVersion,
         openRows: phases.flatMap(phase => phase.tasks).filter(task => task.status !== "completed" && task.status !== "abandoned").map(task => task.content),
         forecastFinish:
           decision.forecast?.unresolvedCount === 0
@@ -6521,14 +6528,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (onlyPlanFact && (!planFact || questions.length === 0)) return;
     const content = [
       ...(planFact ? [planFact] : []),
-      ...(rehydrateDeadlineState(dispatchStateEntries(ctx))?.autoScopeGrowthRows?.length ? [`Auto goal scope growth since anchor: ${rehydrateDeadlineState(dispatchStateEntries(ctx))!.autoScopeGrowthRows!.join("; ")}`] : []),
+      ...(decision.forecast ? [renderCurrentSetForecast(decision.forecast, rehydrateDeadlineState(dispatchStateEntries(ctx)), now)] : []),
       ...(notice && !notice.shown ? [notice.text] : []),
       ...(chief ? [prompt.render(leadTimeSummary, {
         open: decision.forecast?.rows.filter(row => row.status !== "completed" && row.status !== "abandoned").length ?? 0,
         running: decision.activeTaskCount ?? 0,
         ready: visibleRows.filter(row => row.state === "needs worker").length,
         lost: visibleRows.filter(row => row.state === "needs worker" && row.reason === "lost").length,
-        forecast: decision.forecast ? sdk.formatPlanForecast(decision.forecast, now) : null,
+        forecast: null,
       }).trim()] : []),
       ...(rowInstructions ? [rowInstructions] : []),
       ...(facts ? [facts] : []),
@@ -6560,6 +6567,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       formatLocalClock(now, decision.deadline?.timezone),
       workOpen,
       now,
+      { membershipFingerprint: decision.forecast?.membershipFingerprint, predictionVersion: decision.forecast?.predictionVersion,
+        anchorId: rehydrateDeadlineState(dispatchStateEntries(ctx))?.autoAnchorId },
     );
     if (appended && notice) notice.shown = true;
   };

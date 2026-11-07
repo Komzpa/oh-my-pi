@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { forecastTodoPlan, formatPlanForecast, formatTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { autoGoalDeadlineState, decideTodoDispatch } from "./todo_dispatch";
-import { readGoalDeadline, STATE_ENTRY } from "./deadlines";
+import { readGoalDeadline, rehydrateDeadlineState, STATE_ENTRY } from "./deadlines";
 import { renderDeadlineReminder, renderDeadlineUi, renderPresence } from "./goal_deadlines";
 
 const now = Date.parse("2026-10-28T09:00:00Z");
@@ -143,7 +143,7 @@ test("dispatcher includes archived closure pace without reviving archived rows",
 	expect(decision.forecast.autoDeadlineForecast.rowsPerHour).toBeCloseTo(0.7);
 	expect(decision.forecast.rows.map(row => row.content)).toEqual(["open"]);
 	const state = propose(decision.forecast.autoDeadlineForecast.finish, { openRows: ["open"] });
-	expect(state.baselineDeadlineAt * 1000).toBeGreaterThanOrEqual(now + 3_600_000 / 0.7);
+	expect(state.baselineDeadlineAt * 1000).toBe(Math.ceil(decision.forecast.autoDeadlineForecast.finish / 1000) * 1000);
 });
 
 test("legacy plan identity recovers its missed anchor instead of granting a new clock", () => {
@@ -156,4 +156,26 @@ test("legacy plan identity recovers its missed anchor instead of granting a new 
 	expect(next.goalStartedAt).toBe(first.goalStartedAt);
 	expect(next.baselineDeadlineAt).toBe(first.baselineDeadlineAt);
 	expect(next.autoScopeGrowthRows).toEqual(["new scope"]);
+});
+
+
+test("split, reorder, archive and restart cannot grant an old goal a new initial forecast", () => {
+ const first = propose(now + 60 * 60_000, { goalId: "goal-a", openRows: ["original"], membershipFingerprint: "original-set", predictionVersion: "v1" })!;
+ const persisted = JSON.parse(JSON.stringify({ ...first, active: false }));
+ const restored = rehydrateDeadlineState([{ type: "custom", customType: STATE_ENTRY, data: persisted }]);
+ const split = propose(now + 8 * 60 * 60_000, { current: restored, goalId: "goal-a", planKey: "split-reestimated", openRows: ["child-b", "child-a"], now: now + 2 * 60 * 60_000 })!;
+ expect(readGoalDeadline([{ type: "custom", customType: STATE_ENTRY, data: split }])?.deadlineAt).toBe(first.baselineDeadlineAt! * 1000);
+ expect(split.autoAnchorId).toBe(first.autoAnchorId);
+ expect(split.autoMembershipFingerprint).toBe("original-set");
+ expect(split.autoInitialForecastFinish).toBe(first.autoInitialForecastFinish);
+ expect(split.autoEvents!.slice(0, first.autoEvents!.length)).toEqual(first.autoEvents!);
+ expect(split.autoEvents!.at(-1)!.rows).toEqual(["child-b", "child-a"]);
+ expect(propose(now + 9 * 60 * 60_000, { current: split, goalId: "goal-a", planKey: "reordered", openRows: ["child-a", "child-b"] })).toBeUndefined();
+ const removed = propose(now + 9 * 60 * 60_000, { current: { ...split, active: false }, goalId: "goal-a", openRows: [] })!;
+ expect(removed.baselineDeadlineAt).toBe(first.baselineDeadlineAt);
+ expect(removed.active).toBe(true);
+ const nextGoal = propose(now + 9 * 60 * 60_000, { current: removed, goalId: "goal-b", openRows: ["new goal"] })!;
+ expect(nextGoal.goalId).toBe("goal-b");
+ expect(nextGoal.autoAnchorId).not.toBe(first.autoAnchorId);
+ expect(nextGoal.autoEvents!.at(-1)!.oldDeadlineAt).toBe(first.baselineDeadlineAt);
 });

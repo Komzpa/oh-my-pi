@@ -809,7 +809,8 @@ export const todoToolRenderer = {
 		const deadlineAt = result.details?.deadlineAt;
 		const hasForecast = deadlineAt !== undefined || allTasks.some(task => task.schedule !== undefined);
 		const forecast =
-			result.details?.forecast ?? (hasForecast ? forecastTodoPlan(phases, { now, deadlineAt }) : undefined);
+			result.details?.forecast ??
+			(hasForecast ? forecastTodoPlan(phases, { now, deadlineAt, rawSimulation: false }) : undefined);
 		const forecastByContent = new Map(forecast?.rows.map(row => [row.content, row]));
 		const operation = result.details?.op ?? args?.op;
 		const displayTasks = orderTodoTasksForDisplay(phases, forecast?.rows);
