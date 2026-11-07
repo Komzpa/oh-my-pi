@@ -3704,12 +3704,14 @@ export class ModelRegistry {
 		if (this.#isKeylessProvider(model.provider)) {
 			return kNoAuth;
 		}
-		return this.authStorage.keys.get(model.provider, sessionId, {
-			baseUrl: model.baseUrl,
-			modelId: model.id,
-			accountIds: model.accountAccess && Object.keys(model.accountAccess),
-			signal: options?.signal,
-		});
+		return logger.time("modelRegistry.apiKey.wait", () =>
+			this.authStorage.keys.get(model.provider, sessionId, {
+				baseUrl: model.baseUrl,
+				modelId: model.id,
+				accountIds: model.accountAccess && Object.keys(model.accountAccess),
+				signal: options?.signal,
+			}),
+		);
 	}
 
 	/** Resolve request authentication through the historical Pi extension facade. */
