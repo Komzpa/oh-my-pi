@@ -664,6 +664,9 @@ test("native lifecycle preserves the original deadline without reviving stale go
 		);
 		expect(repairedFinal.details.state.baselineDeadlineAt).toBe(now - 60);
 		expect(repairedFinal.details.state.stages.find(stage => stage.id === "draft")?.deadlineAt).toBe(now - 120);
+		for (const stage of repairedFinal.details.state.stages) Object.freeze(stage);
+		Object.freeze(repairedFinal.details.state.stages);
+		Object.freeze(repairedFinal.details.state);
 		await deadlineTool!.execute(
 			"deliver",
 			{ action: "deliver", stage_id: "draft", delivered_artifact: "Usable draft" },
@@ -926,6 +929,9 @@ test("tool results paint deadline state once, after recording delivery", () => {
 		sessionManager: branchMock(() => branch),
 		ui: { setStatus: () => {}, setWidget: (_key, lines) => paints.push(lines) },
 	} as unknown as ExtensionContext;
+	for (const stage of branch[0].data.stages) Object.freeze(stage);
+	Object.freeze(branch[0].data.stages);
+	Object.freeze(branch[0].data);
 	handlers.get("session_start")!({}, ctx);
 	paints.length = 0;
 	handlers.get("tool_result")!({ toolName: "bash", isError: false }, ctx);
