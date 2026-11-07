@@ -129,13 +129,13 @@ import { existingSubagentWorkerPool, subagentWorkerPool } from "../thread/subage
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
 import { pendingWorkerAsks, workerAskDefaultWaitMs } from "./worker-questions";
+import { createReadOnlyGuard } from "./read-only-guard";
+import { isReadOnlyDispatch } from "./read-only-policy";
 import { isCompletionProbeEnabled, startCompletionProbe } from "./completion-probe";
 import { appendToolResult, createTaskWidgetInputs, TOOLS_SOURCE_LABEL } from "./widget-inputs";
 import { TextTap } from "../job-widgets/text-tap";
 import { TOOLS_SOURCE_ID } from "../job-widgets/types";
 import { attributeSubagentError } from "./error-attribution";
-import { createReadOnlyGuard } from "./read-only-guard";
-import { isReadOnlyDispatch } from "./read-only-policy";
 import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
 import { isReadOnlyAgent } from "./read-only-policy";
