@@ -60,6 +60,7 @@ import {
 	buildSessionContextFromLeafPath,
 	selectSessionContextEntriesFromLeafPath,
 	type SessionContextEntryMetadata,
+	isContextBookkeepingEntry,
 	sessionContextEntryMetadata,
 	type SessionContext,
 	snapcompactHistoryBlockOptions,
@@ -5152,6 +5153,18 @@ export class SessionManager {
 
 	getLeafId(): string | null {
 		return this.#index.leafId();
+	}
+
+	/** Accept only append-only bookkeeping since a captured leaf; navigation and context edits invalidate it. */
+	hasContextChangedSince(sourceLeafId: string | null): boolean {
+		if (this.getLeafId() === sourceLeafId) return false;
+		const path = this.#index.metadataPath();
+		for (let index = path.length - 1; index >= 0; index--) {
+			const entry = path[index]!;
+			if (entry.id === sourceLeafId) return false;
+			if (!isContextBookkeepingEntry(entry)) return true;
+		}
+		return true;
 	}
 
 	getLeafEntry(): SessionEntry | undefined {

@@ -949,6 +949,22 @@ describe("AgentSession restart queue round trip", () => {
 		expect((await Bun.file(file).stat()).size - unchanged).toBe(0);
 	}, 30_000);
 
+	it("does not repeat the delivery checkpoint when the delayed queue writer flushes", async () => {
+		appendPriorAssistant(currentManager());
+		session = createSession(currentManager(), [{ content: ["done"] }]);
+		const lease = session.beginRestartDrain();
+		session.queueDeferredMessage(hiddenNextTurnMessage("state for this turn"));
+		await lease.waitForQuiescence();
+		lease.release();
+		await session.waitForIdle();
+		await session.prompt("continue");
+		await session.waitForIdle();
+		const checkpoints = restartQueueCheckpoints(currentManager());
+		expect(checkpoints.at(-1)).toMatchObject({ data: { steering: [], followUp: [], pendingNextTurn: [] } });
+		await session.flushRestartJournal();
+		expect(restartQueueCheckpoints(currentManager())).toHaveLength(checkpoints.length);
+	});
+
 	it("does not write another live-sized checkpoint when queues are unchanged", async () => {
 		appendPriorAssistant(currentManager());
 		session = createSession(currentManager());

@@ -1854,6 +1854,36 @@ export class SessionMaintenance {
 		return this.#emitLifecycleEvent({ type: "manual_compaction_end", aborted, errorMessage }, false);
 	}
 
+	#experimentalRolloverInvalidated(
+		stage: string,
+		signal: AbortSignal,
+		sessionId: string,
+		leafId: string | null,
+		model: string,
+	): boolean {
+		const reason = signal.aborted
+			? "signal-aborted"
+			: !this.#usesExperimentalContextManagement()
+				? "experimental-disabled"
+				: this.#host.sessionId() !== sessionId
+					? "session-changed"
+					: this.#host.sessionManager.hasContextChangedSince(leafId)
+						? "context-changed"
+						: this.#model && `${this.#model.provider}/${this.#model.id}` !== model
+							? "model-changed"
+							: undefined;
+		if (!reason) return false;
+		logger.warn("Experimental context rollover cancelled", {
+			reason,
+			stage,
+			sessionId,
+			sourceLeafId: leafId,
+			currentLeafId: this.#host.sessionManager.getLeafId(),
+			...(signal.aborted ? { cause: String(signal.reason) } : {}),
+		});
+		return true;
+	}
+
 	/**
 	 * Commit a notebook-backed boundary without generating, imaging, or otherwise
 	 * rewriting the canonical transcript. Explicit compact modes and focused
@@ -1867,10 +1897,12 @@ export class SessionMaintenance {
 		const entries = this.#host.sessionManager.getContextBranch();
 		const settings = this.#compactionSettings;
 		const preparation = prepareCompaction(entries, settings, model, this.#tokenizer);
-		if (!preparation)
+		if (!preparation) {
+			logger.warn("Experimental context rollover skipped", { reason: "no-preparation", stage: "prepare" });
 			throw new ManualCompactionNoOpError("Nothing to compact (session too small or already rolled over)");
+		}
 
-		const sourceLeafId = entries.at(-1)?.id;
+		const sourceLeafId = this.#host.sessionManager.getLeafId();
 		const sourceSessionId = this.#host.sessionId();
 		const sourceModel = `${model.provider}/${model.id}`;
 		let hookCompaction: CompactionResult | undefined;
@@ -1883,28 +1915,35 @@ export class SessionMaintenance {
 				customInstructions: undefined,
 				signal: signalController.signal,
 			})) as SessionBeforeCompactResult | undefined;
-			if (hookResult?.cancel) throw new CompactionCancelledError();
+			if (hookResult?.cancel) {
+				logger.warn("Experimental context rollover cancelled", { reason: "hook-cancel", stage: "after-hook" });
+				throw new CompactionCancelledError();
+			}
 			if (hookResult?.compaction) {
 				hookCompaction = hookResult.compaction;
 				fromExtension = true;
 			}
 		}
 		if (
-			signalController.signal.aborted ||
-			!this.#usesExperimentalContextManagement() ||
-			this.#host.sessionId() !== sourceSessionId ||
-			this.#host.sessionManager.getLeafId() !== sourceLeafId ||
-			(this.#model && `${this.#model.provider}/${this.#model.id}` !== sourceModel)
+			this.#experimentalRolloverInvalidated(
+				"after-hook",
+				signalController.signal,
+				sourceSessionId,
+				sourceLeafId,
+				sourceModel,
+			)
 		) {
 			throw new CompactionCancelledError(undefined, { cause: signalController.signal.reason });
 		}
 		const prepared = await this.#prepareCompactionFromHooks(preparation, hookCompaction, signalController.signal);
 		if (
-			signalController.signal.aborted ||
-			!this.#usesExperimentalContextManagement() ||
-			this.#host.sessionId() !== sourceSessionId ||
-			this.#host.sessionManager.getLeafId() !== sourceLeafId ||
-			(this.#model && `${this.#model.provider}/${this.#model.id}` !== sourceModel)
+			this.#experimentalRolloverInvalidated(
+				"after-prepare",
+				signalController.signal,
+				sourceSessionId,
+				sourceLeafId,
+				sourceModel,
+			)
 		) {
 			throw new CompactionCancelledError(undefined, { cause: signalController.signal.reason });
 		}
@@ -1967,12 +2006,21 @@ export class SessionMaintenance {
 		},
 	): Promise<CompactionCheckResult> {
 		const model = this.#model;
-		if (!model || this.isCompacting) return COMPACTION_CHECK_NONE;
+		if (!model || this.isCompacting) {
+			logger.warn("Experimental context rollover skipped", {
+				reason: !model ? "no-model" : "already-compacting",
+				stage: "start",
+			});
+			return COMPACTION_CHECK_NONE;
+		}
 		const settings = this.#compactionSettings;
 		const branch = this.#host.sessionManager.getContextBranch();
 		const preparation = prepareCompaction(branch, settings, model, this.#tokenizer);
-		if (!preparation) return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
-		const sourceLeafId = branch.at(-1)?.id;
+		if (!preparation) {
+			logger.warn("Experimental context rollover skipped", { reason: "no-preparation", stage: "prepare" });
+			return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
+		}
+		const sourceLeafId = this.#host.sessionManager.getLeafId();
 		const sourceSessionId = this.#host.sessionId();
 		const sourceModel = `${model.provider}/${model.id}`;
 
@@ -1990,6 +2038,11 @@ export class SessionMaintenance {
 		try {
 			await this.#emitLifecycleEvent({ type: "auto_compaction_start", reason, action: "context-full" }, false);
 			if (controller.signal.aborted) {
+				logger.warn("Experimental context rollover cancelled", {
+					reason: "signal-aborted",
+					stage: "after-start",
+					cause: String(controller.signal.reason),
+				});
 				await this.#emitLifecycleEvent(
 					{
 						type: "auto_compaction_end",
@@ -2014,6 +2067,7 @@ export class SessionMaintenance {
 					signal: controller.signal,
 				})) as SessionBeforeCompactResult | undefined;
 				if (hookResult?.cancel) {
+					logger.warn("Experimental context rollover cancelled", { reason: "hook-cancel", stage: "after-hook" });
 					await this.#emitLifecycleEvent(
 						{
 							type: "auto_compaction_end",
@@ -2031,7 +2085,15 @@ export class SessionMaintenance {
 					fromExtension = true;
 				}
 			}
-			if (controller.signal.aborted || !this.#usesExperimentalContextManagement()) {
+			if (
+				this.#experimentalRolloverInvalidated(
+					"after-hook",
+					controller.signal,
+					sourceSessionId,
+					sourceLeafId,
+					sourceModel,
+				)
+			) {
 				await this.#emitLifecycleEvent(
 					{
 						type: "auto_compaction_end",
@@ -2048,11 +2110,13 @@ export class SessionMaintenance {
 
 			const prepared = await this.#prepareCompactionFromHooks(preparation, hookCompaction, controller.signal);
 			if (
-				controller.signal.aborted ||
-				!this.#usesExperimentalContextManagement() ||
-				this.#host.sessionId() !== sourceSessionId ||
-				this.#host.sessionManager.getLeafId() !== sourceLeafId ||
-				(this.#model && `${this.#model.provider}/${this.#model.id}` !== sourceModel)
+				this.#experimentalRolloverInvalidated(
+					"after-prepare",
+					controller.signal,
+					sourceSessionId,
+					sourceLeafId,
+					sourceModel,
+				)
 			) {
 				await this.#emitLifecycleEvent(
 					{
@@ -2144,6 +2208,7 @@ export class SessionMaintenance {
 				? COMPACTION_CHECK_CONTINUATION
 				: COMPACTION_CHECK_NONE;
 		} catch (error) {
+			logger.warn("Experimental context rollover failed", { reason: "exception", error: String(error) });
 			await this.#emitLifecycleEvent(
 				{
 					type: "auto_compaction_end",
