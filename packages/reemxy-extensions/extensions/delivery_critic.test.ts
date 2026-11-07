@@ -50,7 +50,8 @@ function harness(outcome: "completed" | "failed" = "completed", preview = false)
 			return 1;
 		},
 		clearTimer: () => {},
-		runDeliveryCritic: (brief: string) => {
+		runDeliveryCritic: (brief: string, _signal: unknown, subject: string) => {
+			expect(subject).toBe(`Delivery ${row.content}`);
 			calls++;
 			expect(brief).toContain(row.content);
 			expect(brief.startsWith("Read skill://stakeholder-shadow to END OF FILE and apply it")).toBe(true);

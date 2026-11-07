@@ -349,7 +349,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 						if (current?.delivery === audit.delivery && current.startedAt === audit.startedAt)
 							ctx.updateTodoSchedule!(content, { audit: { ...audit } });
 					}
-				});
+				}, batch.rows.map(row => row.content).join(" "));
 				const details = result?.details as { results?: Array<{ output?: unknown }> } | undefined;
 				const verdicts = parseRowAuditVerdicts(details?.results?.[0]?.output) ?? [];
 				const head = (await readHead(batch.repoPath)) ?? "unknown";

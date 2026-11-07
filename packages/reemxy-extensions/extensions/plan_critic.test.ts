@@ -59,7 +59,10 @@ function harness(saved: Array<Record<string, unknown>> = [], response: PlanVerdi
 				): Promise<unknown>;
 		  }
 		| undefined;
-	const run = vi.fn(async (_task: string) => ({ details: { results: [{ output: JSON.stringify(response) }] } }));
+	const run = vi.fn(async (_task: string, _signal: unknown, subject: string) => {
+		expect(subject).toBe("Plan");
+		return { details: { results: [{ output: JSON.stringify(response) }] } };
+	});
 	const ctx = {
 		getTodoPhases: () => plan,
 		agent: { kind: "main", id: "Main", name: "main", depth: 0 },

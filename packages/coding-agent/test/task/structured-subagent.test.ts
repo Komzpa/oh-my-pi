@@ -144,6 +144,7 @@ function mockDiscovery(agent: AgentDefinition = AGENT): void {
 afterEach(() => {
 	vi.restoreAllMocks();
 	resetRegisteredArtifactDirsForTests();
+	AgentRegistry.resetGlobalForTests();
 });
 
 describe("structured subagent primitive", () => {

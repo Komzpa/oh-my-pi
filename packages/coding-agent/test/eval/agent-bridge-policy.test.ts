@@ -337,7 +337,7 @@ describe("runEvalAgent", () => {
 		// task.structured is off (default); eval agents keep yield + schemas regardless.
 		expect(firstOptions.structured).toBe(true);
 		expect(secondOptions.structured).toBe(true);
-		expect(firstOptions.assignment).toBe("hello");
+		expect(firstOptions.assignment).toBe(" hello ");
 		expect(firstOptions.description).toBe("My Agent");
 		// No per-call override: the agent's own frontmatter model applies.
 		expect(firstOptions.modelOverride).toEqual(["p/current"]);
