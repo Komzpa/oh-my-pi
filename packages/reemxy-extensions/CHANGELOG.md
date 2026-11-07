@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Dispatch task batches without readonly-property failures while preserving shared TODO snapshots ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Read current dispatch, deadline, and staffing state without replaying long session histories ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Replace pending gate notices by subject so busy leads receive only the latest staffing and ETA state ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

@@ -688,7 +688,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 			delivered_artifact: z.string().optional(),
 		}),
 		async execute(_id, rawParams, _signal, _onUpdate, ctx) {
-			const params = rawParams as DeadlineToolParams;
+			const params = { ...rawParams } as DeadlineToolParams;
 			refresh(ctx);
 			if (params.action === "set") {
 				const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx, params.user_message), params.user_message);

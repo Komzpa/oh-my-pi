@@ -5303,7 +5303,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }
       }
     }
+    let preparedInput;
+    const originalTaskItems = event.toolName === "task" ? taskItems(event.input) : [];
     if (event.toolName === "task" && isMain(ctx)) {
+      // Dispatch annotations belong to this call, never to provider arguments or owner snapshots.
+      const input = event.input;
+      preparedInput = Array.isArray(input) ? input.map(item => ({ ...item }))
+        : Array.isArray(input?.tasks) ? { ...input, tasks: input.tasks.map(item => ({ ...item })) }
+        : { ...input };
+      event = { ...event, input: preparedInput };
       const phases = todoPhases(ctx);
       const rows = phases.flatMap((phase) => phase.tasks);
       for (const item of taskItems(event.input)) {
@@ -5315,7 +5323,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           gateTrace(ctx, "speculative-review-checked", { row: row.content, agent: item.agent, readOnly: readOnlyAudit(item), speculativeOn: row.schedule?.speculativeOn, dependencies: (row.schedule?.dependencies ?? []).map((content) => { const target = rows.find((candidate) => candidate.content === content); return { content, status: target?.status, review: target?.schedule?.review }; }) });
           if (readOnlyAudit(item)) continue;
           // A dropped title with the same exclusive resources is still the same work.
-          const resources = row.schedule?.resources ?? [];
+          let schedule = row.schedule ?? {};
+          const resources = schedule.resources ?? [];
           const predecessor = resources.length && rows.find(candidate => candidate !== row && candidate.status === "abandoned"
             && candidate.schedule?.resources?.length === resources.length
             && resources.every(resource => candidate.schedule.resources.includes(resource))
@@ -5325,12 +5334,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
               reviewPagePending: predecessor.schedule.reviewPagePending,
               firstDeliveredAt: predecessor.schedule.firstDeliveredAt };
             ctx.updateTodoSchedule?.(String(row.content), patch);
-            row.schedule = { ...row.schedule, ...patch };
+            schedule = { ...schedule, ...patch };
             pi.sendMessage({ customType: USER_REVIEW_CUSTOM_TYPE,
               content: prompt.render(gateNoticeInstructions, { renamedRow: row.content, predecessor: predecessor.content }).trim(),
               display: true, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: false });
           }
-          const schedule = row.schedule ?? {};
           const unseen = todoNeedsOwnerDecision(schedule) && !(schedule.deliveryCritic?.verdict === "pending" && !schedule.deliveryCritic?.timedOut) && !schedule.review && (schedule.attemptHistory ?? predecessor?.schedule?.attemptHistory)?.some(attempt => attempt.terminalStatus === "completed");
           const dependentReview = missingSpeculativeReview(item, phases, row);
           const reviewTarget = dependentReview ?? schedule.speculativeOn ?? ((schedule.review === "user" && !schedule.reviewAnswers?.length) || unseen ? String(row.content) : undefined);
@@ -5341,7 +5349,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           };
           if (Object.keys(patch).length) {
             ctx.updateTodoSchedule?.(String(row.content), patch);
-            row.schedule = { ...schedule, ...patch };
+            schedule = { ...schedule, ...patch };
           }
           if (reviewTarget) {
             item.task = `${brief}\n\n${prompt.render(gateNoticeInstructions, { speculative: true, reviewRow: reviewTarget }).trim()}`;
@@ -5464,9 +5472,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }
       }
     }
-    if (event.toolName !== "task" || !dispatchGateBaseline) return;
-    if (pendingIdleResumeOwner) idleResumeAttempts.add(pendingIdleResumeOwner);
-    taskCallBaselines.set(event.toolCallId, new Map(dispatchGateBaseline));
+    if (event.toolName === "task" && dispatchGateBaseline) {
+      if (pendingIdleResumeOwner) idleResumeAttempts.add(pendingIdleResumeOwner);
+      taskCallBaselines.set(event.toolCallId, new Map(dispatchGateBaseline));
+    }
+    if (preparedInput !== undefined && taskItems(preparedInput).some((item, index) => item.task !== originalTaskItems[index]?.task)) return { input: preparedInput };
   });
   // Every todo result ends with what is still wrong with the plan, so the chief sees the problems
   // where it looks instead of in a gate it may never hit (user 2026-09-25: "тулы выдавали

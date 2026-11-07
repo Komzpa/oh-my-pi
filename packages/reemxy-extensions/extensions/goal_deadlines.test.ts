@@ -983,6 +983,16 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		expect(result.details.state?.baselineDeadlineAt).toBe(1_792_594_800);
 	});
 
+	test("deadline normalization accepts frozen params and leaves the caller's stages unchanged", async () => {
+		setSystemTime(NOW);
+		const h = harness();
+		const stage = Object.freeze({ id: "final", label: "Final", expected_result: "Delivered", local_time: "19:00" });
+		const params = Object.freeze({ action: "set", timezone: DUBAI, user_message: "Continue until 19:00", stages: Object.freeze([stage]) });
+		const result = await h.tool.execute("set", params, undefined, undefined, h.ctx);
+		expect(result.details.state?.stages[0]?.deadlineAt).toBe(1_792_594_800);
+		expect(stage).not.toHaveProperty("deadline_at");
+	});
+
 	test("a deadline quote selects the newest real user message containing it", async () => {
 		setSystemTime(NOW);
 		const h = harness("Push it by 19:00");
