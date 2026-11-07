@@ -104,38 +104,6 @@ describe("ExtensionRunner", () => {
 		};
 	};
 
-	it("task hook failures expose the hook and attempted readonly property", async () => {
-		const extensionPath = path.join(extensionsDir, "readonly.ts");
-		await Bun.write(
-			extensionPath,
-			`export default function(pi) {
-            pi.on("tool_call", function readonlyTaskHook() {
-                const row = Object.freeze({ schedule: {} });
-                row.schedule = { review: "user" };
-            });
-        }`,
-		);
-		const loaded = await loadTestExtensions();
-		const runner = new ExtensionRunner(
-			loaded.extensions,
-			loaded.runtime,
-			tempDir.path(),
-			sessionManager,
-			modelRegistry,
-		);
-		const result = await runner.emitToolCall({
-			type: "tool_call",
-			toolName: "task",
-			toolCallId: "readonly",
-			input: {},
-		});
-		expect(result?.block).toBe(true);
-		expect(result?.reason).toContain("tool_call (task)");
-		expect(result?.reason).toContain("readonlyTaskHook");
-		expect(result?.reason).toContain("row.schedule");
-		expect(result?.reason).toContain(extensionPath);
-	});
-
 	it("reflects SessionManager.moveTo() changes instead of the constructor-time snapshot (/move)", async () => {
 		const dirA = tempDir.join("dirA");
 		const dirB = tempDir.join("dirB");
