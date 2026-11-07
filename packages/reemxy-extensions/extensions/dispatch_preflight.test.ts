@@ -227,3 +227,43 @@ test("a running worker reads live parent resources on every write, including rev
 		spy.mockRestore();
 	}
 });
+
+test("ROOT reader does not block writes; unscoped concurrent writes acquire one exact target", async () => {
+	const registry = new AgentRegistry();
+	const spy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+	const phases: TodoPhase[] = [
+		{
+			name: "Work",
+			tasks: [
+				{
+					content: "Audit",
+					status: "in_progress",
+					schedule: { owner: "Audit", resources: ["/project"], readOnly: true },
+				},
+				{ content: "Alpha", status: "in_progress", schedule: { owner: "Alpha" } },
+				{ content: "Beta", status: "in_progress", schedule: { owner: "Beta" } },
+			],
+		},
+	];
+	registry.register({
+		id: "Lead",
+		displayName: "Lead",
+		kind: "main",
+		session: { activeToolExecutionUpdates() {}, getTodoPhases: () => phases } as unknown as AgentSessionHandle,
+	});
+	const context = (id: string) => ({ ...ctx, agent: { kind: "sub", id, parentId: "Lead" } }) as ExtensionContext;
+	try {
+		const results = await Promise.all([
+			call("write", { path: "shared.ts" }, context("Alpha")),
+			call("edit", { path: "shared.ts" }, context("Beta")),
+		]);
+		expect(results.filter(result => result === undefined)).toHaveLength(1);
+		expect(results.find(result => result?.block)?.reason).toContain("Write conflicts with worker");
+		expect(await call("write", { path: "other.ts" }, context("Beta"))).toBeUndefined();
+		expect((await call("write", { path: "audit.ts" }, context("Audit")))?.reason).toContain("Read-only row");
+		phases[0]!.tasks[1]!.status = "completed";
+		expect(await call("write", { path: "shared.ts" }, context("Beta"))).toBeUndefined();
+	} finally {
+		spy.mockRestore();
+	}
+});

@@ -177,6 +177,7 @@ const TodoScheduleUpdateInput = type({
 	"owner?": type("string"),
 	"agentProfile?": type("string"),
 	"resources?": type("string").array(),
+	"readOnly?": "boolean",
 	"estimate?": TodoEstimateInput,
 	"evidence?": type("string"),
 	"decision?": type('"owner"').describe(
@@ -1464,6 +1465,7 @@ function applyScheduleUpdates(
 		if (ownerChanged) schedule.reestimateCount = 0;
 
 		if (update.agentProfile !== undefined) schedule.agentProfile = update.agentProfile.trim() || undefined;
+		if (update.readOnly !== undefined) schedule.readOnly = update.readOnly;
 		if (update.resources !== undefined) schedule.resources = update.resources.map(resource => resource.trim());
 		if (update.estimate) {
 			const estimate = { ...update.estimate, basis: update.estimate.basis.trim() };

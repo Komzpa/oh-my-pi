@@ -71,6 +71,8 @@ export interface TodoSchedule {
 	owner?: string;
 	/** Exclusive identifiers while this task is running. `undefined` means undeclared. */
 	resources?: string[];
+	/** Read claims do not exclude writers; reads may observe concurrent changes. */
+	readOnly?: boolean;
 	estimate?: TodoEstimate;
 	/** Immutable first accepted estimate for session calibration and original promise. */
 	firstEstimate?: TodoEstimate;
@@ -1015,7 +1017,7 @@ function canStart(node: PlanNode, active: readonly { node: PlanNode }[]): boolea
 	for (const running of active) {
 		const other = running.node;
 		if (owner !== undefined && owner === other.schedule?.owner) return false;
-		if (resources.length === 0) continue;
+		if (resources.length === 0 || node.schedule?.readOnly || other.schedule?.readOnly) continue;
 		const held = Array.isArray(other.schedule?.resources) ? other.schedule.resources : [];
 		if (resources.some(resource => held.includes(resource))) return false;
 	}

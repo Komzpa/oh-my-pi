@@ -1,3 +1,4 @@
+import { isReadOnlyAgent, isReadOnlyWorkerRole, READ_ONLY_TOOL_NAMES } from "./read-only-policy";
 /**
  * Shared policy resolution and execution for task and eval subagents.
  *
@@ -131,6 +132,8 @@ export interface StructuredSubagentRequest {
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
+	resources?: string[];
+	readOnly?: boolean;
 	context?: string;
 	agent?: string;
 	/** Saved source session selected for the bundled seance agent. */
@@ -574,7 +577,21 @@ export async function resolveEffectiveSubagentPolicy(
 		}
 	}
 
-	const effectiveAgent = planMode ? createPlanModeAgent(agent) : agent;
+	const row = request.session
+		.getTodoPhases?.()
+		.flatMap(phase => phase.tasks)
+		.find(row => row.content === request.row || request.assignment.trim().startsWith(row.content));
+	const readOnly =
+		request.readOnly === true ||
+		row?.schedule?.readOnly === true ||
+		isReadOnlyWorkerRole(row?.schedule?.agentProfile ?? "") ||
+		isReadOnlyWorkerRole(agentName);
+	if ((readOnly || isReadOnlyAgent(agent)) && request.customTools?.length)
+		throw new StructuredSubagentError("preflight", "Read-only dispatch cannot use custom tools.");
+	const baseAgent = planMode ? createPlanModeAgent(agent) : agent;
+	const effectiveAgent = readOnly
+		? { ...baseAgent, tools: [...READ_ONLY_TOOL_NAMES], spawns: undefined, prewalk: undefined }
+		: baseAgent;
 	// An agent declaring `structured: true` keeps its result contract when the caller opts out (`task.structured` off).
 	const structured = request.structured !== false || effectiveAgent.structured === true;
 	const schema = resolveSchema(request, effectiveAgent, structured);
@@ -712,6 +729,9 @@ async function applySpawnHook(
 			spawnKey,
 			isolated: request.isolation?.requested === true,
 			assignment: request.assignment,
+			row: request.row,
+			resources: request.resources,
+			readOnly: isReadOnlyAgent(policy.effectiveAgent),
 			context: request.context,
 		},
 		request.signal,
@@ -798,7 +818,11 @@ function buildExecutorOptions(
 	const preparedSession = policy.preparedSession;
 	const { skills, autoloadSkills } = resolveAutoloadSkills(session, policy.agent);
 	const localProtocolOptions = sessionLocalProtocolOptions(session);
-	const restrictToolNames = preparedSession !== undefined || policy.planMode || session.restrictToolNames === true;
+	const restrictToolNames =
+		preparedSession !== undefined ||
+		policy.planMode ||
+		isReadOnlyAgent(policy.effectiveAgent) ||
+		session.restrictToolNames === true;
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
 	return {
 		cwd: session.cwd,

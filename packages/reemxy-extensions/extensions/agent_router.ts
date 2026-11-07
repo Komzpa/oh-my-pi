@@ -12,9 +12,20 @@ import { workerYieldRefusal, type WorkerContinuationState } from "./worker_conti
 import gateNotices from "./gate-notices.md" with { type: "text" };
 import { shortenPath, truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { workerToolPreflight, workerRowScope, workerScopeCovers, fileToolTargets, type HostResourceProbes } from "./dispatch_preflight";
+import {
+	workerToolPreflight,
+	workerRowScope,
+	workerScopeCovers,
+	fileToolTargets,
+	type HostResourceProbes,
+} from "./dispatch_preflight";
 import { visionToolRefusal, visionResultRefusal } from "./vision_gate";
-import { checkoutScopesFromResources, checkoutScopesOverlap, checkoutScopesContain } from "./checkout_scope";
+import {
+	readOnlyRow,
+	checkoutScopesFromResources,
+	checkoutScopesOverlap,
+	checkoutScopesContain,
+} from "./checkout_scope";
 
 // Model selection lives in core: the agent's frontmatter chain (role groups) plus core fallback.
 // This extension keeps the write-scope gate, the file-write refusal and the spawn/outcome records.
@@ -90,7 +101,7 @@ function ownedCheckoutScopes(
 	ctx: ExtensionContext,
 	latestTodo?: () => TodoScheduleInput,
 ): string[] | undefined {
-	const fallback = sessionCwdScopes(ctx);
+	const fallback: string[] = [];
 	const declared = checkoutScopesFromResources(event.resources);
 	if (declared) return declared;
 	const readPhases = (): TodoScheduleInput | undefined => {
@@ -165,10 +176,16 @@ function activeWriteWorker(
 	latestTodo?: () => TodoScheduleInput,
 ): SpawnState | undefined {
 	const runningJobs = ctx.getAsyncJobSnapshot?.()?.running ?? [];
-	const cwdFallback = sessionCwdScopes(ctx);
+	const cwdFallback: string[] = [];
 	const incoming = checkoutScopes ?? cwdFallback;
 	return [...state.spawns.values()].find(spawn => {
-		if (spawn.recordedOutcome || spawn.isolated || !WRITE_CAPABLE_WORKERS.has(spawn.agent)) return false;
+		if (
+			spawn.recordedOutcome ||
+			spawn.isolated ||
+			spawn.readOnly === true ||
+			(spawn.readOnly !== false && !WRITE_CAPABLE_WORKERS.has(spawn.agent))
+		)
+			return false;
 		let phases: TodoScheduleInput | undefined;
 		try {
 			phases = latestTodo?.();
@@ -205,6 +222,7 @@ export interface SpawnRecord {
 	order: string[];
 	isolated?: boolean;
 	checkoutScopes?: string[];
+	readOnly?: boolean;
 }
 
 export interface OutcomeRecord {
@@ -264,6 +282,8 @@ export interface BeforeSubagentSpawnEvent {
 	assignment?: unknown;
 	context?: unknown;
 	resources?: unknown;
+	readOnly?: boolean;
+	row?: string;
 	cwd?: unknown;
 	worktree?: unknown;
 	task?: unknown;
@@ -401,9 +421,7 @@ function memoLatestTodo(
 	return () =>
 		(cached ??=
 			ctx.getTodoPhases?.() ??
-			(getter && ctx.sessionManager
-				? getter(getLiveTodoBranchEntries(ctx.sessionManager))
-				: []));
+			(getter && ctx.sessionManager ? getter(getLiveTodoBranchEntries(ctx.sessionManager)) : []));
 }
 
 export async function requestResourceScope(ctx: ExtensionContext, paths: string[], pending = new Set<string>()) {
@@ -437,24 +455,16 @@ export async function requestResourceScope(ctx: ExtensionContext, paths: string[
 
 /** Persist only caller-assigned paths, after canonical overlap checks, before any worker starts. */
 export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: ExtensionContext): string | undefined {
-	const assigned = [
-		...new Set([
-			...lanePathsFromText(
-				[spawnTaskText(event), event.context].filter(value => typeof value === "string").join("\n"),
-			),
-			...[event.cwd, event.worktree, ...(Array.isArray(event.resources) ? event.resources : [])]
-				.filter((value): value is string => typeof value === "string")
-				.map(value => value.replace(/^(?:path|repo|repository|checkout|worktree):/, ""))
-				.filter(value => value.startsWith("/")),
-		]),
-	];
-	if (!assigned.length) return;
+	const explicit = Array.isArray(event.resources);
+	if (explicit && event.resources.some(value => typeof value !== "string" || !value.startsWith("/")))
+		return "resources must contain absolute paths; use tasks[].resources to narrow the row.";
+	const assigned = explicit ? event.resources : lanePathsFromText(spawnTaskText(event) ?? "");
 	const scopes = checkoutScopesFromResources(assigned);
-	if (!scopes) return "Cannot resolve assigned write resources.";
+	if (assigned.length && !scopes) return "Cannot resolve assigned resources.";
 	if (ctx.agent?.kind === "sub") {
 		const inherited = workerRowScope(ctx);
 		const allowed = checkoutScopesFromResources(inherited?.rows.flatMap(row => row.schedule?.resources ?? []));
-		if (!allowed || !checkoutScopesContain(allowed, scopes))
+		if (scopes && (!allowed || !checkoutScopesContain(allowed, scopes)))
 			return "Nested worker assignment exceeds its parent's row resources; request resource_scope from the lead.";
 		return;
 	}
@@ -466,25 +476,40 @@ export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: Ext
 		row =>
 			(typeof event.spawnKey === "string" &&
 				(row.schedule?.owner === event.spawnKey || row.schedule?.executor?.workerId === event.spawnKey)) ||
+			row.content === event.row ||
 			spawnTextMatchesRowTitle(spawnTaskText(event) ?? "", row.content),
 	);
 	if (matched.length !== 1) return;
 	const row = matched[0];
-	const resources = [...new Set([...(row.schedule?.resources ?? []), ...assigned])];
+	const previous = checkoutScopesFromResources(row.schedule?.resources);
+	if (explicit && previous && scopes && !checkoutScopesContain(previous, scopes))
+		return `resources exceed row ${JSON.stringify(row.content)}; update its todo schedule resources before expanding.`;
+	const resources = explicit ? assigned : [...new Set([...(row.schedule?.resources ?? []), ...assigned])];
+	const readOnly = event.readOnly === true || readOnlyRow(row);
 	const incoming = checkoutScopesFromResources(resources);
 	for (const other of rows) {
-		if (other === row) continue;
+		if (
+			other === row ||
+			readOnly ||
+			readOnlyRow(other) ||
+			(other.status === "pending" && !other.schedule?.owner && !other.schedule?.executor?.workerId)
+		)
+			continue;
 		const held = checkoutScopesFromResources(other.schedule?.resources);
 		if (incoming && held && checkoutScopesOverlap(incoming, held))
-			return `resources ${JSON.stringify(resources.filter(resource => {
-				const scope = checkoutScopesFromResources([resource]);
-				return scope && checkoutScopesOverlap(scope, held);
-			}))} held by row ${JSON.stringify(other.content)} (owner ${other.schedule?.owner ?? other.schedule?.executor?.workerId ?? "unassigned"})`;
+			return `resources ${JSON.stringify(
+				resources.filter(resource => {
+					const scope = checkoutScopesFromResources([resource]);
+					return scope && checkoutScopesOverlap(scope, held);
+				}),
+			)} held by row ${JSON.stringify(other.content)} (owner ${other.schedule?.owner ?? other.schedule?.executor?.workerId ?? "unassigned"}); narrow tasks[].resources to disjoint absolute paths within the row, or wait for its writer`;
 	}
 	const owner = stringValue(event.spawnKey) ?? row.schedule?.owner;
 	if (
-		(resources.length !== (row.schedule?.resources?.length ?? 0) || owner !== row.schedule?.owner) &&
-		ctx.updateTodoSchedule?.(row.content, { resources, owner }) !== true
+		(JSON.stringify(resources) !== JSON.stringify(row.schedule?.resources ?? []) ||
+			owner !== row.schedule?.owner ||
+			readOnly !== row.schedule?.readOnly) &&
+		ctx.updateTodoSchedule?.(row.content, { resources, owner, readOnly }) !== true
 	)
 		return "Could not persist assigned row resources; retry dispatch after updating the row.";
 }
@@ -505,9 +530,7 @@ export function routeSubagentSpawn(
 	if (admission) return { block: true, reason: admission };
 	const latestTodo = memoLatestTodo(options.latestTodo, ctx);
 	const checkoutScopes =
-		WRITE_CAPABLE_WORKERS.has(agent) && event.isolated !== true
-			? ownedCheckoutScopes(event, ctx, latestTodo)
-			: undefined;
+		event.readOnly !== true && event.isolated !== true ? ownedCheckoutScopes(event, ctx, latestTodo) : undefined;
 	// git-pr-owner only runs VCS finalization (commit/PR/push), sequenced by the
 	// caller after a coder's edits land. Blocking it on a still-"running" coder
 	// deadlocks the commit-after-write flow the gate is meant to serialize, so
@@ -516,7 +539,12 @@ export function routeSubagentSpawn(
 	// only. Simpler alternatives (per-file overlap checks, completion-aware
 	// "files are done" detection) need edit-intent tracking the spawn event
 	// does not carry.
-	if (WRITE_CAPABLE_WORKERS.has(agent) && agent !== "git-pr-owner" && event.isolated !== true) {
+	if (
+		event.readOnly !== true &&
+		(event.readOnly === false || WRITE_CAPABLE_WORKERS.has(agent)) &&
+		agent !== "git-pr-owner" &&
+		event.isolated !== true
+	) {
 		const activeWriter = activeWriteWorker(state, ctx, checkoutScopes, latestTodo);
 		if (activeWriter) {
 			const heldScopes = activeWriter.checkoutScopes ?? sessionCwdScopes(ctx);
@@ -553,10 +581,11 @@ export function routeSubagentSpawn(
 		at: (options.now ?? (() => new Date()))().toISOString(),
 		sessionId: sessionId(ctx),
 		agent,
+		readOnly: event.readOnly,
 		chosen: order[0] ?? "",
 		order,
 		...(event.isolated === true ? { isolated: true } : {}),
-		...(checkoutScopes ? { checkoutScopes } : {}),
+		...(checkoutScopes?.length ? { checkoutScopes } : {}),
 	};
 	state.spawns.set(recordKey(spawnKey, agent), { ...record, recordedOutcome: false });
 	appendJsonl(options.stateFile ?? defaultStateFile(), record);
