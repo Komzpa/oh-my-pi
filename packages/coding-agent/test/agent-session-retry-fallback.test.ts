@@ -28,6 +28,7 @@ import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import { parseModelPattern } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
+import { lookup as lookupSetting } from "@oh-my-pi/pi-coding-agent/config/registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { editVariantForModel } from "@oh-my-pi/pi-coding-agent/utils/edit-mode";
 import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
@@ -1098,7 +1099,6 @@ describe("AgentSession retry fallback", () => {
 				"compaction.enabled": false,
 				"retry.usageAwareFallback": true,
 				"retry.usageReservePct": 10,
-				"retry.usageConfirmTimeoutMs": 20,
 				"retry.usageReservePolicy": "confirm",
 				"retry.fallbackChains": {
 					default: [`${fallbackModel.provider}/${fallbackModel.id}`],
@@ -1130,6 +1130,8 @@ describe("AgentSession retry fallback", () => {
 
 			const manager = SessionManager.create(tempDir.path(), tempDir.join(`reserve-${choice}`));
 			manager.appendModelChange(`${primaryModel.provider}/${primaryModel.id}`, "default");
+			// Older revisions have no deadline setting; let the watchdog expose their blocked turn.
+			lookupSetting("retry.usageConfirmTimeoutMs")?.override(settings, 20);
 			const warning = vi.spyOn(logger, "warn");
 			const confirmationStarted = Promise.withResolvers<void>();
 			const confirmFallback = vi.fn(async (_confirmation: unknown, signal: AbortSignal) => {
