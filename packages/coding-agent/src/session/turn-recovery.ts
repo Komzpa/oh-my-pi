@@ -1016,11 +1016,19 @@ export class TurnRecovery {
 		if (this.#pendingRetryErrors.length === 0) return [];
 		const branchById = new Map<string, SessionEntry>();
 		const byKey = new Map<string, SessionEntry>();
-		for (const entry of this.#host.sessionManager.iterateBranch("message")) {
-			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-			const key = sessionMessagePersistenceKey(entry.message);
-			if (this.#pendingRetryErrors.some(pending => pending.entryId === entry.id)) branchById.set(entry.id, entry);
-			if (key && this.#pendingRetryErrors.some(pending => pending.persistenceKey === key)) byKey.set(key, entry);
+		const pendingIds = new Set(this.#pendingRetryErrors.map(pending => pending.entryId));
+		for (const entry of this.#host.sessionManager.getBranchMatching(metadata => pendingIds.has(metadata.id))) {
+			if (entry.type === "message" && entry.message.role === "assistant") branchById.set(entry.id, entry);
+		}
+		// Persistence-key matching is the legacy fallback when the captured entry
+		// was replaced; normal retry completion reads only the pending records.
+		const missing = this.#pendingRetryErrors.filter(pending => !branchById.has(pending.entryId));
+		if (missing.length > 0) {
+			for (const entry of this.#host.sessionManager.iterateBranch("message")) {
+				if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+				const key = sessionMessagePersistenceKey(entry.message);
+				if (key && missing.some(pending => pending.persistenceKey === key)) byKey.set(key, entry);
+			}
 		}
 		const retryErrors: RetryErrorUpdate[] = [];
 		for (const pending of this.#pendingRetryErrors) {
@@ -1056,8 +1064,7 @@ export class TurnRecovery {
 					note: pending.note,
 				};
 			}
-			entry.message.retryRecovery = retryRecovery;
-			this.#host.sessionManager.updateEntry(entry);
+			this.#host.sessionManager.appendRetryRecovery(entry.id, retryRecovery);
 			retryErrors.push({
 				entryId: entry.id,
 				persistenceKey: pending.persistenceKey,
@@ -1066,7 +1073,7 @@ export class TurnRecovery {
 			});
 		}
 		if (retryErrors.length > 0) {
-			await this.#host.sessionManager.rewriteEntries();
+			await this.#host.sessionManager.flush();
 		}
 		return retryErrors;
 	}
