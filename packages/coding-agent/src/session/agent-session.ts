@@ -402,6 +402,7 @@ import {
 	collectPendingToolCalls,
 	createInterruptedToolResults,
 	createInterruptedTurnAbortMessage,
+	createSessionInterruptedTurnAbortMessage,
 	hasRestorableTurn,
 	INTERRUPTED_TURN_ERROR,
 	isInterruptedTurnAbort,
@@ -15570,7 +15571,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 			const model = this.model;
 			if (model) {
-				const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.iterateBranch(), {
+				const interruptedTurnAbort = createSessionInterruptedTurnAbortMessage(this.sessionManager, {
 					api: model.api,
 					provider: model.provider,
 					model: model.id,
@@ -15582,8 +15583,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				}
 			}
 
-			const hasThinkingEntry = [...this.sessionManager.iterateBranch("thinking_level_change")].length > 0;
-			const hasServiceTierEntry = [...this.sessionManager.iterateBranch("service_tier_change")].length > 0;
+			const hasThinkingEntry =
+				this.sessionManager.getLatestBranchMatching(metadata => metadata.type === "thinking_level_change") !==
+				undefined;
+			const hasServiceTierEntry =
+				this.sessionManager.getLatestBranchMatching(metadata => metadata.type === "service_tier_change") !==
+				undefined;
 			const defaultThinkingLevel = parseConfiguredThinkingLevel(cfgDefaultThinkingLevel.get(this.settings));
 			const configuredServiceTierByFamily = buildServiceTierByFamily(
 				cfgTierOpenai.get(this.settings),
