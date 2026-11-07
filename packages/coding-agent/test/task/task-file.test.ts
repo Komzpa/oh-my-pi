@@ -1,3 +1,4 @@
+import { renderSubagentUserPrompt } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -240,7 +241,7 @@ describe("taskFile dispatch", () => {
 
 		expect(executions).toHaveLength(2);
 		expect(executions[0].task).toBe(executions[1].task);
-		expect(executions[0].task).toEndWith(`\n${lines.join("\n")}`);
+		expect(renderSubagentUserPrompt(executions[0].task)).toEndWith(`\n${lines.join("\n")}`);
 	});
 
 	it("keeps literal JSON escape sequences in file contents", async () => {

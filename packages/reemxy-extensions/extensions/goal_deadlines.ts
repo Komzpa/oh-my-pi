@@ -640,11 +640,10 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 					? state.stages.find(item => item.id === input.task_id && item.deliveredAt === undefined)
 					: undefined;
 			if (stage) {
-				stage.deliveredAt = Math.floor(Date.now() / 1000);
-				stage.deliveredArtifact =
-					typeof input.evidence === "string" && input.evidence.trim()
-						? input.evidence.trim()
-						: `Goal task ${input.task_id} completed`;
+				const delivered = { ...stage, deliveredAt: Math.floor(Date.now() / 1000),
+					deliveredArtifact: typeof input.evidence === "string" && input.evidence.trim()
+						? input.evidence.trim() : `Goal task ${input.task_id} completed` };
+				state = { ...state, stages: state.stages.map(item => item === stage ? delivered : item) };
 				persist();
 			}
 		}
@@ -793,8 +792,9 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 					throw deadlineGateError("Provide an active schedule, stage_id, and delivered_artifact.", "deliver requires an active schedule, stage_id, and delivered_artifact");
 				const stage = state.stages.find(item => item.id === params.stage_id);
 				if (!stage) throw deadlineGateError(`Choose a known deadline stage for stage_id ${truncateMiddleToWidth(params.stage_id, 28)}.`, `unknown stage: ${params.stage_id}`);
-				stage.deliveredAt = Math.floor(Date.now() / 1000);
-				stage.deliveredArtifact = params.delivered_artifact;
+				state = { ...state, stages: state.stages.map(item => item === stage
+					? { ...item, deliveredAt: Math.floor(Date.now() / 1000), deliveredArtifact: params.delivered_artifact }
+					: item) };
 			} else if (params.action === "clear") {
 				if (state?.userConstraint) {
 					const user = deadlineSdk.latestDeadlineUserMessage(userEntries(ctx, params.user_message), params.user_message);
