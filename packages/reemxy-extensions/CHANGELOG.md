@@ -16,7 +16,7 @@
 
 - Auto-close stale plan critic actions and put unanswered current actions first in FIX NOW after two lead turns ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
-- Keep a short FIX NOW list in chief tool results and user-role supervisor context until plan defects clear; deliver each critic verdict once ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Deliver executable FIX NOW actions once per defect change in a user-role harness message, keep tool results clean, and accept visible replies alongside wait ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Nag unstaffed leads on every tool result, block status loops after two calls, and keep waking until ready rows have workers ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Reuse router duration history after appends so forecast checks avoid rereading old worker records ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

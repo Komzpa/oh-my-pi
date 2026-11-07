@@ -1,6 +1,6 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import planCritic, { chiefCriticFixes } from "./plan_critic";
-import { chiefFixNow, withChiefFixNow, type ChiefDefect } from "./fix_now";
+import planCritic from "./plan_critic";
+import { chiefFixNow, isLegacyFixNow, fixNowIdentity, fixNowQuestion, withChiefFixNow, type ChiefDefect } from "./fix_now";
 import { prepareAttemptBrief } from "./attempt_receipt";
 import { prepareRequirementBrief, installRequirementResolution } from "./requirement_quotes";
 import { installWorkerAskInterrupt, pendingWorkerQuestions } from "./worker_asks";
@@ -4233,8 +4233,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       options.reviewPageProbe,
     );
   };
-  pi.on("message_end", () => {
-    inFlightAssistantHasText = false;
+  pi.on("message_end", (event) => {
+    if (event.message.role !== "assistant") return;
+    inFlightAssistantHasText = event.message.content.some(part => part.type === "text" && part.text.trim()) &&
+      event.message.content.some(part => part.type === "toolCall" && part.name === "wait");
   });
   // An unplanned, single delegated read can finish before the lead replies. A newer
   // human input ends this exemption; it must not hide a correction behind an old job.
@@ -5509,7 +5511,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const redReason = await redRowsIdleReason(ctx);
       if (redReason) return { block: true, reason: redReason };
       const reason = waitingForSingleRead(ctx) ? undefined : unansweredUserReasonWithDraft(ctx);
-      if (reason) return { block: true, reason };
+      if (reason) {
+        const previous = selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-reply-refusal").next().value;
+        if (previous?.data?.reason !== reason) {
+          pi.appendEntry("todo-reply-refusal", { reason });
+          pi.sendMessage({ customType: "todo-reply-recovery", content: reason, display: false, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false });
+          return { block: true, reason };
+        }
+        pi.appendEntry("todo-reply-gate-miss", { reason, action: "wait admitted after identical refusal" });
+      }
       const choiceReason = await chatChoiceReason(ctx);
       if (choiceReason) return { block: true, reason: choiceReason };
       const idleReason = demandIdlePlanContinuation(ctx, false);
@@ -6601,35 +6611,18 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const decision = currentDecision(ctx);
     const phases = todoPhases(ctx);
     const open = phases.flatMap(phase => phase.tasks).filter(task => isNonClosedRowStatus(task.status));
-    const display = leadDisplayContext(ctx, phases, decision);
     const defects: ChiefDefect[] = [];
     const anchor = rehydrateDeadlineState(dispatchStateEntries(ctx));
     const late = planSlipMinutes(anchor?.baselineDeadlineAt === undefined ? decision.deadline?.deadlineAt : anchor.baselineDeadlineAt * 1_000, Date.now(), open.length > 0);
-    if (late) defects.push({ row: "", action: `Plan late ${late}m: cut/split/parallelize or ask owner`, severity: 0 });
-    const claimRefusals = assignedResourceRefusals(phases, ctx);
-    const staffing = staffingRows(phases, display);
-    for (const row of staffing) {
-      const forecast = decision.forecast?.rows.find(item => item.content === row.content);
-      defects.push({ row: row.content, action: claimRefusals.has(row.content) ? "Repair claim for" : lastTaskDispatchRefused ? "Repair refused staffing for" : "Staff", severity: forecast?.overdue ? 1 : 3 });
+    const answered = new Set([...selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-fix-now-answered")].flatMap(entry => entry.data?.identities ?? []));
+    const lateIdentity = `late:${anchor?.baselineDeadlineAt ?? decision.deadline?.deadlineAt}`;
+    if (late && !answered.has(lateIdentity)) defects.push(fixNowQuestion("late", "", lateIdentity));
+    for (const demand of planChurnRows(phases)) {
+      const identity = `churn:${demand.row}`;
+      if (!answered.has(identity)) defects.push(fixNowQuestion("churn", demand.row, identity));
     }
-    const push = ownsBranchWork(ctx) && gitStateCache?.cwd === ctx.cwd ? gitStateCache.state : undefined;
-    if (push?.unpushed && (push.oldestUnpushedAgeMs ?? 0) >= (push.pushThresholdMs ?? STALE_PUSH_MS))
-      defects.push({ row: pushRowTitle(push), action: "Push", severity: 2 });
-    for (const action of chiefCriticFixes(ctx)) defects.push({ severity: 2, ...action });
-    for (const issue of decision.forecast?.planningIssues ?? [])
-      defects.push({ row: issue.task, action: issue.code === "missing-estimate" ? "Estimate" : issue.code === "task-too-large" ? "Split" : "Replan", severity: 4 });
-    for (const row of unresolvedForecastRows(decision.forecast))
-      defects.push({ row: row.content, action: "Resolve dependencies for", severity: 4 });
-    for (const task of open) {
-      const state = classifyTodoDisplayRow(task, phases, display);
-      if (state.state === "audit queued") defects.push({ row: task.content, action: "Audit", severity: 4 });
-      if (state.state === "ready to close") defects.push({ row: task.content, action: "Close", severity: 4 });
-      if (state.state === "handoff pending") defects.push({ row: task.content, action: "Deliver", severity: 4 });
-    }
-    for (const demand of planChurnRows(phases)) defects.push({ row: demand.row, action: "Break churn on", severity: 1 });
-    return defects;
+    return defects.filter(defect => defect.call && pi.getActiveTools().includes(defect.call.name) && decideGateCall(defect.call, []).allowed);
   };
-  const fixNow = (ctx: ExtensionContext, supervisor = false) => chiefFixNow({ main: isMain(ctx), defects: chiefDefects(ctx) }, supervisor);
   pi.on("tool_result", async (event, ctx) => {
     let result = await handleToolResult(event, ctx);
     const nag = zeroActiveNag(ctx);
@@ -6637,8 +6630,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       result = { ...result, content: [{ type: "text", text: nag, harnessNotice: true as const }, ...(result?.content ?? event.content ?? [])] };
     else if (event.toolName === "task" && !event.isError)
       result = { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: staffingAdvice.trim(), harnessNotice: true as const }] };
-    const block = fixNow(ctx);
-    return block ? { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: block, harnessNotice: true as const }] } : result;
+    if (event.toolName === "ask" && !event.isError) {
+      const identities = chiefDefects(ctx).filter(defect => defect.call?.name === "ask" && defect.call.arguments.questions.every(question => event.input?.questions?.some(input => input.id === question.id && input.question === question.question))).map(defect => defect.identity);
+      if (identities.length) pi.appendEntry("todo-fix-now-answered", { identities });
+    }
+    return result;
   });
 
   let calibrationKey = "";
@@ -6791,18 +6787,21 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       messages = event.messages.flatMap(message => !isStaffing(message) ? [message]
         : message === last && rows.length ? [{ ...message, content: prompt.render(gateNoticeInstructions, staffingData(rows)).trim() }] : []);
     }
-    const block = fixNow(ctx);
-    if (!block && !messages.some(message => message.runtimeSupervisor || (message.role === "custom" && typeof message.content === "string" && message.content.includes("\n\nFIX NOW:")) || (message.role === "toolResult" && message.content.some(part => part.type === "text" && part.harnessNotice === true && part.text.startsWith("FIX NOW:"))))) return { messages };
-    messages = messages.filter(message => !(message.role === "user" && message.runtimeSupervisor === true));
-    messages = messages.map(message => {
-      if (message.role === "toolResult") {
-        const content = message.content.filter(part => part.type !== "text" || part.harnessNotice !== true || !part.text.startsWith("FIX NOW:"));
-        return { ...message, content: block ? [...content, { type: "text", text: block, harnessNotice: true as const }] : content };
-      }
+    const defects = chiefDefects(ctx);
+    const key = fixNowIdentity(defects);
+    const previous = selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-fix-now-delivery").next().value;
+    const block = key === previous?.data?.key ? "" : chiefFixNow({ main: isMain(ctx), defects }, true);
+    if (messages.some(message => message.runtimeSupervisor)) messages = messages.filter(message => !message.runtimeSupervisor);
+    const hasLegacy = messages.some(message => message.role === "toolResult"
+      ? message.content.some(part => part.type === "text" && ((part.harnessNotice === true && part.text.startsWith("FIX NOW:")) || isLegacyFixNow(part.text)))
+      : message.role === "custom" && typeof message.content === "string" && /^(todo-|requirements[_-]|lead-plan-critic)/.test(message.customType) && message.content.includes("\n\nFIX NOW:"));
+    if (hasLegacy) messages = messages.map(message => {
+      if (message.role === "toolResult") return { ...message, content: message.content.filter(part => part.type !== "text" || !((part.harnessNotice === true && part.text.startsWith("FIX NOW:")) || isLegacyFixNow(part.text))) };
       return message.role === "custom" && typeof message.content === "string" && /^(todo-|requirements[_-]|lead-plan-critic)/.test(message.customType)
-      ? { ...message, content: withChiefFixNow(message.content, block) } : message;
+        ? { ...message, content: withChiefFixNow(message.content, "") } : message;
     });
-    if (block) messages = [...messages, { role: "user", content: [{ type: "text", text: fixNow(ctx, true) }], timestamp: Date.now(), attribution: "agent", runtimeSupervisor: true }];
+    if (key !== previous?.data?.key) pi.appendEntry("todo-fix-now-delivery", { key });
+    if (block) messages = [...messages, { role: "user", content: [{ type: "text", text: block }], timestamp: Date.now(), attribution: "agent", runtimeSupervisor: true }];
     return { messages };
   });
 
