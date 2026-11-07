@@ -1,3 +1,5 @@
+import { launchStep, launchMetric } from "@oh-my-pi/pi-utils/launch-trace";
+import { withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -1949,13 +1951,11 @@ export class SessionManager {
 
 	#scheduleDiskWork(work: () => Promise<void>, options: DiskQueueOptions = {}): Promise<void> {
 		const epoch = options.epoch ?? this.#diskEpoch;
-		const scheduled = this.#diskTail
-			.catch(() => undefined)
-			.then(async () => {
-				if (!options.ignoreEpoch && epoch !== this.#diskEpoch) return;
-				if (this.#diskFailure && !options.ignorePriorError) throw this.#diskFailure;
-				await work();
-			});
+		const scheduled = launchStep("journal.queue.wait", () => this.#diskTail.catch(() => undefined)).then(async () => {
+			if (!options.ignoreEpoch && epoch !== this.#diskEpoch) return;
+			if (this.#diskFailure && !options.ignorePriorError) throw this.#diskFailure;
+			await launchStep("journal.queue.work", work);
+		});
 
 		const reported = scheduled.catch(err => {
 			throw this.#noteDiskFailure(err);
@@ -1968,9 +1968,9 @@ export class SessionManager {
 		const predecessor = this.#atomicPersistenceTail;
 		const turn = Promise.withResolvers<void>();
 		this.#atomicPersistenceTail = predecessor.catch(() => undefined).then(() => turn.promise);
-		await predecessor.catch(() => undefined);
+		await launchStep("journal.lock.wait", () => predecessor.catch(() => undefined));
 		try {
-			return await operation();
+			return await launchStep("journal.lock.work", operation);
 		} finally {
 			turn.resolve();
 		}
@@ -2213,7 +2213,13 @@ export class SessionManager {
 	}
 
 	#lineFor(entry: FileEntry): string {
-		return `${stringifyJson(prepareEntryForPersistence(entry, this.#blobs)) ?? "null"}\n`;
+		const kind = entry.type === "custom" ? entry.customType : entry.type;
+		return withLoopPhase(`state.serialize:${kind.slice(0, 96)}`, () =>
+			launchStep(
+				`state.serialize:${kind.slice(0, 96)}`,
+				() => `${stringifyJson(prepareEntryForPersistence(entry, this.#blobs)) ?? "null"}\n`,
+			),
+		);
 	}
 	#recordDurableAppend(line: string): void {
 		const offset = this.#expectedDiskSize ?? 0;
@@ -2460,7 +2466,8 @@ export class SessionManager {
 		let sliceStart = performance.now();
 		for (const entry of this.#index.entries(false, start)) {
 			const line = this.#lineFor(entry);
-			if (writer.appendSync && !this.#storage.defersSyncPublish) writer.appendSync(line);
+			if (writer.appendSync && !this.#storage.defersSyncPublish)
+				launchStep("journal.write", () => writer.appendSync!(line));
 			else await writer.append(line);
 			this.#recordDurableAppend(line);
 			if (performance.now() - sliceStart >= 4) {
@@ -2683,7 +2690,12 @@ export class SessionManager {
 				if (this.#diskEpoch !== epoch) return false;
 				await activeBody?.dispose?.();
 				activeBody = undefined;
-				const body = await this.#serializeBodyAsync();
+				const body = await launchStep("journal.publish.serialize", () => this.#serializeBodyAsync());
+				if (reason === "forkFrom")
+					launchMetric(
+						"parent.historyCopiedBytes",
+						body.positions.reduce((bytes, position) => bytes + position.length, 0),
+					);
 				activeBody = body;
 				const options = {
 					expectedSize: this.#expectedDiskSize,
@@ -2857,7 +2869,7 @@ export class SessionManager {
 			const writer = this.#appendWriter();
 			const line = this.#lineFor(entry);
 			if (writer.appendSync && !this.#storage.defersSyncPublish) {
-				writer.appendSync(line);
+				launchStep("journal.write", () => writer.appendSync!(line));
 				this.#recordDurableAppend(line);
 			} else {
 				// A backend that only queues the publish (indexed) has no synchronous
@@ -2865,7 +2877,7 @@ export class SessionManager {
 				// the line: a lost publish must not leave the record describing bytes
 				// the store never accepted, or the next recovery rewrite hands the
 				// backend CAS an impossible `expectedSize`.
-				if (writer.appendSync) writer.appendSync(line);
+				if (writer.appendSync) launchStep("journal.write", () => writer.appendSync!(line));
 				const confirmed = writer.appendSync ? writer.flush() : writer.append(line);
 				void confirmed
 					.then(() => this.#recordDurableAppend(line))
@@ -3052,27 +3064,35 @@ export class SessionManager {
 	}
 
 	#recordEntry(entry: SessionEntry): void {
-		if (this.#released) {
-			logger.warn("Dropped session entry appended after terminal release", { type: entry.type });
-			return;
-		}
-		if (entry.type === "message" && entry.message.role === "assistant" && normalizeAssistantUsage(entry.message)) {
-			logger.warn("Assistant message recorded with incomplete usage", { id: entry.id });
-		}
-		this.#entries.push(entry);
-		this.#index.insert(entry);
-		const batch = this.#atomicEntryBatch;
-		if (batch?.collecting) batch.entryIds.add(entry.id);
-		if (batch && !batch.collecting) {
-			batch.externalLeafChanged = true;
-			// An off-branch entry replays to the leaf it captured, not to itself.
-			batch.externalLeafId = sessionEntryLeafId(entry);
-		}
-		this.#appendToSessionFile(entry);
-		if (batch) batch.deferredNotifications.push(entry);
-		else this.#notifyEntryAppended(entry);
-		if (this.#storage instanceof FileSessionStorage && !batch && this.#fileIsCurrent && !this.#rewriteRequired)
-			this.#entries = this.#index.contextLeafPath().reverse();
+		return withLoopPhase("journal.record", () =>
+			launchStep("journal.record", () => {
+				if (this.#released) {
+					logger.warn("Dropped session entry appended after terminal release", { type: entry.type });
+					return;
+				}
+				if (
+					entry.type === "message" &&
+					entry.message.role === "assistant" &&
+					normalizeAssistantUsage(entry.message)
+				) {
+					logger.warn("Assistant message recorded with incomplete usage", { id: entry.id });
+				}
+				this.#entries.push(entry);
+				this.#index.insert(entry);
+				const batch = this.#atomicEntryBatch;
+				if (batch?.collecting) batch.entryIds.add(entry.id);
+				if (batch && !batch.collecting) {
+					batch.externalLeafChanged = true;
+					// An off-branch entry replays to the leaf it captured, not to itself.
+					batch.externalLeafId = sessionEntryLeafId(entry);
+				}
+				this.#appendToSessionFile(entry);
+				if (batch) batch.deferredNotifications.push(entry);
+				else this.#notifyEntryAppended(entry);
+				if (this.#storage instanceof FileSessionStorage && !batch && this.#fileIsCurrent && !this.#rewriteRequired)
+					this.#entries = this.#index.contextLeafPath().reverse();
+			}),
+		);
 	}
 
 	#rollbackAtomicEntryBatch(batch: AtomicEntryBatch): void {
@@ -4960,7 +4980,7 @@ export class SessionManager {
 		);
 		const writer = this.#appendWriter();
 		if (writer.appendSync && !this.#storage.defersSyncPublish) {
-			writer.appendSync(line);
+			launchStep("journal.write", () => writer.appendSync!(line));
 			this.#recordDurableAppend(line);
 			return;
 		}
@@ -5359,10 +5379,13 @@ export class SessionManager {
 	 * the full-history display transcript, from the current leaf path.
 	 */
 	buildSessionContext(options?: BuildSessionContextOptions): SessionContext {
-		const entries = this.#index.contextLeafPath(options);
-		return buildSessionContextFromLeafPath(entries, {
-			resolveFrameData: data => this.resolveFrameData(data),
-			...options,
+		return launchStep("context.history.build", () => {
+			const entries = this.#index.contextLeafPath(options);
+			launchMetric("historyEntries", entries.length);
+			return buildSessionContextFromLeafPath(entries, {
+				resolveFrameData: data => this.resolveFrameData(data),
+				...options,
+			});
 		});
 	}
 
@@ -5694,6 +5717,7 @@ export class SessionManager {
 
 		const sourceHeader = sourceEntries.find(entry => entry.type === "session") as SessionHeader | undefined;
 		const history = sourceEntries.filter(entry => entry.type !== "session") as SessionEntry[];
+		launchMetric("parent.historyCopiedEntries", history.length);
 		normalizeLoadedUsage(history);
 		if (options?.resetInheritedCost) SessionManager.#resetInheritedUsageCost(history);
 		manager.#resetToNewSession(

@@ -1,8 +1,8 @@
-import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 import {
 	type AgentMessage,
 	type AgentTool,
@@ -1870,6 +1870,9 @@ export class ExtensionRunner {
 		onFailure?: (kind: "timeout" | "error", message: string) => R,
 		outerSignal?: AbortSignal,
 	): Promise<R | undefined> {
+		const originalHandler = handler;
+		handler = (value, context) =>
+			launchStep(`extension.event:${event.type}:${ext.path}`, () => originalHandler(value, context));
 		// `session_stop` carries its own signal on the event; `tool_call` receives
 		// the outer dispatch signal (loop request or wrapper execute) so an abort
 		// while a handler awaits a human dialog cancels the dialog and settles the
@@ -1897,7 +1900,7 @@ export class ExtensionRunner {
 								event.type === "tool_call" ? budget : undefined,
 							);
 							result = await this.#toolRegistrationScope.run(registrationScope, () =>
-								launchStep(`extension.event:${event.type}:${ext.path}`, () => handler(event, handlerContext)),
+								handler(event, handlerContext),
 							);
 						} catch (error) {
 							handlerFailure = { error };

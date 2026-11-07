@@ -1,3 +1,4 @@
+import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 /**
  * Extension loader - loads TypeScript extension modules using native Bun import.
  */
@@ -500,7 +501,9 @@ export async function importExtensionModule(extensionPath: string, cwd: string):
 		const sourceHash = new Bun.CryptoHasher("sha256")
 			.update(await Bun.file(resolvedPath).arrayBuffer())
 			.digest("hex");
-		const module = (await withHostGuard(() => loadLegacyPiModule(resolvedPath))) as LoadedExtensionModule;
+		const module = (await launchStep(`extension.load:${extensionPath}`, () =>
+			withHostGuard(() => loadLegacyPiModule(resolvedPath)),
+		)) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
 
 		if (typeof factory !== "function") {
@@ -534,7 +537,9 @@ async function bindExtension(
 		const extension = createExtension(extensionPath, imported.resolvedPath);
 		extension.sourceHash = imported.sourceHash;
 		const api = new ConcreteExtensionAPI(extension, runtime, cwd, eventBus);
-		await withHostGuard(() => runExtensionFactory(factory, api, runtime));
+		await launchStep(`extension.init:${extensionPath}`, () =>
+			withHostGuard(() => runExtensionFactory(factory, api, runtime)),
+		);
 
 		return { extension, error: null };
 	} catch (err) {
@@ -555,7 +560,7 @@ export async function loadExtensionFromFactory(
 ): Promise<Extension> {
 	const extension = createExtension(name, name);
 	const api = new ConcreteExtensionAPI(extension, runtime, cwd, eventBus);
-	await runExtensionFactory(factory, api, runtime);
+	await launchStep(`extension.init:${name}`, () => runExtensionFactory(factory, api, runtime));
 	return extension;
 }
 
