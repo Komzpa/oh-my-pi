@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { pendingWorkerAsks, type WorkerQuestion } from "@oh-my-pi/pi-coding-agent/task/worker-questions";
+import { answersWorkerQuestion, pendingWorkerAsks, type WorkerQuestion } from "@oh-my-pi/pi-coding-agent/task/worker-questions";
 import { prompt } from "@oh-my-pi/pi-utils";
 import brief from "./worker-ask.md" with { type: "text" };
 
@@ -53,7 +53,9 @@ export function installWorkerAskInterrupt(pi: ExtensionAPI): void {
 			for (const q of pending(ctx))
 				if (
 					input?.path === `agent://${q.worker}` &&
-					input.content?.includes(`Answer to ${q.id} [${q.questionId}]:`)
+					(q.questionId === "reply"
+						? Boolean(input.content?.trim())
+						: answersWorkerQuestion(input.content ?? "", q))
 				)
 					answered.add(key(q));
 		}
