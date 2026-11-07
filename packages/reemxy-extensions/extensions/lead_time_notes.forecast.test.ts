@@ -40,3 +40,10 @@ test("driver names only the final critical row with a bounded title and owner", 
  expect(driver).not.toContain("Prior dependency");
  expect(driver).not.toContain(" → ");
 });
+
+
+test("driver keeps a collateral subject without its explanatory paragraph", () => {
+ const plan = forecastTodoPlan([{ name: "work", tasks: [{ content: 'Collateral for "Building overview": After applying two levels, pipes obscure the racks.', status: "pending", schedule: { owner: "FitCamera", dependencies: [], resources: [], estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "medium", basis: "declared residual", updatedAt: now } } }] }], { now });
+ const driver = renderCurrentSetForecast(plan, anchor, now).split("Driver: ")[1].split("; empirical allowance")[0];
+ expect(driver).toBe('Collateral for "Building overview" (owner FitCamera)');
+});

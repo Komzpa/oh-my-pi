@@ -75,7 +75,7 @@ export async function replayTodoJournals(files: readonly ReplayFile[]): Promise<
 			} catch {}
 		}
 		const harness = /FREE_TOOL_OK|explicit fixture|native[-_ ](?:admission|merge|kill.switch).*fixture/i.test(prefix);
-		if (harness) {
+		if (harness && /^(\/tmp\/|\/private\/tmp\/)|\/\.claude\/jobs\//.test(meta?.cwd ?? "")) {
 			scan.excluded++;
 			continue;
 		}

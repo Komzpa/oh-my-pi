@@ -168,7 +168,8 @@ export function renderCurrentSetForecast(plan: TodoPlanForecast, anchor: Deadlin
 	const lateMinutes = baseline === undefined ? 0 : Math.max(0, Math.ceil((now / 1_000 - baseline) / 60));
 	const endpoint = plan.rows.filter(row => row.status !== "completed" && row.status !== "abandoned" && row.expectedResourceFinish !== undefined)
 		.sort((a, b) => b.expectedResourceFinish! - a.expectedResourceFinish!)[0];
-	const driver = endpoint ? `${truncateToWidth(singleLine(endpoint.content), 80).slice(0, 80)}${endpoint.owner ? ` (owner ${singleLine(endpoint.owner)})` : ""}` : "unknown";
+	const title = endpoint?.content.match(/^Collateral for "[^"]*"/)?.[0] ?? endpoint?.content.split(/\r?\n/, 1)[0];
+	const driver = endpoint ? `${truncateToWidth(singleLine(title ?? endpoint.content), 80).slice(0, 80)}${endpoint.owner ? ` (owner ${singleLine(endpoint.owner)})` : ""}` : "unknown";
 	return [
 		`Current set: point ${stamp(point)}; empirical upper ${empirical}.`,
 		`Driver: ${driver}; empirical allowance ${allowance === undefined ? "unknown" : `${allowance.toFixed(2)}h`}.`,
