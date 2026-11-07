@@ -1,4 +1,0 @@
-{{{primary}}}
-
-Also pending:
-{{{recovery}}}

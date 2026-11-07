@@ -1,3 +1,0 @@
-ancestorEntries = ["packages/coding-agent/src/tools/todo.ts"]
-ourEntries = ["packages/coding-agent/src/tools/todo.ts"]
-theirEntries = ["packages/coding-agent/src/tools/todo.ts"]
