@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ## [18.18.0] - 2026-11-07
+### Added
+
+- Launch diagnostics now show span offsets, the largest gaps between boundaries, and event-loop timer drift ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
 ### Fixed
 
