@@ -76,7 +76,7 @@ describe("Agent", () => {
 		expect(skippedContent?.type).toBe("text");
 		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
 		expect(skippedContent.text).toContain("Skipped due to pending parent steering message");
-		expect(skippedContent.text).toContain("After the steering message is handled on the next step");
+		expect(skippedContent.text).toContain("then retry echo");
 		expect(skippedContent.text).not.toContain("pending system advisory");
 		expect(skippedContent.text).not.toContain("queued user message");
 	});
