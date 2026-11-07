@@ -31,6 +31,8 @@
 
 ### Fixed
 
+- Restart completion reaches the next model request before restored input; text-only steering loops also receive cancellation and failure notices ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
+
 - Restart completion now resumes the lead with a short Harness notice, retires drain instructions, avoids unchanged queue checkpoints, and returns CLI success after acceptance ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
 - Restart completion wakes are saved before delivery is acknowledged, and completed checkpoint notices no longer reach the next model turn ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).

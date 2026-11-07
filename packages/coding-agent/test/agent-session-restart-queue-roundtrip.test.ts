@@ -13,7 +13,6 @@ import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -73,8 +72,7 @@ describe("AgentSession restart queue round trip", () => {
 				tools,
 				messages: manager.buildSessionContext().messages,
 			},
-			convertToLlm: messages =>
-				transformContext ? activeSession.convertMessagesToLlm(messages) : convertToLlm(messages),
+			convertToLlm: messages => activeSession.convertMessagesToLlm(messages),
 			streamFn: (model, context, options) => {
 				modelInputs?.push(JSON.stringify(context.messages));
 				return mock.stream(model, context, options);
@@ -1263,6 +1261,51 @@ describe("AgentSession restart queue round trip", () => {
 		expect(unchangedMs).toBeLessThan(50);
 	});
 
+	it.each(["completed", "cancelled", "failed"])(
+		"delivers a live %s notice on the next text-only steering request",
+		async state => {
+			const manager = currentManager();
+			appendPriorAssistant(manager);
+			const entered = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const inputs: string[] = [];
+			session = createSession(
+				manager,
+				(async function* () {
+					entered.resolve();
+					await release.promise;
+					yield { content: ["still waiting"], stopReason: "stop" as const };
+					yield { content: ["resumed"], stopReason: "stop" as const };
+				})(),
+				inputs,
+				[],
+				undefined,
+				async messages => messages,
+			);
+			const running = session.prompt("text-only plan");
+			await entered.promise;
+			try {
+				await session.sendRestartNotice({
+					customType: "restart-queued",
+					content: `Restart live ${state}`,
+					display: true,
+					attribution: "agent",
+					details: { requestId: "live", state },
+				});
+				session.agent.steer({ role: "user", content: "next text-only iteration", timestamp: Date.now() });
+			} finally {
+				release.resolve();
+			}
+			await running;
+			await session.waitForIdle();
+			expect(inputs).toHaveLength(2);
+			const next = JSON.parse(inputs[1]!) as { role: string; content: unknown }[];
+			const terminal = next.filter(message => JSON.stringify(message).includes(`Restart live ${state}`));
+			expect(terminal).toHaveLength(1);
+			expect(terminal[0]!.role).toBe("user");
+		},
+	);
+
 	it("delivers restart completion into a turn already running before restore", async () => {
 		const manager = currentManager();
 		appendPriorAssistant(manager);
@@ -1299,6 +1342,13 @@ describe("AgentSession restart queue round trip", () => {
 		const running = session.prompt("work already started at startup");
 		await entered.promise;
 		expect(session.isStreaming).toBe(true);
+		const rootRef = AgentRegistry.global().register({
+			id: MAIN_AGENT_ID,
+			displayName: "Root",
+			kind: "main",
+			session,
+			status: "running",
+		});
 		const controller = createRestartQueueController({
 			session,
 			identity: () => ({ instanceId: "new", sessionId, generation: 0 }),
@@ -1317,6 +1367,7 @@ describe("AgentSession restart queue round trip", () => {
 		} finally {
 			release.resolve();
 			controller.dispose();
+			AgentRegistry.global().unregister(MAIN_AGENT_ID, rootRef);
 		}
 	});
 

@@ -725,16 +725,13 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			if (record && (record.state === "completed" || record.state === "cancelled" || record.state === "failed")) {
 				const notices = this.#restartNoticesFor(record.requestId);
 				if (notices.some(notice => notice.terminal) === false) {
-					await this.#session.sendCustomMessage(
-						{
-							customType: RESTART_QUEUED_NOTICE_TYPE,
-							content: restartNoticeContent(record),
-							display: true,
-							attribution: "agent",
-							details: { requestId: record.requestId, state: record.state },
-						},
-						{ deliverAs: "aside", triggerTurn: false, interruptWait: false },
-					);
+					await this.#session.sendRestartNotice({
+						customType: RESTART_QUEUED_NOTICE_TYPE,
+						content: restartNoticeContent(record),
+						display: true,
+						attribution: "agent",
+						details: { requestId: record.requestId, state: record.state },
+					});
 					await this.#session.sessionManager.flush();
 				}
 			}
@@ -748,17 +745,13 @@ class RestartQueueControllerImpl implements RestartQueueController {
 						}),
 					);
 				}
+				// Publish the short completion before goal restoration can start work.
+				if (!pendingAsk && restartCompleted && record)
+					await sendRootContinuationOnce(this.#session, record.requestId, recoveryReport);
 				if (!pendingAsk && record && ["completed", "cancelled", "failed"].includes(record.state))
 					await this.#restoreGoalModeFor(record);
-				// Terminal notices must precede any model continuation.
 				restoreComplete = true;
-				if (askSettled) {
-					await this.#resumeAfterRestoredAsk(record, askAnswered);
-				} else if (!pendingAsk && restartCompleted && record) {
-					// A completed idle root still needs a wake after stale lifecycle inputs
-					// are removed. The durable continuation receipt owns deduplication.
-					await sendRootContinuationOnce(this.#session, record.requestId, recoveryReport);
-				}
+				if (askSettled) await this.#resumeAfterRestoredAsk(record, askAnswered);
 			};
 			if (!this.#deferChildren) await this.resumeChildren();
 		});
@@ -1552,6 +1545,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		}
 		try {
 			run.record = await this.#transition(run, "failed", detail);
+			this.#notifySession(run, this.#session);
+			for (const child of run.children.values()) this.#notifySession(run, child);
+			await Promise.all(run.notifications);
 			await this.#restoreGoalModeFor(run.record);
 		} catch (persistError) {
 			this.#notice(
