@@ -20,6 +20,7 @@ export function sessionContextEntryMetadata(entry: SessionEntry): SessionContext
 type Predicate = (metadata: SessionContextEntryMetadata) => boolean;
 export type BranchSource = {
 	getBranch(): readonly SessionEntry[];
+	getBranchTailMatching?: (limit: number, predicate: Predicate) => SessionEntry[];
 	getBranchMatching?: (predicate: Predicate) => SessionEntry[];
 	getCachedBranchMatching?: (predicate: Predicate) => SessionEntry[];
 	getLatestBranchMatching?: (predicate: Predicate) => SessionEntry | undefined;
