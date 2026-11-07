@@ -510,8 +510,7 @@ test("a post-await launch block reports its pending extension and distinguishes 
 				blockedMs: 350,
 				cpuMs: expect.any(Number),
 				phase: "launch-overlap:extension.init:delayed",
-				launchCandidates: ["extension.init:delayed"],
-				phaseSource: "wall-overlap",
+				phaseMs: 0,
 			},
 		]);
 		setNow(850);

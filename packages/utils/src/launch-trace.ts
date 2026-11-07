@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isPromise } from "node:util/types";
 import * as logger from "./logger";
-import { pushLoopPhase, popLoopPhase, withLoopPhase } from "./loop-phase";
+import { pushLoopPhase, popLoopPhase, withLoopPhase, setLoopPhaseFallback } from "./loop-phase";
 
 interface Span {
 	name: string;
@@ -40,22 +40,10 @@ export function takeLaunchPhaseCandidates(start: number, end: number): string[] 
 		.sort((a, b) => b.depth - a.depth || a.start - b.start);
 	return [...new Set(relevant.map(phase => phase.name))].slice(0, 3);
 }
-/** Separate exact synchronous attribution from merely overlapping launch work. */
-export function launchPhaseDetails(
-	label: string | undefined,
-	start: number,
-	end: number,
-): {
-	phase: string;
-	launchCandidates?: string[];
-	phaseSource?: string;
-} {
-	const launchCandidates = takeLaunchPhaseCandidates(start, end);
-	return {
-		phase: label ?? (launchCandidates.length ? `launch-overlap:${launchCandidates[0]}` : "unknown"),
-		...(launchCandidates.length ? { launchCandidates, ...(!label ? { phaseSource: "wall-overlap" } : {}) } : {}),
-	};
-}
+setLoopPhaseFallback((start, end) => {
+	const candidates = takeLaunchPhaseCandidates(start, end);
+	return candidates.length ? `launch-overlap:${candidates.join("|")}` : undefined;
+});
 const maxSpans = 256;
 const maxName = 160;
 /** Names only the synchronous prefix: no process-global label survives an await. */

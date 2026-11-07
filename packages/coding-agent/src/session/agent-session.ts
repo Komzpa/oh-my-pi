@@ -7562,8 +7562,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		releaseShellSessions(this.sessionManager.getSessionId());
 		const results = await Promise.allSettled([
-			withLoopPhase("resource-release.async-jobs", () => this.#disposeOwnedAsyncJobs()),
-			withLoopPhase("resource-release.kernels", () => this.#eval.disposeKernels()),
+			this.#disposeOwnedAsyncJobs(),
+			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.#eval.getKernelOwnerId()),
 			this.#releaseOwnedComputerSessions(this.#eval.getKernelOwnerId()),
 			this.#disconnectOwnedMcp(),
