@@ -19,6 +19,8 @@
  * - history://current/full - Full, caller-bound current branch history (experimental)
  */
 import * as path from "node:path";
+import * as fs from "node:fs/promises";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
@@ -401,6 +403,81 @@ export function formatCurrentBranchFullHistory(entries: readonly SessionEntry[])
  * and unregistered agents alike.
  */
 export class HistoryProtocolHandler implements ProtocolHandler {
+	#materialized = new WeakMap<
+		object,
+		{ path: string; count: number; lastId?: string; lastStart: number; pending: Promise<void> }
+	>();
+	#directory?: TempDir;
+
+	async materialize(url: InternalUrl, context?: ResolveContext): Promise<string | null> {
+		if (!isCurrentFullRoute(url)) return null;
+		if (!context?.experimentalContextManagement)
+			throw new Error(
+				"history://current/full is available only when compaction.experimentalContextManagement is enabled",
+			);
+		const source = context.getSessionBranch;
+		if (!source) throw new Error("history://current/full requires a bound live session branch");
+		const key = context.session?.sessionManager ?? source;
+		let cache = this.#materialized.get(key);
+		if (!cache) {
+			if (!this.#directory) {
+				this.#directory = TempDir.createSync("@omp-full-history-");
+				const directory = this.#directory;
+				process.once("exit", () => directory.removeSync());
+			}
+			cache = {
+				path: this.#directory.join(`${crypto.randomUUID()}.md`),
+				count: 0,
+				lastStart: 0,
+				pending: Promise.resolve(),
+			};
+			this.#materialized.set(key, cache);
+		}
+		const state = cache;
+		const work = state.pending.then(async () => {
+			const entries = source();
+			// The branch view is live; appends during I/O belong to the next materialization.
+			const count = entries.length;
+			context.signal?.throwIfAborted();
+			const prefix = state.count > 0 && count >= state.count && entries[state.count - 1]?.id === state.lastId;
+			if (prefix && count === state.count) return;
+			const start = prefix ? state.count - 1 : 0;
+			const file = await fs.open(state.path, "a+", 0o600);
+			try {
+				let offset = prefix ? state.lastStart : 0;
+				await file.truncate(offset);
+				if (!prefix) {
+					const header = formatCurrentBranchFullHistory([]).trimEnd() + (count ? "\n\n" : "\n");
+					await file.writeFile(header);
+					offset += Buffer.byteLength(header);
+				}
+				let sliceStart = performance.now();
+				for (let i = start; i < count; i++) {
+					context.signal?.throwIfAborted();
+					const lines: string[] = [];
+					renderRawEntry(lines, entries[i]!);
+					const content = i === count - 1 ? lines.join("\n").trimEnd() + "\n" : lines.join("\n") + "\n\n";
+					state.lastStart = offset;
+					await file.writeFile(content);
+					offset += Buffer.byteLength(content);
+					if (performance.now() - sliceStart >= 10) {
+						await Bun.sleep(0);
+						sliceStart = performance.now();
+					}
+				}
+				state.count = count;
+				state.lastId = entries[count - 1]?.id;
+			} catch (error) {
+				state.count = 0;
+				throw error;
+			} finally {
+				await file.close();
+			}
+		});
+		state.pending = work.catch(() => {});
+		await work;
+		return state.path;
+	}
 	readonly scheme = "history";
 	readonly spec: SchemeSpec = { backing: "virtual", selectors: "lines", immutable: false, linkable: true };
 
