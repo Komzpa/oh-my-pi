@@ -22,8 +22,26 @@ interface Scope {
 	trace?: Trace;
 	label: string;
 	closed: boolean;
+	depth?: number;
 }
 const storage = new AsyncLocalStorage<Scope>();
+interface PendingPhase {
+	name: string;
+	start: number;
+	end: number;
+	depth: number;
+}
+const pendingPhases = new Set<PendingPhase>();
+const completedPhases: PendingPhase[] = [];
+
+/** Wall-overlap candidates, not CPU attribution. Drained once per watchdog tick. */
+export function takeLaunchPhaseCandidates(start: number, end: number): string[] {
+	const phases = [...completedPhases.splice(0), ...pendingPhases];
+	const relevant = phases
+		.filter(phase => phase.start < end && phase.end > start)
+		.sort((a, b) => b.depth - a.depth || a.start - b.start);
+	return [...new Set(relevant.map(phase => phase.name))].slice(0, 3);
+}
 const maxSpans = 256;
 const maxName = 160;
 /** Names only the synchronous prefix: no process-global label survives an await. */
@@ -107,19 +125,27 @@ function recordSpan(trace: Trace, name: string, wallMs: number, syncPrefixMs: nu
 }
 
 /** Wall duration, inclusive of nested steps. `.wait` labels identify explicit waits. */
-export function launchStep<T>(name: string, fn: () => T): T {
+export function launchStep<T, A extends unknown[]>(name: string, fn: (...args: A) => T, ...args: A): T {
 	const trace = storage.getStore()?.trace;
-	if (!trace || trace.closed) return withLoopPhase(name.slice(0, maxName), fn);
+	if (!trace || trace.closed) return withLoopPhase(name.slice(0, maxName), () => fn(...args));
 	const label = name.slice(0, maxName);
 	const started = performance.now();
 	let syncPrefixMs = 0;
 	const finish = () => {
+		phase.end = performance.now();
+		if (pendingPhases.delete(phase)) {
+			if (completedPhases.length === maxSpans) completedPhases.shift();
+			completedPhases.push(phase);
+		}
 		if (trace.closed) return;
 		recordSpan(trace, label, performance.now() - started, syncPrefixMs);
 	};
-	const scope: Scope = { trace, label, closed: false };
+	const depth = (storage.getStore()?.depth ?? 0) + 1;
+	const phase: PendingPhase = { name: label, start: started, end: Number.POSITIVE_INFINITY, depth };
+	if (pendingPhases.size < maxSpans) pendingPhases.add(phase);
+	const scope: Scope = { trace, label, closed: false, depth };
 	try {
-		const result = storage.run(scope, () => withLoopPhase(label, fn));
+		const result = storage.run(scope, () => withLoopPhase(label, () => fn(...args)));
 		syncPrefixMs = performance.now() - started;
 		if (isPromise(result)) {
 			return result.finally(() => {

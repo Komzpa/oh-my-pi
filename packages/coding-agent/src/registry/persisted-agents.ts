@@ -638,8 +638,8 @@ export async function ensurePersistedRoster(
 	const taggedRegistry = registry as RegistryWithPersistedRosterLatches;
 	if (capturedSessionFiles) {
 		const tail = taggedRegistry[kPersistedRosterScanTail] ?? Promise.resolve();
-		const scan = tail.then(() =>
-			registerPersistedSubagents(registry, root, {
+		const scan = launchStep("roster.queue.wait", () => tail).then(() =>
+			launchStep("roster.scan.work", registerPersistedSubagents, registry, root, {
 				hydrateHistory: false,
 				sessionFiles: capturedSessionFiles,
 				vibeOwnedIds,
@@ -659,7 +659,7 @@ export async function ensurePersistedRoster(
 	}
 	const existing = latches.get(root);
 	if (existing) {
-		await existing.pending;
+		await launchStep("roster.latch.wait", () => existing.pending);
 		if (existing.settled) {
 			// A settled latch is reusable only while every parked ref its scan
 			// restored still matches registry identity/session. Another root's
@@ -675,7 +675,7 @@ export async function ensurePersistedRoster(
 			// latch; join it instead of scanning twice.
 			const replacement = latches.get(root);
 			if (replacement) {
-				await replacement.pending;
+				await launchStep("roster.latch.wait", () => replacement.pending);
 				if (!requestedAgentId || registry.get(requestedAgentId)) return root;
 			}
 		} else {
@@ -700,13 +700,11 @@ export async function ensurePersistedRoster(
 	const latch: PersistedRosterLatch = { pending: undefined!, settled: false, owned: new Map() };
 	const tail = taggedRegistry[kPersistedRosterScanTail] ?? Promise.resolve();
 	const scan = launchStep("roster.queue.wait", () => tail).then(() =>
-		launchStep("roster.scan.work", () =>
-			registerPersistedSubagents(registry, root, {
-				hydrateHistory: false,
-				owned: latch.owned,
-				requestedAgentId,
-			}),
-		),
+		launchStep("roster.scan.work", registerPersistedSubagents, registry, root, {
+			hydrateHistory: false,
+			owned: latch.owned,
+			requestedAgentId,
+		}),
 	);
 	taggedRegistry[kPersistedRosterScanTail] = scan.then(
 		() => {},
