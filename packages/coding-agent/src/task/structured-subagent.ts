@@ -10,7 +10,9 @@ import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import { modelKind } from "@oh-my-pi/pi-catalog/types";
+import type { Effort } from "@oh-my-pi/pi-ai";
 import {
+	agentInheritsParentModel,
 	resolveAgentModelSelection,
 	resolveConfiguredModelPatterns,
 	resolveExplicitModelRole,
@@ -165,8 +167,11 @@ export interface StructuredSubagentRequest {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; steers the child's `auto` thinking classification. */
 	solutionSpace?: string;
+	/** Exact internal rung effort; wins over coarse effort and model selector defaults. */
+	thinkingLevel?: Effort;
 	identity?: StructuredSubagentIdentity;
 	index?: number;
+	row?: string;
 	parentToolCallId?: string;
 	detached?: boolean;
 	invokedAt?: number;
@@ -247,6 +252,8 @@ export interface StructuredSubagentResult {
 	artifactsDir: string;
 	temporaryArtifacts: boolean;
 }
+
+/** Effort suffixes the router appends to its chosen model (`model:effort`). */
 
 /** Machine-readable failure category so adapters can retain their native errors. */
 export class StructuredSubagentError extends Error {
@@ -633,6 +640,7 @@ export async function resolveEffectiveSubagentPolicy(
 			"Subagent isolated execution requires task.isolation.enabled; it is currently false.",
 		);
 	}
+	const inheritsParentModel = agentInheritsParentModel(modelResolution);
 	return {
 		discovery,
 		agentName,
@@ -641,12 +649,12 @@ export async function resolveEffectiveSubagentPolicy(
 		modelOverride,
 		preparedSession: preparedSeance?.session,
 		modelRole,
+		structured,
 		serviceTierOverride,
 		compactionThresholdOverride,
 		oauthAccountPools,
-		parentActiveModelPattern,
+		parentActiveModelPattern: inheritsParentModel ? parentActiveModelPattern : undefined,
 		perCallModelGrants,
-		structured,
 		schema,
 		planMode,
 		isIsolated,
@@ -693,14 +701,23 @@ async function applySpawnHook(
 			modelRole: policy.modelRole,
 			patterns: policy.modelOverride ?? [],
 			spawnKey,
+			isolated: request.isolation?.requested === true,
+			assignment: request.assignment,
+			context: request.context,
 		},
 		request.signal,
 	);
 	if (spawnResult?.block) {
 		throw new StructuredSubagentError("preflight", spawnResult.reason ?? "Subagent spawn blocked by extension.");
 	}
-	if (spawnResult?.model === undefined) return policy;
+	if (spawnResult?.model === undefined) {
+		return policy;
+	}
+	// Explicit rework selectors win over extension routing.
+	if (request.model !== undefined) return policy;
 	const replacement = resolveConfiguredModelPatterns(spawnResult.model, request.session.settings);
+	// A routed replacement ends the parent-model fallback.
+	if (replacement.length > 0) policy = { ...policy, parentActiveModelPattern: undefined };
 	if (replacement.length === 0) return policy;
 	return { ...policy, modelOverride: replacement, modelRoute: spawnResult.note };
 }
@@ -781,8 +798,9 @@ function buildExecutorOptions(
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
 		agent: policy.effectiveAgent,
-		task: renderSubagentUserPrompt(request.assignment),
-		assignment: request.assignment.trim(),
+		task: request.assignment,
+		assignment: request.assignment,
+		row: request.row,
 		preparedSession,
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
@@ -808,6 +826,7 @@ function buildExecutorOptions(
 		effort: policy.effort,
 		solutionSpace: request.solutionSpace?.trim() || undefined,
 		structured: policy.structured,
+		exactThinkingLevel: request.thinkingLevel,
 		...(policy.schema.source === "none"
 			? {}
 			: {
@@ -906,8 +925,8 @@ function buildFailureResult(
 			id,
 			agent: policy.agent.name,
 			agentSource: policy.agent.source,
-			task: renderSubagentUserPrompt(request.assignment),
-			assignment: request.assignment.trim(),
+			task: request.assignment,
+			assignment: request.assignment,
 			description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,
 			exitCode: 1,
 			output: "",

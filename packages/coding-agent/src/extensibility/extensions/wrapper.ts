@@ -7,6 +7,7 @@ import {
 	type AgentToolResult,
 	type AgentToolUpdateCallback,
 	isNonBlankContext,
+	ToolCallBlockedError,
 	type ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
 import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
@@ -24,6 +25,7 @@ import {
 	truncateForPrompt,
 } from "../../tools/approval";
 import { getApprovalGrants } from "../../tools/approval-cache";
+import { withToolApprovalScope } from "../../tools/approval-scope";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { withFileMutationSession } from "../../tools/file-write-fallback";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
@@ -238,6 +240,16 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<TDetails, TParameters>> {
+		return withToolApprovalScope(() => this.#execute(toolCallId, params, signal, onUpdate, context));
+	}
+
+	async #execute(
+		toolCallId: string,
+		params: Static<TParameters>,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
+		context?: AgentToolContext,
+	): Promise<AgentToolResult<TDetails, TParameters>> {
 		// The agent loop emits `tool_call` at arg-prep time (session
 		// `beforeToolCall` wiring) so a handler revision lands before concurrency
 		// scheduling and `tool_execution_start`. Consume the marker
@@ -276,7 +288,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			context,
 		);
 		if (preResolved.policy === "deny") {
-			throw denyError(preResolved, this.tool.name);
+			throw new ToolCallBlockedError(denyError(preResolved, this.tool.name).message);
 		}
 
 		// 1. Emit tool_call event first - extensions can block execution or revise the input the tool
@@ -310,7 +322,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 
 				if (callResult?.block) {
 					const reason = callResult.reason || "Tool execution was blocked by an extension";
-					throw new Error(reason);
+					throw new ToolCallBlockedError(reason);
 				}
 				if (isNonBlankContext(callResult?.additionalContext)) {
 					pendingAdditionalContext = callResult.additionalContext;
@@ -337,7 +349,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				context,
 			);
 			if (preflight?.block) {
-				throw new Error(preflight.reason || "Tool execution was blocked by a preflight rule");
+				throw new ToolCallBlockedError(preflight.reason || "Tool execution was blocked by a preflight rule");
 			}
 		}
 
@@ -346,6 +358,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		// input that newly resolves to `deny` is caught here even though the original passed the
 		// short-circuit above.
 		const resolvedArgs = approvalArgs(effectiveParams, context);
+		this.tool.bindApprovalTargets?.(resolvedArgs);
 		const resolved = resolveApproval(
 			this.tool,
 			resolvedArgs,
@@ -358,7 +371,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		context?.xdevTierResolved?.(resolved.tier);
 		if (resolved.policy === "deny") {
 			cancelPreflight();
-			throw denyError(resolved, this.tool.name);
+			throw new ToolCallBlockedError(denyError(resolved, this.tool.name).message);
 		}
 		const pendingSafetyChecks = computerSafetyChecks(context);
 		// Outer approvals only cover the original input. `xd://` approval skips
@@ -438,18 +451,18 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				await emitApprovalResolved(false, reason);
 				cancelPreflight();
 				if (pendingSafetyChecks.length > 0) {
-					throw new Error(
+					throw new ToolCallBlockedError(
 						`Tool "${this.tool.name}" has pending provider safety checks but no interactive UI is available.`,
 					);
 				}
 				if (resolved.source === "restriction") {
-					throw new Error(
+					throw new ToolCallBlockedError(
 						`Tool "${this.tool.name}" requires approval but no interactive UI available.\n` +
 							`Reason: ${resolved.reason}\n` +
 							`A restricted folder (tools.restrictedFolders) asks in every approval mode.`,
 					);
 				}
-				throw new Error(
+				throw new ToolCallBlockedError(
 					`Tool "${this.tool.name}" requires approval but no interactive UI available.\n` +
 						`Options:\n` +
 						`  1. Set tools.approvalMode: yolo in /settings\n` +
@@ -482,12 +495,12 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			await emitApprovalResolved(approved, approved ? undefined : "denied by user");
 			if (!approved) {
 				cancelPreflight();
-				throw new Error(`Tool call denied by user: ${this.tool.name}`);
+				throw new ToolCallBlockedError(`Tool call denied by user: ${this.tool.name}`);
 			}
 			if (pendingSafetyChecks.length > 0) {
 				if (!context) {
 					cancelPreflight();
-					throw new Error("Provider safety approval context is unavailable");
+					throw new ToolCallBlockedError("Provider safety approval context is unavailable");
 				}
 				context.providerSafetyApproved = true;
 			}

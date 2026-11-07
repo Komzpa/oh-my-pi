@@ -86,7 +86,7 @@ import {
 } from "../session/async-job-views";
 import { BlobStore, type BlobPutOptions, type BlobPutResult, lazyImageDataSync } from "../session/blob-store";
 import type { IdleMaintenanceOptions } from "../session/idle-maintenance";
-import type { CustomMessage } from "../session/messages";
+import type { CustomMessage, CustomMessagePayload } from "../session/messages";
 import { resolveRoleModelCycle, roleThinkingLevelForModel, serviceTierForModel } from "../session/model-controls";
 import type { ServingModel } from "../session/retry-fallback-chains";
 import {
@@ -587,6 +587,17 @@ export class RemoteAgentSession implements AgentViewSession {
 
 	resolveTemporaryModelThinkingLevel(model: Model): ConfiguredThinkingLevel | undefined {
 		return roleThinkingLevelForModel(this.settings, this.modelRegistry.getAvailable(), model);
+	}
+
+	setFastMode(enabled: boolean): Promise<boolean> {
+		return this.#command("setFastMode", enabled);
+	}
+
+	sendCustomMessage(
+		message: CustomMessagePayload,
+		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+	): Promise<boolean> {
+		return this.#command("sendCustomMessage", message, options);
 	}
 
 	setModelTemporary(

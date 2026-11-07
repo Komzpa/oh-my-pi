@@ -129,6 +129,9 @@ function resetObserved(writes: string[], windowsTitleMock: WindowsConsoleTitleMo
 }
 
 describe("disposeTerminalTitleState", () => {
+	function advanceTitleTime(ms: number): void {
+		vi.advanceTimersByTime(ms);
+	}
 	let writes: string[] = [];
 	let stdoutSpy: { mockRestore(): void } | undefined;
 	let prevHeadless = false;
@@ -163,6 +166,8 @@ describe("disposeTerminalTitleState", () => {
 		setTerminalTitleSpinnerInterval(DEFAULT_SPINNER_INTERVAL_MS);
 		setSessionTerminalTitle("my-project");
 		setTerminalTitleState("idle");
+		advanceTitleTime(1000);
+		advanceTitleTime(1000);
 		resetObserved(writes, windowsTitleMock);
 	});
 
@@ -196,7 +201,7 @@ describe("disposeTerminalTitleState", () => {
 		// timer was actually running, so the post-dispose silence is meaningful and
 		// not a headless/TTY misconfiguration masking all writes).
 		resetObserved(writes, windowsTitleMock);
-		vi.advanceTimersByTime(400);
+		advanceTitleTime(1000);
 		const ticksWhileLive = observedTitles(writes, windowsTitleMock).length;
 		expect(ticksWhileLive).toBeGreaterThan(0);
 
@@ -205,7 +210,7 @@ describe("disposeTerminalTitleState", () => {
 
 		// After dispose: advance far past many tick periods. No tick may fire.
 		resetObserved(writes, windowsTitleMock);
-		vi.advanceTimersByTime(4000);
+		advanceTitleTime(4000);
 		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
 	});
 
@@ -220,6 +225,7 @@ describe("disposeTerminalTitleState", () => {
 		// is the latch and not a headless/TTY misconfiguration.
 		resetObserved(writes, windowsTitleMock);
 		setTerminalTitle("live write");
+		advanceTitleTime(1000);
 		expect(observedTitles(writes, windowsTitleMock).length).toBeGreaterThan(0);
 
 		disposeTerminalTitleState();
@@ -232,6 +238,7 @@ describe("disposeTerminalTitleState", () => {
 		initTerminalTitleState();
 		resetObserved(writes, windowsTitleMock);
 		setTerminalTitle("owned again");
+		advanceTitleTime(1000);
 		expect(observedTitles(writes, windowsTitleMock).length).toBeGreaterThan(0);
 	});
 
@@ -255,7 +262,7 @@ describe("disposeTerminalTitleState", () => {
 		// later dispose reaches.
 		expect(vi.getTimerCount()).toBe(0);
 
-		vi.advanceTimersByTime(4000);
+		advanceTitleTime(4000);
 		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
 	});
 
@@ -302,7 +309,7 @@ describe("disposeTerminalTitleState", () => {
 		setTerminalTitleState("working");
 		resetObserved(writes, windowsTitleMock);
 
-		vi.advanceTimersByTime(400);
+		advanceTitleTime(1000);
 
 		const titles = observedTitles(writes, windowsTitleMock);
 		expect(titles.length).toBeGreaterThan(0);
@@ -319,7 +326,7 @@ describe("disposeTerminalTitleState", () => {
 		setTerminalTitleState("working");
 		resetObserved(writes, windowsTitleMock);
 
-		vi.advanceTimersByTime(DEFAULT_SPINNER_INTERVAL_MS * 2);
+		advanceTitleTime(1000);
 
 		const titles = observedTitles(writes, windowsTitleMock);
 		expect(titles.length).toBeGreaterThan(0);
@@ -331,7 +338,7 @@ describe("disposeTerminalTitleState", () => {
 		setTerminalTitleState("working");
 		resetObserved(writes, windowsTitleMock);
 
-		vi.advanceTimersByTime(400);
+		advanceTitleTime(1000);
 
 		const titles = observedTitles(writes, windowsTitleMock);
 		expect(titles.length).toBeGreaterThan(0);
@@ -358,21 +365,63 @@ describe("disposeTerminalTitleState", () => {
 
 		// ...and the spinner is genuinely ticking again, not frozen on one frame.
 		resetObserved(writes, windowsTitleMock);
-		vi.advanceTimersByTime(400);
+		advanceTitleTime(1000);
 		expect(observedTitles(writes, windowsTitleMock).length).toBeGreaterThan(0);
 	});
 
+	it("coalesces changing titles to the latest text at one write per second", () => {
+		setTerminalTitle("first");
+		resetObserved(writes, windowsTitleMock);
+		for (let i = 0; i < 100; i++) setTerminalTitle(`update ${i}`);
+		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+		advanceTitleTime(999);
+		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+		advanceTitleTime(1);
+		expect(observedTitles(writes, windowsTitleMock)).toEqual(["update 99"]);
+		resetObserved(writes, windowsTitleMock);
+		for (let i = 0; i < 100; i++) setTerminalTitle("update 99");
+		advanceTitleTime(2000);
+		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+		// Returning to the displayed title must cancel an obsolete pending update.
+		setTerminalTitle("temporary");
+		setTerminalTitle("pending");
+		setTerminalTitle("temporary");
+		resetObserved(writes, windowsTitleMock);
+		advanceTitleTime(1000);
+		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+	});
+
+	it("does not restore an obsolete queued title after the event loop stalls", () => {
+		let now = Date.now();
+		const clock = spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			setTerminalTitle("first");
+			setTerminalTitle("obsolete");
+			// Move wall time without dispatching the already queued timer.
+			now += 1500;
+			setTerminalTitle("latest");
+			expect(observedTitles(writes, windowsTitleMock).at(-1)).toBe("latest");
+			resetObserved(writes, windowsTitleMock);
+			now += 2000;
+			advanceTitleTime(2000);
+			expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
 	it("ticks at the configured interval, re-arming a live spinner on change", () => {
-		setTerminalTitleState("working");
 		setTerminalTitleSpinnerInterval(1000);
+		setTerminalTitleState("working");
+		advanceTitleTime(1000);
 		resetObserved(writes, windowsTitleMock);
 
 		// Nothing before the new period elapses, even though the default period has passed several times.
-		vi.advanceTimersByTime(999);
+		advanceTitleTime(999);
 		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
-		vi.advanceTimersByTime(1);
+		advanceTitleTime(1);
 		expect(observedTitles(writes, windowsTitleMock)).toHaveLength(1);
-		vi.advanceTimersByTime(1000);
+		advanceTitleTime(1000);
 		expect(observedTitles(writes, windowsTitleMock)).toHaveLength(2);
 	});
 
@@ -380,15 +429,17 @@ describe("disposeTerminalTitleState", () => {
 		setTerminalTitleSpinnerInterval(0);
 		resetObserved(writes, windowsTitleMock);
 		setTerminalTitleState("working");
+		advanceTitleTime(1000);
 
 		expect(observedTitles(writes, windowsTitleMock)).toEqual(["π : my-project"]);
 		expect(vi.getTimerCount()).toBe(0);
 		resetObserved(writes, windowsTitleMock);
-		vi.advanceTimersByTime(DEFAULT_SPINNER_INTERVAL_MS * 10);
+		advanceTitleTime(DEFAULT_SPINNER_INTERVAL_MS * 10);
 		expect(observedTitles(writes, windowsTitleMock)).toEqual([]);
 
 		// Other states are unaffected by the static spinner.
 		setTerminalTitleState("idle");
+		advanceTitleTime(1000);
 		expect(observedTitles(writes, windowsTitleMock)).toEqual(["π > my-project"]);
 	});
 
@@ -411,6 +462,7 @@ describe("disposeTerminalTitleState", () => {
 
 			initTerminalTitleState();
 			setSessionTerminalTitle("running-session");
+			advanceTitleTime(1000);
 			expect(native.titles).toContain("π > running-session");
 
 			resetObserved(writes, native);

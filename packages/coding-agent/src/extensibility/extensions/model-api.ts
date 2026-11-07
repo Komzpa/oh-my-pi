@@ -6,6 +6,7 @@
  * alias, and compare model families — without touching the mutable registry or
  * duplicating resolution/family heuristics.
  */
+import { loadRowRisk } from "../../task/row-risk";
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import type { ModelRegistry } from "../../config/model-registry";
 import { getModelMatchPreferences, resolveModelRoleValue } from "../../config/model-resolver";
@@ -20,9 +21,11 @@ export function createExtensionModelQuery(
 	modelRegistry: ModelRegistry,
 	settings: Settings | undefined,
 	getModel: () => Model | undefined,
+	cwd: string = process.cwd(),
 ): ExtensionModelQuery {
 	return {
 		list: () => modelRegistry.getAvailable(),
+		rowRisk: () => loadRowRisk(settings, modelRegistry, cwd),
 		current: () => getModel(),
 		// resolveModelRoleValue expands a role alias (`@slow`) to its full configured
 		// priority list and tries each pattern — the same path core selection uses — so a

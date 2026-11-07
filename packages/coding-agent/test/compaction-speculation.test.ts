@@ -11,6 +11,8 @@ import { type CompactionMethod, resolveSpeculationMethod } from "@oh-my-pi/pi-co
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionMaintenance, type SessionMaintenanceHost } from "@oh-my-pi/pi-coding-agent/session/session-maintenance";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { cfgMemoryBackend } from "@oh-my-pi/pi-coding-agent/memory-backend/settings";
+import { hindsightBackend } from "@oh-my-pi/pi-coding-agent/hindsight/backend";
 import * as snapcompactModule from "@oh-my-pi/snapcompact";
 
 import {
@@ -127,6 +129,7 @@ describe("async speculative compaction", () => {
 				events.push(event.type);
 			},
 			emitNotice: () => {},
+			emitCompactionBackoffNotice: () => {},
 			scheduleAgentContinue: () => {},
 			scheduleCompactionContinuation: () => false,
 			persistTurnMessagesForMidRunCompaction: options.persistTurnMessagesForMidRunCompaction ?? (async () => false),
@@ -256,6 +259,28 @@ describe("async speculative compaction", () => {
 		expect(maintenance.speculationState).toBe("running");
 		await waitForState("armed");
 		expect(compactSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not recall unused memory while arming native Codex compaction", async () => {
+		const bundled = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!bundled) throw new Error("Expected built-in Codex model");
+		model = { ...bundled, contextWindow: CONTEXT_WINDOW };
+		authStorage.keys.setRuntime("openai-codex", "test-key");
+		maintenance = createMaintenance({ methodOrder: ["remote"] });
+		cfgMemoryBackend.override(maintenanceSettings, "hindsight");
+		const recallSpy = vi.spyOn(hindsightBackend, "preCompactionContext").mockResolvedValue("fresh memory");
+		vi.spyOn(compactionModule, "compact").mockImplementation(async preparation => ({
+			summary: "native summary",
+			firstKeptEntryId: preparation.firstKeptEntryId,
+			tokensBefore: preparation.tokensBefore,
+			details: {},
+			preserveData: { openaiRemoteCompaction: { provider: model.provider, replacementHistory: [] } },
+		}));
+
+		maintenance.maybeStartSpeculativeCompaction(SPECULATION_BAND_START, CONTEXT_WINDOW);
+		await waitForState("armed");
+
+		expect(recallSpy).not.toHaveBeenCalled();
 	});
 
 	it("commits an armed summary at threshold without paying for another summarizer call", async () => {
@@ -623,7 +648,7 @@ describe("async speculative compaction", () => {
 		expect(agent.state.messages[0]).toEqual(freshUser);
 	});
 
-	it("suppresses speculation at a dead-end cut point and re-arms when the cut point advances", async () => {
+	it("suppresses speculation after no reduction and rearms after meaningful growth", async () => {
 		sessionManager = SessionManager.inMemory();
 		sessionManager.appendMessage(userMessage("earlier request ".repeat(400)));
 		sessionManager.appendMessage(assistantMessage("earlier response ".repeat(400), model));
@@ -655,7 +680,7 @@ describe("async speculative compaction", () => {
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 		expect(sessionManager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(0);
 
-		const nextRequest = userMessage("new request opens a cut point");
+		const nextRequest = userMessage("new request opens a cut point ".repeat(10000));
 		sessionManager.appendMessage(nextRequest);
 		activeMessages.push(nextRequest);
 		await maintenance.maintainContextMidRun(activeMessages, undefined, context);

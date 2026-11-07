@@ -122,7 +122,7 @@ export type RpcCommand =
 	| { id?: string; type: "abort_retry" }
 
 	// Bash
-	| { id?: string; type: "bash"; command: string }
+	| { id?: string; type: "bash"; command: string; excludeFromContext?: boolean }
 	| { id?: string; type: "abort_bash" }
 
 	// Session
@@ -379,6 +379,8 @@ export interface RpcReadyFrame {
 	supportedProtocolVersions: [1, 2];
 	maxFrameBytes: number;
 	maxReassembledFrameBytes: number;
+	/** `bash` accepts `excludeFromContext`; older runtimes omit this capability. Require exactly `true`. */
+	supportsBashExcludeFromContext?: boolean;
 }
 
 export interface RpcChunkFrame {
@@ -898,14 +900,14 @@ export interface RpcHostToolCancelRequest {
 export interface RpcHostToolUpdate {
 	type: "host_tool_update";
 	id: string;
-	partialResult: AgentToolResult<unknown>;
+	partialResult: Omit<AgentToolResult<unknown>, "harnessNotice">;
 }
 
 /** Sent by the host to complete a pending tool call. */
 export interface RpcHostToolResult {
 	type: "host_tool_result";
 	id: string;
-	result: AgentToolResult<unknown>;
+	result: Omit<AgentToolResult<unknown>, "harnessNotice">;
 	isError?: boolean;
 }
 

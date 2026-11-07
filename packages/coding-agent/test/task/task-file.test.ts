@@ -1,3 +1,4 @@
+import { renderSubagentUserPrompt } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -210,10 +211,10 @@ describe("taskFile dispatch", () => {
 		expect(result.isError).not.toBe(true);
 		expect(args).toEqual(submitted);
 		const dispatched = executions.find(item => item.id === "FileTask");
-		expect(dispatched).toMatchObject({ assignment: source.trim(), context: "Shared context." });
-		expect(executions.find(item => item.id === "InlineTask")?.assignment).toBe("Inline work.");
+		expect(dispatched).toMatchObject({ assignment: source, context: "Shared context." });
+		expect(executions.find(item => item.id === "InlineTask")?.assignment).toBe("  Inline work.\n");
 		expect(result.details?.results.find(item => item.id === "FileTask")).toMatchObject({
-			assignment: source.trim(),
+			assignment: source,
 			taskFile,
 			taskFileSha256: await sha256(bytes),
 		});
@@ -240,7 +241,7 @@ describe("taskFile dispatch", () => {
 
 		expect(executions).toHaveLength(2);
 		expect(executions[0].task).toBe(executions[1].task);
-		expect(executions[0].task).toEndWith(`\n${lines.join("\n")}`);
+		expect(renderSubagentUserPrompt(executions[0].task)).toEndWith(`\n${lines.join("\n")}`);
 	});
 
 	it("keeps literal JSON escape sequences in file contents", async () => {
@@ -266,7 +267,7 @@ describe("taskFile dispatch", () => {
 		const result = await tool.execute("local-file", { name: "Local", taskFile });
 
 		expect(result.details?.results[0]).toMatchObject({
-			assignment: "Local task instructions.",
+			assignment: "Local task instructions.\n",
 			taskFile,
 			taskFileSha256: await sha256(bytes),
 		});
@@ -300,8 +301,8 @@ describe("taskFile dispatch", () => {
 		gate.resolve();
 		await manager.getJob("AsyncFile")?.promise;
 
-		const expected = { assignment: source.trim(), taskFile, taskFileSha256: await sha256(bytes) };
-		expect(executions.find(item => item.id === "AsyncFile")?.assignment).toBe(source.trim());
+		const expected = { assignment: source, taskFile, taskFileSha256: await sha256(bytes) };
+		expect(executions.find(item => item.id === "AsyncFile")?.assignment).toBe(source);
 		expect(updates.at(-1)?.progress?.[0]).toMatchObject({ ...expected, status: "completed" });
 	});
 

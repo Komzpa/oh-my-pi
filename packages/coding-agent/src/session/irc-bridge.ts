@@ -118,12 +118,12 @@ export class IrcBridge {
 			const records = [...this.#interrupts, ...this.#asides].filter(record => !isPeer(record));
 			this.#interrupts = this.#interrupts.filter(isPeer);
 			this.#asides = this.#asides.filter(isPeer);
-			return records;
+			return withoutSupersededSnapshots(records);
 		}
 		const records = [...this.#interrupts, ...this.#asides];
 		this.#interrupts = [];
 		this.#asides = [];
-		return records;
+		return withoutSupersededSnapshots(records);
 	}
 
 	/** Snapshots and discards every queued IRC record — used when a session-boundary transition
@@ -344,4 +344,27 @@ export class IrcBridge {
 			this.#host.agent.emitExternalEvent({ type: "message_end", message: record });
 		}
 	}
+}
+
+/** A custom record flagged `details.supersedesQueued` is a snapshot: of several queued ones with the
+ *  same customType only the newest is delivered, so a busy agent never reads stale state. */
+function withoutSupersededSnapshots(records: AgentMessage[]): AgentMessage[] {
+	const newest = new Map<string, AgentMessage>();
+	for (const record of records) {
+		if (isSupersedingSnapshot(record)) newest.set((record as { customType: string }).customType, record);
+	}
+	if (newest.size === 0) return records;
+	return records.filter(
+		record => !isSupersedingSnapshot(record) || newest.get((record as { customType: string }).customType) === record,
+	);
+}
+
+function isSupersedingSnapshot(record: AgentMessage): boolean {
+	if (record.role !== "custom") return false;
+	const details = (record as { details?: unknown }).details;
+	return (
+		typeof details === "object" &&
+		details !== null &&
+		(details as { supersedesQueued?: unknown }).supersedesQueued === true
+	);
 }

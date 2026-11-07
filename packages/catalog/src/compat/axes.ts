@@ -583,6 +583,13 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 		shape: "scalar",
 		values: [true, false],
 	},
+	/** Channel for trusted harness notices; absence preserves legacy conversion. */
+	"harness-notice-role": {
+		key: "harnessNoticeRole",
+		set: "catalog",
+		shape: "scalar",
+		values: ["user", "developer", "tool", "off-legacy"],
+	},
 	/**
 	 * Prompt-cache lookback in block positions: how far back from a cache
 	 * breakpoint the provider looks for an earlier request's cache entry.

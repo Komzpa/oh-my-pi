@@ -1,6 +1,6 @@
 {
 	"name": "@oh-my-pi/pi-tui",
-	"version": "18.17.0",
+	"version": "18.18.0",
 	"description": "Terminal User Interface library with differential rendering for efficient text-based applications",
 	"keywords": [
 		"cli",
@@ -64,6 +64,10 @@
 		"./tools/shell-viz": {
 			"types": "./src/tools/shell-viz.ts",
 			"import": "./src/tools/shell-viz.ts"
+		},
+		"./tools/todo-schedule": {
+			"types": "./src/tools/todo-schedule.ts",
+			"import": "./src/tools/todo-schedule.ts"
 		},
 		"./status-line": {
 			"types": "./src/status-line/index.ts",

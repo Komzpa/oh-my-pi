@@ -8,11 +8,12 @@
  * broker-backed rotation policy and the same usage ledger.
  */
 import { extractHttpStatusFromError, logger } from "@oh-my-pi/pi-utils";
-import { type ApiKeyResolver, createOAuthProvenance, type ResolvedApiKey } from "../auth-retry";
+import { type ApiKeyResolver, createOAuthProvenance, NO_AUTH_SENTINEL, type ResolvedApiKey } from "../auth-retry";
 import type { AuthApiKeyOptions, AuthStorage } from "../auth-storage";
 import * as AIError from "../error";
 import { classifyGatewayError, type GatewayErrorClassification } from "../error/gateway";
 import { isUsageLimitOutcome } from "../error/rate-limit";
+import { getProviderDefinition } from "../registry";
 import type { Api, FetchImpl, Model, Usage } from "../types";
 import type { ClientUsageIdentity } from "../usage";
 import { extractProviderRetryHint } from "../utils/retry-after";
@@ -114,7 +115,8 @@ export function gatewayRequestLogFields(
  * and its OAuth identity together (refreshing through the broker when needed).
  * Keep this selection snapshot intact even if another request replaces the
  * stored token before dispatch. Storage failures map through
- * {@link classifyGatewayError}; a provider without any credential is a 401.
+ * {@link classifyGatewayError}; a provider without any credential is a 401
+ * unless its catalog policy allows keyless requests.
  */
 export async function resolveGatewayApiKey(
 	opts: AuthGatewayCredentialOptions,
@@ -136,6 +138,7 @@ export async function resolveGatewayApiKey(
 		return classified;
 	}
 	if (apiKey) return apiKey;
+	if (getProviderDefinition(model.provider)?.allowsMissingApiKey) return { apiKey: NO_AUTH_SENTINEL };
 	return {
 		status: 401,
 		type: "authentication_error",
@@ -203,6 +206,7 @@ async function refreshGatewayApiKeyAfterAuthError(
 		if (!switched) return undefined;
 		return storage.keys.getWithCredential(provider, sessionId, modelKeyOptions(model, signal));
 	}
+	if (status === 402) return undefined;
 	await storage.limits.invalidateMatching(provider, oldKey, { sessionId, signal });
 	logger.debug("auth-gateway retrying provider request after credential invalidation", {
 		format,
@@ -254,6 +258,9 @@ export function buildGatewayApiKeyResolver(
 	const provenance = createOAuthProvenance();
 	provenance.record(initialKey);
 	return async ({ lastChance, error, signal, previousKey }) => {
+		if (initialKey.apiKey === NO_AUTH_SENTINEL && initialKey.credentialId === undefined) {
+			return error === undefined ? initialKey : undefined;
+		}
 		const sig = signal ?? requestSignal;
 		// Only the bearer the failed request actually sent names the rejected
 		// token; a caller that cannot report it keeps the previous behaviour.
@@ -294,6 +301,46 @@ export function buildGatewayApiKeyResolver(
 		if (next) onResolvedKey?.(next);
 		return next;
 	};
+}
+/**
+ * Forward a settled upstream failure to the canonical provider-health latch.
+ * The health owner classifies quota 402 bodies and timed 429 resets; gateway
+ * code only supplies the observed status, message, and provider reset hint.
+ */
+export function observeGatewayProviderFailure(storage: AuthStorage, model: Model<Api>, error: unknown): void {
+	const details =
+		typeof error === "object" && error !== null
+			? (error as {
+					errorClassificationMessage?: unknown;
+					errorMessage?: unknown;
+					errorStatus?: unknown;
+					message?: unknown;
+				})
+			: undefined;
+	const message =
+		error instanceof Error
+			? error.message
+			: typeof error === "string"
+				? error
+				: (details?.errorClassificationMessage ?? details?.errorMessage ?? details?.message ?? String(error));
+	if (typeof message !== "string") return;
+	const status =
+		typeof details?.errorStatus === "number"
+			? details.errorStatus
+			: (extractHttpStatusFromError(error) ??
+				extractHttpStatusFromError(message) ??
+				classifyGatewayError(message).status);
+	const retryAfterMs = status === 429 ? extractProviderRetryHint(model.provider, message) : undefined;
+	const resetAtMs =
+		retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+			? Date.now() + retryAfterMs
+			: undefined;
+	storage.health.markProviderDepleted(model.provider, { status, message, resetAtMs });
+}
+
+/** Clear the provider latch only after the provider layer reports a completed call. */
+export function observeGatewayProviderSuccess(storage: AuthStorage, provider: string): void {
+	storage.health.markProviderSucceeded(provider);
 }
 
 /**

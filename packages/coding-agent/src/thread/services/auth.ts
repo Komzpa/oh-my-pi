@@ -205,6 +205,7 @@ function serveAuthStorage(state: PeerAuthState): RpcServe<AuthStorage, AuthStora
 		"credentials.list": (storage, provider) => storage.credentials.list(provider),
 		"credentials.has": (storage, provider) => storage.credentials.has(provider),
 		"credentials.hasOAuth": (storage, provider) => storage.credentials.hasOAuth(provider),
+		"credentials.hasSubscription": (storage, provider) => storage.credentials.hasSubscription(provider),
 		"credentials.getOAuth": (storage, provider) => storage.credentials.getOAuth(provider),
 		"credentials.set": (storage, provider, credential) => storage.credentials.set(provider, credential),
 		"credentials.upsert": (storage, provider, credential) => storage.credentials.upsert(provider, credential),
@@ -290,6 +291,11 @@ function serveAuthStorage(state: PeerAuthState): RpcServe<AuthStorage, AuthStora
 			storage.usage.setProvider(provider, usageProvider, apiKey),
 		"usage.removeProvider": (storage, provider) => storage.usage.removeProvider(provider),
 
+		"health.isProviderDepleted": (storage, provider) => storage.health.isProviderDepleted(provider),
+		"health.markProviderDepleted": (storage, provider, options) =>
+			storage.health.markProviderDepleted(provider, options),
+		"health.markProviderSucceeded": (storage, provider) => storage.health.markProviderSucceeded(provider),
+		"health.resetProviderDepletion": (storage, provider) => storage.health.resetProviderDepletion(provider),
 		"health.model": (storage, provider, options) => storage.health.model(provider, options),
 		"health.check": (storage, options) => {
 			if (!options) return storage.health.check();

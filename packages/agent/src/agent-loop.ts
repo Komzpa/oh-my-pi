@@ -622,6 +622,7 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 			content,
 			details,
 			providerMetadata,
+			...(typeof rawObj?.harnessNotice === "string" ? { harnessNotice: rawObj.harnessNotice } : {}),
 			...(isError ? { isError: true } : {}),
 			...(useless && !isError ? { useless: true } : {}),
 		},
@@ -1971,7 +1972,10 @@ function openLiveSteering(
 			const transformed = config.transformContext
 				? await config.transformContext(messages, bound(signal))
 				: messages;
-			const converted = normalizeMessagesForProvider(await config.convertToLlm(transformed), prepared.model);
+			const converted = normalizeMessagesForProvider(
+				await config.convertToLlm(transformed, prepared.model),
+				prepared.model,
+			);
 			const userMessages: UserMessage[] = [];
 			for (const message of converted) {
 				if (message.role !== "user") return undefined;
@@ -1985,13 +1989,38 @@ function openLiveSteering(
 	});
 }
 
+function removeSupersededGoalContext(messages: AgentContext["messages"]): AgentContext["messages"] {
+	let newestGoalContext = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message?.role === "custom" && message.customType === "goal-mode-context") {
+			newestGoalContext = i;
+			break;
+		}
+	}
+	if (newestGoalContext <= 0) return messages;
+	let hasOlderGoalContext = false;
+	for (let i = 0; i < newestGoalContext; i++) {
+		const message = messages[i];
+		if (message?.role === "custom" && message.customType === "goal-mode-context") {
+			hasOlderGoalContext = true;
+			break;
+		}
+	}
+	if (!hasOlderGoalContext) return messages;
+	return messages.filter(
+		(message, index) =>
+			index >= newestGoalContext || message.role !== "custom" || message.customType !== "goal-mode-context",
+	);
+}
+
 async function prepareProviderCall(
 	context: AgentContext,
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 ): Promise<PreparedProviderCall> {
 	const model = config.getModel?.() ?? config.model;
-	let messages = context.messages;
+	let messages = removeSupersededGoalContext(context.messages);
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);
 	}
@@ -3539,6 +3568,7 @@ async function executeToolCalls(
 			content: result.content,
 			details: result.details,
 			providerMetadata: result.providerMetadata,
+			...(result.harnessNotice !== undefined ? { harnessNotice: result.harnessNotice } : {}),
 			isError,
 			...(result.useless && !isError ? { useless: true } : {}),
 			timestamp: Date.now(),
@@ -3734,6 +3764,7 @@ async function executeToolCalls(
 				result = {
 					content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
 					details: {},
+					...(e instanceof ToolCallBlockedError ? { harnessNotice: e.message } : {}),
 				};
 				isError = true;
 			}
@@ -3762,6 +3793,7 @@ async function executeToolCalls(
 							isError: after.isError ?? result.isError,
 							providerMetadata: after.providerMetadata ?? result.providerMetadata,
 							useless: after.useless ?? result.useless,
+							harnessNotice: result.harnessNotice,
 						});
 						result = coerced.result;
 						isError = coerced.malformed || (after.isError ?? isError);
@@ -4080,6 +4112,7 @@ export function createSyntheticToolResultMessage(
 		toolName: toolCall.name,
 		content: [{ type: "text", text: errorMessage ? `${message}: ${errorMessage}` : `${message}.` }],
 		details,
+		harnessNotice: message,
 		isError: true,
 		timestamp: Date.now(),
 	};
@@ -4157,11 +4190,13 @@ function createSkippedToolResult(
 		reason = "a queued background completion (job or supervised process)";
 		blocker = "completion notice";
 	}
+	const message = `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`;
 	return {
+		harnessNotice: message,
 		content: [
 			{
 				type: "text",
-				text: `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`,
+				text: message,
 			},
 		],
 		details: executionStarted

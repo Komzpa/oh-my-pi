@@ -1,3 +1,14 @@
+import { formatSpawnRefusal } from "../../task/spawn-refusal";
+import { rowAuditOutputSchema } from "../../task/row-audit";
+import { buildOutputValidator } from "../../tools/output-schema-validator";
+import { purposeAgentName } from "../../task/name-generator";
+import type { TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
+import {
+	cfgTodoReviewOpen,
+	cfgTodoPreviewEnabled,
+	cfgTodoPreviewPaths,
+	cfgTodoPreviewThresholdMinutes,
+} from "../../tools/settings";
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
@@ -8,6 +19,7 @@ import {
 	type AgentToolContext,
 	type AgentToolResult,
 	type AgentToolUpdateCallback,
+	type SoftToolRequirement,
 	isNonBlankContext,
 	joinAdditionalContext,
 } from "@oh-my-pi/pi-agent-core";
@@ -37,8 +49,10 @@ import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot, SendUserMessageOptions } from "../../session/agent-session";
-import { MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { sendAgentMessageFromSession } from "../../irc/messaging";
+import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { SessionManager } from "../../session/session-manager";
+import { cfgTaskMaxConcurrency } from "../../task/settings";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { accumulateToolCallResult, buildAggregatedToolCallResult } from "../shared-events";
@@ -544,8 +558,33 @@ export class ExtensionRunner {
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
+	#sendAgentMessageFn: NonNullable<ExtensionContextActions["sendAgentMessage"]> = (to, message) =>
+		this.#defaultSendAgentMessage(to, message);
+	/**
+	 * Fallback peer-messaging route for runners whose host never wired
+	 * `sendAgentMessage` (or never called `initialize`). Uses the same
+	 * session-identity path as `write agent://` — the process registry with
+	 * this runner's own agent id, depth, and settings — so the extension API
+	 * and the URL write agree instead of one side answering "unavailable"
+	 * while the other delivers.
+	 */
+	#defaultSendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }> {
+		if (!this.settings)
+			return Promise.resolve({ delivered: false, text: "Peer messaging is unavailable in this session." });
+		return sendAgentMessageFromSession(
+			{
+				agentRegistry: AgentRegistry.global(),
+				settings: this.settings,
+				taskDepth: this.agent.depth,
+				getAgentId: () => this.agent.id,
+			},
+			to,
+			message,
+		);
+	}
 	#runEphemeralTurnFn?: ExtensionContextActions["runEphemeralTurn"];
 	#startLiveFn?: ExtensionContextActions["startLive"];
+	#setSubagentFastModeFn?: ExtensionContextActions["setSubagentFastMode"];
 	#ephemeralTurnBlocker = new AsyncLocalStorage<string | undefined>();
 	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
@@ -744,6 +783,8 @@ export class ExtensionRunner {
 			signal?: AbortSignal;
 			onUpdate?: AgentToolUpdateCallback<TDetails>;
 			depth?: number;
+			/** Await a background-capable native task without changing its profile. */
+			waitForCompletion?: boolean;
 			/**
 			 * The caller tool's own context. Reused for the native call so metadata the native tool
 			 * reads — `toolCall` (write/edit LSP batch flushing) and provider metadata /
@@ -759,8 +800,11 @@ export class ExtensionRunner {
 		if (depth >= 8) {
 			throw new Error(`invokeTool: delegation depth exceeded 8 (recursive invokeTool for "${name}"?)`);
 		}
-		const toolCallId = `invoke-${name}-${Date.now().toString(36)}-${depth}`;
-		return (await resolved.tool.execute(
+		const toolCallId = `invoke-${name}-${crypto.randomUUID()}-${depth}`;
+		const tool = resolved.tool as AgentTool & { executeBlocking?: AgentTool["execute"] };
+		const execute = options?.waitForCompletion && tool.executeBlocking ? tool.executeBlocking : tool.execute;
+		return (await execute.call(
+			tool,
 			toolCallId,
 			params as never,
 			options?.signal,
@@ -784,6 +828,10 @@ export class ExtensionRunner {
 		private readonly agent: ExtensionAgentIdentity = TOP_LEVEL_AGENT,
 		/** Builds `ctx.annotations`; supplied by the host that wires the bundled `/annotate` command. */
 		createAnnotations?: ExtensionAnnotationsFactory,
+		private readonly getTodoPhases?: ExtensionContext["getTodoPhases"],
+		private readonly updateTodoSchedule?: ExtensionContext["updateTodoSchedule"],
+		private readonly applyReviewPageAnswer?: ExtensionContext["applyReviewPageAnswer"],
+		private readonly getTodoSnapshot?: ExtensionContext["getTodoSnapshot"],
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -879,8 +927,11 @@ export class ExtensionRunner {
 		this.#getContextUsageFn = contextActions.getContextUsage;
 		this.#compactFn = contextActions.compact;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
+		this.#sendAgentMessageFn =
+			contextActions.sendAgentMessage ?? ((to, message) => this.#defaultSendAgentMessage(to, message));
 		this.#runEphemeralTurnFn = contextActions.runEphemeralTurn;
 		this.#startLiveFn = contextActions.startLive;
+		this.#setSubagentFastModeFn = contextActions.setSubagentFastMode;
 
 		// Command context actions (optional, only for interactive mode)
 		if (commandContextActions) {
@@ -1696,6 +1747,29 @@ export class ExtensionRunner {
 	}
 
 	/**
+	 * Evaluate the currently active extension-owned native soft tool requirement.
+	 * Providers share one fresh context and run synchronously at the model-choice boundary.
+	 * More than one active provider is ambiguous, so fail closed instead of silently choosing.
+	 */
+	getSoftToolRequirement(): SoftToolRequirement | undefined {
+		let ctx: ExtensionContext | undefined;
+		let activePath: string | undefined;
+		let activeRequirement: SoftToolRequirement | undefined;
+		for (const extension of this.extensions) {
+			const provider = extension.softToolRequirementProvider;
+			if (!provider) continue;
+			const requirement = withActiveSettings(this.settings, () => provider((ctx ??= this.createContext())));
+			if (requirement === undefined) continue;
+			if (activeRequirement !== undefined) {
+				throw new Error(`Multiple active soft tool requirement providers: ${activePath}, ${extension.path}`);
+			}
+			activePath = extension.path;
+			activeRequirement = requirement;
+		}
+		return activeRequirement;
+	}
+
+	/**
 	 * Creates an extension context, optionally scoped to a provider request model.
 	 *
 	 * `delegation` wires the same-tool `ctx.invokeTool` for a re-registered built-in: when `toolName`
@@ -1730,8 +1804,57 @@ export class ExtensionRunner {
 			ui: this.#uiContext,
 			mode: this.#mode,
 			getContextUsage: () => this.#getContextUsageFn(),
+			getTodoPreviewConfig: () => ({
+				openReviewPages: this.settings ? cfgTodoReviewOpen.get(this.settings) : true,
+				enabled: this.settings ? cfgTodoPreviewEnabled.get(this.settings) : false,
+				paths: this.settings ? cfgTodoPreviewPaths.get(this.settings) : [],
+				thresholdMinutes: this.settings ? cfgTodoPreviewThresholdMinutes.get(this.settings) : 15,
+			}),
+			getTaskMaxConcurrency: () => (this.settings ? cfgTaskMaxConcurrency.get(this.settings) : undefined),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
+			runDeliveryCritic: (task, signal, subject) =>
+				this.invokeNativeTool(
+					"task",
+					{ agent: "reviewer", name: purposeAgentName("Critic", subject ?? "Delivery"), task, effort: "lo" },
+					{ signal, waitForCompletion: true },
+				),
+			runRowAudit: (task, agent, signal, onStarted, subject, rows, onResult) => {
+				const outputSchema = rows ? rowAuditOutputSchema(rows) : undefined;
+				const validator = buildOutputValidator(outputSchema).validator;
+				return this.invokeNativeTool<TaskToolDetails>(
+					"task",
+					{
+						agent,
+						name: subject ? purposeAgentName("Audit", subject) : purposeAgentName(agent),
+						task,
+						...(outputSchema ? { outputSchema, schemaMode: "strict" } : {}),
+					},
+					{
+						signal,
+						waitForCompletion: true,
+						onUpdate: update => {
+							const id = update.details?.progress?.[0]?.id;
+							if (id) onStarted?.(id);
+							const yields = update.details?.progress?.[0]?.extractedToolData?.yield;
+							if (validator && Array.isArray(yields)) {
+								for (const item of [...yields].reverse()) {
+									if (!item || typeof item !== "object" || !("data" in item)) continue;
+									if (validator.validate(item.data).success) {
+										onResult?.(item.data);
+										break;
+									}
+								}
+							}
+						},
+					},
+				);
+			},
+			getTodoPhases: () => this.getTodoPhases?.(),
+			getTodoSnapshot: () => this.getTodoSnapshot?.() ?? this.getTodoPhases?.(),
+			applyReviewPageAnswer: answer => this.applyReviewPageAnswer?.(answer) ?? Promise.resolve(false),
+			updateTodoSchedule: (task, patch) => this.updateTodoSchedule?.(task, patch) ?? false,
+			setSubagentFastMode: this.#setSubagentFastModeFn,
 			hasUI: this.hasUI(),
 			cwd: this.cwd,
 			sessionManager: this.sessionManager,
@@ -1741,7 +1864,7 @@ export class ExtensionRunner {
 			get model() {
 				return getModel();
 			},
-			models: createExtensionModelQuery(this.modelRegistry, this.settings, getModel),
+			models: createExtensionModelQuery(this.modelRegistry, this.settings, getModel, this.cwd),
 			isIdle: () => this.#isIdleFn(),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
@@ -1754,6 +1877,7 @@ export class ExtensionRunner {
 				return getSessionModes();
 			},
 			getSystemPrompt: () => this.#getSystemPromptFn(),
+			sendAgentMessage: (to, message) => this.#sendAgentMessageFn(to, message),
 			runEphemeralTurn: runEphemeralTurn
 				? async options => {
 						if (this.#ephemeralTurnBlocker.getStore()) {
@@ -1866,7 +1990,7 @@ export class ExtensionRunner {
 		ctx: ExtensionContext,
 		ext: Extension,
 		timeoutMs: number,
-		onFailure?: (kind: "timeout" | "error", message: string) => R,
+		onFailure?: (kind: "timeout" | "error", message: string, error?: unknown) => R,
 		outerSignal?: AbortSignal,
 	): Promise<R | undefined> {
 		// `session_stop` carries its own signal on the event; `tool_call` receives
@@ -1944,7 +2068,7 @@ export class ExtensionRunner {
 				error: message,
 				stack,
 			});
-			return onFailure?.("error", message);
+			return onFailure?.("error", message, handlerFailure.error);
 		}
 		return handlerResult as R | undefined;
 	}
@@ -2228,19 +2352,24 @@ export class ExtensionRunner {
 					ctx,
 					ext,
 					timeoutMs,
-					(kind, message) => ({
+					(kind, message, error) => ({
 						block: true,
 						reason:
 							kind === "timeout"
 								? `Extension ${ext.path} timed out after ${timeoutMs}ms`
-								: `Extension ${ext.path} failed: ${message}`,
+								: `Extension ${ext.path} failed: ${message}\nHook: tool_call (${event.toolName})\n${error instanceof Error ? Bun.inspect(error, { colors: false }) : ""}`,
 					}),
 					signal,
 				)) as ToolCallEventResult | undefined;
 
 				if (!handlerResult) continue;
 				if (handlerResult.block) {
-					return handlerResult;
+					return event.toolName === "task"
+						? {
+								...handlerResult,
+								reason: formatSpawnRefusal(handlerResult.reason ?? "Task blocked by extension"),
+							}
+						: handlerResult;
 				}
 				const { additionalContext: _context, input: _input, ...controlResult } = handlerResult;
 				accumulateToolCallResult(aggregated, handlerResult);
@@ -2558,7 +2687,7 @@ export class ExtensionRunner {
 	): Promise<BeforeSubagentSpawnEventResult | undefined> {
 		if (!this.hasHandlers("before_subagent_spawn")) return undefined;
 		const ctx = this.createContext();
-		let chosen: Pick<BeforeSubagentSpawnEventResult, "model" | "note"> | undefined;
+		let chosen: BeforeSubagentSpawnEventResult | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_subagent_spawn");
@@ -2577,7 +2706,7 @@ export class ExtensionRunner {
 				if (!handlerResult) continue;
 				const result = handlerResult as BeforeSubagentSpawnEventResult;
 				if (result.block) return result;
-				if (result.model !== undefined) chosen = { model: result.model, note: result.note };
+				if (result.model !== undefined) chosen = result;
 			}
 		}
 

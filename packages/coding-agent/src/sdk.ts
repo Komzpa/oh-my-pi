@@ -1,3 +1,7 @@
+import { convertWithHarnessNotices } from "./session/harness-notices";
+import { resolveHarnessNoticeRole } from "./config/harness-notices";
+import { buildTodoSchedulePatchEdit, patchTodoSchedule } from "./session/todo-schedule-patch";
+import { selectBranchNewestFirst } from "./session/branch-selection";
 import * as path from "node:path";
 import {
 	Agent,
@@ -194,6 +198,7 @@ import {
 	type PlanYolo,
 	type Prewalk,
 } from "./session/agent-session";
+import type { AgentSessionDisposeOptions } from "./session/agent-session-types";
 import {
 	createAuthStorageSettingsSync,
 	discoverAuthStorage as discoverAuthStorageFromConfig,
@@ -334,6 +339,12 @@ import { wrapToolWithMetaNotice } from "./tools/output-meta";
 import { isFilesystemSourcePath } from "./tools/path-utils";
 import { isAutoQaEnabled } from "./tools/report-tool-issue";
 import { queueResolveHandler } from "./tools/resolve";
+import {
+	TodoTool,
+	isTodoSelectionEntryMetadata,
+	shouldPersistTodoFullSnapshotCheckpoint,
+	USER_TODO_EDIT_CUSTOM_TYPE,
+} from "./tools/todo";
 import { ttsTool } from "./tools/tts";
 import { resolveActiveRepoContext } from "./utils/active-repo-context";
 import { EventBus } from "./utils/event-bus";
@@ -1736,6 +1747,7 @@ const CAPTURE_DROPPED_KEYS = [
 	"approval",
 	"formatApprovalDetails",
 	"approvalCacheTargets",
+	"bindApprovalTargets",
 	"approvalRestrictionPaths",
 	"renderCall",
 	"renderResult",
@@ -2574,6 +2586,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			get cwd() {
 				return sessionManager.getCwd();
 			},
+			submitUserReply:
+				options.hasUI === true
+					? text => {
+							void session?.sendUserMessage(text).catch(error => {
+								logger.warn("Ask reply delivery failed", { error: String(error) });
+							});
+						}
+					: undefined,
 			get costGate() {
 				return currentCostGate();
 			},
@@ -2700,8 +2720,19 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			getFileMutationVersion: path => fileMutationVersions.get(path) ?? 0,
 			getTodoPhases: () => session.getTodoPhases(),
+			getTodoSnapshot: () => session.getTodoSnapshot(),
 			setTodoPhases: phases => session.setTodoPhases(phases),
-			commitTodoPhases: phases => session.commitTodoPhases(phases),
+			persistTodoPhases: (phases, edit) => {
+				if (edit) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
+				} else if (
+					shouldPersistTodoFullSnapshotCheckpoint(
+						selectBranchNewestFirst(sessionManager, isTodoSelectionEntryMetadata),
+					)
+				) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				}
+			},
 			getWorkPoolYieldItems: () => session?.getWorkPoolYieldItems() ?? [],
 			getLastAssistantText: () => session?.getLastAssistantText(),
 			getYieldReportText: toolCallId => resolveYieldReportText(session?.messages ?? [], toolCallId),
@@ -3761,6 +3792,22 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				...(options.parentAgentId ? { parentId: options.parentAgentId } : {}),
 			}),
 			createAnnotationsAPI,
+			() => (hasSession ? session.getTodoPhases() : undefined),
+			(task, patch) => {
+				if (!hasSession) return false;
+				const at = Date.now();
+				const phases = patchTodoSchedule(session.getTodoSnapshot(), task, patch, at);
+				if (!phases) return false;
+				// The callback merges into fresh hydrated state synchronously. A canonical
+				// append-only delta keeps extension annotations on the normal resume path.
+				sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+					edit: buildTodoSchedulePatchEdit(task, patch, at),
+				});
+				session.setTodoPhases(phases);
+				return true;
+			},
+			answer => (hasSession ? new TodoTool(toolSession).applyReviewPageAnswer(answer) : Promise.resolve(false)),
+			() => (hasSession ? session.getTodoSnapshot() : undefined),
 		);
 		// A dialog waits for the user, not the agent: the session lets the display sleep while one is open.
 		const trackUserWait: UserWaitTracker = dialog => (hasSession ? session.waitForUser(dialog) : dialog());
@@ -4159,6 +4206,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			emitEvent: event => cursorEventEmitter?.(event),
 			getTodoPhases: () => session.getTodoPhases(),
 			commitTodoPhases: phases => session.commitTodoPhases(phases),
+			persistTodoPhases: (phases, edit) => {
+				if (edit) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
+				} else if (
+					shouldPersistTodoFullSnapshotCheckpoint(
+						selectBranchNewestFirst(sessionManager, isTodoSelectionEntryMetadata),
+					)
+				) {
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+				}
+			},
 			// `pi_grep` carries its own context width and match cap, which the
 			// shared grep instance fixed at construction cannot express. Gated on
 			// the grant: the factory builds a fresh tool and `executeTool` prefers
@@ -4623,12 +4681,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// whose blocks would otherwise be normalized and published for nothing.
 		// Read both dynamically so a `/model` switch or setting change takes
 		// effect on the next turn.
-		const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-			const converted = convertToLlm(messages);
+		const convertToLlmWithBlockImages = (messages: AgentMessage[], requestModel?: Model): Message[] => {
+			const activeModel = requestModel ?? agent?.state.model ?? model;
+			const converted = convertWithHarnessNotices(
+				messages,
+				resolveHarnessNoticeRole(activeModel, settings),
+				convertToLlm,
+			);
 			if (cfgImagesBlockImages.get(settings)) {
 				return replaceLlmImagesWithText(converted, "Image reading is disabled.");
 			}
-			const activeModel = agent?.state.model ?? model;
 			if (activeModel && !sendsImageInputOnWire(activeModel)) {
 				return replaceLlmImagesWithText(
 					converted,
@@ -4640,8 +4702,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		// Final convertToLlm: live provider replay drops API-level refusal errors,
 		// then applies secret obfuscation to the remaining outbound context.
-		const convertToLlmFinal = (messages: AgentMessage[]): Message[] => {
-			const converted = filterProviderReplayMessages(convertToLlmWithBlockImages(messages));
+		const convertToLlmFinal = (messages: AgentMessage[], requestModel?: Model): Message[] => {
+			const converted = filterProviderReplayMessages(convertToLlmWithBlockImages(messages, requestModel));
 			if (!obfuscator?.hasSecrets()) return converted;
 			return obfuscateMessages(obfuscator, converted);
 		};
@@ -4920,6 +4982,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// A stray sloppy payload in plain text becomes a real edit tool call so
 			// the normal pipeline (validation, approval, rendering) executes it.
 			transformAssistantMessage: async (message, signal) => {
+				session?.refreshAssistantVisibility();
 				if (cfgEditRecoverInlineEdits.get(settings)) {
 					// The live tool is an ExtensionToolWrapper whose proxy forwards the
 					// EditTool `mode` getter; a bridge/custom edit tool without a sloppy
@@ -4934,6 +4997,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				}
 				const content = await session?.extensionRunner?.emitAssistantMessage(message, signal);
 				if (content) message.content = content;
+				if (session?.silentAssistantTurn) {
+					message.content = message.content.map(block =>
+						block.type === "text" ? { ...block, text: "", textSignature: undefined } : block,
+					);
+				}
 			},
 			// Recovery only fires on turns without tool calls and appends a new one,
 			// so streamed calls (and their speculation sessions) are never rewritten.
@@ -5205,8 +5273,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
-			agentKind,
 			agentRegistry,
+			agentKind,
 			providerSessionId: options.providerSessionId,
 			accountPoolScope,
 			providerPromptCacheKeySource,
@@ -5534,7 +5602,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		{
 			const originalDispose = session.dispose.bind(session);
 			let tinyClientReleased = false;
-			session.dispose = async () => {
+			session.dispose = async (disposeOptions?: AgentSessionDisposeOptions) => {
 				try {
 					// Reject new session work (eval starts) the moment disposal
 					// begins — the lifecycle await below opens an async gap before
@@ -5558,7 +5626,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						await vibeRegistry.suspendScope(vibeRegistry.ownerScope(vibeParentSession), scopedAsyncJobManager);
 						await AgentLifecycleManager.global().dispose();
 					}
-					await originalDispose();
+					await originalDispose(disposeOptions);
 				} finally {
 					// The tiny-model client is a process singleton shared by every session.
 					// Only the session that owns process state drops its connections, once:

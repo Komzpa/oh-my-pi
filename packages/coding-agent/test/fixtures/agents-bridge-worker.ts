@@ -64,6 +64,7 @@ export interface AgentsProbe {
 	adopt(id: string): Promise<void>;
 	/** Whether the local session of `key` was disposed. */
 	disposed(key: string): Promise<boolean>;
+	peerResources(id: string): Promise<string[]>;
 	/** Whether the worker's lifecycle proxy manages the worker's registry proxy. */
 	manages(): Promise<boolean>;
 }
@@ -212,6 +213,11 @@ const probe: AgentsProbe = {
 		if (!session) throw new Error(`no session ${key}`);
 		return session.isDisposed;
 	},
+	peerResources: async id =>
+		AgentRegistry.global()
+			.get(id)
+			?.session?.getTodoPhases()
+			.flatMap(phase => phase.tasks.flatMap(row => row.schedule?.resources ?? [])) ?? [],
 	manages: async () => AgentLifecycleManager.global().manages(AgentRegistry.global()),
 };
 

@@ -2133,8 +2133,9 @@ func (v *SubagentStatus) UnmarshalJSON(data []byte) error {
 }
 
 type TodoItem struct {
-	Content string     `json:"content"`
-	Status  TodoStatus `json:"status"`
+	Content  string        `json:"content"`
+	Status   TodoStatus    `json:"status"`
+	Schedule *TodoSchedule `json:"schedule,omitempty"`
 	// What a `blocked` task is waiting on.
 	Blocker *string  `json:"blocker,omitempty"`
 	Details *string  `json:"details,omitempty"`
@@ -2150,6 +2151,7 @@ func (v *TodoItem) decodeFrom(raw map[string]json.RawMessage) error {
 	d := fieldDecoder{raw: raw, owner: "TodoItem"}
 	d.required("content", &out.Content)
 	d.required("status", &out.Status)
+	d.optional("schedule", &out.Schedule)
 	d.optional("blocker", &out.Blocker)
 	d.optional("details", &out.Details)
 	d.optional("notes", &out.Notes)
@@ -2174,6 +2176,261 @@ func (v *TodoPhase) decodeFrom(raw map[string]json.RawMessage) error {
 	d := fieldDecoder{raw: raw, owner: "TodoPhase"}
 	d.required("name", &out.Name)
 	d.required("tasks", &out.Tasks)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type TodoConfidence string
+
+const (
+	TodoConfidenceLow    TodoConfidence = "low"
+	TodoConfidenceMedium TodoConfidence = "medium"
+	TodoConfidenceHigh   TodoConfidence = "high"
+)
+
+func (v *TodoConfidence) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoConfidence")
+	if err != nil {
+		return err
+	}
+	switch value := TodoConfidence(s); value {
+	case TodoConfidenceLow, TodoConfidenceMedium, TodoConfidenceHigh:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoConfidence", s)
+}
+
+type TodoScheduleReview string
+
+const (
+	TodoScheduleReviewUser     TodoScheduleReview = "user"
+	TodoScheduleReviewAccepted TodoScheduleReview = "accepted"
+	TodoScheduleReviewRedo     TodoScheduleReview = "redo"
+	TodoScheduleReviewDrop     TodoScheduleReview = "drop"
+)
+
+func (v *TodoScheduleReview) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoScheduleReview")
+	if err != nil {
+		return err
+	}
+	switch value := TodoScheduleReview(s); value {
+	case TodoScheduleReviewUser, TodoScheduleReviewAccepted, TodoScheduleReviewRedo, TodoScheduleReviewDrop:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoScheduleReview", s)
+}
+
+type TodoWorkerOutcome string
+
+const (
+	TodoWorkerOutcomeCompleted TodoWorkerOutcome = "completed"
+	TodoWorkerOutcomeFailed    TodoWorkerOutcome = "failed"
+	TodoWorkerOutcomeAborted   TodoWorkerOutcome = "aborted"
+)
+
+func (v *TodoWorkerOutcome) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoWorkerOutcome")
+	if err != nil {
+		return err
+	}
+	switch value := TodoWorkerOutcome(s); value {
+	case TodoWorkerOutcomeCompleted, TodoWorkerOutcomeFailed, TodoWorkerOutcomeAborted:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoWorkerOutcome", s)
+}
+
+// User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds.
+type TodoEstimate struct {
+	OptimisticSeconds  float64        `json:"optimisticSeconds"`
+	LikelySeconds      float64        `json:"likelySeconds"`
+	PessimisticSeconds float64        `json:"pessimisticSeconds"`
+	Confidence         TodoConfidence `json:"confidence"`
+	Basis              string         `json:"basis"`
+	UpdatedAt          float64        `json:"updatedAt"`
+}
+
+func (v *TodoEstimate) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoEstimate", v.decodeFrom)
+}
+
+func (v *TodoEstimate) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoEstimate
+	d := fieldDecoder{raw: raw, owner: "TodoEstimate"}
+	d.required("optimisticSeconds", &out.OptimisticSeconds)
+	d.required("likelySeconds", &out.LikelySeconds)
+	d.required("pessimisticSeconds", &out.PessimisticSeconds)
+	d.required("confidence", &out.Confidence)
+	d.required("basis", &out.Basis)
+	d.required("updatedAt", &out.UpdatedAt)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type TodoScheduleProgress struct {
+	At       float64 `json:"at"`
+	Evidence string  `json:"evidence"`
+}
+
+func (v *TodoScheduleProgress) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoScheduleProgress", v.decodeFrom)
+}
+
+func (v *TodoScheduleProgress) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoScheduleProgress
+	d := fieldDecoder{raw: raw, owner: "TodoScheduleProgress"}
+	d.required("at", &out.At)
+	d.required("evidence", &out.Evidence)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Observed Task worker that executed this row, independent of forecast ownership; timestamps are Unix milliseconds.
+type TodoScheduleExecutor struct {
+	WorkerID      string             `json:"workerId"`
+	StartedAt     float64            `json:"startedAt"`
+	AgentProfile  *string            `json:"agentProfile,omitempty"`
+	ResolvedModel *string            `json:"resolvedModel,omitempty"`
+	ThinkingLevel *string            `json:"thinkingLevel,omitempty"`
+	FinishedAt    *float64           `json:"finishedAt,omitempty"`
+	Outcome       *TodoWorkerOutcome `json:"outcome,omitempty"`
+}
+
+func (v *TodoScheduleExecutor) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoScheduleExecutor", v.decodeFrom)
+}
+
+func (v *TodoScheduleExecutor) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoScheduleExecutor
+	d := fieldDecoder{raw: raw, owner: "TodoScheduleExecutor"}
+	d.required("workerId", &out.WorkerID)
+	d.required("startedAt", &out.StartedAt)
+	d.optional("agentProfile", &out.AgentProfile)
+	d.optional("resolvedModel", &out.ResolvedModel)
+	d.optional("thinkingLevel", &out.ThinkingLevel)
+	d.optional("finishedAt", &out.FinishedAt)
+	d.optional("outcome", &out.Outcome)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds.
+type TodoReworkAttempt struct {
+	AttemptID            string            `json:"attemptId"`
+	WorkerName           string            `json:"workerName"`
+	ResolvedModel        string            `json:"resolvedModel"`
+	Effort               string            `json:"effort"`
+	StartedAt            float64           `json:"startedAt"`
+	FinishedAt           float64           `json:"finishedAt"`
+	DurationMs           float64           `json:"durationMs"`
+	TerminalStatus       TodoWorkerOutcome `json:"terminalStatus"`
+	DeliverablePaths     []string          `json:"deliverablePaths"`
+	RejectionReason      *string           `json:"rejectionReason,omitempty"`
+	ReflectionAnswer     *string           `json:"reflectionAnswer,omitempty"`
+	NoAnswerReason       *string           `json:"noAnswerReason,omitempty"`
+	FinalReportParagraph *string           `json:"finalReportParagraph,omitempty"`
+	InfraFailureLine     *string           `json:"infraFailureLine,omitempty"`
+	InfraFailureError    *string           `json:"infraFailureError,omitempty"`
+}
+
+func (v *TodoReworkAttempt) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoReworkAttempt", v.decodeFrom)
+}
+
+func (v *TodoReworkAttempt) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoReworkAttempt
+	d := fieldDecoder{raw: raw, owner: "TodoReworkAttempt"}
+	d.required("attemptId", &out.AttemptID)
+	d.required("workerName", &out.WorkerName)
+	d.required("resolvedModel", &out.ResolvedModel)
+	d.required("effort", &out.Effort)
+	d.required("startedAt", &out.StartedAt)
+	d.required("finishedAt", &out.FinishedAt)
+	d.required("durationMs", &out.DurationMs)
+	d.required("terminalStatus", &out.TerminalStatus)
+	d.required("deliverablePaths", &out.DeliverablePaths)
+	d.optional("rejectionReason", &out.RejectionReason)
+	d.optional("reflectionAnswer", &out.ReflectionAnswer)
+	d.optional("noAnswerReason", &out.NoAnswerReason)
+	d.optional("finalReportParagraph", &out.FinalReportParagraph)
+	d.optional("infraFailureLine", &out.InfraFailureLine)
+	d.optional("infraFailureError", &out.InfraFailureError)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds.
+type TodoSchedule struct {
+	// Exact task-content references; absent means unknown, while an empty array explicitly means independent.
+	Dependencies []string `json:"dependencies,omitempty"`
+	// Exclusive forecast owner while this task is running.
+	Owner *string `json:"owner,omitempty"`
+	// Exclusive resource identifiers while running; absent means undeclared.
+	Resources []string      `json:"resources,omitempty"`
+	Estimate  *TodoEstimate `json:"estimate,omitempty"`
+	// Server-owned revision: the first estimate is revision 1.
+	EstimateRevision *float64              `json:"estimateRevision,omitempty"`
+	ReestimateCount  *float64              `json:"reestimateCount,omitempty"`
+	Progress         *TodoScheduleProgress `json:"progress,omitempty"`
+	StartedAt        *float64              `json:"startedAt,omitempty"`
+	FinishedAt       *float64              `json:"finishedAt,omitempty"`
+	// Time this row first entered the plan as a user requirement.
+	FirstRequirementAt *float64 `json:"firstRequirementAt,omitempty"`
+	// Time the first usable result was handed to the user.
+	FirstDeliveredAt *float64 `json:"firstDeliveredAt,omitempty"`
+	// Append-only durable attempts for this exact row.
+	AttemptHistory []TodoReworkAttempt `json:"attemptHistory,omitempty"`
+	// Short final worker report retained for the user's review handoff.
+	ReviewSummary *string `json:"reviewSummary,omitempty"`
+	// User decision state for a delivered implementation result.
+	Review *TodoScheduleReview `json:"review,omitempty"`
+	// Review row whose verdict gates publication of this speculative work.
+	SpeculativeOn *string               `json:"speculativeOn,omitempty"`
+	Executor      *TodoScheduleExecutor `json:"executor,omitempty"`
+}
+
+func (v *TodoSchedule) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoSchedule", v.decodeFrom)
+}
+
+func (v *TodoSchedule) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoSchedule
+	d := fieldDecoder{raw: raw, owner: "TodoSchedule"}
+	d.optional("dependencies", &out.Dependencies)
+	d.optional("owner", &out.Owner)
+	d.optional("resources", &out.Resources)
+	d.optional("estimate", &out.Estimate)
+	d.optional("estimateRevision", &out.EstimateRevision)
+	d.optional("reestimateCount", &out.ReestimateCount)
+	d.optional("progress", &out.Progress)
+	d.optional("startedAt", &out.StartedAt)
+	d.optional("finishedAt", &out.FinishedAt)
+	d.optional("firstRequirementAt", &out.FirstRequirementAt)
+	d.optional("firstDeliveredAt", &out.FirstDeliveredAt)
+	d.optional("attemptHistory", &out.AttemptHistory)
+	d.optional("reviewSummary", &out.ReviewSummary)
+	d.optional("review", &out.Review)
+	d.optional("speculativeOn", &out.SpeculativeOn)
+	d.optional("executor", &out.Executor)
 	if d.err != nil {
 		return d.err
 	}
@@ -4698,6 +4955,8 @@ type ReadyEvent struct {
 	SupportedProtocolVersions []int64 `json:"supportedProtocolVersions,omitempty"`
 	MaxFrameBytes             *int64  `json:"maxFrameBytes,omitempty"`
 	MaxReassembledFrameBytes  *int64  `json:"maxReassembledFrameBytes,omitempty"`
+	// `bash` accepts `excludeFromContext`; require exactly true before sending excluded commands.
+	SupportsBashExcludeFromContext *bool `json:"supportsBashExcludeFromContext,omitempty"`
 }
 
 func (v *ReadyEvent) UnmarshalJSON(data []byte) error {
@@ -4712,6 +4971,7 @@ func (v *ReadyEvent) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("supportedProtocolVersions", &out.SupportedProtocolVersions)
 	d.optional("maxFrameBytes", &out.MaxFrameBytes)
 	d.optional("maxReassembledFrameBytes", &out.MaxReassembledFrameBytes)
+	d.optional("supportsBashExcludeFromContext", &out.SupportsBashExcludeFromContext)
 	if d.err != nil {
 		return d.err
 	}
@@ -4932,14 +5192,21 @@ func (v *SubagentLifecycleStatus) UnmarshalJSON(data []byte) error {
 }
 
 type SubagentLifecyclePayload struct {
-	ID               string                  `json:"id"`
-	Agent            string                  `json:"agent"`
-	AgentSource      AgentSource             `json:"agentSource"`
-	Status           SubagentLifecycleStatus `json:"status"`
-	Index            int64                   `json:"index"`
-	Description      *string                 `json:"description,omitempty"`
-	SessionFile      *string                 `json:"sessionFile,omitempty"`
-	ParentToolCallID *string                 `json:"parentToolCallId,omitempty"`
+	ID           string                  `json:"id"`
+	Agent        string                  `json:"agent"`
+	AgentSource  AgentSource             `json:"agentSource"`
+	Status       SubagentLifecycleStatus `json:"status"`
+	Index        int64                   `json:"index"`
+	FollowUpTurn *bool                   `json:"followUpTurn,omitempty"`
+	// Wall clock of the emitted lifecycle transition, in Unix milliseconds.
+	At                    *float64 `json:"at,omitempty"`
+	ResolvedModelIdentity *string  `json:"resolvedModelIdentity,omitempty"`
+	ResolvedThinkingLevel *string  `json:"resolvedThinkingLevel,omitempty"`
+	Description           *string  `json:"description,omitempty"`
+	TaskText              *string  `json:"taskText,omitempty"`
+	Row                   *string  `json:"row,omitempty"`
+	SessionFile           *string  `json:"sessionFile,omitempty"`
+	ParentToolCallID      *string  `json:"parentToolCallId,omitempty"`
 	// The subagent runs as a detached background job.
 	Detached *bool `json:"detached,omitempty"`
 }
@@ -4956,7 +5223,13 @@ func (v *SubagentLifecyclePayload) decodeFrom(raw map[string]json.RawMessage) er
 	d.required("agentSource", &out.AgentSource)
 	d.required("status", &out.Status)
 	d.required("index", &out.Index)
+	d.optional("followUpTurn", &out.FollowUpTurn)
+	d.optional("at", &out.At)
+	d.optional("resolvedModelIdentity", &out.ResolvedModelIdentity)
+	d.optional("resolvedThinkingLevel", &out.ResolvedThinkingLevel)
 	d.optional("description", &out.Description)
+	d.optional("taskText", &out.TaskText)
+	d.optional("row", &out.Row)
 	d.optional("sessionFile", &out.SessionFile)
 	d.optional("parentToolCallId", &out.ParentToolCallID)
 	d.optional("detached", &out.Detached)
@@ -4974,6 +5247,7 @@ type SubagentProgressPayload struct {
 	Task        string      `json:"task"`
 	// Raw `AgentProgress` record.
 	Progress         map[string]json.RawMessage `json:"progress"`
+	FollowUpTurn     *bool                      `json:"followUpTurn,omitempty"`
 	ParentToolCallID *string                    `json:"parentToolCallId,omitempty"`
 	Assignment       *string                    `json:"assignment,omitempty"`
 	SessionFile      *string                    `json:"sessionFile,omitempty"`
@@ -4992,6 +5266,7 @@ func (v *SubagentProgressPayload) decodeFrom(raw map[string]json.RawMessage) err
 	d.required("agentSource", &out.AgentSource)
 	d.required("task", &out.Task)
 	d.required("progress", &out.Progress)
+	d.optional("followUpTurn", &out.FollowUpTurn)
 	d.optional("parentToolCallId", &out.ParentToolCallID)
 	d.optional("assignment", &out.Assignment)
 	d.optional("sessionFile", &out.SessionFile)
@@ -8223,10 +8498,11 @@ func (c Commands) AbortRetry(ctx context.Context) error {
 
 // BashCommand holds the parameters of "bash".
 type BashCommand struct {
-	Command string `json:"command"`
+	Command            string `json:"command"`
+	ExcludeFromContext *bool  `json:"excludeFromContext,omitempty"`
 }
 
-// Bash sends "bash": Run a shell command.
+// Bash sends "bash": Run a shell command. Before excluding output, require ready.supportsBashExcludeFromContext to be true.
 func (c Commands) Bash(ctx context.Context, p BashCommand) (BashResult, error) {
 	var out BashResult
 	err := c.call(ctx, "bash", p, 0, &out)

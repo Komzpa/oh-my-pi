@@ -200,6 +200,68 @@ afterEach(async () => {
 });
 
 describe("AgentSession empty stop guard", () => {
+	it("retries a silent dispatcher action demand until its tool runs", async () => {
+		const { session, mock } = await createHarness([
+			thinkingOnlyStop(),
+			recordCall("ready-row", "call-ready-row"),
+			{ content: ["done"], stopReason: "stop" },
+		]);
+		await session.sendCustomMessage(
+			{
+				customType: "todo-plan-check",
+				content: "Staff the ready row",
+				display: false,
+				details: { silentAssistant: true, actionDemand: "Staff the ready row with a tool" },
+			},
+			{ triggerTurn: true },
+		);
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(3);
+		expect(
+			session.agent.state.messages.some(
+				message => message.role === "toolResult" && message.toolCallId === "call-ready-row",
+			),
+		).toBe(true);
+		expect(reminderMessages(session.agent.state.messages)).toHaveLength(1);
+	});
+
+	it("exposes the retry cap for a silent dispatcher demand instead of idling silently", async () => {
+		const { session, mock } = await createHarness(Array.from({ length: 4 }, thinkingOnlyStop));
+		const failures: AgentSessionEvent[] = [];
+		session.subscribe(event => {
+			if (event.type === "auto_retry_end" && !event.success) failures.push(event);
+		});
+		await session.sendCustomMessage(
+			{
+				customType: "todo-plan-check",
+				content: "Staff the ready row",
+				display: false,
+				details: { silentAssistant: true, actionDemand: "Staff the ready row with a tool" },
+			},
+			{ triggerTurn: true },
+		);
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(4);
+		expect(failures).toHaveLength(1);
+		expect(failures[0]).toMatchObject({ type: "auto_retry_end", success: false, attempt: 3 });
+	});
+
+	it("accepts an idle silent dispatcher wake with no action demand", async () => {
+		const { session, mock } = await createHarness([thinkingOnlyStop()]);
+		await session.sendCustomMessage(
+			{
+				customType: "todo-plan-check",
+				content: "All rows wait for running workers",
+				display: false,
+				details: { silentAssistant: true },
+			},
+			{ triggerTurn: true },
+		);
+		await session.waitForIdle();
+		expect(mock.calls).toHaveLength(1);
+		expect(reminderMessages(session.agent.state.messages)).toHaveLength(0);
+	});
+
 	it("retries an empty assistant stop after a tool result", async () => {
 		const { session, mock } = await createHarness([
 			recordCall("alpha", "call-record-alpha"),

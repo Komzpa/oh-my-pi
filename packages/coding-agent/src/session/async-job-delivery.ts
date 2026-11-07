@@ -8,7 +8,7 @@
  * This replaces the old single hardwired `onJobComplete` closure that routed
  * every completion — regardless of owner — into the first top-level session.
  */
-import { prompt } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobType } from "../async";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
@@ -49,6 +49,7 @@ export interface AsyncResultEntry {
 }
 
 type AsyncResultJobDetails = {
+	agentProfile?: string;
 	jobId: string;
 	type?: AsyncJobType;
 	status?: AsyncJob["status"];
@@ -164,6 +165,7 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			schemaStatusLabel: structured ? structuredStatusLabel(structured.status) : undefined,
 			schemaError: structured?.error === undefined ? undefined : escapeHarnessTags(structured.error),
 			schemaValid: structured?.status === "valid",
+			agentProfile: completedAgentProfile(entry.job),
 		};
 	});
 	const details: AsyncResultDetails = {
@@ -175,6 +177,7 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			agentId: job.agentId,
 			label: job.label,
 			durationMs: job.durationMs,
+			agentProfile: job.agentProfile,
 			...(job.meta ? { meta: job.meta } : {}),
 			...(job.structured ? { schema: job.structured } : {}),
 		})),
@@ -193,4 +196,15 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 		details,
 		timestamp: Date.now(),
 	};
+}
+
+/** Preserve the completed profile after the live job and its artifacts are evicted. */
+function completedAgentProfile(job: AsyncJob | undefined): string | undefined {
+	if (job?.type !== "task" || job.status !== "completed") return undefined;
+	const progress = job.latestDetails?.progress;
+	if (!Array.isArray(progress)) return undefined;
+	const result = progress.find(item => isRecord(item) && item.id === (job.agentId ?? job.id));
+	return isRecord(result) && result.status === "completed" && typeof result.agent === "string"
+		? result.agent
+		: undefined;
 }

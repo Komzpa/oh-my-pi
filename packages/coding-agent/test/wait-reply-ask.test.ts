@@ -1,8 +1,8 @@
 /**
- * Contract: while an SDK session's `ask` dialog waits for the user, the session's agent counts as blocked on the
+ * Contract: while an SDK session's interactive `ask` dialog waits for the user, the session's agent counts as blocked on the
  * user, so a peer's `wait` for its reply returns at once naming it instead of sitting out the reply cap.
  */
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -19,7 +19,8 @@ import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { BUILTIN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { AskTool } from "@oh-my-pi/pi-coding-agent/tools/ask";
 import { WaitTool } from "@oh-my-pi/pi-coding-agent/tools/wait";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
@@ -39,11 +40,16 @@ describe("a reply wait on an agent in `ask`", () => {
 	});
 
 	beforeEach(() => {
+		// Exercise the blocking re-answer path; ordinary ask remains nonblocking.
+		spyOn(BUILTIN_TOOLS, "ask").mockImplementation(
+			toolSession => new AskTool(toolSession, { interactiveAnswer: true }),
+		);
 		AgentRegistry.resetGlobalForTests();
 		IrcBus.resetGlobalForTests();
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		await session?.dispose();
 		session = undefined;
 		AgentRegistry.resetGlobalForTests();

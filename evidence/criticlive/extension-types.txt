@@ -1,0 +1,2 @@
+$ bun check --no-script -p tsconfig.json
+✓ No type errors in 2,798 files [372.96ms]

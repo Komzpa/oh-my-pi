@@ -47,7 +47,7 @@ import type {
 } from "./agent-session-types";
 import type { BlobPutOptions, BlobPutResult } from "./blob-store";
 import type { IdleMaintenanceOptions } from "./idle-maintenance";
-import type { CustomMessage } from "./messages";
+import type { CustomMessage, CustomMessagePayload } from "./messages";
 import type { ServingModel } from "./retry-fallback-chains";
 import type { AdvisorStatusOverviewEntry } from "./session-advisors";
 import type { SessionContext, TranscriptSessionContextOptions } from "./session-context";
@@ -109,6 +109,10 @@ export interface AgentSessionHandle {
 	readonly ircWakesPending: boolean;
 	/** Full message list, including custom message types. */
 	readonly messages: AgentMessage[];
+	/** Current TODO rows, read from the home thread on each call. */
+	getTodoPhases(): TodoPhase[];
+	/** Stable immutable local plan view, when supported by this handle. */
+	getTodoSnapshot?(): readonly TodoPhase[];
 	/** Current transcript path, or undefined when sessions are disabled. */
 	readonly sessionFile: string | undefined;
 	/** Current model, when selected. */
@@ -155,6 +159,8 @@ export interface AgentSessionHandle {
 	}): Promise<void>;
 	/** Replace the pooled-turn yield contract. */
 	setWorkPoolYieldItems(items: readonly WorkPoolYieldItem[]): Promise<void>;
+	/** Change fast mode on the home thread. */
+	setFastMode(enabled: boolean): boolean | Promise<boolean>;
 	/** Dispose the session and release its resources. */
 	dispose(options?: AgentSessionDisposeOptions): Promise<void>;
 }
@@ -256,6 +262,10 @@ export function isAgentViewSession(session: AgentSessionHandle): session is Agen
 
 /** Extra surface the TUI reads on a focused subagent (`ctx.viewSession`). */
 export interface AgentViewSession extends AgentSessionHandle {
+	sendCustomMessage(
+		message: CustomMessagePayload,
+		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+	): Promise<boolean>;
 	/** Agent loop pause flag, live state, and pending tool results. */
 	readonly agent: AgentViewLoop;
 	/** Agent loop state (same object as `agent.state`). */

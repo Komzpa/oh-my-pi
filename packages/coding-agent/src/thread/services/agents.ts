@@ -228,6 +228,7 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 		entries: (bridge, key, delta) => bridge.session(key)?.applyEntries(delta),
 		closed: (bridge, key) => bridge.closed(key),
 		read: (_bridge, session, fields) => readSessionFields(session, fields),
+		readTodoPhases: (_bridge, session) => toWireData([...(session.getTodoSnapshot?.() ?? session.getTodoPhases())]),
 		readMessages: (_bridge, session) => toWireData(session.messages),
 		hasQueuedIrcFrom: (_bridge, session, from) => session.hasQueuedIrcFrom(from),
 		subscribe: (bridge, session, listener) =>
@@ -238,6 +239,7 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 		steer: (_bridge, session, text, images, options) => session.steer(text, images, options),
 		abort: (_bridge, session, options) => session.abort(options),
 		dispose: (_bridge, session, options) => session.dispose(options),
+		setFastMode: (_bridge, session, enabled) => session.setFastMode(enabled),
 		deliverIrcMessage: (_bridge, session, msg) => session.deliverIrcMessage(msg),
 		waitForIrcReplies: (_bridge, session) => session.waitForIrcReplies(),
 		setWorkPoolYieldItems: (_bridge, session, items) => session.setWorkPoolYieldItems(items),
@@ -247,6 +249,7 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 
 function serveRegistry(bridge: MainSessionBridge): RpcServe<AgentRegistry, AgentRegistryProtocol> {
 	return {
+		setSubagentFastMode: (registry, parentId, id, enabled) => registry.setSubagentFastMode(parentId, id, enabled),
 		register: (registry, input) => registry.register(input),
 		registerIfAvailable: (registry, input, expected) => registry.registerIfAvailable(input, expected),
 		reopen: (registry, id, expected) => registry.reopen(id, expected),

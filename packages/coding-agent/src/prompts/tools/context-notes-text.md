@@ -1,1 +1,1 @@
-Entire replacement notebook text, up to {{maxBytes}} UTF-8 bytes. Omit to read without changing notes; use an empty string to clear.
+Entire replacement notebook text, preserved in full without a notebook-specific byte cap. Required and nonempty only for `action: "replace"`; ignored for `action: "read"` and `action: "clear"` (clearing is done by `action: "clear"` alone — empty text never clears). Keep a compact current index with recoverable history entry-ID references instead of copied raw logs, without discarding still-needed state.

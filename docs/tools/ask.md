@@ -1,6 +1,32 @@
 # ask
 
-> Prompts the interactive user for one or more option-picker or free-form answers.
+> Posts a pending question in the session transcript and returns immediately. The user replies through that session's normal chat while independent work continues.
+
+## Asynchronous questions
+
+Ordinary `ask` calls return `details.pending` containing the tool-call identity, the owning session identity when available, and the questions. In an interactive TUI, the same rich ask dialog used by explicit interactive re-answer opens non-blockingly for the questions; confirming it (options, `n` note, or custom answer, submitted with Enter or Ctrl+Enter/Ctrl+Q) sends an ordinary user message in the form `Answer to <tool-call-id> [<question-id>]: <answer> — note: <text>`. The tool result remains pending and the agent turn does not wait for this input. Headless sessions retain the pending transcript text and can receive replies through normal chat. Multiple pending questions can coexist; focus the asking session before replying.
+
+Pending means unanswered, never approved. Recommendations and `ask.timeout` do not select an answer on this path. Continue independent work; actions requiring the reply remain blocked by their existing approval or dependency controls. Ask does not modify permission gates.
+
+The selector/editor lifecycle below applies only to explicit `/tree` re-answer, which constructs `AskTool` with `interactiveAnswer: true`. That user-initiated dialog remains exclusive; normal Ask is shared and returns without waiting for input.
+
+## Optional lead gate
+
+The gate is off by default. Enable it in `config.yml`:
+
+```yaml
+ask:
+  gate:
+    enabled: true
+    agent: gate-runner
+    recentSeconds: 300
+```
+
+For calls offering options, every question must supply an integer `recommended` index within its options. The active session branch must also contain a successful task result from the configured agent profile, either after the latest user message or within `recentSeconds` (seconds; `0` disables the time-window alternative). Failed, aborted, running, wrong-profile and prose-only reports do not count. Async deliveries preserve the completed profile for resume.
+
+A passing non-critical call returns the existing pending identity plus `details.workingDefaults`, without opening a dialog or waiting. The recommended options become working defaults immediately; choices belong on a styled review page with only its link in chat. This grants no permission for actions requiring user approval. Explicit `/tree` re-answer remains interactive.
+
+A genuine mission-critical stop may supply `critical: { kind: "irreversible" | "public" | "hands" | "credential", reason: "concrete reason" }`. Its kind and non-blank reason are recorded in `details.critical`; it bypasses the gate and retains normal pending-question behavior.
 
 ## Source
 
@@ -30,6 +56,7 @@
 
 ## Outputs
 
+Normal calls return a pending result, not an answer: `details.pending.id` is the tool-call ID, `sessionId` identifies the asking session when available, and `questions` preserves the complete question form. The following answered-result variants belong to explicit interactive re-answer.
 - Single-shot result.
 - `content[0].text` is plain text:
    - single question: selected/custom answer plus an optional `User added note: ...`
@@ -91,7 +118,7 @@
 - Option labels must not equal the reserved runtime labels `Other (type your own)`, `Chat about this`, or `Next →`. Multi-select labels also cannot equal the theme-prefixed `Done selecting` control.
 - IDs must be unique across questions, and option labels unique within each question; these guards run after carriage-return normalization.
 - Fallback timeout only applies to the option picker; once the user chooses `Other`, the editor has no timeout. Prompt surfaces that report presentation/reset events start or re-arm the picker deadline at those events; otherwise the timer starts when selection is requested.
-- `AskTool.concurrency = "exclusive"`: the tool runs alone in its tool batch because the selector/editor UI surface is shared.
+- Normal Ask uses `concurrency = "shared"` and never waits on a selector/editor. Explicit interactive re-answer uses `"exclusive"` because that user-opened dialog shares the selector/editor UI surface.
 - The call renderer normalizes incomplete or malformed streamed arguments for display: bare string options become labels and unusable question/option entries are omitted. Execution still receives schema-validated input.
 
 ## Errors

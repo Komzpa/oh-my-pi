@@ -399,6 +399,7 @@ export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "a
 export interface TodoItem {
 	content: string;
 	status: TodoStatus;
+	schedule?: TodoSchedule;
 	/** What a `blocked` task is waiting on. */
 	blocker?: string;
 	details?: string;
@@ -408,6 +409,87 @@ export interface TodoItem {
 export interface TodoPhase {
 	name: string;
 	tasks: TodoItem[];
+}
+
+export type TodoConfidence = "low" | "medium" | "high";
+
+export type TodoScheduleReview = "user" | "accepted" | "redo" | "drop";
+
+export type TodoWorkerOutcome = "completed" | "failed" | "aborted";
+
+/** User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds. */
+export interface TodoEstimate {
+	optimisticSeconds: number;
+	likelySeconds: number;
+	pessimisticSeconds: number;
+	confidence: TodoConfidence;
+	basis: string;
+	updatedAt: number;
+}
+
+export interface TodoScheduleProgress {
+	at: number;
+	evidence: string;
+}
+
+/** Observed Task worker that executed this row, independent of forecast ownership; timestamps are Unix milliseconds. */
+export interface TodoScheduleExecutor {
+	workerId: string;
+	startedAt: number;
+	agentProfile?: string;
+	resolvedModel?: string;
+	thinkingLevel?: string;
+	finishedAt?: number;
+	outcome?: TodoWorkerOutcome;
+}
+
+/** Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds. */
+export interface TodoReworkAttempt {
+	attemptId: string;
+	workerName: string;
+	resolvedModel: string;
+	effort: string;
+	startedAt: number;
+	finishedAt: number;
+	durationMs: number;
+	terminalStatus: TodoWorkerOutcome;
+	deliverablePaths: string[];
+	rejectionReason?: string;
+	reflectionAnswer?: string;
+	noAnswerReason?: string;
+	finalReportParagraph?: string;
+	infraFailureLine?: string;
+	infraFailureError?: string;
+}
+
+/** Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds. */
+export interface TodoSchedule {
+	/** Exact task-content references; absent means unknown, while an empty array explicitly means independent. */
+	dependencies?: string[];
+	/** Exclusive forecast owner while this task is running. */
+	owner?: string;
+	/** Exclusive resource identifiers while running; absent means undeclared. */
+	resources?: string[];
+	estimate?: TodoEstimate;
+	/** Server-owned revision: the first estimate is revision 1. */
+	estimateRevision?: number;
+	reestimateCount?: number;
+	progress?: TodoScheduleProgress;
+	startedAt?: number;
+	finishedAt?: number;
+	/** Time this row first entered the plan as a user requirement. */
+	firstRequirementAt?: number;
+	/** Time the first usable result was handed to the user. */
+	firstDeliveredAt?: number;
+	/** Append-only durable attempts for this exact row. */
+	attemptHistory?: TodoReworkAttempt[];
+	/** Short final worker report retained for the user's review handoff. */
+	reviewSummary?: string;
+	/** User decision state for a delivered implementation result. */
+	review?: TodoScheduleReview;
+	/** Review row whose verdict gates publication of this speculative work. */
+	speculativeOn?: string;
+	executor?: TodoScheduleExecutor;
 }
 
 export interface ContextUsage {
@@ -1060,6 +1142,8 @@ export interface ReadyEvent {
 	supportedProtocolVersions?: number[];
 	maxFrameBytes?: number;
 	maxReassembledFrameBytes?: number;
+	/** `bash` accepts `excludeFromContext`; require exactly true before sending excluded commands. */
+	supportsBashExcludeFromContext?: boolean;
 }
 
 export type PromptStatus = "completed" | "aborted" | "error";
@@ -1113,7 +1197,14 @@ export interface SubagentLifecyclePayload {
 	agentSource: AgentSource;
 	status: SubagentLifecycleStatus;
 	index: number;
+	followUpTurn?: boolean;
+	/** Wall clock of the emitted lifecycle transition, in Unix milliseconds. */
+	at?: number;
+	resolvedModelIdentity?: string;
+	resolvedThinkingLevel?: string;
 	description?: string;
+	taskText?: string;
+	row?: string;
 	sessionFile?: string;
 	parentToolCallId?: string;
 	/** The subagent runs as a detached background job. */
@@ -1127,6 +1218,7 @@ export interface SubagentProgressPayload {
 	task: string;
 	/** Raw `AgentProgress` record. */
 	progress: Record<string, unknown>;
+	followUpTurn?: boolean;
 	parentToolCallId?: string;
 	assignment?: string;
 	sessionFile?: string;
@@ -1771,6 +1863,7 @@ export interface SetAutoRetryParams {
 
 export interface BashParams {
 	command: string;
+	excludeFromContext?: boolean;
 }
 
 export interface GetSessionLeaseParams {

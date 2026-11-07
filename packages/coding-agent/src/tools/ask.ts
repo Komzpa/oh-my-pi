@@ -1,13 +1,12 @@
 import type { AskToolDetails, QuestionResult } from "@oh-my-pi/pi-tui/tools/ask";
 /**
- * Ask Tool - Interactive user prompting during execution
+ * Ask Tool - last resort for choices no source can settle.
  *
- * Use this tool when you need to ask the user questions during execution.
- * This allows you to:
- *   1. Gather user preferences or requirements
- *   2. Clarify ambiguous instructions
- *   3. Get decisions on implementation choices as you work
- *   4. Offer choices to the user about what direction to take
+ * Act first: before asking, try tools, the repository, web search and manuals.
+ * Never ask for a fact (specs, manual meanings, protocol values, file contents).
+ * Ask only for a product or taste choice, or a destructive or external action.
+ * Bundle every open question into one call, never several in a row; while
+ * waiting, keep working on the most likely option.
  *
  * Usage notes:
  *   - Users will always be able to select "Other" to provide custom text input
@@ -22,12 +21,19 @@ import { type ImageContent, type TextContent, type ToolExample, validateToolArgu
 import { replaceTabs, TERMINAL, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { isRecord, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 
-import type { ExtensionUISelectItem } from "../extensibility/extensions";
+import type {
+	ExtensionAskDialogQuestion,
+	ExtensionAskDialogResultItem,
+	ExtensionUISelectItem,
+} from "../extensibility/extensions";
 import { formatKeyHint, formatKeyHints } from "@oh-my-pi/pi-tui/app-keybindings";
 import { editorKey, editorKeys } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import askHeadlessForkMessage from "../prompts/tools/ask-headless-fork.md" with { type: "text" };
+import askGateRefused from "../prompts/tools/ask-gate-refused.md" with { type: "text" };
+import askGateDefaults from "../prompts/tools/ask-gate-defaults.md" with { type: "text" };
+import askPending from "../prompts/tools/ask-pending.md" with { type: "text" };
 import { vocalizer } from "../tts/vocalizer";
 
 import type { ToolSession } from ".";
@@ -41,7 +47,13 @@ import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { ToolAbortError } from "./tool-errors";
 
 import { sessionLocalProtocolOptions } from "../internal-urls/context";
-import { cfgAskNotify, askTimeoutMs } from "../modes/settings";
+import {
+	cfgAskNotify,
+	askTimeoutMs,
+	cfgAskGateEnabled,
+	cfgAskGateAgent,
+	cfgAskGateRecentSeconds,
+} from "../modes/settings";
 import { renderAttachmentSourceNotice } from "../session/attachment-source-notice";
 import { cfgSpeechEnabled } from "../tts/settings";
 import { describeAttachedImagesForTextModel, shouldDescribeImagesForTextModel } from "../utils/image-vision-fallback";
@@ -85,6 +97,10 @@ const QuestionItem = arkType({
 
 const askSchema = arkType({
 	questions: QuestionItem.array().atLeastLength(1),
+	"critical?": arkType({
+		kind: "'irreversible' | 'public' | 'hands' | 'credential'",
+		reason: arkType("string").narrow((reason, ctx) => reason.trim().length > 0 || ctx.mustBe("non-blank")),
+	}),
 });
 
 const askRecoveryTool = { name: "ask", description: "", parameters: askSchema };
@@ -537,6 +553,44 @@ function formatSingleQuestionResponse(result: {
 	return result.multi ? "User did not select any options" : "User cancelled the selection";
 }
 
+/**
+ * Map schema questions into the rich ask dialog shape. Shared by the ordinary
+ * (non-blocking) and explicit interactive re-answer paths so both render the
+ * exact same dialog component for the same question.
+ */
+function toAskDialogQuestions(questions: AskToolInput["questions"]): ExtensionAskDialogQuestion[] {
+	return questions.map(q => ({
+		id: q.id,
+		question: q.question,
+		...(q.header?.trim() ? { header: q.header } : {}),
+		options: q.options.map(option => ({
+			label: option.label,
+			...(option.description?.trim() ? { description: option.description.trim() } : {}),
+			...(option.preview?.trim() ? { preview: option.preview } : {}),
+		})),
+		...(q.multi !== undefined ? { multi: q.multi } : {}),
+		...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
+	}));
+}
+
+/**
+ * Format one rich-dialog answer as the user-chat reply the model correlates
+ * back to the pending question: `Answer to <toolCallId> [<questionId>]: <answer>`,
+ * with an optional ` — note: <text>` suffix.
+ */
+function formatAsyncAnswerReply(toolCallId: string, result: ExtensionAskDialogResultItem): string {
+	const noteSuffix = result.note ? ` — note: ${result.note}` : "";
+	if (result.customInput !== undefined) {
+		return `Answer to ${toolCallId} [${result.id}]: ${result.customInput}${noteSuffix}`;
+	}
+	if (result.selectedOptions.length > 0) {
+		const answer = result.multi ? `[${result.selectedOptions.join(", ")}]` : result.selectedOptions[0];
+		return `Answer to ${toolCallId} [${result.id}]: ${answer}${noteSuffix}`;
+	}
+	const answer = result.multi ? "[]" : "(cancelled)";
+	return `Answer to ${toolCallId} [${result.id}]: ${answer}${noteSuffix}`;
+}
+
 // =============================================================================
 // Tool Class
 // =============================================================================
@@ -573,16 +627,17 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			},
 		},
 	];
-	// Run alone in its tool batch. The interactive selector/editor is a single
-	// shared UI surface (`ExtensionUiController.showHookSelector` has no queue and
-	// overwrites `ctx.hookSelector` on each call), so two concurrent `ask` calls
-	// would clobber each other: the second steals focus and orphans the first,
-	// whose promise then hangs until the user aborts the whole turn.
-	readonly concurrency = "exclusive";
+	readonly concurrency: "shared" | "exclusive";
 	readonly loadMode = "discoverable";
+	readonly #interactiveAnswer: boolean;
 
-	constructor(private readonly session: ToolSession) {
+	constructor(
+		private readonly session: ToolSession,
+		options: { interactiveAnswer?: boolean } = {},
+	) {
 		this.description = prompt.render(askDescription);
+		this.#interactiveAnswer = options.interactiveAnswer === true;
+		this.concurrency = this.#interactiveAnswer ? "exclusive" : "shared";
 	}
 
 	static createIf(session: ToolSession): AskTool | null {
@@ -649,19 +704,69 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		return blocks;
 	}
 
+	/** Read structured results on this branch only; prose and running jobs are never evidence. */
+	#hasRecentAgentResult(): boolean {
+		const agent = cfgAskGateAgent.get(this.session.settings).trim();
+		if (!agent) return false;
+		const entries = this.session.sessionManager?.getBranch() ?? [];
+		const windowMs = Math.max(0, cfgAskGateRecentSeconds.get(this.session.settings)) * 1000;
+		const now = Date.now();
+		let afterUser = true;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i]!;
+			if (entry.type !== "message") continue;
+			const message = entry.message;
+			if (message.role === "user") afterUser = false;
+			const time = Date.parse(entry.timestamp);
+			if (!afterUser && !(windowMs > 0 && time <= now && now - time <= windowMs)) continue;
+			if (message.role === "toolResult" && message.toolName === "task" && !message.isError) {
+				const details = message.details;
+				if (
+					isRecord(details) &&
+					Array.isArray(details.results) &&
+					details.results.some(
+						result =>
+							isRecord(result) &&
+							result.agent === agent &&
+							result.exitCode === 0 &&
+							!result.aborted &&
+							!result.error,
+					)
+				)
+					return true;
+			}
+			if (message.role === "custom" && message.customType === "async-result") {
+				const details = message.details;
+				if (
+					isRecord(details) &&
+					Array.isArray(details.jobs) &&
+					details.jobs.some(
+						job =>
+							isRecord(job) && job.type === "task" && job.status === "completed" && job.agentProfile === agent,
+					)
+				)
+					return true;
+			}
+		}
+		return false;
+	}
+
 	async execute(
-		_toolCallId: string,
+		toolCallId: string,
 		params: AskParams,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<AskToolDetails>> {
-		// Headless fallback
 		if (!context?.hasUI || !context.ui) {
 			// A headless fork (`/tan`) keeps `ask` advertised only to share the parent's
 			// prompt-cache prefix. Aborting would end its run with no final answer, and the
 			// parent would receive an empty result; let the model put the question there.
 			if (this.session.advertiseHeadlessAsk) throw new ToolError(HEADLESS_FORK_ASK_ERROR);
+		}
+		// Only explicit interactive re-answer requires a modal UI. Normal asks can
+		// still return a durable pending result in text-only/headless contexts.
+		if (this.#interactiveAnswer && (!context?.hasUI || !context.ui)) {
 			context?.abort();
 			throw new ToolAbortError("Ask tool requires interactive mode");
 		}
@@ -744,6 +849,69 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			}
 		}
 
+		const gated =
+			!this.#interactiveAnswer &&
+			!(this.session.taskDepth && this.session.taskDepth > 0) &&
+			cfgAskGateEnabled.get(this.session.settings) &&
+			params.questions.some(question => question.options.length > 0);
+		if (gated && !params.critical) {
+			const recommended = params.questions.every(
+				question =>
+					Number.isInteger(question.recommended) &&
+					question.recommended! >= 0 &&
+					question.recommended! < question.options.length,
+			);
+			if (!recommended || !this.#hasRecentAgentResult()) {
+				throw new ToolError(prompt.render(askGateRefused, { agent: cfgAskGateAgent.get(this.session.settings) }));
+			}
+		}
+
+		if (!this.#interactiveAnswer) {
+			if (signal?.aborted) throw new ToolAbortError("Ask input was cancelled");
+			if (params.questions.length === 0) {
+				return { content: [{ type: "text", text: "Error: questions must not be empty" }], details: {} };
+			}
+			const pending = {
+				id: toolCallId,
+				sessionId: this.session.getSessionId?.() ?? undefined,
+				questions: params.questions,
+			};
+			if (gated && !params.critical) {
+				const workingDefaults = params.questions.map(question => ({
+					id: question.id,
+					option: question.options[question.recommended!]!.label,
+				}));
+				return {
+					content: [{ type: "text", text: prompt.render(askGateDefaults, { ...pending, workingDefaults }) }],
+					details: { pending, workingDefaults },
+				};
+			}
+			this.#sendAskNotification();
+			const askDialog = context?.ui?.askDialog;
+			if (askDialog && this.session.submitUserReply) {
+				void (async () => {
+					const result = await askDialog(toAskDialogQuestions(params.questions), {});
+					if (!result || result.kind !== "submit") return;
+					const answers = result.results.map(item => formatAsyncAnswerReply(toolCallId, item));
+					this.session.submitUserReply?.(answers.join("\n"));
+				})().catch(error => {
+					logger.warn("Ask pending dialog failed", { error: String(error), toolCallId });
+				});
+			}
+			return {
+				content: [{ type: "text", text: prompt.render(askPending, pending) }],
+				details: { pending, ...(params.critical ? { critical: params.critical } : {}) },
+			};
+		}
+
+		// Interactive re-answer reaches here only with a modal UI present (the
+		// headless/without-UI path throws above); re-assert so the type checker
+		// narrows `context` and its UI for the remaining dialog path.
+		if (!context?.hasUI || !context.ui) {
+			context?.abort();
+			throw new ToolAbortError("Ask tool requires interactive mode");
+		}
+
 		const extensionUi = context.ui;
 		const ui: UIContext = {
 			timeoutStartsOnPresentation: extensionUi.timeoutStartsOnPresentation,
@@ -796,21 +964,11 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		if (richAskDialog) {
 			try {
 				const showRichDialog = () =>
-					richAskDialog(
-						params.questions.map(q => ({
-							id: q.id,
-							question: q.question,
-							...(q.header?.trim() ? { header: q.header } : {}),
-							options: q.options.map(option => ({
-								label: option.label,
-								...(option.description?.trim() ? { description: option.description.trim() } : {}),
-								...(option.preview?.trim() ? { preview: option.preview } : {}),
-							})),
-							...(q.multi !== undefined ? { multi: q.multi } : {}),
-							...(q.recommended !== undefined ? { recommended: q.recommended } : {}),
-						})),
-						{ timeout: timeout ?? undefined, signal: dialogSignal, acceptImages: true },
-					);
+					richAskDialog(toAskDialogQuestions(params.questions), {
+						timeout: timeout ?? undefined,
+						signal: dialogSignal,
+						acceptImages: true,
+					});
 				const richResult = await untilAborted(dialogSignal, showRichDialog);
 				if (!richResult) return cancelAsk();
 				if (richResult.kind === "chat") {

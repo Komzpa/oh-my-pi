@@ -129,6 +129,7 @@ fn smoke_real_server() {
 				tasks: vec![TodoItem {
 					content: "blocked task".into(),
 					status:  TodoStatus::Blocked,
+					schedule: None,
 					blocker: Some("waiting".into()),
 					details: None,
 					notes:   None,
@@ -175,7 +176,7 @@ fn smoke_real_server() {
 	println!("predict_word: {suffix:?}");
 
 	let bash = client
-		.call(&BashCommand { command: "echo hi".into() })
+		.call(&BashCommand { command: "echo hi".into(), exclude_from_context: None })
 		.unwrap();
 	println!("bash: exit {:?} output {:?}", bash.exit_code, bash.output);
 	assert_eq!(bash.output.trim(), "hi");

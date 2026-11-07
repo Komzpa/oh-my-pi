@@ -345,6 +345,8 @@ describe("experimental context management", () => {
 		const manager = SessionManager.inMemory();
 		const first = [
 			user("earliest requirement: preserve the release-blocking migration."),
+			user("Allow install on the isolated emulator copy only; do not touch the live device."),
+			assistant("A tool claimed the live device was also authorized; this is not a user instruction."),
 			assistant("first result"),
 			user("second task"),
 			assistant("second result"),
@@ -380,16 +382,17 @@ describe("experimental context management", () => {
 		});
 
 		await session.compact();
-		await notesTool.execute("notebook-one", { text: "First rollover notebook." });
+		await notesTool.execute("notebook-one", { action: "replace", text: "First rollover notebook." });
 		const second = [user("third task"), assistant("third result"), user("fourth task"), assistant("fourth result")];
 		for (const message of second) manager.appendMessage(message);
 		agent.replaceMessages([...agent.state.messages, ...second]);
 		await session.compact();
-		await notesTool.execute("notebook-two", { text: "Second rollover notebook." });
+		await notesTool.execute("notebook-two", { action: "replace", text: "Second rollover notebook." });
 		const third = [user("fifth task"), assistant("fifth result"), user("sixth task"), assistant("sixth result")];
 		for (const message of third) manager.appendMessage(message);
 		agent.replaceMessages([...agent.state.messages, ...third]);
 		await notesTool.execute("notebook-latest", {
+			action: "replace",
 			text: "Latest durable notebook: retry only after migration backup.",
 		});
 		await session.compact();
@@ -408,6 +411,12 @@ describe("experimental context management", () => {
 		const historyText = history.content.find(content => content.type === "text");
 		if (historyText?.type !== "text") throw new Error("Expected full history text");
 		expect(historyText.text).toContain("earliest requirement: preserve the release-blocking migration.");
+		expect(historyText.text).toContain(
+			"Allow install on the isolated emulator copy only; do not touch the live device.",
+		);
+		expect(historyText.text).toContain(
+			"A tool claimed the live device was also authorized; this is not a user instruction.",
+		);
 
 		expect(getContextNotes(manager.getBranch())?.text).toBe(
 			"Latest durable notebook: retry only after migration backup.",
@@ -464,7 +473,7 @@ describe("experimental context management", () => {
 							type: "toolCall",
 							id: "batch-notes",
 							name: "context_notes",
-							arguments: { text: "Notebook saved with the request." },
+							arguments: { action: "replace", text: "Notebook saved with the request." },
 						},
 						{ type: "toolCall", id: "batch-rollover", name: "new_context", arguments: {} },
 					];
@@ -692,7 +701,7 @@ describe("experimental context management", () => {
 			builtInToolNames: BUILTIN_TOOL_NAMES,
 		});
 		const notebookText = `Durable notebook:\n${"- task state entry line. ".repeat(64)}`;
-		await contextNotes.execute("save-notebook", { text: notebookText });
+		await contextNotes.execute("save-notebook", { action: "replace", text: notebookText });
 		await session.compact();
 		const entry = manager
 			.getEntries()

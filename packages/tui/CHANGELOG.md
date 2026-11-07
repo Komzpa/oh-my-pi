@@ -4,7 +4,60 @@
 
 ### Fixed
 
+- Keep TODO point forecasts on residual PERT work, with experimental whole-plan uncertainty and throughput shown only as a diagnostic ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Reuse unchanged worker HUD rows and status inputs during terminal paints ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Give an exact dependency update when one worker owns collateral rows ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- TODO rows show queued audits and pending handoffs separately, and request review only after verification and handoff finish.
+- Show certain deadline misses in red with lateness, and dim explicit after-deadline follow-ups ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Tern's classic renderer draws inline images (table charts included) as Kitty Unicode placeholders, so text that replaces an image's cells removes the image instead of leaving a stale copy over the table while an answer streams or the pane resizes
+- The native composer's first frame shows the cached thinking level on the model chip (or effort chip) instead of the plain model icon until the session attaches
+- Clicking the popup of an enum setting with many values (Edit Mode, Session Tree Filter, Advisor Sync Backlog) on a native settings page opens its menu instead of doing nothing
+- Ask notes added on successive single-select questions now start with an empty editor and stay with their respective answers ([#17979](https://github.com/can1357/oh-my-pi/issues/17979))
+- Closing an overlay that others were opened over no longer leaves them returning focus to it once they close ([#16476](https://github.com/can1357/oh-my-pi/pull/16476))
+- ASCII tree branches are two columns (`|-`, `'-`) like their Unicode counterparts, so rows hanging under a branch, such as a single-file Grep's code frames, line up with its text instead of sitting one column left ([#18103](https://github.com/can1357/oh-my-pi/pull/18103) by [@JustasMasiulis](https://github.com/JustasMasiulis))
+- Agent hub task summaries display the task itself and no longer depend on a prompt prefix.
+
+### Changed
+
+- Show one TODO progress summary with live work, grouped dependencies, audits and user review states ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
+### Added
+
+- Forecast deadline probability and P50/P80/P90 finish from worker pools and empirical redo risk ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Bash cards now show incremental Python-like pseudocode with a Raw toggle, same-color execution dimming, failure marks and variable values beside their latest setter; the inspector adds layers, split source and timestamp-based replay. Native hosts keep the segmented run box: the `shell` node (role `omp.tool.bash.command`) is the command segment only, and the box's ordinary `omp.tool.bash.output` segment shows the output once (the replay-cursor output while one is held). Bash cards keep a neutral background in every state, and native bash views are inline (head above, the segmented run box the only frame).
+- Added `VersionUpdate`, `WelcomeComponent.setVersionUpdate()`, and `ComposerWelcomeUpdate.versionUpdate`: the welcome banner shows background self-update progress, readiness, or failure after its version label, narrowing to the percent and then dropping it on narrow terminals
+- `newSessionThinkingLevel` and `resolveConfiguredThinkingLevel` resolve the thinking level a new session starts at on a model; `ComposerCache.writeStatus` takes `{ shared: false }` to keep a project's status out of the any-project fallback
+- Added `SettingItem.menu`: a cycling row's choices as a menu, which `SettingsList.openSubmenuFor` opens (a native settings page's popup) while Enter/Space still cycle
+- `StatusLineComponent.setSessionPinned()` / `setPinnedSessionIds()` / `isSessionPinned()` track pinned sessions; `session_name` prefixes the theme's pin icon for a pinned session ([#17848](https://github.com/can1357/oh-my-pi/pull/17848) by [@SuperUserA](https://github.com/SuperUserA))
+- `LinkBrowserComponent` (`overlays/link-browser`) replays a transcript fullscreen with extension link hint tags that each link keeps while it stays in view; `LinkHints` / `viewportLinkTargets()` (`render/link-hints`) share tag assignment (preferring the letters a label starts with) and painting with `Composer`; `ChatTranscriptBuilder` accepts `textRenderers` ([#16476](https://github.com/can1357/oh-my-pi/pull/16476) by [@materemias](https://github.com/materemias))
+- Added the `cache` status-line segment, `StatusLineSession.getPromptCacheStatus`, the `icon.cacheWarm` / `icon.cacheCold` symbols, the composer's `omp.composer.cache` fact and the `promptCacheBrief` / `promptCacheDetails` text helpers ([#12677](https://github.com/can1357/oh-my-pi/issues/12677)) ([#17496](https://github.com/can1357/oh-my-pi/pull/17496) by [@will-bogusz](https://github.com/will-bogusz))
+- Added effort-level rows to `^` model mention autocomplete: after `:`, it lists the supported levels of the top three matching models below any model ids that contain the typed text, and typing `:` reopens a closed mention popup ([#17574](https://github.com/can1357/oh-my-pi/pull/17574) by [@a-glapinski](https://github.com/a-glapinski))
+- Added optional `AutocompleteProvider.trySyncModelMentionCompletion`, which returns a `ModelMentionCompletion`; the editor uses it to refresh a shown mention popup as you type, so Tab accepts a row for the current text ([#17574](https://github.com/can1357/oh-my-pi/pull/17574) by [@a-glapinski](https://github.com/a-glapinski))
+- Added a shared spinner clock (`spinner-clock`: `setSpinnerInterval`, `sharedSpinnerFrame`, `spinnerTickDelay`) that every spinner and the thinking pulse follow, ticking on common boundaries so N spinners cost one frame per period; `0` pins them static with no timers ([#14240](https://github.com/can1357/oh-my-pi/pull/14240) by [@mccraigmccraig](https://github.com/mccraigmccraig))
+- Added a frame-rate ceiling (`frame-rate`: `setMaxFps`, `minFrameIntervalMs`) honoured by the render scheduler and animation timers; frames a keystroke waits on keep 30 fps ([#14240](https://github.com/can1357/oh-my-pi/pull/14240) by [@mccraigmccraig](https://github.com/mccraigmccraig))
+- Added a decorative-motion switch (`motion-effects`: `setMotionEffects`) gating the status-line blink and brand fade, the editor's magic-keyword sweep, and native `fx` spans; a static spinner clock also stills native `spinner` nodes ([#14240](https://github.com/can1357/oh-my-pi/pull/14240) by [@mccraigmccraig](https://github.com/mccraigmccraig))
+
+### Added
+
+- Grep headers syntax-highlight regex patterns, including incomplete patterns while a call streams, in terminal and native views ([#18392](https://github.com/can1357/oh-my-pi/pull/18392) by [@JustasMasiulis](https://github.com/JustasMasiulis)).
+
+### Changed
+
+- Grep results for a single searched file no longer repeat `1 file` after the match count; the header already names the file ([#18422](https://github.com/can1357/oh-my-pi/pull/18422) by [@JustasMasiulis](https://github.com/JustasMasiulis)).
+
+### Fixed
+
+- A saved bash trace the shell visualization can no longer restore (e.g. a `tool_result` hook rewrote its `script`) renders as plain command and output instead of crashing the TUI and every `omp --resume` of that session ([#18338](https://github.com/can1357/oh-my-pi/issues/18338))
+- Tables with near-equal large numeric columns no longer crash transcript rendering during chart analysis ([#18343](https://github.com/can1357/oh-my-pi/issues/18343))
+- A JPEG truncated before its end-of-image marker is rejected when read and omitted from the request, instead of failing the whole provider request with "unsupported image" ([#18385](https://github.com/can1357/oh-my-pi/pull/18385) by [@iwangjie](https://github.com/iwangjie))
+
+## [18.18.0] - 2026-11-07
+
+### Fixed
+
 - Ctrl+J from a win32-input-mode record with `VK_J` and `Uc=LF` now decodes as `ctrl+j`, so Windows Terminal / mini-term insert a newline instead of submitting ([#18253](https://github.com/can1357/oh-my-pi/pull/18253) by [@Clannad47](https://github.com/Clannad47))
+- The BTW history page (`f` on a side answer) scrolls its reader and history list with the mouse wheel, matching the other scrolling sheets ([#18303](https://github.com/can1357/oh-my-pi/pull/18303) by [@ImAlexBlock](https://github.com/ImAlexBlock))
+- The BTW history list shows the date for questions asked before today (and the year for ones from an earlier year), instead of a bare time that read as today's; a follow-up asked on a later day than its topic shows its date too ([#18210](https://github.com/can1357/oh-my-pi/pull/18210) by [@a-glapinski](https://github.com/a-glapinski))
 
 ## [18.17.0] - 2026-11-06
 

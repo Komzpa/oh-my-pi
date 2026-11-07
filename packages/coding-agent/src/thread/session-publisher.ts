@@ -48,6 +48,7 @@
  */
 import type { AgentMessage, AgentTool, QueuedMessageGate } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../capability/rule";
 import type { OverlayLayers, Settings } from "../config/settings";
@@ -142,6 +143,7 @@ type DiffedViewState = Omit<SessionViewState, "activeToolExecutionUpdates">;
 
 /** Live objects behind the wire copies of the heavy view fields; an unchanged source reuses its copy. */
 interface ViewSources {
+	readonly todoPhases: readonly TodoPhase[];
 	readonly tools: readonly AgentTool[];
 	readonly systemPrompt: readonly string[];
 	readonly skills: readonly Skill[];
@@ -449,6 +451,7 @@ export class SessionPublisher {
 		const previous = this.#view;
 		const prior = this.#viewSources;
 		const sources: ViewSources = {
+			todoPhases: session.getTodoSnapshot(),
 			tools: session.agent.state.tools,
 			systemPrompt: session.systemPrompt,
 			skills: session.skills,
@@ -509,7 +512,7 @@ export class SessionPublisher {
 			goalMode: toWireData(session.getGoalModeState()),
 			advisorCost: session.getAdvisorCost(),
 			advisorUsingSubscription: session.isAdvisorUsingSubscription(),
-			todoPhases: toWireData(session.getTodoPhases()),
+			todoPhases: previous && reuse("todoPhases") ? previous.todoPhases : toWireData([...sources.todoPhases]),
 			queuedMessages: toWireData(session.getQueuedMessages()),
 			restorableQueue: toWireData({ steering: steering.map(queuedEntry), followUp: followUp.map(queuedEntry) }),
 			approvals: {
@@ -578,6 +581,10 @@ export const SESSION_HOST_SERVE: RpcServe<SessionPublisher, SessionHostProtocol>
 		if (message) session.withdrawQueuedMessage(message);
 		publisher.schedule();
 	},
+	setFastMode: async (publisher, enabled) =>
+		settle(publisher, Promise.resolve(publisher.session.setFastMode(enabled))),
+	sendCustomMessage: async (publisher, message, options) =>
+		settle(publisher, publisher.session.sendCustomMessage(message, options)),
 	setTodoPhases: (publisher, phases) => {
 		publisher.session.setTodoPhases(phases);
 		publisher.schedule();

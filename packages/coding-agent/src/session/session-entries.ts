@@ -284,6 +284,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	tools: string[];
 	/** Names in `tools` presented as `xd://` devices instead of top-level tools (absent from older files). */
 	mountedTools?: string[];
+	/** Exact parent todo row, when explicitly linked. */
+	row?: string;
 	/** Agent definition name (for example `scout` or `reviewer`). */
 	agent?: string;
 	/** Semantic model role declared by the agent, retained even after concrete model resolution. */

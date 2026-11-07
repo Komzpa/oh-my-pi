@@ -171,6 +171,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		const senderId = this.session.getAgentId?.() ?? undefined;
 		const messaging = registry && senderId ? { registry, senderId } : undefined;
 		const manager = this.session.asyncJobManager;
+		// A running task job is already listed on its TODO row (or under "unassigned workers") once a real plan exists.
+		const todoTracksTasks = (this.session.getTodoPhases?.() ?? []).some(phase => phase.tasks.length > 0);
 
 		if (messaging) {
 			const queued = takeQueuedMessages(messaging);
@@ -198,7 +200,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		// wait watched it) is exactly what this wait is for: return it now.
 		const undelivered = manager ? undeliveredJobs(manager, senderId) : [];
 		if (manager && undelivered.length > 0) {
-			return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], []);
+			return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], [], [], todoTracksTasks);
 		}
 		const serviceRunning = hasLiveOwnedService(this.session);
 		if (jobs.length === 0 && !serviceRunning) {
@@ -216,7 +218,16 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 				};
 			}
 		}
-		return this.#blockUntilWake({ jobs, manager, messaging, serviceRunning, idle, signal, onUpdate });
+		return this.#blockUntilWake({
+			jobs,
+			manager,
+			messaging,
+			serviceRunning,
+			idle,
+			signal,
+			onUpdate,
+			todoTracksTasks,
+		});
 	}
 
 	/**
@@ -231,8 +242,9 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		idle: IdleStreak | undefined;
 		signal: AbortSignal | undefined;
 		onUpdate: AgentToolUpdateCallback<CoordinationDetails> | undefined;
+		todoTracksTasks: boolean;
 	}): Promise<AgentToolResult<CoordinationDetails>> {
-		const { jobs, manager, messaging, serviceRunning, idle, signal, onUpdate } = args;
+		const { jobs, manager, messaging, serviceRunning, idle, signal, onUpdate, todoTracksTasks } = args;
 		const streak = idle && Date.now() - idle.endedAt < WAIT_LADDER_RESET_MS ? idle : undefined;
 		const rung = streak ? Math.min(streak.rung + 1, WAIT_LADDER_MS.length - 1) : 0;
 		const watchedIds = jobs.map(job => job.id);
@@ -295,7 +307,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		const emitProgress = () =>
 			onUpdate?.({
 				content: [{ type: "text", text: "" }],
-				details: { op: "wait", jobs: snapshotJobs(this.session, jobs) },
+				details: { op: "wait", jobs: snapshotJobs(this.session, jobs), todoTracksTasks },
 			});
 		const progressTimer = onUpdate && jobs.length > 0 ? setInterval(emitProgress, PROGRESS_INTERVAL_MS) : undefined;
 		if (jobs.length > 0) emitProgress();
@@ -360,7 +372,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 				throwIfAborted(signal);
 			}
 			if (manager && jobs.length > 0) {
-				const result = buildJobResult(this.session, manager, "wait", jobs, []);
+				const result = buildJobResult(this.session, manager, "wait", jobs, [], [], todoTracksTasks);
 				if (wake === "timeout") return this.#elapsed(result, rung, streak);
 				// A finished service is news even while every watched job still runs.
 				if (wake !== "service") return result;

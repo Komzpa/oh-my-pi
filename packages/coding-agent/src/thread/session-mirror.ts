@@ -52,7 +52,7 @@ import type {
 	SteerOptions,
 } from "../session/agent-session-types";
 import type { IdleMaintenanceOptions } from "../session/idle-maintenance";
-import type { CustomMessage } from "../session/messages";
+import type { CustomMessage, CustomMessagePayload } from "../session/messages";
 import type { ServingModel } from "../session/retry-fallback-chains";
 import type { ModelUsageEntry, SessionEntry, UsageStatistics } from "../session/session-entries";
 import type { AgentDefinition } from "../task/types";
@@ -253,6 +253,14 @@ export type SessionHostProtocol = {
 	 * never be delivered.
 	 */
 	popQueuedMessage: RpcMethod<[id: string], void>;
+	setFastMode: RpcMethod<[enabled: boolean], boolean>;
+	sendCustomMessage: RpcMethod<
+		[
+			message: CustomMessagePayload,
+			options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+		],
+		boolean
+	>;
 	setTodoPhases: RpcMethod<[phases: TodoPhase[]], void>;
 	appendCustomEntry: RpcMethod<[customType: string, data: unknown], void>;
 	appendModelUsage: RpcMethod<
@@ -297,6 +305,7 @@ export type SessionHostProtocol = {
  * local session or its mirror, and routes commands to the home thread).
  */
 export type SessionBridgeProtocol = {
+	setFastMode: RpcMethod<[session: AgentSessionHandle, enabled: boolean], boolean>;
 	opened: RpcMethod<[opened: SessionOpened], void>;
 	patch: RpcMethod<[key: string, patch: Partial<SessionMirrorState>], void>;
 	messages: RpcMethod<[key: string, delta: SessionMessagesDelta], void>;
@@ -317,6 +326,7 @@ export type SessionBridgeProtocol = {
 	entries: RpcMethod<[key: string, delta: SessionEntriesDelta], void>;
 	closed: RpcMethod<[key: string], void>;
 	read: RpcMethod<[session: AgentSessionHandle, fields: readonly PeerStateField[]], Partial<SessionMirrorState>>;
+	readTodoPhases: RpcMethod<[session: AgentSessionHandle], TodoPhase[]>;
 	readMessages: RpcMethod<[session: AgentSessionHandle], AgentMessage[]>;
 	hasQueuedIrcFrom: RpcMethod<[session: AgentSessionHandle, from: string], boolean>;
 	subscribe: RpcMethod<[session: AgentSessionHandle, listener: AgentSessionEventListener], () => void>;

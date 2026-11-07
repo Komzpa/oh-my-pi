@@ -222,6 +222,29 @@ describe("task per-item blocking split", () => {
 		expect(completionUpdates).toHaveLength(1);
 	});
 
+	it("internal delivery call gets the final verdict from an ordinary profile without changing sibling dispatch", async () => {
+		mockDiscovery();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options =>
+			makeResult(options.id ?? "?", options.agent.name, { output: '{"verdict":"clean","findings":[]}' }),
+		);
+		const manager = createManager();
+		const tool = await TaskTool.create(createSession({ manager }));
+		const result = await tool.executeBlocking("tc-delivery", {
+			context: "ctx",
+			tasks: [{ name: "RackCritic", agent: "task", task: "Review delivered rack controls." }],
+		} as TaskParams);
+		expect(result.details?.results[0]?.output).toBe('{"verdict":"clean","findings":[]}');
+		expect(result.details?.async).toBeUndefined();
+		expect(manager.getAllJobs()).toHaveLength(0);
+
+		const ordinary = await tool.execute("tc-ordinary", {
+			context: "ctx",
+			tasks: [{ name: "NextWorker", agent: "task", task: "Continue independent work." }],
+		} as TaskParams);
+		expect(ordinary.details?.async?.jobId).toBe("NextWorker");
+		await manager.getJob("NextWorker")!.promise;
+	});
+
 	it("keeps an all-blocking batch fully synchronous", async () => {
 		mockDiscovery();
 		const executed: string[] = [];

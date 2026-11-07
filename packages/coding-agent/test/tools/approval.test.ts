@@ -556,9 +556,11 @@ describe("tool-owned dynamic approval declarations", () => {
 			],
 		};
 
+		// Read-only inspection matched by an allow pattern keeps the `read` tier, which planning admission needs.
 		for (const command of ["git diff packages/coding-agent/src/tools/bash.ts", "git status", "git log --oneline"]) {
-			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
+			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "read", policy: "allow" });
 		}
+		expect(bashApproval("git checkout main", settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
 
 		expect(bashApproval("rm -rf build", settingsOverrides)).toEqual({
 			tier: "exec",
@@ -608,7 +610,7 @@ describe("tool-owned dynamic approval declarations", () => {
 		};
 
 		expect(bashApproval("git status", settingsOverrides)).toEqual({
-			tier: "write",
+			tier: "read",
 			policy: "allow",
 		});
 	});
@@ -666,6 +668,77 @@ describe("tool-owned dynamic approval declarations", () => {
 			reason: "Prompt required by bash pattern: curl *",
 		});
 	});
+
+	it("applies deny precedence over an earlier prompt rule across non-compound-eligible command segments", () => {
+		const settingsOverrides = {
+			"bash.patterns": [
+				{ match: "curl *", approval: "prompt" },
+				{ match: "rm -rf tmp/ok", approval: "prompt" },
+				{ match: "rm -rf *", approval: "deny" },
+			],
+		};
+
+		for (const command of [
+			"curl http://x -o out.txt; rm -rf tmp/victim",
+			"curl http://x -o out.txt | rm -rf tmp/victim",
+			"curl http://x -o out.txt && rm -rf tmp/victim",
+			"rm -rf tmp/ok; rm -rf tmp/victim",
+		]) {
+			expect(bashApproval(command, settingsOverrides)).toEqual({
+				tier: "exec",
+				override: true,
+				policy: "deny",
+				reason: "Blocked by bash pattern: rm -rf *",
+			});
+		}
+
+		// Within a single segment, first-match ordering still picks the earlier prompt over the broader deny.
+		expect(bashApproval("rm -rf tmp/ok; echo done", settingsOverrides)).toEqual({
+			tier: "exec",
+			override: true,
+			policy: "prompt",
+			reason: "Prompt required by bash pattern: rm -rf tmp/ok",
+		});
+	});
+
+	it("keeps operator grantAuthority deny and prompt rules when project settings override bash.patterns with allow", () => {
+		const operatorSettings = Settings.isolated({
+			"bash.patterns": [
+				{ match: "rm -rf *", approval: "deny" },
+				{ match: "git push *", approval: "prompt" },
+			],
+		});
+		const sessionSettings = Settings.isolated({
+			"bash.patterns": [{ match: "*", approval: "allow" }],
+		});
+		spyOn(sessionSettings, "grantAuthority").mockReturnValue(operatorSettings);
+		spyOn(sessionSettings, "getShellConfig").mockReturnValue({
+			shell: "/bin/bash",
+			args: ["-c"],
+			env: {},
+			prefix: undefined,
+		});
+		const bash = new BashTool({ settings: sessionSettings } as unknown as ConstructorParameters<typeof BashTool>[0]);
+		const approval = bash.approval;
+		if (typeof approval !== "function") throw new Error("Bash approval must be dynamic");
+
+		expect(approval({ command: "rm -rf /tmp/victim" })).toEqual({
+			tier: "exec",
+			override: true,
+			policy: "deny",
+			reason: "Blocked by bash pattern: rm -rf *",
+		});
+		expect(approval({ command: "git push origin main" })).toEqual({
+			tier: "exec",
+			override: true,
+			policy: "prompt",
+			reason: "Prompt required by bash pattern: git push *",
+		});
+		expect(approval({ command: "make build" })).toEqual({
+			tier: "write",
+			policy: "allow",
+		});
+	});
 	it("never auto-approves a command that only prefixes an allow pattern", () => {
 		const settingsOverrides = {
 			"bash.patterns": [{ match: "git *", approval: "allow" }],
@@ -698,7 +771,7 @@ describe("tool-owned dynamic approval declarations", () => {
 		}
 
 		for (const command of ["git status", "git status --short", "git  status", "git\tstatus"]) {
-			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "write", policy: "allow" });
+			expect(bashApproval(command, settingsOverrides)).toEqual({ tier: "read", policy: "allow" });
 		}
 	});
 
@@ -826,7 +899,8 @@ describe("tool-owned dynamic approval declarations", () => {
 				{ match: "rm *", approval: "prompt" },
 			],
 		});
-		const commands = ["cmp before after && pwd", "pwd && whoami"];
+		// `whoami` stands in for an unmatched, non-read-only command (allow-listed read-only ones are `read` tier).
+		const commands = ["cmp before after && whoami", "whoami && id"];
 		const cases: Array<[ApprovalMode, Record<string, "allow" | "prompt" | "deny">, "allow" | "prompt" | "deny"]> = [
 			["always-ask", {}, "prompt"],
 			["write", {}, "prompt"],
@@ -841,7 +915,7 @@ describe("tool-owned dynamic approval declarations", () => {
 				const args = { command };
 				expect(resolveApproval(bash, args, mode, userPolicy).policy).toBe(policy);
 				expect(resolveApproval(bash, args, mode, userPolicy).policy).toBe(
-					resolveApproval(bash, { command: "pwd" }, mode, userPolicy).policy,
+					resolveApproval(bash, { command: "whoami" }, mode, userPolicy).policy,
 				);
 				if (policy === "deny") {
 					expect(() => requiresApproval(bash, args, mode, userPolicy)).toThrow();

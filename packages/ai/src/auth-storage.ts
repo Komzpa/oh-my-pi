@@ -242,6 +242,7 @@ export class AuthStorage {
 
 /** The single-process backend: credential modules composed over one store. */
 class LocalAuthStorageBackend implements AuthStorageBackend {
+	readonly #providerDepletion = new Map<string, number | null>();
 	readonly #options: AuthStorageOptions;
 	readonly #overrides: KeyOverrides;
 	readonly #policies: AccountPolicies;
@@ -391,6 +392,7 @@ class LocalAuthStorageBackend implements AuthStorageBackend {
 				refresher,
 				overrides,
 				strategies,
+				providerDepletion: this.#providerDepletion,
 			}),
 			limits,
 			resets: new ResetCredits({ store, pool, oauth, usage, usageCache, blocks }),

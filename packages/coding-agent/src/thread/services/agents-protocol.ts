@@ -4,7 +4,7 @@
  */
 import type { IrcDeliveryReceipt, IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import type { IrcWaitFilter } from "../../irc/bus";
-import type { AdoptOptions } from "../../registry/agent-lifecycle";
+import type { AdoptOptions, AgentReleaseOptions } from "../../registry/agent-lifecycle";
 import type {
 	AgentHistorySummary,
 	AgentRef,
@@ -30,6 +30,7 @@ export const AGENT_SESSION_HOST_KIND = "agent-session-host";
 
 /** `AgentRegistryApi` (with its `awaits`) over the link. */
 export type AgentRegistryProtocol = {
+	setSubagentFastMode: RpcMethod<[parentId: string, id: string, enabled: boolean], boolean>;
 	register: RpcMethod<[input: RegisterInput], AgentRef>;
 	registerIfAvailable: RpcMethod<[input: RegisterInput, expected: AgentRef | null], AgentRef | undefined>;
 	reopen: RpcMethod<[id: string, expected: AgentRef], AgentRef | undefined>;
@@ -65,7 +66,7 @@ export type AgentLifecycleProtocol = {
 	isParking: RpcMethod<[id: string, expected?: AgentRefExpectation], boolean>;
 	park: RpcMethod<[id: string], void>;
 	ensureLive: RpcMethod<[id: string], AgentSessionHandle>;
-	release: RpcMethod<[id: string, expected?: AgentRefExpectation, options?: { tombstone?: boolean }], boolean>;
+	release: RpcMethod<[id: string, expected?: AgentRefExpectation, options?: AgentReleaseOptions], boolean>;
 };
 
 /** Result row of `IrcBusApi.unansweredSends`. */

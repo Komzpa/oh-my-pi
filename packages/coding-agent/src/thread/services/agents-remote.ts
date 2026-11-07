@@ -12,7 +12,12 @@
 import type { IrcDeliveryReceipt, IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentAwaitsApi } from "../../registry/agent-awaits";
-import type { AdoptOptions, AgentLifecycleApi, PersistedSubagentReviverFactory } from "../../registry/agent-lifecycle";
+import type {
+	AdoptOptions,
+	AgentLifecycleApi,
+	AgentReleaseOptions,
+	PersistedSubagentReviverFactory,
+} from "../../registry/agent-lifecycle";
 import type {
 	AgentHistorySummary,
 	AgentRef,
@@ -95,6 +100,10 @@ export class RemoteAgentRegistry implements AgentRegistryApi {
 		this.#remote = remote;
 		this.awaits = new RemoteAgentAwaits(remote);
 		this.#listeners = new ForwardedListeners("agent-registry", forward => remote.callSync("subscribe", forward));
+	}
+
+	setSubagentFastMode(parentId: string, id: string, enabled: boolean): Promise<boolean> {
+		return this.#remote.call("setSubagentFastMode", parentId, id, enabled);
 	}
 
 	register(input: RegisterInput): AgentRef {
@@ -215,7 +224,7 @@ export class RemoteAgentLifecycle implements AgentLifecycleApi {
 		return this.#remote.call("ensureLive", id);
 	}
 
-	release(id: string, expected?: AgentRefExpectation, options?: { tombstone?: boolean }): Promise<boolean> {
+	release(id: string, expected?: AgentRefExpectation, options?: AgentReleaseOptions): Promise<boolean> {
 		return this.#remote.call("release", id, expected, options);
 	}
 

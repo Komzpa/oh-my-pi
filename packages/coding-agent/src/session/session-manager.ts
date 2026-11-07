@@ -3708,6 +3708,7 @@ export class SessionManager {
 		perCallModelIdentity?: string;
 		perCallThinkingLevel?: ConfiguredThinkingLevel | null;
 		retryFallback?: RetryFallbackRole;
+		row?: string;
 		readOnly?: boolean;
 		outputSchema?: unknown;
 		outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -4779,6 +4780,7 @@ export interface PersistedSessionInit {
 	perCallModelIdentity?: string;
 	perCallThinkingLevel?: ConfiguredThinkingLevel | null;
 	retryFallback?: RetryFallbackRole;
+	row?: string;
 	readOnly?: boolean;
 	outputSchema?: unknown;
 	outputSchemaMode?: StructuredSubagentSchemaMode;
@@ -4811,6 +4813,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			perCallModelIdentity: entry.perCallModelIdentity,
 			perCallThinkingLevel: entry.perCallThinkingLevel,
 			retryFallback: entry.retryFallback,
+			row: entry.row,
 			readOnly: entry.readOnly,
 			outputSchema: entry.outputSchema,
 			outputSchemaMode: entry.outputSchemaMode,
