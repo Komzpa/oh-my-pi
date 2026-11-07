@@ -2251,8 +2251,6 @@ export interface TaskItem {
 	taskFile?: string;
 	/** Exact open todo content. */
 	row?: string;
-	/** Explicit absolute paths; narrows the row claim. */
-	resources?: string[];
 	/** Restrict this dispatch to read tools. */
 	readOnly?: boolean;
 	previewIntegration?: { task: string; kind: "refresh" | "integration" };
@@ -2268,6 +2266,8 @@ export interface TaskItem {
 	schemaMode?: "permissive" | "strict";
 	/** Eval-defined tool names exposed to this child. */
 	tools?: string[];
+	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
 }
@@ -2293,8 +2293,6 @@ export interface TaskParams {
 	taskFile?: string;
 	/** Exact open todo content. */
 	row?: string;
-	/** Explicit absolute paths; narrows the row claim. */
-	resources?: string[];
 	/** Restrict this dispatch to read tools. */
 	readOnly?: boolean;
 	/** How open-ended the work is (flat form); see {@link TaskItem.solutionSpace}. */
@@ -2309,6 +2307,8 @@ export interface TaskParams {
 	schemaMode?: "permissive" | "strict";
 	/** Eval-defined tool names exposed to the flat-form child. */
 	tools?: string[];
+	/** Declared exclusive checkout paths for the flat-form child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	/** Batch form (`task.batch`): one subagent per item. */
 	tasks?: TaskItem[];
 	/** Batch form: shared background prepended to every assignment; required by the batch schema. */
