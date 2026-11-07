@@ -24,3 +24,19 @@ test("missing calibration or unresolved release gates cannot invent an empirical
  expect(note).toContain("point unknown");
  expect(note).toContain("forecast conditional on unresolved work");
 });
+
+
+test("driver names only the final critical row with a bounded title and owner", () => {
+ const title = "Final delivery " + "acceptance ".repeat(30);
+ const plan = forecastTodoPlan([{ name: "delivery", tasks: [
+  { content: "Prior dependency", status: "pending", schedule: { dependencies: [], resources: [], estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, updatedAt: now, confidence: "medium", basis: "declared residual" } } },
+  { content: title, status: "pending", schedule: { resources: [], owner: "Closer", dependencies: ["Prior dependency"], estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, updatedAt: now, confidence: "medium", basis: "declared residual" } } },
+ ] }], { now });
+ const note = renderCurrentSetForecast(plan, anchor, now);
+ const driver = note.split("Driver: ")[1].split("; empirical allowance")[0];
+ expect(driver).toContain("Final delivery");
+ expect(driver).toEndWith(" (owner Closer)");
+ expect(driver.replace(" (owner Closer)", "").length).toBeLessThanOrEqual(80);
+ expect(driver).not.toContain("Prior dependency");
+ expect(driver).not.toContain(" → ");
+});

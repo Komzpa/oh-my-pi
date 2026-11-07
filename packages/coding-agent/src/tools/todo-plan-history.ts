@@ -60,7 +60,7 @@ export function settleTodoPlanRecord(
 const caches = new WeakMap<object, { leaf: unknown; revision?: number; records: Map<string, TodoPlanHistoryRecord> }>();
 const keyOf = (record: TodoPlanHistoryRecord): string =>
 	`${record.prediction.sessionId}:${Math.floor(record.prediction.originAt / 3_600_000)}`;
-function isHistory(value: unknown): value is TodoPlanHistoryRecord {
+export function isTodoPlanHistoryRecord(value: unknown): value is TodoPlanHistoryRecord {
 	if (!value || typeof value !== "object") return false;
 	const record = value as TodoPlanHistoryRecord;
 	const p = record.prediction;
@@ -97,7 +97,7 @@ export function readTodoPlanHistory(
 			extendsCache = true;
 			break;
 		}
-		if (entry.type === "custom" && isHistory(entry.data)) fresh.push(structuredClone(entry.data));
+		if (entry.type === "custom" && isTodoPlanHistoryRecord(entry.data)) fresh.push(structuredClone(entry.data));
 	}
 	const records = extendsCache ? new Map(cached!.records) : new Map<string, TodoPlanHistoryRecord>();
 	for (const record of fresh.reverse()) {
