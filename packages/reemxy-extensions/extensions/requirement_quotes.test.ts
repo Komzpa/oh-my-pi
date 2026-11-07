@@ -1,6 +1,7 @@
 // @ts-nocheck -- minimal durable journal fixture.
 import { expect, test } from "bun:test";
-import { prepareRequirementBrief, rowRequirementQuotes, requirementConflict } from "./requirement_quotes";
+import { Type } from "@sinclair/typebox";
+import { prepareRequirementBrief, rowRequirementQuotes, requirementConflict, installRequirementResolution } from "./requirement_quotes";
 function fixture() {
 	const row = {
 		content: "Edit PRD levels",
@@ -46,18 +47,21 @@ test("PRD dispatch carries original solar quote and refuses a row without its li
 		task: "Fix button",
 	});
 });
-test("conflicting product contract cannot redispatch through prose; only exact quote/conflict-bound resolution releases it", () => {
+test("conflicting product contract cannot redispatch through prose; only exact quote/conflict-bound resolution releases it", async () => {
 	const h = fixture();
 	h.row.blocker = "BLOCKED_BY_CONFLICTING_PRODUCT_CONTRACT: 1 rack over 4 levels";
 	h.row.schedule.progress = { evidence: "I chose to hide conflicts" };
 	expect(prepareRequirementBrief(h.row, h.ctx, "retry").refusal).toContain("unresolved product contract conflict");
-	const resolution = {
-		row: h.row.content,
-		conflict: requirementConflict(h.row),
-		quotes: JSON.stringify(rowRequirementQuotes(h.ctx, h.row.content)),
-		resolution: "Show physical infeasibility; ignore solar artefacts",
-	};
-	h.journal.push({ type: "custom", customType: "requirement-contract-resolution", data: resolution });
+	let tool;
+	installRequirementResolution({ typebox: { Type }, registerTool: value => tool = value,
+		appendEntry: (customType, data) => h.journal.push({ type: "custom", customType, data }) });
+	h.ctx.sessionManager.getHeader = () => ({});
+	h.ctx.getTodoSnapshot = () => [{ tasks: [h.row] }];
+	const params = { row: h.row.content, quoteIds: ["R1"], resolution: "Show physical infeasibility; ignore solar artefacts" };
+	await expect(tool.execute("bad", { ...params, quoteIds: ["invented"] }, undefined, undefined, h.ctx)).rejects.toThrow();
+	await tool.execute("resolve", params, undefined, undefined, h.ctx);
+	expect(prepareRequirementBrief(h.row, h.ctx, "retry").refusal).toBeUndefined();
+	h.journal.push({ type: "custom", customType: "requirement-contract-resolution", data: { row: "Another row" } });
 	expect(prepareRequirementBrief(h.row, h.ctx, "retry").refusal).toBeUndefined();
 	h.journal[0].data.requirements[0].rawText = "physical infeasibility MUST be a conflict";
 	expect(prepareRequirementBrief(h.row, h.ctx, "retry").refusal).toContain("unresolved product contract conflict");

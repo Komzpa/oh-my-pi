@@ -2400,7 +2400,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const deliveryKey = (row) => JSON.stringify([row.content, row.schedule?.executor?.workerId, row.schedule?.executor?.startedAt, row.schedule?.executor?.finishedAt]);
   const checkDeliveries = (ctx: ExtensionContext) => {
     if (!isMain(ctx)) return;
-    if (!singleWriterLane) void checkRowAudits(ctx).catch(() => {});
+    if (!singleWriterLane) void checkRowAudits(ctx, { recordRequirementDiff: data => pi.appendEntry("requirement-diff-audit", data) }).catch(() => {});
     const previews = previewRecords(ctx);
     for (const phase of todoPhases(ctx)) for (const row of phase.tasks) {
       if (row.schedule?.deliveryCritic || !priorDeliveries.has(deliveryKey(row)))

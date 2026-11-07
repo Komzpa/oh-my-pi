@@ -227,6 +227,10 @@ export interface RowAuditOptions {
 	resolveAuditor?: () => Promise<string | undefined>;
 	requirementsFor?: (row: string) => string[];
 	fileExists?: (path: string) => boolean;
+	recordRequirementDiff?: (data: {
+		row: string; head: string; delivery: string; quotes: RequirementQuote[];
+		diffs: RowAuditVerdict["requirementDiffs"]; verdict: string; findings: string; at: number;
+	}) => void;
 }
 
 /** In-flight batches survive extension reloads in this process; a new process relaunches each once. */
@@ -377,7 +381,13 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 						if ((audit.attempts ?? 1) < 2) retry = true;
 						continue;
 					}
-					const settled = settleRowAuditVerdict(verdict, fileExists, editsRequirements(row) ? rowRequirementQuotes(ctx, row.content) : undefined);
+					const requirementEdit = editsRequirements(row) || verdict.requirementDiffs !== undefined;
+					const settled = settleRowAuditVerdict(verdict, fileExists, requirementEdit ? rowRequirementQuotes(ctx, row.content) : undefined);
+					if (requirementEdit) options.recordRequirementDiff?.({
+						row: row.content, head: batch.head, delivery: audit.delivery,
+						quotes: rowRequirementQuotes(ctx, row.content),
+						diffs: verdict.requirementDiffs ?? [], ...settled, at,
+					});
 					const record: TodoRowAudit = { ...audit, verdict: settled.verdict, findings: settled.findings, at };
 					if (settled.verdict === "inconclusive") {
 						// A second inconclusive result returns the findings to staffing through todoRowAfterWorker.

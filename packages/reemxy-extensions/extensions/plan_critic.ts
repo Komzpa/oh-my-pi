@@ -205,9 +205,17 @@ export default function planCritic(pi: ExtensionAPI): void {
 		inFlight = true;
 		const token = generation;
 		try {
+			const requirementAudits = selectBranchEntries(ctx.sessionManager,
+				metadata => metadata.type === "custom" && metadata.customType === "requirement-diff-audit")
+				.flatMap(entry => "data" in entry && object(entry.data) ? [entry.data] : []);
 			const task = prompt.render(brief, {
 				digest: compactTrajectoryDigest(digest),
-				requirementAuthority: JSON.stringify(current.flatMap(phase => phase.tasks).map(row => ({ row: row.content, quotes: rowRequirementQuotes(ctx, row.content), conflict: requirementConflict(row), evidence: row.schedule?.progress?.evidence }))),
+				requirementAuthority: JSON.stringify(current.flatMap(phase => phase.tasks).map(row => ({
+					row: row.content, quotes: rowRequirementQuotes(ctx, row.content), conflict: requirementConflict(row),
+					evidence: row.schedule?.progress?.evidence,
+					diffAudit: requirementAudits.findLast(data => data.row === row.content &&
+						data.head === row.schedule?.audit?.head && data.delivery === row.schedule?.audit?.delivery),
+				}))),
 				assessment: JSON.stringify({
 					converging: analyzeTrajectory(digest).converging,
 					criticalPathBlocker: analyzeTrajectory(digest).criticalPathBlocker,

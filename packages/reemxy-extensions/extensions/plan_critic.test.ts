@@ -93,6 +93,25 @@ function harness(saved: Array<Record<string, unknown>> = [], response: PlanVerdi
 const settle = async () => {
 	await Bun.sleep(0);
 };
+
+test("critic receives the current requirement diff with its exact quote, excluding another revision's receipt", async () => {
+	const row = "Edit PRD levels";
+	const saved = [
+		{ type: "custom", customType: "requirements_ledger", data: { requirements: [{ id: "R1", rows: [row], rawText: "solar should not block levels", text: "levels never refused" }] } },
+		{ type: "custom", customType: "requirement-diff-audit", data: { row, head: "current", delivery: "d1", diffs: [{ before: "Solar blocks levels", after: "Levels never refused", widening: true }] } },
+		{ type: "custom", customType: "requirement-diff-audit", data: { row, head: "stale", delivery: "d0", diffs: [{ after: "STALE DIFF" }] } },
+	];
+	const h = harness(saved, { ...verdict, converging: true, actions: [] });
+	h.set([{ name: "work", tasks: [{ content: row, status: "pending", schedule: { audit: {
+		head: "current", delivery: "d1", repoPath: "/p", startedAt: 1, verdict: "fail", agent: "qa-auditor", at: 2,
+	} } }] }]);
+	h.event("session_start");
+	await settle();
+	const input = h.run.mock.calls[0]![0];
+	expect(input).toContain("solar should not block levels");
+	expect(input).toContain("Levels never refused");
+	expect(input).not.toContain("STALE DIFF");
+});
 afterEach(() => vi.restoreAllMocks());
 describe("plan critic runtime binding", () => {
 	test("successful dependency mutation closes an action; prose and failed tools cannot", async () => {
