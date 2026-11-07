@@ -9,6 +9,24 @@ interface Span {
 	wallMs: number;
 	/** Synchronous prefix only; excludes uninstrumented continuations. */
 	syncPrefixMs: number;
+	startOffsetMs: number;
+	endOffsetMs: number;
+}
+interface Boundary {
+	name: string;
+	kind: "start" | "end";
+	offsetMs: number;
+	token: object;
+}
+interface Gap {
+	startOffsetMs: number;
+	wallMs: number;
+	before: string;
+	after: string;
+}
+interface LagSample {
+	startOffsetMs: number;
+	driftMs: number;
 }
 interface Trace {
 	spans: Map<string, Span>;
@@ -17,6 +35,15 @@ interface Trace {
 	metrics: Record<string, number>;
 	overflow: number;
 	closed: boolean;
+	boundary: Boundary;
+	boundaryGaps: Gap[];
+	boundaryGapMs: number;
+	leafIntervalMs: number;
+	gapCount: number;
+	lagSamples: LagSample[];
+	lagCount: number;
+	lagDeadline: number;
+	lagTimer?: Timer;
 }
 interface Scope {
 	trace?: Trace;
@@ -47,6 +74,47 @@ setLoopPhaseFallback((start, end) => {
 });
 const maxSpans = 256;
 const maxName = 160;
+// Boundary intervals partition wall time. A direct start/end pair is inside a
+// leaf span; every other interval is a boundary gap. Gaps can still be inside
+// an inclusive async span: they do not prove CPU work or an uninstrumented await.
+const maxSamples = 16;
+const lagIntervalMs = 100;
+function boundary(trace: Trace, name: string, kind: "start" | "end", token: object, now: number): void {
+	const previous = trace.boundary;
+	const offsetMs = now - trace.started;
+	const wallMs = offsetMs - previous.offsetMs;
+	if (previous.kind === "start" && kind === "end" && previous.token === token) {
+		trace.leafIntervalMs += wallMs;
+	} else if (wallMs > 0) {
+		trace.boundaryGapMs += wallMs;
+		trace.gapCount++;
+		trace.boundaryGaps.push({
+			startOffsetMs: previous.offsetMs,
+			wallMs,
+			before: `${previous.name}:${previous.kind}`,
+			after: `${name}:${kind}`,
+		});
+		trace.boundaryGaps.sort((a, b) => b.wallMs - a.wallMs);
+		trace.boundaryGaps.length = Math.min(trace.boundaryGaps.length, maxSamples);
+	}
+	trace.boundary = { name, kind, token, offsetMs };
+}
+function sampleLag(trace: Trace, now: number): void {
+	if (now < trace.lagDeadline) return;
+	trace.lagCount++;
+	trace.lagSamples.push({ startOffsetMs: trace.lagDeadline - trace.started, driftMs: now - trace.lagDeadline });
+	trace.lagSamples.sort((a, b) => b.driftMs - a.driftMs);
+	trace.lagSamples.length = Math.min(trace.lagSamples.length, maxSamples);
+}
+function armLagProbe(trace: Trace): void {
+	trace.lagDeadline = performance.now() + lagIntervalMs;
+	trace.lagTimer = setTimeout(() => {
+		if (trace.closed) return;
+		sampleLag(trace, performance.now());
+		armLagProbe(trace);
+	}, lagIntervalMs);
+	trace.lagTimer.unref();
+}
 /** Names only the synchronous prefix: no process-global label survives an await. */
 export async function withAsyncLoopPhase<T>(label: string, fn: () => Promise<T>): Promise<T> {
 	return withLoopPhase(label.slice(0, maxName), fn);
@@ -56,6 +124,7 @@ export async function withAsyncLoopPhase<T>(label: string, fn: () => Promise<T>)
 export async function runLaunchTrace<T>(identity: Record<string, string | number>, fn: () => Promise<T>): Promise<T> {
 	const parent = storage.getStore()?.trace;
 	if (parent && !parent.closed) return fn();
+	const started = performance.now();
 	const trace: Trace = {
 		spans: new Map(),
 		identity: Object.fromEntries(
@@ -63,11 +132,20 @@ export async function runLaunchTrace<T>(identity: Record<string, string | number
 				.slice(0, 8)
 				.map(([key, value]) => [key.slice(0, 40), typeof value === "string" ? value.slice(0, maxName) : value]),
 		),
-		started: performance.now(),
+		started,
 		metrics: Object.create(null) as Record<string, number>,
 		overflow: 0,
 		closed: false,
+		boundary: { name: "launch", kind: "start", offsetMs: 0, token: {} },
+		boundaryGaps: [],
+		boundaryGapMs: 0,
+		leafIntervalMs: 0,
+		gapCount: 0,
+		lagSamples: [],
+		lagCount: 0,
+		lagDeadline: started + lagIntervalMs,
 	};
+	armLagProbe(trace);
 	return storage.run({ trace }, async () => {
 		let failed = true;
 		try {
@@ -89,6 +167,9 @@ export function finishLaunchTrace(failed = false): void {
 	if (!trace || trace.closed) return;
 	trace.closed = true;
 	const ended = performance.now();
+	clearTimeout(trace.lagTimer);
+	sampleLag(trace, ended);
+	boundary(trace, "launch", "end", trace, ended);
 	const totalMs = ended - trace.started;
 	for (const phase of pendingPhases) {
 		if (phase.trace !== trace) continue;
@@ -104,6 +185,11 @@ export function finishLaunchTrace(failed = false): void {
 		failed,
 		unit: "ms",
 		spans,
+		boundaryGaps: trace.boundaryGaps,
+		boundaryGapMs: trace.boundaryGapMs,
+		leafIntervalMs: trace.leafIntervalMs,
+		gapCount: trace.gapCount,
+		loopLag: { intervalMs: lagIntervalMs, count: trace.lagCount, samples: trace.lagSamples },
 		metrics: trace.metrics,
 		overflow: trace.overflow,
 	});
@@ -116,9 +202,11 @@ export function finishLaunchTrace(failed = false): void {
 		});
 }
 
-function recordSpan(trace: Trace, name: string, wallMs: number, syncPrefixMs: number): void {
+function recordSpan(trace: Trace, name: string, wallMs: number, syncPrefixMs: number, started: number): void {
 	const previous = trace.spans.get(name);
 	if (previous) {
+		previous.startOffsetMs = Math.min(previous.startOffsetMs, started - trace.started);
+		previous.endOffsetMs = Math.max(previous.endOffsetMs, started + wallMs - trace.started);
 		previous.count++;
 		previous.wallMs += wallMs;
 		previous.syncPrefixMs += syncPrefixMs;
@@ -133,7 +221,14 @@ function recordSpan(trace: Trace, name: string, wallMs: number, syncPrefixMs: nu
 		if (!smallest || smallest.wallMs >= wallMs) return;
 		trace.spans.delete(smallest.name);
 	}
-	trace.spans.set(name, { name, count: 1, wallMs, syncPrefixMs });
+	trace.spans.set(name, {
+		name,
+		count: 1,
+		wallMs,
+		syncPrefixMs,
+		startOffsetMs: started - trace.started,
+		endOffsetMs: started + wallMs - trace.started,
+	});
 }
 
 /** Wall duration, inclusive of nested steps. `.wait` labels identify explicit waits. */
@@ -142,6 +237,8 @@ export function launchStep<T, A extends unknown[]>(name: string, fn: (...args: A
 	if (!trace || trace.closed) return withLoopPhase(name.slice(0, maxName), () => fn(...args));
 	const label = name.slice(0, maxName);
 	const started = performance.now();
+	const token = {};
+	boundary(trace, label, "start", token, started);
 	let syncPrefixMs = 0;
 	const finish = () => {
 		const ended = performance.now();
@@ -151,7 +248,8 @@ export function launchStep<T, A extends unknown[]>(name: string, fn: (...args: A
 			completedPhases.push(phase);
 		}
 		if (trace.closed) return;
-		recordSpan(trace, label, ended - started, syncPrefixMs);
+		boundary(trace, label, "end", token, ended);
+		recordSpan(trace, label, ended - started, syncPrefixMs, started);
 	};
 	const depth = (storage.getStore()?.depth ?? 0) + 1;
 	const phase: PendingPhase = { trace, name: label, start: started, end: Number.POSITIVE_INFINITY, depth };
@@ -194,13 +292,16 @@ export function launchScope(name: string): Disposable {
 	const trace = storage.getStore()?.trace;
 	const label = name.slice(0, maxName);
 	const started = trace && !trace.closed ? performance.now() : undefined;
+	const token = {};
+	if (trace && !trace.closed && started !== undefined) boundary(trace, label, "start", token, started);
 	pushLoopPhase(label);
 	return {
 		[Symbol.dispose]() {
 			popLoopPhase();
 			if (trace && !trace.closed && started !== undefined) {
 				const elapsed = performance.now() - started;
-				recordSpan(trace, label, elapsed, elapsed);
+				boundary(trace, label, "end", token, started + elapsed);
+				recordSpan(trace, label, elapsed, elapsed, started);
 			}
 		},
 	};
