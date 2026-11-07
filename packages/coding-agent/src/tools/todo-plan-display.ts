@@ -1,13 +1,8 @@
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { TodoDisplayRequirement } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import type { TodoArchiveSummary, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import { getLatestTodoArchiveFromEntries, getTodoArchiveSummaryFromEntries } from "./todo";
-import {
-	type BranchSource,
-	selectBranchEntries,
-	isTodoSelectionEntryMetadata,
-	selectLatestBranchEntry,
-} from "../session/branch-selection";
+import { readTodoArchiveState } from "./todo";
+import { type BranchSource, isTodoSelectionEntryMetadata, selectLatestBranchEntry } from "../session/branch-selection";
 import type { SessionEntry } from "../session/session-entries";
 
 /** Read the ledger's durable wire projection without depending on an extension implementation. */
@@ -87,19 +82,10 @@ interface DisplayArchive {
 	phases: TodoPhase[];
 	summary: TodoArchiveSummary | undefined;
 }
-const displayArchives = new WeakMap<DisplayLedgerSource, DisplayArchive>();
 
-/** Archive edits are historical; reconstruct them only after the TODO state changes. */
+/** Use the archive fold already maintained by resume and native todo operations. */
 export function readTodoDisplayArchive(manager: DisplayLedgerSource): DisplayArchive {
 	const latest = selectLatestBranchEntry(manager, isTodoSelectionEntryMetadata)?.id;
-	const cached = displayArchives.get(manager);
-	if (cached && cached.latest === latest) return cached;
-	const entries = selectBranchEntries(manager, isTodoSelectionEntryMetadata);
-	const result = {
-		latest,
-		phases: getLatestTodoArchiveFromEntries(entries),
-		summary: getTodoArchiveSummaryFromEntries(entries),
-	};
-	displayArchives.set(manager, result);
-	return result;
+	const archive = readTodoArchiveState(manager);
+	return { latest, phases: archive.phases, summary: archive.summary };
 }

@@ -11,7 +11,7 @@ import contextNotesDescription from "../prompts/tools/context-notes.md" with { t
 import contextNotesTextDescription from "../prompts/tools/context-notes-text.md" with { type: "text" };
 import newContextDescription from "../prompts/tools/new-context.md" with { type: "text" };
 import { CONTEXT_NOTES_ENTRY_TYPE, type ContextNotesEntry, getContextNotes } from "../session/context-notes";
-import { selectBranchEntries, selectLatestBranchEntry } from "../session/branch-selection";
+import { selectBranchNewestFirst, selectLatestBranchEntry } from "../session/branch-selection";
 import { cfgCompactionExperimentalContextManagement } from "../session/context-settings";
 import type { ToolSession } from ".";
 import { throwIfAborted } from "./tool-errors";
@@ -115,12 +115,15 @@ export class ContextNotesTool implements AgentTool<typeof contextNotesSchema, Co
 		}
 		if (action === "read") {
 			// Read never mutates, whatever placeholder text a model may also send.
-			const notes = getContextNotes(
-				selectBranchEntries(
-					manager,
-					metadata => metadata.type === "reset_boundary" || metadata.customType === CONTEXT_NOTES_ENTRY_TYPE,
-				),
-			);
+			let notes;
+			for (const entry of selectBranchNewestFirst(
+				manager,
+				metadata => metadata.type === "reset_boundary" || metadata.customType === CONTEXT_NOTES_ENTRY_TYPE,
+			)) {
+				if (entry.type === "reset_boundary") break;
+				notes = getContextNotes([entry]);
+				if (notes) break;
+			}
 			return {
 				content: [{ type: "text", text: notes?.text ?? "No context notes are stored for this session branch." }],
 				details: notes ? { entryId: notes.entryId, text: notes.text } : { entryId: undefined, text: "" },
