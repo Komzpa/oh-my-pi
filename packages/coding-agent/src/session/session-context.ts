@@ -349,7 +349,7 @@ export function sessionContextEntryMetadata(entry: SessionEntry): SessionContext
 		messageRole: entry.type === "message" ? entry.message.role : undefined,
 		toolName: entry.type === "message" && entry.message.role === "toolResult" ? entry.message.toolName : undefined,
 		userRequest: isRolloverRequestEntry(entry),
-		customType: entry.type === "custom" ? entry.customType : undefined,
+		customType: entry.type === "custom" || entry.type === "custom_message" ? entry.customType : undefined,
 		assistantProvider:
 			entry.type === "message" && entry.message.role === "assistant" ? entry.message.provider : undefined,
 		assistantTimestamp:
