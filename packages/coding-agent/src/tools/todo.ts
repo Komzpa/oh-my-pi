@@ -1,5 +1,10 @@
 import { patchTodoSchedule } from "../session/todo-schedule-patch";
-import { selectBranchEntries, isTodoSelectionEntryMetadata } from "../session/branch-selection";
+import {
+	selectBranchEntries,
+	selectBranchNewestFirst,
+	isTodoSelectionEntryMetadata,
+	type BranchSource,
+} from "../session/branch-selection";
 import type {
 	TodoArchivePersistedEdit,
 	TodoArchiveSummary,
@@ -554,6 +559,17 @@ export { isTodoSelectionEntryMetadata } from "../session/branch-selection";
 
 function getTodoBranchEntries(manager: ToolSession["sessionManager"]): SessionEntry[] {
 	return manager ? selectBranchEntries(manager, isTodoSelectionEntryMetadata) : [];
+}
+
+/** Latest full live snapshot and its compact edit/HUD tail; archives use the full history reader. */
+export function getLiveTodoBranchEntries(manager: BranchSource | undefined): SessionEntry[] {
+	if (!manager) return [];
+	const entries: SessionEntry[] = [];
+	for (const entry of selectBranchNewestFirst(manager, isTodoSelectionEntryMetadata)) {
+		entries.push(entry);
+		if (canonicalTodoPhases(entry) !== undefined) break;
+	}
+	return entries.reverse();
 }
 
 export function shouldPersistTodoFullSnapshotCheckpoint(entriesNewestFirst: Iterable<SessionEntry>): boolean {

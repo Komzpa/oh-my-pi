@@ -1,4 +1,3 @@
-import { selectBranchEntries } from "../../session/branch-selection";
 import type { TodoPersistedEdit, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	applyOpsToPhases,
@@ -10,7 +9,7 @@ import {
 	phasesToMarkdown,
 	resolveTodoMarkdownPath,
 	USER_TODO_EDIT_CUSTOM_TYPE,
-	isTodoSelectionEntryMetadata,
+	getLiveTodoBranchEntries,
 } from "../../tools/todo";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime } from "../types";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./parse";
@@ -96,7 +95,7 @@ function findTaskFuzzy(phases: TodoPhase[], query: string): TodoTaskMatch | unde
 }
 
 function currentPhases(runtime: SlashCommandRuntime): TodoPhase[] {
-	const entries = selectBranchEntries(runtime.sessionManager, isTodoSelectionEntryMetadata);
+	const entries = getLiveTodoBranchEntries(runtime.sessionManager);
 	// A saved snapshot with zero live phases is authoritative (all rows
 	// archived); only an entirely absent transcript falls back to session state.
 	if (getLatestTodoSnapshotIdentity(entries) !== undefined) return getLatestTodoPhasesFromEntries(entries);

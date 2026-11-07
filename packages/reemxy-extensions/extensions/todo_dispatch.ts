@@ -10,7 +10,7 @@ import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
-import { getLatestTodoArchiveFromEntries, withTodoArchive, isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { getLiveTodoBranchEntries, getLatestTodoArchiveFromEntries, withTodoArchive, isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -73,17 +73,6 @@ export function dispatchTodoArchive(ctx: ExtensionContext): TodoScheduleInput {
   return phases;
 }
 
-function latestTodoStateEntries(source: BranchSource) {
-  const entries = [];
-  for (const entry of selectBranchNewestFirst(source, isTodoSelectionEntryMetadata)) {
-    entries.push(entry);
-    if (entry.type === "custom" && Array.isArray(entry.data?.phases)) break;
-    if (entry.type === "message" && entry.message.role === "toolResult" && !entry.message.isError
-      && entry.message.details?.op !== "view" && Array.isArray(entry.message.details?.phases)) break;
-  }
-  return entries.reverse();
-}
-
 // Only these synthetic arrays carry a native immutable owner snapshot. Durable
 // entries and mutable legacy getter results must still go through host replay.
 const liveTodoEntrySnapshots = new WeakMap<object, readonly TodoPhase[]>();
@@ -101,7 +90,7 @@ export function todoStateEntries(ctx: ExtensionContext, pending: unknown[] = [])
     if (snapshot !== undefined && pending.length === 0) liveTodoEntrySnapshots.set(entries, snapshot);
     return entries;
   }
-  const branch = latestTodoStateEntries(ctx.sessionManager);
+  const branch = getLiveTodoBranchEntries(ctx.sessionManager);
   return pending.length ? [...branch, ...pending] : branch;
 }
 
@@ -117,7 +106,7 @@ export function dispatchStateEntries(ctx: ExtensionContext, pending: unknown[] =
     if (snapshot !== undefined && pending.length === 0) liveTodoEntrySnapshots.set(entries, snapshot);
     return entries;
   }
-  return [...branch, ...latestTodoStateEntries(ctx.sessionManager), ...pending];
+  return [...branch, ...getLiveTodoBranchEntries(ctx.sessionManager), ...pending];
 }
 
 type DispatchForecastApi = Pick<
@@ -2845,6 +2834,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return promise;
   };
   const load = (ctx: ExtensionContext) => {
+    // Reconstruct historical archives during resume, before interactive dispatch/render reads.
+    dispatchTodoArchive(ctx);
     resetDeliveryCriticTimers(ctx);
     priorDeliveries.clear();
     for (const phase of todoPhases(ctx)) for (const row of phase.tasks)

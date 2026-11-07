@@ -5,6 +5,7 @@
 ### Fixed
 
 - Replace pending gate notices by subject so busy leads receive only the latest staffing and ETA state ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Keep TODO dispatch responsive in long sessions and load archived rows during resume ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep restored row owners staffed, withdraw stale restart staffing warnings, and refuse duplicate row dispatches ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Keep plan notifications responsive by updating only changed TODO rows ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
