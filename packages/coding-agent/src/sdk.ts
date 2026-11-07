@@ -4977,6 +4977,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// A stray sloppy payload in plain text becomes a real edit tool call so
 			// the normal pipeline (validation, approval, rendering) executes it.
 			transformAssistantMessage: async (message, signal) => {
+				session?.refreshAssistantVisibility();
 				if (cfgEditRecoverInlineEdits.get(settings)) {
 					// The live tool is an ExtensionToolWrapper whose proxy forwards the
 					// EditTool `mode` getter; a bridge/custom edit tool without a sloppy
@@ -4999,6 +5000,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					const synced = syncOpenAIResponsesHistoryTexts(message.providerPayload, texts);
 					message.content = content;
 					if (synced) message.providerPayload = synced;
+				}
+				if (session?.silentAssistantTurn) {
+					message.content = message.content.map(block =>
+						block.type === "text" ? { ...block, text: "", textSignature: undefined } : block,
+					);
 				}
 			},
 			// Recovery only fires on turns without tool calls and appends a new one,

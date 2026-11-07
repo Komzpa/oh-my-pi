@@ -243,6 +243,8 @@
 
 ### Fixed
 
+- Dispatcher wakes keep unchanged status silent and demand concrete action on stalled plans ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Keep original TODO estimates, start clocks and cumulative re-estimate history across worker changes while giving each owner a fresh recovery budget. ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Show the failing extension hook and source property in task-call errors ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
