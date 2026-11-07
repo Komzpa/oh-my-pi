@@ -2457,6 +2457,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	readonly tokenRate: TokenRateMeter;
 
 	constructor(config: AgentSessionConfig) {
+		using _constructionPhase = launchScope("session.construct");
 		this.agent = config.agent;
 		this.agent.requireQueuedMessagePersistenceAcknowledgement();
 		this.#detachRestartDrainBeforeModelCall = this.agent.addBeforeModelCall(
