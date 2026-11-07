@@ -1,3 +1,5 @@
+import { createSkippedToolResult, steeringQueueState } from "../../agent/src/agent-loop";
+import type { AgentMessage } from "../../agent/src/types";
 import { Type } from "@sinclair/typebox";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import planCritic, { chiefCriticFixes } from "./plan_critic";
@@ -19,6 +21,7 @@ export const gateScenarioIds = [
 	"harnessrole",
 	"compactloop",
 	"composite-deadlock",
+	"advisoryskip",
 ];
 export async function leadGateScenarios(): Promise<LeadInstructionScenario[]> {
 	const now = Date.now();
@@ -100,6 +103,7 @@ export async function leadGateScenarios(): Promise<LeadInstructionScenario[]> {
 	if (criticFixes[0]?.severity !== -1)
 		throw new Error("Unanswered critic action did not become first-priority after two turns");
 	for (const id of gateScenarioIds) {
+		if (id === "advisoryskip") continue;
 		const blocked = id === "spawnconflict" || id === "composite-deadlock";
 		const auditor = { ...structuredClone(holder), schedule: { ...holder.schedule, readOnly: !blocked } };
 		const expected = blocked
@@ -167,5 +171,30 @@ export async function leadGateScenarios(): Promise<LeadInstructionScenario[]> {
 			scenario.context += `\n\n${chiefFixNow({ main: true, defects: [{ row: row.content, action: "Staff", severity: 3 }, ...(id === "criticstale" ? criticFixes.map(fix => ({ severity: 2, ...fix })) : [])] }, true)}`;
 		output.push(scenario);
 	}
+	const advisory = steeringQueueState([
+		{
+			role: "custom",
+			customType: "requirements-gate-notice",
+			content:
+				'Classify R1 with todo op="classify", id="R1", classification="not-a-requirement", reason="one-shot read-only probe".',
+			display: false,
+			attribution: "agent",
+			timestamp: now,
+		} as AgentMessage,
+	]);
+	const skipped = createSkippedToolResult(advisory.source, false, "wait", advisory.advisory);
+	const scenario = await capture({
+		id: "advisoryskip",
+		row: structuredClone(row),
+		state: "working",
+		workers: [{ id: "SpawnProbe" }],
+		expected: { tool: "todo", args: { op: "classify", id: "R1", classification: "not-a-requirement" } },
+	});
+	scenario.context = `One-shot read-only SpawnProbe is already running. It must return pwd and HEAD. wait returned:\n${skipped.content
+		.filter(block => block.type === "text")
+		.map(block => block.text)
+		.join("\n")}\nHandle the named advisory, then retry wait for SpawnProbe and print its result.`;
+	scenario.notices = [scenario.context];
+	output.push(scenario);
 	return output;
 }

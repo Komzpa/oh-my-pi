@@ -183,6 +183,8 @@ export interface SteeringQueueState {
 	queued: boolean;
 	/** Best-effort origin used only to word synthetic skipped-tool results. */
 	source?: SteeringInterruptSource;
+	/** Identity and one-line demand of the selected pending message. */
+	advisory?: { type: string; demand: string };
 }
 
 /**

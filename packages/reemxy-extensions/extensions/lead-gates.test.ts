@@ -99,3 +99,10 @@ test("zero-active refusals stop after three non-remedy attempts while inspection
 	expect(result.decisions!.filter(decision => !decision.allowed).length).toBeLessThanOrEqual(3);
 	expect(result.decisions!.at(-1)!.allowed).toBe(true);
 });
+
+test("a skipped wait names its advisory, executable demand and exact retry (no telepathy)", async () => {
+	const scenario = (await leadGateScenarios()).find(item => item.id === "advisoryskip")!;
+	expect(scenario.context).toContain("Pending requirements-gate-notice:");
+	expect(scenario.context).toContain('op="classify", id="R1"');
+	expect(scenario.context).toContain("Handle requirements-gate-notice, then retry wait");
+});

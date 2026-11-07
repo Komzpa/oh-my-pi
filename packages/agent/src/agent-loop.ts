@@ -53,7 +53,7 @@ import {
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { isDsmlLeakRecoveryTarget, removeDsmlToolMarkupLeak } from "@oh-my-pi/pi-ai/utils/dsml-leak";
-import { cloneJsonTree, logger, sanitizeText, structuredCloneJSON, toError } from "@oh-my-pi/pi-utils";
+import { cloneJsonTree, logger, prompt, sanitizeText, structuredCloneJSON, toError } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { LiveSteeringChannel } from "./live-steering";
 import { agentPauseGate } from "./pause";
@@ -83,6 +83,7 @@ import {
 	TOOL_RESULT_ADDITIONAL_CONTEXT,
 	type ToolResultWithAdditionalContext,
 } from "./tool-context";
+import skippedToolPrompt from "./prompts/skipped-tool.md" with { type: "text" };
 import dsmlToolCallLeakPrompt from "./prompts/dsml-tool-call-leak.md" with { type: "text" };
 import type {
 	AgentContext,
@@ -1949,18 +1950,37 @@ interface PreparedProviderCall {
  * queue peek and the loop's live-taken steering.
  */
 export function steeringQueueState(messages: readonly AgentMessage[], count = messages.length): SteeringQueueState {
-	if (count === 0) return { queued: false };
-	let hasAgentSteering = false;
+	let selected: SteeringQueueState = { queued: false };
 	for (let i = 0; i < count; i++) {
 		const message = messages[i];
 		const role = "role" in message ? message.role : undefined;
 		const attribution = "attribution" in message ? message.attribution : undefined;
-		if (attribution === "user") return { queued: true, source: "user" };
-		if (role !== "user") continue;
-		if (attribution !== "agent") return { queued: true, source: "user" };
-		hasAgentSteering = true;
+		// Passive notices remain queued for delivery but never preempt tools.
+		if ("interruptWait" in message && message.interruptWait === false) continue;
+		const source =
+			attribution === "user" || (role === "user" && attribution !== "agent")
+				? "user"
+				: role === "user"
+					? "agent"
+					: "system";
+		if (selected.source === "user" || (selected.source === "agent" && source === "system")) continue;
+		const content = "content" in message ? message.content : undefined;
+		const text =
+			typeof content === "string"
+				? content
+				: Array.isArray(content)
+					? content.flatMap(block => (block.type === "text" ? [block.text] : [])).join(" ")
+					: "";
+		selected = {
+			queued: true,
+			source,
+			advisory: {
+				type: "customType" in message ? String(message.customType) : String(role ?? source),
+				demand: text.replace(/\s+/g, " ").trim(),
+			},
+		};
 	}
-	return { queued: true, source: hasAgentSteering ? "agent" : "system" };
+	return selected;
 }
 
 /**
@@ -3401,7 +3421,11 @@ async function executeToolCalls(
 	const interruptibleSignal: AbortSignal = signal
 		? AbortSignal.any([signal, steeringAbortController.signal, ircAbortController.signal])
 		: AbortSignal.any([steeringAbortController.signal, ircAbortController.signal]);
-	const interruptState: { triggered: boolean; source?: AsideInterruptSource } = { triggered: false };
+	const interruptState: {
+		triggered: boolean;
+		source?: AsideInterruptSource;
+		advisory?: SteeringQueueState["advisory"];
+	} = { triggered: false };
 
 	// Streamed messages were prepared (validation + `beforeToolCall`) before
 	// `message_end`, so hook revisions are already part of the message; anything
@@ -3516,7 +3540,10 @@ async function executeToolCalls(
 		let steeringSource: SteeringInterruptSource | undefined;
 		if (liveSteering.length > 0) {
 			steeringQueued = true;
-			steeringSource = steeringQueueState(liveSteering).source;
+			const state = steeringQueueState(liveSteering);
+			steeringQueued = state.queued;
+			steeringSource = state.source;
+			interruptState.advisory = state.advisory;
 		} else if (hasSteeringMessages) {
 			const queuedState = await hasSteeringMessages();
 			if (typeof queuedState === "boolean") {
@@ -3525,6 +3552,7 @@ async function executeToolCalls(
 			} else {
 				const state: SteeringQueueState = queuedState;
 				steeringQueued = state.queued;
+				interruptState.advisory = state.advisory;
 				steeringSource = state.source ?? (state.queued ? "unknown" : undefined);
 			}
 		}
@@ -3838,7 +3866,16 @@ async function executeToolCalls(
 			// user abort takes priority even if a queued interrupt fixed the
 			// combined signal's reason first; keep the actual cancellation error.
 			record.skipped = true;
-			emitToolResult(record, createSkippedToolResult(interruptState.source, executionStarted), true);
+			emitToolResult(
+				record,
+				createSkippedToolResult(
+					interruptState.source,
+					executionStarted,
+					record.toolCall.name,
+					interruptState.advisory,
+				),
+				true,
+			);
 		} else {
 			// A tool that finished before the interrupt landed (`completedToolExecution`)
 			// keeps its real result even if its signal aborted around completion:
@@ -3992,7 +4029,11 @@ async function executeToolCalls(
 				toolName: record.toolCall.name,
 				status: "skipped",
 			});
-			emitToolResult(record, createSkippedToolResult(interruptState.source, false), true);
+			emitToolResult(
+				record,
+				createSkippedToolResult(interruptState.source, false, record.toolCall.name, interruptState.advisory),
+				true,
+			);
 		}
 	}
 	await speculationCoordinator?.discardAll("candidate was not dispatched");
@@ -4171,9 +4212,11 @@ function createToolSignalAbortedResult(signal: AbortSignal): AgentToolResult<unk
 /** Origin of a mid-batch interrupt: queued steering, a peer IRC, a queued aside, or a background completion notice. */
 type AsideInterruptSource = SteeringInterruptSource | "irc" | "aside" | "background";
 
-function createSkippedToolResult(
+export function createSkippedToolResult(
 	source: AsideInterruptSource | undefined,
 	executionStarted: boolean,
+	toolName: string,
+	advisory?: SteeringQueueState["advisory"],
 ): AgentToolResult<SyntheticToolResultDetails | InterruptedToolResultDetails> {
 	let reason = "pending steering message";
 	let blocker = "queued message";
@@ -4196,7 +4239,7 @@ function createSkippedToolResult(
 		reason = "a queued background completion (job or supervised process)";
 		blocker = "completion notice";
 	}
-	const message = `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`;
+	const message = prompt.render(skippedToolPrompt, { reason, blocker, toolName, advisory }).trim();
 	return {
 		harnessNotice: message,
 		content: [
