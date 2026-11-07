@@ -27,3 +27,7 @@ New ten-minute regression fails on base: wait.test.ts settled=true, expected fal
 bun check: exit 0; Rust skipped automatically because this topic changes no Rust-affecting files. Broad IRC/peer/task/aside/wait run: 968 pass, 4 fail, 4210 assertions (failed-child-artifact x3 and worktree generic git-not-found). Baseline/isolation investigation follows; this is not a green suite receipt.
 
 Native artifact was supplied in the lane workspace before edits, SHA256 2d1c1146c25e431985d63b832e1db810be341ed21f36d074c64f1ff2f6fe240b. Its build provenance is not supplied; no native source/binary was edited or installed by this lane. Test coverage is source/runtime proof, not a native rebuild or installed-product proof.
+
+Broad suite rerun with TMPDIR=/tmp TMP=/tmp: **972 pass, 0 fail, 4215 assertions across 76 files**. The four failures above came from the lane's TMPDIR nested inside the repository (a supposedly non-repo fixture inherits Git parent discovery), and disappear with an external temporary root. No unrelated source change was required. The exact command is the broad IRC/peer/task/aside/wait invocation in ../pr23-tests-external-tmp.log.
+
+Fresh-upstream stack_check fails before either candidate, at PR16651 executor.ts after 3 PRs. lane_ask DECISION authorized the requested read-only rehearsal on user-selected fork/main 9370e7b with exact fetched manifest heads; fresh upstream is separate base drift, no unrelated rebase. Generated rules.json conflicts are regenerated from KDL after assembly, as in the updater.
