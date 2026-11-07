@@ -1,4 +1,3 @@
-import { withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import {
 	type TodoStatus,
 	type TodoOperation,
@@ -7,6 +6,7 @@ import {
 	type TodoCompletionTransition,
 	type TodoToolDetails,
 } from "@oh-my-pi/pi-tui/tools/todo";
+import { launchScope } from "@oh-my-pi/pi-utils/launch-trace";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 
@@ -179,17 +179,16 @@ export interface TodoHudStateEntryData extends TodoSnapshotIdentity {
 }
 
 function todoPhasesFingerprint(phases: readonly TodoPhase[]): string {
-	return withLoopPhase("state.serialize:todo-fingerprint", () =>
-		JSON.stringify(
-			phases.map(phase => ({
-				name: phase.name,
-				tasks: phase.tasks.map(task =>
-					task.blocker === undefined
-						? { content: task.content, status: task.status }
-						: { content: task.content, status: task.status, blocker: task.blocker },
-				),
-			})),
-		),
+	using phase = launchScope("state.serialize:todo-fingerprint");
+	return JSON.stringify(
+		phases.map(phase => ({
+			name: phase.name,
+			tasks: phase.tasks.map(task =>
+				task.blocker === undefined
+					? { content: task.content, status: task.status }
+					: { content: task.content, status: task.status, blocker: task.blocker },
+			),
+		})),
 	);
 }
 

@@ -3727,7 +3727,7 @@ export async function finalizeSubagentLifecycle(args: {
 			args.session.prepareForHeadlessAdvisorDrain();
 			await args.session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now()));
 		}
-		const disposal = launchStep("resource-release.dispose", () => args.session.dispose(options));
+		const disposal = args.session.dispose(options);
 		const remainingMs = Math.max(0, cleanupDeadlineAt - Date.now());
 		try {
 			await untilAborted(AbortSignal.timeout(remainingMs), () => disposal);
@@ -5123,19 +5123,17 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			let session: AgentSession;
 			let sessionPromise: Promise<CreateAgentSessionResult> | undefined;
 			try {
-				sessionPromise = launchStep("sdkCreate", () =>
-					createAgentSession(
-						buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, null, mcpFollower, {
-							workPoolYieldItems: options.workPoolYieldItems ?? [],
-							// A revived session restores the tier history it persisted (including
-							// tiers a provider rejected or an extension changed since spawn); only
-							// the fresh spawn resolves the per-agent override.
-							resolveServiceTierByFamily,
-							onFirstChatDispatch: () => {
-								firstChatDispatchAt ??= performance.now();
-							},
-						}),
-					),
+				sessionPromise = createAgentSession(
+					buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, null, mcpFollower, {
+						workPoolYieldItems: options.workPoolYieldItems ?? [],
+						// A revived session restores the tier history it persisted (including
+						// tiers a provider rejected or an extension changed since spawn); only
+						// the fresh spawn resolves the per-agent override.
+						resolveServiceTierByFamily,
+						onFirstChatDispatch: () => {
+							firstChatDispatchAt ??= performance.now();
+						},
+					}),
 				);
 				({ session } = await awaitAbortable(sessionPromise));
 				if (preparedSession) untrackedSession = session;
