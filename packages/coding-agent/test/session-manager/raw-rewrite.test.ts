@@ -15,10 +15,13 @@ test("explicit large rewrites preserve cold UTF-8 records without decoding their
 	const payload = "й😺".repeat(5 * 1024 * 1024);
 	for (let i = 0; i < 3; i++)
 		sink.write(
-			`${JSON.stringify({ type: "custom", customType: "fixture", id: String(i), parentId: i === 0 ? null : String(i - 1), timestamp: new Date(0).toISOString(), data: payload })}\n`,
+			`${JSON.stringify({ type: i === 0 ? "message" : "custom", customType: i === 0 ? undefined : "fixture", message: i === 0 ? { role: "user", content: payload, timestamp: 0 } : undefined, id: String(i), parentId: i === 0 ? null : String(i - 1), timestamp: new Date(0).toISOString(), data: payload })}\n`,
 		);
 	sink.write(
-		`${JSON.stringify({ type: "message", id: "tail", parentId: "2", timestamp: new Date(0).toISOString(), message: { role: "user", content: "tail", timestamp: 0 } })}\n`,
+		`${JSON.stringify({ type: "compaction", id: "compact", parentId: "2", timestamp: new Date(0).toISOString(), summary: "Archived", firstKeptEntryId: "tail", tokensBefore: 100 })}\n`,
+	);
+	sink.write(
+		`${JSON.stringify({ type: "message", id: "tail", parentId: "compact", timestamp: new Date(0).toISOString(), message: { role: "user", content: "tail", timestamp: 0 } })}\n`,
 	);
 	await sink.end();
 	const manager = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
@@ -36,7 +39,11 @@ test("explicit large rewrites preserve cold UTF-8 records without decoding their
 		const reopened = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
 		for (let i = 0; i < 3; i++) {
 			const entry = reopened.getEntry(String(i));
-			expect(entry?.type === "custom" && entry.data === payload).toBe(true);
+			expect(
+				i === 0
+					? entry?.type === "message" && entry.message.role === "user" && entry.message.content === payload
+					: entry?.type === "custom" && entry.data === payload,
+			).toBe(true);
 			expect(entry?.parentId).toBe(i === 0 ? null : String(i - 1));
 		}
 		await reopened.close();
