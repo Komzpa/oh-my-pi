@@ -2488,7 +2488,12 @@ export class ExtensionRunner {
 
 				if (!handlerResult) continue;
 				if (handlerResult.block) {
-					return handlerResult;
+					return event.toolName === "task"
+						? {
+								...handlerResult,
+								reason: `REFUSED: no worker was spawned.\n${handlerResult.reason ?? "Task blocked by extension"}`,
+							}
+						: handlerResult;
 				}
 				const { additionalContext: _context, input: _input, ...controlResult } = handlerResult;
 				accumulateToolCallResult(aggregated, handlerResult);

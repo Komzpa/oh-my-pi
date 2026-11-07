@@ -95,10 +95,18 @@ test("live heads create one notice and priority push row, then a worker push cle
 		try {
 			await handlers.get("session_start")!({}, ctx);
 			await tick();
+			expect(phases).toEqual([]);
+			expect(notices.filter(message => message.customType === "todo-unpushed")).toHaveLength(0);
+			expect(provider?.(ctx)?.reminder?.some(message => message.content.includes("UNPUSHED WORK")) ?? false).toBe(false);
+			const probe = await handlers.get("tool_call")!({ toolName: "task", input: { tasks: [{ name: "SpawnProbe", agent: "task", task: "Read only: report model and effort. Do nothing else." }] } }, ctx);
+			expect(probe?.block).not.toBe(true);
+			// The neighbouring lead owns an explicit checkout row; its push obligation remains.
+			phases = [{ name: "DC lead", tasks: [{ content: "Implement branch work", status: "completed", schedule: { resources: [`checkout:${work}`] } }] }];
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 			await handlers.get("context")!({ messages: [] }, ctx);
 			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 			expect(notices.filter(message => message.customType === "todo-unpushed")).toHaveLength(1);
-			expect(phases.flatMap(phase => phase.tasks)).toHaveLength(1);
+			expect(phases.flatMap(phase => phase.tasks)).toHaveLength(2);
 			expect(phases[0].tasks[0].content).toContain("project gates and push origin/");
 			expect(phases[0].tasks[0].status).toBe("pending");
 			expect(statuses.at(-1)).toMatch(/1 unpushed · oldest 80m/);
@@ -122,7 +130,7 @@ test("live heads create one notice and priority push row, then a worker push cle
 		git(work, id, "config", "omp.unpushedThresholdMinutes", "15");
 		await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 		expect(notices.filter(message => message.customType === "todo-unpushed")).toHaveLength(2);
-		expect(phases.flatMap(phase => phase.tasks)).toHaveLength(1);
+		expect(phases.flatMap(phase => phase.tasks)).toHaveLength(2);
 		expect(phases[0].tasks[0].status).toBe("pending");
 		git(work, id, "remote", "set-url", "origin", join(dir, "missing.git"));
 		await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);

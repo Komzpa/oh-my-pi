@@ -15,6 +15,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
 import { readTodoArchiveState, getLiveTodoBranchEntries, withTodoArchive } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { getTodoPlanCalibrationStore } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-calibration";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -28,7 +29,7 @@ import { clampThinkingLevelToCeiling, resolveThinkingLevelForModel } from "@oh-m
 import { readTodoDisplayLedger } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-display";
 import { refuseProofReview, renderLeadRowInstructions } from "./lead-row-instructions";
 import { checkRowAudits } from "./row_audit";
-import { todoNeedsOwnerDecision, classifyTodoDisplayRow, todoRowAfterWorker, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { todoNeedsOwnerDecision, classifyTodoDisplayRow, todoRowAfterWorker, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanPrediction, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -1256,6 +1257,7 @@ export interface DispatchInput {
   risk?: RowRiskOptions;
   phases: TodoScheduleInput;
   archivedPhases?: TodoScheduleInput;
+  history?: readonly TodoPlanPrediction[];
   jobs: Jobs | null;
   externalOwnerProbe?: ExternalOwnerProbe;
   restoredChildren?: PersistedChild[];
@@ -1927,6 +1929,7 @@ export function decideTodoDispatch(
   const userWaits = userWaitRows(phases);
   const forecast = sdk.forecastTodoPlan(withTodoArchive(parking.phases, input.archivedPhases ?? []), {
     risk: input.risk,
+    history: input.history,
     now,
     deadlineAt: deadline?.deadlineAt,
     ...(capacity === undefined ? {} : { capacity }),
@@ -3018,6 +3021,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 	// Quota discovery may wait on providers; restoring the session must not.
 	// The refresh already coalesces requests and handles failures internally.
 	void refreshLiveWorkerModels(ctx);
+    void getTodoPlanCalibrationStore().refresh().then(() => { cachedDecision = null; });
     refreshRowRisk(ctx);
     releaseLapsedPostDeadline(ctx);
     if (typeof pi.appendEntry === "function" && !singleWriterLane && !pauseGate?.paused && !gateSwitchedOff(ctx) && isMain(ctx)) recoveryFor(ctx);
@@ -3115,6 +3119,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       risk,
       phases,
       archivedPhases: dispatchTodoArchive(ctx),
+      history: getTodoPlanCalibrationStore().snapshot(now),
       jobs,
       externalOwnerProbe: options.externalOwnerProbe,
       persistedChildren,
@@ -4690,8 +4695,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (gitStatePending === pending) gitStatePending = null;
     }
   };
+  const ownsBranchWork = (ctx: ExtensionContext) => todoPhases(ctx).some(phase => phase.tasks.some(row =>
+    row.content.startsWith("Push: run project gates and push ") ||
+    row.schedule?.resources?.some(resource => {
+      const target = resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "");
+      return isAbsolute(target) && (resolve(target) === resolve(ctx.cwd) || resolve(target).startsWith(`${resolve(ctx.cwd)}/`));
+    })
+  ));
   const refreshPush = async (ctx: ExtensionContext, force = false) => {
-    if (singleWriterLane || !isMain(ctx)) return;
+    if (singleWriterLane || !isMain(ctx) || !ownsBranchWork(ctx)) return;
     const session = AgentRegistry.global().list().find(ref => ref.kind === "main"
       && ref.session?.sessionManager === ctx.sessionManager)?.session;
     if (!session) return;
@@ -4748,7 +4760,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }],
       };
     }
-    if (state && !state.mergeHead && (state.unpushed ?? 0) > 0 && (state.oldestUnpushedAgeMs ?? 0) >= (state.pushThresholdMs ?? STALE_PUSH_MS)) {
+    if (ownsBranchWork(ctx) && state && !state.mergeHead && (state.unpushed ?? 0) > 0 && (state.oldestUnpushedAgeMs ?? 0) >= (state.pushThresholdMs ?? STALE_PUSH_MS)) {
       const minutes = Math.round((state.oldestUnpushedAgeMs ?? 0) / 60_000);
       gateTrace(ctx, "push-demand", { unpushed: state.unpushed, minutes });
       return {
@@ -5130,7 +5142,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const integrationFacts = async (ctx: ExtensionContext, now: number) => {
     void refreshPush(ctx);
     const local = await refreshMerge(ctx, now);
-    const pushed = gitStateCache?.cwd === ctx.cwd && gitStateCache.state?.head === local?.head ? gitStateCache.state : null;
+    const pushed = ownsBranchWork(ctx) && gitStateCache?.cwd === ctx.cwd && gitStateCache.state?.head === local?.head ? gitStateCache.state : null;
     const state = local ? { ...pushed, ...local } : pushed;
     const lines: string[] = [];
     const sessionId = ctx.sessionManager.getHeader?.()?.id ?? "unknown";
@@ -6521,7 +6533,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     };
   });
 
+  let calibrationKey = "";
   const appendLeadTimeNote = async (ctx: ExtensionContext, onlyPlanFact = false) => {
+    await getTodoPlanCalibrationStore().refresh();
+    const nextCalibrationKey = JSON.stringify(getTodoPlanCalibrationStore().snapshot(Date.now()));
+    if (nextCalibrationKey !== calibrationKey) { calibrationKey = nextCalibrationKey; cachedDecision = null; }
     const now = Date.now();
     if (singleWriterLane) return;
     const decision = currentDecision(ctx, now);
