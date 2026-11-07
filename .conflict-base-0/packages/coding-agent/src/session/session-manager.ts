@@ -1,6 +1,6 @@
-import { launchStep, launchMetric } from "@oh-my-pi/pi-utils/launch-trace";
-import { withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import * as fs from "node:fs";
+import { launchScope, launchStep, launchMetric } from "@oh-my-pi/pi-utils/launch-trace";
+import { withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import * as path from "node:path";
 import type {
 	AssistantRetryRecovery,
@@ -2782,6 +2782,7 @@ export class SessionManager {
 	}
 
 	#appendToSessionFile(entry: SessionEntry): void {
+		using phase = launchScope("journal.write");
 		if (this.#released || !this.#persist || !this.#sessionFile) return;
 		if (this.#atomicEntryBatch) return;
 
@@ -2869,7 +2870,7 @@ export class SessionManager {
 			const writer = this.#appendWriter();
 			const line = this.#lineFor(entry);
 			if (writer.appendSync && !this.#storage.defersSyncPublish) {
-				launchStep("journal.write", () => writer.appendSync!(line));
+				writer.appendSync(line);
 				this.#recordDurableAppend(line);
 			} else {
 				// A backend that only queues the publish (indexed) has no synchronous
@@ -2877,7 +2878,7 @@ export class SessionManager {
 				// the line: a lost publish must not leave the record describing bytes
 				// the store never accepted, or the next recovery rewrite hands the
 				// backend CAS an impossible `expectedSize`.
-				if (writer.appendSync) launchStep("journal.write", () => writer.appendSync!(line));
+				if (writer.appendSync) writer.appendSync(line);
 				const confirmed = writer.appendSync ? writer.flush() : writer.append(line);
 				void confirmed
 					.then(() => this.#recordDurableAppend(line))
@@ -3064,35 +3065,28 @@ export class SessionManager {
 	}
 
 	#recordEntry(entry: SessionEntry): void {
-		return withLoopPhase("journal.record", () =>
-			launchStep("journal.record", () => {
-				if (this.#released) {
-					logger.warn("Dropped session entry appended after terminal release", { type: entry.type });
-					return;
-				}
-				if (
-					entry.type === "message" &&
-					entry.message.role === "assistant" &&
-					normalizeAssistantUsage(entry.message)
-				) {
-					logger.warn("Assistant message recorded with incomplete usage", { id: entry.id });
-				}
-				this.#entries.push(entry);
-				this.#index.insert(entry);
-				const batch = this.#atomicEntryBatch;
-				if (batch?.collecting) batch.entryIds.add(entry.id);
-				if (batch && !batch.collecting) {
-					batch.externalLeafChanged = true;
-					// An off-branch entry replays to the leaf it captured, not to itself.
-					batch.externalLeafId = sessionEntryLeafId(entry);
-				}
-				this.#appendToSessionFile(entry);
-				if (batch) batch.deferredNotifications.push(entry);
-				else this.#notifyEntryAppended(entry);
-				if (this.#storage instanceof FileSessionStorage && !batch && this.#fileIsCurrent && !this.#rewriteRequired)
-					this.#entries = this.#index.contextLeafPath().reverse();
-			}),
-		);
+		using phase = launchScope("journal.record");
+		if (this.#released) {
+			logger.warn("Dropped session entry appended after terminal release", { type: entry.type });
+			return;
+		}
+		if (entry.type === "message" && entry.message.role === "assistant" && normalizeAssistantUsage(entry.message)) {
+			logger.warn("Assistant message recorded with incomplete usage", { id: entry.id });
+		}
+		this.#entries.push(entry);
+		this.#index.insert(entry);
+		const batch = this.#atomicEntryBatch;
+		if (batch?.collecting) batch.entryIds.add(entry.id);
+		if (batch && !batch.collecting) {
+			batch.externalLeafChanged = true;
+			// An off-branch entry replays to the leaf it captured, not to itself.
+			batch.externalLeafId = sessionEntryLeafId(entry);
+		}
+		this.#appendToSessionFile(entry);
+		if (batch) batch.deferredNotifications.push(entry);
+		else this.#notifyEntryAppended(entry);
+		if (this.#storage instanceof FileSessionStorage && !batch && this.#fileIsCurrent && !this.#rewriteRequired)
+			this.#entries = this.#index.contextLeafPath().reverse();
 	}
 
 	#rollbackAtomicEntryBatch(batch: AtomicEntryBatch): void {

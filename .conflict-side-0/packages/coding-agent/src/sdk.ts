@@ -1980,7 +1980,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	if (options.parentTaskPrefix || options.taskDepth) {
 		return runLaunchTrace(
 			{ id: options.agentId ?? options.parentTaskPrefix ?? "subagent", taskDepth: options.taskDepth ?? 0 },
-			() => createAgentSessionInScope(options),
+			() => launchStep("sdkCreate", () => createAgentSessionInScope(options)),
 		);
 	}
 	return createAgentSessionInScope(options);
