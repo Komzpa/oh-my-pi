@@ -5339,81 +5339,84 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			autoTitle: options.autoTitle === true && !isSubagentSession,
 		});
 		hasSession = true;
-		// The session now owns its cost gate; the interactive TUI starts compression after its first frame.
-		if (options.deferSkillDescriptionCompression !== true) skillDescriptions.startCompression();
-		credentialNoticeSession = session;
-		// Hashline snapshots are session-scoped: /new and switchSession fire the
-		// change callbacks, so clear the tool-side store there — stale tags would
-		// otherwise surface as "issued in this session" in mismatch diagnostics
-		// after a reset (#13370). The tools snapshot into THIS store, not the
-		// AgentSession's own lazy field.
-		session.registerSessionChangeCallback(() => toolSession.editStore?.clear());
-		if (ownedSkillDescriptionStore) {
-			// Let in-flight compressions land before releasing the file.
-			session.addDisposer(
-				() => void skillDescriptions.waitForPending().finally(() => ownedSkillDescriptionStore.close()),
-			);
-		}
-		// A caller-supplied store belongs to the caller (the CLI keeps it in sync itself).
-		if (ownsAuthStorage) createAuthStorageSettingsSync(session, authStorage);
-		// One coalesced prompt rebuild for every prompt input (rule bucketing, the
-		// `tools.format` catalog dialect, personality, …), so a bulk change rebuilds once.
-		// Hide Secrets first switches outbound obfuscation on the live obfuscator (earlier
-		// placeholders keep deobfuscating, the first switch-on builds it): the prompt
-		// reports its state.
-		cfgSystemPromptInputs.listen(session, async (next, previous) => {
-			if (next.secretsEnabled !== previous.secretsEnabled) {
-				try {
-					if (cfgSecretsEnabled.get(settings) && !obfuscator) {
-						const built = await launchStep("sdk.secretObfuscator.wait", () =>
-							buildSecretObfuscator(cwd, agentDir, options.agentDir),
-						);
-						if (!obfuscator && built) {
-							obfuscator = built;
-							session.setObfuscator(built);
+		launchStep("sdk.sessionBindings", () => {
+			// The session now owns its cost gate; the interactive TUI starts compression after its first frame.
+			if (options.deferSkillDescriptionCompression !== true)
+				launchStep("sdk.skillCompression.kickoff", () => skillDescriptions.startCompression());
+			credentialNoticeSession = session;
+			// Hashline snapshots are session-scoped: /new and switchSession fire the
+			// change callbacks, so clear the tool-side store there — stale tags would
+			// otherwise surface as "issued in this session" in mismatch diagnostics
+			// after a reset (#13370). The tools snapshot into THIS store, not the
+			// AgentSession's own lazy field.
+			session.registerSessionChangeCallback(() => toolSession.editStore?.clear());
+			if (ownedSkillDescriptionStore) {
+				// Let in-flight compressions land before releasing the file.
+				session.addDisposer(
+					() => void skillDescriptions.waitForPending().finally(() => ownedSkillDescriptionStore.close()),
+				);
+			}
+			// A caller-supplied store belongs to the caller (the CLI keeps it in sync itself).
+			if (ownsAuthStorage) createAuthStorageSettingsSync(session, authStorage);
+			// One coalesced prompt rebuild for every prompt input (rule bucketing, the
+			// `tools.format` catalog dialect, personality, …), so a bulk change rebuilds once.
+			// Hide Secrets first switches outbound obfuscation on the live obfuscator (earlier
+			// placeholders keep deobfuscating, the first switch-on builds it): the prompt
+			// reports its state.
+			cfgSystemPromptInputs.listen(session, async (next, previous) => {
+				if (next.secretsEnabled !== previous.secretsEnabled) {
+					try {
+						if (cfgSecretsEnabled.get(settings) && !obfuscator) {
+							const built = await launchStep("sdk.secretObfuscator.wait", () =>
+								buildSecretObfuscator(cwd, agentDir, options.agentDir),
+							);
+							if (!obfuscator && built) {
+								obfuscator = built;
+								session.setObfuscator(built);
+							}
 						}
+						obfuscator?.setObfuscating(cfgSecretsEnabled.get(settings));
+					} catch (error) {
+						logger.warn("Hide Secrets change not applied", { error: String(error) });
 					}
-					obfuscator?.setObfuscating(cfgSecretsEnabled.get(settings));
-				} catch (error) {
-					logger.warn("Hide Secrets change not applied", { error: String(error) });
 				}
-			}
-			if (session.isDisposed) return;
-			try {
-				await session.refreshBaseSystemPrompt();
-			} catch (error) {
-				session.emitNotice("error", `Failed to rebuild the system prompt after a settings change: ${error}`);
-			}
-		});
-		// Agent-level tool-call switches: the loop snapshots them per prompt run, so a
-		// change applies from the next run without splitting one response's schema/strip.
-		// The prompt listener above republishes the intent-field guidance.
-		cfgToolCallSwitches.listen(session, ({ intentTracing, abortOnFabricatedResult }) => {
-			agent.intentTracing = intentTracing;
-			agent.abortOnFabricatedToolResult = abortOnFabricatedResult;
-		});
-		// Tool-gating settings add or remove the tools they gate and refresh the
-		// prompt once per coalesced change. Restricted (structured) sessions keep the
-		// exact host-provided tool list they were built with.
-		if (!restrictToolNames) {
-			const reconcileGatedTools = async (options?: { refreshPrompt?: boolean }): Promise<void> => {
+				if (session.isDisposed) return;
 				try {
-					await session.reconcileBuiltinTools(options);
+					await session.refreshBaseSystemPrompt();
 				} catch (error) {
-					session.emitNotice("error", `Failed to apply tool settings: ${error}`);
+					session.emitNotice("error", `Failed to rebuild the system prompt after a settings change: ${error}`);
 				}
-			};
-			cfgSessionToolGates.listen(session, () => reconcileGatedTools());
-			// `find.enabled: auto` follows the judge role; a role change only touches
-			// the prompt when it actually adds or removes `find`.
-			cfgModelRoles.listen(session, () => reconcileGatedTools({ refreshPrompt: false }));
-		}
-		// Backfill the resumed advisor spend without blocking startup: the scan
-		// runs after the session is live, so `--resume` no longer scales with the
-		// advisor transcript size (issue #9553).
-		session.beginInitialAdvisorCostRestore();
-		// Lines already seen follow the live context on their own (`getContextMessages`); a new session file starts over.
-		if (spotlightExperiment) session.registerSessionChangeCallback(() => spotlightExperiment.onSessionChange());
+			});
+			// Agent-level tool-call switches: the loop snapshots them per prompt run, so a
+			// change applies from the next run without splitting one response's schema/strip.
+			// The prompt listener above republishes the intent-field guidance.
+			cfgToolCallSwitches.listen(session, ({ intentTracing, abortOnFabricatedResult }) => {
+				agent.intentTracing = intentTracing;
+				agent.abortOnFabricatedToolResult = abortOnFabricatedResult;
+			});
+			// Tool-gating settings add or remove the tools they gate and refresh the
+			// prompt once per coalesced change. Restricted (structured) sessions keep the
+			// exact host-provided tool list they were built with.
+			if (!restrictToolNames) {
+				const reconcileGatedTools = async (options?: { refreshPrompt?: boolean }): Promise<void> => {
+					try {
+						await session.reconcileBuiltinTools(options);
+					} catch (error) {
+						session.emitNotice("error", `Failed to apply tool settings: ${error}`);
+					}
+				};
+				cfgSessionToolGates.listen(session, () => reconcileGatedTools());
+				// `find.enabled: auto` follows the judge role; a role change only touches
+				// the prompt when it actually adds or removes `find`.
+				cfgModelRoles.listen(session, () => reconcileGatedTools({ refreshPrompt: false }));
+			}
+			// Backfill the resumed advisor spend without blocking startup: the scan
+			// runs after the session is live, so `--resume` no longer scales with the
+			// advisor transcript size (issue #9553).
+			launchStep("sdk.advisorCostRestore.kickoff", () => session.beginInitialAdvisorCostRestore());
+			// Lines already seen follow the live context on their own (`getContextMessages`); a new session file starts over.
+			if (spotlightExperiment) session.registerSessionChangeCallback(() => spotlightExperiment.onSessionChange());
+		});
 		// Extension factories normally register tools before session construction,
 		// but Pi-compatible extensions may discover them asynchronously from a
 		// session_start handler. Install those late registrations into the live
@@ -5431,82 +5434,95 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// Capture ordinary extension precedence while the listener observes this exact registration.
 			// A later same-name registration may replace the extension map before serialized activation runs.
 			const isEffectiveRegistrant = extensionRunner.getRegisteredTool(name) === registered;
-			const activation = session.runToolRegistryMutation(async () => {
-				activationSignal.throwIfAborted();
-				const existingTool = toolRegistry.get(name);
-				const previousExtensionMcpTool = session.getExtensionMCPTool(name);
-				const wasMcpManagerTool = session.hasMCPManagerTool(name);
-				if (existingTool) {
-					// RPC host tools and SDK custom tools retain their startup precedence when an
-					// extension registers the same name later.
-					if (session.hasRpcHostTool(name) || sdkCustomToolNames.has(name)) return;
-					// Put the replacement first so same-origin MCP re-registration keeps it. Distinct MCP origins still
-					// use the stable winner; ordinary tool collisions retain the extension runner's last-wins precedence.
-					const competingTools = deduplicateMCPToolsByName([liveTool, existingTool]);
-					if (competingTools.length === 1) {
-						if (competingTools[0] !== liveTool) return;
-					} else if (!isEffectiveRegistrant) {
-						return;
-					}
-				} else if (!isEffectiveRegistrant) {
-					return;
-				}
+			const activation = launchStep("sdk.toolRegistration.queue", () =>
+				session.runToolRegistryMutation(
+					() =>
+						launchStep("sdk.toolRegistration.apply", async () => {
+							activationSignal.throwIfAborted();
+							const existingTool = toolRegistry.get(name);
+							const previousExtensionMcpTool = session.getExtensionMCPTool(name);
+							const wasMcpManagerTool = session.hasMCPManagerTool(name);
+							if (existingTool) {
+								// RPC host tools and SDK custom tools retain their startup precedence when an
+								// extension registers the same name later.
+								if (session.hasRpcHostTool(name) || sdkCustomToolNames.has(name)) return;
+								// Put the replacement first so same-origin MCP re-registration keeps it. Distinct MCP origins still
+								// use the stable winner; ordinary tool collisions retain the extension runner's last-wins precedence.
+								const competingTools = deduplicateMCPToolsByName([liveTool, existingTool]);
+								if (competingTools.length === 1) {
+									if (competingTools[0] !== liveTool) return;
+								} else if (!isEffectiveRegistrant) {
+									return;
+								}
+							} else if (!isEffectiveRegistrant) {
+								return;
+							}
 
-				const enabled = session.getEnabledToolNames();
-				const alreadyEnabled = enabled.includes(name);
-				const explicitlyRequested = explicitlyRequestedToolNameSet?.has(name) === true;
-				const mounted = session.getMountedXdevToolNames();
-				const wasBuiltIn = builtInRegistryToolNames.has(name);
-				toolRegistry.set(name, liveTool);
-				builtInRegistryToolNames.delete(name);
-				session.setToolBuiltIn(name, false);
-				session.setExtensionMCPTool(name, liveTool);
-				try {
-					if ((registered.definition.defaultInactive || registered.definition.hidden) && !explicitlyRequested) {
-						if (!alreadyEnabled) return;
-						await session.setActiveToolPresentation(
-							enabled.filter(enabledName => enabledName !== name),
-							mounted.filter(mountedName => mountedName !== name),
-							existingTool !== undefined,
-							activationSignal,
-						);
-						return;
-					}
-					// Re-registration refreshes the implementation, but it must not reverse an
-					// explicit setActiveTools() decision that disabled the previous definition.
-					if (existingTool && !alreadyEnabled) return;
-					const shouldMount =
-						!explicitlyRequested &&
-						toolSession.xdev !== undefined &&
-						builtInRegistryToolNames.has("read") &&
-						builtInRegistryToolNames.has("write") &&
-						enabled.includes("read") &&
-						(enabled.includes("write") || toolSession.deviceOnlyWrite === true) &&
-						isMountableUnderXdev(liveTool);
-					const nextMounted = shouldMount
-						? mounted.includes(name)
-							? mounted
-							: [...mounted, name]
-						: mounted.filter(mountedName => mountedName !== name);
-					await session.setActiveToolPresentation(
-						alreadyEnabled ? enabled : [...enabled, name],
-						nextMounted,
-						existingTool !== undefined,
-						activationSignal,
-					);
-				} catch (error) {
-					if (existingTool) {
-						toolRegistry.set(name, existingTool);
-					} else {
-						toolRegistry.delete(name);
-					}
-					if (wasBuiltIn) builtInRegistryToolNames.add(name);
-					session.setToolBuiltIn(name, wasBuiltIn);
-					session.setExtensionMCPTool(name, previousExtensionMcpTool);
-					session.setMCPManagerTool(name, wasMcpManagerTool);
-					throw error;
-				}
-			}, activationSignal);
+							const enabled = session.getEnabledToolNames();
+							const alreadyEnabled = enabled.includes(name);
+							const explicitlyRequested = explicitlyRequestedToolNameSet?.has(name) === true;
+							const mounted = session.getMountedXdevToolNames();
+							const wasBuiltIn = builtInRegistryToolNames.has(name);
+							toolRegistry.set(name, liveTool);
+							builtInRegistryToolNames.delete(name);
+							session.setToolBuiltIn(name, false);
+							session.setExtensionMCPTool(name, liveTool);
+							try {
+								if (
+									(registered.definition.defaultInactive || registered.definition.hidden) &&
+									!explicitlyRequested
+								) {
+									if (!alreadyEnabled) return;
+									await launchStep("sdk.toolRegistration.presentation", () =>
+										session.setActiveToolPresentation(
+											enabled.filter(enabledName => enabledName !== name),
+											mounted.filter(mountedName => mountedName !== name),
+											existingTool !== undefined,
+											activationSignal,
+										),
+									);
+									return;
+								}
+								// Re-registration refreshes the implementation, but it must not reverse an
+								// explicit setActiveTools() decision that disabled the previous definition.
+								if (existingTool && !alreadyEnabled) return;
+								const shouldMount =
+									!explicitlyRequested &&
+									toolSession.xdev !== undefined &&
+									builtInRegistryToolNames.has("read") &&
+									builtInRegistryToolNames.has("write") &&
+									enabled.includes("read") &&
+									(enabled.includes("write") || toolSession.deviceOnlyWrite === true) &&
+									isMountableUnderXdev(liveTool);
+								const nextMounted = shouldMount
+									? mounted.includes(name)
+										? mounted
+										: [...mounted, name]
+									: mounted.filter(mountedName => mountedName !== name);
+								await launchStep("sdk.toolRegistration.presentation", () =>
+									session.setActiveToolPresentation(
+										alreadyEnabled ? enabled : [...enabled, name],
+										nextMounted,
+										existingTool !== undefined,
+										activationSignal,
+									),
+								);
+							} catch (error) {
+								if (existingTool) {
+									toolRegistry.set(name, existingTool);
+								} else {
+									toolRegistry.delete(name);
+								}
+								if (wasBuiltIn) builtInRegistryToolNames.add(name);
+								session.setToolBuiltIn(name, wasBuiltIn);
+								session.setExtensionMCPTool(name, previousExtensionMcpTool);
+								session.setMCPManagerTool(name, wasMcpManagerTool);
+								throw error;
+							}
+						}),
+					activationSignal,
+				),
+			);
 			scheduledToolRegistrations.set(registered, activation);
 			return activation;
 		};
@@ -5516,100 +5532,108 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 			// Close the construction race: a background registration can land after
 			// the initial snapshot but before the live listener above is attached.
-			for (const registered of extensionRunner.getAllRegisteredTools()) {
+			for (const registered of launchStep("sdk.toolRegistration.snapshot", () =>
+				extensionRunner.getAllRegisteredTools(),
+			)) {
 				if (!initialRegisteredTools.has(registered)) {
-					await scheduleToolRegistration(registered);
+					await launchStep("sdk.toolRegistration.reconcile.wait", () => scheduleToolRegistration(registered));
 				}
 			}
 		}
-		if (agentKind === "main") {
-			// Live skills/commands discovery settings: rediscover skills and file slash
-			// commands, rebuild the prompt, and notify command pickers (TUI/RPC/ACP).
-			// `enabledProviders`/`disabledProviders` gate foreign provider sources.
-			cfgSkillsAndCommandsDiscovery.listen(session, () => session.refreshSkillsAndCommands());
-			// Live `extensions` / `disabledExtensions`: a settings-governed extension whose
-			// source leaves the rediscovered set is suspended (handlers, commands, tools,
-			// renderers, shortcuts, file fallbacks) and a returning source resumes. Modules
-			// are never unloaded, and sources this process never imported need a restart.
-			// Governed = discoverable with every `extensions` entry seen this session and
-			// nothing disabled; caller-preloaded and inline extensions are never touched.
-			let extensionReconcile: Promise<void> = Promise.resolve();
-			const announcedUnloadedExtensions = new Set<string>();
-			const seenConfiguredExtensions = new Set(buildSessionExtensionRoots().configured);
-			const reconcileExtensionSources = async (): Promise<void> => {
-				const roots = buildSessionExtensionRoots();
-				// Explicit-only sessions (`--no-extensions`, trusted allowlists) ignore both settings.
-				if (roots.mode === "explicit-only") return;
-				for (const configured of roots.configured) seenConfiguredExtensions.add(configured);
-				resetCapabilities();
-				const cwdNow = sessionManager.getCwd();
-				const [governedPaths, enabledPaths] = await Promise.all([
-					discoverExtensionPaths([...roots.explicit, ...seenConfiguredExtensions], cwdNow, []),
-					discoverSessionExtensionPaths({ extensionRoots: () => roots }, cwdNow, settings),
-				]);
-				const governed = new Set(governedPaths.map(extensionPath => resolvePath(extensionPath, cwdNow)));
-				const enabled = new Set(enabledPaths.map(extensionPath => resolvePath(extensionPath, cwdNow)));
-				const { suspended, resumed } = extensionRunner.setSuspendedExtensions(
-					extension => governed.has(extension.resolvedPath) && !enabled.has(extension.resolvedPath),
-				);
-				const loadedPaths = new Set(extensionRunner.getLoadedExtensions().map(extension => extension.resolvedPath));
-				const unloaded = [...enabled].filter(
-					extensionPath => !loadedPaths.has(extensionPath) && !announcedUnloadedExtensions.has(extensionPath),
-				);
-				if (unloaded.length > 0) {
-					for (const extensionPath of unloaded) announcedUnloadedExtensions.add(extensionPath);
-					session.emitNotice(
-						"warning",
-						`Restart omp to load newly enabled extensions: ${unloaded.join(", ")}`,
-						"extensions",
+		launchStep("sdk.extensionSources.bind", () => {
+			if (agentKind === "main") {
+				// Live skills/commands discovery settings: rediscover skills and file slash
+				// commands, rebuild the prompt, and notify command pickers (TUI/RPC/ACP).
+				// `enabledProviders`/`disabledProviders` gate foreign provider sources.
+				cfgSkillsAndCommandsDiscovery.listen(session, () => session.refreshSkillsAndCommands());
+				// Live `extensions` / `disabledExtensions`: a settings-governed extension whose
+				// source leaves the rediscovered set is suspended (handlers, commands, tools,
+				// renderers, shortcuts, file fallbacks) and a returning source resumes. Modules
+				// are never unloaded, and sources this process never imported need a restart.
+				// Governed = discoverable with every `extensions` entry seen this session and
+				// nothing disabled; caller-preloaded and inline extensions are never touched.
+				let extensionReconcile: Promise<void> = Promise.resolve();
+				const announcedUnloadedExtensions = new Set<string>();
+				const seenConfiguredExtensions = new Set(buildSessionExtensionRoots().configured);
+				const reconcileExtensionSources = async (): Promise<void> => {
+					const roots = buildSessionExtensionRoots();
+					// Explicit-only sessions (`--no-extensions`, trusted allowlists) ignore both settings.
+					if (roots.mode === "explicit-only") return;
+					for (const configured of roots.configured) seenConfiguredExtensions.add(configured);
+					resetCapabilities();
+					const cwdNow = sessionManager.getCwd();
+					const [governedPaths, enabledPaths] = await launchStep("sdk.extensionSources.discover.wait", () =>
+						Promise.all([
+							discoverExtensionPaths([...roots.explicit, ...seenConfiguredExtensions], cwdNow, []),
+							discoverSessionExtensionPaths({ extensionRoots: () => roots }, cwdNow, settings),
+						]),
 					);
-				}
-				if (restrictToolNames) return;
-				const suspendedToolNames = new Set(suspended.flatMap(extension => [...extension.tools.keys()]));
-				const resumedToolNames = new Set(resumed.flatMap(extension => [...extension.tools.keys()]));
-				for (const name of new Set([...suspendedToolNames, ...resumedToolNames])) {
-					// RPC host, SDK custom, and MCP manager tools keep precedence over extension tools.
-					if (session.hasRpcHostTool(name) || sdkCustomToolNames.has(name) || session.hasMCPManagerTool(name)) {
-						continue;
-					}
-					const effective = extensionRunner.getRegisteredTool(name);
-					if (effective) {
-						// Re-run activation for the surviving registrant, bypassing the once-per-tool cache.
-						scheduledToolRegistrations.delete(effective);
-						await scheduleToolRegistration(effective);
-						continue;
-					}
-					if (!suspendedToolNames.has(name)) continue;
-					await session.runToolRegistryMutation(async () => {
-						const enabled = session.getEnabledToolNames();
-						const mounted = session.getMountedXdevToolNames();
-						const native = nativeToolsByName.get(name);
-						session.setExtensionMCPTool(name, undefined);
-						if (native) {
-							// The suspended extension overrode a built-in: restore the native tool.
-							toolRegistry.set(name, new ExtensionToolWrapper(native, extensionRunner));
-							builtInRegistryToolNames.add(name);
-							session.setToolBuiltIn(name, true);
-							await session.setActiveToolPresentation(enabled, mounted, true);
-							return;
-						}
-						toolRegistry.delete(name);
-						await session.setActiveToolPresentation(
-							enabled.filter(enabledName => enabledName !== name),
-							mounted.filter(mountedName => mountedName !== name),
+					const governed = new Set(governedPaths.map(extensionPath => resolvePath(extensionPath, cwdNow)));
+					const enabled = new Set(enabledPaths.map(extensionPath => resolvePath(extensionPath, cwdNow)));
+					const { suspended, resumed } = extensionRunner.setSuspendedExtensions(
+						extension => governed.has(extension.resolvedPath) && !enabled.has(extension.resolvedPath),
+					);
+					const loadedPaths = new Set(
+						extensionRunner.getLoadedExtensions().map(extension => extension.resolvedPath),
+					);
+					const unloaded = [...enabled].filter(
+						extensionPath => !loadedPaths.has(extensionPath) && !announcedUnloadedExtensions.has(extensionPath),
+					);
+					if (unloaded.length > 0) {
+						for (const extensionPath of unloaded) announcedUnloadedExtensions.add(extensionPath);
+						session.emitNotice(
+							"warning",
+							`Restart omp to load newly enabled extensions: ${unloaded.join(", ")}`,
+							"extensions",
 						);
-					});
-				}
-			};
-			cfgExtensionSources.listen(session, () => {
-				const next = extensionReconcile
-					.catch(() => {})
-					.then(reconcileExtensionSources)
-					.then(() => session.refreshSkillsAndCommands());
-				extensionReconcile = next;
-				return next;
-			});
-		}
+					}
+					if (restrictToolNames) return;
+					const suspendedToolNames = new Set(suspended.flatMap(extension => [...extension.tools.keys()]));
+					const resumedToolNames = new Set(resumed.flatMap(extension => [...extension.tools.keys()]));
+					for (const name of new Set([...suspendedToolNames, ...resumedToolNames])) {
+						// RPC host, SDK custom, and MCP manager tools keep precedence over extension tools.
+						if (session.hasRpcHostTool(name) || sdkCustomToolNames.has(name) || session.hasMCPManagerTool(name)) {
+							continue;
+						}
+						const effective = extensionRunner.getRegisteredTool(name);
+						if (effective) {
+							// Re-run activation for the surviving registrant, bypassing the once-per-tool cache.
+							scheduledToolRegistrations.delete(effective);
+							await scheduleToolRegistration(effective);
+							continue;
+						}
+						if (!suspendedToolNames.has(name)) continue;
+						await session.runToolRegistryMutation(async () => {
+							const enabled = session.getEnabledToolNames();
+							const mounted = session.getMountedXdevToolNames();
+							const native = nativeToolsByName.get(name);
+							session.setExtensionMCPTool(name, undefined);
+							if (native) {
+								// The suspended extension overrode a built-in: restore the native tool.
+								toolRegistry.set(name, new ExtensionToolWrapper(native, extensionRunner));
+								builtInRegistryToolNames.add(name);
+								session.setToolBuiltIn(name, true);
+								await session.setActiveToolPresentation(enabled, mounted, true);
+								return;
+							}
+							toolRegistry.delete(name);
+							await session.setActiveToolPresentation(
+								enabled.filter(enabledName => enabledName !== name),
+								mounted.filter(mountedName => mountedName !== name),
+							);
+						});
+					}
+				};
+				cfgExtensionSources.listen(session, () => {
+					const next = extensionReconcile
+						.catch(() => {})
+						.then(reconcileExtensionSources)
+						.then(() => session.refreshSkillsAndCommands());
+					extensionReconcile = next;
+					return next;
+				});
+			}
+		});
 		session.yieldQueue.register<McpNotificationEntry>("mcp-notification", {
 			build: buildMcpNotificationBatchMessage,
 		});
@@ -5623,13 +5647,17 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// time. The dispose wrapper below unregisters on teardown (unless parked).
 		if (
 			!registeredAgentRef ||
-			!agentRegistry.attachSession(
-				resolvedAgentId,
-				session,
-				sessionManager.getSessionFile() ?? null,
-				registeredAgentRef,
+			!launchStep("sdk.registry.attach", () =>
+				agentRegistry.attachSession(
+					resolvedAgentId,
+					session,
+					sessionManager.getSessionFile() ?? null,
+					registeredAgentRef,
+				),
 			) ||
-			!agentRegistry.setStatus(resolvedAgentId, "running", registeredAgentRef)
+			!launchStep("sdk.registry.running", () =>
+				agentRegistry.setStatus(resolvedAgentId, "running", registeredAgentRef),
+			)
 		) {
 			throw new Error(`Agent "${resolvedAgentId}" was replaced during session initialization.`);
 		}
@@ -5643,97 +5671,104 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		let unsubscribeMcpNotifications: (() => void) | undefined;
 		let unregisterMcpPostmortem: (() => void) | undefined;
 
-		{
-			const originalDispose = session.dispose.bind(session);
-			let tinyClientReleased = false;
-			session.dispose = async (disposeOptions?: AgentSessionDisposeOptions) => {
-				try {
-					// Reject new session work (eval starts) the moment disposal
-					// begins — the lifecycle await below opens an async gap before
-					// AgentSession.dispose() would otherwise set its guards.
-					session.beginDispose();
-					if (agentKind === "main") {
-						// Top-level teardown owns the global agent lifecycle: park timers,
-						// adopted subagent sessions, revivers. Tear it down while shared
-						// resources (kernels, MCP, LSP) are still live. Subagent disposal
-						// must NOT touch the global lifecycle.
-						const vibeRegistry = VibeSessionRegistry.global();
-						const vibeParentSession = {
-							getAgentId: () => resolvedAgentId,
-							getSessionId: () => sessionManager.getSessionId(),
-							getSessionFile: () => sessionManager.getSessionFile() ?? null,
-							sessionManager,
-							asyncJobManager: scopedAsyncJobManager,
-							settings,
-							getActiveModelString,
-						};
-						await vibeRegistry.suspendScope(vibeRegistry.ownerScope(vibeParentSession), scopedAsyncJobManager);
-						await AgentLifecycleManager.global().dispose();
-					}
-					await originalDispose(disposeOptions);
-				} finally {
-					// The tiny-model client is a process singleton shared by every session.
-					// Only the session that owns process state drops its connections, once:
-					// that fails every request still in flight, and a repeat dispose must not
-					// cancel requests other sessions made since.
-					if (bindsProcessState && !tinyClientReleased) {
-						tinyClientReleased = true;
-						try {
-							await shutdownTinyTitleClient();
-						} catch (error) {
-							logger.warn("Session dispose: tiny-model client shutdown failed", { error: String(error) });
-						}
-					}
-					unregisterUnlessParked();
-					unsubscribeCredentialDisabled();
-					unbindSessionEffects?.();
-					restoreProviderToggles?.();
-					unsubscribeMcpNotifications?.();
-					unregisterMcpPostmortem?.();
-					for (const callback of disposeCallbacks) callback();
-					disposeCallbacks.clear();
-					// Drop refs so the process-global postmortem list doesn't retain
-					// the bridge closure past explicit dispose.
-					unsubscribeMcpNotifications = undefined;
-					unregisterMcpPostmortem = undefined;
-				}
-			};
-		}
-
-		const prewarmModel = session.model;
-		if (prewarmModel?.api === "openai-codex-responses") {
-			// `.api` equality doesn't narrow the generic; the guard makes this cast sound.
-			const codexModel = prewarmModel as Model<"openai-codex-responses">;
-			if (isOpenAICodexWebSocketPreferred(codexModel, { preferWebsockets: session.preferWebsockets })) {
-				void (async () => {
+		launchStep("sdk.dispose.bind", () => {
+			{
+				const originalDispose = session.dispose.bind(session);
+				let tinyClientReleased = false;
+				session.dispose = async (disposeOptions?: AgentSessionDisposeOptions) => {
 					try {
-						const codexPrewarmApiKey = options.getApiKey
-							? // `getApiKey` returns a value-or-promise union; unwrap the promise,
-								// then resolve the result if it is itself an ApiKeyResolver.
-								await resolveApiKeyOnce(await options.getApiKey(codexModel))
-							: await modelRegistry.getApiKey(codexModel, providerSessionId);
-						if (!codexPrewarmApiKey) return;
-						// Load the transport only for an actual Codex prewarm, not unrelated session setup.
-						const { prewarmOpenAICodexResponses } =
-							await import("@oh-my-pi/pi-ai/providers/openai-codex-responses");
-						await logger.time("prewarmOpenAICodexResponses", prewarmOpenAICodexResponses, codexModel, {
-							apiKey: codexPrewarmApiKey,
-							sessionId: providerSessionId,
-							preferWebsockets: session.preferWebsockets,
-							providerSessionState: session.providerSessionState,
-							serviceTier: session.effectiveServiceTier(codexModel),
-						});
-					} catch (error) {
-						const errorMessage = error instanceof Error ? error.message : String(error);
-						logger.debug("Codex websocket prewarm failed", {
-							error: errorMessage,
-							provider: codexModel.provider,
-							model: codexModel.id,
-						});
+						// Reject new session work (eval starts) the moment disposal
+						// begins — the lifecycle await below opens an async gap before
+						// AgentSession.dispose() would otherwise set its guards.
+						session.beginDispose();
+						if (agentKind === "main") {
+							// Top-level teardown owns the global agent lifecycle: park timers,
+							// adopted subagent sessions, revivers. Tear it down while shared
+							// resources (kernels, MCP, LSP) are still live. Subagent disposal
+							// must NOT touch the global lifecycle.
+							const vibeRegistry = VibeSessionRegistry.global();
+							const vibeParentSession = {
+								getAgentId: () => resolvedAgentId,
+								getSessionId: () => sessionManager.getSessionId(),
+								getSessionFile: () => sessionManager.getSessionFile() ?? null,
+								sessionManager,
+								asyncJobManager: scopedAsyncJobManager,
+								settings,
+								getActiveModelString,
+							};
+							await vibeRegistry.suspendScope(vibeRegistry.ownerScope(vibeParentSession), scopedAsyncJobManager);
+							await AgentLifecycleManager.global().dispose();
+						}
+						await originalDispose(disposeOptions);
+					} finally {
+						// The tiny-model client is a process singleton shared by every session.
+						// Only the session that owns process state drops its connections, once:
+						// that fails every request still in flight, and a repeat dispose must not
+						// cancel requests other sessions made since.
+						if (bindsProcessState && !tinyClientReleased) {
+							tinyClientReleased = true;
+							try {
+								await shutdownTinyTitleClient();
+							} catch (error) {
+								logger.warn("Session dispose: tiny-model client shutdown failed", { error: String(error) });
+							}
+						}
+						unregisterUnlessParked();
+						unsubscribeCredentialDisabled();
+						unbindSessionEffects?.();
+						restoreProviderToggles?.();
+						unsubscribeMcpNotifications?.();
+						unregisterMcpPostmortem?.();
+						for (const callback of disposeCallbacks) callback();
+						disposeCallbacks.clear();
+						// Drop refs so the process-global postmortem list doesn't retain
+						// the bridge closure past explicit dispose.
+						unsubscribeMcpNotifications = undefined;
+						unregisterMcpPostmortem = undefined;
 					}
-				})();
+				};
 			}
-		}
+		});
+		launchStep("sdk.prewarm.kickoff", () => {
+			const prewarmModel = session.model;
+			if (prewarmModel?.api === "openai-codex-responses") {
+				// `.api` equality doesn't narrow the generic; the guard makes this cast sound.
+				const codexModel = prewarmModel as Model<"openai-codex-responses">;
+				if (isOpenAICodexWebSocketPreferred(codexModel, { preferWebsockets: session.preferWebsockets })) {
+					void (async () => {
+						try {
+							const codexPrewarmApiKey = options.getApiKey
+								? // `getApiKey` returns a value-or-promise union; unwrap the promise,
+									// then resolve the result if it is itself an ApiKeyResolver.
+									await launchStep("sdk.prewarm.apiKey.wait", async () =>
+										resolveApiKeyOnce(await options.getApiKey!(codexModel)),
+									)
+								: await launchStep("sdk.prewarm.apiKey.wait", () =>
+										modelRegistry.getApiKey(codexModel, providerSessionId),
+									);
+							if (!codexPrewarmApiKey) return;
+							// Load the transport only for an actual Codex prewarm, not unrelated session setup.
+							const { prewarmOpenAICodexResponses } =
+								await import("@oh-my-pi/pi-ai/providers/openai-codex-responses");
+							await logger.time("prewarmOpenAICodexResponses", prewarmOpenAICodexResponses, codexModel, {
+								apiKey: codexPrewarmApiKey,
+								sessionId: providerSessionId,
+								preferWebsockets: session.preferWebsockets,
+								providerSessionState: session.providerSessionState,
+								serviceTier: session.effectiveServiceTier(codexModel),
+							});
+						} catch (error) {
+							const errorMessage = error instanceof Error ? error.message : String(error);
+							logger.debug("Codex websocket prewarm failed", {
+								error: errorMessage,
+								provider: codexModel.provider,
+								model: codexModel.id,
+							});
+						}
+					})();
+				}
+			}
+		});
 
 		// Broker-shared language servers (see lsp/mux/protocol.ts). The mode is
 		// process state read on every client cold start, so only a session that binds
@@ -5809,7 +5844,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					if (!lazy) startLspWarmup();
 				});
 			} else {
-				startLspWarmup();
+				launchStep("sdk.lspWarmup.kickoff", startLspWarmup);
 			}
 		}
 
@@ -5826,68 +5861,70 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			});
 		};
 
-		const runAutoLearnCapture = createAutoLearnCaptureRunner({
-			sourceAgent: agent,
-			primaryPromptCacheKey: model => session.getPromptCacheKeyForModel(model),
-			captureTools: () =>
-				(["manage_skill", "learn"] as const)
-					.map(name => session.getToolByName(name))
-					.filter((tool): tool is AgentTool => tool !== undefined),
-			onPayload,
-			onResponse,
-			createAgent: captureOptions => {
-				const captureModel = captureOptions.initialState?.model;
-				const captureSessionId = captureOptions.sessionId;
-				if (!captureModel || !captureSessionId) throw new Error("Auto-learn capture identity is incomplete");
-				const captureDateCwdReminder = new DateCwdReminderInjector();
-				return new Agent({
-					...captureOptions,
-					cwd: sessionManager.getCwd(),
-					cwdResolver: () => sessionManager.getCwd(),
-					convertToLlm: convertToLlmFinal,
-					transformContext: async messages => wrapSteeringForModel(messages),
-					transformProviderContext: async (context, transformModel) => {
-						let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
-						transformed = capArchiveFrameBytes(transformed, transformModel);
-						transformed = clampProviderContextImages(transformed, transformModel);
-						transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
-						transformed = await dropUnreadableContextImages(transformed, transformModel);
-						transformed = await blobBroker.decorateContext(transformed, transformModel);
-						transformed = clampProviderContextImageBytes(transformed, transformModel);
-						return captureDateCwdReminder.transform(
-							transformed,
-							formatLocalCalendarDate(),
-							normalizePromptPath(sessionManager.getCwd()),
-						);
-					},
-					temperature: agent.temperature,
-					topP: agent.topP,
-					topK: agent.topK,
-					minP: agent.minP,
-					presencePenalty: agent.presencePenalty,
-					repetitionPenalty: agent.repetitionPenalty,
-					serviceTierResolver: agent.serviceTierResolver,
-					hideThinkingSummary: agent.hideThinkingSummary,
-					maxRetryDelayMs: agent.maxRetryDelayMs,
-					getToolContext: toolCall => toolContextStore.getContext(toolCall),
-					streamFn: primaryStreamFn,
-					transformToolCallArguments,
-					// No fallback resolver: only `learn`/`manage_skill` execute here (the rest are refused
-					// copies), and the primary's resolver could reach main-session MCP tools.
-					intentTracing: agent.intentTracing,
-					intentDescription: agent.intentDescription,
-					pruneToolDescriptions: agent.pruneToolDescriptions,
-					dialect: resolveDialect(cfgToolsFormat.get(settings), captureModel),
-					abortOnFabricatedToolResult: cfgToolsAbortOnFabricatedResult.get(settings),
-					appendOnlyContext: shouldEnableAppendOnlyContext(
-						cfgProviderAppendOnlyContext.get(settings),
-						captureModel,
-					)
-						? new AppendOnlyContextManager()
-						: undefined,
-				});
-			},
-		});
+		const runAutoLearnCapture = launchStep("sdk.autoLearn.bind", () =>
+			createAutoLearnCaptureRunner({
+				sourceAgent: agent,
+				primaryPromptCacheKey: model => session.getPromptCacheKeyForModel(model),
+				captureTools: () =>
+					(["manage_skill", "learn"] as const)
+						.map(name => session.getToolByName(name))
+						.filter((tool): tool is AgentTool => tool !== undefined),
+				onPayload,
+				onResponse,
+				createAgent: captureOptions => {
+					const captureModel = captureOptions.initialState?.model;
+					const captureSessionId = captureOptions.sessionId;
+					if (!captureModel || !captureSessionId) throw new Error("Auto-learn capture identity is incomplete");
+					const captureDateCwdReminder = new DateCwdReminderInjector();
+					return new Agent({
+						...captureOptions,
+						cwd: sessionManager.getCwd(),
+						cwdResolver: () => sessionManager.getCwd(),
+						convertToLlm: convertToLlmFinal,
+						transformContext: async messages => wrapSteeringForModel(messages),
+						transformProviderContext: async (context, transformModel) => {
+							let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
+							transformed = capArchiveFrameBytes(transformed, transformModel);
+							transformed = clampProviderContextImages(transformed, transformModel);
+							transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+							transformed = await dropUnreadableContextImages(transformed, transformModel);
+							transformed = await blobBroker.decorateContext(transformed, transformModel);
+							transformed = clampProviderContextImageBytes(transformed, transformModel);
+							return captureDateCwdReminder.transform(
+								transformed,
+								formatLocalCalendarDate(),
+								normalizePromptPath(sessionManager.getCwd()),
+							);
+						},
+						temperature: agent.temperature,
+						topP: agent.topP,
+						topK: agent.topK,
+						minP: agent.minP,
+						presencePenalty: agent.presencePenalty,
+						repetitionPenalty: agent.repetitionPenalty,
+						serviceTierResolver: agent.serviceTierResolver,
+						hideThinkingSummary: agent.hideThinkingSummary,
+						maxRetryDelayMs: agent.maxRetryDelayMs,
+						getToolContext: toolCall => toolContextStore.getContext(toolCall),
+						streamFn: primaryStreamFn,
+						transformToolCallArguments,
+						// No fallback resolver: only `learn`/`manage_skill` execute here (the rest are refused
+						// copies), and the primary's resolver could reach main-session MCP tools.
+						intentTracing: agent.intentTracing,
+						intentDescription: agent.intentDescription,
+						pruneToolDescriptions: agent.pruneToolDescriptions,
+						dialect: resolveDialect(cfgToolsFormat.get(settings), captureModel),
+						abortOnFabricatedToolResult: cfgToolsAbortOnFabricatedResult.get(settings),
+						appendOnlyContext: shouldEnableAppendOnlyContext(
+							cfgProviderAppendOnlyContext.get(settings),
+							captureModel,
+						)
+							? new AppendOnlyContextManager()
+							: undefined,
+					});
+				},
+			}),
+		);
 
 		// Auto-learn can immediately trigger a private capture after the first real
 		// stop. When it is enabled at startup and a memory backend is selected,
