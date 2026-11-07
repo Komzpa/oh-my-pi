@@ -19,7 +19,7 @@ import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { logger, TempDir } from "@oh-my-pi/pi-utils";
 import { computeNonMessageTokens } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import { mnemopiBackend } from "@oh-my-pi/pi-coding-agent/mnemopi/backend";
 import type { Tool, ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -741,6 +741,96 @@ describe("experimental context management", () => {
 		}
 	});
 
+	it.each([
+		["manual", "bookkeeping"],
+		["automatic", "bookkeeping"],
+		["manual", "message"],
+		["automatic", "message"],
+		["manual", "notes"],
+		["automatic", "notes"],
+	] as const)("handles %s rollover with %s appended during preparation", async (mode, mutation) => {
+		const tempDir = TempDir.createSync("@pi-experimental-abort-");
+		try {
+			const mock = createMockModel({
+				responses: [{ content: [{ type: "toolCall", name: "new_context", arguments: {} }] }, { content: ["done"] }],
+			});
+			const model = mock.model;
+			if (!model) throw new Error("Expected bundled model");
+			const manager = SessionManager.inMemory(tempDir.path());
+			const seed = [
+				user("first task"),
+				assistant("first result ".repeat(512)),
+				user("second task"),
+				assistant("second result"),
+			];
+			for (const message of seed) manager.appendMessage(message);
+			const settings = Settings.isolated({
+				"compaction.experimentalContextManagement": true,
+				"compaction.keepRecentTokens": 1,
+				"compaction.autoContinue": false,
+			});
+			const enteredHook = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const runtime = new ExtensionRuntime();
+			const extension = await loadExtensionFromFactory(
+				pi => {
+					pi.on("session_before_compact", async () => {
+						enteredHook.resolve();
+						await release.promise;
+						return {};
+					});
+				},
+				tempDir.path(),
+				new EventBus(),
+				runtime,
+				"experimental-abort",
+			);
+			const extensionRunner = new ExtensionRunner([extension], runtime, tempDir.path(), manager, modelRegistry);
+			const { tools } = createRolloverTools(manager, settings);
+			const agent = new Agent({
+				initialState: { model, systemPrompt: ["test"], messages: seed, tools },
+				streamFn: mock.stream,
+				getApiKey: () => "test-key",
+			});
+			session = new AgentSession({
+				agent,
+				sessionManager: manager,
+				settings,
+				modelRegistry,
+				toolRegistry: new Map(tools.map(tool => [tool.name, tool])),
+				builtInToolNames: BUILTIN_TOOL_NAMES,
+				extensionRunner,
+			});
+			const compacted = mode === "manual" ? session.compact() : session.prompt("continue");
+			await enteredHook.promise;
+			const warn = vi.spyOn(logger, "warn");
+			if (mutation === "bookkeeping")
+				manager.appendCustomEntry("omp:restart-pending-queues", {
+					steering: [],
+					followUp: [],
+					pendingNextTurn: [],
+				});
+			else if (mutation === "message") manager.appendMessage(user("new intent"));
+			else manager.appendCustomEntry(CONTEXT_NOTES_ENTRY_TYPE, { text: "updated notes" });
+			release.resolve();
+			if (mode === "manual" && mutation !== "bookkeeping")
+				await expect(compacted).rejects.toThrow(CompactionCancelledError);
+			else await compacted;
+			await session.waitForIdle();
+			expect(manager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(
+				mutation === "bookkeeping" ? 1 : 0,
+			);
+			if (mutation !== "bookkeeping") {
+				expect(warn).toHaveBeenCalledTimes(1);
+				expect(warn).toHaveBeenCalledWith(
+					"Experimental context rollover cancelled",
+					expect.objectContaining({ reason: "context-changed", stage: "after-hook" }),
+				);
+			}
+		} finally {
+			tempDir.removeSync();
+		}
+	});
 	it("commits no boundary when the run aborts mid-rollover while the compaction hook is parked", async () => {
 		const tempDir = TempDir.createSync("@pi-experimental-abort-");
 		try {

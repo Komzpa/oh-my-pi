@@ -990,14 +990,17 @@ export class TurnRecovery {
 		await this.persistTerminalEmptyErrorTurn(message);
 		const persistenceKey = sessionMessagePersistenceKey(message);
 		if (!persistenceKey) return;
-		const branch = this.#host.sessionManager.getBranchView();
-		const branchEntry = branch.findLast(
-			entry =>
-				entry.type === "message" &&
-				entry.message.role === "assistant" &&
-				sessionMessagePersistenceKey(entry.message) === persistenceKey &&
-				(sameMessageContent(entry.message, message) || this.#isSameAssistantMessage(entry.message, message)),
-		);
+		let branchEntry: SessionEntry | undefined;
+		for (const entry of this.#host.sessionManager.iterateBranchMatchingNewestFirst(
+			metadata => metadata.type === "message" && metadata.messageRole === "assistant",
+		)) {
+			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+			if (sessionMessagePersistenceKey(entry.message) !== persistenceKey) continue;
+			if (!sameMessageContent(entry.message, message) && !this.#isSameAssistantMessage(entry.message, message))
+				continue;
+			branchEntry = entry;
+			break;
+		}
 		if (!branchEntry) return;
 		if (this.#pendingRetryErrors.some(error => error.entryId === branchEntry.id)) return;
 		const rateLimited = AIError.is(id, AIError.Flag.UsageLimit);
@@ -1014,21 +1017,31 @@ export class TurnRecovery {
 
 	async #markPendingRetryErrors(completion: RetryErrorCompletion): Promise<RetryErrorUpdate[]> {
 		if (this.#pendingRetryErrors.length === 0) return [];
-		const branch = this.#host.sessionManager.getBranchView();
 		const branchById = new Map<string, SessionEntry>();
-		for (const entry of branch) {
-			branchById.set(entry.id, entry);
+		const byKey = new Map<string, SessionEntry>();
+		const pendingIds = new Set(this.#pendingRetryErrors.map(pending => pending.entryId));
+		for (const entry of this.#host.sessionManager.getBranchMatching(metadata => pendingIds.has(metadata.id))) {
+			if (entry.type === "message" && entry.message.role === "assistant") branchById.set(entry.id, entry);
+		}
+		// Persistence-key matching is the legacy fallback when the captured entry
+		// was replaced; normal retry completion reads only the pending records.
+		const missing = this.#pendingRetryErrors.filter(pending => !branchById.has(pending.entryId));
+		if (missing.length > 0) {
+			for (const entry of this.#host.sessionManager.iterateBranchMatchingNewestFirst(
+				metadata => metadata.type === "message" && metadata.messageRole === "assistant",
+			)) {
+				if (entry.type !== "message" || entry.message.role !== "assistant") continue;
+				const key = sessionMessagePersistenceKey(entry.message);
+				if (key && !byKey.has(key) && missing.some(pending => pending.persistenceKey === key))
+					byKey.set(key, entry);
+				if (missing.every(pending => byKey.has(pending.persistenceKey))) break;
+			}
 		}
 		const retryErrors: RetryErrorUpdate[] = [];
 		for (const pending of this.#pendingRetryErrors) {
 			let entry = branchById.get(pending.entryId);
 			if (entry?.type !== "message" || entry.message.role !== "assistant") {
-				entry = branch.findLast(
-					candidate =>
-						candidate.type === "message" &&
-						candidate.message.role === "assistant" &&
-						sessionMessagePersistenceKey(candidate.message) === pending.persistenceKey,
-				);
+				entry = byKey.get(pending.persistenceKey);
 			}
 			if (entry?.type !== "message" || entry.message.role !== "assistant") continue;
 			let retryRecovery: AssistantRetryRecovery;
@@ -1058,7 +1071,7 @@ export class TurnRecovery {
 					note: pending.note,
 				};
 			}
-			entry.message.retryRecovery = retryRecovery;
+			this.#host.sessionManager.appendRetryRecovery(entry.id, retryRecovery);
 			retryErrors.push({
 				entryId: entry.id,
 				persistenceKey: pending.persistenceKey,
@@ -1067,7 +1080,7 @@ export class TurnRecovery {
 			});
 		}
 		if (retryErrors.length > 0) {
-			await this.#host.sessionManager.rewriteEntries();
+			await this.#host.sessionManager.flush();
 		}
 		return retryErrors;
 	}
@@ -1369,17 +1382,8 @@ export class TurnRecovery {
 	}
 
 	#discardAcceptedTerminalEmptyStop(assistantMessage: AssistantMessage): void {
-		const branch = this.#host.sessionManager.getBranchView();
-		const branchIndex = branch.findLastIndex(
-			entry =>
-				entry.type === "message" &&
-				entry.message.role === "assistant" &&
-				this.#isSameAssistantMessage(entry.message, assistantMessage),
-		);
-		const branchEntry = branchIndex >= 0 ? branch[branchIndex] : undefined;
-		// A branch entry's parent is the entry before it on the branch.
-		const parentEntry =
-			branchEntry?.parentId === null || branchEntry?.parentId === undefined ? undefined : branch[branchIndex - 1];
+		const branchEntry = this.#findPersistedAssistantEntry(assistantMessage);
+		const parentEntry = branchEntry?.parentId ? this.#host.sessionManager.getEntry(branchEntry.parentId) : undefined;
 		const prunePrompt = parentEntry?.type === "custom_message";
 
 		this.removeAssistantMessageFromActiveContext(assistantMessage, "accepted-terminal-empty-stop");
@@ -1409,21 +1413,10 @@ export class TurnRecovery {
 	discardAssistantTurn(assistantMessage: AssistantMessage): string | undefined {
 		this.removeAssistantMessageFromActiveContext(assistantMessage);
 
-		const branch = this.#host.sessionManager.getBranchView();
-		const persistedEntryId = this.#host.persistedAssistantEntryId(assistantMessage);
-		const branchEntry =
-			(persistedEntryId === undefined
-				? undefined
-				: branch.find(
-						entry =>
-							entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
-					)) ??
-			branch.findLast(
-				entry =>
-					entry.type === "message" &&
-					entry.message.role === "assistant" &&
-					this.#isSameAssistantMessage(entry.message as AssistantMessage, assistantMessage),
-			);
+		const branchEntry = this.#findPersistedAssistantEntry(
+			assistantMessage,
+			this.#host.persistedAssistantEntryId(assistantMessage),
+		);
 		if (!branchEntry) {
 			return undefined;
 		}
@@ -1437,6 +1430,23 @@ export class TurnRecovery {
 		return branchEntry.id;
 	}
 
+	#findPersistedAssistantEntry(message: AssistantMessage, preferredId?: string): SessionEntry | undefined {
+		if (preferredId) {
+			const preferred = this.#host.sessionManager.getLatestBranchMatching(metadata => metadata.id === preferredId);
+			if (preferred?.type === "message" && preferred.message.role === "assistant") return preferred;
+		}
+		for (const entry of this.#host.sessionManager.iterateBranchMatchingNewestFirst(
+			metadata => metadata.type === "message" && metadata.messageRole === "assistant",
+		)) {
+			if (
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				this.#isSameAssistantMessage(entry.message, message)
+			)
+				return entry;
+		}
+		return undefined;
+	}
 	#isSameAssistantMessage(left: AssistantMessage, right: AssistantMessage): boolean {
 		return (
 			left === right ||
@@ -3397,7 +3407,9 @@ export class TurnRecovery {
 		// A restored session omits the failed turn (and its synthetic results)
 		// from provider context, so — mirroring retry() — the persisted display
 		// transcript decides whether a retryable tool-call tail exists.
-		return abortedToolCallTail(this.#host.sessionManager.buildSessionContext({ transcript: true }).messages);
+		return abortedToolCallTail(
+			this.#host.sessionManager.buildSessionContext({ transcript: true, collapseCompactedHistory: true }).messages,
+		);
 	}
 	/**
 	 * Manually retry the last failed assistant turn.
@@ -3448,7 +3460,10 @@ export class TurnRecovery {
 			// A restored session already dropped the failed assistant turn (and its
 			// paired synthetic tool results) from provider context, so the persisted
 			// display transcript is the source of truth for a retryable failed tail.
-			const transcriptMessages = this.#host.sessionManager.buildSessionContext({ transcript: true }).messages;
+			const transcriptMessages = this.#host.sessionManager.buildSessionContext({
+				transcript: true,
+				collapseCompactedHistory: true,
+			}).messages;
 			if (retryableAssistantTurnEnd(transcriptMessages) === undefined) return false;
 			// The boundary is already gone from active context; when the intact
 			// failed batch is still the tail, replay the tools directly.
@@ -3504,21 +3519,7 @@ export class TurnRecovery {
 			}
 		}
 		const anchor = messages[replayStart - 1] as AssistantMessage;
-		const branch = this.#host.sessionManager.getBranchView();
-		const persistedEntryId = this.#host.persistedAssistantEntryId(anchor);
-		const anchorEntry =
-			(persistedEntryId === undefined
-				? undefined
-				: branch.find(
-						entry =>
-							entry.id === persistedEntryId && entry.type === "message" && entry.message.role === "assistant",
-					)) ??
-			branch.findLast(
-				entry =>
-					entry.type === "message" &&
-					entry.message.role === "assistant" &&
-					this.#isSameAssistantMessage(entry.message as AssistantMessage, anchor),
-			);
+		const anchorEntry = this.#findPersistedAssistantEntry(anchor, this.#host.persistedAssistantEntryId(anchor));
 		if (anchorEntry) {
 			this.#host.withBashBranchTransition(() => {
 				this.#host.sessionManager.branch(anchorEntry.id);

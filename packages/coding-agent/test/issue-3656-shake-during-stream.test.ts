@@ -86,6 +86,7 @@ describe("issue #3656 /shake mid-stream preserves the in-flight assistant turn",
 		});
 		mode = new InteractiveMode(session, "test");
 		mode.ui.requestRender = vi.fn();
+		await mode.init();
 	});
 
 	afterEach(async () => {
@@ -117,7 +118,9 @@ describe("issue #3656 /shake mid-stream preserves the in-flight assistant turn",
 		mode.streamingComponent = streamingComponent;
 		mode.streamingMessage = assistantWithBash("echo hi");
 		mode.pendingTools.set("call-1", pendingTool);
-		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => streaming });
+		session.agent.state.isStreaming = streaming;
+		session.agent.state.streamMessage = streaming ? mode.streamingMessage : null;
+		session.agent.state.pendingToolCalls = new Set(streaming ? ["call-1"] : []);
 		return { streamingComponent, pendingTool };
 	}
 
@@ -183,6 +186,7 @@ describe("issue #3656 /shake mid-stream preserves the in-flight assistant turn",
 		Object.defineProperty(mode, "viewSession", {
 			configurable: true,
 			get: () => ({
+				messages: [],
 				isStreaming: true,
 				buildTranscriptSessionContext: () => ({ messages: [] }),
 				getToolByName: () => undefined,

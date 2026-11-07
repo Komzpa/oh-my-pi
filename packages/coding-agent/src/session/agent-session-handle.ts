@@ -40,12 +40,14 @@ import type {
 	PromptOptions,
 	ResolvedRoleModel,
 	RestoredQueuedMessage,
+	RestartDrainLease,
 	RoleModelCycle,
 	RoleModelCycleResult,
 	SessionStats,
 	SteerOptions,
 } from "./agent-session-types";
 import type { BlobPutOptions, BlobPutResult } from "./blob-store";
+import type { SessionContextEntryMetadata } from "./session-context";
 import type { IdleMaintenanceOptions } from "./idle-maintenance";
 import type { CustomMessage } from "./messages";
 import type { ServingModel } from "./retry-fallback-chains";
@@ -95,6 +97,13 @@ export interface AgentSessionAdvisorOverview {
 
 /** The surface other agents' code uses on a session obtained from the registry, lifecycle, or IRC delivery. */
 export interface AgentSessionHandle {
+	readonly isDisposed: boolean;
+	beginRestartDrain(options?: { interruptProvider?: boolean }): RestartDrainLease;
+	getRestartPendingInputCount(): number;
+	getRestartBranchEntries(): Promise<SessionEntry[]>;
+	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void>;
+	flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void>;
+
 	/** Cross-thread identity token: `${homeThreadId}:${snowflake}`, unique per session object. */
 	readonly instanceKey: string;
 	/** Agent loop pause flag and live state. */
@@ -152,6 +161,7 @@ export interface AgentSessionHandle {
 		reason?: string;
 		preserveCompaction?: boolean;
 		deliverQueuedMessages?: boolean;
+		cancelBackgroundJobs?: boolean;
 	}): Promise<void>;
 	/** Replace the pooled-turn yield contract. */
 	setWorkPoolYieldItems(items: readonly WorkPoolYieldItem[]): Promise<void>;
@@ -167,6 +177,10 @@ export interface AgentViewSessionManager extends AgentSessionManagerHandle {
 	getEntries(): SessionEntry[];
 	/** Entries from the root to `fromId` (default: the current leaf). */
 	getBranch(fromId?: string): SessionEntry[];
+	/** Metadata-first newest iteration for bounded live state readers. */
+	iterateBranchMatchingNewestFirst?: (
+		predicate: (metadata: SessionContextEntryMetadata) => boolean,
+	) => Iterable<SessionEntry>;
 	/** Id of the current leaf entry. */
 	getLeafId(): string | null;
 	/** The newest entry that moves the conversation, when the active branch ends at it (`conversationTip`). */

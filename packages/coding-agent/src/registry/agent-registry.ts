@@ -144,6 +144,8 @@ export interface AgentRegistryApi {
 	reopen(id: string, expected: AgentRef): AgentRef | undefined;
 	/** Attach transcript-derived identity and telemetry without changing lifecycle state. */
 	setHistory(id: string, history: AgentHistorySummary, expectedSessionFile?: string): boolean;
+	/** Restore persisted identity while the exact ref is still current. */
+	restoreIdentity(id: string, expected: AgentRef, identity: { displayName: string; parentId?: string }): boolean;
 	/** Transition `id` to `status` when it still matches `expected`. */
 	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean;
 	/** Record that the current run handed over its final result. */
@@ -296,6 +298,16 @@ export class AgentRegistry implements AgentRegistryApi {
 			definedHistory.directCost = Math.max(previousDirectCost, incomingDirectCost);
 		}
 		ref.history = { ...ref.history, ...definedHistory };
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
+	}
+	/** Restore transcript-backed display/parent identity only while the exact ref is still current. */
+	restoreIdentity(id: string, expected: AgentRef, identity: { displayName: string; parentId?: string }): boolean {
+		const ref = this.#refs.get(id);
+		if (ref !== expected || ref.status === "aborted") return false;
+		if (ref.displayName === identity.displayName && ref.parentId === identity.parentId) return true;
+		ref.displayName = identity.displayName;
+		ref.parentId = identity.parentId;
 		this.#emit({ type: "metadata_changed", ref });
 		return true;
 	}

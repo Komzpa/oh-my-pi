@@ -364,16 +364,26 @@ describe("inline click-to-focus geometry", () => {
 		cfgExtensionAssistantTextRenderers.set(mode.settings, true);
 		const { extension } = installDemoLinkExtension([]);
 		appendReply("Open [the details](demo:open/7) now.");
-		await mode.init({ suppressWelcomeIntro: true });
-		void mode.getUserInput();
-		await term.waitForRender();
+		const reachedReplay = Promise.withResolvers<void>();
+		const releaseReplay = Promise.withResolvers<void>();
+		const renderInitialMessages = mode.renderInitialMessages.bind(mode);
+		vi.spyOn(mode, "renderInitialMessages").mockImplementationOnce(async options => {
+			reachedReplay.resolve();
+			await releaseReplay.promise;
+			await renderInitialMessages(options);
+		});
+		const initializing = mode.init({ suppressWelcomeIntro: true });
+		await reachedReplay.promise;
 		// A startup notice (MCP, LSP) lands in the chat before the replay; then a scheme is claimed.
 		mode.showWarning("early notice");
 		extension.linkSchemes.push("demo");
 		mode.syncExtensionLinks();
 		// Any rebuild the change queued runs as a microtask, before this continuation.
 		await Promise.resolve();
-		await mode.renderInitialMessages({ preserveExistingChat: true });
+		releaseReplay.resolve();
+		await initializing;
+		void mode.getUserInput();
+		await term.waitForRender();
 		const chat = plainRows(mode.chatContainer.render(120)).join("\n");
 		expect(chat.split("Open the details now.").length - 1).toBe(1);
 		expect(chat.split("early notice").length - 1).toBe(1);

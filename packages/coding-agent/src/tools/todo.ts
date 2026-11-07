@@ -11,8 +11,10 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 
+import { launchScope } from "@oh-my-pi/pi-utils/launch-trace";
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
+import type { SessionContextEntryMetadata } from "../session/session-context";
 import type { SessionEntry } from "../session/session-entries";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
@@ -158,6 +160,13 @@ export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
 
 export const TODO_HUD_STATE_CUSTOM_TYPE = "todo_hud_state";
 
+/** Entries that can carry todo state or HUD choices; replay over only these is equivalent to the full branch. */
+export function isTodoStateEntryMetadata(metadata: SessionContextEntryMetadata): boolean {
+	if (metadata.type === "custom")
+		return metadata.customType === USER_TODO_EDIT_CUSTOM_TYPE || metadata.customType === TODO_HUD_STATE_CUSTOM_TYPE;
+	return metadata.type === "message" && metadata.messageRole === "toolResult" && metadata.toolName === "todo";
+}
+
 export type TodoHudVisibility = "dismissed" | "revealed";
 
 export interface TodoSnapshotIdentity {
@@ -170,6 +179,7 @@ export interface TodoHudStateEntryData extends TodoSnapshotIdentity {
 }
 
 function todoPhasesFingerprint(phases: readonly TodoPhase[]): string {
+	using _phase = launchScope("state.serialize:todo-fingerprint");
 	return JSON.stringify(
 		phases.map(phase => ({
 			name: phase.name,

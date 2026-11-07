@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
+import { setImmediate as yieldImmediate } from "node:timers/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { FileEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
@@ -76,6 +77,73 @@ function messageTexts(entries: FileEntry[]): string[] {
 }
 
 describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
+	it("keeps lifecycle records while avoiding unrelated payload parsing, including imported JSON", async () => {
+		const custom = { type: "custom", id: "spawn", parentId: null, timestamp: ISO, customType: "vibe", data: {} };
+		const content = [
+			JSON.stringify(HEADER),
+			JSON.stringify(msg("large", "s1", "payload".repeat(100_000))),
+			JSON.stringify(custom),
+			JSON.stringify({
+				id: "reordered",
+				type: custom.type,
+				parentId: null,
+				timestamp: ISO,
+				customType: "vibe",
+				data: {},
+			}),
+			JSON.stringify({ ...custom, id: "multiline" }, null, 2),
+		].join("\n");
+		const file = await writeTemp(content);
+		const parsed = spyOn(JSON, "parse");
+		const visited: FileEntry[] = [];
+		try {
+			await sessionLoader.visitEntriesFromFileStream(
+				file,
+				entry => {
+					visited.push(entry);
+				},
+				{ entryTypes: ["custom"] },
+			);
+			expect(entryIds(visited)).toEqual(["spawn", "reordered", "multiline"]);
+			expect(parsed.mock.calls.some(([value]) => typeof value === "string" && value.includes('"id":"large"'))).toBe(
+				false,
+			);
+		} finally {
+			parsed.mockRestore();
+		}
+	});
+
+	it("yields to a queued render during CPU-heavy visits even below byte and entry thresholds", async () => {
+		const file = await writeTemp(
+			[
+				JSON.stringify(HEADER),
+				...Array.from({ length: 40 }, (_, i) => JSON.stringify(msg(`m${i}`, "s1", "text"))),
+			].join("\n"),
+		);
+		let renderedAt = 0;
+		let visited = 0;
+		let render: Promise<void> | undefined;
+		await sessionLoader.visitEntriesFromFileStream(
+			file,
+			() => {
+				visited++;
+				if (!render)
+					render = yieldImmediate().then(() => {
+						renderedAt = visited;
+					});
+				const until = performance.now() + 2;
+				while (performance.now() < until) {
+					/* Simulate expensive summary projection. */
+				}
+			},
+			{ yieldEveryBytes: 0, yieldEveryEntries: 0 },
+		);
+		await render;
+		expect(visited).toBe(41);
+		expect(renderedAt).toBeGreaterThan(0);
+		expect(renderedAt).toBeLessThan(41);
+	});
+
 	it("visits entries incrementally while skipping malformed lines", async () => {
 		const slotLine = serializeTitleSlot({ title: "Visitor", source: "user", updatedAt: ISO });
 		const content = [
@@ -436,6 +504,61 @@ describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
 
 		expect(entryIds(visited)).toEqual(["s1"]);
 		expect(malformedRecords).toBe(1);
+	});
+
+	it("keeps only the first JSON value of a physical line that holds two values, then resumes on the next line", async () => {
+		const first = JSON.stringify(msg("p1", "s1", "first"));
+		const second = JSON.stringify(msg("p2", "p1", "second"));
+		const content = `${JSON.stringify(HEADER)}\n${first} ${second}\n${JSON.stringify(msg("tail", "s1", "after"))}\n`;
+		const file = await writeTemp(content);
+		const loaded = await sessionLoader.loadEntriesFromFileStream(file);
+
+		expect(entryIds(loaded.entries)).toEqual(["s1", "p1", "tail"]);
+		expect(loaded.malformedRecords).toBe(1);
+	});
+
+	it("recovers a valid prefix before trailing junk, honoring maxRecords without a malformed callback", async () => {
+		const content = `${JSON.stringify(msg("pre", "s1", "prefix"))} junk\n${JSON.stringify(msg("tail", "s1", "after"))}\n`;
+		const file = await writeTemp(content);
+		const loaded = await sessionLoader.loadEntriesFromFileStream(file);
+		expect(entryIds(loaded.entries)).toEqual(["pre", "tail"]);
+		expect(loaded.malformedRecords).toBe(1);
+
+		const capped: string[] = [];
+		let capMalformed = 0;
+		await sessionLoader.visitEntriesFromFileStream(file, entry => void capped.push(entry.id), {
+			maxRecords: 1,
+			onMalformedRecord: () => {
+				capMalformed++;
+			},
+		});
+		expect(capped).toEqual(["pre"]);
+		expect(capMalformed).toBe(0);
+	});
+
+	it("demands only the valid JSON prefix of a positioned entry and reads its exact Unicode value", async () => {
+		const text = "café 漢字 🙂";
+		const headerLine = `${JSON.stringify(HEADER)}\n`;
+		const preLine = JSON.stringify(msg("pre", "s1", text));
+		const file = await writeTemp(`${headerLine}${preLine} junk\n${JSON.stringify(msg("tail", "s1", "after"))}\n`);
+		const positions = new Map<string, Parameters<typeof sessionLoader.readPositionedSessionEntry>[1]>();
+		const resume = await sessionLoader.visitSessionFileForResume(file, (entry, position) => {
+			positions.set(entry.id, position);
+		});
+		try {
+			const position = positions.get("pre");
+			if (!position || resume.sourceFd === undefined) throw new Error("missing positioned entry or source fd");
+			expect(position.offset).toBe(Buffer.byteLength(headerLine));
+			expect(position.length).toBe(Buffer.byteLength(preLine));
+			expect(sessionLoader.readPositionedSessionEntry(resume.sourceFd, position)).toMatchObject({
+				type: "message",
+				id: "pre",
+				parentId: "s1",
+				message: { content: [{ type: "text", text }] },
+			});
+		} finally {
+			if (resume.sourceFd !== undefined) fs.closeSync(resume.sourceFd);
+		}
 	});
 
 	it("returns empty for a missing file (ENOENT)", async () => {

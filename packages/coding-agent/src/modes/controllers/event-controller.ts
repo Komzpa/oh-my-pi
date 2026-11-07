@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -39,6 +40,7 @@ import { eventBlockId, PresentedBlock } from "@oh-my-pi/pi-tui/chat/transcript-p
 import { createUsageRowBlock, TurnUsageTally, turnElapsedMs } from "@oh-my-pi/pi-tui/overlays/usage-row";
 import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { getSymbolTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { createLocalInteractiveSessionConnection, type InteractiveSessionConnection } from "../interactive-session";
 import type { InteractiveModeContext } from "../../modes/types";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { AgentSessionEvent } from "../../session/agent-session";
@@ -323,6 +325,7 @@ export class EventController {
 	/** Bumped at every `agent_start`; a settle watch stands down once a new run begins. */
 	#runEpoch = 0;
 	/** Epoch of the in-flight {@link #finishWhenRunSettles} watch, if any. */
+	#settleWait: AbortController | undefined;
 	#settleWatchEpoch: number | undefined = undefined;
 	/**
 	 * The settle that handed control back to background work only
@@ -343,6 +346,9 @@ export class EventController {
 	// feeds it. Speech stays intact: `#vocalizeDelta` runs at ARRIVAL for every
 	// delta before the snapshot is coalesced away.
 	#pendingMessageUpdate: Extract<AgentSessionEvent, { type: "message_update" }> | undefined = undefined;
+	// Provider replay resets are not cumulative: retain the boundary even when
+	// the empty restart snapshot is replaced by a later delta before painting.
+	#pendingMessageRestart = false;
 	#messageUpdateTimer: NodeJS.Timeout | undefined = undefined;
 	/** Tail of the serialized dispatch chain; see #runSerialized. */
 	#dispatchTail: Promise<void> = Promise.resolve();
@@ -355,7 +361,10 @@ export class EventController {
 	#vocalizedMessageUpdates = new WeakSet<object>();
 	static readonly #MESSAGE_UPDATE_COALESCE_MS = 33;
 
-	constructor(private ctx: InteractiveModeContext) {
+	constructor(
+		private ctx: InteractiveModeContext,
+		private sessionConnection: InteractiveSessionConnection = createLocalInteractiveSessionConnection(ctx.session),
+	) {
 		// Enhanced speech (`speech.enhanced`) rewrites blocks through the
 		// tiny/smol role with this session's registry and credentials; the
 		// vocalizer falls back to mechanical cleanup when unset. Tolerates
@@ -501,6 +510,7 @@ export class EventController {
 			this.#messageUpdateTimer = undefined;
 		}
 		this.#pendingMessageUpdate = undefined;
+		this.#pendingMessageRestart = false;
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
 		this.composerPrediction.cancel();
@@ -675,13 +685,15 @@ export class EventController {
 	}
 
 	#retractToolCardEntry(toolCallId: string, component: ToolExecutionHandle): void {
-		component.seal();
 		let removeComponent = true;
 		if (component instanceof ReadToolGroupComponent) {
 			removeComponent = component.removeEntry(toolCallId);
 			if (component === this.#lastReadGroup) this.#resetReadGroup();
 		}
-		if (removeComponent) this.ctx.chatContainer.removeChild(component);
+		if (removeComponent) {
+			component.seal();
+			this.ctx.chatContainer.removeChild(component);
+		}
 		this.ctx.pendingTools.delete(toolCallId);
 		this.#toolTimelineComponents.delete(toolCallId);
 		this.#clearReadToolCall(toolCallId);
@@ -878,7 +890,11 @@ export class EventController {
 		// the listener's first await, preserving the timing the coalescing
 		// tests assert on. `message_update` enqueue is itself synchronous and
 		// needs no serialization.
-		this.ctx.unsubscribe = this.ctx.session.subscribe(event => this.dispatchSessionEvent(event));
+		const unsubscribe = this.sessionConnection.subscribe(event => this.dispatchSessionEvent(event));
+		this.ctx.unsubscribe = () => {
+			this.#settleWait?.abort();
+			unsubscribe();
+		};
 	}
 
 	/**
@@ -969,6 +985,7 @@ export class EventController {
 		this.#vocalizeDelta(event);
 		this.#vocalizedMessageUpdates.add(event);
 		this.#pendingMessageUpdate = event;
+		this.#pendingMessageRestart ||= event.assistantMessageEvent.type === "start";
 		if (this.#messageUpdateTimer) return;
 		this.#messageUpdateTimer = setTimeout(() => {
 			this.#messageUpdateTimer = undefined;
@@ -1001,6 +1018,11 @@ export class EventController {
 		const event = this.#pendingMessageUpdate;
 		if (!event) return;
 		this.#pendingMessageUpdate = undefined;
+		const restarted = this.#pendingMessageRestart;
+		this.#pendingMessageRestart = false;
+		if (restarted && event.assistantMessageEvent.type !== "start") {
+			await this.#restartAssistantStream(event.message);
+		}
 		await this.handleEvent(event);
 	}
 
@@ -1027,11 +1049,13 @@ export class EventController {
 	 * session's transcript and must not bleed into the new one.
 	 */
 	resetTranscriptAnchors(): void {
+		this.#settleWait?.abort();
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
 		}
 		this.#pendingMessageUpdate = undefined;
+		this.#pendingMessageRestart = false;
 		this.#resetReadGroup();
 		this.#lastVisibleBlockCount = 0;
 		this.#renderedCustomMessages.clear();
@@ -1166,6 +1190,7 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		this.#settleWait?.abort();
 		this.#runEpoch += 1;
 		// A run with no user prompt in it (synthetic-only: `/goal` kickoff,
 		// approved-plan execution) must not measure prompt→yield from an unrelated
@@ -1581,18 +1606,50 @@ export class EventController {
 		if (text) vocalizer.speak(text);
 	}
 
+	async #restartAssistantStream(message: AgentMessage): Promise<void> {
+		this.#retractStreamedToolPreviews();
+		await this.handleEvent({ type: "message_start", message });
+	}
+
+	#retractStreamedToolPreviews(): void {
+		// A provider replay can abandon previews without ever executing them.
+		// No result will settle those cards; leaving one pins all later history.
+		for (const toolCallId of this.#streamedToolCallIdByIndex.values()) {
+			if (this.#executionStartedCallIds.has(toolCallId) || this.#backgroundCallIds.has(toolCallId)) continue;
+			this.#toolArgsReveal.finish(toolCallId);
+			this.#pendingStreamPreviews.delete(toolCallId);
+			const component = this.ctx.pendingTools.get(toolCallId);
+			if (component) this.#retractToolCardEntry(toolCallId, component);
+			const segment = this.#postToolAssistantComponents.get(toolCallId);
+			if (segment) {
+				this.ctx.chatContainer.removeChild(segment);
+				segment.markTranscriptBlockFinalized();
+				this.#postToolAssistantComponents.delete(toolCallId);
+			}
+		}
+		this.#resetReadGroup();
+	}
+
 	async #handleMessageUpdate(event: Extract<AgentSessionEvent, { type: "message_update" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (!this.#vocalizedMessageUpdates.delete(event)) {
 			this.#vocalizeDelta(event);
 		}
-		if (this.ctx.streamingComponent && event.message.role === "assistant") {
-			const unlockedThinkingVisibility = this.ctx.noteDisplayableThinkingContent(event.message);
+		if (event.assistantMessageEvent?.type === "start") {
+			await this.#restartAssistantStream(event.message);
+		}
+		if (event.message.role === "assistant") await this.syncAssistantMessage(event.message);
+	}
+
+	/** Resync a cumulative snapshot without replay cleanup or speech side effects. */
+	async syncAssistantMessage(message: AssistantMessage): Promise<void> {
+		if (this.ctx.streamingComponent) {
+			const unlockedThinkingVisibility = this.ctx.noteDisplayableThinkingContent(message);
 			if (unlockedThinkingVisibility) {
 				this.ctx.streamingComponent.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 				this.#streamingReveal.resyncVisibility();
 			}
-			this.ctx.streamingMessage = event.message;
+			this.ctx.streamingMessage = message;
 			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
 			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
 
@@ -2380,7 +2437,7 @@ export class EventController {
 		// leaving "Working…" gone while the agent keeps running. The live turn owns
 		// the loader and finalizes it at its own agent_end (isStreaming === false by
 		// then). Mirrors the collab guest's !isStreaming loader reconciler.
-		if (this.ctx.session.isStreaming) {
+		if (this.sessionConnection.isStreaming) {
 			// A focused worker can end while the main session streams; its run is
 			// over even though main's is not. Tear down only what the viewed worker
 			// owns (its loader); main-owned work waits for main's own settle.
@@ -2448,21 +2505,22 @@ export class EventController {
 		const epoch = this.#runEpoch;
 		if (this.#settleWatchEpoch === epoch) return;
 		this.#settleWatchEpoch = epoch;
-		const session = this.ctx.session;
+		const localSession = this.ctx.session;
+		const session = this.sessionConnection;
+		const wait = new AbortController();
+		this.#settleWait = wait;
 		// No `hasAdmittedSubmission` gate: this very settle is emitted while the
 		// prompt that produced it is still admitted, and a new submission starts a
 		// run whose `agent_start` bumps the epoch anyway.
 		const superseded = () =>
 			this.#runEpoch !== epoch ||
 			this.#settleWatchEpoch !== epoch ||
-			this.ctx.session !== session ||
+			this.ctx.session !== localSession ||
+			this.sessionConnection !== session ||
 			session.isStreaming;
 		try {
-			while (!superseded()) {
-				await session.waitForIdle();
-				if (superseded() || !session.hasPendingAsyncWork()) break;
-				await session.settleAsyncWork();
-			}
+			if (superseded()) return;
+			await session.waitForSettled(wait.signal);
 			await this.#runSerialized(async () => {
 				if (
 					superseded() ||
@@ -2477,9 +2535,10 @@ export class EventController {
 				if (this.ctx.shutdownRequested) this.ctx.requestShutdown();
 			});
 		} catch (error) {
-			logger.warn("Non-terminal settle teardown failed", { error: String(error) });
+			if (!wait.signal.aborted) logger.warn("Non-terminal settle teardown failed", { error: String(error) });
 		} finally {
 			if (this.#settleWatchEpoch === epoch) this.#settleWatchEpoch = undefined;
+			if (this.#settleWait === wait) this.#settleWait = undefined;
 		}
 	}
 
@@ -2520,6 +2579,7 @@ export class EventController {
 		if (!event) return;
 		this.#asyncWaitEnd = undefined;
 		this.#settleWatchEpoch = undefined;
+		this.#settleWait?.abort();
 		const session = this.ctx.session;
 		try {
 			// Ending this wait means "stay quiet until I prompt"; latch before awaiting the

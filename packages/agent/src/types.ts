@@ -438,6 +438,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	beforeModelCall?: AgentBeforeModelCall;
 
 	/**
+	 * Whether any installed `beforeModelCall` gate can currently stop a call. A run that is
+	 * already aborted skips its provider call when a gate exists, so a gate that is installed
+	 * but dormant reports `false` here and the aborted turn is still closed by the provider's
+	 * own aborted message. Absent means the gate is always active.
+	 */
+	beforeModelCallActive?: () => boolean;
+
+	/**
 	 * Optional transform applied to tool call arguments before execution.
 	 * Use for deobfuscating secrets or rewriting arguments.
 	 */
@@ -1276,8 +1284,16 @@ export interface AgentTool<
 	approvalCacheTargets?: (args: unknown) => readonly string[] | undefined;
 
 	/**
-	 * Paths a call reads beyond its working directory, matched against restricted folders when it
-	 * reports no `approvalCacheTargets`. Unlike cache targets they never key a remembered grant.
+	 * Capture per-invocation targets after extension preflight, before final approval and execution.
+	 * The coding-agent wrapper calls this once with the final approval args, even without a prompt
+	 * or restricted folders. Restriction queries and approval details may then read the binding.
+	 */
+	bindApprovalTargets?: (args: unknown) => void;
+
+	/**
+	 * Query paths a call reads beyond its working directory, matched against restricted folders when
+	 * it reports no `approvalCacheTargets`. Never capture bindings here: this also runs before preflight.
+	 * Unlike cache targets these paths never key a remembered grant.
 	 */
 	approvalRestrictionPaths?: (args: unknown) => readonly string[] | undefined;
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import * as path from "node:path";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { registerPersistedSubagents } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
@@ -23,6 +23,31 @@ async function registerFrom(dir: string): Promise<AgentRegistry> {
 }
 
 describe("registerPersistedSubagents mid-spawn stubs", () => {
+	it("keeps a legacy worker visible without parsing its oversized first conversation record", async () => {
+		using tempDir = TempDir.createSync("@omp-bounded-metadata-");
+		const dir = tempDir.path();
+		const main = path.join(dir, "main.jsonl");
+		await Bun.write(main, `${sessionHeader("main")}\n`);
+		await Bun.write(
+			path.join(dir, "main", "Legacy.jsonl"),
+			`${sessionHeader("legacy")}\n${JSON.stringify({
+				type: "message",
+				id: "large-message",
+				parentId: null,
+				message: { role: "user", content: "large-prompt".repeat(200_000), timestamp: 1 },
+			})}\n`,
+		);
+		const parsed = spyOn(JSON, "parse");
+		try {
+			const registry = new AgentRegistry();
+			await registerPersistedSubagents(registry, main, { hydrateHistory: false });
+			expect(registry.get("Legacy")?.status).toBe("parked");
+			expect(parsed.mock.calls.some(([text]) => typeof text === "string" && text.length > 1024 * 1024)).toBe(false);
+		} finally {
+			parsed.mockRestore();
+		}
+	});
+
 	it("does not park a child that only has the SessionManager header", async () => {
 		using tempDir = TempDir.createSync("@omp-mid-spawn-stub-");
 		const dir = tempDir.path();

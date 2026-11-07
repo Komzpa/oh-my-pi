@@ -81,6 +81,8 @@ import {
 /** Full state of a local session, as published to main. */
 export function captureSessionState(session: AgentSession): SessionMirrorState {
 	return {
+		isDisposed: read.isDisposed(session),
+		restartPendingInputCount: read.restartPendingInputCount(session),
 		isStreaming: read.isStreaming(session),
 		runStartedAt: read.runStartedAt(session),
 		ircWakesPending: read.ircWakesPending(session),
@@ -590,6 +592,10 @@ export const SESSION_HOST_SERVE: RpcServe<SessionPublisher, SessionHostProtocol>
 		publisher.session.sessionManager.appendModelUsage(usage, owner);
 		publisher.schedule();
 	},
+	beginRestartDrain: publisher => publisher.session.beginRestartDrain(),
+	getRestartBranchEntries: publisher => publisher.session.getRestartBranchEntries(),
+	sendRestartNotice: (publisher, message) => settle(publisher, publisher.session.sendRestartNotice(message)),
+	flushRestartJournal: (publisher, options) => settle(publisher, publisher.session.flushRestartJournal(options)),
 	flushSession: async publisher => settle(publisher, publisher.session.sessionManager.flush()),
 	ensureOnDisk: async publisher => settle(publisher, publisher.session.sessionManager.ensureOnDisk()),
 	getArtifactPath: (publisher, id) => publisher.session.sessionManager.getArtifactPath(id),

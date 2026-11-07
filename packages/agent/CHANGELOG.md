@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Cancelled queue drains preserve pending input for the next turn without reporting an assistant-role error ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
+
+### Changed
+
+- Tool-result pruning now returns pure decisions with stable branch-local projections instead of mutating historical messages.
+
 ## [18.17.0] - 2026-11-06
 
 ### Added

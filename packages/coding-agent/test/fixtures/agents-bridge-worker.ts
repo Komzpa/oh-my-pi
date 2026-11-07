@@ -66,6 +66,8 @@ export interface AgentsProbe {
 	disposed(key: string): Promise<boolean>;
 	/** Whether the worker's lifecycle proxy manages the worker's registry proxy. */
 	manages(): Promise<boolean>;
+	/** Open a persisted session so restart tests can read its checkpoint. */
+	openPersisted(id: string, persistedCwd: string): Promise<string>;
 }
 
 /** Test-only boot globals of the probe service. */
@@ -84,7 +86,7 @@ let threadName = "";
 let gate = Promise.withResolvers<void>();
 let gateOpen = false;
 
-async function makeSession(id: string, gated: boolean): Promise<AgentSession> {
+async function makeSession(id: string, gated: boolean, persistedCwd?: string): Promise<AgentSession> {
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 	if (!model) throw new Error("bundled model missing");
 	const mock = createMockModel({
@@ -103,7 +105,9 @@ async function makeSession(id: string, gated: boolean): Promise<AgentSession> {
 	authStorage.keys.setRuntime("anthropic", "test-key");
 	const session = new AgentSession({
 		agent,
-		sessionManager: SessionManager.inMemory(),
+		sessionManager: persistedCwd
+			? SessionManager.create(persistedCwd, `${persistedCwd}/sessions`)
+			: SessionManager.inMemory(),
 		settings: Settings.isolated(),
 		modelRegistry: new ModelRegistry(authStorage),
 		agentId: id,
@@ -122,7 +126,11 @@ function local(id: string): AgentSession {
 const probe: AgentsProbe = {
 	threadId: async () => threadName,
 	open: async (id, options) => {
-		const session = await makeSession(id, options.gated === true);
+		const session = await makeSession(
+			id,
+			options.gated === true,
+			"persistedCwd" in options && typeof options.persistedCwd === "string" ? options.persistedCwd : undefined,
+		);
 		const registry = AgentRegistry.global();
 		registry.register({
 			id,
@@ -213,6 +221,10 @@ const probe: AgentsProbe = {
 		return session.isDisposed;
 	},
 	manages: async () => AgentLifecycleManager.global().manages(AgentRegistry.global()),
+	openPersisted: async (id, persistedCwd) => {
+		const options = { gated: false, persistedCwd };
+		return probe.open(id, options);
+	},
 };
 
 function isProbeGlobals(value: unknown): value is AgentsProbeGlobals {

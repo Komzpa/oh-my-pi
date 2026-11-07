@@ -46,7 +46,54 @@ describe("AgentSession dispose releases retained memory", () => {
 		tempDir.removeSync();
 	});
 
-	function createSession(): AgentSession {
+	it("persists dispose and cleanup tail entries before releasing a restart journal", async () => {
+		const manager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "sessions"));
+		const current = createSession(manager);
+		manager.appendMessage({ role: "user", content: "before restart", timestamp: 1 });
+		await manager.ensureOnDisk();
+		const file = manager.getSessionFile()!;
+		const childManager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "child-sessions"));
+		const child = createSession(childManager);
+		session = current;
+		childManager.appendMessage({ role: "user", content: "worker input", timestamp: 1 });
+		await childManager.ensureOnDisk();
+		const childFile = childManager.getSessionFile()!;
+		current.beginRestartHandoff?.([child]);
+		await child.dispose();
+		await current.dispose();
+		childManager.appendCustomEntry("worker-exit-tail", { completed: true });
+		// These are the three entry types in the live post-release warnings.
+		manager.appendCustomEntry("worker-exit", { completed: true });
+		manager.appendCustomMessageEntry("job-completion", "tail message", false);
+		manager.appendMessage({ role: "user", content: "tail input", timestamp: 2 });
+		await current.finishRestartHandoff?.();
+		const revivedChild = await SessionManager.open(childFile);
+		try {
+			expect(
+				revivedChild.getEntries().some(entry => entry.type === "custom" && entry.customType === "worker-exit-tail"),
+			).toBe(true);
+		} finally {
+			await revivedChild.close();
+		}
+		const revived = await SessionManager.open(file);
+		try {
+			const entries = revived.getEntries();
+			expect(entries.some(entry => entry.type === "custom" && entry.customType === "worker-exit")).toBe(true);
+			expect(entries.some(entry => entry.type === "custom_message" && entry.customType === "job-completion")).toBe(
+				true,
+			);
+			expect(
+				entries.some(
+					entry =>
+						entry.type === "message" && entry.message.role === "user" && entry.message.content === "tail input",
+				),
+			).toBe(true);
+		} finally {
+			await revived.close();
+		}
+	});
+
+	function createSession(manager?: SessionManager): AgentSession {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("expected bundled model");
 		const mock = createMockModel({ handler: () => ({ content: ["ok"] }) });
@@ -57,7 +104,7 @@ describe("AgentSession dispose releases retained memory", () => {
 		});
 		session = new AgentSession({
 			agent,
-			sessionManager: SessionManager.inMemory(tempDir.path()),
+			sessionManager: manager ?? SessionManager.inMemory(tempDir.path()),
 			settings: Settings.isolated(),
 			modelRegistry: new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml")),
 			agentId: "Main",

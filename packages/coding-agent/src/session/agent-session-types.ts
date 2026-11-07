@@ -68,7 +68,9 @@ export interface AgentSessionDisposeOptions {
 	 * Postmortem reason that triggered this dispose (signal/fatal teardown
 	 * paths). When set, the persisted `session_exit` diagnostic records it
 	 * instead of the generic `"dispose"` used for normal programmatic disposal
-	 * (`/quit`, test teardown, subagent completion).
+	 * (`/quit`, test teardown, subagent completion). `EXIT` (also a subagent cut
+	 * off by its owner's shutdown) additionally records a turn still in flight as
+	 * interrupted, so `omp --restore` goes on with it.
 	 */
 	reason?: postmortem.Reason;
 }
@@ -108,6 +110,8 @@ export interface AsyncJobInspection {
 export interface AsyncJobSnapshot {
 	running: AsyncJobSnapshotItem[];
 	recent: AsyncJobSnapshotItem[];
+	/** Exact ids and session-corroborated liveness for registry agents without a running job. */
+	nonJobAgents?: Array<{ id: string; live: boolean }>;
 	delivery: AsyncJobDeliveryState;
 }
 
@@ -122,6 +126,12 @@ export interface AsyncJobTree {
 }
 
 export type { ShakeMode, ShakeResult } from "./shake-types";
+/** Stops this session at the next safe model boundary until released. */
+export interface RestartDrainLease {
+	wasRunning: boolean;
+	waitForQuiescence(): Promise<void>;
+	release(): void;
+}
 
 /**
  * Prewalk switches an active session one-way from its starting model to a
@@ -516,6 +526,8 @@ export interface FollowUpOptions {
 	attribution?: MessageAttribution;
 	/** Called synchronously with the messages pushed onto the follow-up queue. See {@link PromptOptions.onPromptQueued}. */
 	onPromptQueued?: PromptOptions["onPromptQueued"];
+	/** Called synchronously once the message is on its queue. See {@link PromptOptions.onPromptAdmitted}. */
+	onPromptAdmitted?: () => void;
 }
 
 /** Options for AgentSession.steer(). */

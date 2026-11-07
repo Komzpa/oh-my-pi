@@ -951,7 +951,7 @@ export class ModelRegistry {
 	async awaitBackgroundRefresh(): Promise<void> {
 		if (this.#owner) return this.#owner.awaitBackgroundRefresh();
 		if (this.#backgroundRefresh) {
-			await this.#backgroundRefresh;
+			await logger.time("modelRegistry.refresh.wait", () => this.#backgroundRefresh);
 		}
 	}
 
@@ -3669,6 +3669,14 @@ export class ModelRegistry {
 		sessionId?: string,
 		options?: { signal?: AbortSignal },
 	): Promise<string | undefined> {
+		return logger.time("modelRegistry.apiKey.wait", () => this.#resolveModelApiKey(model, sessionId, options));
+	}
+
+	async #resolveModelApiKey(
+		model: Model<Api>,
+		sessionId?: string,
+		options?: { signal?: AbortSignal },
+	): Promise<string | undefined> {
 		// A disabled provider gets no credential, so no request reaches it however
 		// its model was obtained.
 		if (this.#isProviderDisabled(model.provider)) return undefined;
@@ -3777,11 +3785,14 @@ export class ModelRegistry {
 		return this.authStorage.keys.peek(provider, options);
 	}
 
-	/**
-	 * Check if a model is using OAuth credentials (subscription).
-	 */
+	/** Whether a model uses OAuth credentials. Kept separate from subscription billing for cache-tier decisions. */
 	isUsingOAuth(model: Model<Api>): boolean {
 		return this.authStorage.credentials.hasOAuth(model.provider);
+	}
+
+	/** Whether a model's credentials represent subscription billing. */
+	isUsingSubscription(model: Model<Api>): boolean {
+		return this.authStorage.credentials.hasSubscription(model.provider);
 	}
 
 	#clearRuntimeProviderState(providerName: string): void {

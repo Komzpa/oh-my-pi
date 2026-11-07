@@ -270,7 +270,7 @@ const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
 const EVAL_PRELUDE_NOTICE_MESSAGE_TYPE = "eval-prelude-notice";
 
 /** Custom entry holding the digest of the base prompt the branch's primary model calls are built from. */
-const SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE = "system-prompt-digest";
+export const SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE = "system-prompt-digest";
 
 /** Equal digests mean equal prompt blocks. */
 function systemPromptDigest(blocks: readonly string[]): string {
@@ -1569,26 +1569,10 @@ export class SessionTools {
 
 	/** Digest of the base prompt the current branch's newest reply with provider output was produced under. */
 	recordedPromptDigest(): string | undefined {
-		const branch = this.#host.sessionManager.getBranchView();
-		const scan = this.#recordedDigestScan;
-		if (scan?.branch === branch) {
-			for (let index = scan.scanned; index < branch.length; index++) {
-				const digest = promptDigestOfEntry(branch[index]);
-				if (digest !== null) scan.digest = digest;
-			}
-			scan.scanned = branch.length;
-			return scan.digest;
-		}
-		let digest: string | undefined;
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const found = promptDigestOfEntry(branch[index]);
-			if (found !== null) {
-				digest = found;
-				break;
-			}
-		}
-		this.#recordedDigestScan = { branch, scanned: branch.length, digest };
-		return digest;
+		const entry = this.#host.sessionManager.getLatestBranchMatching(
+			metadata => metadata.type === "custom" && metadata.customType === SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE,
+		);
+		return entry ? (promptDigestOfEntry(entry) ?? undefined) : undefined;
 	}
 
 	/** Digest of the agent's current base prompt, comparable with the digests recorded on the branch. */
@@ -1649,7 +1633,6 @@ export class SessionTools {
 	/** Drops retained transcript references when the session is disposed. */
 	releaseRestoredTranscript(): void {
 		this.#restoredTranscript = undefined;
-		this.#recordedDigestScan = undefined;
 	}
 
 	/**

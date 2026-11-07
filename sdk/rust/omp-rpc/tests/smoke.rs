@@ -89,7 +89,7 @@ fn smoke_real_server() {
 	assert_eq!(client.protocol_version(), 2);
 	let mut seen = Vec::new();
 
-	let state = client.call(&GetStateCommand {}).unwrap();
+	let state = client.call(&GetStateCommand { view: None }).unwrap();
 	println!(
 		"get_state: session {} steering {:?} streaming {}",
 		state.session_id, state.steering_mode, state.is_streaming
@@ -175,7 +175,7 @@ fn smoke_real_server() {
 	println!("predict_word: {suffix:?}");
 
 	let bash = client
-		.call(&BashCommand { command: "echo hi".into() })
+		.call(&BashCommand { command: "echo hi".into(), exclude_from_context: None })
 		.unwrap();
 	println!("bash: exit {:?} output {:?}", bash.exit_code, bash.output);
 	assert_eq!(bash.output.trim(), "hi");
@@ -369,7 +369,7 @@ fn smoke_scripted_model() {
 	assert!(echoed);
 
 	let messages = client.get_messages().unwrap();
-	let state = client.call(&GetStateCommand {}).unwrap();
+	let state = client.call(&GetStateCommand { view: None }).unwrap();
 	println!(
 		"get_messages: {} messages, get_state messageCount {}",
 		messages.len(),

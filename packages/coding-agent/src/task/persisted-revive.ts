@@ -17,6 +17,7 @@ import type { Settings } from "../config/settings";
 import { MCPManager } from "../mcp/manager";
 import { initializeExtensions } from "../modes/runtime-init";
 import type { AsyncJobManagerApi } from "../async";
+import type { SubagentDiscoveryOptions } from "../sdk";
 import type { PreparedExtension } from "../extensibility/extensions/types";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
@@ -67,6 +68,7 @@ import type { AgentDefinition } from "./types";
  */
 export interface PersistedSubagentReviveContext {
 	session: AgentSession;
+	getSubagentDiscoveryOptions?: (restrictToolNames: boolean) => SubagentDiscoveryOptions;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
 	settings: Settings;
@@ -104,6 +106,7 @@ export interface PersistedReviveSpec {
 	readonly asyncJobManager: AsyncJobManagerApi | undefined;
 	/** The root's artifact manager at revive time; a revived non-seance agent adopts it. */
 	readonly artifactManager: ArtifactManagerApi | undefined;
+	readonly discoveryOptions?: SubagentDiscoveryOptions;
 	readonly preparedExtensions: readonly PreparedExtension[] | undefined;
 	readonly authStorage: AuthStorage;
 	readonly modelRegistry: ModelRegistry;
@@ -227,6 +230,9 @@ export function createPersistedSubagentReviverFactory(
 				costGate: ctx.session.costGate,
 				asyncJobManager: ctx.session.asyncJobManager,
 				artifactManager: ctx.session.sessionManager.getArtifactManager() ?? undefined,
+				discoveryOptions: ctx.getSubagentDiscoveryOptions?.(
+					restoredSeance !== undefined || peek.init?.restrictToolNames === true,
+				),
 				preparedExtensions: ctx.session.preparedExtensions,
 				authStorage: ctx.authStorage,
 				modelRegistry: ctx.modelRegistry,
@@ -259,15 +265,14 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 		suppressBreadcrumb: true,
 		throwIfMissing: true,
 	});
-	const entries = reopened.getEntries();
-	const init = extractSessionInit(entries);
+	const init = extractSessionInit([...reopened.iterateEntries("session_init")]);
 	if (!init) {
 		await reopened.close();
 		throw new Error(
 			`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no persisted session contract. The agent was not revived.`,
 		);
 	}
-	if (!hasConversationalHistory(entries)) {
+	if (!hasConversationalHistory(reopened.iterateEntries("message"))) {
 		await reopened.close();
 		throw new Error(
 			`Cannot revive subagent "${ref.id}": session file "${sessionFile}" has no message history (truncated to header/session_init). The agent was not revived.`,
@@ -481,11 +486,17 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			// Inherit current owner policy, never extension authority from a transcript.
 			extensionRoots: () => spec.root.effectiveExtensionRoots,
 			preloadedPreparedExtensions: spec.preparedExtensions,
+			cacheWarming: false,
 			// Old files predate persisted spawns: deny re-spawning rather than let
 			// createAgentSession default to wildcard ("*").
 			spawns: init.spawns ?? "",
 			hasUI: false,
 			enableLsp: restrictToolNames ? false : spec.enableLsp,
+			...(spec.discoveryOptions && {
+				extensionRoots: undefined,
+				preloadedPreparedExtensions: undefined,
+				...spec.discoveryOptions,
+			}),
 			...(restrictToolNames
 				? {
 						enableIrc: false,

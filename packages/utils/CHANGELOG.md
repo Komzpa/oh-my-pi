@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Launch diagnostics now show span offsets, the largest gaps between boundaries, and event-loop timer drift ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
+
+## [18.18.0] - 2026-11-07
+
 ### Fixed
 
 - Fixed abort signals leaving command output reads blocked when a descendant keeps stdout or stderr open after the root process exits. ([#18309](https://github.com/can1357/oh-my-pi/pull/18309) by [@eggpeat](https://github.com/eggpeat))

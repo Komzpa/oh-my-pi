@@ -814,6 +814,7 @@ describe("runSubprocess result acceptance", () => {
 		let finish: ((error?: unknown) => void | Promise<void>) | undefined;
 		const bridge = new IrcBridge({
 			isDisposed: () => false,
+			isRestartDraining: () => false,
 			isStreaming: () => false,
 			planModeEnabled: () => false,
 			emitSessionEvent: async () => {},
