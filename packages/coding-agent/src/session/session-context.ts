@@ -1,4 +1,3 @@
-import { projectRetryRecoveries } from "./retry-recovery-annotation";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { customMessageEntryMessage, isUserRequestEntry } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import {
@@ -35,6 +34,8 @@ import {
 	type SessionEntry,
 	type SessionMessageEntry,
 } from "./session-entries";
+
+import { projectRetryRecoveries } from "./retry-recovery-annotation";
 
 // #4470 crash artifacts had legacy frames (no shape metadata) with 17 frames,
 // ~306k archive chars, and ~1.5M truncated chars. Current snapcompact frames

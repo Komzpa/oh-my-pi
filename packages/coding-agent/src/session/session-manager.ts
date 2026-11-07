@@ -1,4 +1,3 @@
-import { RETRY_RECOVERY_ENTRY, retryRecoveryEntryData } from "./retry-recovery-annotation";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -134,6 +133,7 @@ import {
 	writeTerminalBreadcrumb,
 } from "./session-paths";
 import { forgetExternalizedImages, prepareEntryForPersistence } from "./session-persistence";
+import { RETRY_RECOVERY_ENTRY, retryRecoveryEntryData } from "./retry-recovery-annotation";
 import { loadPinnedSessionIds, sortPinnedFirst } from "./session-pins";
 import {
 	FileSessionStorage,
