@@ -1,4 +1,4 @@
-import * as fs from "node:fs/promises";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
@@ -26,9 +26,9 @@ export async function listeningPorts(pids: readonly number[]): Promise<number[]>
 		try {
 			const children = await Bun.file(`/proc/${pid}/task/${pid}/children`).text();
 			pending.push(...children.trim().split(/\s+/).map(Number));
-			for (const fd of await fs.readdir(`/proc/${pid}/fd`)) {
+			for (const fd of await fs.promises.readdir(`/proc/${pid}/fd`)) {
 				try {
-					const target = await fs.readlink(`/proc/${pid}/fd/${fd}`);
+					const target = await fs.promises.readlink(`/proc/${pid}/fd/${fd}`);
 					if (target.startsWith("socket:[")) inodes.add(target.slice(8, -1));
 				} catch {
 					/* Process/descriptor closed during observation. */
@@ -58,6 +58,11 @@ export class PeerRuntime {
 	#head: string | null | undefined;
 	#branch: string | null | undefined;
 	#pending: Promise<void> = Promise.resolve();
+	readonly #abort = new AbortController();
+	#initialization: Promise<void> | undefined;
+	#startupWatcher: fs.FSWatcher | undefined;
+	readonly #startupPaths = new Set<string>();
+	#toolStarted = false;
 	constructor(
 		readonly session: AgentSession,
 		readonly id: string,
@@ -73,6 +78,8 @@ export class PeerRuntime {
 				.catch(error => logger.debug("Peer notice failed", { id, error: String(error) }));
 		});
 		this.#unsubscribe = session.subscribe(event => {
+			if (this.#abort.signal.aborted) return;
+			if (event.type === "tool_execution_start") this.#toolStarted = true;
 			if (event.type !== "tool_execution_end" && event.type !== "tool_execution_update") return;
 			const result: unknown = event.type === "tool_execution_end" ? event.result : event.partialResult;
 			const details = isRecord(result) ? result.details : undefined;
@@ -99,13 +106,77 @@ export class PeerRuntime {
 		});
 		runtimes.set(session, this);
 	}
-	async initialize(): Promise<void> {
+	/** Optional repository metadata must never gate SDK readiness. */
+	startInitialization(): void {
+		this.#pending = this.initialize().catch(error => {
+			if (!this.#abort.signal.aborted) logger.debug("Peer baseline failed", { id: this.id, error: String(error) });
+		});
+	}
+	initialize(): Promise<void> {
+		return (this.#initialization ??= this.#initialize());
+	}
+	async #initialize(): Promise<void> {
+		const signal = this.#abort.signal;
+		if (signal.aborted) return;
 		const repository = vcs.git(this.#scopeRoot());
 		if (!repository) return;
-		const status = await repository.statusPorcelain({ untracked: "all", nulTerminated: true });
-		this.#baseline = await this.#snapshot(repository.info().repoRoot ?? this.cwd, status);
-		this.#head = await repository.headSha();
-		this.#branch = await repository.currentBranch();
+		const root = repository.info().repoRoot ?? this.cwd;
+		// HEAD is cheap and synchronous: an early commit must not become our baseline.
+		const head = repository.headSync();
+		this.#head = head.commit;
+		this.#branch = head.branch;
+		// Status can sit in the shared cooldown while tools already run. Retain filesystem
+		// changes in that window, including edits to dirty files and deletions, without
+		// mistaking all pre-existing dirty work for this worker's mutations.
+		this.#startupWatcher = fs.watch(root, { recursive: true, persistent: false }, (_event, filename) => {
+			if (
+				!signal.aborted &&
+				this.#toolStarted &&
+				filename &&
+				filename !== ".git" &&
+				!filename.startsWith(`.git${path.sep}`)
+			)
+				this.#startupPaths.add(path.resolve(root, filename));
+		});
+		try {
+			const status = await repository.statusPorcelain({ untracked: "all", nulTerminated: true }, signal);
+			if (signal.aborted) return;
+			const baseline = await this.#snapshot(root, status);
+			if (signal.aborted) return;
+			// Drain filesystem notifications before replacing the startup watcher with status diffs.
+			await Bun.sleep(0);
+			if (signal.aborted) return;
+			this.#baseline = baseline;
+			if (this.#startupPaths.size) {
+				const tracked = await repository.lsFiles(false, true, signal);
+				if (signal.aborted) return;
+				const candidates = new Set([...baseline.keys(), ...tracked].map(value => path.resolve(root, value)));
+				this.#touchObservedPaths([...this.#startupPaths].filter(value => candidates.has(value)));
+			}
+		} finally {
+			this.#startupWatcher?.close();
+			this.#startupWatcher = undefined;
+			this.#startupPaths.clear();
+		}
+	}
+	#touchObservedPaths(paths: string[]): void {
+		if (this.#abort.signal.aborted) return;
+		const scopeRoot = this.#scopeRoot();
+		const state = this.registry.get(this.id)?.history?.peerCoordination;
+		const shared = this.registry
+			.list()
+			.some(
+				peer =>
+					peer.id !== this.id &&
+					peer.status === "running" &&
+					peer.history?.peerCoordination?.scope.root === scopeRoot,
+			);
+		const owned = (state?.scope.paths ?? []).map(value => path.resolve(scopeRoot, value));
+		this.#coordination.touch(
+			paths
+				.filter(value => !shared || owned.some(scope => value === scope || value.startsWith(`${scope}${path.sep}`)))
+				.map(value => `path:${value}`),
+		);
 	}
 	#scopeRoot(): string {
 		return path.resolve(this.cwd, this.registry.get(this.id)?.history?.peerCoordination?.scope.root ?? this.cwd);
@@ -113,8 +184,9 @@ export class PeerRuntime {
 	async #snapshot(root: string, status: string): Promise<Map<string, string>> {
 		const snapshot = new Map<string, string>();
 		for (const entry of parseDirtyPathsWithStatus(status)) {
+			if (this.#abort.signal.aborted) break;
 			try {
-				const stat = await fs.lstat(path.resolve(root, entry.path), { bigint: true });
+				const stat = await fs.promises.lstat(path.resolve(root, entry.path), { bigint: true });
 				snapshot.set(entry.path, `${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.mode}`);
 			} catch {
 				// A deletion still changes the observed Git state.
@@ -125,16 +197,19 @@ export class PeerRuntime {
 	}
 
 	touch(value: string): void {
-		if (!value.includes("://")) this.#coordination.touch([`path:${path.resolve(this.cwd, value)}`]);
+		if (!this.#abort.signal.aborted && !value.includes("://"))
+			this.#coordination.touch([`path:${path.resolve(this.cwd, value)}`]);
 	}
 	async #observe(): Promise<void> {
+		if (this.#abort.signal.aborted) return;
 		const scopeRoot = this.#scopeRoot();
 		const repository = vcs.git(scopeRoot);
 		if (repository) {
-			const status = await repository.statusPorcelain({ untracked: "all", nulTerminated: true });
+			const status = await repository.statusPorcelain({ untracked: "all", nulTerminated: true }, this.#abort.signal);
+			if (this.#abort.signal.aborted) return;
 			const root = repository.info().repoRoot ?? this.cwd;
 			const snapshot = await this.#snapshot(root, status);
-			const state = this.registry.get(this.id)?.history?.peerCoordination;
+			if (this.#abort.signal.aborted) return;
 			const shared = this.registry
 				.list()
 				.some(
@@ -149,27 +224,24 @@ export class PeerRuntime {
 				.filter(value => this.#baseline.get(value) !== snapshot.get(value))
 				.map(value => path.resolve(root, value));
 			this.#baseline = snapshot;
-			const owned = (state?.scope.paths ?? []).map(value => path.resolve(scopeRoot, value));
-			this.#coordination.touch(
-				paths
-					.filter(
-						value => !shared || owned.some(scope => value === scope || value.startsWith(`${scope}${path.sep}`)),
-					)
-					.map(value => `path:${value}`),
-			);
-			const branch = await repository.currentBranch();
-			const head = await repository.headSha();
+			this.#touchObservedPaths(paths);
+			const branch = await repository.currentBranch(this.#abort.signal);
+			const head = await repository.headSha(this.#abort.signal);
+			if (this.#abort.signal.aborted) return;
 			if (!shared && branch && (branch !== this.#branch || head !== this.#head)) {
 				this.#coordination.touch([`branch:${root}:${branch}`]);
 			}
 			this.#branch = branch;
 			this.#head = head;
 		}
-		this.#coordination.touch((await listeningPorts([...this.#pids])).map(port => `port:${port}`));
+		const ports = await listeningPorts([...this.#pids]);
+		if (!this.#abort.signal.aborted) this.#coordination.touch(ports.map(port => `port:${port}`));
 	}
 	async checkHandover(value: unknown): Promise<string | undefined> {
 		await this.#pending;
+		if (this.#abort.signal.aborted) return;
 		await this.#observe();
+		if (this.#abort.signal.aborted) return;
 		const entries = Array.isArray(value)
 			? value.filter(
 					(entry): entry is Deconfliction =>
@@ -182,6 +254,10 @@ export class PeerRuntime {
 		return this.#coordination.checkHandover(entries);
 	}
 	dispose(): void {
+		this.#abort.abort();
+		this.#startupWatcher?.close();
+		this.#startupWatcher = undefined;
+		this.#startupPaths.clear();
 		this.#unsubscribe();
 		this.#coordination.dispose();
 		runtimes.delete(this.session);
