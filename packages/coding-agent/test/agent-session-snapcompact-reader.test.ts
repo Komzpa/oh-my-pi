@@ -21,7 +21,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { convertToLlm, createCompactionSummaryMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { CompactionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { parseSessionContent } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionEntryIndex, SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -469,7 +469,13 @@ describe("snapcompact archive read by another model", () => {
 		const first = manager.appendMessage({ role: "user", content: "old", timestamp: 0 });
 		for (let i = 0; i < 300_000; i++) manager.appendCompaction("obsolete", undefined, first, 100);
 		await seedArchive(manager, { summary: EXTENSION_SUMMARY });
-		const { session } = startSession(manager, gpt);
+		const { session } = startSession(manager, gpt, {
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				"compaction.supersedeReads": false,
+				"compaction.dropUseless": false,
+			}),
+		});
 		let obsoleteReads = 0;
 		const original = SessionEntryIndex.prototype.get;
 		const read = vi
@@ -484,7 +490,14 @@ describe("snapcompact archive read by another model", () => {
 			const sent = requestContent(await session.convertMessagesToLlm(session.messages, undefined, claude));
 			expect(sent.text).toContain(EXTENSION_FACT);
 			expect(sent.text).not.toContain(REASONING);
+			const completed = assistant(gpt, [{ type: "text", text: "complete" }]);
+			session.agent.emitExternalEvent({ type: "message_end", message: completed });
+			session.agent.emitExternalEvent({ type: "agent_end", messages: [completed] });
+			await session.waitForIdle();
 		}
+		const missing = createCompactionSummaryMessage("No stored archive", 10, new Date(0).toISOString());
+		const plain = requestContent(await session.convertMessagesToLlm([missing], undefined, claude));
+		expect(plain.text).toContain("No stored archive");
 		expect(obsoleteReads).toBe(0);
 		read.mockRestore();
 	});

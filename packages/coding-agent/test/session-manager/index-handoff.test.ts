@@ -2,6 +2,7 @@ import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { readCheckpointRewindState } from "@oh-my-pi/pi-coding-agent/session/checkpoint-entries";
 import * as loader from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { CURRENT_SESSION_VERSION } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -256,4 +257,31 @@ test("switching journals starts a fresh incremental handoff after appending", as
 	const restored = await open(next);
 	expect(restored.getLeafId()).toBe(id);
 	expect(restored.getEntry(id)).toMatchObject({ customType: "after-switch", data: { value: 1 } });
+});
+
+test("a pre-selection-metadata handoff falls back to the journal and restores its checkpoint", async () => {
+	const file = await journal();
+	const original = await open(file);
+	const startedAt = "2026-11-07T00:00:00.000Z";
+	const checkpoint = original.appendMessage({
+		role: "toolResult",
+		toolName: "checkpoint",
+		toolCallId: "checkpoint",
+		isError: false,
+		content: [{ type: "text", text: "saved" }],
+		details: { startedAt },
+		timestamp: 2,
+	});
+	expect(await original.writeIndexHandoff()).toBe(true);
+	const handoff = Bun.file(`${file}.index-handoff`);
+	const legacy = (await handoff.json()) as { version: number; ordered: Array<{ checkpointKind?: string }> };
+	legacy.version = 2;
+	for (const row of legacy.ordered) delete row.checkpointKind;
+	await Bun.write(handoff, JSON.stringify(legacy));
+	const restored = await open(file);
+	expect(readCheckpointRewindState(restored).checkpoint).toEqual({
+		checkpointEntryId: checkpoint,
+		checkpointMessageCount: 2,
+		startedAt,
+	});
 });

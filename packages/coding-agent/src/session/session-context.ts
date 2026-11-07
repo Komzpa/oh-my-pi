@@ -30,6 +30,7 @@ import {
 	type SessionMessageEntry,
 } from "./session-entries";
 
+import { checkpointEntryKind } from "./checkpoint-entries";
 import { projectRetryRecoveries } from "./retry-recovery-annotation";
 
 // #4470 crash artifacts had legacy frames (no shape metadata) with 17 frames,
@@ -335,6 +336,8 @@ export interface SessionContextEntryMetadata {
 	customType?: string;
 	assistantProvider?: string;
 	assistantTimestamp?: number;
+	compactionTimestamp?: number;
+	checkpointKind?: "pending" | "completed";
 	activeLeafId?: string | null;
 }
 
@@ -351,6 +354,8 @@ export function sessionContextEntryMetadata(entry: SessionEntry): SessionContext
 			entry.type === "message" && entry.message.role === "assistant" ? entry.message.provider : undefined,
 		assistantTimestamp:
 			entry.type === "message" && entry.message.role === "assistant" ? entry.message.timestamp : undefined,
+		checkpointKind: checkpointEntryKind(entry),
+		compactionTimestamp: entry.type === "compaction" ? new Date(entry.timestamp).getTime() : undefined,
 		activeLeafId: entry.type === "model_usage" ? entry.activeLeafId : undefined,
 	};
 }
