@@ -949,12 +949,16 @@ function customMessageSupersedes(message: CustomMessage): string | undefined {
 /** Keep recent hidden machine context bounded even when no prompt consumes it.
  * User-authored and visible messages remain lossless. Only recent hidden runtime
  * context accompanies the next provider request. */
-function boundHiddenNextTurnMessages(messages: CustomMessage[]): CustomMessage[] {
+function boundHiddenNextTurnMessages(
+	messages: CustomMessage[],
+	preserved?: ReadonlySet<AgentMessage>,
+): CustomMessage[] {
 	let remaining = 32;
 	return messages
 		.toReversed()
 		.filter(
 			message =>
+				preserved?.has(message) ||
 				message.display !== false ||
 				message.attribution === "user" ||
 				isUserAuthoredMessage(message) ||
@@ -1516,6 +1520,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
 	#restartPendingQueuesCheckpointActive = false;
+	#restoredRestartInputs = new Set<AgentMessage>();
+	#restartRestoreWarning: string | undefined;
 	#lastRestartPendingQueuesSignature: string | undefined;
 	#restartCheckpointTimer: NodeJS.Timeout | undefined;
 	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
@@ -2274,7 +2280,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 *  settle step replays it once idle — never appended into a live streamMessage. */
 	#preserveAdvisorCard(card: CustomMessage): void {
 		if (this.#abortInProgress && this.isStreaming) {
-			this.#pendingNextTurnMessages = boundHiddenNextTurnMessages([...this.#pendingNextTurnMessages, card]);
+			this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(
+				[...this.#pendingNextTurnMessages, card],
+				this.#restoredRestartInputs,
+			);
 			return;
 		}
 		this.#recordWithoutTurn([card]);
@@ -3381,8 +3390,16 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		registerLocalSession(this);
 		// Queue installation precedes all listeners. Restored idle roots need the same
 		// wake as enqueue; defer through the ordinary scheduler after construction.
-		if (this.agent.hasQueuedMessages()) {
-			this.#schedulePostPromptTask(async () => this.#scheduleIdleQueueDrain(), { delayMs: 1 });
+		if (this.agent.hasQueuedMessages() || this.#restoredRestartInputs.size > 0 || this.#restartRestoreWarning) {
+			this.#schedulePostPromptTask(
+				async () => {
+					if (this.#restartRestoreWarning)
+						this.emitNotice("warning", this.#restartRestoreWarning, "restart-restore");
+
+					this.#scheduleIdleQueueDrain();
+				},
+				{ delayMs: 1 },
+			);
 		}
 	}
 
@@ -4525,16 +4542,19 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#settlePendingNextTurnDelivery(delivery: PendingNextTurnDelivery, committed: boolean): void {
 		if (delivery.settled) return;
 		delivery.settled = true;
+		if (committed) {
+			for (const message of delivery.messages) this.#acknowledgeRestoredRestartInput(message);
+		}
 		for (const message of delivery.messages) {
 			if (this.#pendingNextTurnDeliveryByMessage.get(message) === delivery) {
 				this.#pendingNextTurnDeliveryByMessage.delete(message);
 			}
 		}
 		if (!committed && this.sessionManager.getSessionId() === delivery.sessionId) {
-			this.#pendingNextTurnMessages = boundHiddenNextTurnMessages([
-				...delivery.messages,
-				...this.#pendingNextTurnMessages,
-			]);
+			this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(
+				[...delivery.messages, ...this.#pendingNextTurnMessages],
+				this.#restoredRestartInputs,
+			);
 		}
 	}
 
@@ -4749,6 +4769,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		};
 	}
 
+	#acknowledgeRestoredRestartInput(message: AgentMessage): void {
+		if (!this.#restoredRestartInputs.delete(message)) return;
+		logger.info("Delivered restored restart input", {
+			role: message.role,
+			messageId: restartQueueMessageId(message),
+		});
+	}
+
 	#persistMessageEnd(
 		message: AgentMessage,
 		promptGeneration: number,
@@ -4792,7 +4820,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		if (queuedDelivery === undefined || !this.#restartPendingQueuesCheckpointActive) {
 			const afterCommit = this.#persistMessageEndEntry(message, promptGeneration);
-			if (queuedDelivery !== undefined) this.agent.acknowledgeQueuedMessagePersistence(message);
+			if (queuedDelivery !== undefined) {
+				this.agent.acknowledgeQueuedMessagePersistence(message);
+				this.#acknowledgeRestoredRestartInput(message);
+			}
 			afterCommit?.();
 			return;
 		}
@@ -4809,6 +4840,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			})
 			.then(afterCommit => {
 				this.agent.acknowledgeQueuedMessagePersistence(message);
+				this.#acknowledgeRestoredRestartInput(message);
 				afterCommit?.();
 			});
 	}
@@ -4840,7 +4872,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			return afterCommit;
 		};
 		const acknowledgeQueuedMessage = (): void => {
-			if (queuedDelivery !== undefined) this.agent.acknowledgeQueuedMessagePersistence(message);
+			if (queuedDelivery !== undefined) {
+				this.agent.acknowledgeQueuedMessagePersistence(message);
+				this.#acknowledgeRestoredRestartInput(message);
+			}
 		};
 
 		if (!this.#restartPendingQueuesCheckpointActive) {
@@ -7650,6 +7685,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		} catch (error) {
 			if (!signal?.aborted && this.#promptGeneration === generation) {
 				this.#queuedMessageDrainBlocked = this.agent.hasQueuedMessages();
+				if (this.#restoredRestartInputs.size > 0) {
+					this.emitNotice(
+						"warning",
+						"Restored restart inputs could not be delivered. They remain queued; resume or retry to deliver them.",
+						"restart-restore",
+					);
+				}
 			}
 			throw error;
 		}
@@ -7956,7 +7998,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Delivery acknowledgements still commit the transcript and remaining queues atomically;
 	 * never checkpoint from the agent's dequeue callback before that commit. */
 	#supersedeRestartCheckpoint(): void {
-		this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(this.#pendingNextTurnMessages);
+		this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(
+			this.#pendingNextTurnMessages,
+			this.#restoredRestartInputs,
+		);
 		if (!this.#restartPendingQueuesCheckpointActive || this.#restartDrainLeaseCount > 0 || this.#isDisposed) return;
 		if (this.#restartCheckpointTimer) return;
 		const sessionId = this.sessionManager.getSessionId();
@@ -8033,7 +8078,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		for (let index = branch.length - 1; index >= 0; index--) {
 			const entry = branch[index];
 			if (entry?.type !== "custom" || entry.customType !== RESTART_PENDING_QUEUES_CUSTOM_TYPE) continue;
-			if (!isRestartPendingQueues(entry.data)) return;
+			if (!isRestartPendingQueues(entry.data)) {
+				this.#restartRestoreWarning = `Restart input snapshot ${entry.id} could not be restored: invalid queue data. The snapshot remains in the session journal.`;
+				logger.error("Restart input restore failed", { entryId: entry.id });
+				return;
+			}
 			const keepRestartNotice = createRestartNoticeFilter(
 				selectRestartBranchEntries(
 					this.sessionManager,
@@ -8043,9 +8092,23 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			const keepMessage = (message: AgentMessage): boolean =>
 				message.role !== "custom" || keepRestartNotice(message);
 			this.agent.replaceQueues(entry.data.steering.filter(keepMessage), entry.data.followUp.filter(keepMessage));
-			this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(
-				entry.data.pendingNextTurn.filter(keepRestartNotice),
-			);
+			this.#pendingNextTurnMessages = entry.data.pendingNextTurn.filter(keepRestartNotice);
+			for (const [queue, messages] of [
+				["steering", this.agent.peekSteeringQueue()],
+				["followUp", this.agent.peekFollowUpQueue()],
+				["pendingNextTurn", this.#pendingNextTurnMessages],
+			] as const) {
+				for (const [index, message] of messages.entries()) {
+					this.#restoredRestartInputs.add(message);
+					logger.info("Restored restart input", {
+						entryId: entry.id,
+						queue,
+						index,
+						role: message.role,
+						messageId: restartQueueMessageId(message),
+					});
+				}
+			}
 			this.#lastRestartPendingQueuesSignature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(entry.data)}`;
 			this.#restartPendingQueuesCheckpointActive = true;
 			return;
@@ -11023,6 +11086,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	#scheduleQueuedMessageDrain(): void {
+		if (!this.isRestartDraining && !this.isStreaming && this.#restoredRestartInputs.size > 0) {
+			// A restored input is a new turn, even if restart status left a custom
+			// transcript tail. Put the saved queues ahead of newly arriving work;
+			// steering is polled before the first provider request on every tail.
+			const restored = (message: AgentMessage) => this.#restoredRestartInputs.has(message);
+			const pending = this.#pendingNextTurnMessages.filter(restored);
+			const followUp = this.agent.peekFollowUpQueue();
+			const savedFollowUp = followUp.filter(restored);
+			this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(message => !restored(message));
+			if (savedFollowUp.length > 0 || pending.length > 0) {
+				this.agent.replaceQueues(
+					[
+						...this.agent.peekSteeringQueue().filter(restored),
+						...savedFollowUp,
+						...pending,
+						...this.agent.peekSteeringQueue().filter(message => !restored(message)),
+					],
+					followUp.filter(message => !restored(message)),
+				);
+			}
+		}
 		if (
 			this.#queuedMessageDrainScheduled ||
 			this.#restartDrainLeaseCount > 0 ||
@@ -11051,6 +11135,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			onError: () => {
 				this.#queuedMessageDrainScheduled = false;
 				this.#queuedMessageDrainBlocked = this.agent.hasQueuedMessages();
+				if (this.#restoredRestartInputs.size > 0) {
+					this.emitNotice(
+						"warning",
+						"Restored restart inputs could not be delivered. They remain queued; resume or retry to deliver them.",
+						"restart-restore",
+					);
+				}
 			},
 		});
 	}
