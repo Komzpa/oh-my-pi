@@ -669,13 +669,13 @@ describe("AgentSession restart queue round trip", () => {
 			if (!file) throw new Error("Expected durable journal");
 			const before = (await Bun.file(file).stat()).size;
 			for (let index = 0; index < 100; index++) await session.sendCustomMessage(notice, options);
-			await Bun.sleep(1_100);
+			await Bun.sleep(5_100);
 			await session.flushRestartJournal();
 			expect((await Bun.file(file).stat()).size - before).toBe(0);
 		} finally {
 			session.agent.state.isStreaming = false;
 		}
-	});
+	}, 10_000);
 
 	it("coalesces 100 live queue changes in ten seconds and restores the durable checkpoint after a crash", async () => {
 		appendPriorAssistant(currentManager());
@@ -700,7 +700,7 @@ describe("AgentSession restart queue round trip", () => {
 		const writes = restartQueueCheckpoints(currentManager()).length - count;
 		const bytes = (await Bun.file(file).stat()).size - before;
 		process.stderr.write(`busy lead: changes=100 seconds=10 writes=${writes} bytes/min=${bytes * 6}\n`);
-		expect(writes).toBeLessThanOrEqual(11);
+		expect(writes).toBeLessThanOrEqual(3);
 		const checkpoint = restartQueueCheckpoints(currentManager()).at(-1);
 		expect(checkpoint).toMatchObject({
 			data: {
@@ -727,7 +727,7 @@ describe("AgentSession restart queue round trip", () => {
 			await crashSession.dispose();
 		}
 		const unchanged = (await Bun.file(file).stat()).size;
-		await Bun.sleep(1_100);
+		await Bun.sleep(5_100);
 		await session.flushRestartJournal();
 		expect((await Bun.file(file).stat()).size - unchanged).toBe(0);
 	}, 20_000);

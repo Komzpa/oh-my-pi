@@ -8078,7 +8078,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
-	/** Coalesce live edits for at most one second. Restart drains bypass this window.
+	/** Coalesce live edits for at most five seconds. Restart drains bypass this window.
 	 * Delivery acknowledgements still commit the transcript and remaining queues atomically;
 	 * never checkpoint from the agent's dequeue callback before that commit. */
 	#supersedeRestartCheckpoint(): void {
@@ -8089,8 +8089,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#restartCheckpointTimer = setTimeout(() => {
 			this.#restartCheckpointTimer = undefined;
 			if (this.#isDisposed || sessionId !== this.sessionManager.getSessionId()) return;
-			this.#writeRestartCheckpoint();
-		}, 1_000);
+			try {
+				this.#writeRestartCheckpoint();
+			} catch (error) {
+				logger.error("Failed to persist restart queue checkpoint", { error: String(error) });
+			}
+		}, 5_000);
 		this.#restartCheckpointTimer.unref();
 	}
 
