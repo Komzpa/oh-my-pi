@@ -40,6 +40,9 @@ test("50 real TodoTool executions decode current state rather than 300k obsolete
 	};
 	const manager = {
 		getBranch: () => branch.map(decode),
+		appendCustomEntry: (customType: string, data: unknown) =>
+			branch.push(entry(`saved-${branch.length}`, customType, data)),
+		flush: async () => {},
 		getBranchMatching: (predicate: (entry: RequirementEntryMetadata) => boolean) =>
 			branch.filter(value => predicate(metadata(value))).map(decode),
 		*iterateBranchMatchingNewestFirst(predicate: (entry: RequirementEntryMetadata) => boolean) {
@@ -87,6 +90,59 @@ test("50 real TodoTool executions decode current state rather than 300k obsolete
 		expect(result.content.some(part => part.type === "text" && part.text.includes("R1"))).toBe(true);
 	}
 	expect(decoded).toBeLessThanOrEqual(50 * 8);
+
+	// An unrelated archived requirement must never demand a historical row fold
+	// while completing the current linked row, including the first cold gate.
+	const linked = createRequirementCandidates(
+		[],
+		["Deliver Current", "Old archived delivery"],
+		"2026-11-07T00:00:00Z",
+	).map((requirement, i) => ({
+		...requirement,
+		classification: "linked",
+		rows: [i === 0 ? "Current" : "Archived unrelated"],
+	}));
+	history.push(entry("linked-ledger", "requirements_ledger", { version: 1, requirements: linked }));
+	decoded = 0;
+	for (let i = 0; i < 3; i++) {
+		if (i > 0) history.push(entry(`linked-append-${i}`, USER_TODO_EDIT_CUSTOM_TYPE, { phases }));
+		const result = await tool.execute(`linked-done-${i}`, { op: "done", task: "Current" });
+		expect(result.isError).toBe(true);
+		expect(result.content.some(part => part.type === "text" && part.text.includes("R1"))).toBe(true);
+	}
+	expect(decoded).toBeLessThanOrEqual(3 * 10);
+
+	// A persisted legacy receipt explicitly demands exact historical row changes
+	// once. Repeated blocked gates must advance that fold across only the new tail.
+	const legacy = linked.map(requirement =>
+		requirement.rows.includes("Current")
+			? {
+					...requirement,
+					rowVerdicts: {
+						Current: {
+							status: "pass",
+							artifact: "saved artifact",
+							evidence: "Reviewed saved state",
+							workerId: "qa-fixture",
+							auditor: "qa-auditor",
+							rawWords: requirement.rawText,
+							receivedAt: "2026-11-07T00:00:01Z",
+						},
+					},
+				}
+			: requirement,
+	);
+	history.push(entry("legacy-ledger", "requirements_ledger", { version: 1, requirements: legacy }));
+	decoded = 0;
+	expect((await tool.execute("legacy-cold", { op: "done", task: "Current" })).isError).toBe(true);
+	expect(decoded).toBeGreaterThanOrEqual(300_000);
+	decoded = 0;
+	for (let i = 0; i < 3; i++) {
+		history.push(entry(`legacy-append-${i}`, USER_TODO_EDIT_CUSTOM_TYPE, { phases }));
+		history.push(entry(`legacy-ledger-${i}`, "requirements_ledger", { version: 1, requirements: legacy }));
+		expect((await tool.execute(`legacy-done-${i}`, { op: "done", task: "Current" })).isError).toBe(true);
+	}
+	expect(decoded).toBeLessThanOrEqual(3 * 12);
 
 	branch = [entry("other", USER_TODO_EDIT_CUSTOM_TYPE, { phases: [] })];
 	expect(getRequirementArtifactTodoPhases(manager)).toEqual([]);
