@@ -409,7 +409,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 					customType: "lead-plan-critic-question",
 					display: true,
 					content: params.reason,
-					details: { verdictId: binding.id, actionId: action.id },
+					details: { verdictId: binding.id, actionId: action.id, row: action.row, at: Date.now() },
 				});
 			binding.addressed[action.id] = { reason: `${params.decision}: ${params.reason}` };
 			binding.trajectories = { ...binding.trajectories, [action.row]: rowTrajectories(phases(ctx))[action.row]! };

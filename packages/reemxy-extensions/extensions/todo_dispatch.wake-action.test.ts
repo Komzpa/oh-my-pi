@@ -1,16 +1,18 @@
 // @ts-nocheck -- drives the registered dispatcher against disposable session state.
-import { expect, test } from "bun:test";
+import { expect, test, spyOn } from "bun:test";
+import { Type } from "@sinclair/typebox";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch from "./todo_dispatch";
 
-async function harness(journal = [], chain = false) {
+async function harness(journal = [], chain = false, healthy = false, deadlineEnabled = true) {
   const hooks = new Map();
   const sent = [];
   const timers = [];
+  const tools = new Map();
   const now = Date.now();
   const phases = [{ name: "Ship", tasks: [{ content: "PR 114 acceptance", status: "pending", schedule: {
-    dependencies: [], cumulativeReestimateCount: 4,
+    dependencies: [], cumulativeReestimateCount: healthy ? 0 : 4,
     estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "medium", basis: "test", updatedAt: now },
   } }] }];
   if (chain) {
@@ -19,10 +21,10 @@ async function harness(journal = [], chain = false) {
       phases[0].tasks.push({ content, status: "pending", schedule: { dependencies: [dependency], estimate: { ...phases[0].tasks[0].schedule.estimate } } });
   }
   const jobs = { running: [], recent: [], nonJobAgents: [] };
-  const api = { on: (name, fn) => hooks.set(name, fn), getActiveTools: () => ["todo", "task"],
+  const api = { typebox: { Type }, registerTool: tool => tools.set(tool.name, tool), on: (name, fn) => hooks.set(name, fn), getActiveTools: () => ["todo", "task"],
     appendEntry: (customType, data) => journal.push({ type: "custom", customType, data }),
     sendMessage: (message, options) => sent.push({ ...message, options }),
-    pi: { ...schedule, getLatestTodoPhasesFromEntries, readGoalDeadline: () => ({ goalId: "wake", deadlineAt: now - 6 * 3600000 }), agentPauseGate: { paused: false } },
+    pi: { ...schedule, getLatestTodoPhasesFromEntries, readGoalDeadline: () => deadlineEnabled ? ({ goalId: "wake", deadlineAt: now - 6 * 3600000 }) : undefined, agentPauseGate: { paused: false } },
   };
   const ctx = { cwd: "/tmp/omp-wake-test", sessionManager: { getHeader: () => ({ id: "wake" }),
     getBranch: () => journal, getBranchMatching: predicate => journal.filter(predicate), getLatestBranchMatching: predicate => journal.findLast(predicate), getSessionFile: () => undefined },
@@ -34,7 +36,7 @@ async function harness(journal = [], chain = false) {
   };
   await todoDispatch(api);
   const wake = async () => { await hooks.get("agent_end")({}, ctx); await timers.pop()?.(); const message = sent.findLast(message => message.options?.triggerTurn); if (message) await hooks.get("message_start")({ message: { role: "custom", ...message } }, ctx); };
-  return { hooks, ctx, sent, phases, jobs, journal, wake };
+  return { hooks, ctx, sent, phases, jobs, journal, wake, tools };
 }
 
 test("no-event wake is silent, prose-only and re-estimate turns persist an escalating concrete action across reload", async () => {
@@ -174,4 +176,97 @@ test("dependent dispatch must succeed in an isolated worktree and have no unfini
   await h.hooks.get("tool_result")({ ...call, isError: false }, h.ctx);
   await h.hooks.get("turn_end")({}, h.ctx);
   expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data).toMatchObject({ mutations: 1, misses: 0 });
+});
+
+
+test("MISSED demand survives prose, estimate inflation, unrelated dispatch and reload until observed staffing", async () => {
+  const h = await harness([], false, true);
+  await h.hooks.get("turn_start")({}, h.ctx);
+  const first = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand");
+  expect(first?.data.recovery?.pending?.kind).toBe("deadline");
+  const call = { toolName: "task", input: { tasks: [{ name: "Other", task: "Unrelated" }] }, content: [], isError: false };
+  await h.hooks.get("tool_result")(call, h.ctx);
+  h.phases[0].tasks[0].schedule.estimate.likelySeconds += 1000;
+  await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule" }, content: [], isError: false }, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data).toMatchObject({ misses: 1, mutations: 0 });
+  const resumed = await harness(h.journal, false, true);
+  await resumed.hooks.get("turn_start")({}, resumed.ctx);
+  await resumed.hooks.get("turn_end")({}, resumed.ctx);
+  expect(resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.misses).toBe(2);
+  const refused = await resumed.hooks.get("tool_call")({ toolName: "wait", input: {} }, resumed.ctx);
+  expect(refused?.block).toBe(true);
+  const row = resumed.phases[0].tasks[0];
+  row.schedule.owner = "NewWorker";
+  await resumed.hooks.get("tool_result")({ ...call, toolName: "todo" }, resumed.ctx);
+  expect(resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.recovery.pending.kind).toBe("deadline");
+  row.schedule.executor = { workerId: "NewWorker", startedAt: Date.now() };
+  resumed.jobs.running.push({ id: "NewWorker", label: "Delivery", startTime: Date.now(), type: "task", status: "running" });
+  await resumed.hooks.get("tool_result")(call, resumed.ctx);
+  expect(resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data).toMatchObject({ misses: 0, mutations: 1, recovery: { pending: undefined } });
+});
+
+test("MISSED demand accepts a scope cut but a failed tool cannot satisfy it", async () => {
+  const h = await harness([], false, true);
+  await h.hooks.get("turn_start")({}, h.ctx);
+  h.phases[0].tasks[0].status = "abandoned";
+  await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "update" }, content: [], isError: true }, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.recovery.pending.kind).toBe("deadline");
+  await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "update" }, content: [], isError: false }, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.mutations).toBe(1);
+});
+
+
+test("only a fresh recorded owner question on an open demand row satisfies deadline escalation", async () => {
+  const h = await harness([], false, true);
+  await h.hooks.get("turn_start")({}, h.ctx);
+  const at = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.recovery.pending.at;
+  const call = { toolName: "plan_critic_action", input: {}, content: [], isError: false };
+  for (const [row, timestamp] of [["Unrelated", at + 1], [h.phases[0].tasks[0].content, at - 1]]) {
+    h.journal.push({ type: "custom_message", customType: "lead-plan-critic-question", details: { row, at: timestamp } });
+    await h.hooks.get("tool_result")(call, h.ctx);
+    expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.recovery.pending.kind).toBe("deadline");
+  }
+  h.journal.push({ type: "custom_message", customType: "lead-plan-critic-question", details: { row: h.phases[0].tasks[0].content, at: at + 1 } });
+  await h.hooks.get("tool_result")(call, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data).toMatchObject({ mutations: 1, recovery: { pending: undefined } });
+});
+
+test("forecast tool persists measured pace and ETA; a zero-pace call leaves demand pending", async () => {
+  let now = Date.now(); const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const h = await harness([], false, true);
+    h.phases[0].tasks.push({ content: "Other delivery", status: "pending" });
+    await h.hooks.get("turn_start")({}, h.ctx);
+    const tool = h.tools.get("todo_dispatch_forecast");
+    now += 3600000;
+    await expect(tool.execute("f", {}, undefined, undefined, h.ctx)).rejects.toThrow("zero rows/hour");
+    h.phases[0].tasks[1].status = "completed";
+    await tool.execute("f", {}, undefined, undefined, h.ctx);
+    const receipt = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
+    expect(receipt.recovery.forecast).toMatchObject({ rowsPerHour: 1, completed: 1, open: 1, eta: now + 3600000 });
+    expect(receipt.recovery.pending).toBeUndefined();
+  } finally { clock.mockRestore(); }
+});
+
+
+test("ready-row idle age survives reload and clears only for staffing or that row's recorded hold", async () => {
+  let now = Date.now(); const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const h = await harness([], false, true, false);
+    await h.hooks.get("turn_start")({}, h.ctx);
+    now += 600000;
+    const resumed = await harness(h.journal, false, true, false);
+    await resumed.hooks.get("turn_start")({}, resumed.ctx);
+    let receipt = resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
+    expect(receipt.recovery.pending.kind).toBe("idle");
+    await resumed.hooks.get("tool_result")({ toolName: "task", input: { tasks: [{ name: "Other", task: "Unrelated" }] }, content: [], isError: false }, resumed.ctx);
+    await resumed.hooks.get("turn_end")({}, resumed.ctx);
+    expect(resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.misses).toBe(1);
+    resumed.phases[0].tasks[0].status = "blocked";
+    resumed.phases[0].tasks[0].blocker = "Waiting for owner-approved access";
+    await resumed.hooks.get("tool_result")({ toolName: "todo", input: { op: "block" }, content: [], isError: false }, resumed.ctx);
+    receipt = resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
+    expect(receipt.recovery.pending).toBeUndefined(); expect(receipt.mutations).toBe(1);
+  } finally { clock.mockRestore(); }
 });
