@@ -919,10 +919,9 @@ function isRestartPendingQueues(value: unknown): value is RestartPendingQueues {
 	);
 }
 
-// Queue entries are immutable after admission. Compare their identities, rather than
-// walking and stringifying their (potentially megabyte-sized) contents on every poll.
+// Cache content hashes for admitted queue entries so unchanged checkpoints never
+// re-serialize their (potentially megabyte-sized) message contents.
 const restartQueueMessageIds = new WeakMap<AgentMessage, string>();
-let nextRestartQueueMessageId = 0;
 function restartQueueMessageId(message: AgentMessage): string {
 	let id = restartQueueMessageIds.get(message);
 	if (id !== undefined) return id;
@@ -934,7 +933,7 @@ function restartQueueMessageId(message: AgentMessage): string {
 		delete normalized.timestamp;
 		id = `notice:${Bun.hash(JSON.stringify(normalized))}`;
 	} else {
-		id = `message:${++nextRestartQueueMessageId}`;
+		id = `message:${Bun.hash(JSON.stringify(message))}`;
 	}
 	restartQueueMessageIds.set(message, id);
 	return id;
@@ -1521,6 +1520,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
 	#restartPendingQueuesCheckpointActive = false;
 	#lastRestartPendingQueuesSignature: string | undefined;
+	#restartCheckpointTimer: NodeJS.Timeout | undefined;
 	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
 
 	// Custom commands (TypeScript slash commands)
@@ -7160,6 +7160,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * gap slips past the disposal guards.
 	 */
 	beginDispose(): void {
+		this.#flushRestartCheckpoint();
 		this.#isDisposed = true;
 		for (const dispose of this.#disposers.splice(0)) dispose();
 		this.#modelDiscoveryAbortController.abort();
@@ -7907,6 +7908,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		await this.sendCustomMessage(message, { deliverAs: "nextTurn", triggerTurn: false });
 	}
 	async flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void> {
+		this.#flushRestartCheckpoint();
 		await this.sessionManager.ensureOnDisk();
 		await this.sessionManager.flush();
 		if (options?.handoffIndex) await this.sessionManager.writeIndexHandoff();
@@ -8076,15 +8078,30 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
-	/**
-	 * Keep the newest restart checkpoint equal to the live queues once a checkpoint exists and no
-	 * drain owns it. Called only from explicit queue edits and drain release, never from the
-	 * agent's dequeue path: a message claimed for delivery is not yet in the snapshot's delivery
-	 * suffix there, and an interim checkpoint would drop it if its atomic commit then failed. Without this, a cancelled restart or a queue edit leaves an older snapshot
-	 * that `#restorePendingRestartMessages` would replay on the next resume.
-	 */
+	/** Coalesce live edits for at most one second. Restart drains bypass this window.
+	 * Delivery acknowledgements still commit the transcript and remaining queues atomically;
+	 * never checkpoint from the agent's dequeue callback before that commit. */
 	#supersedeRestartCheckpoint(): void {
 		this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(this.#pendingNextTurnMessages);
+		if (!this.#restartPendingQueuesCheckpointActive || this.#restartDrainLeaseCount > 0 || this.#isDisposed) return;
+		if (this.#restartCheckpointTimer) return;
+		const sessionId = this.sessionManager.getSessionId();
+		this.#restartCheckpointTimer = setTimeout(() => {
+			this.#restartCheckpointTimer = undefined;
+			if (this.#isDisposed || sessionId !== this.sessionManager.getSessionId()) return;
+			this.#writeRestartCheckpoint();
+		}, 1_000);
+		this.#restartCheckpointTimer.unref();
+	}
+
+	#flushRestartCheckpoint(): void {
+		if (!this.#restartCheckpointTimer) return;
+		clearTimeout(this.#restartCheckpointTimer);
+		this.#restartCheckpointTimer = undefined;
+		this.#writeRestartCheckpoint();
+	}
+
+	#writeRestartCheckpoint(): void {
 		if (!this.#restartPendingQueuesCheckpointActive || this.#restartDrainLeaseCount > 0 || this.#isDisposed) return;
 		const checkpoint: RestartPendingQueues = {
 			...this.agent.snapshotPendingQueues(),
@@ -8092,8 +8109,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		};
 		const signature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(checkpoint)}`;
 		if (signature === this.#lastRestartPendingQueuesSignature) return;
-		this.#lastRestartPendingQueuesSignature = signature;
 		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, checkpoint);
+		this.#lastRestartPendingQueuesSignature = signature;
 	}
 
 	async #queueRestartMessage(message: CustomMessage): Promise<void> {
@@ -8124,6 +8141,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (queuesChanged) this.agent.replaceQueues(retainedSteering, retainedFollowUp);
 		if (queuesChanged || this.#pendingNextTurnMessages.length !== pending.length) {
 			this.#supersedeRestartCheckpoint();
+			this.#flushRestartCheckpoint();
 			await this.sessionManager.flush();
 		}
 	}
