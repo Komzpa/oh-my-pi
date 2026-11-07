@@ -38,7 +38,7 @@ test("explicit large rewrites preserve cold UTF-8 records without decoding their
 		return original(fd, position);
 	});
 	try {
-		await manager.rewriteEntries();
+		await manager.rewriteEntries({ forceFullRewrite: true });
 		expect(decoded).toBeLessThanOrEqual(1);
 		await manager.close();
 		const reopened = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });

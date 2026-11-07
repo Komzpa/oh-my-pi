@@ -1,0 +1,37 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/worker_asks.test.ts:
+(pass) seen worker ask survives prose, unrelated dispatch and failed/wrong-worker answers; successful reject releases gate [1.19ms]
+(pass) worker question preempts a churning row [0.37ms]
+(pass) direct lead questions require a real reply; progress cannot answer or create an ask [0.21ms]
+
+packages/reemxy-extensions/extensions/attempt_receipt.test.ts:
+(pass) redispatch selects latest attempt by finish time and carries existing fix, failed oracle and open question [0.21ms]
+(pass) redispatch refuses missing findings instead of running with stale premises [0.04ms]
+
+packages/reemxy-extensions/extensions/requirement_quotes.test.ts:
+(pass) PRD dispatch carries original solar quote and refuses a row without its linked quote [0.45ms]
+(pass) conflicting product contract cannot redispatch through prose; only exact quote/conflict-bound resolution releases it [0.50ms]
+(pass) a passing requirement audit with executable checks cannot hide widening or omit quote comparison [0.16ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.readonly.test.ts:
+(pass) recorded 7-task batch 2026-11-07T00:04:49.357Z preserves frozen review rows [14.63ms]
+(pass) recorded 8-task batch 2026-11-07T00:06:26.685Z preserves frozen review rows [3.07ms]
+(pass) recorded 2-task batch 2026-11-07T00:10:23.602Z preserves frozen review rows [2.31ms]
+(pass) renamed rows inherit review metadata without writing either frozen row [3.29ms]
+(pass) read-only audits leave frozen review metadata and task arguments untouched [0.66ms]
+(pass) registered dispatch refuses a retry without findings and attaches the previous same-row receipt [2.57ms]
+
+packages/coding-agent/test/task/executor-worker-ask.test.ts:
+(pass) unanswered worker ask survives runtime deadline and resumes the same assignment after lead answer [1109.39ms]
+(pass) explicit caller cancellation still stops a worker parked on an ask [0.95ms]
+(pass) authorized brief applies the stated default after bounded wait and records the decision [251.75ms]
+(pass) recommended option alone never authorizes a worker default [351.72ms]
+(pass) late terminal yield cannot terminate an assignment with an unanswered worker ask [352.03ms]
+(pass) a direct worker question to the lead parks through the runtime deadline and resumes on an IRC answer [702.64ms]
+(pass) a structured worker ask resumes on the lead's IRC answer without a synthetic user reply [1.05ms]
+
+ 21 pass
+ 0 fail
+ 116 expect() calls
+Ran 21 tests across 5 files. [3.32s]

@@ -132,7 +132,7 @@ describe("indexed rewrite persistence", () => {
 		await manager.close();
 	}, 120_000);
 
-	it("keeps full indexed history and concurrent appends ordered within two rewrites", async () => {
+	it("keeps full indexed history and concurrent appends ordered with one explicit rewrite", async () => {
 		using temp = TempDir.createSync("@pi-rewrite-race-");
 		const file = path.join(temp.path(), "large.jsonl");
 		await makeJournal(file, Number(process.env.OMP_REWRITE_FIXTURE_ENTRIES ?? 6400), false);
@@ -151,12 +151,15 @@ describe("indexed rewrite persistence", () => {
 			const marker = `rewrite-tail-${tails.length}`;
 			tails.push(marker);
 			manager.appendMessage({ role: "user", content: marker, timestamp: Date.now() });
+			manager.appendCustomEntry("tool_execution_start", { toolCallId: marker });
+			manager.appendCustomMessageEntry("todo-dispatch-time-note", marker, false, undefined, "agent", 1);
+			manager.appendCustomEntry("omp:restart-pending-queues", { steering: [], pendingNextTurn: [] });
 		}, 100);
 		storage.onAtomicWrite = count => {
 			if (count >= 3) clearInterval(appendTimer);
 		};
 		try {
-			await manager.appendEntriesAtomically(() => manager.appendCustomEntry("batch-boundary"));
+			await manager.rewriteEntries({ forceFullRewrite: true });
 			await manager.flush();
 		} finally {
 			intervals.push(performance.now() - previous);
@@ -176,7 +179,17 @@ describe("indexed rewrite persistence", () => {
 		);
 		expect(storage.syncWrites).toBe(0);
 		expect(tails.length).toBeGreaterThan(0);
-		expect(storage.atomicWrites).toBeLessThanOrEqual(2);
+		expect(storage.atomicWrites).toBe(1);
+		const completedRewrites = storage.atomicWrites;
+		for (let i = 0; i < 20; i++) {
+			await manager.appendEntriesAtomically(() => {
+				manager.appendCustomMessageEntry("requirements-gate-notice", `after-rewrite-${i}`, false);
+				manager.appendCustomEntry("omp:restart-pending-queues", { steering: [], pendingNextTurn: [] });
+			});
+		}
+		await manager.flush();
+		expect(storage.atomicWrites).toBe(completedRewrites);
+		expect(storage.syncWrites).toBe(0);
 		await manager.close();
 		const reopened = await SessionManager.open(file, "/tmp", new FileSessionStorage(), { suppressBreadcrumb: true });
 		expect(
@@ -188,6 +201,54 @@ describe("indexed rewrite persistence", () => {
 		const actual = tails.map(marker => content.indexOf(marker));
 		expect(actual.every(index => index >= 0)).toBe(true);
 		expect(actual).toEqual([...actual].sort((a, b) => a - b));
+		expect(
+			reopened
+				.getEntries()
+				.filter(entry => entry.type === "custom_message" && entry.customType === "requirements-gate-notice"),
+		).toHaveLength(20);
 		await reopened.close();
 	}, 120_000);
+	it("appends queue deliveries and deferred messages without rewriting indexed history", async () => {
+		using temp = TempDir.createSync("@pi-rewrite-batch-");
+		const file = path.join(temp.path(), "large.jsonl");
+		await makeJournal(file, 32, false);
+		const original = await Bun.file(file).text();
+		const storage = new CountingStorage();
+		const manager = await SessionManager.open(file, "/tmp", storage, { suppressBreadcrumb: true });
+		const delivered: string[] = [];
+		for (let i = 0; i < 4; i++) {
+			manager.appendCustomEntry("tool_execution_start", { toolCallId: `call-${i}` });
+			await manager.appendEntriesAtomically(() => {
+				delivered.push(manager.appendCustomMessageEntry("requirements-gate-notice", `delivery-${i}`, false));
+				manager.appendCustomEntry("omp:restart-pending-queues", {
+					steering: [],
+					followUp: [],
+					pendingNextTurn: [],
+				});
+			});
+		}
+		await manager.flush();
+		expect(storage.atomicWrites).toBe(0);
+		expect(storage.syncWrites).toBe(0);
+		expect(storage.atomicBytes + storage.syncBytes).toBe(0);
+		expect((await Bun.file(file).text()).startsWith(original)).toBe(true);
+		await manager.close();
+		const reopened = await SessionManager.open(file, "/tmp", new FileSessionStorage(), { suppressBreadcrumb: true });
+		expect(
+			reopened.getEntries().filter(entry => entry.type === "custom" && entry.customType === "fixture"),
+		).toHaveLength(32);
+		const entries = reopened.getEntries();
+		for (const id of delivered) {
+			const position = entries.findIndex(entry => entry.id === id);
+			expect(entries[position]?.type).toBe("custom_message");
+			expect(entries[position + 1]).toMatchObject({ type: "custom", customType: "omp:restart-pending-queues" });
+		}
+		expect(entries.filter(entry => entry.type === "custom_message").map(entry => entry.content)).toEqual([
+			"delivery-0",
+			"delivery-1",
+			"delivery-2",
+			"delivery-3",
+		]);
+		await reopened.close();
+	});
 });

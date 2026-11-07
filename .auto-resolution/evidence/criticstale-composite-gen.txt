@@ -1,0 +1,3 @@
+$ bun --cwd=packages/catalog run gen:compat
+$ bun scripts/compile-compat.ts
+wrote src/compat/rules.json (1174 rules, 21 classes, 91 catalog providers, 102 auth providers, 246 files)
