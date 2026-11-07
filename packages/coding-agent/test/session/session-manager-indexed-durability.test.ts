@@ -26,6 +26,7 @@ class FakeBackend implements SessionStorageBackend {
 	failAppends = 0;
 	/** Reject the next N whole-file publishes with a transient failure. */
 	failWrites = 0;
+	fullWrites = 0;
 	holdNextWrite: PromiseWithResolvers<void> | undefined;
 	readonly writeHeld = Promise.withResolvers<void>();
 	#mtime = 1;
@@ -67,6 +68,7 @@ class FakeBackend implements SessionStorageBackend {
 		_title?: unknown,
 		expectedSize?: number | null,
 	): Promise<void> {
+		this.fullWrites++;
 		if (this.failWrites > 0) {
 			this.failWrites -= 1;
 			throw new Error("transient backend write failure");
@@ -147,6 +149,37 @@ async function makeManager(): Promise<{
 }
 
 describe("SessionManager + indexed backend durability", () => {
+	it("appends racing traffic after one unconfirmed publication without publishing the body again", async () => {
+		const backend = new FakeBackend();
+		const storage = new IndexedSessionStorage(backend);
+		await storage.initialize();
+		const manager = SessionManager.create("/cwd", "/sessions/proj", storage);
+		const hold = Promise.withResolvers<void>();
+		backend.holdNextWrite = hold;
+		const id = manager.appendMessage(assistantMessage("before publication"));
+		await backend.writeHeld.promise;
+		for (let i = 0; i < 20; i++) {
+			manager.appendCustomMessageEntry("requirements-gate-notice", `note-${i}`, false);
+			manager.appendCustomEntry("omp:restart-pending-queues", { steering: [] });
+		}
+		const entry = manager.getEntry(id)!;
+		if (entry.type !== "message" || entry.message.role !== "assistant") throw new Error("Missing assistant");
+		entry.message.content = [{ type: "text", text: "edited during publication" }];
+		manager.updateEntry(entry);
+		hold.resolve();
+		await manager.flush();
+		const file = manager.getSessionFile()!;
+		expect(backend.fullWrites).toBe(1);
+		expect(manager.captureState().expectedDiskSize).toBe(Buffer.byteLength(backend.files.get(file)!));
+		await manager.close();
+		const reopened = await SessionManager.open(file, "/sessions/proj", storage, { suppressBreadcrumb: true });
+		expect(reopened.getEntry(id)).toMatchObject({
+			message: { content: [{ type: "text", text: "edited during publication" }] },
+		});
+		expect(reopened.getEntries().filter(entry => entry.type === "custom_message")).toHaveLength(20);
+		await reopened.close();
+	});
+
 	it("does not advance the durable size before the backend confirms the append", async () => {
 		const { backend, storage, manager } = await makeManager();
 		const sessionFile = manager.getSessionFile();
@@ -352,7 +385,7 @@ describe("SessionManager + indexed backend durability", () => {
 
 		const hold = Promise.withResolvers<void>();
 		backend.holdNextWrite = hold;
-		const rewritePublished = manager.rewriteEntries();
+		const rewritePublished = manager.rewriteEntries({ forceFullRewrite: true });
 		await backend.writeHeld.promise;
 		backend.failWrites = 1;
 		manager.appendMessage({ role: "user", content: "fenced append", timestamp: Date.now() });

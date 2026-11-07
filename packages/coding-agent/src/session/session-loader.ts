@@ -1,3 +1,4 @@
+import { entryRevision, headerRevision, foldJournalRecords } from "./journal-records";
 import * as fs from "node:fs";
 import { setImmediate as yieldImmediate } from "node:timers/promises";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
@@ -192,12 +193,13 @@ function applyTitleSlot(entry: FileEntry | undefined, slot: SessionTitleUpdate |
 export function parseSessionContent(content: string): SessionLoadResult {
 	const { body, slot } = splitTitleSlot(content);
 	let malformedRecords = 0;
-	const entries = parseJsonlLenient<RawFileEntry>(body, {
+	const records = parseJsonlLenient<RawFileEntry>(body, {
 		onMalformedRecord: () => {
 			malformedRecords++;
 		},
 	}) as FileEntry[];
-	applyTitleSlot(entries[0], slot);
+	applyTitleSlot(records[0], slot);
+	const entries = foldJournalRecords(records);
 	return {
 		entries,
 		titleSlot: slot,
@@ -501,7 +503,7 @@ export async function loadEntriesFromFileStream(
 	let snapshotBytes: number | undefined;
 	if (options?.compactExecutorObservations) {
 		snapshotBytes = 0;
-		await visitEntriesFromFileStream(filePath, entry => references.visit(entry), {
+		await visitEntriesFromFileStream(filePath, entry => references.visit(entryRevision(entry) ?? entry), {
 			throwIfMissing: options.throwIfMissing,
 			onBytesConsumed: bytes => {
 				snapshotBytes! += bytes;
@@ -511,14 +513,13 @@ export async function loadEntriesFromFileStream(
 	const compactor = options?.compactExecutorObservations
 		? new ExecutorObservationCompactor(references.ids)
 		: undefined;
-	const entries: FileEntry[] = compactor?.entries ?? [];
+	const entries: FileEntry[] = [];
 	let malformedRecords = 0;
 	let bytesConsumed = 0;
 	const titleSlot = await visitEntriesFromFileStream(
 		filePath,
 		entry => {
-			if (compactor) compactor.push(entry);
-			else entries.push(entry);
+			entries.push(entry);
 		},
 		{
 			// Both passes must see the same prefix: a later appended branch may
@@ -533,9 +534,17 @@ export async function loadEntriesFromFileStream(
 			},
 		},
 	);
-	compactor?.flush();
+	const folded = foldJournalRecords(entries);
+	if (compactor) {
+		for (const record of entries) {
+			const revised = entryRevision(record);
+			if (revised) references.ids.add(revised.id);
+		}
+		for (const entry of folded) compactor.push(entry);
+		compactor.flush();
+	}
 	return {
-		entries,
+		entries: compactor?.entries ?? folded,
 		titleSlot,
 		malformedRecords,
 		sourceSize: bytesConsumed,
@@ -682,14 +691,32 @@ export async function visitSessionFileForResume(
 		// Scan references on the same inode and byte prefix as the indexed pass.
 		const snapshotBytes = fs.fstatSync(sourceFd).size;
 		const references = new ExecutorObservationReferences();
-		if (options.compactExecutorObservations) {
-			await visitEntriesFromFileStream(filePath, entry => references.visit(entry), {
+		const revisions = new Map<string, PositionedSessionEntry>();
+		await visitEntriesFromFileStream(
+			filePath,
+			entry => {
+				const revised = entryRevision(entry);
+				if (revised) references.ids.add(revised.id);
+				references.visit(revised ?? entry);
+			},
+			{
 				sourceFd,
 				startOffset: 0,
 				maxBytes: snapshotBytes,
 				throwIfMissing: options.throwIfMissing,
-			});
-		}
+				onEntryPosition: (record, offset, length) => {
+					const revised = entryRevision(record);
+					if (revised)
+						revisions.set(revised.id, {
+							...sessionContextEntryMetadata(revised),
+							offset,
+							length,
+							firstKeptEntryId: revised.type === "compaction" ? revised.firstKeptEntryId : undefined,
+							rawCopy: false,
+						});
+				},
+			},
+		);
 		const positions = new WeakMap<SessionEntry, PositionedSessionEntry>();
 		const compactor = options.compactExecutorObservations
 			? new ExecutorObservationCompactor(references.ids, (entry, compacted) => {
@@ -736,6 +763,23 @@ export async function visitSessionFileForResume(
 					migrated = version < CURRENT_SESSION_VERSION;
 					return;
 				}
+				const revisedHeader = headerRevision(entry);
+				if (revisedHeader) {
+					if (revisedHeader.id !== header.id) throw new Error("Journal header identity changed");
+					header = revisedHeader;
+					return;
+				}
+				if (entryRevision(entry)) return;
+				const revisionPosition = entry.type === "session" ? undefined : revisions.get(entry.id);
+				if (revisionPosition) {
+					entry = readPositionedSessionEntry(sourceFd, revisionPosition);
+					offset = revisionPosition.offset;
+					length = revisionPosition.length;
+				}
+				if (entry.type === "title_change") {
+					header.title = entry.title;
+					header.titleSource = entry.source;
+				}
 				const arrayIndex = legacyIds.length;
 				rawIds.push(entry.type === "session" ? undefined : entry.id);
 				if (entry.type === "session") {
@@ -766,7 +810,7 @@ export async function visitSessionFileForResume(
 					}
 				}
 				const position: PositionedSessionEntry = {
-					rawCopy: version >= CURRENT_SESSION_VERSION,
+					rawCopy: !revisionPosition && version >= CURRENT_SESSION_VERSION,
 					...sessionContextEntryMetadata(entry),
 					offset,
 					length,
@@ -781,6 +825,7 @@ export async function visitSessionFileForResume(
 			},
 		});
 		compactor?.flush();
+		for (const id of revisions.keys()) if (!ids.has(id)) throw new Error(`Journal revision target ${id} not found`);
 		// Array migration reads a forward target's original id before that target is
 		// migrated. Preserve that exact behavior rather than inventing a future id.
 		for (const { position, target } of forwardReferences) {
@@ -817,7 +862,8 @@ export function readPositionedSessionEntry(fd: number, position: PositionedSessi
 		if (count === 0) throw new Error(`Session entry ${position.id} was truncated`);
 		read += count;
 	}
-	const entry = JSON.parse(bytes.toString("utf8")) as SessionEntry;
+	const record = JSON.parse(bytes.toString("utf8")) as SessionEntry;
+	const entry = entryRevision(record) ?? record;
 	entry.id = position.id;
 	entry.parentId = position.parentId;
 	if (entry.type === "compaction") {
@@ -843,14 +889,20 @@ export async function visitEntriesFromFile(
 ): Promise<void> {
 	const size = storage.statSync(filePath).size;
 	if (shouldStreamEntries(storage, size)) {
-		let sawFirstEntry = false;
-		await visitEntriesFromFileStream(filePath, entry => {
-			if (!sawFirstEntry) {
-				sawFirstEntry = true;
-				if (!isValidSessionHeader(entry)) return false;
+		const positions = new Map<string, PositionedSessionEntry>();
+		const loaded = await visitSessionFileForResume(filePath, (entry, position) => positions.set(entry.id, position));
+		try {
+			for (const header of loaded.entries) if (visit(header) === false) return;
+			if (loaded.sourceFd !== undefined) {
+				for (const position of positions.values()) {
+					// Match the streaming visitor's EOF behavior if its consumer truncates the journal.
+					if (position.offset + position.length > fs.fstatSync(loaded.sourceFd).size) break;
+					if (visit(readPositionedSessionEntry(loaded.sourceFd, position)) === false) return;
+				}
 			}
-			return visit(entry);
-		});
+		} finally {
+			if (loaded.sourceFd !== undefined) fs.closeSync(loaded.sourceFd);
+		}
 		return;
 	}
 

@@ -762,7 +762,7 @@ describe("bounded resume memory", () => {
 			old.message.content = [{ type: "text", text: "short replacement" }];
 			session.updateEntry(old);
 			storage.armed = true;
-			rewrite = session.rewriteEntries();
+			rewrite = session.rewriteEntries({ forceFullRewrite: true });
 			await storage.published.promise;
 			expect(session.getEntry("c1")).toEqual(entries.find(entry => entry.id === "c1"));
 			expect(session.getEntry("sibling-compaction")).toEqual(
@@ -847,7 +847,7 @@ describe("bounded resume memory", () => {
 			const block = historicalTextBlock();
 			expect(structuredClone(block)).toEqual(block);
 			storage.armed = true;
-			rewrite = session.rewriteEntries();
+			rewrite = session.rewriteEntries({ forceFullRewrite: true });
 			await storage.published.promise;
 			block.text = "nested historical edit during published rewrite 🐈";
 			const owner = session.getEntry("old-large");
@@ -909,7 +909,7 @@ describe("bounded resume memory", () => {
 			early.message.content = [{ type: "text", text: "short replacement" }];
 			session.updateEntry(early);
 			storage.armed = true;
-			rewrite = session.rewriteEntries();
+			rewrite = session.rewriteEntries({ forceFullRewrite: true });
 			await storage.published.promise;
 			// The serialized image is still tiny; only the live comparison needs a blob.
 			image.data = changedImage;

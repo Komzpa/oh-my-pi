@@ -1,28 +1,7 @@
 /**
- * `close()` -- the method `AgentSession#doDispose` actually calls, via
- * `seal()` then `close()` -- must not report a durably-recoverable session as
- * lost just because two synchronous rewrites (`flushSync`) for the same path
- * raced a deferred-publish backend's (any indexed/SQL storage) confirm.
- * `writeTextSync` updates `IndexedSessionStorage`'s local index SYNCHRONOUSLY
- * before queuing the backend publish, but `SessionManager`'s own
- * `#expectedDiskSize` only advances once that publish is confirmed (an async
- * step) -- so a second synchronous rewrite for the same path, issued before
- * that confirm, still carries the STALE `expectedSize` and conflicts with the
- * index the first rewrite already set, entirely locally, before the backend
- * ever sees the second write. No artificial delay is needed to reproduce
- * this: it is deterministic whenever two `flushSync`-driven rewrites for one
- * path have no `await` between them.
- *
- * This is exactly the shape `AgentSession#recordSessionExit` produces at
- * dispose: it appends the session-exit bookkeeping entry and calls
- * `flushSync()` immediately after the final turn's own message-persist, with
- * no further append to trigger the existing cold-path recovery (which only
- * ever runs when a LATER append retries the whole transcript, and which
- * `seal()` disables anyway once dispose has raised it). Before the fix,
- * `close()`'s first disk-work item refuses on the already-latched failure
- * before ever draining, so the still-outstanding (and otherwise perfectly
- * fine) first publish never gets the chance to confirm, and the whole
- * transcript -- not merely the exit-record bookkeeping -- is reported lost.
+ * A final message followed synchronously by session_exit and flushSync must
+ * survive seal()+close() while indexed storage confirms its initial publication.
+ * It must not publish a second full body with a stale expected size.
  */
 
 import { describe, expect, it } from "bun:test";
@@ -41,6 +20,7 @@ import { MemorySessionStorage, SessionWriteConflictError } from "@oh-my-pi/pi-co
 class FakeIndexedBackend implements SessionStorageBackend {
 	readonly files = new Map<string, string>();
 	readonly mtimes = new Map<string, number>();
+	fullPublications = 0;
 	#mtime = 1;
 
 	async init(): Promise<void> {}
@@ -76,6 +56,7 @@ class FakeIndexedBackend implements SessionStorageBackend {
 		_title?: unknown,
 		expectedSize?: number | null,
 	): Promise<void> {
+		this.fullPublications++;
 		const current = this.files.get(path) ?? null;
 		const actualSize = current === null ? null : Buffer.byteLength(current, "utf8");
 		if (expectedSize !== undefined && actualSize !== expectedSize) {
@@ -142,7 +123,7 @@ class DeferredPublishMemoryStorage extends MemorySessionStorage {
 	readonly defersSyncPublish = true;
 }
 
-describe("SessionManager seal()+close() recovers a sync-rewrite conflict against a deferred-publish backend", () => {
+describe("SessionManager seal()+close() with a deferred-publish backend", () => {
 	it("dispose's seal-then-close still lands the final message and the exit record", async () => {
 		const backend = new FakeIndexedBackend();
 		const storage = new IndexedSessionStorage(backend);
@@ -166,10 +147,9 @@ describe("SessionManager seal()+close() recovers a sync-rewrite conflict against
 		} catch (err) {
 			exitRecordError = err;
 		}
-		// The exit-record rewrite really did conflict locally, before the
-		// backend ever saw it -- this is the bug's own fingerprint, not
-		// incidental to the fix.
-		expect(exitRecordError).toBeInstanceOf(SessionWriteConflictError);
+		// The pending bootstrap owns publication; exit bookkeeping must wait
+		// for confirmation and append instead of self-conflicting.
+		expect(exitRecordError).toBeUndefined();
 
 		// Exactly `AgentSession#doDispose`'s own shutdown sequence: seal (which
 		// disables the ordinary mid-life repair path) then close(). No third
@@ -180,6 +160,7 @@ describe("SessionManager seal()+close() recovers a sync-rewrite conflict against
 		const body = backend.files.get(sessionFile) ?? "";
 		expect(body).toContain("FINAL MESSAGE");
 		expect(body).toContain("session_exit");
+		expect(backend.fullPublications).toBe(1);
 		expect(manager.captureState().expectedDiskSize).toBe(Buffer.byteLength(body, "utf8"));
 	});
 
@@ -194,7 +175,7 @@ describe("SessionManager seal()+close() recovers a sync-rewrite conflict against
 			manager.appendCustomEntry("session_exit", { reason: "dispose" });
 			manager.flushSync();
 		} catch {
-			// Expected: the same local conflict as above.
+			// A synchronous storage failure is surfaced by close() below.
 		}
 
 		// The backend is genuinely gone (every retried write fails too), not

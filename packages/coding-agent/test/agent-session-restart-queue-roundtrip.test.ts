@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import { IrcBridge } from "@oh-my-pi/pi-coding-agent/session/irc-bridge";
+import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { createMockModel, type MockResponse, type MockResponseSource } from "@oh-my-pi/pi-ai/providers/mock";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
@@ -147,6 +149,118 @@ describe("AgentSession restart queue round trip", () => {
 		session = createSession(sessionManager, responses, modelInputs);
 		return session;
 	}
+
+	it("persists peer and advisory skips with interleaved deferred queue delivery by append only", async () => {
+		const manager = currentManager();
+		appendPriorAssistant(manager);
+		let peerPending = false;
+		let executed = 0;
+		const wait: AgentTool = {
+			name: "wait",
+			label: "Wait",
+			description: "Interruptible wait",
+			parameters: type({}),
+			interruptible: true,
+			concurrency: "exclusive",
+			execute: async (_id, _args, signal) => {
+				executed++;
+				const aborted = Promise.withResolvers<never>();
+				signal?.addEventListener("abort", () => aborted.reject(new Error("interrupted wait")), { once: true });
+				return Promise.race([
+					aborted.promise,
+					Bun.sleep(2000).then(() => {
+						throw new Error("interrupt did not arrive");
+					}),
+				]);
+			},
+		};
+		const notes: AgentTool = {
+			name: "context_notes",
+			label: "Notes",
+			description: "Save context notes",
+			parameters: type({}),
+			execute: async () => ({ content: [{ type: "text", text: "Context notes saved." }], details: {} }),
+		};
+		// Recorded 02:50:40-41 order: assistant wait -> peer skip -> second
+		// assistant context_notes+wait -> saved notes -> advisory skip.
+		session = createSession(
+			manager,
+			[
+				() => {
+					peerPending = true;
+					return {
+						content: [{ type: "toolCall", id: "peer-skip", name: "wait", arguments: {} }],
+					};
+				},
+				() => {
+					peerPending = false;
+					session!.agent.steer({
+						...hiddenNextTurnMessage("requirements"),
+						customType: "requirements-gate-notice",
+					});
+					return {
+						content: [
+							{ type: "toolCall", id: "notes", name: "context_notes", arguments: {} },
+							{ type: "toolCall", id: "advisory-skip", name: "wait", arguments: {} },
+						],
+					};
+				},
+				{ content: ["continued"], stopReason: "stop" },
+			],
+			undefined,
+			[wait, notes],
+		);
+		const active = session;
+		const interruptPeek = vi.spyOn(IrcBridge.prototype, "hasInterrupts").mockImplementation(() => peerPending);
+		const lease = active.beginRestartDrain();
+		active.queueDeferredMessage({
+			...hiddenNextTurnMessage("deadline"),
+			customType: "goal-deadline-time-note",
+			timestamp: 1794020058033,
+		});
+		await lease.waitForQuiescence();
+		lease.release();
+		const file = manager.getSessionFile()!;
+		const prefix = await Bun.file(file).text();
+		const atomicWrites = vi.spyOn(FileSessionStorage.prototype, "writeLinesAtomic");
+		const syncWrites = vi.spyOn(FileSessionStorage.prototype, "writeLinesSync");
+		try {
+			await active.prompt("continue live entry mix");
+			await active.settleInFlightMessagePersistence();
+			await manager.flush();
+			expect(executed).toBe(0);
+			const results = manager
+				.getEntries()
+				.flatMap(entry => (entry.type === "message" && entry.message.role === "toolResult" ? [entry.message] : []));
+			expect(results.map(result => result.toolCallId)).toEqual(["peer-skip", "notes", "advisory-skip"]);
+			expect(results[0].content).toEqual([
+				expect.objectContaining({ text: expect.stringContaining("pending peer interrupt") }),
+			]);
+			expect(results[0]).toMatchObject({ details: { __synthetic: true, executed: false } });
+			expect(results[1]).toMatchObject({
+				isError: false,
+				content: [{ type: "text", text: "Context notes saved." }],
+			});
+			expect(results[2].content).toEqual([
+				expect.objectContaining({ text: expect.stringContaining("pending system advisory") }),
+			]);
+			expect(atomicWrites).not.toHaveBeenCalled();
+			expect(syncWrites).not.toHaveBeenCalled();
+			expect((await Bun.file(file).text()).startsWith(prefix)).toBe(true);
+			expect(countCustomMessageEntries(manager, "goal-deadline-time-note")).toBe(1);
+			expect(countCustomMessageEntries(manager, "requirements-gate-notice")).toBe(1);
+		} finally {
+			atomicWrites.mockRestore();
+			syncWrites.mockRestore();
+			interruptPeek.mockRestore();
+		}
+		await active.dispose();
+		session = undefined;
+		sessionManager = undefined;
+		const reopened = await reopenSession(file);
+		expect(countCustomMessageEntries(reopened.sessionManager, "goal-deadline-time-note")).toBe(1);
+		expect(countCustomMessageEntries(reopened.sessionManager, "requirements-gate-notice")).toBe(1);
+	});
 
 	it("wakes a restored idle root within one second with owner input first despite background work", async () => {
 		appendPriorAssistant(currentManager());
