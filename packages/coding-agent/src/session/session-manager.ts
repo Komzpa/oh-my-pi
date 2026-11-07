@@ -4314,22 +4314,12 @@ export class SessionManager {
 		await resolveBlobRefsInEntries(sourceEntries, manager.#blobs);
 
 		const sourceHeader = sourceEntries.find(entry => entry.type === "session") as SessionHeader | undefined;
-		let history = sourceEntries.filter(entry => entry.type !== "session") as SessionEntry[];
-		if (options?.seance) {
-			// Persist only the context the consultant receives, never the parent's
-			// retired messages, runtime state or other workers' startup contracts.
-			const context = buildSessionContext(history);
-			const snapshot: SessionEntry[] = [];
-			let parentId: string | null = null;
-			for (const message of context.messages) {
-				const id = Bun.randomUUIDv7();
-				snapshot.push({ type: "message", id, parentId, timestamp: nowIso(), message });
-				parentId = id;
-			}
-			history = snapshot;
-		}
+		const history = sourceEntries.filter(entry => entry.type !== "session") as SessionEntry[];
 		normalizeLoadedUsage(history);
-		if (options?.resetInheritedCost) SessionManager.#resetInheritedUsageCost(history);
+		// A seance persists only the context the consultant receives, never the parent's
+		// retired messages, runtime state or other workers' startup contracts.
+		const forked = options?.seance ? SessionManager.#seanceSnapshot(history) : history;
+		if (options?.resetInheritedCost) SessionManager.#resetInheritedUsageCost(forked);
 		manager.#resetToNewSession(
 			{
 				parentSession: sourceHeader?.id,
@@ -4352,12 +4342,12 @@ export class SessionManager {
 		manager.#titleSource = manager.#header.titleSource;
 		manager.#titleUpdatedAt = nowIso();
 		manager.#hasTitleSlot = true;
-		manager.#entries = history;
-		manager.#index.rebuild(history);
+		manager.#entries = forked;
+		manager.#index.rebuild(forked);
 		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();
 		if (options?.repairInterruptedTail) {
-			SessionManager.#repairForkedInterruptedTail(history, manager.#index.pathTo());
-			manager.#index.rebuild(history);
+			SessionManager.#repairForkedInterruptedTail(forked, manager.#index.pathTo());
+			manager.#index.rebuild(forked);
 		}
 		manager.#forceFileCreation = true;
 		await manager.#rewriteAtomically();
@@ -4365,6 +4355,17 @@ export class SessionManager {
 			await copySessionArtifacts(sourcePath, manager.#sessionFile!);
 		}
 		return manager;
+	}
+
+	static #seanceSnapshot(history: SessionEntry[]): SessionEntry[] {
+		const snapshot: SessionEntry[] = [];
+		let parentId: string | null = null;
+		for (const message of buildSessionContext(history).messages) {
+			const id = Bun.randomUUIDv7();
+			snapshot.push({ type: "message", id, parentId, timestamp: nowIso(), message });
+			parentId = id;
+		}
+		return snapshot;
 	}
 
 	/**
