@@ -805,6 +805,8 @@ export interface ExtensionContext {
 		signal?: AbortSignal,
 		onStarted?: (workerId: string) => void,
 		subject?: string,
+		rows?: readonly string[],
+		onResult?: (output: unknown) => void,
 	): Promise<AgentToolResult>;
 	getTodoPreviewConfig?(): { openReviewPages?: boolean; enabled: boolean; paths: string[]; thresholdMinutes: number };
 	/** Current hydrated plan, without replaying the session journal. Undefined before session initialization. */

@@ -737,6 +737,11 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 			}
 			if (sectionFailure && !sectionFailure.success) {
 				this.#schemaValidationFailures++;
+				if (this.#session.outputSchemaMode === "strict") {
+					throw new Error(
+						`Output does not match schema: ${formatAllValidationIssues(sectionFailure.issues)}. Nothing was submitted. Expected schema:\n${formatSchema(this.#session.outputSchema)}`,
+					);
+				}
 				if (this.#schemaValidationFailures <= MAX_SCHEMA_RETRIES) {
 					const remaining = MAX_SCHEMA_RETRIES - this.#schemaValidationFailures;
 					const retryHint =

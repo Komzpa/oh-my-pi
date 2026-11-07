@@ -337,21 +337,8 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		launched++;
 		void (async () => {
 			let retry = false;
-			try {
-				const result = await ctx.runRowAudit!(rowAuditTask(batch, requirementsFor), agent, undefined, workerId => {
-					for (const [content, audit] of records) {
-						if (audit.workerId === workerId) continue;
-						audit.workerId = workerId;
-						const current = ctx
-							.getTodoPhases?.()
-							?.flatMap(phase => phase.tasks)
-							.find(row => row.content === content)?.schedule?.audit;
-						if (current?.delivery === audit.delivery && current.startedAt === audit.startedAt)
-							ctx.updateTodoSchedule!(content, { audit: { ...audit } });
-					}
-				}, batch.rows.map(row => row.content).join(" "));
-				const details = result?.details as { results?: Array<{ output?: unknown }> } | undefined;
-				const verdicts = parseRowAuditVerdicts(details?.results?.[0]?.output) ?? [];
+			const apply = async (output: unknown) => {
+				const verdicts = parseRowAuditVerdicts(output) ?? [];
 				const head = (await readHead(batch.repoPath)) ?? "unknown";
 				// A moved head makes these verdicts stale; the next check audits once at the new head.
 				if (head !== batch.head) return;
@@ -363,7 +350,9 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 						!row ||
 						current?.delivery !== audit.delivery ||
 						current.head !== audit.head ||
-						current.startedAt !== audit.startedAt
+						current.startedAt !== audit.startedAt ||
+						current.attempts !== audit.attempts ||
+						(current.verdict !== "pending" && current.verdict !== "omitted")
 					)
 						continue;
 					const at = now();
@@ -381,7 +370,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 						if ((audit.attempts ?? 1) < 2) retry = true;
 						continue;
 					}
-					const requirementEdit = editsRequirements(row) || verdict.requirementDiffs !== undefined;
+					const requirementEdit = editsRequirements(row) || (verdict.requirementDiffs?.length ?? 0) > 0;
 					const settled = settleRowAuditVerdict(verdict, fileExists, requirementEdit ? rowRequirementQuotes(ctx, row.content) : undefined);
 					if (requirementEdit) options.recordRequirementDiff?.({
 						row: row.content, head: batch.head, delivery: audit.delivery,
@@ -403,6 +392,29 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 						},
 					});
 				}
+			};
+			let updates = Promise.resolve();
+			const submit = (output: unknown) => {
+				updates = updates.then(() => apply(output));
+				return updates;
+			};
+			try {
+				const result = await ctx.runRowAudit!(rowAuditTask(batch, requirementsFor), agent, undefined, workerId => {
+					for (const [content, audit] of records) {
+						if (audit.workerId === workerId) continue;
+						audit.workerId = workerId;
+						const current = ctx
+							.getTodoPhases?.()
+							?.flatMap(phase => phase.tasks)
+							.find(row => row.content === content)?.schedule?.audit;
+						if (current?.delivery === audit.delivery && current.startedAt === audit.startedAt && current.verdict === "pending")
+							ctx.updateTodoSchedule!(content, { audit: { ...audit } });
+					}
+				}, batch.rows.map(row => row.content).join(" "), batch.rows.map(row => row.content), output => {
+					void submit(output).catch(error => logger.warn("Row audit update failed", { error: String(error) }));
+				});
+				const details = result?.details as { results?: Array<{ output?: unknown }> } | undefined;
+				await submit(details?.results?.[0]?.output);
 			} catch (error) {
 				for (const row of batch.rows) {
 					failedAt.set(rowKey(row), now());
