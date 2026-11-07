@@ -1296,7 +1296,35 @@ function readSessionUtf8Piece(fd: number, offset: number, length: number, begin:
 	return bytes.toString("utf8", first, last);
 }
 
+/** Read cold ranges through the I/O pool, including when the source is not in page cache. */
+async function readSessionUtf8PieceAsync(
+	fd: number,
+	offset: number,
+	length: number,
+	begin: number,
+	end: number,
+): Promise<string> {
+	const bytes = Buffer.allocUnsafe(Math.min(length, end + 3) - begin);
+	let read = 0;
+	while (read < bytes.length) {
+		const pending = Promise.withResolvers<number>();
+		fs.read(fd, bytes, read, bytes.length - read, offset + begin + read, (error, count) => {
+			if (error) pending.reject(error);
+			else pending.resolve(count);
+		});
+		const count = await pending.promise;
+		if (count === 0) throw new Error("Session record truncated during rewrite");
+		read += count;
+	}
+	let first = 0;
+	while (first < bytes.length && (bytes[first]! & 0xc0) === 0x80) first++;
+	let last = end - begin;
+	while (last < bytes.length && (bytes[last]! & 0xc0) === 0x80) last++;
+	return bytes.toString("utf8", first, last);
+}
+
 interface SessionFileBody {
+	readLine?: (index: number) => string | Promise<string>;
 	dispose?: () => void;
 	lines: string[];
 	bytes: number;
@@ -2042,38 +2070,44 @@ export class SessionManager {
 				? this.#moveOffSessionFile("open-elsewhere")
 				: sessionFile;
 		const body = await this.#serializeBodyAsync();
-		const options = {
-			expectedSize: this.#expectedDiskSize,
-			commitGuard,
-			fencedAsyncPublish: this.#largeRewriteFence,
-		};
 		try {
-			await (this.#storage.writeLinesAtomic
-				? this.#storage.writeLinesAtomic(target, body.lines, options)
-				: this.#storage.writeTextAtomic(target, body.lines.join(""), options));
-		} catch (error) {
-			const retryPath = await this.#recoverFromWriteConflict(error, recoveries);
-			if (retryPath) return this.#publishAuthoritativeBody(retryPath, operationError, commitGuard, recoveries + 1);
-			const recoveryErrors = [toError(error)];
+			const options = {
+				expectedSize: this.#expectedDiskSize,
+				readLine: body.readLine,
+				commitGuard,
+				fencedAsyncPublish: this.#largeRewriteFence,
+			};
 			try {
-				await this.#storage.drain();
-			} catch (drainFailure) {
-				recoveryErrors.push(toError(drainFailure));
+				await (this.#storage.writeLinesAtomic
+					? this.#storage.writeLinesAtomic(target, body.lines, options)
+					: this.#storage.writeTextAtomic(target, body.lines.join(""), options));
+			} catch (error) {
+				const retryPath = await this.#recoverFromWriteConflict(error, recoveries);
+				if (retryPath)
+					return this.#publishAuthoritativeBody(retryPath, operationError, commitGuard, recoveries + 1);
+				const recoveryErrors = [toError(error)];
+				try {
+					await this.#storage.drain();
+				} catch (drainFailure) {
+					recoveryErrors.push(toError(drainFailure));
+				}
+				let actual: string;
+				try {
+					actual = await this.#storage.readText(target);
+				} catch (readFailure) {
+					recoveryErrors.push(toError(readFailure));
+					throw this.#latchIndeterminate(operationError, recoveryErrors);
+				}
+				if (!textMatchesLines(actual, body.lines)) {
+					recoveryErrors.push(new Error("Authoritative session repair did not match durable storage."));
+					throw this.#latchIndeterminate(operationError, recoveryErrors);
+				}
 			}
-			let actual: string;
-			try {
-				actual = await this.#storage.readText(target);
-			} catch (readFailure) {
-				recoveryErrors.push(toError(readFailure));
-				throw this.#latchIndeterminate(operationError, recoveryErrors);
-			}
-			if (!textMatchesLines(actual, body.lines)) {
-				recoveryErrors.push(new Error("Authoritative session repair did not match durable storage."));
-				throw this.#latchIndeterminate(operationError, recoveryErrors);
-			}
+			await this.#recordFullRewriteAsync(body, target);
+			return body.stamp.entryCount;
+		} finally {
+			body.dispose?.();
 		}
-		await this.#recordFullRewriteAsync(body, target);
-		return body.stamp.entryCount;
 	}
 
 	#appendWriter(): SessionStorageWriter {
@@ -2240,6 +2274,7 @@ export class SessionManager {
 		const revision = this.#bodyRevision;
 		let sliceStart = performance.now();
 		const lines = [titleLine, headerLine];
+		const asyncLines = new Map<number, () => Promise<string>>();
 		let bytes = Buffer.byteLength(titleLine) + Buffer.byteLength(headerLine);
 		const positions: SessionFileBody["positions"] = [];
 		const ranges: SessionFileBody["ranges"] = new Map();
@@ -2266,6 +2301,9 @@ export class SessionManager {
 						const pieceStart = begin;
 						const pieceEnd = Math.min(length, begin + 256 * 1024);
 						const recordLength = length;
+						asyncLines.set(lines.length, () =>
+							readSessionUtf8PieceAsync(fd, offset, recordLength, pieceStart, pieceEnd),
+						);
 						Object.defineProperty(lines, lines.length, {
 							enumerable: true,
 							get: () => readSessionUtf8Piece(fd, offset, recordLength, pieceStart, pieceEnd),
@@ -2296,6 +2334,7 @@ export class SessionManager {
 				}
 			}
 			return {
+				readLine: index => asyncLines.get(index)?.() ?? lines[index]!,
 				lines,
 				bytes,
 				positions,
@@ -2523,6 +2562,7 @@ export class SessionManager {
 				activeBody = body;
 				const options = {
 					expectedSize: this.#expectedDiskSize,
+					readLine: body.readLine,
 					fencedAsyncPublish: this.#largeRewriteFence,
 					commitGuard: () => !this.#released && this.#diskEpoch === epoch,
 				};
