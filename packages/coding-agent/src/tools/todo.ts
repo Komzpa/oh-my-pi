@@ -560,7 +560,14 @@ export { isTodoSelectionEntryMetadata } from "../session/branch-selection";
 interface TodoArchiveBranchSource extends BranchSource {
 	readonly bodyRevision?: number;
 }
-const todoArchiveBranches = new WeakMap<object, { latest: unknown; bodyRevision?: number; entries: SessionEntry[] }>();
+interface TodoArchiveState {
+	phases: TodoPhase[];
+	summary?: TodoArchiveSummary;
+}
+const todoArchiveBranches = new WeakMap<
+	object,
+	TodoArchiveState & { latest: unknown; bodyRevision?: number; entries: SessionEntry[] }
+>();
 
 /** Fold archive history during resume without retaining decoded historical entries. */
 export function getTodoArchiveBranchEntries(manager: TodoArchiveBranchSource | undefined): SessionEntry[] {
@@ -570,16 +577,24 @@ export function getTodoArchiveBranchEntries(manager: TodoArchiveBranchSource | u
 	const cached = todoArchiveBranches.get(manager);
 	const sameBody = cached?.bodyRevision === manager.bodyRevision;
 	if (cached && sameBody && cached.latest === revision) return cached.entries;
+	let extendsCached = false;
+	let hasEdit = false;
 	function* history(): IterableIterator<SessionEntry> {
 		for (const entry of selectBranchNewestFirst(manager!, isTodoSelectionEntryMetadata)) {
 			if (cached && sameBody && (entry.id ?? entry) === cached.latest) {
-				yield* cached.entries.toReversed();
+				extendsCached = true;
+				if (hasEdit) yield* cached.entries.toReversed();
 				return;
 			}
+			if (compactTodoEditFromEntry(entry)) hasEdit = true;
 			yield entry;
 		}
 	}
-	const { phases, fromAt, toAt } = foldTodoArchiveNewestFirst(history());
+	const { phases, summary, fromAt, toAt } = foldTodoArchiveNewestFirst(history());
+	if (cached && extendsCached && !hasEdit) {
+		cached.latest = revision;
+		return cached.entries;
+	}
 	const entries = Number.isFinite(fromAt)
 		? [fromAt, toAt].map((at, index): SessionEntry => ({
 				type: "custom",
@@ -590,8 +605,18 @@ export function getTodoArchiveBranchEntries(manager: TodoArchiveBranchSource | u
 				data: { edit: { v: 1, kind: "archive", at, archivedPhases: index === 0 ? phases : [] } },
 			}))
 		: [];
-	todoArchiveBranches.set(manager, { latest: revision, bodyRevision: manager.bodyRevision, entries });
+	todoArchiveBranches.set(manager, { latest: revision, bodyRevision: manager.bodyRevision, entries, phases, summary });
 	return entries;
+}
+
+/** Detached archive data for one consumer operation, without replaying folded entries. */
+export function readTodoArchiveState(manager: TodoArchiveBranchSource | undefined): TodoArchiveState {
+	getTodoArchiveBranchEntries(manager);
+	const state = manager ? todoArchiveBranches.get(manager) : undefined;
+	return {
+		phases: state ? structuredClone(state.phases) : [],
+		summary: state?.summary ? { ...state.summary } : undefined,
+	};
 }
 
 /** Latest full live snapshot and its compact edit/HUD tail; archives use the full history reader. */
@@ -2302,13 +2327,14 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const entry = resolved;
 		const op = entry.op;
 		const now = Date.now();
-		const todoEntries = getTodoArchiveBranchEntries(this.session.sessionManager);
+		const archiveState = readTodoArchiveState(this.session.sessionManager);
+		const priorArchive = archiveState.phases;
 		const healedRows = healStoredSelfEdges(previousPhases);
-		const healedEdges = healStoredDanglingEdges(previousPhases, getLatestTodoArchiveFromEntries(todoEntries));
+		const healedEdges = healStoredDanglingEdges(previousPhases, priorArchive);
 		const manager = this.session.sessionManager;
 		const deadline = manager
 			? readGoalDeadlineFromManager(manager, this.session.cwd, { includePaused: true })
-			: readGoalDeadline(todoEntries, this.session.cwd, { includePaused: true });
+			: readGoalDeadline([], this.session.cwd, { includePaused: true });
 		const skippedEstimates: string[] = [];
 		if (entry.op === "schedule") {
 			const changed = (entry.updates ?? []).flatMap(update => {
@@ -2334,7 +2360,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), entry, now, getLatestTodoArchiveFromEntries(todoEntries));
+			: applyParams(clonePhases(previousPhases), entry, now, priorArchive);
 		if (op === "done" && !this.#validatingReviewClosure) {
 			for (const phase of updated)
 				for (const row of phase.tasks) {
@@ -2384,7 +2410,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		);
 		const archived = !readOnly && !failed && closesRow ? archiveTodoPhases(updated, now) : undefined;
 		const effective = archived?.phases ?? (failed ? previousPhases : updated);
-		const archivedPhases = op === "init" && !failed ? [] : getLatestTodoArchiveFromEntries(todoEntries);
+		const archivedPhases = op === "init" && !failed ? [] : priorArchive;
 		const newArchive = archived?.archivedPhases ?? [];
 		// A schedule rename changes titles, not statuses: content-keyed completion
 		// diffing must not report renamed closed rows as newly completed.
@@ -2425,7 +2451,9 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const archiveSummary =
 			op === "init" && !failed
 				? getTodoArchiveSummaryFromEntries([], archiveEdit)
-				: getTodoArchiveSummaryFromEntries(todoEntries, archiveEdit);
+				: archiveEdit
+					? getTodoArchiveSummaryFromEntries(getTodoArchiveBranchEntries(this.session.sessionManager), archiveEdit)
+					: archiveState.summary;
 		if (archiveSummary) details.archiveSummary = archiveSummary;
 		if (readOnly && entry.archive) details.archivedPhases = archivedPhases;
 		if (deadline) details.deadlineAt = deadline.deadlineAt;
