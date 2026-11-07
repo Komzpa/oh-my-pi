@@ -3877,6 +3877,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	silentAssistantTurn = false;
 
 	refreshAssistantVisibility(): void {
+		let actionDemand = false;
 		// User prompts are appended before streaming and need not emit message_start.
 		for (let index = this.agent.state.messages.length - 1; index >= 0; index--) {
 			const input = this.agent.state.messages[index];
@@ -3885,9 +3886,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				break;
 			}
 			if (input.role !== "custom") continue;
-			const details = input.details as { silentAssistant?: boolean } | undefined;
+			const details = input.details as { silentAssistant?: boolean; actionDemand?: unknown } | undefined;
 			if (typeof details?.silentAssistant === "boolean") {
 				this.silentAssistantTurn = details.silentAssistant;
+				actionDemand = typeof details.actionDemand === "string" && details.actionDemand.trim().length > 0;
 				break;
 			}
 			if (!input.customType.startsWith("todo-")) {
@@ -3895,7 +3897,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				break;
 			}
 		}
-		if (this.silentAssistantTurn) this.#recovery.setAcceptTerminalEmptyStop(true);
+		// Hiding unchanged narration must not waive an explicit dispatcher action.
+		// Idle wakes may stop silently; demanded work uses bounded empty-stop recovery.
+		if (this.silentAssistantTurn) this.#recovery.setAcceptTerminalEmptyStop(!actionDemand);
 	}
 
 	/** Emit an event to all listeners */
