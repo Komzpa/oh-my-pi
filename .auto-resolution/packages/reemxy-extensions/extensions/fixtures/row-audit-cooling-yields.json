@@ -1,0 +1,102 @@
+[
+  {
+    "at": "2026-11-07T14:34:29.980Z",
+    "arguments": {
+      "data": {
+        "result": "| requirement | artifact | verdict | evidence |\n|---|---|---|---|\n| Cooling: Heat mains blue/orange proven on bfbabf30d | row \"Cooling: Heat mains blue/orange proven on bfbabf30d\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff | pass | Users can open Facility \u2192 Heat and distinguish blue supply mains from orange return mains, including buried returns. Independently observed clean HEAD bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff; serving Vite PID 1279608 had cwd ROOT. Mounted hardware-browser checks at 1440\u00d7900 and 430\u00d7932 observed two supply mains with actual material #28d8ff and two return mains with actual material #ffb347, two see-through return trunks, live AMD WebGL contexts and no console errors. Inspected my own screenshots and paired crops below. `node local://heat-colour-probe.mjs` exited 0 after correcting its initially ambiguous canvas selector; asserts actual mounted material colours, not descriptive attributes. `npx playwright test e2e/product-root.spec.ts --project=chromium --grep 'AI Project draws paired cooling mains and a see-through buried return in Heat' --workers=1 --reporter=list,json --output=/home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07` exited 0: 2 expected, 0 unexpected, 0 skipped; assertion source e2e/product-root.spec.ts:3446\u20133465, runner `2 passed (16.2s)`. Environment DCG_E2E_PORT=47361, DCG_E2E_PREBUILT=1, DCG_E2E_GPU=hardware; reused the identity-confirmed ROOT dev server, not a production preview. `npx vitest run --project=release --project=precommit src/__tests__/coolingTrunks.test.ts src/__tests__/coolingTrunkSizing.test.ts` exited 0: 34 passed. Both checks ran from /home/kom/proj/sunbim/wt/HeatMainsColour at the same assigned HEAD, after `npm ci` exited 0. `npm run build -- --outDir /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/build` exited 0 there. Full diffs of named HEAD and recovered implementation 04c7c286436ca2443a675c19b8ba09c93b141629 contain no requirements-document edits; both ancestor checks exited 0. No requirement widening found. No baseline was supplied: recovered before revision 7e7e9db59fda7cfea6217a7baf4c7be583b01606 as the actual colour fix's parent. Built it successfully in a disposable detached worktree, confirmed serving PID 1353912 and cwd before capture. `node local://heat-colour-probe.mjs --baseline` exited 0. Both captures used identical fresh AI Project state, route, viewport, Heat mode and frozen motion; Chromium launched without --hide-scrollbars. Captured full screenshots heat-probe-1440.png, heat-probe-430.png, base-probe-1440.png and base-probe-430.png in the evidence directory above, plus corresponding -crop.png canvas captures and the close-ups below. Initial CLI launches exited 1 twice for overlong socket paths; corrected runtime path opened successfully, but its later GPU context loss means that exploratory session is excluded from colour proof. One CLI assertion invocation exited 1 for its callback signature; corrected invocation exited 0 but was likewise superseded by the independent hardware probe. The probe's initial ambiguous selector run exited 1, corrected run exited 0. Baseline build exited 0. Owned server PIDs were stopped with `kill 1353912 1279608`; disposable worktree removal exited 0. No product edits, commits or pushes. |\n\n| before | after | region | defect |\n|---|---|---|---|\n| /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/base-mains-1440.png | /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/heat-mains-1440.png | 1440px: cooling plant, mains and neighbouring hall equipment; gray before mains regain thermal colours. Compared crops are not byte-identical. | none |\n| /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/base-mains-430.png | /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/heat-mains-430.png | 430px: cooling connections and neighbouring rack rows. Compared crops are not byte-identical; thin mains are visually small at this default camera, so actual material assertions provide the colour discrimination evidence. | none |\n\nUnassigned user asks found: none. Intake supplied a row title rather than a separate requirement ID or canonical Markdown header; the exact assigned row title is preserved above."
+      }
+    }
+  },
+  {
+    "at": "2026-11-07T14:36:14.897Z",
+    "arguments": {
+      "data": {
+        "rows": [
+          {
+            "row": "Cooling: Heat mains blue/orange proven on bfbabf30d",
+            "verdict": "pass",
+            "findings": "Verified clean ROOT HEAD bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff and live Vite serving PID 1279608/cwd ROOT. Independently exercised Facility \u2192 Heat at 1440\u00d7900 and 430\u00d7932 on AMD hardware WebGL. Actual mounted materials: two supply mains #28d8ff; two return mains #ffb347; two see-through buried return trunks. Contexts remained live and independent probe reported no console errors. Inspected my own full screenshots and close-ups. Scoped unit checks: 34 passed. Existing mounted Heat journeys: 2 passed, 0 skipped, 0 unexpected. Build passed in HeatMainsColour worktree at the exact assigned HEAD. Inspected complete diffs of bfbabf30d and recovered colour implementation 04c7c286436ca2443a675c19b8ba09c93b141629; neither edits requirements. Both commits are ancestors of assigned HEAD. For visual comparison, recovered baseline 7e7e9db59fda7cfea6217a7baf4c7be583b01606 from the actual colour fix's parent, built it in a disposable detached worktree and verified serving PID 1353912/cwd before capture. Same fresh AI Project state, route, frozen motion, viewport and crop rectangles in each pair. No introduced collateral defect observed. Narrow default-camera mains are small; actual material assertions independently establish their colours. All browser captures were headless; independent probe omitted --hide-scrollbars. Baseline worktree removed; owned server PIDs 1353912 and 1279608 stopped with kill. No product edits, commits or pushes. Failed exploratory CLI runs and the initial ambiguous-selector probe were superseded by the successful independent hardware probe, not counted as acceptance evidence.",
+            "checks": [
+              {
+                "command": "npm ci (cwd=/home/kom/proj/sunbim/wt/HeatMainsColour)",
+                "exitCode": 0
+              },
+              {
+                "command": "npx vitest run --project=release --project=precommit src/__tests__/coolingTrunks.test.ts src/__tests__/coolingTrunkSizing.test.ts (cwd=/home/kom/proj/sunbim/wt/HeatMainsColour)",
+                "exitCode": 0
+              },
+              {
+                "command": "DCG_E2E_PORT=47361 DCG_E2E_PREBUILT=1 DCG_E2E_GPU=hardware PLAYWRIGHT_JSON_OUTPUT_FILE=/home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/report.json npx playwright test e2e/product-root.spec.ts --project=chromium --grep 'AI Project draws paired cooling mains and a see-through buried return in Heat' --workers=1 --reporter=list,json --output=/home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07 (cwd=/home/kom/proj/sunbim/wt/HeatMainsColour)",
+                "exitCode": 0
+              },
+              {
+                "command": "npm run build -- --outDir /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/build (cwd=/home/kom/proj/sunbim/wt/HeatMainsColour)",
+                "exitCode": 0
+              },
+              {
+                "command": "node local://heat-colour-probe.mjs (initial ambiguous canvas selector; corrected before successful rerun)",
+                "exitCode": 1
+              },
+              {
+                "command": "node local://heat-colour-probe.mjs (corrected selector; independently asserts mounted material colours at both widths)",
+                "exitCode": 0
+              },
+              {
+                "command": "npm --prefix /tmp/heat-colour-base-7e7e9db ci",
+                "exitCode": 0
+              },
+              {
+                "command": "npm run build -- --outDir /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/base-build (cwd=/tmp/heat-colour-base-7e7e9db)",
+                "exitCode": 0
+              },
+              {
+                "command": "node local://heat-colour-probe.mjs --baseline",
+                "exitCode": 0
+              },
+              {
+                "command": "git merge-base --is-ancestor bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff HEAD",
+                "exitCode": 0
+              },
+              {
+                "command": "git merge-base --is-ancestor 04c7c286436ca2443a675c19b8ba09c93b141629 HEAD",
+                "exitCode": 0
+              },
+              {
+                "command": "kill 1353912 1279608 && git worktree remove /tmp/heat-colour-base-7e7e9db",
+                "exitCode": 0
+              }
+            ],
+            "screenshots": [
+              {
+                "path": "/home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/heat-probe-1440.png",
+                "width": 1440
+              },
+              {
+                "path": "/home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/heat-probe-430.png",
+                "width": 430
+              },
+              {
+                "path": "/home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/base-probe-1440.png",
+                "width": 1440
+              },
+              {
+                "path": "/home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/base-probe-430.png",
+                "width": 430
+              },
+              {
+                "path": "/home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/product-root-AI-Project-dr-7cda8-eturn-in-Heat-at-1440-webgl-chromium/heat-cooling-mains-1440.png",
+                "width": 1440
+              },
+              {
+                "path": "/home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/product-root-AI-Project-dr-3644b-return-in-Heat-at-430-webgl-chromium/heat-cooling-mains-430.png",
+                "width": 430
+              }
+            ],
+            "requirementDiffs": []
+          }
+        ],
+        "result": "| requirement | artifact | verdict | evidence |\n|---|---|---|---|\n| Cooling: Heat mains blue/orange proven on bfbabf30d | row \"Cooling: Heat mains blue/orange proven on bfbabf30d\" @ git:/home/kom/proj/sunbim/datacenter-decision-graph@bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff | pass | Observed clean assigned HEAD and live serving cwd. Independently exercised Facility \u2192 Heat at 1440 and 430px: actual supply materials #28d8ff, return materials #ffb347; buried returns visible. Hardware contexts live, no probe console errors. Own captures inspected. Scoped tests 34 passed; mounted journeys 2 passed; build exit 0. Complete delivered diffs contain no requirement-document edits. Comparison baseline recovered from actual colour fix's parent 7e7e9db59fda7cfea6217a7baf4c7be583b01606, built and served from disposable detached worktree; removed after capture. |\n\n| before | after | region | defect |\n|---|---|---|---|\n| /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/base-mains-1440.png | /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/heat-mains-1440.png | 1440px cooling plant, mains and neighbouring hall equipment | none |\n| /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/base-mains-430.png | /home/kom/proj/sunbim/evidence/bfbabf30d53ff2ba1dc5996a693abf2b7d16c2ff/heat-colour-2026-11-07/heat-mains-430.png | 430px cooling connections and neighbouring rack rows | none |\n\nUnassigned asks found: none."
+      }
+    }
+  }
+]

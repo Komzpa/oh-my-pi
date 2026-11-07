@@ -1,0 +1,1 @@
+Skipped due to {{reason}}.{{#if advisory}} Pending {{advisory.type}}: {{advisory.demand}}{{/if}} Do not count this skipped result as completed work or verification. Handle {{#if advisory}}{{advisory.type}}{{else}}the {{blocker}} delivered at the next boundary{{/if}}, then retry {{toolName}} if it is still needed.

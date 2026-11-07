@@ -913,7 +913,7 @@ describe("bounded resume memory", () => {
 			await storage.published.promise;
 			// The serialized image is still tiny; only the live comparison needs a blob.
 			image.data = changedImage;
-			put.mockImplementationOnce(() => {
+			put.mockImplementation(() => {
 				throw failure;
 			});
 			function announceLaterRevision(): void {
@@ -928,7 +928,7 @@ describe("bounded resume memory", () => {
 			Bun.gc(true);
 			storage.release.resolve();
 			await expect(rewrite).rejects.toBe(failure);
-			expect(put).toHaveBeenCalledTimes(1);
+			expect(put).toHaveBeenCalledTimes(2);
 			put.mockRestore();
 			// This historical record was never loaded or retained by the caller.
 			expect(session.getEntry("sibling-compaction")).toEqual(

@@ -1,0 +1,10 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/coding-agent/test/session/prompt-cache-status.test.ts:
+(pass) AgentSession prompt-cache status > for a request this process sent > counts the lifetime and the next refresh from when the provider sent the request, past a slot wait [233.25ms]
+
+ 1 pass
+ 23 filtered out
+ 0 fail
+ 1 expect() calls
+Ran 1 test across 1 file. [654.00ms]
