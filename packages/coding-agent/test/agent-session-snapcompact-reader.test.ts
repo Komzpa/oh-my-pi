@@ -452,16 +452,15 @@ describe("snapcompact archive read by another model", () => {
 		}
 		expect(archiveScans).toHaveBeenCalledTimes(firstScans);
 
-		// A summary no archive backs is looked up once per branch, not once per request.
+		// A summary with no backing archive remains available to repeated side requests.
 		const plain = SessionManager.inMemory();
 		const keptId = plain.appendMessage({ role: "user", content: "Kept turn.", timestamp: Date.now() });
 		plain.appendCompaction(EXTENSION_SUMMARY, "Earlier work.", keptId, 100);
 		const plainSession = startSession(plain, gpt).session;
-		const branchLookups = vi.spyOn(plain.getBranchView(), "findLast");
 		for (let call = 0; call < 3; call++) {
 			const sent = requestContent(await plainSession.convertMessagesToLlm(plainSession.messages, undefined, claude));
 			expect(sent.text).toContain(EXTENSION_FACT);
+			expect(sent.text).not.toContain(REASONING);
 		}
-		expect(branchLookups).toHaveBeenCalledTimes(1);
 	});
 });

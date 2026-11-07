@@ -623,7 +623,7 @@ function journalStamp(stat: fs.BigIntStats): string {
 }
 
 // A caller retaining a context payload also retains its plain owning entry;
-// historical reads and branch arrays themselves are only weakly memoized.
+// historical payload reads are weakly memoized; branch arrays contain only lazy slots.
 const readerRegistry = new FinalizationRegistry<number>(fd => {
 	try {
 		fs.closeSync(fd);
@@ -644,7 +644,7 @@ export class SessionEntryIndex {
 	// Branch memo: getBranch() walks leaf-to-root per call (array + Set +
 	// reverse) on per-frame/per-turn paths. An insert extending the current
 	// leaf appends to the issued view in O(1); a leaf change or rebuild starts
-	// a fresh array. Weak ownership lets dropped historical views be collected.
+	// a fresh array. Slots read payloads on demand and never own historical payloads.
 	#generation = 0;
 	#metadataCache:
 		| {
@@ -658,7 +658,7 @@ export class SessionEntryIndex {
 	#contextSelectionCache:
 		| { generation: number; leaf: string | null; providerIds: string[]; displayIds: string[] }
 		| undefined;
-	#branchCache: { leaf: string | null; generation: number; branch: WeakRef<SessionEntry[]> } | undefined;
+	#branchCache: { leaf: string | null; generation: number; branch: SessionEntry[] } | undefined;
 	#read?: (entry: IndexedSessionEntry) => SessionEntry;
 	#readerFd?: number;
 	#readerPath?: string;
@@ -771,7 +771,7 @@ export class SessionEntryIndex {
 			};
 		} else this.#contextSelectionPath = undefined;
 		const cache = this.#branchCache;
-		const branch = cache?.branch.deref();
+		const branch = cache?.branch;
 		if (
 			isNew &&
 			nextLeaf === entry.id &&
@@ -782,8 +782,11 @@ export class SessionEntryIndex {
 			entry.parentId === previousLeaf &&
 			entry.parentId !== null
 		) {
-			branch.push(entry);
+			this.#appendBranchSlot(branch, entry.id);
 			cache.leaf = entry.id;
+			cache.generation = this.#generation;
+		} else if (isNew && nextLeaf === previousLeaf && cache?.generation === this.#generation - 1) {
+			// Off-branch bookkeeping (late usage) does not alter the issued path.
 			cache.generation = this.#generation;
 		} else {
 			this.#branchCache = undefined;
@@ -870,6 +873,17 @@ export class SessionEntryIndex {
 			if (!movesConversation(metadata)) continue;
 			const entry = this.get(metadata.id, false)!;
 			if (movesConversation(entry)) return entry;
+		}
+		return undefined;
+	}
+	/** Active conversation tip, with administrative payloads excluded on local and mirrored readers. */
+	conversationTip(): SessionEntry | undefined {
+		const latest = this.latestConversationEntry();
+		if (!latest) return undefined;
+		for (const metadata of this.#metadataLeafPath()) {
+			if (!movesConversation(metadata)) continue;
+			const entry = this.get(metadata.id, false)!;
+			if (movesConversation(entry)) return entry.id === latest.id ? entry : undefined;
 		}
 		return undefined;
 	}
@@ -979,14 +993,28 @@ export class SessionEntryIndex {
 		return this.metadataPath(id).map(entry => this.get(entry.id)!);
 	}
 
-	/** The memoized active-leaf branch, without copying. Callers MUST NOT mutate it. */
+	#appendBranchSlot(branch: SessionEntry[], id: string): void {
+		Object.defineProperty(branch, branch.length, {
+			enumerable: true,
+			configurable: true,
+			get: () => this.get(id)!,
+		});
+	}
+
+	/** Lazy active-leaf array. Full iteration is an explicit historical payload read. */
 	branchView(): readonly SessionEntry[] {
 		const cache = this.#branchCache;
-		const retained = cache?.branch.deref();
-		if (cache?.generation === this.#generation && retained) return retained;
-		const branch = this.metadataPath().map(entry => this.get(entry.id)!);
-		this.#branchCache = { leaf: this.#leaf, generation: this.#generation, branch: new WeakRef(branch) };
+		if (cache?.generation === this.#generation) return cache.branch;
+		const branch: SessionEntry[] = [];
+		for (const entry of this.metadataPath()) this.#appendBranchSlot(branch, entry.id);
+		this.#branchCache = { leaf: this.#leaf, generation: this.#generation, branch };
 		return branch;
+	}
+
+	/** Latest branch match reads metadata first, including on disk-backed mirrors. */
+	latestBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry | undefined {
+		const metadata = this.#metadataLeafPath().find(predicate);
+		return metadata ? this.get(metadata.id, false) : undefined;
 	}
 
 	// In-place edits are announced through update() (SessionManager.updateEntry) or a
@@ -4872,7 +4900,9 @@ export class SessionManager {
 
 	/** Arbitrary predicates are evaluated afresh, including caller-owned closure state. */
 	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
-		return [...this.#iterateSelectedBranch(this.#index.metadataPath(), predicate, true)].reverse();
+		const path = this.#index.metadataPath();
+		const selected = new Set(path.filter(predicate).map(metadata => metadata.id));
+		return [...this.#iterateSelectedBranch(path, metadata => selected.has(metadata.id), true)].reverse();
 	}
 
 	/** Matching entries newest first; excluded payloads are never read. */
@@ -5001,12 +5031,7 @@ export class SessionManager {
 
 	/** {@link conversationTip} of the session at its active leaf. */
 	getConversationTip(): SessionEntry | undefined {
-		const latest = this.#index.latestConversationEntry();
-		if (!latest) return undefined;
-		for (const entry of this.iterateBranchMatchingNewestFirst(metadata => movesConversation(metadata))) {
-			if (movesConversation(entry)) return entry.id === latest.id ? entry : undefined;
-		}
-		return undefined;
+		return this.#index.conversationTip();
 	}
 
 	/**

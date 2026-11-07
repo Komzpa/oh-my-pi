@@ -95,7 +95,7 @@ import {
 	type TranscriptSessionContextOptions,
 } from "../session/session-context";
 import type { CustomEntry, SessionEntry } from "../session/session-entries";
-import { conversationTip, lastModelChangeRole, SessionEntryIndex } from "../session/session-manager";
+import { SessionEntryIndex } from "../session/session-manager";
 import type { RestartDrainLease } from "../session/agent-session-types";
 import type { AgentDefinition } from "../task/types";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
@@ -345,8 +345,14 @@ export class RemoteAgentSession implements AgentViewSession {
 			getSessionName: () => this.#view.sessionName,
 			getEntries: () => [...this.#entries],
 			getBranch: fromId => this.#entryIndex.pathTo(fromId),
+			*iterateBranchMatchingNewestFirst(predicate) {
+				const path = mirror.#entryIndex.metadataPath();
+				for (let i = path.length - 1; i >= 0; i--) {
+					if (predicate(path[i]!)) yield mirror.#entryIndex.get(path[i]!.id, false)!;
+				}
+			},
 			getLeafId: () => this.#entryIndex.leafId(),
-			getConversationTip: () => conversationTip(this.#entries, this.#entryIndex.branchView()),
+			getConversationTip: () => this.#entryIndex.conversationTip(),
 			getSeanceSourceArtifactsDir: () => this.#view.seanceSourceArtifactsDir,
 			appendCustomEntry: (customType, data) => this.#appendCustomEntry(customType, data),
 			flush: () => this.#command("flushSession"),
@@ -601,12 +607,17 @@ export class RemoteAgentSession implements AgentViewSession {
 		return this.#command("setModelTemporary", toWireData(model), thinkingLevel, options);
 	}
 
+	#latestModelRole(): string | undefined {
+		const entry = this.#entryIndex.latestBranchMatching(metadata => metadata.type === "model_change");
+		return entry?.type === "model_change" ? (entry.role ?? "default") : undefined;
+	}
+
 	getRoleModelCycle(roleOrder: readonly string[]): RoleModelCycle | undefined {
 		return resolveRoleModelCycle(
 			this.settings,
 			this.modelRegistry.getAvailable(),
 			this.#state.model,
-			lastModelChangeRole(this.#entryIndex.branchView()),
+			this.#latestModelRole(),
 			roleOrder,
 		);
 	}
