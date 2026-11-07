@@ -79,6 +79,7 @@ import {
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { pickTableChart } from "../auto-graph/planner";
 import { beginRestartTerminalHandoff } from "../restart-terminal";
+import { getLiveSubagentsForRestart } from "../task/restart-recovery";
 import { restartArgv } from "../cli/flag-tables";
 import type { CollabGuestLink } from "../collab/guest";
 import { CollabController } from "../collab/controller";
@@ -154,7 +155,7 @@ import { registerPersistedSubagents } from "../registry/persisted-agents";
 import type { AgentCostSnapshot } from "@oh-my-pi/pi-tui/overlays/agent-hub-projection";
 import { SubagentTreeCostIndex } from "./agent-hub-runtime";
 import {
-	type AgentSession,
+	AgentSession,
 	type AgentSessionEvent,
 	type DroppedPrompt,
 	type ResolvedRoleModel,
@@ -9363,7 +9364,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		const draftAtSnapshot = this.editor.getText();
 		if (this.#signalTeardown) await this.#signalTeardown.saveDraft();
 		else await this.#sessionConnection.saveDraft(this.#inputController.getDraftText(), this.#draftEditorState());
-		this.sessionManager.beginRestartHandoff();
+		this.session.beginRestartHandoff(
+			getLiveSubagentsForRestart(this.session).flatMap(child =>
+				child.session instanceof AgentSession && !child.session.isDisposed ? [child.session] : [],
+			),
+		);
 		// Flush the checkpoint; keep the journal writable through final teardown.
 		await this.#sessionConnection.checkpoint();
 		// Keys typed while the checkpoint flushed reached the editor after the snapshot; stopping the
