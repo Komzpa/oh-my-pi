@@ -24,6 +24,29 @@ import {
 	serializeTitleSlot,
 } from "./session-title-slot";
 
+interface AssistantScan {
+	ino: number;
+	dev: number;
+	size: number;
+	mtimeMs: number;
+	offset: number;
+	found: boolean;
+}
+
+// Listing creates fresh storage objects; keep the append cursor across those calls.
+const assistantScans = new Map<string, AssistantScan>();
+const ASSISTANT_SCAN_CACHE_LIMIT = 256;
+
+function isAssistantMessageLine(line: string): boolean {
+	if (!line.includes('"assistant"')) return false;
+	try {
+		const record = JSON.parse(line);
+		return record?.type === "message" && record.message?.role === "assistant";
+	} catch {
+		return false;
+	}
+}
+
 /** Shared base flags for the held transcript descriptor; callers add `O_APPEND` or `O_TRUNC`. */
 const SESSION_WRITE_FLAGS = fs.constants.O_WRONLY | fs.constants.O_CREAT;
 const utf8Decoder = new TextDecoder("utf-8");
@@ -217,6 +240,8 @@ export interface SessionStorage {
 	 * omit it and callers keep the window evidence.
 	 */
 	scanLines?(path: string, visit: (line: string) => boolean): Promise<void>;
+	/** Optional append-aware assistant-only scan; generic visitors still use scanLines. */
+	scanAssistantTurn?(path: string): Promise<boolean>;
 	writeText(path: string, content: string): Promise<void>;
 	writeTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void>;
 	/** Streaming {@link writeTextAtomic}, optional on the same terms as {@link writeLinesSync}. */
@@ -1113,6 +1138,70 @@ export class FileSessionStorage implements SessionStorage {
 			for await (const line of fileHandle.readLines()) {
 				if (visit(line)) return;
 			}
+		} finally {
+			await fileHandle.close();
+		}
+	}
+
+	async scanAssistantTurn(path: string): Promise<boolean> {
+		const fileHandle = await fsp.open(path, "r");
+		try {
+			const stat = await fileHandle.stat();
+			const cached = assistantScans.get(path);
+			const sameFile = cached && cached.ino === stat.ino && cached.dev === stat.dev;
+			if (sameFile && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.found;
+			const appended = Boolean(sameFile && stat.size > cached.size);
+			let offset = appended && cached ? cached.offset : 0;
+			let found = Boolean(appended && cached?.found);
+			if (!found) {
+				const buffer = Buffer.allocUnsafe(64 * 1024);
+				let pending: Buffer[] = [];
+				let pendingBytes = 0;
+				let cursor = offset;
+				while (cursor < stat.size) {
+					const { bytesRead } = await fileHandle.read(
+						buffer,
+						0,
+						Math.min(buffer.length, stat.size - cursor),
+						cursor,
+					);
+					if (!bytesRead) break;
+					cursor += bytesRead;
+					const chunk = buffer.subarray(0, bytesRead);
+					let start = 0;
+					let end: number;
+					while ((end = chunk.indexOf(10, start)) !== -1) {
+						const line = chunk.subarray(start, end);
+						found = isAssistantMessageLine(
+							pendingBytes ? Buffer.concat([...pending, line]).toString("utf8") : line.toString("utf8"),
+						);
+						offset += pendingBytes + end + 1 - start;
+						pending = [];
+						pendingBytes = 0;
+						start = end + 1;
+						if (found) break;
+					}
+					if (found) break;
+					if (start < chunk.length) {
+						pending.push(Buffer.from(chunk.subarray(start)));
+						pendingBytes += chunk.length - start;
+					}
+				}
+				// Reparse an unterminated final record when its remaining bytes arrive.
+				if (!found && pendingBytes) found = isAssistantMessageLine(Buffer.concat(pending).toString("utf8"));
+			}
+			assistantScans.delete(path);
+			assistantScans.set(path, {
+				ino: stat.ino,
+				dev: stat.dev,
+				size: stat.size,
+				mtimeMs: stat.mtimeMs,
+				offset,
+				found,
+			});
+			if (assistantScans.size > ASSISTANT_SCAN_CACHE_LIMIT)
+				assistantScans.delete(assistantScans.keys().next().value!);
+			return found;
 		} finally {
 			await fileHandle.close();
 		}
