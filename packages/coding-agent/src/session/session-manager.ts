@@ -1,3 +1,4 @@
+import { RETRY_RECOVERY_ENTRY, retryRecoveryEntryData } from "./retry-recovery-annotation";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -78,8 +79,6 @@ import {
 	lastSelfSelectedLeafId,
 	type NewSessionOptions,
 	type ResetBoundaryEntry,
-	RETRY_RECOVERY_ENTRY,
-	retryRecoveryEntryData,
 	type ServiceTierChangeEntry,
 	sessionEntryLeafId,
 	type SessionEntry,
@@ -704,24 +703,22 @@ export class SessionEntryIndex {
 		blobs: BlobStore,
 		replaced = false,
 		sourceFd?: number,
-		positions?: SessionFileBody["positions"],
+		ranges?: SessionFileBody["ranges"],
 	): void {
 		if (sourceFd === undefined && !replaced && this.#readerFd !== undefined && this.#readerPath === filePath) return;
 		const fd = sourceFd ?? fs.openSync(filePath, "r");
 		const previous = this.#readerFd;
 		readerRegistry.unregister(this);
 		readerRegistry.register(this, fd, this);
-		// No disk I/O or payload serialization may interrupt the reader/range
-		// handoff. Uncompared live revisions remain strong if comparison fails.
-		if (positions) {
-			for (const { id, offset, length, entry: snapshotEntry } of positions) {
-				this.setPosition(id, offset, length, -1, this.retainedEntry(id) ?? snapshotEntry?.deref());
-			}
-		}
+		// Publish reader + all ranges together. Per-entry revision reconciliation
+		// may then yield without reading old offsets from the replacement inode.
 		this.#readerFd = fd;
 		this.#readerPath = filePath;
 		this.#read = indexed => {
-			const entry = readPositionedSessionEntry(fd, indexed as PositionedSessionEntry);
+			const entry = readPositionedSessionEntry(fd, {
+				...indexed,
+				...ranges?.get(indexed.id),
+			} as PositionedSessionEntry);
 			if (entry.type === "message" && entry.message.role === "assistant") normalizeAssistantUsage(entry.message);
 			resolveBlobRefsInEntriesSync([entry], blobs);
 			return entry;
@@ -1161,6 +1158,7 @@ export class SessionEntryIndex {
 		if ((indexed.revision ?? 0) === revision) {
 			if (indexed.entry) indexed.weak = new WeakRef(indexed.entry);
 			indexed.entry = undefined;
+			indexed.rawCopy = true;
 		}
 		indexed.offset = offset;
 		indexed.length = length;
@@ -1305,6 +1303,7 @@ interface SessionFileBody {
 	lines: string[];
 	bytes: number;
 	stamp: SessionBodyStamp;
+	ranges: Map<string, { offset: number; length: number }>;
 	positions: Array<{
 		id: string;
 		offset: number;
@@ -2141,7 +2140,7 @@ export class SessionManager {
 		if (this.#storage instanceof FileSessionStorage && this.#sessionFile) {
 			// Pair every published byte range with the replacement reader before
 			// comparing live payloads: serialization can fail while writing a blob.
-			this.#index.setFileReader(source, this.#blobs, true, undefined, body.positions);
+			this.#index.setFileReader(source, this.#blobs, true, undefined, body.ranges);
 			for (const { id, offset, length, revision, line, serializedLine, entry: snapshotEntry } of body.positions) {
 				const entry = this.#index.retainedEntry(id) ?? snapshotEntry?.deref();
 				const changed =
@@ -2208,6 +2207,7 @@ export class SessionManager {
 		const lines = [titleLine, headerLine];
 		let bytes = Buffer.byteLength(titleLine, "utf8") + Buffer.byteLength(headerLine, "utf8");
 		const positions: SessionFileBody["positions"] = [];
+		const ranges: SessionFileBody["ranges"] = new Map();
 		for (const entry of this.#index.entries()) {
 			const line = this.#lineFor(entry);
 			const length = Buffer.byteLength(line, "utf8");
@@ -2219,6 +2219,7 @@ export class SessionManager {
 				line: lines.length,
 				entry: this.#index.retainedEntry(entry.id) ? new WeakRef(entry) : undefined,
 			});
+			ranges.set(entry.id, { offset: bytes, length });
 			bytes += length;
 			lines.push(line);
 		}
@@ -2229,10 +2230,10 @@ export class SessionManager {
 			revision: this.#bodyRevision,
 			prefix: titleLine + headerLine,
 		};
-		return { lines, bytes, stamp, positions };
+		return { lines, bytes, stamp, positions, ranges };
 	}
 
-	/** Stream cold canonical custom records without decoding or retaining their payloads. */
+	/** Stream unchanged current-version records without decoding or retaining their payloads. */
 	async #serializeBodyAsync(): Promise<SessionFileBody> {
 		if ((this.#expectedDiskSize ?? 0) < LARGE_SESSION_REWRITE_BYTES) return this.#serializeBody();
 		const titleLine = this.#titleSlotLine();
@@ -2244,6 +2245,7 @@ export class SessionManager {
 		const lines = [titleLine, headerLine];
 		let bytes = Buffer.byteLength(titleLine) + Buffer.byteLength(headerLine);
 		const positions: SessionFileBody["positions"] = [];
+		const ranges: SessionFileBody["ranges"] = new Map();
 		const fd = this.#index.openSerializationReader();
 		try {
 			for (const source of this.#index.serializationSources()) {
@@ -2289,6 +2291,7 @@ export class SessionManager {
 					serializedLine,
 					entry: retained ? new WeakRef(retained) : undefined,
 				});
+				ranges.set(source.id, { offset: bytes, length });
 				bytes += length;
 				if (performance.now() - sliceStart >= 4) {
 					await Bun.sleep(1);
@@ -2299,6 +2302,7 @@ export class SessionManager {
 				lines,
 				bytes,
 				positions,
+				ranges,
 				dispose: fd === undefined ? undefined : () => fs.closeSync(fd),
 				stamp: { entries, entryCount, lastEntry: entries.at(-1), revision, prefix: titleLine + headerLine },
 			};
