@@ -1281,7 +1281,8 @@ export type ReadonlySessionManager = Pick<
 	| "getUsageStatistics"
 	| "putBlob"
 	| "putBlobSync"
->;
+> &
+	Partial<Pick<SessionManager, "getBranchTailMatching">>;
 
 interface SessionManagerStateSnapshot {
 	cwd: string;
@@ -5304,6 +5305,12 @@ export class SessionManager {
 		return [...this.#iterateSelectedBranch(path, metadata => selected.has(metadata.id), true)].reverse();
 	}
 
+	/** Match within the last `limit` branch entries, without decoding excluded payloads. */
+	getBranchTailMatching(limit: number, predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+		const path = this.#index.metadataPath();
+		return [...this.#iterateSelectedBranch(path, predicate, false, Math.max(0, path.length - limit))].reverse();
+	}
+
 	/** Matching entries newest first; excluded payloads are never read. */
 	*iterateBranchMatchingNewestFirst(
 		predicate: (metadata: SessionContextEntryMetadata) => boolean,
@@ -5315,6 +5322,7 @@ export class SessionManager {
 		path: readonly SessionContextEntryMetadata[],
 		predicate: (metadata: SessionContextEntryMetadata) => boolean,
 		retainIdentity: boolean,
+		firstIndex = 0,
 	): IterableIterator<SessionEntry> {
 		const extension = this as SessionManager & {
 			createBranchSelectionProjector?: (
@@ -5323,7 +5331,7 @@ export class SessionManager {
 			) => (entry: SessionEntry, index: number) => SessionEntry;
 		};
 		const project = extension.createBranchSelectionProjector?.(path, id => this.#index.get(id, false));
-		for (let i = path.length - 1; i >= 0; i--) {
+		for (let i = path.length - 1; i >= firstIndex; i--) {
 			const metadata = path[i]!;
 			if (!predicate(metadata)) continue;
 			const entry = this.#index.get(metadata.id, retainIdentity)!;
