@@ -1,10 +1,10 @@
+import { projectRetryRecoveries } from "./retry-recovery-annotation";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { customMessageEntryMessage, isUserRequestEntry } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { getAnthropicCompactionPayload, isTurnStartEntry } from "@oh-my-pi/pi-agent-core/compaction";
 import { projectToolResultPrunes } from "@oh-my-pi/pi-agent-core/compaction/pruning";
 import {
 	coerceServiceTierByFamily,
-	type AssistantRetryRecovery,
 	type OpenAIResponsesHistoryPayload,
 	type ServiceTierByFamily,
 } from "@oh-my-pi/pi-ai";
@@ -27,7 +27,6 @@ import {
 	type CustomMessageEntry,
 	EPHEMERAL_MODEL_CHANGE_ROLE,
 	resolveSessionLeafId,
-	retryRecoveryEntryData,
 	type SessionEntry,
 	type SessionMessageEntry,
 } from "./session-entries";
@@ -560,13 +559,7 @@ export function buildSessionContextFromLeafPath(
 	// resume (issue #849).
 	let hasExplicitDefaultModel = false;
 
-	const retryRecoveries = new Map<string, AssistantRetryRecovery>();
-	for (const entry of path) {
-		const annotation = retryRecoveryEntryData(entry);
-		if (annotation) retryRecoveries.set(annotation.entryId, annotation.retryRecovery);
-	}
-
-	const projectedPath = projectToolResultPrunes(path);
+	const projectedPath = projectToolResultPrunes(projectRetryRecoveries(path));
 	const keepRestartNotice = createRestartNoticeFilter(projectedPath);
 	for (const entry of projectedPath) {
 		if (entry.type === "thinking_level_change") {
@@ -684,16 +677,11 @@ export function buildSessionContextFromLeafPath(
 			if (
 				!options?.transcript &&
 				entry.message.role === "assistant" &&
-				(entry.message.retryRecovery || retryRecoveries.has(entry.id) || isEmptyErrorTurn(entry.message))
+				(entry.message.retryRecovery || isEmptyErrorTurn(entry.message))
 			) {
 				return;
 			}
-			const recovery = retryRecoveries.get(entry.id);
-			pushMessage(
-				entry.message.role === "assistant" && recovery
-					? { ...entry.message, retryRecovery: recovery }
-					: entry.message,
-			);
+			pushMessage(entry.message);
 		} else if (entry.type === "custom_message") {
 			if (
 				!options?.transcript &&

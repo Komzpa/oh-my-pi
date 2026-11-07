@@ -648,7 +648,7 @@ export async function loadEntriesFromFile(
 
 /** Physical payload source and migrated identity shared by resume and read-only history. */
 export interface PositionedSessionEntry extends SessionContextEntryMetadata {
-	/** Current custom record whose physical bytes are already canonical. */
+	/** Current-version record whose physical bytes need no migration. */
 	rawCopy?: boolean;
 	offset: number;
 	length: number;
@@ -705,6 +705,7 @@ export async function visitSessionFileForResume(
 		let version = CURRENT_SESSION_VERSION;
 		let malformedRecords = 0;
 		let sourceSize = 0;
+		let lastPosition: PositionedSessionEntry | undefined;
 		let invalidHeader = false;
 		let migrated = false;
 		let parentId: string | null = null;
@@ -765,12 +766,13 @@ export async function visitSessionFileForResume(
 					}
 				}
 				const position: PositionedSessionEntry = {
-					rawCopy: version >= CURRENT_SESSION_VERSION && entry.type === "custom",
+					rawCopy: version >= CURRENT_SESSION_VERSION,
 					...sessionContextEntryMetadata(entry),
 					offset,
 					length,
 					firstKeptEntryId: entry.type === "compaction" ? entry.firstKeptEntryId : undefined,
 				};
+				lastPosition = position;
 				if (target !== undefined && target > arrayIndex) forwardReferences.push({ position, target });
 				if (compactor) {
 					positions.set(entry, position);
@@ -786,7 +788,10 @@ export async function visitSessionFileForResume(
 		}
 		if (sourceSize > 0 && header && !invalidHeader) {
 			const lastByte = Buffer.allocUnsafe(1);
-			if (fs.readSync(sourceFd, lastByte, 0, 1, sourceSize - 1) === 1 && lastByte[0] !== 0x0a) migrated = true;
+			if (fs.readSync(sourceFd, lastByte, 0, 1, sourceSize - 1) === 1 && lastByte[0] !== 0x0a) {
+				migrated = true;
+				if (lastPosition) lastPosition.rawCopy = false;
+			}
 			transferred = true;
 		}
 		return {
