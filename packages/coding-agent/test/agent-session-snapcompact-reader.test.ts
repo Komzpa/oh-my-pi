@@ -23,7 +23,8 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { CompactionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { parseSessionContent } from "@oh-my-pi/pi-coding-agent/session/session-loader";
+import { SessionEntryIndex, SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 
@@ -260,12 +261,12 @@ describe("snapcompact archive read by another model", () => {
 		// the stored variant without rendering it again.
 		await sessionManager.flush();
 		const sessionFile = sessionManager.getSessionFile()!;
-		const persisted = (await Bun.file(sessionFile).text())
-			.split("\n")
-			.filter(Boolean)
-			.map(line => JSON.parse(line))
-			.find(entry => entry.type === "compaction");
-		const slot = persisted.preserveData[snapcompact.PRESERVE_KEY];
+		const persisted = parseSessionContent(await Bun.file(sessionFile).text()).entries.find(
+			entry => entry.type === "compaction",
+		);
+		if (persisted?.type !== "compaction") throw new Error("Missing persisted compaction");
+		const slot = snapcompact.getPreservedArchive(persisted.preserveData);
+		if (!slot?.withoutThinking) throw new Error("Missing persisted no-reasoning variant");
 		const refs = [...slot.frames, ...slot.withoutThinking.archive.frames].map(frame => frame.data as string);
 		expect(refs.length).toBeGreaterThan(slot.frames.length);
 		expect(refs.every(data => data.startsWith("blob:sha256:"))).toBe(true);
@@ -462,5 +463,29 @@ describe("snapcompact archive read by another model", () => {
 			expect(sent.text).toContain(EXTENSION_FACT);
 			expect(sent.text).not.toContain(REASONING);
 		}
+	});
+	it("side requests decode only their current archive across 300k obsolete compactions", async () => {
+		const manager = SessionManager.inMemory();
+		const first = manager.appendMessage({ role: "user", content: "old", timestamp: 0 });
+		for (let i = 0; i < 300_000; i++) manager.appendCompaction("obsolete", undefined, first, 100);
+		await seedArchive(manager, { summary: EXTENSION_SUMMARY });
+		const { session } = startSession(manager, gpt);
+		let obsoleteReads = 0;
+		const original = SessionEntryIndex.prototype.get;
+		const read = vi
+			.spyOn(SessionEntryIndex.prototype, "get")
+			.mockImplementation(function (this: SessionEntryIndex, id, retain) {
+				read.mockClear();
+				const entry = original.call(this, id, retain);
+				if (entry?.type === "compaction" && entry.summary === "obsolete") obsoleteReads++;
+				return entry;
+			});
+		for (let turn = 0; turn < 10; turn++) {
+			const sent = requestContent(await session.convertMessagesToLlm(session.messages, undefined, claude));
+			expect(sent.text).toContain(EXTENSION_FACT);
+			expect(sent.text).not.toContain(REASONING);
+		}
+		expect(obsoleteReads).toBe(0);
+		read.mockRestore();
 	});
 });
