@@ -70,6 +70,7 @@ import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import type { CatalogPolicyInputs } from "@oh-my-pi/pi-catalog/types";
 import { isRecord, logger, prompt, Snowflake, toError } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
+import compactionBackoffNotice from "../prompts/steering/compaction-backoff.md" with { type: "text" };
 import { writeArtifact } from "./artifacts";
 import type { ModelRegistry } from "../config/model-registry";
 import { CHAT_MODEL_ROLE_IDS } from "../config/model-roles";
@@ -429,6 +430,7 @@ export interface SessionMaintenanceHost {
 	queueExperimentalContextNotesReminder(prompt: string): void;
 	memoryBackendSession(): MemoryBackendOperationContext["session"];
 	emitSessionEvent(event: AgentSessionEvent, options?: { detachExtensions?: boolean }): Promise<void>;
+	emitCompactionBackoffNotice(message: string): void;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
 	scheduleAgentContinue(options: {
 		source: string;
@@ -589,6 +591,75 @@ export class SessionMaintenance {
 	 * prompt ({@link resetForNewPrompt}).
 	 */
 	#incompleteRecoveryAttempts = 0;
+
+	/** Backoff survives user prompts and changing compaction cut points. Token growth uses the local estimate throughout. */
+	#compactionBreaker: { model: string; window: number; tokens: number; notice: string } | undefined;
+
+	#breakerModelKey(): string {
+		return `${this.#model?.provider}/${this.#model?.id}`;
+	}
+
+	#armCompactionBreaker(tokens: number): void {
+		const model = this.#model;
+		if (!model || this.#compactionBreaker) return;
+		this.cancelSpeculation();
+		const notice = prompt
+			.render(compactionBackoffNotice, {
+				model: this.#breakerModelKey(),
+				window: model.contextWindow,
+				tokens,
+				fixedTokens: computeNonMessageTokens(
+					this.#host.nonMessageTokenSource(),
+					this.#tokenizer,
+					this.#host.settings.revision,
+				),
+			})
+			.trim();
+		this.#compactionBreaker = { model: this.#breakerModelKey(), window: model.contextWindow ?? 0, tokens, notice };
+		this.#host.emitCompactionBackoffNotice(notice);
+	}
+
+	#compactionBlocked(): boolean {
+		const tokens = this.#estimateStoredContextTokens();
+		const model = this.#model;
+		if (!model || (model.contextWindow ?? 0) <= 0) return false;
+		const breaker = this.#compactionBreaker;
+		const threshold = resolveThresholdTokens(model.contextWindow ?? 0, this.#compactionSettings);
+		if (breaker) {
+			if (
+				breaker.model !== this.#breakerModelKey() ||
+				breaker.window !== model.contextWindow ||
+				tokens < Math.min(threshold, breaker.tokens * 0.9)
+			) {
+				this.#compactionBreaker = undefined;
+			} else if (tokens < breaker.tokens + Math.max(4096, Math.ceil((model.contextWindow ?? 0) * 0.05))) {
+				return true;
+			} else {
+				this.#compactionBreaker = undefined;
+			}
+		}
+		const fixed = computeNonMessageTokens(
+			this.#host.nonMessageTokenSource(),
+			this.#tokenizer,
+			this.#host.settings.revision,
+		);
+		if (fixed >= threshold) {
+			this.#armCompactionBreaker(tokens);
+			return true;
+		}
+		return false;
+	}
+
+	/** ModelControls calls this after the model-dependent resident context is rebuilt. */
+	checkModelContextWindow(): void {
+		this.#compactionBreaker = undefined;
+		const window = this.#model?.contextWindow ?? 0;
+		if (window > 0) {
+			const tokens = this.#estimateStoredContextTokens();
+			if (tokens >= window) this.#armCompactionBreaker(tokens);
+		}
+	}
+
 	/** Latest rollover boundary that already received its pre-threshold notebook reminder. */
 	#experimentalNotesReminderBoundaryId: string | undefined;
 	/** Each archive's no-reasoning view, rendered (or failed closed) once per compaction entry. */
@@ -2244,7 +2315,7 @@ export class SessionMaintenance {
 	 * {@link deferThresholdCompactionToSpeculation}'s grace band instead.
 	 */
 	maybeStartSpeculativeCompaction(contextTokens: number, contextWindow: number): void {
-		if (contextWindow <= 0 || this.#host.isDisposed()) return;
+		if (contextWindow <= 0 || this.#host.isDisposed() || this.#compactionBlocked()) return;
 		const settings = this.#compactionSettings;
 		if (this.#usesExperimentalContextManagement()) {
 			this.#maybeQueueExperimentalNotesReminder(contextTokens, contextWindow);
@@ -2341,7 +2412,7 @@ export class SessionMaintenance {
 	 * extension must keep exact blocking semantics.
 	 */
 	deferThresholdCompactionToSpeculation(contextTokens: number, contextWindow: number): boolean {
-		if (contextWindow <= 0 || this.#host.isDisposed()) return false;
+		if (contextWindow <= 0 || this.#host.isDisposed() || this.#compactionBlocked()) return false;
 		const settings = this.#compactionSettings;
 		if (this.#usesExperimentalContextManagement()) return false;
 		if (!settings.enabled || settings.asyncEnabled === false || !hasConfiguredCompactionMethod(settings))
@@ -2634,7 +2705,6 @@ export class SessionMaintenance {
 		this.#host.persistEvalStateContext();
 		// A committed compaction starts a new cycle; native compaction gets a fresh try.
 		this.#failedNativeSpeculation = undefined;
-		const newEntries = this.#host.sessionManager.getEntries();
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAfterCompaction();
@@ -2649,9 +2719,7 @@ export class SessionMaintenance {
 		} else {
 			this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		}
-		const savedCompactionEntry = newEntries.find(e => e.type === "compaction" && e.id === entryId) as
-			| CompactionEntry
-			| undefined;
+		const savedCompactionEntry = this.#host.sessionManager.getEntry(entryId) as CompactionEntry | undefined;
 		if (this.#host.extensionRunner && savedCompactionEntry) {
 			const compactEmit = this.#host.extensionRunner.emit({
 				type: "session_compact",
@@ -4668,9 +4736,7 @@ export class SessionMaintenance {
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();
 		// Extensions must see the entry that is now active, not (only) the one
 		// this rebuild just superseded — mirror the regular append path's hook.
-		const rebuiltEntry = this.#host.sessionManager.getEntries().find(e => e.id === rebuiltEntryId) as
-			| CompactionEntry
-			| undefined;
+		const rebuiltEntry = this.#host.sessionManager.getEntry(rebuiltEntryId) as CompactionEntry | undefined;
 		if (this.#host.extensionRunner && rebuiltEntry) {
 			await this.#host.extensionRunner.emit({
 				type: "session_compact",
@@ -5104,6 +5170,9 @@ export class SessionMaintenance {
 		const compactionSettings = this.#compactionSettings;
 		// An explicit model-requested rollover bypasses the Auto-Compact toggle;
 		// automatic threshold rollover stays gated exactly as before.
+		if (this.#compactionBlocked()) {
+			return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
+		}
 		const explicitNewContextRequest = options.explicitNewContextRequest === true;
 		if (reason !== "idle" && !compactionSettings.enabled && !explicitNewContextRequest) {
 			return COMPACTION_CHECK_NONE;
@@ -5377,14 +5446,16 @@ export class SessionMaintenance {
 				}
 				if (!preparation) {
 					const noProgressDeadEnd = reason !== "idle" && !frameRescueCreatedHeadroom;
+					if (noProgressDeadEnd) this.#armCompactionBreaker(this.#estimateStoredContextTokens());
 					const implicatedFrames =
 						frameRescueResult && !frameRescueCreatedHeadroom
 							? (snapcompact.getPreservedArchive(frameRescueResult.preserveData)?.frames.length ?? 0)
 							: 0;
 					const deadEndWarning = noProgressDeadEnd
-						? this.#compactionDeadEndWarning(
+						? (this.#compactionBreaker?.notice ??
+							this.#compactionDeadEndWarning(
 								this.#deadEndRemedies("shrink it (e.g. clear large tool output)", implicatedFrames),
-							)
+							))
 						: undefined;
 					// A rescue that appended a rebuilt archive without creating
 					// headroom must carry the dead-end badge on the entry the
@@ -5436,7 +5507,7 @@ export class SessionMaintenance {
 						});
 						continuationScheduled = true;
 					}
-					if (deadEndWarning) {
+					if (deadEndWarning && !this.#compactionBreaker) {
 						this.#host.emitNotice("warning", deadEndWarning, "compaction");
 					}
 					// A rescue that offloaded content but still could not produce a
@@ -6029,7 +6100,11 @@ export class SessionMaintenance {
 				const noReductionMessage = laterMethodUsable
 					? `${action} compaction would not reduce context; trying the next preferred compaction method.`
 					: `${action} compaction would not reduce context.`;
-				this.#host.emitNotice("warning", noReductionMessage, "compaction");
+				if (!laterMethodUsable && reason !== "idle") {
+					this.#armCompactionBreaker(this.#estimateStoredContextTokens());
+				} else {
+					this.#host.emitNotice("warning", noReductionMessage, "compaction");
+				}
 				await this.#emitLifecycleEvent(
 					{
 						type: "auto_compaction_end",
@@ -6303,7 +6378,12 @@ export class SessionMaintenance {
 				await this.#host.sessionManager.rewriteEntries();
 			}
 		}
-		const deadEndWarning = noProgressDeadEnd ? this.#compactionDeadEndWarning("clear large tool output") : undefined;
+		if (noProgressDeadEnd) {
+			this.#armCompactionBreaker(this.#estimateStoredContextTokens());
+		}
+		const deadEndWarning = noProgressDeadEnd
+			? (this.#compactionBreaker?.notice ?? this.#compactionDeadEndWarning("clear large tool output"))
+			: undefined;
 		if (deadEndWarning) {
 			// Stamp the divider: the compaction bar badges the dead-end and
 			// carries the full warning in its ctrl+o detail, so the pause
@@ -6339,7 +6419,7 @@ export class SessionMaintenance {
 			});
 		}
 
-		if (deadEndWarning) {
+		if (deadEndWarning && !this.#compactionBreaker) {
 			this.#host.emitNotice("warning", deadEndWarning, "compaction");
 		}
 		if (continuationScheduled) return COMPACTION_CHECK_CONTINUATION;
