@@ -171,3 +171,21 @@ test("unchanged plan reuses its forecast minute and refreshes when time advances
 	const later = forecastTodoPlan(phases(), { now: now + 60000, risk: r }).risk!;
 	expect(later.p80Finish).toBe(first.p80Finish + 60000);
 });
+
+test("redo simulation uses this session's calibration rather than the cached dispatch estimate", () => {
+	const plan = phases().map(phase => ({ ...phase, tasks: [...phase.tasks] }));
+	const row = plan[0]!.tasks[0]!;
+	row.schedule!.firstEstimate = { ...row.schedule!.estimate! };
+	row.schedule!.riskEstimateMeanSeconds = 100;
+	const accepted = structuredClone(row);
+	accepted.content = "accepted calibration row";
+	accepted.status = "completed";
+	accepted.schedule!.startedAt = now;
+	accepted.schedule!.finishedAt = now + 300_000;
+	plan[0]!.tasks.push(accepted);
+	const options = risk();
+	options.pools.coder = [{ model: "a/m", weight: 1 }];
+	const calibrated = forecastTodoPlan(plan, { now, risk: options });
+	expect(calibrated.calibration).toEqual({ ratio: 3, samples: 1 });
+	expect(calibrated.risk!.p50Finish).toBe(now + 300_000);
+});

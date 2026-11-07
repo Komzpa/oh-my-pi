@@ -14,6 +14,7 @@ import { SettingsManager } from "@oh-my-pi/pi-coding-agent/extensibility/legacy-
 import type { ActiveGoalRef, DeadlineState, QuotaSnapshot } from "./deadlines";
 import * as deadlineSdk from "./deadlines";
 import { deadlineFormats } from "./deadline-format";
+import deadlineSlip from "./goal-deadline-slip.md" with { type: "text" };
 import wrapUpInstructions from "./goal-deadline-wrap-up.md" with { type: "text" };
 import { appendTimedNote } from "./lead_time_notes";
 
@@ -207,7 +208,7 @@ function deadline(due: number, start: number, now: number, timezone?: string): s
 	const delta = due - now;
 	const percent = remainingPercent(start, due, now);
 	const clock = deadlineSdk.formatLocalTimestamp(due * 1000, timezone);
-	return `${clock} ${delta < 0 ? "overdue" : "left"} ${duration(delta)} (${percent ?? "n/a"}%)`;
+	return `${clock} ${delta < 0 ? "overdue" : "left"} ${duration(delta)} (${percent ?? "n/a"}%)${delta < 0 ? " · missed" : ""}`;
 }
 
 type TodoPhasesLike = ReadonlyArray<{ tasks: ReadonlyArray<{ content: string; status: string }> }>;
@@ -259,6 +260,7 @@ export function renderDeadlineReminder(
 		? `Quota shared, not reserved: ${currentQuota.provider} start=${state.initialQuota?.remainingPercent ?? "unknown"}% now=${currentQuota.remainingPercent ?? "unknown"}% status=${currentQuota.status} as-of=${currentQuota.sourceAsOf ?? "unknown"}.`
 		: "Quota now=unknown; do not infer capacity.";
 	const text = [
+		...(now > finalDue ? [prompt.render(deadlineSlip, { minutes: Math.ceil((now - finalDue) / 60) }).trim()] : []),
 		"Deliver usable work; reserve review time; delegate bounded cheap tasks when authorized. Adjust depth to time/quota. Overdue is not a verdict: floor it and catch up; show the latest artifact or say none.",
 		...(state.auto ? ["Deadline set automatically from the TODO plan forecast."] : []),
 		`Goal=${bounded(state.goalId, 64)} start=${deadlineSdk.formatLocalTimestamp(state.goalStartedAt * 1000, state.timezone)} now=${deadlineSdk.formatLocalTimestamp(now * 1000, state.timezone)} tz=${bounded(state.timezone, 40)}.`,
@@ -292,7 +294,7 @@ export function renderDeadlineUi(state: DeadlineState, now: number, todoShowsDue
 	const finalDue = state.baselineDeadlineAt ?? Math.max(...state.stages.map(stage => stage.deadlineAt));
 	const final =
 		finalDue === current.deadlineAt ? "" : ` · final ${deadline(finalDue, state.goalStartedAt, now, state.timezone)}`;
-	if (todoShowsDue) return [`Goal · ${current.label} → ${bounded(current.expectedResult, 120)}${final}`];
+	if (todoShowsDue && current.deadlineAt >= now) return [`Goal · ${current.label} → ${bounded(current.expectedResult, 120)}${final}`];
 	return [
 		`Deadline · ${current.label}: ${deadline(current.deadlineAt, state.goalStartedAt, now, state.timezone)}`,
 		// The final deadline is repeated only when a later stage still follows the current one.
