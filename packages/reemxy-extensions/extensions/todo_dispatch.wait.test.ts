@@ -356,16 +356,20 @@ test("user-deferred Fireflies and external blockers never force ready work or mu
 	} finally { h.shutdown(); }
 });
 
-test("an unanswered human message refuses every wait with its timestamp and text, while reads stay allowed", async () => {
+test("an unanswered human message refuses once then admits wait and records the reply miss", async () => {
 	const h = await noticeHarness([], Date.now() + 3600_000);
 	try {
 		h.entries.push(humanQuestion());
 		h.entries.push({ type: "message", message: { role: "assistant", content: [{ type: "thinking", thinking: "I should reply" }, { type: "toolCall", name: "read", arguments: {} }] } });
 		for (let attempt = 0; attempt < 2; attempt++) {
 			const result = await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
-			expect(result?.block).toBe(true);
-			expect(result.reason).toContain("2026-10-24T04:23:16.000Z");
-			expect(result.reason).toContain("сука а ты можешь быстрее?:???????");
+            if (attempt === 0) {
+              expect(result?.block).toBe(true);
+              expect(result.reason).toContain("2026-10-24T04:23:16.000Z");
+            } else {
+              expect(result?.block).not.toBe(true);
+              expect(h.entries.some(entry => entry.customType === "todo-reply-gate-miss")).toBe(true);
+            }
 		}
 		expect(await h.handlers.get("tool_call")!({ toolName: "read", input: { path: "README.md" } }, h.ctx)).toBeUndefined();
 	} finally { h.shutdown(); }
@@ -389,7 +393,8 @@ test("text in the in-flight assistant message carrying wait answers the human", 
 		h.entries.push(humanQuestion());
 		await h.handlers.get("message_start")?.({ message: { role: "assistant", content: [] } }, h.ctx);
 		await h.handlers.get("message_update")?.({ message: { role: "assistant", content: [{ type: "text", text: "I checked the current state; the worker is still running." }] } }, h.ctx);
-		expect(await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx)).toBeUndefined();
+		await h.handlers.get("message_end")?.({message:{role:"assistant",content:[{type:"text",text:"Waiting for the result."},{type:"toolCall",name:"wait",arguments:{}}]}},h.ctx);
+        expect(await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx)).toBeUndefined();
 	} finally { h.shutdown(); }
 });
 

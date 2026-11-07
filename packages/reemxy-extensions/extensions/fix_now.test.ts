@@ -1,29 +1,25 @@
 import { expect, test } from "bun:test";
-import { chiefFixNow, type ChiefDefect } from "./fix_now";
-
-test("large live-shaped open-defect snapshot is ranked, deduped and bounded on both delivery surfaces", () => {
-	const defects: ChiefDefect[] = [
-		{ row: "Cooling", action: "Staff", severity: 1 },
-		{ row: "Power", action: "Repair refused staffing for", severity: 2 },
-		{ row: "Push branch", action: "Push", severity: 2 },
-		{ row: "Frame", action: "Staff", severity: 3 },
-		...Array.from({ length: 12 }, (_, i) => ({
-			row: `Audit ${i}: ${"long title ".repeat(12)}`,
-			action: "Audit",
-			severity: 4,
-		})),
-		{ row: "Cooling", action: "Staff", severity: 3 },
+import { chiefFixNow, fixNowIdentity, fixNowQuestion } from "./fix_now";
+import { AskTool } from "../../coding-agent/src/tools/ask";
+import { validateToolCall } from "@oh-my-pi/pi-ai/utils/validation";
+import { decideGateCall } from "./todo_dispatch";
+test("late and churn notices contain complete schema-valid executable remedies, vague items are dropped", () => {
+	const defects = [
+		fixNowQuestion("late", "", "late:deadline"),
+		fixNowQuestion("churn", "Cooling trunks", "churn:Cooling trunks"),
 	];
-	for (const supervisor of [false, true]) {
-		const rendered = chiefFixNow({ main: true, defects }, supervisor);
-		expect(rendered.length).toBeLessThanOrEqual(400);
-		const items = rendered.split("FIX NOW: ")[1]!.split(/; \d\. /);
-		expect(items).toHaveLength(5);
-		for (const item of items) expect(item.replace(/^1\. /, "").length).toBeLessThanOrEqual(70);
-		expect(rendered.indexOf("Cooling")).toBeLessThan(rendered.indexOf("Power"));
-		expect(rendered.match(/Cooling/g)).toHaveLength(1);
-		expect(rendered).not.toMatch(/authoriz|approv|permission/i);
+	const ask = new AskTool({} as never);
+	for (const d of defects) {
+		const call = { ...d.call!, id: "probe", type: "toolCall" as const };
+		expect(validateToolCall([ask], call)).toEqual(call.arguments);
+		expect(decideGateCall(call, [{ id: "unrelated", remedy: "todo", satisfies: () => false }]).allowed).toBe(true);
 	}
-	expect(chiefFixNow({ main: true, defects: [] })).toBe("");
+	const rendered = chiefFixNow(
+		{ main: true, defects: [...defects, { row: "X", action: "Break churn", severity: 0 }] },
+		true,
+	);
+	expect(rendered).toContain(JSON.stringify(defects[1]!.call!.arguments));
+	expect(rendered).not.toContain("Break churn");
+	expect(fixNowIdentity(defects)).toBe(fixNowIdentity([...defects].reverse()));
 	expect(chiefFixNow({ main: false, defects })).toBe("");
 });
