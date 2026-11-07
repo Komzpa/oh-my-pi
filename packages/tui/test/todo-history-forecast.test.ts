@@ -249,6 +249,7 @@ test("comparable small on-time closures outweigh giant misses and duplicate iden
 		forecastTodoPlan([{ name: "similar", tasks: rows }], { now, capacity: 5 });
 	const plan = run(tasks);
 	expect(plan.autoDeadlineForecast!.rowFactors[0]!.calibrationRatio).toBe(1);
+	expect(plan.autoDeadlineForecast!.finish).toBe(run([...smallPlan(now), ...small]).autoDeadlineForecast!.finish);
 	expect(run([...tasks, ...Array.from({ length: 10 }, () => tasks[4]!)]).autoDeadlineForecast!.finish).toBe(
 		plan.autoDeadlineForecast!.finish,
 	);
