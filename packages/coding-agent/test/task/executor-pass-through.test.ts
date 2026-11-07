@@ -154,6 +154,24 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		}
 	});
 
+	it("records an explicit read-only shell dispatch as read-only for cold revival", async () => {
+		const session = yieldEmittingSession();
+		const inits: Array<boolean | undefined> = [];
+		vi.spyOn(session.sessionManager, "appendSessionInit").mockImplementation(init => {
+			inits.push(init.readOnly);
+			return "session-init";
+		});
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "read-only-shell-init",
+			agent: { ...baseAgent, readOnly: true, tools: ["bash", "yield"] },
+		});
+		expect(result.exitCode).toBe(0);
+		expect(inits.length).toBeGreaterThan(0);
+		expect(inits[0]).toBe(true);
+	});
+
 	it("forwards rules, extension-root policy, prepared extensions, and preloaded source paths to createAgentSession", async () => {
 		const session = yieldEmittingSession();
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));

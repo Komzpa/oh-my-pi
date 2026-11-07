@@ -5444,6 +5444,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				// stamp the contract so cold revival leaves them transcript-only
 				// even when the workspace was retained for recovery.
 				isolated: worktree !== undefined || undefined,
+				// An explicit readOnly dispatch keeps its shell, so the tool list alone no
+				// longer marks it read-only; record it so cold revival keeps the guard.
+				...(agent.readOnly === true ? { readOnly: true } : {}),
 			});
 
 			abortSignal.addEventListener(
