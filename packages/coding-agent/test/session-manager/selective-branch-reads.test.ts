@@ -97,3 +97,33 @@ it("reads only requested custom payloads across sibling branches", () => {
 		read.mockRestore();
 	}
 });
+
+it("repeated context subtype selection reads one payload across 300k unrelated notices", async () => {
+	const manager = SessionManager.inMemory();
+	const id = manager.appendCustomMessageEntry("startup-context", "workspace", false, { cwd: "/fixture" });
+	for (let i = 0; i < 300_000; i++) manager.appendCustomMessageEntry("unrelated-notice", "old", false);
+	let decoded = 0;
+	const original = SessionEntryIndex.prototype.get;
+	const read = spyOn(SessionEntryIndex.prototype, "get").mockImplementation(
+		function (this: SessionEntryIndex, entryId, retainIdentity) {
+			read.mockClear();
+			decoded++;
+			return original.call(this, entryId, retainIdentity);
+		},
+	);
+	try {
+		for (let turn = 0; turn < 10; turn++) {
+			expect(
+				manager.getLatestBranchMatching(
+					metadata =>
+						metadata.type === "custom_message" &&
+						(metadata.customType === undefined || metadata.customType === "startup-context"),
+				)?.id,
+			).toBe(id);
+		}
+		expect(decoded).toBe(10);
+	} finally {
+		read.mockRestore();
+		await manager.close();
+	}
+}, 60_000);
