@@ -5671,64 +5671,62 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		let unsubscribeMcpNotifications: (() => void) | undefined;
 		let unregisterMcpPostmortem: (() => void) | undefined;
 
-		launchStep("sdk.dispose.bind", () => {
-			{
-				const originalDispose = session.dispose.bind(session);
-				let tinyClientReleased = false;
-				session.dispose = async (disposeOptions?: AgentSessionDisposeOptions) => {
-					try {
-						// Reject new session work (eval starts) the moment disposal
-						// begins — the lifecycle await below opens an async gap before
-						// AgentSession.dispose() would otherwise set its guards.
-						session.beginDispose();
-						if (agentKind === "main") {
-							// Top-level teardown owns the global agent lifecycle: park timers,
-							// adopted subagent sessions, revivers. Tear it down while shared
-							// resources (kernels, MCP, LSP) are still live. Subagent disposal
-							// must NOT touch the global lifecycle.
-							const vibeRegistry = VibeSessionRegistry.global();
-							const vibeParentSession = {
-								getAgentId: () => resolvedAgentId,
-								getSessionId: () => sessionManager.getSessionId(),
-								getSessionFile: () => sessionManager.getSessionFile() ?? null,
-								sessionManager,
-								asyncJobManager: scopedAsyncJobManager,
-								settings,
-								getActiveModelString,
-							};
-							await vibeRegistry.suspendScope(vibeRegistry.ownerScope(vibeParentSession), scopedAsyncJobManager);
-							await AgentLifecycleManager.global().dispose();
-						}
-						await originalDispose(disposeOptions);
-					} finally {
-						// The tiny-model client is a process singleton shared by every session.
-						// Only the session that owns process state drops its connections, once:
-						// that fails every request still in flight, and a repeat dispose must not
-						// cancel requests other sessions made since.
-						if (bindsProcessState && !tinyClientReleased) {
-							tinyClientReleased = true;
-							try {
-								await shutdownTinyTitleClient();
-							} catch (error) {
-								logger.warn("Session dispose: tiny-model client shutdown failed", { error: String(error) });
-							}
-						}
-						unregisterUnlessParked();
-						unsubscribeCredentialDisabled();
-						unbindSessionEffects?.();
-						restoreProviderToggles?.();
-						unsubscribeMcpNotifications?.();
-						unregisterMcpPostmortem?.();
-						for (const callback of disposeCallbacks) callback();
-						disposeCallbacks.clear();
-						// Drop refs so the process-global postmortem list doesn't retain
-						// the bridge closure past explicit dispose.
-						unsubscribeMcpNotifications = undefined;
-						unregisterMcpPostmortem = undefined;
+		{
+			const originalDispose = launchStep("sdk.dispose.bind", () => session.dispose.bind(session));
+			let tinyClientReleased = false;
+			session.dispose = async (disposeOptions?: AgentSessionDisposeOptions) => {
+				try {
+					// Reject new session work (eval starts) the moment disposal
+					// begins — the lifecycle await below opens an async gap before
+					// AgentSession.dispose() would otherwise set its guards.
+					session.beginDispose();
+					if (agentKind === "main") {
+						// Top-level teardown owns the global agent lifecycle: park timers,
+						// adopted subagent sessions, revivers. Tear it down while shared
+						// resources (kernels, MCP, LSP) are still live. Subagent disposal
+						// must NOT touch the global lifecycle.
+						const vibeRegistry = VibeSessionRegistry.global();
+						const vibeParentSession = {
+							getAgentId: () => resolvedAgentId,
+							getSessionId: () => sessionManager.getSessionId(),
+							getSessionFile: () => sessionManager.getSessionFile() ?? null,
+							sessionManager,
+							asyncJobManager: scopedAsyncJobManager,
+							settings,
+							getActiveModelString,
+						};
+						await vibeRegistry.suspendScope(vibeRegistry.ownerScope(vibeParentSession), scopedAsyncJobManager);
+						await AgentLifecycleManager.global().dispose();
 					}
-				};
-			}
-		});
+					await originalDispose(disposeOptions);
+				} finally {
+					// The tiny-model client is a process singleton shared by every session.
+					// Only the session that owns process state drops its connections, once:
+					// that fails every request still in flight, and a repeat dispose must not
+					// cancel requests other sessions made since.
+					if (bindsProcessState && !tinyClientReleased) {
+						tinyClientReleased = true;
+						try {
+							await shutdownTinyTitleClient();
+						} catch (error) {
+							logger.warn("Session dispose: tiny-model client shutdown failed", { error: String(error) });
+						}
+					}
+					unregisterUnlessParked();
+					unsubscribeCredentialDisabled();
+					unbindSessionEffects?.();
+					restoreProviderToggles?.();
+					unsubscribeMcpNotifications?.();
+					unregisterMcpPostmortem?.();
+					for (const callback of disposeCallbacks) callback();
+					disposeCallbacks.clear();
+					// Drop refs so the process-global postmortem list doesn't retain
+					// the bridge closure past explicit dispose.
+					unsubscribeMcpNotifications = undefined;
+					unregisterMcpPostmortem = undefined;
+				}
+			};
+		}
 		launchStep("sdk.prewarm.kickoff", () => {
 			const prewarmModel = session.model;
 			if (prewarmModel?.api === "openai-codex-responses") {
@@ -5861,70 +5859,68 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			});
 		};
 
-		const runAutoLearnCapture = launchStep("sdk.autoLearn.bind", () =>
-			createAutoLearnCaptureRunner({
-				sourceAgent: agent,
-				primaryPromptCacheKey: model => session.getPromptCacheKeyForModel(model),
-				captureTools: () =>
-					(["manage_skill", "learn"] as const)
-						.map(name => session.getToolByName(name))
-						.filter((tool): tool is AgentTool => tool !== undefined),
-				onPayload,
-				onResponse,
-				createAgent: captureOptions => {
-					const captureModel = captureOptions.initialState?.model;
-					const captureSessionId = captureOptions.sessionId;
-					if (!captureModel || !captureSessionId) throw new Error("Auto-learn capture identity is incomplete");
-					const captureDateCwdReminder = new DateCwdReminderInjector();
-					return new Agent({
-						...captureOptions,
-						cwd: sessionManager.getCwd(),
-						cwdResolver: () => sessionManager.getCwd(),
-						convertToLlm: convertToLlmFinal,
-						transformContext: async messages => wrapSteeringForModel(messages),
-						transformProviderContext: async (context, transformModel) => {
-							let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
-							transformed = capArchiveFrameBytes(transformed, transformModel);
-							transformed = clampProviderContextImages(transformed, transformModel);
-							transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
-							transformed = await dropUnreadableContextImages(transformed, transformModel);
-							transformed = await blobBroker.decorateContext(transformed, transformModel);
-							transformed = clampProviderContextImageBytes(transformed, transformModel);
-							return captureDateCwdReminder.transform(
-								transformed,
-								formatLocalCalendarDate(),
-								normalizePromptPath(sessionManager.getCwd()),
-							);
-						},
-						temperature: agent.temperature,
-						topP: agent.topP,
-						topK: agent.topK,
-						minP: agent.minP,
-						presencePenalty: agent.presencePenalty,
-						repetitionPenalty: agent.repetitionPenalty,
-						serviceTierResolver: agent.serviceTierResolver,
-						hideThinkingSummary: agent.hideThinkingSummary,
-						maxRetryDelayMs: agent.maxRetryDelayMs,
-						getToolContext: toolCall => toolContextStore.getContext(toolCall),
-						streamFn: primaryStreamFn,
-						transformToolCallArguments,
-						// No fallback resolver: only `learn`/`manage_skill` execute here (the rest are refused
-						// copies), and the primary's resolver could reach main-session MCP tools.
-						intentTracing: agent.intentTracing,
-						intentDescription: agent.intentDescription,
-						pruneToolDescriptions: agent.pruneToolDescriptions,
-						dialect: resolveDialect(cfgToolsFormat.get(settings), captureModel),
-						abortOnFabricatedToolResult: cfgToolsAbortOnFabricatedResult.get(settings),
-						appendOnlyContext: shouldEnableAppendOnlyContext(
-							cfgProviderAppendOnlyContext.get(settings),
-							captureModel,
-						)
-							? new AppendOnlyContextManager()
-							: undefined,
-					});
-				},
-			}),
-		);
+		const runAutoLearnCapture = logger.time("sdk.autoLearn.bind", createAutoLearnCaptureRunner, {
+			sourceAgent: agent,
+			primaryPromptCacheKey: model => session.getPromptCacheKeyForModel(model),
+			captureTools: () =>
+				(["manage_skill", "learn"] as const)
+					.map(name => session.getToolByName(name))
+					.filter((tool): tool is AgentTool => tool !== undefined),
+			onPayload,
+			onResponse,
+			createAgent: captureOptions => {
+				const captureModel = captureOptions.initialState?.model;
+				const captureSessionId = captureOptions.sessionId;
+				if (!captureModel || !captureSessionId) throw new Error("Auto-learn capture identity is incomplete");
+				const captureDateCwdReminder = new DateCwdReminderInjector();
+				return new Agent({
+					...captureOptions,
+					cwd: sessionManager.getCwd(),
+					cwdResolver: () => sessionManager.getCwd(),
+					convertToLlm: convertToLlmFinal,
+					transformContext: async messages => wrapSteeringForModel(messages),
+					transformProviderContext: async (context, transformModel) => {
+						let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
+						transformed = capArchiveFrameBytes(transformed, transformModel);
+						transformed = clampProviderContextImages(transformed, transformModel);
+						transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+						transformed = await dropUnreadableContextImages(transformed, transformModel);
+						transformed = await blobBroker.decorateContext(transformed, transformModel);
+						transformed = clampProviderContextImageBytes(transformed, transformModel);
+						return captureDateCwdReminder.transform(
+							transformed,
+							formatLocalCalendarDate(),
+							normalizePromptPath(sessionManager.getCwd()),
+						);
+					},
+					temperature: agent.temperature,
+					topP: agent.topP,
+					topK: agent.topK,
+					minP: agent.minP,
+					presencePenalty: agent.presencePenalty,
+					repetitionPenalty: agent.repetitionPenalty,
+					serviceTierResolver: agent.serviceTierResolver,
+					hideThinkingSummary: agent.hideThinkingSummary,
+					maxRetryDelayMs: agent.maxRetryDelayMs,
+					getToolContext: toolCall => toolContextStore.getContext(toolCall),
+					streamFn: primaryStreamFn,
+					transformToolCallArguments,
+					// No fallback resolver: only `learn`/`manage_skill` execute here (the rest are refused
+					// copies), and the primary's resolver could reach main-session MCP tools.
+					intentTracing: agent.intentTracing,
+					intentDescription: agent.intentDescription,
+					pruneToolDescriptions: agent.pruneToolDescriptions,
+					dialect: resolveDialect(cfgToolsFormat.get(settings), captureModel),
+					abortOnFabricatedToolResult: cfgToolsAbortOnFabricatedResult.get(settings),
+					appendOnlyContext: shouldEnableAppendOnlyContext(
+						cfgProviderAppendOnlyContext.get(settings),
+						captureModel,
+					)
+						? new AppendOnlyContextManager()
+						: undefined,
+				});
+			},
+		});
 
 		// Auto-learn can immediately trigger a private capture after the first real
 		// stop. When it is enabled at startup and a memory backend is selected,
