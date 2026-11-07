@@ -2502,7 +2502,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   // `identity` is the stable fingerprint of what the notice says (defaults to the full text): a notice
   // whose rendered text only differs by minute counters or worker telemetry must not look new.
-  const sendHarnessNotice = (kind: string, rowKey: string, content: string, details?: unknown, identity: string = content, delivery: { triggerTurn?: boolean; interruptWait?: boolean } = {}): boolean => {
+  const sendHarnessNotice = (kind: string, rowKey: string, content: string, details?: unknown, identity: string = content, delivery: { triggerTurn?: boolean; interruptWait?: boolean; supersedes?: string } = {}): boolean => {
     const key = noticeKey(kind, rowKey);
     const digest = noticeDigest(identity);
     if (sprintState.lastNotices[key] === digest) {
@@ -2512,11 +2512,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const { [key]: _previous, ...others } = sprintState.lastNotices;
     sprintState = { ...sprintState, lastNotices: boundedNotices({ ...others, [key]: digest }) };
     persistSprintState();
-    // A plan check is a whole-plan snapshot: the queue keeps only the newest one, so a busy lead
-    // never reads a stale "overdue, unstaffed" list after it already fixed the plan.
+    // Replace pending state by subject, independently of the digest used to suppress emissions.
+    // The queue owns replacement across nextTurn and steering, including while the lead is busy.
     const sent = kind === "todo-plan-check" ? { ...((details as Record<string, unknown> | undefined) ?? {}), supersedesQueued: true } : details;
     const stateNote = kind === "todo-gate-steering" || kind === "todo-plan-check";
-    const options = { deliverAs: stateNote ? "steer" as const : "nextTurn" as const, triggerTurn: false, interruptWait: false, ...delivery, ...(stateNote ? { supersedes: kind } : {}) };
+    const options = { deliverAs: stateNote ? "steer" as const : "nextTurn" as const, triggerTurn: false, interruptWait: false, supersedes: kind === "todo-plan-check" ? kind : key, ...delivery };
     pi.sendMessage(
       { customType: kind, content, display: false, attribution: "agent", ...(sent === undefined ? {} : { details: sent }) },
       options,
@@ -3787,11 +3787,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const announceGates = (ctx: ExtensionContext, pending: unknown[] = [], now = Date.now(), measured?: DispatchDecision) => {
     if (singleWriterLane || !isMain(ctx) || typeof pi.sendMessage !== "function" || typeof pi.appendEntry !== "function") return;
     const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending));
-    const notice = (kind: string, key: string, data: Record<string, unknown>, interruptWait = false) => {
+    const notice = (kind: string, key: string, data: Record<string, unknown>, interruptWait = false, subject?: string) => {
       const type = `todo-gate-${kind}`;
       const content = prompt.render(gateNoticeInstructions, data).trim();
       if (sprintState.lastNotices[noticeKey(type, key)] === noticeDigest(content)) return;
-      sendHarnessNotice(type, key, content, undefined, content, { interruptWait });
+      sendHarnessNotice(type, key, content, undefined, content, { interruptWait, supersedes: subject === undefined ? type : noticeKey(type, subject) });
     };
     if (pauseGate?.paused || gateSwitchedOff(ctx)) return;
     const decision = measured ?? currentDecision(ctx, now, pending);
@@ -3802,7 +3802,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (tasks.length) notice("schedule", JSON.stringify(tasks), { schedule: true, rows: tasks.map(task => JSON.stringify(task)).join(", "), tasks });
     for (const item of activeRecoveries(ctx, pending)) notice("recovery", JSON.stringify([item.kind, item.row, item.owner, item.at]), {
       recovery: true, action: recoveryAction(item), owner: item.owner, recoveryCap: item.kind === "cap",
-    }, true);
+    }, true, JSON.stringify([item.kind, item.row]));
     // Delivered rows the runtime audit could not verify go to the lead with the missing piece.
     const unverified = phases.flatMap((phase) => phase.tasks).flatMap((task) => {
       const after = todoRowAfterWorker(task);
@@ -3820,11 +3820,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (!isOpenRowStatus(row.status) || !row.owner || !task || classifyTodoDisplayRow(task, phases, displayContext).state !== "working") continue;
       const key = `${row.content}:${row.owner}:${row.estimateRevision}`;
       const data = { row: JSON.stringify(row.content), owner: row.owner };
-      if (row.reestimateCount >= 2) notice("cap", key, { ...data, cap: true });
+      if (row.reestimateCount >= 2) notice("cap", key, { ...data, cap: true }, false, row.content);
       const start = row.estimateUpdatedAt ?? row.startedAt;
       const finish = row.resourceFinish;
       if (row.reestimateCount < 2 && row.status === "in_progress" && start !== undefined && finish !== undefined && finish > start && now >= finish)
-        notice("eta", key, { ...data, eta: true });
+        notice("eta", key, { ...data, eta: true }, false, row.content);
     }
 
   };

@@ -2064,3 +2064,48 @@ test("negative control: a blocked row without a delivered result is not ready wo
 		expect(demand?.content).toContain("No work is currently ready");
 	} finally { h.shutdown(); }
 });
+
+test("ETA replacement keys retain distinct rows and survive estimate revisions", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(2, now);
+	for (const [i, row] of phases[0].tasks.entries()) {
+		row.status = "in_progress";
+		row.schedule.dependencies = [];
+		row.schedule.owner = `worker-${i}`;
+		row.schedule.estimateRevision = 1;
+	}
+	const forecast = (phases, options) => {
+		const out = forecastTodoPlan(phases, options);
+		for (const row of out.rows)
+			Object.assign(row, {
+				startedAt: now - 200_000,
+				estimateUpdatedAt: now - 200_000,
+				resourceFinish: now - 1,
+				reestimateCount: 0,
+				estimateRevision: phases[0].tasks.find(task => task.content === row.content).schedule.estimateRevision,
+			});
+		return out;
+	};
+	const h = await noticeHarness(phases, now + 3600_000, [], 0, forecast);
+	h.ctx.getAsyncJobSnapshot = () => ({
+		running: phases[0].tasks.map(row => ({
+			id: row.schedule.owner,
+			type: "task",
+			status: "running",
+			label: row.content,
+			startTime: now - 200_000,
+		})),
+		recent: [],
+		nonJobAgents: [],
+	});
+	await h.handlers.get("turn_start")({}, h.ctx);
+	const first = h.notices.filter(notice => notice.customType === "todo-gate-eta");
+	expect(first).toHaveLength(2);
+	expect(first.every(notice => typeof notice.delivery.supersedes === "string")).toBe(true);
+	expect(first[0].delivery.supersedes).not.toBe(first[1].delivery.supersedes);
+	phases[0].tasks[0].schedule.estimateRevision++;
+	await h.handlers.get("turn_start")({}, h.ctx);
+	const latest = h.notices.filter(notice => notice.customType === "todo-gate-eta").at(-1);
+	expect(latest.content).toContain(phases[0].tasks[0].content);
+	expect(latest.delivery.supersedes).toBe(first[0].delivery.supersedes);
+});
