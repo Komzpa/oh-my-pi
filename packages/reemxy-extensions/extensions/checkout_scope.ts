@@ -81,21 +81,19 @@ export function checkoutScopesFromResources(resources: unknown): string[] | unde
 	return scopes.size ? [...scopes].sort() : undefined;
 }
 
+export function checkoutScopesContain(roots: string[], targets: string[]): boolean {
+	return targets.every(target =>
+		roots.some(root => {
+			const [rootRepo, rootPath] = root.split("\0");
+			const [targetRepo, targetPath] = target.split("\0");
+			if (!rootRepo || rootPath === undefined || !targetRepo || targetPath === undefined) return false;
+			const allowed = path.resolve(rootRepo, rootPath);
+			const resolved = path.resolve(targetRepo, targetPath);
+			return resolved === allowed || resolved.startsWith(`${allowed}${path.sep}`);
+		}),
+	);
+}
+
 export function checkoutScopesOverlap(left: string[], right: string[]): boolean {
-	for (const leftScope of left) {
-		const [leftRoot, leftPath] = leftScope.split("\0");
-		for (const rightScope of right) {
-			const [rightRoot, rightPath] = rightScope.split("\0");
-			if (leftRoot !== rightRoot || leftPath === undefined || rightPath === undefined) continue;
-			if (
-				leftPath === "." ||
-				rightPath === "." ||
-				leftPath === rightPath ||
-				leftPath.startsWith(`${rightPath}${path.sep}`) ||
-				rightPath.startsWith(`${leftPath}${path.sep}`)
-			)
-				return true;
-		}
-	}
-	return false;
+	return left.some(l => right.some(r => checkoutScopesContain([l], [r]) || checkoutScopesContain([r], [l])));
 }

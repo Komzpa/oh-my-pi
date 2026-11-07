@@ -830,6 +830,8 @@ export interface ExtensionContext {
 			| "previewPending"
 			| "previewTracked"
 			| "postDeadline"
+			| "resources"
+			| "owner"
 		>,
 	): boolean;
 	/** UI methods for user interaction */
@@ -1286,6 +1288,8 @@ export interface BeforeSubagentSpawnEvent {
 	isolated?: boolean;
 	/** Verbatim task assignment text; lets routing gates scope checkouts before row owners are recorded. */
 	assignment?: string;
+	/** Caller-supplied assignment context. */
+	context?: string;
 }
 
 export type {

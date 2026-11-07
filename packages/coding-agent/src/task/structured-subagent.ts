@@ -712,6 +712,7 @@ async function applySpawnHook(
 			spawnKey,
 			isolated: request.isolation?.requested === true,
 			assignment: request.assignment,
+			context: request.context,
 		},
 		request.signal,
 	);

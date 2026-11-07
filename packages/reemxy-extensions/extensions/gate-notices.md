@@ -56,3 +56,5 @@ NEXT ACTION: call task {tasks:[{name:{{#if previous}}{{jsonStringify previous}}{
 {{#if scopeChanged}}Row {{row}} write scope is now {{resources}}; applies to this running worker immediately.{{/if}}
 
 {{#if liveOwner}}{{row}} already has live owner {{owner}} (running or restoring). Steer agent://{{owner}} instead of re-dispatching this row. To replace a stalled owner, use the existing reestimate/recovery path, kill that exact owner and read its stop receipt before dispatching the replacement.{{/if}}
+
+{{#if scopeRequest}}Write scope request from {{worker}}. READY LEAD ACTION: inspect conflicts and approve with todo {{action}}, or tell the worker why refused. Assigned paths already auto-grant; these paths extend the current row.{{/if}}
