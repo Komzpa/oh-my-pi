@@ -1,3 +1,4 @@
+import { editsRequirements, rowRequirementQuotes, type RequirementQuote } from "./requirement_quotes";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -28,6 +29,7 @@ export type RowAuditVerdict = {
 	findings: string;
 	checks: RowAuditCheck[];
 	screenshots: RowAuditScreenshot[];
+	requirementDiffs?: Array<{ before: string; after: string; quoteIds: string[]; widening: boolean; reason: string }>;
 };
 export interface RowAuditBatch {
 	repoPath: string;
@@ -57,6 +59,7 @@ export function parseRowAuditVerdicts(output: unknown): RowAuditVerdict[] | unde
 		if (item.verdict !== "pass" && item.verdict !== "fail" && item.verdict !== "inconclusive") return;
 		verdicts.push({
 			row: item.row,
+			requirementDiffs: item.requirementDiffs,
 			verdict: item.verdict,
 			findings: typeof item.findings === "string" ? item.findings.trim() : "",
 			checks: (Array.isArray(item.checks) ? item.checks : []).filter(
@@ -85,6 +88,7 @@ const IDENTITY_READ = /^\s*git\s+(?:-C\s+\S+\s+)?(?:rev-parse|status|log|show|br
 export function settleRowAuditVerdict(
 	verdict: RowAuditVerdict | undefined,
 	fileExists: (path: string) => boolean = existsSync,
+	quotes?: RequirementQuote[],
 ): { verdict: "pass" | "fail" | "inconclusive"; findings: string } {
 	if (!verdict) return { verdict: "inconclusive", findings: "auditor returned no verdict for this row" };
 	if (verdict.verdict === "inconclusive")
@@ -97,6 +101,15 @@ export function settleRowAuditVerdict(
 			verdict: "inconclusive",
 			findings: `"${verdict.verdict}" without a check or screenshot at HEAD${verdict.findings ? `: ${verdict.findings}` : ""}`,
 		};
+	if (quotes !== undefined) {
+		const diffs = verdict.requirementDiffs;
+		if (!quotes.length || !Array.isArray(diffs) || !diffs.length || diffs.some(diff =>
+			!diff || typeof diff.before !== "string" || typeof diff.after !== "string" || typeof diff.widening !== "boolean" ||
+			!diff.reason?.trim() || !Array.isArray(diff.quoteIds) || !diff.quoteIds.length || diff.quoteIds.some(id => !quotes.some(q => q.id === id))))
+			return { verdict: "inconclusive", findings: "Requirement diff must be checked hunk by hunk against linked verbatim quotes" };
+		const widened = diffs.filter(diff => diff.widening);
+		if (widened.length) return { verdict: "fail", findings: widened.map(diff => diff.reason).join("; ") };
+	}
 	return { verdict: verdict.verdict, findings: verdict.findings };
 }
 
@@ -290,7 +303,8 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 			}
 		return 0;
 	}
-	const requirementsFor = options.requirementsFor ?? ledgerRequirements(ctx);
+	const linked = options.requirementsFor ?? ledgerRequirements(ctx);
+	const requirementsFor = (row: string) => [...linked(row), ...rowRequirementQuotes(ctx, row).map(q => `VERBATIM USER QUOTE ${q.id}: ${JSON.stringify(q.quote)}`)];
 	const fileExists = options.fileExists ?? existsSync;
 	let launched = 0;
 	for (const batch of batches) {
@@ -363,7 +377,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 						if ((audit.attempts ?? 1) < 2) retry = true;
 						continue;
 					}
-					const settled = settleRowAuditVerdict(verdict, fileExists);
+					const settled = settleRowAuditVerdict(verdict, fileExists, editsRequirements(row) ? rowRequirementQuotes(ctx, row.content) : undefined);
 					const record: TodoRowAudit = { ...audit, verdict: settled.verdict, findings: settled.findings, at };
 					if (settled.verdict === "inconclusive") {
 						// A second inconclusive result returns the findings to staffing through todoRowAfterWorker.

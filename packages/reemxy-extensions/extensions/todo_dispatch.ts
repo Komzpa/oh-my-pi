@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { prepareRequirementBrief, installRequirementResolution } from "./requirement_quotes";
 import { installWorkerAskInterrupt, pendingWorkerQuestions } from "./worker_asks";
 import { resetDeliveryCriticTimers, queueDeliveryCritic, type DeliveryRow, type DeliveryVerdict } from "./delivery_critic";
 import { openReviewPages, probeReviewPage, ReviewAnswerPoller } from "./todo_review_opener";
@@ -2394,6 +2395,7 @@ export function syncCriticalFast(
 
 export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe; reviewPageOpener?: (url: string) => void; deliveryCriticRecord?: (row: DeliveryRow, verdict: DeliveryVerdict) => Promise<void> } = {}): Promise<void> {
   installWorkerAskInterrupt(pi);
+  installRequirementResolution(pi);
   const priorDeliveries = new Set<string>();
   const deliveryKey = (row) => JSON.stringify([row.content, row.schedule?.executor?.workerId, row.schedule?.executor?.startedAt, row.schedule?.executor?.finishedAt]);
   const checkDeliveries = (ctx: ExtensionContext) => {
@@ -5467,6 +5469,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const brief = String(item.task ?? "");
         const boundRows = speculativeTaskRows(item, phases);
         for (const row of boundRows) {
+          const grounded = prepareRequirementBrief(row, ctx, String(item.task ?? ""));
+          if (grounded.refusal) return { block: true, reason: grounded.refusal };
+          item.task = grounded.task;
           const refusal = refuseProofReview(row, item.agent, Date.now());
           if (refusal) return { block: true, reason: refusal };
           gateTrace(ctx, "speculative-review-checked", { row: row.content, agent: item.agent, readOnly: readOnlyAudit(item), speculativeOn: row.schedule?.speculativeOn, dependencies: (row.schedule?.dependencies ?? []).map((content) => { const target = rows.find((candidate) => candidate.content === content); return { content, status: target?.status, review: target?.schedule?.review }; }) });

@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Bind requirement edits and conflict resolution to verbatim user quotes and reject widened requirement audits ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Keep workers parked on questions and require a lead answer before ending the turn ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Dispatcher wakes keep unchanged status silent and demand concrete action on stalled plans ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
