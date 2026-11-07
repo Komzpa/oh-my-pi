@@ -670,3 +670,9 @@ test("periodic retro receipt lookup uses the indexed 500-entry tail", () => {
   for (let turn = 0; turn < 10; turn++) expect(branchRetroReceiptIds(ctx)).toEqual(["retro-1"]);
   expect(visited).toBe(5_000);
 });
+
+
+test("an unplanned completed probe does not acquire a retrospective from a deadline alarm", async () => {
+  const f = await fixture([], [{ id: "SpawnProbe", agentId: "SpawnProbe", label: "SpawnProbe", type: "task", status: "completed", startTime: liveNow - 40_000 }]);
+  expect(await f.check()).not.toContain("retrospective due");
+});

@@ -48,6 +48,7 @@ import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } fr
 import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
 import { appendTimedNote, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
 import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
+import oneShotInstructions from "./one-shot.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
@@ -4179,6 +4180,31 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("message_end", () => {
     inFlightAssistantHasText = false;
   });
+  // An unplanned, single delegated read can finish before the lead replies. A newer
+  // human input ends this exemption; it must not hide a correction behind an old job.
+  const waitingForSingleRead = (ctx: ExtensionContext): boolean => {
+    if (sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never).some(phase => phase.tasks.some(row => isNonClosedRowStatus(row.status)))) return false;
+    const jobs = (ctx.getAsyncJobSnapshot()?.running ?? []).filter(job => job.type === "task" && job.status === "running");
+    if (jobs.length !== 1) return false;
+    const tasks: Record<string, unknown>[] = [];
+    for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata =>
+      metadata.type === "message" && (metadata.messageRole === "user" || metadata.messageRole === "assistant"),
+    )) {
+      if (entry.message.role === "user" && latestDeadlineUserMessage([entry])) break;
+      if (entry.message.role !== "assistant") continue;
+      for (const part of entry.message.content) {
+        if (part.type === "toolCall" && part.name === "task") tasks.push(...taskItems(part.arguments));
+      }
+    }
+    if (tasks.length !== 1) return false;
+    const scope = tasks[0].scope as { paths?: unknown } | undefined;
+    return Array.isArray(scope?.paths) && scope.paths.length === 0 &&
+      [jobs[0].id, jobs[0].agentId, jobs[0].label].includes(String(tasks[0].name));
+  };
+  pi.on("before_agent_start", (event, ctx) => {
+    if (singleWriterLane || !isMain(ctx) || sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never).some(phase => phase.tasks.length)) return;
+    return { systemPrompt: [...event.systemPrompt, oneShotInstructions] };
+  });
   const unansweredUserReasonWithDraft = (ctx: ExtensionContext) => {
     if (!inFlightAssistantHasText) return unansweredUserReason(ctx);
     const reason = unansweredUserReason(ctx);
@@ -5409,7 +5435,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName === "wait") {
       const redReason = await redRowsIdleReason(ctx);
       if (redReason) return { block: true, reason: redReason };
-      const reason = unansweredUserReasonWithDraft(ctx);
+      const reason = waitingForSingleRead(ctx) ? undefined : unansweredUserReasonWithDraft(ctx);
       if (reason) return { block: true, reason };
       const choiceReason = await chatChoiceReason(ctx);
       if (choiceReason) return { block: true, reason: choiceReason };
@@ -5785,6 +5811,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   let lastPlanProblems = "";
   const planCheck = async (ctx: ExtensionContext, pending: unknown[] = [], problemsOnly = false): Promise<string | null> => {
+    if (!sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending) as never).some(phase => phase.tasks.length)) return null;
     const visibility = await pollPreview(ctx);
     const visibilityProblem = previewPlanProblem(overduePreviewRows((ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.()) ?? [], visibility, previewConfig(ctx), Date.now()));
     if (visibilityProblem) return visibilityProblem;
@@ -6507,7 +6534,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // The plan tick settles a completed facilitator up to a minute later; until then the snapshot already shows it.
     const facilitatorDone = (ctx.getAsyncJobSnapshot()?.recent ?? []).some((job) =>
       job.type === "task" && job.status === "completed" && [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name)));
-    const retroDue = sprintState.retroDueReason && !retroRowStaffed(phases) && !facilitatorDone ? buildRetroLine(now, decision.deadline?.timezone) : "";
+    const retroDue = phases.some(phase => phase.tasks.length) && sprintState.retroDueReason && !retroRowStaffed(phases) && !facilitatorDone ? buildRetroLine(now, decision.deadline?.timezone) : "";
     if (retroDue) {
       sprintState = { ...sprintState, retroDueNotifiedKey: retroNotifyKey() };
       persistSprintState();

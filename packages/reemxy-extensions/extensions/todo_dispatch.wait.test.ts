@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { expect, test, vi } from "bun:test";
+import probe from "./fixtures/oneshot-spawn-probe.json";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
@@ -122,6 +123,7 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 	const intervals: Array<() => void | Promise<void>> = [];
 	const timeouts: Array<() => void | Promise<void>> = [];
 	let recent = initialJobs;
+	let running = [];
 	const api = {
 		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		getActiveTools: () => ["task", "todo", "wait"],
@@ -147,7 +149,7 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 			...branchMock(() => [{ type: "custom", customType: "user_todo_edit", data: { phases } }, ...entries]),
 			getSessionFile: () => undefined,
 		},
-		getAsyncJobSnapshot: () => ({ running: [], recent, nonJobAgents: [] }),
+		getAsyncJobSnapshot: () => ({ running, recent, nonJobAgents: [] }),
 		getTaskMaxConcurrency: () => 20,
 		hasPendingMessages: () => false,
 		isIdle: () => true,
@@ -168,6 +170,7 @@ async function noticeHarness(phases: WaitTestPhase[], deadlineAt: number, initia
 		ctx,
 		notices,
 		entries,
+		setRunning: (jobs: unknown[]) => { running = jobs; },
 		setRecent: (jobs: unknown[]) => {
 			recent = jobs;
 		},
@@ -2108,4 +2111,40 @@ test("ETA replacement keys retain distinct rows and survive estimate revisions",
 	const latest = h.notices.filter(notice => notice.customType === "todo-gate-eta").at(-1);
 	expect(latest.content).toContain(phases[0].tasks[0].content);
 	expect(latest.delivery.supersedes).toBe(first[0].delivery.supersedes);
+});
+
+
+test("SpawnProbe can wait for its only read worker and stop after printing the fixture answer without creating a plan", async () => {
+	const h = await noticeHarness([], Date.now() + 3600_000);
+	try {
+		h.entries.push(structuredClone(probe.user), structuredClone(probe.dispatch));
+		h.setRunning([{ id: "probe-job", agentId: "SpawnProbe", label: "SpawnProbe", type: "task", status: "running" }]);
+		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).not.toBe(true);
+		// Waiting is allowed, but a running worker is not itself an answer.
+		expect((await h.handlers.get("session_stop")!({}, h.ctx))?.decision).toBe("block");
+		h.setRunning([]);
+		h.entries.push(structuredClone(probe.answer));
+		expect((await h.handlers.get("session_stop")!({}, h.ctx))?.decision).not.toBe("block");
+		await h.handlers.get("agent_end")!({}, h.ctx);
+		expect(h.notices.filter(n => n.delivery?.triggerTurn)).toEqual([]);
+		expect(h.entries.filter(e => e.customType === "user_todo_edit")).toEqual([]);
+	} finally { h.shutdown(); }
+});
+
+test("a neighbouring DC plan still requires a reply before waiting on its worker", async () => {
+	const h = await noticeHarness(chainedPlan(3, Date.now()), Date.now() + 3600_000);
+	try {
+		h.entries.push(structuredClone(probe.user), structuredClone(probe.dispatch));
+		h.setRunning([{ id: "probe-job", agentId: "SpawnProbe", label: "SpawnProbe", type: "task", status: "running" }]);
+		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
+	} finally { h.shutdown(); }
+});
+
+test("a newer human correction cannot wait behind an earlier unplanned probe", async () => {
+	const h = await noticeHarness([], Date.now() + 3600_000);
+	try {
+		h.entries.push(structuredClone(probe.user), structuredClone(probe.dispatch), humanQuestion());
+		h.setRunning([{ id: "probe-job", agentId: "SpawnProbe", label: "SpawnProbe", type: "task", status: "running" }]);
+		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
+	} finally { h.shutdown(); }
 });
