@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { TodoScheduleInputTask } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { measuredRecoveryForecast, recoveryActionObserved, recoveryDemand, RECOVERY_STEP_MS } from "./dispatch_wake";
-const plan = (): TodoScheduleInput => [
+const plan = (): Array<{ name: string; tasks: TodoScheduleInputTask[] }> => [
 	{
 		name: "Ship",
 		tasks: [
@@ -67,4 +67,43 @@ test("forecast records measured completed rows per hour and computed ETA, reject
 		open: 1,
 		eta: 7201000,
 	});
+});
+
+test("live legacy owners and non-dispatchable rows never accrue idle age", () => {
+	const phases = plan();
+	phases[0]!.tasks[0]!.schedule = { owner: "live" };
+	const state = recoveryDemand(
+		phases,
+		new Set(["live", "alias"]),
+		1000,
+		2,
+		undefined,
+		undefined,
+		undefined,
+		1,
+		new Set(["Delivery"]),
+	);
+	expect(state.idleSince).toEqual({});
+	expect(
+		recoveryDemand(
+			phases,
+			new Set(["live", "alias"]),
+			601000,
+			2,
+			undefined,
+			undefined,
+			state,
+			1,
+			new Set(["Delivery"]),
+		).pending,
+	).toBeUndefined();
+});
+
+test("splitting an open row requires new linked children; adding unrelated rows cannot satisfy recovery", () => {
+	const phases = plan();
+	const demand = recoveryDemand(phases, running, 3000, 2, 2000, undefined).pending!;
+	phases[0]!.tasks.push({ content: "Piece A", status: "pending" }, { content: "Piece B", status: "pending" });
+	expect(recoveryActionObserved(demand, phases, running)).toBe(false);
+	phases[0]!.tasks[0]!.schedule = { dependencies: ["Piece A", "Piece B"] };
+	expect(recoveryActionObserved(demand, phases, running)).toBe(true);
 });

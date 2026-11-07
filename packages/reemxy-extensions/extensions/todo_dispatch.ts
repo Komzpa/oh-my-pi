@@ -2505,7 +2505,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const session = ctx.sessionManager.getHeader()?.id;
     if (recoverySession !== session || !recovery) { recoverySession = session; recovery = recoveryReceipt(ctx)?.recovery; }
     const decision = currentDecision(ctx);
-    const next = recoveryDemand(todoPhases(ctx), runningOwnerNames(ctx), Date.now(), workerCapacity(ctx), decision.deadline?.deadlineAt, decision.forecast?.expectedResourceFinish, recovery, (ctx.getAsyncJobSnapshot()?.running ?? []).filter(job => job.type === "task").length);
+    const next = recoveryDemand(todoPhases(ctx), runningOwnerNames(ctx), Date.now(), workerCapacity(ctx), decision.deadline?.deadlineAt, decision.forecast?.expectedResourceFinish, recovery, (ctx.getAsyncJobSnapshot()?.running ?? []).filter(job => job.type === "task").length, new Set((decision.dispatchableReady ?? []).map(row => row.content)));
     if (JSON.stringify(next) !== JSON.stringify(recovery)) { recovery = next; saveRecovery(ctx); }
     return recovery?.pending;
   };
@@ -2522,6 +2522,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     description: "Record an ETA computed from completed TODO rows per hour over the observed window; cannot invent pace or a delivery promise.",
     parameters: pi.typebox.Type.Object({}),
     async execute(_id, _params, _signal, _update, ctx) {
+      if (!isMain(ctx)) throw new Error("Only the lead can record a plan forecast");
       const demand = recoveryFor(ctx);
       if (demand?.kind !== "deadline") throw new Error("No pending deadline demand");
       recovery.forecast = measuredRecoveryForecast(recovery, todoPhases(ctx), Date.now());

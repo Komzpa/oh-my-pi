@@ -140,6 +140,7 @@ export function recoveryDemand(
 	finish: number | undefined,
 	previous?: RecoveryState,
 	activeCount = running.size,
+	readyContents?: ReadonlySet<string>,
 ): RecoveryState {
 	const state: RecoveryState = structuredClone(previous ?? { idleSince: {}, samples: [] });
 	const rows = phases.flatMap(phase => phase.tasks);
@@ -153,7 +154,9 @@ export function recoveryDemand(
 	while (state.samples.length > 2 && state.samples[1]!.at < now - 90 * 60_000) state.samples.shift();
 	const ready = open.filter(
 		row =>
+			(readyContents === undefined || readyContents.has(row.content)) &&
 			row.status !== "blocked" &&
+			!running.has(row.schedule?.owner ?? "") &&
 			!staffed(row, running) &&
 			(row.schedule?.dependencies ?? []).every(dep => rows.some(other => other.content === dep && !openRow(other))),
 	);
