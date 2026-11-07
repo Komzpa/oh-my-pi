@@ -243,6 +243,8 @@
 
 ### Fixed
 
+- Show the failing extension hook and source property in task-call errors ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Stop retrying undelivered worker continuations without a state change ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep TODO workers assigned through IRC replies and show row ownership as soon as a task spawns ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
