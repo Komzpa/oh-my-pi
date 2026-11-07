@@ -180,8 +180,9 @@ test("redo simulation uses this session's calibration rather than the cached dis
 	const accepted = structuredClone(row);
 	accepted.content = "accepted calibration row";
 	accepted.status = "completed";
-	accepted.schedule!.startedAt = now;
-	accepted.schedule!.finishedAt = now + 300_000;
+	accepted.schedule!.firstEstimate!.updatedAt = now - 300_000;
+	accepted.schedule!.startedAt = now - 300_000;
+	accepted.schedule!.finishedAt = now;
 	plan[0]!.tasks.push(accepted);
 	const options = risk();
 	options.pools.coder = [{ model: "a/m", weight: 1 }];
