@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Workers immediately receive assigned write paths, nested workers inherit row scope, and new scope requests surface as lead actions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Resumed leads immediately demand recovery for already missed automatic deadlines alongside CHURN actions and start tracking idle ready rows ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Missed deadlines and idle ready rows require recorded plan recovery and escalate when ignored ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

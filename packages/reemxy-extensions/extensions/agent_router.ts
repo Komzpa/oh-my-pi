@@ -12,9 +12,9 @@ import { workerYieldRefusal, type WorkerContinuationState } from "./worker_conti
 import gateNotices from "./gate-notices.md" with { type: "text" };
 import { shortenPath, truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { workerToolPreflight, fileToolTargets, type HostResourceProbes } from "./dispatch_preflight";
+import { workerToolPreflight, workerRowScope, workerScopeCovers, fileToolTargets, type HostResourceProbes } from "./dispatch_preflight";
 import { visionToolRefusal, visionResultRefusal } from "./vision_gate";
-import { checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
+import { checkoutScopesFromResources, checkoutScopesOverlap, checkoutScopesContain } from "./checkout_scope";
 
 // Model selection lives in core: the agent's frontmatter chain (role groups) plus core fallback.
 // This extension keeps the write-scope gate, the file-write refusal and the spawn/outcome records.
@@ -261,6 +261,10 @@ export interface BeforeSubagentSpawnEvent {
 	patterns?: unknown;
 	isolated?: unknown;
 	assignment?: unknown;
+	context?: unknown;
+	resources?: unknown;
+	cwd?: unknown;
+	worktree?: unknown;
 	task?: unknown;
 	prompt?: unknown;
 	text?: unknown;
@@ -401,6 +405,80 @@ function memoLatestTodo(
 				: []));
 }
 
+export async function requestResourceScope(ctx: ExtensionContext, paths: string[], pending = new Set<string>()) {
+	if (!paths.length || paths.some(target => !target.startsWith("/")))
+		return { status: "invalid", reason: "Use absolute paths." };
+	if (await workerScopeCovers(ctx, paths)) return { status: "granted", paths };
+	const scope = workerRowScope(ctx);
+	if (!scope?.lead.session) return { status: "unavailable", reason: "No canonical lead row found." };
+	const updates = scope.rows.map(row => ({
+		task: row.content,
+		resources: [...new Set([...(row.schedule?.resources ?? []), ...paths])],
+	}));
+	const action = { op: "schedule", updates };
+	const key = JSON.stringify(action);
+	if (!pending.has(key)) {
+		await scope.lead.session.steer(
+			prompt
+				.render(gateNotices, { scopeRequest: true, worker: ctx.agent?.id, action: JSON.stringify(action) })
+				.trim(),
+		);
+		pending.add(key);
+	}
+	return { status: "pending", lead: scope.lead.id, action };
+}
+
+/** Persist only caller-assigned paths, after canonical overlap checks, before any worker starts. */
+export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: ExtensionContext): string | undefined {
+	const assigned = [
+		...new Set([
+			...lanePathsFromText(
+				[spawnTaskText(event), event.context].filter(value => typeof value === "string").join("\n"),
+			),
+			...[event.cwd, event.worktree, ...(Array.isArray(event.resources) ? event.resources : [])]
+				.filter((value): value is string => typeof value === "string")
+				.map(value => value.replace(/^(?:path|repo|repository|checkout|worktree):/, ""))
+				.filter(value => value.startsWith("/")),
+		]),
+	];
+	if (!assigned.length) return;
+	const scopes = checkoutScopesFromResources(assigned);
+	if (!scopes) return "Cannot resolve assigned write resources.";
+	if (ctx.agent?.kind === "sub") {
+		const inherited = workerRowScope(ctx);
+		const allowed = checkoutScopesFromResources(inherited?.rows.flatMap(row => row.schedule?.resources ?? []));
+		if (!allowed || !checkoutScopesContain(allowed, scopes))
+			return "Nested worker assignment exceeds its parent's row resources; request resource_scope from the lead.";
+		return;
+	}
+	const phases = ctx.getTodoPhases?.() ?? [];
+	const rows = phases
+		.flatMap(phase => phase.tasks)
+		.filter(row => row.status !== "completed" && row.status !== "abandoned");
+	const matched = rows.filter(
+		row =>
+			row.schedule?.owner === event.spawnKey ||
+			row.schedule?.executor?.workerId === event.spawnKey ||
+			spawnTextMatchesRowTitle(spawnTaskText(event) ?? "", row.content),
+	);
+	if (matched.length !== 1) return;
+	const row = matched[0];
+	const resources = [...new Set([...(row.schedule?.resources ?? []), ...assigned])];
+	const incoming = checkoutScopesFromResources(resources);
+	for (const other of rows) {
+		if (other === row) continue;
+		const held = checkoutScopesFromResources(other.schedule?.resources);
+		if (incoming && held && checkoutScopesOverlap(incoming, held))
+			return `Assigned resources conflict with row ${JSON.stringify(other.content)}; keep one writer per resource.`;
+	}
+	const owner = stringValue(event.spawnKey) ?? row.schedule?.owner;
+	if (
+		(resources.length !== (row.schedule?.resources?.length ?? 0) || owner !== row.schedule?.owner) &&
+		ctx.updateTodoSchedule?.(row.content, { resources, owner }) !== true
+	)
+		return "Could not persist assigned row resources; retry dispatch after updating the row.";
+}
+
 export function routeSubagentSpawn(
 	event: BeforeSubagentSpawnEvent,
 	ctx: ExtensionContext,
@@ -413,6 +491,8 @@ export function routeSubagentSpawn(
 ): { block: true; reason: string } | undefined {
 	const agent = stringValue(event.agent);
 	if (!agent) return undefined;
+	const admission = admitAssignedResources(event, ctx);
+	if (admission) return { block: true, reason: admission };
 	const latestTodo = memoLatestTodo(options.latestTodo, ctx);
 	const checkoutScopes =
 		WRITE_CAPABLE_WORKERS.has(agent) && event.isolated !== true
@@ -921,6 +1001,20 @@ export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbe
 	const announcedGuardSessions = new Set<string>();
 	pi.setLabel?.("Agent Router");
 	const continuedWorkers = new Map<string, WorkerContinuationState>();
+	const pendingScopes = new Set<string>();
+	if (pi.zod && pi.registerTool)
+		pi.registerTool({
+			name: "resource_scope",
+			label: "Resource scope",
+			loadMode: "essential",
+			description:
+				"Request write scope for absolute paths. Already assigned paths are granted immediately; new paths become a ready lead action.",
+			parameters: pi.zod.object({ paths: pi.zod.array(pi.zod.string()).min(1) }),
+			async execute(_id, input, _signal, _update, ctx) {
+				const result = await requestResourceScope(ctx, input.paths, pendingScopes);
+				return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+			},
+		});
 	pi.on("tool_call", async (event, ctx) => {
 		const vision = await visionToolRefusal(event, ctx);
 		if (vision) return vision;

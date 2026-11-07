@@ -307,17 +307,60 @@ function bashWriteTargets(argv: string[]): string[] {
 }
 
 /** Read the parent's current plan, never the child's copied TODO snapshot. */
+export function workerRowScope(ctx: ExtensionContext) {
+	const registry = AgentRegistry.global();
+	const workers: string[] = [];
+	let workerId = ctx.agent?.id;
+	let parentId = ctx.agent?.parentId;
+	const seen = new Set<string>();
+	let lead;
+	while (workerId && parentId && !seen.has(parentId)) {
+		seen.add(parentId);
+		workers.push(workerId);
+		const parent = registry.get(parentId);
+		if (!parent) break;
+		lead = parent;
+		workerId = parentId;
+		parentId = parent.parentId;
+	}
+	const phases = lead?.session?.getTodoPhases() ?? [];
+	for (const owner of workers.reverse()) {
+		const rows = phases
+			.flatMap(phase => phase.tasks)
+			.filter(
+				row =>
+					row.status !== "completed" &&
+					row.status !== "abandoned" &&
+					(row.schedule?.owner === owner || row.schedule?.executor?.workerId === owner),
+			);
+		if (rows.length) return { rows, phases, lead: lead! };
+	}
+	return undefined;
+}
+
 export function liveWorkerRows(ctx: ExtensionContext) {
-	const parent = ctx.agent?.parentId ? AgentRegistry.global().get(ctx.agent.parentId)?.session : undefined;
-	const phases: TodoScheduleInput = parent?.getTodoPhases() ?? [];
-	return phases
-		.flatMap(phase => phase.tasks)
-		.filter(
-			row =>
-				row.status !== "completed" &&
-				row.status !== "abandoned" &&
-				(row.schedule?.owner === ctx.agent?.id || row.schedule?.executor?.workerId === ctx.agent?.id),
-		);
+	return workerRowScope(ctx)?.rows ?? [];
+}
+
+export async function workerScopeCovers(ctx: ExtensionContext, paths: string[]): Promise<boolean> {
+	const scope = workerRowScope(ctx);
+	const resources = scope?.rows.flatMap(row => row.schedule?.resources ?? []) ?? [];
+	const roots = await Promise.all(
+		resources.map(resource =>
+			canonical(
+				path.resolve(
+					ctx.cwd,
+					resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "").replace(/:[^/]+$/, ""),
+				),
+			),
+		),
+	);
+	if (!roots.length) return false;
+	for (const target of paths) {
+		const resolved = await canonical(path.resolve(ctx.cwd, target));
+		if (!roots.some(root => inside(root, resolved))) return false;
+	}
+	return true;
 }
 
 export async function workerToolPreflight(
@@ -335,7 +378,8 @@ export async function workerToolPreflight(
 			...[...action.targets, ...bashWriteTargets(action.argv)].map(target => path.resolve(action.cwd, target)),
 		);
 	const root = await canonical(path.resolve(ctx.cwd));
-	const rows = liveWorkerRows(ctx);
+	const scope = workerRowScope(ctx);
+	const rows = scope?.rows ?? [];
 	const declared = rows
 		.flatMap(row => row.schedule?.resources ?? [])
 		.map(resource => resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "").replace(/:[^/]+$/, ""))
@@ -346,10 +390,20 @@ export async function workerToolPreflight(
 		const resolved = await canonical(
 			path.resolve(ctx.cwd, target.startsWith("~/") ? path.join(os.homedir(), target.slice(2)) : target),
 		);
+		for (const other of scope?.phases.flatMap(phase => phase.tasks) ?? []) {
+			if (rows.includes(other) || other.status === "completed" || other.status === "abandoned") continue;
+			for (const resource of other.schedule?.resources ?? []) {
+				const resourcePath = resource
+					.replace(/^(?:path|repo|repository|checkout|worktree):/, "")
+					.replace(/:[^/]+$/, "");
+				if (path.isAbsolute(resourcePath) && inside(await canonical(resourcePath), resolved))
+					return { block: true, reason: `Write conflicts with row ${JSON.stringify(other.content)}.` };
+			}
+		}
 		if (!roots.some(allowed => inside(allowed, resolved)))
 			return {
 				block: true,
-				reason: `Outside your worktree: add ${resolved} to row ${JSON.stringify(rows.map(row => row.content).join(", ") || ctx.agent?.id || "<worker row>")} resources via todo schedule; applies to the running worker. Use an absolute path. If its worktree disappeared, restore it or put the replacement absolute worktree path in that row resources, then retry.`,
+				reason: `Outside your worktree: add ${resolved} to row ${JSON.stringify(rows.map(row => row.content).join(", ") || ctx.agent?.id || "<worker row>")} resources via todo schedule; applies to the running worker. Use an absolute path. If its worktree disappeared, restore it or put the replacement absolute worktree path in that row resources, then retry. Call resource_scope with the absolute paths; assigned paths return granted immediately.`,
 			};
 	}
 	const app = input.app as { relay?: boolean; cdp_url?: string } | undefined;
