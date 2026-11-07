@@ -202,7 +202,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	if (options.planMode) {
 		filteredAgents = filteredAgents.filter(agent => !isBundledSeance(agent));
 	}
-	const renderedAgents = filteredAgents.map(agent => ({
+	const renderedAgents = (options.catalogOnly ? filteredAgents : []).map(agent => ({
 		name: agent.name,
 		description: agent.description,
 		readOnly: isReadOnlyAgent(agent),
@@ -213,10 +213,9 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	const seanceAgent = filteredAgents.find(agent => agent.name === SEANCE_AGENT_NAME);
 	const scoutAvailable = isScoutSpawnable(options.disabledAgents, options.parentSpawns);
 	return prompt.render(taskDescriptionTemplate, {
-		catalogOnly: options.catalogOnly,
 		agents: renderedAgents,
 		scoutAvailable,
-		spawningDisabled,
+		spawningDisabled: options.catalogOnly === true && spawningDisabled,
 		defaultAgent: defaultAgentFor(spawnPolicy, options.planMode),
 		isolationEnabled: options.isolationEnabled,
 		applyIsolatedChanges: options.applyIsolatedChanges,
@@ -232,6 +231,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 		hasStructuredAgents: true,
 		hasModelMentions: true,
 		seanceGuidance: options.catalogOnly && seanceAgent && isBundledSeance(seanceAgent) ? seanceTaskGuidance : "",
+		catalogOnly: options.catalogOnly,
 		ircEnabled: options.ircEnabled,
 		asyncGuidance: options.asyncGuidance,
 	});
