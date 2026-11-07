@@ -1,3 +1,4 @@
+import { todoInfraBreaker } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	todoEstimateMeanSeconds,
@@ -91,7 +92,7 @@ export function validateTodoExecutorRow(phases: readonly TodoPhase[], row: strin
 	return undefined;
 }
 
-function findTodoExecutorTarget(
+export function findTodoExecutorTarget(
 	phases: readonly TodoPhase[],
 	observation: TodoExecutorObservation,
 ): TodoPhase["tasks"][number] | undefined {
@@ -226,6 +227,9 @@ export function appendTodoReworkAttempt(
 			task === matches[0]
 				? {
 						...task,
+						...(todoInfraBreaker([...(task.schedule?.attemptHistory ?? []), attempt])
+							? { status: "blocked" as const, blocker: `Infra breaker: ${attempt.infraFailureError}` }
+							: {}),
 						schedule: {
 							...task.schedule,
 							attemptHistory: [...(task.schedule?.attemptHistory ?? []), structuredClone(attempt)],

@@ -1,3 +1,4 @@
+import { todoWorkAttempts } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import type { AgentToolCall, SpeculativeOperationSink } from "@oh-my-pi/pi-agent-core";
 import type { TaskLaunchSession } from "@oh-my-pi/pi-coding-agent/task/speculative-launch";
 import { afterEach, expect, test, vi } from "bun:test";
@@ -342,3 +343,29 @@ for (const agent of ["qa-auditor", "observer"])
 		expect(reader.restrictToolNames).toBe(true);
 		expect(f.phases[0].tasks[1].schedule?.readOnly).toBe(true);
 	});
+
+test("three identical admission conflicts block only that row, persist across tool recreation, and notify once", async () => {
+	const f = await fixture();
+	const notices: string[] = [];
+	f.session.setTodoPhases = next => { f.phases.splice(0, f.phases.length, ...next); };
+	f.session.persistTodoPhases = () => {};
+	f.session.steer = message => { notices.push(message.content); };
+	const item = { ...f.items[0], row: "Captures" };
+	for (let i = 0; i < 3; i++) await f.tool.execute(`infra-${i}`, { context: "Capture", tasks: [item] });
+	const row = f.phases[0].tasks[1];
+	expect(row.status).toBe("blocked");
+	expect(row.blocker).toContain("Holder-1");
+	expect(row.schedule?.attemptHistory).toHaveLength(3);
+	expect(todoWorkAttempts(row.schedule?.attemptHistory)).toHaveLength(0);
+	expect(notices).toHaveLength(1);
+	expect(notices[0]).toContain("proc://");
+	const elevated = convertWithHarnessNotices([{ role: "custom", customType: "todo-infra-breaker", content: notices[0], display: false, timestamp: 1 }], "user", convertToLlm);
+	expect(elevated.some(message => message.role === "user" && JSON.stringify(message).includes("Holder-1"))).toBe(true);
+	const resumed = await TaskTool.create(f.session);
+	const fourth = await resumed.execute("again", { context: "Capture", tasks: [{ ...item, name: "DifferentName" }] });
+	expect(textOf(fourth)).toContain("Infra breaker");
+	expect(row.schedule?.attemptHistory).toHaveLength(3);
+	expect(notices).toHaveLength(1);
+	expect(f.run).not.toHaveBeenCalled();
+	expect(f.jobs.getJob("PrCaptures")).toBeUndefined();
+});

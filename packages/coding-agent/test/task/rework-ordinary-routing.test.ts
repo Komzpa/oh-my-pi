@@ -1,10 +1,11 @@
+import { todoWorkAttempts } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 /** Ordinary-routing regression coverage: completed rows without a real rework reason dispatch normally. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
+import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
@@ -168,5 +169,44 @@ describe("task ordinary routing without a rework reason", () => {
 		expect(run).toHaveBeenCalledTimes(1);
 		expect(result.details?.results?.[0]?.exitCode).toBe(0);
 		expect(text(result)).not.toContain("Cannot redispatch");
+	});
+	it("short harness deaths trip the durable row breaker without spending a model work attempt", async () => {
+		const phases = completedPhase();
+		delete phases[0]!.tasks[0]!.schedule!.executor;
+		const harness = createSession(phases);
+		const notices: string[] = [];
+		harness.session.steer = message => {
+			notices.push(message.content);
+		};
+		const run = vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			options.subagentEventBus?.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id: options.id,
+				agent: "task",
+				row: ROW,
+				taskText: ROW,
+				status: "started",
+				at: Date.now(),
+			});
+			return makeResult(options.id ?? OWNER, {
+				exitCode: 1,
+				error: "harness resource conflict: holder AuditPower",
+				durationMs: 47,
+			});
+		});
+		const tool = await TaskTool.create(harness.session);
+		for (let i = 0; i < 3; i++)
+			await tool.execute(`death-${i}`, {
+				agent: "task",
+				name: harness.phases()[0]!.tasks[0]!.schedule!.owner,
+				row: ROW,
+				task: ROW,
+			});
+		const row = harness.phases()[0]!.tasks[0]!;
+		expect(row).toMatchObject({ status: "blocked" });
+		expect(todoWorkAttempts(row.schedule!.attemptHistory)).toHaveLength(0);
+		expect(row.schedule!.attemptHistory).toHaveLength(3);
+		expect(notices).toHaveLength(1);
+		await tool.execute("fourth", { agent: "task", name: row.schedule!.owner, row: ROW, task: ROW });
+		expect(run).toHaveBeenCalledTimes(3);
 	});
 });

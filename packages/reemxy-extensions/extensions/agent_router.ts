@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { todoInfraBreaker } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, realpathSync, statSync } from "node:fs";
 import { randomInt } from "node:crypto";
 import { availableParallelism, homedir } from "node:os";
@@ -482,6 +483,7 @@ export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: Ext
 	);
 	if (matched.length !== 1) return;
 	const row = matched[0];
+	if (row.status === "blocked" && todoInfraBreaker(row.schedule?.attemptHistory)) return row.blocker ?? "Infra breaker: inspect todo history and repair admission before unblocking this row.";
 	const previous = checkoutScopesFromResources(row.schedule?.resources);
 	if (explicit && previous && scopes && !checkoutScopesContain(previous, scopes))
 		return `resources exceed row ${JSON.stringify(row.content)}; update its todo schedule resources before expanding.`;
