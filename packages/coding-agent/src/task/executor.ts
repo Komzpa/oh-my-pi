@@ -2702,10 +2702,11 @@ async function driveSessionToResult(
 			let promptAttempts = 0;
 			for (;;) {
 				try {
-					if (restore) await awaitSessionTurn(session.restoreInterruptedTurn());
+					if (restore) await awaitAbortable(session.restoreInterruptedTurn());
 					else await dispatchPrompt(task, { attribution: "agent", solutionSpace }, "initial prompt");
 					break;
 				} catch (error) {
+					if (monitor.workerQuestionStopRequested() && !abortSignal.aborted && !(error instanceof AgentBusyError)) break;
 					promptAttempts++;
 					if (!(error instanceof AgentBusyError) || promptAttempts >= 3 || !onPromptBusy) throw error;
 					await onPromptBusy();
