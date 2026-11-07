@@ -605,8 +605,8 @@ describe("restart queue controller", () => {
 		expect(registry.get(childId)).toMatchObject({ id: childId, status: "running", sessionFile: childFile });
 		expect(childDeliveries).toHaveLength(1);
 		expect(childDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: childId });
-		expect(rootDeliveries).toHaveLength(rootWasRunning ? 1 : 0);
-		if (rootWasRunning) expect(rootDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID });
+		expect(rootDeliveries).toHaveLength(1);
+		expect(rootDeliveries[0]).toMatchObject({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID });
 		expect(controller.snapshot().request?.state).toBe("completed");
 		expect(restartNoticeText(rootManager.getBranch(), "cold-restart-request")).toBe("Restarted");
 		controller.dispose();
