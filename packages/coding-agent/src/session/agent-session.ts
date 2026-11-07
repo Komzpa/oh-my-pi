@@ -3872,8 +3872,45 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	// Event Subscription
 	// =========================================================================
 
+	/** Dispatcher-only turns may perform work without narrating unchanged state. */
+	silentAssistantTurn = false;
+
+	refreshAssistantVisibility(): void {
+		// User prompts are appended before streaming and need not emit message_start.
+		for (let index = this.agent.state.messages.length - 1; index >= 0; index--) {
+			const input = this.agent.state.messages[index];
+			if (input.role === "user") {
+				this.silentAssistantTurn = false;
+				break;
+			}
+			if (input.role !== "custom") continue;
+			const details = input.details as { silentAssistant?: boolean } | undefined;
+			if (typeof details?.silentAssistant === "boolean") {
+				this.silentAssistantTurn = details.silentAssistant;
+				break;
+			}
+			if (!input.customType.startsWith("todo-")) {
+				this.silentAssistantTurn = false;
+				break;
+			}
+		}
+		if (this.silentAssistantTurn) this.#recovery.setAcceptTerminalEmptyStop(true);
+	}
+
 	/** Emit an event to all listeners */
 	#emit(event: AgentSessionEvent): void {
+		if (this.silentAssistantTurn) {
+			if (event.type === "message_update" && event.message.role === "assistant") return;
+			if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "assistant") {
+				event = {
+					...event,
+					message: {
+						...event.message,
+						content: event.message.content.map(block => (block.type === "text" ? { ...block, text: "" } : block)),
+					},
+				};
+			}
+		}
 		// Listener array is copy-on-write (see `subscribe`), so iterating the
 		// current array is safe against (un)subscribes made by a listener.
 		for (const l of this.#eventListeners) {
@@ -4150,6 +4187,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * the recovery wait always sees the in-flight handler and blocks until it — and
 	 * everything it schedules — settles. */
 	#dispatchAgentEvent = async (event: AgentEvent): Promise<void> => {
+		if (event.type === "message_start" && event.message.role === "assistant") this.refreshAssistantVisibility();
+		if (event.type === "message_start") {
+			if (event.message.role === "user") this.silentAssistantTurn = false;
+			if (event.message.role === "custom") {
+				const details = event.message.details as { silentAssistant?: boolean } | undefined;
+				if (typeof details?.silentAssistant === "boolean") this.silentAssistantTurn = details.silentAssistant;
+				else if (!event.message.customType.startsWith("todo-")) this.silentAssistantTurn = false;
+			}
+		}
 		// Revoke before the first await: delayed end-of-turn maintenance must
 		// never revoke a foreground-control grant acquired by a later prompt.
 		const computerControlRevocation =
