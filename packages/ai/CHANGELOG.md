@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Claude usage polling now shares cached reports and rate-limit backoff across sessions in one process.
+- Claude usage polling now shares cached reports and rate-limit backoff across sessions in one process ([#168](https://github.com/Komzpa/oh-my-pi/pull/168) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.17.0] - 2026-11-06
 
