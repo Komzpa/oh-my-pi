@@ -256,6 +256,7 @@ export interface RouterState {
 	fallbacks: FallbackRecord[];
 }
 export interface BeforeSubagentSpawnEvent {
+	phase?: "admission";
 	agent?: unknown;
 	spawnKey?: unknown;
 	patterns?: unknown;
@@ -475,7 +476,10 @@ export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: Ext
 		if (other === row) continue;
 		const held = checkoutScopesFromResources(other.schedule?.resources);
 		if (incoming && held && checkoutScopesOverlap(incoming, held))
-			return `Assigned resources conflict with row ${JSON.stringify(other.content)}; keep one writer per resource.`;
+			return `resources ${JSON.stringify(resources.filter(resource => {
+				const scope = checkoutScopesFromResources([resource]);
+				return scope && checkoutScopesOverlap(scope, held);
+			}))} held by row ${JSON.stringify(other.content)} (owner ${other.schedule?.owner ?? other.schedule?.executor?.workerId ?? "unassigned"})`;
 	}
 	const owner = stringValue(event.spawnKey) ?? row.schedule?.owner;
 	if (
@@ -538,6 +542,7 @@ export function routeSubagentSpawn(
 			};
 		}
 	}
+	if (event.phase === "admission") return;
 	const order = Array.isArray(event.patterns)
 		? event.patterns.filter((spec): spec is string => typeof spec === "string")
 		: [];

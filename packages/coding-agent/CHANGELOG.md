@@ -19,6 +19,8 @@
 
 ### Fixed
 
+- Refuse conflicting task items before reporting spawned workers, while starting independent siblings ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Refused task spawns now state that no worker was spawned before extension advice ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Recover empty assistant stops when a silent dispatcher wake requires action, with a visible warning after bounded retries ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

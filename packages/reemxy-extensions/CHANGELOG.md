@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Refuse conflicting task items before reporting spawned workers, while starting independent siblings ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Keep file and tool text separate from harness advice and label supervisor reminders as Harness (not Darafei) ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Auto-close stale plan critic actions and put unanswered current actions first in FIX NOW after two lead turns ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

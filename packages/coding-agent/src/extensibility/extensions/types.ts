@@ -1244,6 +1244,9 @@ export interface BeforeAgentStartEvent {
 
 /** Fired in the parent session before a subagent (task tool or eval `agent()`) resolves its model. */
 export interface BeforeSubagentSpawnEvent {
+	/** Admission runs before a job exists; check gates without recording a running worker.
+	 * The ordinary runtime event repeats checks to catch claims changed while queued. */
+	phase?: "admission";
 	type: "before_subagent_spawn";
 	/** Agent definition name being spawned. */
 	agent: string;
