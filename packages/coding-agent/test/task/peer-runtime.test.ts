@@ -1,5 +1,6 @@
 import { afterEach, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
+import type { VcsStatusOptions } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import * as path from "node:path";
@@ -20,7 +21,7 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 });
 it("actual SDK write produces a clash, gates yield, and accepts a structured agreement", async () => {
-	using temp = TempDir.createSync("omp-peer-sdk-");
+	using temp = TempDir.createSync("@omp-peer-sdk-");
 	const root = path.resolve(temp.path());
 	const authStorage = await AuthStorage.create(path.join(root, "auth.db"));
 	const previous = AgentRegistry.global();
@@ -90,7 +91,7 @@ it("actual SDK write produces a clash, gates yield, and accepts a structured agr
 	}
 });
 it("observes edits to initially dirty files without blaming siblings for a shared branch change", async () => {
-	using temp = TempDir.createSync("omp-peer-git-");
+	using temp = TempDir.createSync("@omp-peer-git-");
 	const root = path.resolve(temp.path());
 	// Fixture setup: the native VCS adapter has no repository initialization API.
 	const init = Bun.spawnSync(["git", "init", "-q", "--initial-branch=main", root]);
@@ -199,11 +200,18 @@ function startupFixture(root: string) {
 	const repository = vcs.requireGit(root);
 	const status = Promise.withResolvers<string>();
 	let signal: AbortSignal | undefined;
-	const statusSpy = vi.spyOn(repository, "statusPorcelain").mockImplementation((_options, value) => {
+	const statusSpy = vi.fn((_options: VcsStatusOptions, value?: unknown) => {
 		signal = value as AbortSignal;
 		return status.promise;
 	});
-	vi.spyOn(vcs, "git").mockReturnValue(repository);
+	const observed = new Proxy(repository, {
+		get(target, key) {
+			if (key === "statusPorcelain") return statusSpy;
+			const value = Reflect.get(target, key, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+	});
+	vi.spyOn(vcs, "git").mockReturnValue(observed);
 	const runtime = new PeerRuntime(session, "early", root, registry);
 	return {
 		registry,
@@ -215,9 +223,8 @@ function startupFixture(root: string) {
 	};
 }
 it("disposal aborts pending baseline and prevents late attribution or further repository work", async () => {
-	using temp = TempDir.createSync("omp-peer-dispose-");
+	using temp = TempDir.createSync("@omp-peer-dispose-");
 	const fixture = startupFixture(temp.path());
-	fixture.runtime.startInitialization();
 	const initialization = fixture.runtime.initialize();
 	fixture.runtime.dispose();
 	expect(fixture.signal()?.aborted).toBe(true);
@@ -231,13 +238,13 @@ it("disposal aborts pending baseline and prevents late attribution or further re
 	expect(fixture.statusSpy).toHaveBeenCalledTimes(1);
 });
 it("reconciles early unhooked edits and deletions without attributing untouched dirty or sibling paths", async () => {
-	using temp = TempDir.createSync("omp-peer-early-");
+	using temp = TempDir.createSync("@omp-peer-early-");
 	const fixture = startupFixture(temp.path());
 	await Bun.write(temp.join("src/dirty.txt"), "old dirty");
 	await Bun.write(temp.join("src/untouched.txt"), "untouched dirty");
 	await Bun.write(temp.join("src/deleted.txt"), "delete me");
 	await Bun.write(temp.join("sibling/out.txt"), "sibling");
-	fixture.runtime.startInitialization();
+	const initialization = fixture.runtime.initialize();
 	try {
 		fixture.emit({
 			type: "tool_execution_start",
@@ -250,7 +257,7 @@ it("reconciles early unhooked edits and deletions without attributing untouched 
 		await Bun.write(temp.join("sibling/out.txt"), "other worker");
 		await Bun.sleep(30);
 		fixture.status.resolve("?? src/dirty.txt\0?? src/untouched.txt\0 D src/deleted.txt\0?? sibling/out.txt\0");
-		await fixture.runtime.initialize();
+		await initialization;
 		expect(fixture.registry.get("early")?.history?.peerCoordination?.touched.toSorted()).toEqual(
 			[
 				`path:${path.resolve(temp.join("src/deleted.txt"))}`,
