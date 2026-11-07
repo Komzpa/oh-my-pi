@@ -148,9 +148,14 @@ export class PeerRuntime {
 			if (signal.aborted) return;
 			this.#baseline = baseline;
 			if (this.#startupPaths.size) {
-				const tracked = await repository.lsFiles(false, true, signal);
+				const [tracked, untracked] = await Promise.all([
+					repository.lsFiles(false, true, signal),
+					repository.lsFiles(true, true, signal),
+				]);
 				if (signal.aborted) return;
-				const candidates = new Set([...baseline.keys(), ...tracked].map(value => path.resolve(root, value)));
+				const candidates = new Set(
+					[...baseline.keys(), ...tracked, ...untracked].map(value => path.resolve(root, value)),
+				);
 				this.#touchObservedPaths([...this.#startupPaths].filter(value => candidates.has(value)));
 			}
 		} finally {
