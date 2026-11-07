@@ -2785,7 +2785,7 @@ export class SessionManager {
 	}
 
 	#appendToSessionFile(entry: SessionEntry): void {
-		using phase = launchScope("journal.write");
+		using _phase = launchScope("journal.write");
 		if (this.#released || !this.#persist || !this.#sessionFile) return;
 		if (this.#atomicEntryBatch) return;
 
