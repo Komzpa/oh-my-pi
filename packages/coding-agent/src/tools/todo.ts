@@ -2344,7 +2344,6 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
-		await this.#calibrationReady;
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);
@@ -2357,6 +2356,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		}
 		const entry = resolved;
 		const op = entry.op;
+		await this.#calibrationReady;
 		const now = Date.now();
 		const archiveState = readTodoArchiveState(this.session.sessionManager);
 		const priorArchive = archiveState.phases;
