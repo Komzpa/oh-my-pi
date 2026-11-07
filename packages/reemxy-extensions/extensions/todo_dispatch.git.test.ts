@@ -10,13 +10,12 @@ test("Git integration probing yields while Git is slow and retains merge facts",
   mkdirSync(join(cwd, ".git"));
   writeFileSync(join(cwd, ".git", "MERGE_HEAD"), "merge\n");
   const executable = join(cwd, "git");
-  writeFileSync(executable, `#!${process.execPath}\nawait Bun.sleep(60);\nconst args = process.argv.slice(2).join(" ");\nconst replies = {"rev-parse HEAD":"head", "rev-parse --git-path MERGE_HEAD":".git/MERGE_HEAD", "rev-parse --short MERGE_HEAD":"merge", "diff --name-only --diff-filter=U":"a.txt\\na.txt\\nb.txt", "log --format=%ct @{upstream}..HEAD":"1\\n2"};\nconsole.log(replies[args] ?? "");\n`);
+  writeFileSync(executable, `#!${process.execPath}\nawait Bun.sleep(60);\nconst args = process.argv.slice(2).join(" ");\nconst replies = {"rev-parse HEAD":"head", "rev-parse --git-path MERGE_HEAD":".git/MERGE_HEAD", "rev-parse --short MERGE_HEAD":"merge", "diff --name-only --diff-filter=U":"a.txt\\na.txt\\nb.txt", "remote":"origin", "log --format=%ct head --not":"1\\n2"};\nconsole.log(replies[args] ?? "");\n`);
   chmodSync(executable, 0o755);
   let ticks = 0;
   const ticker = setInterval(() => ticks++, 10);
   try {
-    process.env.PATH = `${cwd}:${previousPath ?? ""}`;
-    const state = await readGitIntegrationState(cwd, 10_000);
+    const state = await readGitIntegrationState(cwd, 10_000, { ...process.env, PATH: `${cwd}:${previousPath ?? ""}` });
     expect(ticks).toBeGreaterThan(2);
     expect(state?.head).toBe("head");
     expect(state?.mergeHead).toBe("merge");
@@ -25,8 +24,6 @@ test("Git integration probing yields while Git is slow and retains merge facts",
     expect(state?.oldestUnpushedAgeMs).toBe(9_000);
   } finally {
     clearInterval(ticker);
-    if (previousPath === undefined) delete process.env.PATH;
-    else process.env.PATH = previousPath;
     rmSync(cwd, { recursive: true, force: true });
   }
 });
