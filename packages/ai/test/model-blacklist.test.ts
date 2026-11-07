@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as dirs from "@oh-my-pi/pi-utils";
+import { readModelBlacklist } from "../src/model-blacklist";
 import { registerCustomApi, unregisterCustomApis } from "../src/api-registry";
 import { __providerInFlightForTesting, stream, streamSimple } from "../src/stream";
 import type { Api, AssistantMessage, Context, Model } from "../src/types";
@@ -68,6 +69,25 @@ describe("owner model blacklist at dispatch", () => {
 			JSON.stringify({ "canary.provider/convicted": "fabricated verification" }),
 		);
 	}
+
+	test("repeated dispatch checks reuse unchanged policy but observe replacement, removal and malformed edits", () => {
+		ban();
+		const read = spyOn(fs, "readFileSync");
+		try {
+			for (let i = 0; i < 100; i++) expect(() => streamSimple(banned, context)).toThrow("blacklisted");
+			expect(read.mock.calls.filter(([file]) => file === path.join(dir, "model-blacklist.json"))).toHaveLength(1);
+			const file = path.join(dir, "model-blacklist.json");
+			fs.writeFileSync(`${file}.tmp`, JSON.stringify({ "canary.provider/convicted-small": "new reason" }));
+			fs.renameSync(`${file}.tmp`, file);
+			expect(readModelBlacklist().get("canary.provider/convicted-small")).toBe("new reason");
+			fs.writeFileSync(file, "{");
+			expect(() => readModelBlacklist()).toThrow("Cannot read model blacklist");
+			fs.unlinkSync(file);
+			expect(readModelBlacklist().size).toBe(0);
+		} finally {
+			read.mockRestore();
+		}
+	});
 
 	test("banned models never reach either dispatch entry point, while the neighboring model works", async () => {
 		ban();

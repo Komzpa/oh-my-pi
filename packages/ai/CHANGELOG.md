@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Repeated model checks reuse unchanged owner blacklist files while applying edits immediately ([#152](https://github.com/Komzpa/oh-my-pi/pull/152) by [@Komzpa](https://github.com/Komzpa)).
+
 ## [18.17.0] - 2026-11-06
 
 ### Added

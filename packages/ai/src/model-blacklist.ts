@@ -9,14 +9,34 @@ interface ModelIdentity {
 	blacklistRouteIdentity?: { provider: string; id: string };
 }
 
+let cached:
+	| { file: string; mtimeMs: number; size: number; inode: number; value: ReadonlyMap<string, string> }
+	| undefined;
+
 /** Owner policy shared by all profiles; role lists and presets cannot override it. */
 export function readModelBlacklist(): ReadonlyMap<string, string> {
 	const file = path.join(getBaseConfigRoot(), "model-blacklist.json");
 	let value: unknown;
+	let version: fs.Stats;
 	try {
+		const stat = fs.statSync(file);
+		version = stat;
+		if (
+			cached?.file === file &&
+			cached.mtimeMs === stat.mtimeMs &&
+			cached.size === stat.size &&
+			cached.inode === stat.ino
+		) {
+			return cached.value;
+		}
 		value = JSON.parse(fs.readFileSync(file, "utf8"));
+		// Save only after validation below. A failed read must never restore a stale policy.
+		cached = undefined;
 	} catch (error) {
-		if (isEnoent(error)) return new Map();
+		if (isEnoent(error)) {
+			cached = undefined;
+			return new Map();
+		}
 		throw new Error(`Cannot read model blacklist ${file}: ${error instanceof Error ? error.message : error}`);
 	}
 	if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -36,7 +56,9 @@ export function readModelBlacklist(): ReadonlyMap<string, string> {
 			throw new Error(`Invalid model blacklist ${file}: each provider/model requires a nonblank reason`);
 		}
 	}
-	return new Map(entries as [string, string][]);
+	const result = new Map(entries as [string, string][]);
+	cached = { file, mtimeMs: version.mtimeMs, size: version.size, inode: version.ino, value: result };
+	return result;
 }
 
 export function modelBlacklistReason(model: ModelIdentity, blacklist = readModelBlacklist()): string | undefined {
