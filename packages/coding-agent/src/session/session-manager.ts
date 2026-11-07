@@ -664,6 +664,8 @@ export class SessionEntryIndex {
 	#read?: (entry: IndexedSessionEntry) => SessionEntry;
 	#readerFd?: number;
 	#readerPath?: string;
+	#readerPins = new Map<number, number>();
+	#retiredReaders = new Set<number>();
 	#active = new Map<string, SessionEntry>();
 	#retryRecoveries?: Map<string, AssistantRetryRecovery>;
 
@@ -684,7 +686,7 @@ export class SessionEntryIndex {
 		this.#branchCache = undefined;
 		if (closeReader) {
 			readerRegistry.unregister(this);
-			if (this.#readerFd !== undefined) fs.closeSync(this.#readerFd);
+			if (this.#readerFd !== undefined) this.#closeReader(this.#readerFd);
 			this.#readerFd = undefined;
 			this.#readerPath = undefined;
 			this.#read = undefined;
@@ -723,7 +725,7 @@ export class SessionEntryIndex {
 			resolveBlobRefsInEntriesSync([entry], blobs);
 			return entry;
 		};
-		if (previous !== undefined) fs.closeSync(previous);
+		if (previous !== undefined) this.#closeReader(previous);
 	}
 
 	insert(entry: SessionEntry, offset?: number, length?: number, position?: PositionedSessionEntry): void {
@@ -925,8 +927,30 @@ export class SessionEntryIndex {
 		return recovery ? { ...entry, message: { ...entry.message, retryRecovery: recovery } } : entry;
 	}
 
-	openSerializationReader(): number | undefined {
-		return this.#readerPath ? fs.openSync(this.#readerPath, "r") : undefined;
+	#closeReader(fd: number): void {
+		if (this.#readerPins.has(fd)) this.#retiredReaders.add(fd);
+		else fs.closeSync(fd);
+	}
+
+	/** Pin the exact indexed inode until its raw chunks and comparisons have been consumed. */
+	openSerializationReader(): { fd: number; dispose: () => void } | undefined {
+		const fd = this.#readerFd;
+		if (fd === undefined) return undefined;
+		this.#readerPins.set(fd, (this.#readerPins.get(fd) ?? 0) + 1);
+		let released = false;
+		return {
+			fd,
+			dispose: () => {
+				if (released) return;
+				released = true;
+				const pins = this.#readerPins.get(fd)! - 1;
+				if (pins) this.#readerPins.set(fd, pins);
+				else {
+					this.#readerPins.delete(fd);
+					if (this.#retiredReaders.delete(fd)) fs.closeSync(fd);
+				}
+			},
+		};
 	}
 
 	*serializationSources(): IterableIterator<IndexedSessionEntry> {
@@ -2281,7 +2305,8 @@ export class SessionManager {
 		let bytes = Buffer.byteLength(titleLine) + Buffer.byteLength(headerLine);
 		const positions: SessionFileBody["positions"] = [];
 		const ranges: SessionFileBody["ranges"] = new Map();
-		const fd = this.#index.openSerializationReader();
+		const reader = this.#index.openSerializationReader();
+		const fd = reader?.fd;
 		let lastRaw: { index: number; offset: number; length: number; begin: number; end: number } | undefined;
 
 		try {
@@ -2360,11 +2385,11 @@ export class SessionManager {
 				bytes,
 				positions,
 				ranges,
-				dispose: fd === undefined ? undefined : () => fs.closeSync(fd),
+				dispose: reader?.dispose,
 				stamp: { entries, entryCount, lastEntry: entries.at(-1), revision, prefix: titleLine + headerLine },
 			};
 		} catch (error) {
-			if (fd !== undefined) fs.closeSync(fd);
+			reader?.dispose();
 			throw error;
 		}
 	}
