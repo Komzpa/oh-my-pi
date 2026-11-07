@@ -2170,7 +2170,8 @@ test("zero-active live shape nags first, refuses third call, permits staffing an
 		expect((await call("read", { path: "agent://third" }))?.block).toBe(true);
 		expect((await call("ask", { question: "scope?" }))?.block).not.toBe(true);
 		expect((await call("todo", { op: "schedule", updates: [] }))?.reason ?? "").not.toContain("0 workers running");
-		expect((await call("task", { tasks: [{ name: "ProduceRow", agent: "task", task: "Row 1" }] }))?.reason ?? "").not.toContain("0 workers running");
+		expect((await call("task", { tasks: [{ name: "ProduceRow", agent: "task", task: "Row 1" }] }))?.block).not.toBe(true);
+		await result("task", {}, true);
 		expect((await call("read", { path: "proc://list" }))?.block).toBe(true);
 		for (let turn = 0; turn < 6; turn++) {
 			await h.handlers.get("turn_start")({}, h.ctx);
