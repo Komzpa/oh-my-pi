@@ -8,7 +8,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 test("task hook failures expose the hook and attempted readonly property", async () => {
-	const tempDir = TempDir.createSync("task-hook-error-");
+	const tempDir = TempDir.createSync("@task-hook-error-");
 	const extensionsDir = tempDir.path();
 	const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
 	const modelRegistry = new ModelRegistry(authStorage);
@@ -25,6 +25,8 @@ test("task hook failures expose the hook and attempted readonly property", async
         }`,
 		);
 		const loaded = await loadExtensions([extensionPath], tempDir.path());
+		expect(loaded.errors).toEqual([]);
+		expect(loaded.extensions).toHaveLength(1);
 		const runner = new ExtensionRunner(
 			loaded.extensions,
 			loaded.runtime,
