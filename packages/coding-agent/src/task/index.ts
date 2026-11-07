@@ -413,6 +413,31 @@ function validateModel(
 		: invalidModelSelectorReason(item.model, label, { settings, invocationKind: "task" });
 }
 
+/** Models fill optional selectors with "" / [] / null; treat those as absent instead of refusing the spawn. */
+const EMPTY_OPTIONAL_TASK_FIELDS = ["model", "sourceSession"] as const;
+function dropEmptyOptionalTaskFields(raw: unknown): unknown {
+	if (!isRecord(raw)) return raw;
+	const strip = (value: Record<string, unknown>): Record<string, unknown> => {
+		let out = value;
+		for (const key of EMPTY_OPTIONAL_TASK_FIELDS) {
+			const field = value[key];
+			const empty =
+				field === null ||
+				(typeof field === "string" && field.trim().length === 0) ||
+				(Array.isArray(field) && field.length === 0);
+			if (key in value && empty) {
+				if (out === value) out = { ...value };
+				delete out[key];
+			}
+		}
+		return out;
+	};
+	const top = strip(raw);
+	if (!Array.isArray(top.tasks)) return top;
+	const tasks = top.tasks.map(item => (isRecord(item) ? strip(item) : item));
+	return tasks.some((item, index) => item !== (top.tasks as unknown[])[index]) ? { ...top, tasks } : top;
+}
+
 function spawnModelFields(params: TaskParams): Pick<StructuredSubagentRequest, "perCallModel" | "seanceModel"> {
 	if (params.model === undefined) return {};
 	if (params.agent === SEANCE_AGENT_NAME) return { seanceModel: params.model };
@@ -1770,7 +1795,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const defaultAgent = this.#defaultAgent();
 		const batchEnabled = this.#isBatchEnabled();
 		const plan = planSpawns(
-			rawParams,
+			dropEmptyOptionalTaskFields(rawParams),
 			batchEnabled,
 			cfgTaskFile.get(this.session.settings),
 			defaultAgent,
@@ -2802,3 +2827,4 @@ subprocessToolRegistry.register<TaskToolDetails>("task", {
 	...taskSubprocessRenderer,
 	extractData: event => (isTaskToolDetails(event.result?.details) ? event.result.details : undefined),
 });
+export const __testDropEmptyOptionalTaskFields = dropEmptyOptionalTaskFields;
