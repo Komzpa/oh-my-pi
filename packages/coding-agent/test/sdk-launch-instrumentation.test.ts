@@ -4,6 +4,7 @@ import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
 import { createAgentSession } from "../src/sdk";
+import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
 import { SessionManager } from "../src/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -19,6 +20,15 @@ test("real SDK child reports computed UTF-8 sizes and startup steps after startu
 	const modelRegistry = new ModelRegistry(authStorage, path.join(dir.path(), "models.yml"));
 	const logs = spyOn(logger, "debug").mockImplementation(() => {});
 	logger.endTiming();
+	// A slow synchronous kickoff used to disappear between construction and memory startup.
+	const restore = AgentSession.prototype.beginInitialAdvisorCostRestore;
+	spyOn(AgentSession.prototype, "beginInitialAdvisorCostRestore").mockImplementation(function (this: AgentSession) {
+		const deadline = performance.now() + 40;
+		while (performance.now() < deadline) {
+			/* controlled parent-thread work */
+		}
+		return restore.call(this);
+	});
 	try {
 		const { session } = await createAgentSession({
 			cwd: dir.path(),
@@ -58,6 +68,10 @@ test("real SDK child reports computed UTF-8 sizes and startup steps after startu
 					expect.objectContaining({ name: "context.history.build" }),
 				]),
 			);
+			const kickoff = summary.spans?.find(
+				(span: { name: string }) => span.name === "sdk.advisorCostRestore.kickoff",
+			);
+			expect(kickoff?.syncPrefixMs).toBeGreaterThanOrEqual(40);
 			expect(currentLoopPhase()).toBeUndefined();
 		} finally {
 			await session.dispose();
