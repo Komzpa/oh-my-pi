@@ -344,7 +344,9 @@ export function liveWorkerRows(ctx: ExtensionContext) {
 
 export async function workerScopeCovers(ctx: ExtensionContext, paths: string[]): Promise<boolean> {
 	const scope = workerRowScope(ctx);
-	const resources = scope?.rows.flatMap(row => row.schedule?.resources ?? []) ?? [];
+	const resources = (scope?.rows.flatMap(row => row.schedule?.resources ?? []) ?? [])
+		.map(resource => resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "").replace(/:[^/]+$/, ""))
+		.filter(resource => path.isAbsolute(resource));
 	const roots = await Promise.all(
 		resources.map(resource =>
 			canonical(

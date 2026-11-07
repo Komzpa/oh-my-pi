@@ -408,7 +408,13 @@ function memoLatestTodo(
 export async function requestResourceScope(ctx: ExtensionContext, paths: string[], pending = new Set<string>()) {
 	if (!paths.length || paths.some(target => !target.startsWith("/")))
 		return { status: "invalid", reason: "Use absolute paths." };
-	if (await workerScopeCovers(ctx, paths)) return { status: "granted", paths };
+	if (await workerScopeCovers(ctx, paths)) {
+		for (const target of paths) {
+			const refusal = await workerToolPreflight({ toolName: "write", input: { path: target } }, ctx);
+			if (refusal) return { status: "conflict", reason: refusal.reason };
+		}
+		return { status: "granted", paths };
+	}
 	const scope = workerRowScope(ctx);
 	if (!scope?.lead.session) return { status: "unavailable", reason: "No canonical lead row found." };
 	const updates = scope.rows.map(row => ({
@@ -457,8 +463,8 @@ export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: Ext
 		.filter(row => row.status !== "completed" && row.status !== "abandoned");
 	const matched = rows.filter(
 		row =>
-			row.schedule?.owner === event.spawnKey ||
-			row.schedule?.executor?.workerId === event.spawnKey ||
+			(typeof event.spawnKey === "string" &&
+				(row.schedule?.owner === event.spawnKey || row.schedule?.executor?.workerId === event.spawnKey)) ||
 			spawnTextMatchesRowTitle(spawnTaskText(event) ?? "", row.content),
 	);
 	if (matched.length !== 1) return;

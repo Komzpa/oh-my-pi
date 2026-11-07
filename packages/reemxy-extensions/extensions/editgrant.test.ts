@@ -164,6 +164,12 @@ test("resource scope requests restating assignments grant without lead work; new
 		expect((await request([`${f.dir}/new-proof`])).details.status).toBe("pending");
 		expect((await request([`${f.dir}/new-proof`])).details.status).toBe("pending");
 		expect(f.steer).toHaveBeenCalledTimes(1);
+		f.phases()[0]!.tasks.push({
+			content: "Other writer",
+			status: "in_progress",
+			schedule: { owner: "Other", resources: [f.assigned] },
+		});
+		expect((await request([`${f.assigned}/capture.png`])).details.status).toBe("conflict");
 		expect(f.steer.mock.calls[0]![0]).toContain('"op":"schedule"');
 		expect(f.steer.mock.calls[0]![0]).toContain(`${f.dir}/new-proof`);
 		expect(

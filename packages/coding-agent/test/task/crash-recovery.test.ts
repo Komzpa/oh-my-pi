@@ -154,6 +154,7 @@ describe("kill/replay through ordinary resume", () => {
 				return wrapper;
 			},
 			getTodoPhases: () => phases,
+			getTodoSnapshot: () => phases,
 			commitTodoPhases: (next: TodoPhase[]) => {
 				phases = next;
 			},

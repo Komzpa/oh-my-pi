@@ -758,7 +758,9 @@ describe("structured subagent primitive", () => {
 		await resolveEffectiveSubagentPolicy(request({ session: childSession }));
 		expect(events).toEqual([]);
 
-		const settled = await runStructuredSubagent(request({ session: childSession, retainArtifacts: true }));
+		const settled = await runStructuredSubagent(
+			request({ session: childSession, retainArtifacts: true, context: "Assigned worktree /tmp/worker-evidence" }),
+		);
 		expect(dispatched[0]).toMatchObject({
 			modelOverride: ["openai/gpt-4o"],
 			modelRole: "definition",
@@ -773,6 +775,7 @@ describe("structured subagent primitive", () => {
 				patterns: ["anthropic/claude-opus-4-5"],
 				isolated: false,
 				assignment: "Inspect the target.",
+				context: "Assigned worktree /tmp/worker-evidence",
 				spawnKey: undefined,
 			},
 		]);

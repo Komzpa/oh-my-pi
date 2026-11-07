@@ -201,6 +201,7 @@ async function restoreInterruptedChild(options: { transcript?: "handoff" | "fall
 		asyncJobManager: manager,
 		getToolByName: () => taskTool,
 		getTodoPhases: () => phases,
+		getTodoSnapshot: () => phases,
 		commitTodoPhases: (next: TodoPhase[]) => {
 			phases = next;
 		},
