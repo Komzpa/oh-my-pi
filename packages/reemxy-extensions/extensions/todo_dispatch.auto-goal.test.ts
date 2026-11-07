@@ -2,7 +2,7 @@
 import { expect, test } from "bun:test";
 import { autoGoalDeadlineState } from "./todo_dispatch";
 import { readGoalDeadline, STATE_ENTRY } from "./deadlines";
-import { renderDeadlineReminder } from "./goal_deadlines";
+import { renderDeadlineReminder, renderDeadlineUi, renderPresence } from "./goal_deadlines";
 
 const now = Date.parse("2026-10-28T09:00:00Z");
 const planKey = JSON.stringify([["Work", ["Deliver the patch"]]]);
@@ -54,19 +54,21 @@ test("a later tick keeps the original automatic deadline for the same plan", () 
 	expect(first.baselineDeadlineAt).toBe(Math.ceil((now + 3 * 60 * 60_000) / 1_000));
 });
 
-test("a missed automatic forecast deadline moves to the revised forecast and remains automatic", () => {
+test("a missed automatic forecast remains anchored even when estimates change", () => {
 	const first = propose(now + 60 * 60_000)!;
 	const revisedAt = now + 65 * 60_000;
 	const next = autoGoalDeadlineState({
 		current: first,
-		planKey,
+		planKey: "changed-estimates",
 		forecastFinish: revisedAt + 2 * 60 * 60_000,
 		now: revisedAt,
 		hasRealGoal: false,
 		hasRealDeadline: false,
 	})!;
 
-	expect(next.auto).toBe(true);
-	expect(next.baselineDeadlineAt).toBe(Math.ceil((revisedAt + 2 * 60 * 60_000) / 1_000));
-	expect(readGoalDeadline([{ type: "custom", customType: STATE_ENTRY, data: next }])?.deadlineAt).toBe(next.baselineDeadlineAt! * 1_000);
+	expect(next).toBeUndefined();
+	expect(renderDeadlineReminder(first, Math.floor(revisedAt / 1_000))).toContain("5m");
+	expect(renderDeadlineUi(first, Math.floor(revisedAt / 1_000), true).join(" ")).toContain("missed");
+	expect(renderPresence([], first, revisedAt)).toContain("missed");
+	expect(renderPresence([], first, revisedAt)).not.toContain("on track");
 });
