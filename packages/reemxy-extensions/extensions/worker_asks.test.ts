@@ -40,7 +40,7 @@ function harness() {
 		sessionManager: { getHeader: () => ({ id: "lead" }) },
 		getAsyncJobSnapshot: () => ({ running: [{ id: "worker", type: "task" }] }),
 	};
-	return { hooks, sent, ctx };
+	return { hooks, sent, ctx, messages };
 }
 
 test("seen worker ask survives prose, unrelated dispatch and failed/wrong-worker answers; successful reject releases gate", async () => {
@@ -56,6 +56,7 @@ test("seen worker ask survives prose, unrelated dispatch and failed/wrong-worker
 	expect(call()?.block).toBe(true);
 	for (const event of [
 		{ toolName: "task", isError: false },
+		{ toolName: "write", input: { path: "agent://worker", content: "Answer to ask-1 [q]: " } },
 		{ toolName: "write", input: { path: "agent://other", content: "Answer to ask-1 [q]: reject" } },
 		{ toolName: "write", isError: true, input: { path: "agent://worker", content: "Answer to ask-1 [q]: reject" } },
 	]) {
@@ -78,4 +79,22 @@ test("worker question preempts a churning row", () => {
 	]);
 	expect(demand.churn).toBe(false);
 	expect(demand.action).toContain("Which oracle?");
+});
+
+test("direct lead questions require a real reply; progress cannot answer or create an ask", () => {
+	const h = harness();
+	h.messages.length = 0;
+	const write = (id, path) => h.messages.push(
+		{ role: "assistant", content: [{ type: "toolCall", name: "write", id, arguments: { path, content: "Which existing oracle?" } }] },
+		{ role: "toolResult", toolName: "write", toolCallId: id, timestamp: 1 },
+	);
+	const gate = () => h.hooks.get("tool_call")({ toolName: "yield" }, h.ctx);
+	write("progress", "agent://main?progress");
+	expect(gate()).toBeUndefined();
+	write("question", "agent://main");
+	expect(gate()?.block).toBe(true);
+	h.messages.push({ role: "custom", customType: "irc:incoming", details: { from: "main", progress: true, message: "Looking" } });
+	expect(gate()?.block).toBe(true);
+	h.messages.push({ role: "custom", customType: "irc:incoming", details: { from: "main", message: "Use the existing oracle" } });
+	expect(gate()).toBeUndefined();
 });

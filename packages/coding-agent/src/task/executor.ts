@@ -75,6 +75,8 @@ import { initializeExtensions } from "../modes/runtime-init";
 import subagentAsyncPendingTemplate from "../prompts/system/subagent-async-pending.md" with { type: "text" };
 import subagentSystemPromptTemplate from "../prompts/system/subagent-system-prompt.md" with { type: "text" };
 import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md" with { type: "text" };
+import workerAskDefaultTemplate from "../prompts/system/worker-ask-default.md" with { type: "text" };
+import workerAskDefaultProposedTemplate from "../prompts/system/worker-ask-default-proposed.md" with { type: "text" };
 import { AgentLifecycleManager, type AgentReviver } from "../registry/agent-lifecycle";
 import { AgentRegistry, type AgentRef, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { ensurePersistedRoster, isCurrentSessionRosterRef } from "../registry/persisted-agents";
@@ -1862,7 +1864,14 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	 */
 	const activeTools = new Map<
 		string,
-		{ tool: string; args?: string; argsKey?: string; intent?: string; startMs: number }
+		{
+			tool: string;
+			args?: string;
+			argsKey?: string;
+			intent?: string;
+			startMs: number;
+			input?: Record<string, unknown>;
+		}
 	>();
 	let visibleToolCallId: string | undefined;
 	// Providers that run the tool loop server-side (Cursor) execute tools while
@@ -1959,6 +1968,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				progress.currentToolIntent = intent;
 				activeTools.set(event.toolCallId, {
 					tool: event.toolName,
+					input: startArgs,
 					args: preview?.value,
 					argsKey: preview?.key,
 					intent,
@@ -1983,11 +1993,23 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			}
 
 			case "tool_execution_end": {
-				if (event.toolName === "ask" && !event.isError && isRecord(event.result?.details) && isRecord(event.result.details.pending) && !event.result.details.workingDefaults) {
+				if (
+					event.toolName === "ask" &&
+					!event.isError &&
+					isRecord(event.result?.details) &&
+					isRecord(event.result.details.pending) &&
+					!event.result.details.workingDefaults
+				) {
 					// Stop only the free-running turn; retain the assignment and its journal for the answer.
 					requestYieldTurnStop();
 				}
 				const finished = activeTools.get(event.toolCallId);
+				if (
+					event.toolName === "write" &&
+					!event.isError &&
+					["agent://main", "agent://lead", "agent://parent"].includes(String(finished?.input?.path))
+				)
+					requestYieldTurnStop();
 				activeTools.delete(event.toolCallId);
 				if (finished) {
 					progress.recentTools.unshift({
@@ -2081,7 +2103,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					const forcedFinalYield = event.toolName === "yield" && finalYieldForced && yieldCalled;
 					endsRun = wantsTerminate || forcedFinalYield;
 					if (endsRun) {
-						if (event.toolName === "yield" && (sessionHasPendingAsyncWork() || (activeSession && pendingWorkerAsks(activeSession.messages).length))) {
+						if (
+							event.toolName === "yield" &&
+							(sessionHasPendingAsyncWork() ||
+								(activeSession && pendingWorkerAsks(activeSession.messages).length))
+						) {
 							// Terminal yield with owner jobs still pending: park the
 							// run behind the quiescence barrier instead of completing
 							// it (see requestYieldTurnStop).
@@ -2762,16 +2788,50 @@ async function driveSessionToResult(
 		// Runs that exhaust the ladder with no pending work, or hit a terminal
 		// model error, skip the barrier; teardown reaps their jobs.
 		let asyncPendingNoticeSent = false;
+		const proposedDefaults = new Set<string>();
 		while (!abortSignal.aborted) {
 			// An unanswered ask parks this assignment, without spending yield retries or destroying its state.
 			await awaitAbortable(monitor.waitForYieldTurnStop());
 			const questions = pendingWorkerAsks(session.messages);
 			if (questions.length) {
 				const defaultsAuthorized = task.includes("[worker-ask-defaults]");
-				const due = questions.filter(q => defaultsAuthorized && !q.critical && q.proposedDefault && Date.now() - q.at >= workerAskDefaultWaitMs());
+				const proposed = questions.filter(
+					q =>
+						defaultsAuthorized &&
+						!q.critical &&
+						q.proposedDefault &&
+						!proposedDefaults.has(`${q.id}:${q.questionId}`),
+				);
+				if (proposed.length) {
+					await session.sendCustomMessage(
+						{
+							customType: "worker-ask-default-proposed",
+							display: true,
+							content: prompt.render(workerAskDefaultProposedTemplate, { questions: proposed }).trim(),
+							details: { questions: proposed, waitMs: workerAskDefaultWaitMs() },
+							attribution: "agent",
+						},
+						{ triggerTurn: false },
+					);
+					for (const q of proposed) proposedDefaults.add(`${q.id}:${q.questionId}`);
+				}
+				const due = questions.filter(
+					q =>
+						defaultsAuthorized &&
+						!q.critical &&
+						q.proposedDefault &&
+						Date.now() - q.at >= workerAskDefaultWaitMs(),
+				);
 				if (due.length) {
-					session.sessionManager.appendCustomEntry("worker-ask-default-applied", { questions: due, at: Date.now() });
-					await dispatchPrompt(due.map(q => `Answer to ${q.id} [${q.questionId}]: ${q.proposedDefault}`).join("\n"), { attribution: "agent" }, "authorized worker defaults");
+					session.sessionManager.appendCustomEntry("worker-ask-default-applied", {
+						questions: due,
+						at: Date.now(),
+					});
+					await dispatchPrompt(
+						prompt.render(workerAskDefaultTemplate, { questions: due }).trim(),
+						{ attribution: "agent" },
+						"authorized worker defaults",
+					);
 				} else {
 					await awaitAbortable(Bun.sleep(250));
 					await awaitAbortable(session.waitForIdle());

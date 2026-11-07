@@ -36,7 +36,15 @@ function harness(task = "Fix camera", maxRuntimeMs = 0) {
 			isError: false,
 		} as AgentSessionEvent);
 	const answer = (text = "Answer to ask-camera [scope]: Use existing oracle") => {
-		messages.push({ role: "user", content: text, timestamp: Date.now() });
+		if (task.includes("[irc-question]") || task.includes("[irc-answer]"))
+			messages.push({
+				role: "custom",
+				customType: "irc:incoming",
+				details: { from: "main", message: text },
+				content: text,
+				timestamp: Date.now(),
+			} as AgentMessage);
+		else messages.push({ role: "user", content: text, timestamp: Date.now() });
 		finish();
 	};
 	const session = {
@@ -52,6 +60,10 @@ function harness(task = "Fix camera", maxRuntimeMs = 0) {
 		},
 		getActiveToolNames: () => ["ask", "yield"],
 		getEnabledToolNames: () => ["ask", "yield"],
+		sendCustomMessage: async (message: { customType: string; content: string }) => {
+			entries.push({ type: message.customType, data: message });
+			return false;
+		},
 		subscribe: (fn: (event: AgentSessionEvent) => void) => {
 			listener = fn;
 			return () => {};
@@ -80,13 +92,35 @@ function harness(task = "Fix camera", maxRuntimeMs = 0) {
 						},
 					},
 				});
+				if (task.includes("[irc-question]")) {
+					messages.length = 0;
+					const args = { path: "agent://main", content: "Should I run the existing proof?" };
+					messages.push({
+						role: "assistant",
+						content: [{ type: "toolCall", id: "ask-camera", name: "write", arguments: args }],
+					} as unknown as AgentMessage);
+					listener({
+						type: "tool_execution_start",
+						toolCallId: "ask-camera",
+						toolName: "write",
+						args,
+					} as AgentSessionEvent);
+					messages.push({
+						role: "toolResult",
+						toolCallId: "ask-camera",
+						toolName: "write",
+						content: [],
+						timestamp: Date.now(),
+						isError: false,
+					});
+				}
 				const pending = messages.at(-1)!;
 				listener({
 					type: "tool_execution_end",
 					toolCallId: "ask-camera",
-					toolName: "ask",
+					toolName: task.includes("[irc-question]") ? "write" : "ask",
 					result: {
-						content: pending.content,
+						content: pending.role === "toolResult" ? pending.content : [],
 						details: pending.role === "toolResult" ? pending.details : undefined,
 					},
 					isError: false,
@@ -150,6 +184,9 @@ test("authorized brief applies the stated default after bounded wait and records
 	expect(result.aborted).toBe(false);
 	expect(h.prompts).toContain("Answer to ask-camera [scope]: Use existing oracle");
 	expect(h.entries.some(e => e.type === "worker-ask-default-applied")).toBe(true);
+	expect(h.entries.find(e => e.type === "worker-ask-default-proposed")?.data).toMatchObject({
+		content: expect.stringContaining("I will do Use existing oracle unless told otherwise"),
+	});
 });
 
 test("recommended option alone never authorizes a worker default", async () => {
@@ -174,6 +211,23 @@ test("late terminal yield cannot terminate an assignment with an unanswered work
 	await Bun.sleep(350);
 	expect(settled).toBe(false);
 	expect(h.prompts).toEqual(["Fix camera"]);
+	h.answer();
+	expect((await h.result).aborted).toBe(false);
+});
+
+test("a direct worker question to the lead parks through the runtime deadline and resumes on an IRC answer", async () => {
+	const h = harness("Fix camera [irc-question]", 300);
+	await h.asked;
+	await Bun.sleep(700);
+	expect(h.abortCalls()).toBe(1);
+	expect(h.prompts).toEqual(["Fix camera [irc-question]"]);
+	h.answer();
+	expect((await h.result).aborted).toBe(false);
+});
+
+test("a structured worker ask resumes on the lead's IRC answer without a synthetic user reply", async () => {
+	const h = harness("Fix camera [irc-answer]");
+	await h.asked;
 	h.answer();
 	expect((await h.result).aborted).toBe(false);
 });
