@@ -2620,6 +2620,21 @@ async function driveSessionToResult(
 			throw new ToolAbortError();
 		}
 	};
+	const awaitSessionTurn = async (turn: Promise<unknown>): Promise<void> => {
+		try {
+			await awaitAbortable(turn);
+		} catch (error) {
+			// Parking may reject prompt/restore/idle while leaving the run resumable.
+			if (
+				!monitor.workerQuestionStopRequested() ||
+				abortSignal.aborted ||
+				error instanceof PromptDroppedError ||
+				error instanceof AgentBusyError
+			) {
+				throw error;
+			}
+		}
+	};
 	const awaitAbortable = async <T>(promise: Promise<T>): Promise<T> => {
 		checkAbort();
 		const { promise: abortPromise, reject } = Promise.withResolvers<never>();
@@ -2635,21 +2650,6 @@ async function driveSessionToResult(
 			return await Promise.race([promise, abortPromise]);
 		} finally {
 			abortSignal.removeEventListener("abort", onAbort);
-		}
-	};
-	const awaitSessionTurn = async (turn: Promise<unknown>): Promise<void> => {
-		try {
-			await awaitAbortable(turn);
-		} catch (error) {
-			// Parking may reject prompt/restore/idle while leaving the run resumable.
-			if (
-				!monitor.workerQuestionStopRequested() ||
-				abortSignal.aborted ||
-				error instanceof PromptDroppedError ||
-				error instanceof AgentBusyError
-			) {
-				throw error;
-			}
 		}
 	};
 	/**
@@ -2712,7 +2712,7 @@ async function driveSessionToResult(
 					await onPromptBusy();
 				}
 			}
-			await awaitSessionTurn(session.waitForIdle());
+			await awaitAbortable(session.waitForIdle());
 		} catch (err) {
 			// A budget stop or a yield turn-stop (terminal yield parked behind
 			// the async quiescence barrier) cancels the free-running turn by
@@ -2774,7 +2774,7 @@ async function driveSessionToResult(
 					);
 				} else {
 					await awaitAbortable(Bun.sleep(250));
-					await awaitSessionTurn(session.waitForIdle());
+					await awaitAbortable(session.waitForIdle());
 				}
 			}
 		};
@@ -2832,7 +2832,7 @@ async function driveSessionToResult(
 						"yield reminder",
 						{ forceFinalYield: isFinalRetry },
 					);
-					await awaitSessionTurn(session.waitForIdle());
+					await awaitAbortable(session.waitForIdle());
 				} catch (err) {
 					if (endsRun(err)) throw err;
 					if (abortSignal.aborted || err instanceof ToolAbortError) {
@@ -2934,7 +2934,7 @@ async function driveSessionToResult(
 		}
 
 		if (!monitor.yieldCalled()) {
-			await awaitSessionTurn(session.waitForIdle());
+			await awaitAbortable(session.waitForIdle());
 		}
 
 		const lastAssistant = session.getLastAssistantMessage();
