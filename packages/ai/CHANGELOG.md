@@ -4,6 +4,10 @@
 
 ### Fixed
 
+- Retained regional Token Plan request routing for both tp- and ttp- keys alongside current catalog authentication.
+
+### Fixed
+
 - ChatGPT Pro Max (`promax`) counts as Pro for Codex account routing, so a blocked Pro account no longer wins over an open or pinned Pro Max account ([#18399](https://github.com/can1357/oh-my-pi/pull/18399) by [@serverinspector](https://github.com/serverinspector))
 - A 429 or 402 worded like a context overflow (Bedrock's "429 Too many tokens, please wait…") is treated as a rate limit, so it retries and walks the fallback chain instead of compacting ([#18345](https://github.com/can1357/oh-my-pi/pull/18345) by [@nick-maderight](https://github.com/nick-maderight))
 - `auth-gateway stdio` and `serve` no longer reject credentialless Apple on-device models ([#18370](https://github.com/can1357/oh-my-pi/issues/18370))
@@ -154,7 +158,6 @@
 
 ### Fixed
 
-- Retained regional Token Plan request routing for both tp- and ttp- keys alongside current catalog authentication.
 - Fixed OAuth logins shared by several processes being disabled with `invalid_grant` when they refreshed at the same time or one of them quit mid-refresh ([#17128](https://github.com/can1357/oh-my-pi/pull/17128) by [@sjawhar](https://github.com/sjawhar))
 - Fixed transient Google 429 rate-limit and capacity responses retrying in place without blocking or rotating credentials, while daily caps and zero-entitlement limits still rotate ([#17127](https://github.com/can1357/oh-my-pi/pull/17127) by [@GTanger](https://github.com/GTanger))
 - Fixed Aliyun DashScope's multimodal gateway failing a turn on its intermittent `InvalidParameter` 400s for valid inline images ("provided URL does not appear to be valid", "Download multimodal file timed out"); they are now retried ([#17101](https://github.com/can1357/oh-my-pi/pull/17101) by [@shuairongzeng](https://github.com/shuairongzeng))
