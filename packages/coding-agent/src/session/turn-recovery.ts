@@ -78,7 +78,6 @@ import {
 	validateRetryFallbackChains,
 } from "./retry-fallback-chains";
 import { describeUsageFallback } from "./retry-fallback-reason";
-import { getLatestCompactionEntry } from "./session-context";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
 import type { SessionManager } from "./session-manager";
 import { isUserQueuedMessage } from "./queued-messages";
@@ -991,12 +990,15 @@ export class TurnRecovery {
 		const persistenceKey = sessionMessagePersistenceKey(message);
 		if (!persistenceKey) return;
 		let branchEntry: SessionEntry | undefined;
-		for (const entry of this.#host.sessionManager.iterateBranch("message")) {
+		for (const entry of this.#host.sessionManager.iterateBranchMatchingNewestFirst(
+			metadata => metadata.type === "message" && metadata.messageRole === "assistant",
+		)) {
 			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 			if (sessionMessagePersistenceKey(entry.message) !== persistenceKey) continue;
 			if (!sameMessageContent(entry.message, message) && !this.#isSameAssistantMessage(entry.message, message))
 				continue;
 			branchEntry = entry;
+			break;
 		}
 		if (!branchEntry) return;
 		if (this.#pendingRetryErrors.some(error => error.entryId === branchEntry.id)) return;
@@ -1024,10 +1026,14 @@ export class TurnRecovery {
 		// was replaced; normal retry completion reads only the pending records.
 		const missing = this.#pendingRetryErrors.filter(pending => !branchById.has(pending.entryId));
 		if (missing.length > 0) {
-			for (const entry of this.#host.sessionManager.iterateBranch("message")) {
+			for (const entry of this.#host.sessionManager.iterateBranchMatchingNewestFirst(
+				metadata => metadata.type === "message" && metadata.messageRole === "assistant",
+			)) {
 				if (entry.type !== "message" || entry.message.role !== "assistant") continue;
 				const key = sessionMessagePersistenceKey(entry.message);
-				if (key && missing.some(pending => pending.persistenceKey === key)) byKey.set(key, entry);
+				if (key && !byKey.has(key) && missing.some(pending => pending.persistenceKey === key))
+					byKey.set(key, entry);
+				if (missing.every(pending => byKey.has(pending.persistenceKey))) break;
 			}
 		}
 		const retryErrors: RetryErrorUpdate[] = [];
@@ -1347,7 +1353,9 @@ export class TurnRecovery {
 		assistantMessage: AssistantMessage,
 		options: { autoContinue: boolean; triggerContextTokens?: number; excludeMediaMethods?: boolean },
 	): Promise<RecoveryCompactionResult> {
-		const compactionEntryBefore = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		const compactionEntryBefore = this.#host.sessionManager.getLatestBranchMatching(
+			metadata => metadata.type === "compaction",
+		)?.id;
 		await this.dropPersistedAssistantTurn(assistantMessage);
 		const result = await this.#host.runAutoCompaction(reason, true, {
 			autoContinue: options.autoContinue,
@@ -1355,7 +1363,9 @@ export class TurnRecovery {
 			phase: "mid_turn",
 			excludeMediaMethods: options.excludeMediaMethods,
 		});
-		const compactionEntryAfter = getLatestCompactionEntry(this.#host.sessionManager.getBranch());
+		const compactionEntryAfter = this.#host.sessionManager.getLatestBranchMatching(
+			metadata => metadata.type === "compaction",
+		)?.id;
 		if (result.historyRewritten !== true && compactionEntryAfter === compactionEntryBefore) {
 			this.#restoreFailedAssistantTurn(assistantMessage);
 		}
@@ -1424,13 +1434,21 @@ export class TurnRecovery {
 	}
 
 	#findPersistedAssistantEntry(message: AssistantMessage, preferredId?: string): SessionEntry | undefined {
-		let latest: SessionEntry | undefined;
-		for (const entry of this.#host.sessionManager.iterateBranch("message")) {
-			if (entry.type !== "message" || entry.message.role !== "assistant") continue;
-			if (entry.id === preferredId) return entry;
-			if (this.#isSameAssistantMessage(entry.message, message)) latest = entry;
+		if (preferredId) {
+			const preferred = this.#host.sessionManager.getLatestBranchMatching(metadata => metadata.id === preferredId);
+			if (preferred?.type === "message" && preferred.message.role === "assistant") return preferred;
 		}
-		return latest;
+		for (const entry of this.#host.sessionManager.iterateBranchMatchingNewestFirst(
+			metadata => metadata.type === "message" && metadata.messageRole === "assistant",
+		)) {
+			if (
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				this.#isSameAssistantMessage(entry.message, message)
+			)
+				return entry;
+		}
+		return undefined;
 	}
 	#isSameAssistantMessage(left: AssistantMessage, right: AssistantMessage): boolean {
 		return (
@@ -3453,7 +3471,10 @@ export class TurnRecovery {
 			// A restored session already dropped the failed assistant turn (and its
 			// paired synthetic tool results) from provider context, so the persisted
 			// display transcript is the source of truth for a retryable failed tail.
-			const transcriptMessages = this.#host.sessionManager.buildSessionContext({ transcript: true }).messages;
+			const transcriptMessages = this.#host.sessionManager.buildSessionContext({
+				transcript: true,
+				collapseCompactedHistory: true,
+			}).messages;
 			if (retryableAssistantTurnEnd(transcriptMessages) === undefined) return false;
 			// The boundary is already gone from active context; when the intact
 			// failed batch is still the tail, replay the tools directly.
