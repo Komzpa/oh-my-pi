@@ -2,6 +2,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ToolResultPruneEntry, ToolResultPruneTarget } from "@oh-my-pi/pi-agent-core/compaction/entries";
 export type { ToolResultPruneEntry, ToolResultPruneTarget };
 import type {
+	AssistantRetryRecovery,
 	ImageContent,
 	MessageAttribution,
 	ServiceTierByFamily,
@@ -428,4 +429,14 @@ export interface UsageStatistics {
 	cost: number;
 	/** Portion of {@link cost} carried by completed `task` results (direct children's spend). */
 	subagentCost: number;
+}
+export const RETRY_RECOVERY_ENTRY = "omp:retry-recovery";
+
+export function retryRecoveryEntryData(
+	entry: SessionEntry,
+): { entryId: string; retryRecovery: AssistantRetryRecovery } | undefined {
+	if (entry.type !== "custom" || entry.customType !== RETRY_RECOVERY_ENTRY) return undefined;
+	const data = entry.data as { entryId?: string; retryRecovery?: AssistantRetryRecovery } | undefined;
+	if (typeof data?.entryId !== "string" || data.retryRecovery?.kind !== "auto-retry") return undefined;
+	return { entryId: data.entryId, retryRecovery: data.retryRecovery };
 }
