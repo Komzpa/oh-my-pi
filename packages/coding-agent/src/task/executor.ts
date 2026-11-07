@@ -4925,6 +4925,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 		let resolvedAt: number | undefined;
 		let sessionOpenedAt: number | undefined;
 		let sessionCreatedAt: number | undefined;
+		let rosterReadyAt: number | undefined;
 		let readyAt: number | undefined;
 
 		try {
@@ -5300,6 +5301,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			}
 			sessionOpenedAt = performance.now();
 			await refreshSubagentIrcRoot(sessionSpec.prompt, sessionManager, sessionFile);
+			rosterReadyAt = performance.now();
 
 			// A seance fork inherits the source's model roles; they describe the
 			// source run, not this consult, so the consult still pins its own chain.
@@ -5764,6 +5766,8 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			resolveMs: span(perfStart, resolvedAt),
 			sessionOpenMs: span(resolvedAt, sessionOpenedAt),
 			createSessionMs: span(sessionOpenedAt, sessionCreatedAt),
+			rosterMs: span(sessionOpenedAt, rosterReadyAt),
+			sdkCreateMs: span(rosterReadyAt, sessionCreatedAt),
 			readyMs: span(sessionCreatedAt, readyAt),
 			promptToFirstChatMs: span(readyAt, firstChatDispatchAt),
 			setupToFirstChatMs,
