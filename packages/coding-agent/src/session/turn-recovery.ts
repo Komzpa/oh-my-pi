@@ -2120,17 +2120,22 @@ export class TurnRecovery {
 		}
 		this.#usageReserveApproval = undefined;
 		const applied = await this.applyRetryFallbackCandidate(fallback.role, fallback.selector, currentSelector, {
-			persistRole: fallback.role,
 			pinFallback: true,
 			apiKey: fallback.apiKey,
 			signal,
 			reason: describeUsageFallback(health, cfgRetryUsageReservePct.get(this.#host.settings)),
 		});
-		if (applied)
+		if (applied) {
+			// A usage switch must survive resume; the fallback role marks only retry-time swaps as ephemeral.
+			const switched = this.#host.model();
+			if (switched) {
+				this.#host.sessionManager.appendModelChange(formatModelStringWithRouting(switched), fallback.role, true);
+			}
 			this.#host.sessionManager.appendCustomEntry("usage-reserve-decision", {
 				primary: formatModelStringWithRouting(currentModel),
 				decision: "switch",
 			});
+		}
 		return applied;
 	}
 
@@ -2279,7 +2284,7 @@ export class TurnRecovery {
 		role: string,
 		selector: RetryFallbackSelector,
 		currentSelector: string,
-		options?: { pinFallback?: boolean; apiKey?: string; signal?: AbortSignal; reason?: string; persistRole?: string },
+		options?: { pinFallback?: boolean; apiKey?: string; signal?: AbortSignal; reason?: string },
 	): Promise<boolean> {
 		const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 		const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
@@ -2335,11 +2340,7 @@ export class TurnRecovery {
 			if (this.#activeRetryFallback) this.#activeRetryFallback.served = servedBeforeSwap;
 			return false;
 		}
-		this.#host.sessionManager.appendModelChange(
-			candidateSelector,
-			options?.persistRole ?? EPHEMERAL_MODEL_CHANGE_ROLE,
-			true,
-		);
+		this.#host.sessionManager.appendModelChange(candidateSelector, EPHEMERAL_MODEL_CHANGE_ROLE, true);
 		this.#host.settings.getStorage()?.recordModelUsage(candidateSelector);
 		this.#host.setThinkingLevel(nextThinkingLevel);
 		if (!this.#activeRetryFallback) {
