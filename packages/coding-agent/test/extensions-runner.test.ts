@@ -1,5 +1,5 @@
 import coolingYields from "../../reemxy-extensions/extensions/fixtures/row-audit-cooling-yields.json";
-import { YieldTool } from "../src/tools/yield";
+import { YieldTool as RowAuditYieldTool } from "../src/tools/yield";
 import type { ToolSession } from "../src/tools";
 /**
  * Tests for ExtensionRunner - conflict detection, error handling, tool wrapping.
@@ -4966,7 +4966,7 @@ describe("ExtensionRunner", () => {
 				.createContext()
 				.runRowAudit?.("audit", "qa-auditor", undefined, undefined, row, [row], output => received.push(output));
 			const params = seen.params as { outputSchema?: unknown; schemaMode?: "strict" };
-			const tool = new YieldTool({
+			const tool = new RowAuditYieldTool({
 				cwd: tempDir.path(),
 				hasUI: false,
 				settings: Settings.isolated(),
@@ -5001,7 +5001,7 @@ describe("ExtensionRunner", () => {
 				.createContext()
 				.runRowAudit?.("audit", "qa-auditor", undefined, undefined, row, [row, "Other row"]);
 			const multi = seen.params as { outputSchema: unknown };
-			const multiTool = new YieldTool({
+			const multiTool = new RowAuditYieldTool({
 				cwd: tempDir.path(),
 				hasUI: false,
 				settings: Settings.isolated(),
