@@ -2239,8 +2239,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		hasExistingSession = true;
 		break;
 	}
-	const hasThinkingEntry = [...sessionManager.iterateBranch("thinking_level_change")].length > 0;
-	const hasServiceTierEntry = [...sessionManager.iterateBranch("service_tier_change")].length > 0;
+	const hasThinkingEntry =
+		sessionManager.getLatestBranchMatching(metadata => metadata.type === "thinking_level_change") !== undefined;
+	const hasServiceTierEntry =
+		sessionManager.getLatestBranchMatching(metadata => metadata.type === "service_tier_change") !== undefined;
 
 	const deferredModelPatterns = Array.isArray(options.modelPattern)
 		? options.modelPattern.map(pattern => pattern.trim()).filter(Boolean)
