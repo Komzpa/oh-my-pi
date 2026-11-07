@@ -178,7 +178,18 @@ export function applyTodoExecutorObservation(
 		...(target.schedule?.riskEstimateMeanSeconds === undefined && target.schedule?.estimate
 			? { riskEstimateMeanSeconds: todoEstimateMeanSeconds(target.schedule.estimate) }
 			: {}),
-		...(!keepPrevious && shouldSetOwner ? { owner: observation.workerId } : {}),
+		...(!keepPrevious && shouldSetOwner
+			? {
+					owner: observation.workerId,
+					...(owner !== observation.workerId
+						? {
+								reestimateCount: 0,
+								cumulativeReestimateCount:
+									target.schedule?.cumulativeReestimateCount ?? target.schedule?.reestimateCount ?? 0,
+							}
+						: {}),
+				}
+			: {}),
 		workerIds: [...new Set([...getRecordedTodoWorkerIds(target), observation.workerId])],
 		executor: keepPrevious ? previous : executor,
 	};

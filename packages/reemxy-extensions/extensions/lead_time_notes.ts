@@ -75,7 +75,7 @@ export function renderPlanFactNote(
 	const open = phases.flatMap(phase => phase.tasks).filter(row => row.status !== "completed" && row.status !== "abandoned");
 	const churn = open.flatMap(row => {
 		const failures = row.schedule?.attemptHistory?.filter(attempt => attempt.terminalStatus !== "completed" || attempt.rejectionReason).length ?? 0;
-		const reestimates = row.schedule?.reestimateCount ?? 0;
+		const reestimates = row.schedule?.cumulativeReestimateCount ?? row.schedule?.reestimateCount ?? 0;
 		return failures >= 3 || reestimates >= 3 ? [{ row: row.content.slice(0, 180), failures, reestimates }] : [];
 	}).slice(0, 8);
 	const slip = deadlineAt === undefined || !open.length ? 0 : Math.max(now, forecastFinish ?? 0) - deadlineAt;

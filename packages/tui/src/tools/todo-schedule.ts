@@ -78,7 +78,10 @@ export interface TodoSchedule {
 	estimateRevision?: number;
 	/** PERT mean captured at first dispatch, used by empirical attempt ratios. */
 	riskEstimateMeanSeconds?: number;
+	/** Reestimates under the current owner; resets on restaffing for the exhaustion gate. */
 	reestimateCount?: number;
+	/** Row-wide reestimates, retained across owner changes for calibration and churn. */
+	cumulativeReestimateCount?: number;
 	progress?: { at: number; evidence: string };
 	startedAt?: number;
 	finishedAt?: number;
@@ -2000,13 +2003,14 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 				? workEnd - row.startedAt
 				: undefined;
 	const worked = workedMs === undefined ? undefined : `${Math.round(workedMs / 60_000)}m`;
+	const cumulativeReestimates = row.schedule?.cumulativeReestimateCount ?? row.reestimateCount;
 	if (row.estimateRangeSeconds) {
 		// A reestimate that lands while the row runs is remaining work from its update time; the
 		// badge budget adds the elapsed it absorbed so `worked / budget` never compares elapsed
 		// against remaining-only. First estimates keep total-work semantics.
 		const absorbedMs =
 			row.status === "in_progress" &&
-			row.reestimateCount >= 1 &&
+			cumulativeReestimates >= 1 &&
 			finiteTimestamp(row.startedAt) &&
 			finiteTimestamp(row.estimateUpdatedAt) &&
 			row.estimateUpdatedAt > row.startedAt
@@ -2018,8 +2022,8 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 	} else if (worked) parts.push(worked);
 	if (row.onProposal?.length) parts.push("on proposal");
 	if (row.criticalityKnown === true && row.critical) parts.push("critical");
-	if (row.reestimateCount >= 3) {
-		parts.push(`reestimated ${row.reestimateCount}×`);
+	if (cumulativeReestimates >= 3) {
+		parts.push(`reestimated ${cumulativeReestimates}×`);
 		if (row.schedule?.firstEstimate) parts.push(`first ${Math.ceil(row.schedule.firstEstimate.likelySeconds / 60)}m`);
 	}
 	if (expanded) {
