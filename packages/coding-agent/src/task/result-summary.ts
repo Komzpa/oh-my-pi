@@ -71,8 +71,12 @@ export function formatTaskResultSummary(
 	// irc instead of redoing the work. Isolated runs are parked without a
 	// reviver (their worktree is gone), so they must not read as resumable.
 	const resumable = result.aborted && !result.isolated && isResumable(AgentRegistry.global().get(result.id));
+	// Abandonment must be visible on a successful run too: `stderr` is not
+	// shown for completed results, so it rides in the envelope itself.
+	const abandonedJobIds = result.abandonedJobs?.map(job => escapeHarnessTags(job.id)).join(", ");
 	const render = (truncated: boolean): string =>
 		prompt.render(taskSummaryTemplate, {
+			abandonedJobIds,
 			agentName: result.agent,
 			id: result.id,
 			status,

@@ -34,7 +34,7 @@ import {
 	runEvalWait,
 } from "../handle-bridge";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
-import { getActiveEvalShadowCell } from "../speculation/runtime-context";
+import { getActiveEvalShadowCell, runWithEvalJob } from "../speculation/runtime-context";
 import { isEvalBridgeToolCallable } from "../tool-bridge-policy";
 import { EVAL_WORKPOOL_BRIDGE_NAME, type EvalWorkpoolResult, runEvalWorkpool } from "../workpool-bridge";
 import type { RuntimeCallIdentity } from "./shared/runtime";
@@ -60,6 +60,7 @@ export interface ToolBridgeOptions {
 	 * would draw them, so such calls fail instead of reporting a reply nobody sees.
 	 */
 	onReply?: (text: string) => void;
+	evalJobId?: string;
 }
 
 type ToolValue =
@@ -344,12 +345,8 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			DELEGATED_WORK_TOOLS.has(name) ? options.emitStatus : undefined,
 			async () => {
 				try {
-					return await tool.execute(
-						toolCallId,
-						validatedArgs,
-						options.signal,
-						onUpdate,
-						options.session.getToolContext?.(),
+					return await runWithEvalJob(options.evalJobId, () =>
+						tool.execute(toolCallId, validatedArgs, options.signal, onUpdate, options.session.getToolContext?.()),
 					);
 				} finally {
 					settled = true;
