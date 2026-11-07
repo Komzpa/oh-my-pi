@@ -2579,7 +2579,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     wakeTurn.chain = chainDemand(before);
     if (wakeTurn.chain || recovery?.pending) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: demand.key, action: demand.action, edges: wakeTurn.chain?.edges, misses: receipt?.key === demand.key ? receipt.misses : 0, toolCalls: 0, mutations: 0 });
     const misses = demand && receipt?.key === demand.key ? receipt.misses : 0;
-    return { silentAssistant: !realUpdate, ...(demand ? { actionDemand: prompt.render(dispatchWakeInstructions, { ...demand, misses, escalation: misses > 0 }).trim() } : {}) };
+    return { silentAssistant: !realUpdate, ...(demand ? { actionDemandKey: demand.key, actionDemand: prompt.render(dispatchWakeInstructions, { ...demand, misses, escalation: misses > 0 }).trim() } : {}) };
   };
   const requirementRowsSeen = new Set<string>();
   let latestUserRequestAt: number | undefined;
@@ -2673,6 +2673,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // Replace pending state by subject, independently of the digest used to suppress emissions.
     // The queue owns replacement across nextTurn and steering, including while the lead is busy.
     const wake = delivery.triggerTurn && wakeContext ? prepareWake(wakeContext) : undefined;
+    if (wake?.actionDemandKey && wakeContext) {
+      const now = Date.now();
+      const previous = [...selectBranchNewestFirst(wakeContext.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-wake")].find(entry => entry.type === "custom" && entry.data?.key === wake.actionDemandKey)?.data;
+      // Persist separately from demand observations: the minute ticker may append those
+      // indefinitely, but only a requested wake spends this key's five-minute allowance.
+      if (typeof previous?.at === "number" && now - previous.at < 5 * 60_000) delivery = { ...delivery, triggerTurn: false };
+      else pi.appendEntry("todo-dispatch-action-wake", { key: wake.actionDemandKey, at: now });
+    }
     if (wake?.actionDemand) content += `\n${wake.actionDemand}`;
     if (wake) details = { ...((details as Record<string, unknown>) ?? {}), ...wake };
     const sent = kind === "todo-plan-check" ? { ...((details as Record<string, unknown> | undefined) ?? {}), supersedesQueued: true } : details;

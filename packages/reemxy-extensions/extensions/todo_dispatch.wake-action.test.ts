@@ -1,14 +1,17 @@
 // @ts-nocheck -- drives the registered dispatcher against disposable session state.
-import { expect, test, spyOn } from "bun:test";
+import { afterEach, expect, test, spyOn, vi } from "bun:test";
 import { Type } from "@sinclair/typebox";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch from "./todo_dispatch";
 
+afterEach(() => vi.restoreAllMocks());
+
 async function harness(journal = [], chain = false, healthy = false, deadlineEnabled = true) {
   const hooks = new Map();
   const sent = [];
   const timers = [];
+  const intervals = [];
   const tools = new Map();
   const now = Date.now();
   const phases = [{ name: "Ship", tasks: [{ content: "PR 114 acceptance", status: "pending", schedule: {
@@ -33,10 +36,11 @@ async function harness(journal = [], chain = false, healthy = false, deadlineEna
     getTodoPreviewConfig: () => ({ enabled: false, paths: [], openReviewPages: false }),
     isIdle: () => true, hasPendingMessages: () => false,
     setTimeout: fn => { timers.push(fn); return {}; }, clearTimer: () => {},
+    setInterval: (fn, ms) => { intervals.push({ fn, ms }); return {}; },
   };
   await todoDispatch(api);
   const wake = async () => { await hooks.get("agent_end")({}, ctx); await timers.pop()?.(); const message = sent.findLast(message => message.options?.triggerTurn); if (message) await hooks.get("message_start")({ message: { role: "custom", ...message } }, ctx); };
-  return { hooks, ctx, sent, phases, jobs, journal, wake, tools };
+  return { hooks, ctx, sent, phases, jobs, journal, wake, tools, intervals };
 }
 
 test("no-event wake is silent, prose-only and re-estimate turns persist an escalating concrete action across reload", async () => {
@@ -55,7 +59,8 @@ test("no-event wake is silent, prose-only and re-estimate turns persist an escal
   expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data).toMatchObject({ misses: 2, mutations: 0 });
   const resumed = await harness(h.journal);
   await resumed.wake();
-  const next = resumed.sent.find(message => message.options?.triggerTurn);
+  expect(resumed.sent.some(message => message.options?.triggerTurn)).toBe(false);
+  const next = resumed.sent.findLast(message => message.details?.actionDemand);
   expect(next.content).toContain("ESCALATED");
   expect(next.content).toContain("PR 114 acceptance");
 });
@@ -107,8 +112,9 @@ test("CHURN chain review persists every link, survives reload and rejects unrela
   expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.misses).toBe(2);
   const resumed = await harness(h.journal, true);
   await resumed.wake();
-  expect(resumed.sent.findLast(message => message.options?.triggerTurn)?.content).toContain("ESCALATED");
-  expect(resumed.sent.findLast(message => message.options?.triggerTurn)?.content).toContain("Collateral2");
+  expect(resumed.sent.some(message => message.options?.triggerTurn)).toBe(false);
+  expect(resumed.sent.findLast(message => message.details?.actionDemand)?.content).toContain("ESCALATED");
+  expect(resumed.sent.findLast(message => message.details?.actionDemand)?.content).toContain("Collateral2");
   // A slot-only edge is removed by a real todo mutation, preserving the rest of the graph.
   resumed.phases[0].tasks[1].schedule.dependencies = [];
   await resumed.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule" }, content: [], isError: false }, resumed.ctx);
@@ -269,4 +275,56 @@ test("ready-row idle age survives reload and clears only for staffing or that ro
     receipt = resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
     expect(receipt.recovery.pending).toBeUndefined(); expect(receipt.mutations).toBe(1);
   } finally { clock.mockRestore(); }
+});
+
+test("minute action-demand observations wake once per key every five minutes, including after reload", async () => {
+  let now = Date.now();
+  spyOn(Date, "now").mockImplementation(() => now);
+  const h = await harness([], true);
+  await h.hooks.get("session_start")({}, h.ctx);
+  const tick = h.intervals.find(interval => interval.ms === 60_000).fn;
+  await tick();
+  const wakes = () => h.sent.filter(message => message.options?.triggerTurn && message.details?.actionDemand);
+  expect(wakes()).toHaveLength(1);
+  expect(wakes()[0].content).toContain("WAIT-CHAIN REVIEW");
+  for (let minute = 1; minute < 5; minute++) {
+    now += 60_000;
+    await tick();
+    expect(wakes()).toHaveLength(1);
+  }
+  // A new runtime instance must honor the journal reservation, even with a fresh notice cache.
+  const resumed = await harness(h.journal, true);
+  await resumed.hooks.get("session_start")({}, resumed.ctx);
+  const resumedTick = resumed.intervals.find(interval => interval.ms === 60_000).fn;
+  await resumedTick();
+  expect(resumed.sent.filter(message => message.options?.triggerTurn && message.details?.actionDemand)).toHaveLength(0);
+  now += 60_000;
+  await resumedTick();
+  expect(resumed.sent.filter(message => message.options?.triggerTurn && message.details?.actionDemand)).toHaveLength(1);
+  // Closing the demand removes its action from subsequent wake prompts.
+  for (const row of resumed.phases[0].tasks) row.status = "completed";
+  resumed.sent.length = 0;
+  now += 5 * 60_000;
+  await resumedTick();
+  expect(resumed.sent.filter(message => message.options?.triggerTurn && message.details?.actionDemand)).toHaveLength(0);
+});
+
+test("a busy lead keeps demand queued without spending its idle wake allowance", async () => {
+  const h = await harness([], true);
+  let idle = false;
+  h.ctx.isIdle = () => idle;
+  await h.hooks.get("session_start")({}, h.ctx);
+  const tick = h.intervals.find(interval => interval.ms === 60_000).fn;
+  await tick();
+  expect(h.sent.some(message => message.options?.triggerTurn)).toBe(false);
+  expect(h.journal.some(entry => entry.customType === "todo-dispatch-action-wake")).toBe(false);
+  idle = true;
+  await tick();
+  expect(h.sent.filter(message => message.options?.triggerTurn && message.details?.actionDemand)).toHaveLength(1);
+  // A different dependency graph is a new obligation and can wake immediately.
+  h.phases[0].tasks[1].schedule.dependencies.push("Collateral2");
+  await tick();
+  const wakes = h.sent.filter(message => message.options?.triggerTurn && message.details?.actionDemand);
+  expect(wakes).toHaveLength(2);
+  expect(wakes[0].details.actionDemandKey).not.toBe(wakes[1].details.actionDemandKey);
 });
