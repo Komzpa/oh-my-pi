@@ -16,7 +16,7 @@ afterEach(() => {
 	AgentRegistry.resetGlobalForTests();
 });
 
-function harness(task = "Fix camera", maxRuntimeMs = 0) {
+function harness(task = "Fix camera", maxRuntimeMs = 0, rejectStoppedTurn = false) {
 	const messages: AgentMessage[] = [];
 	const entries: Array<{ type: string; data: unknown }> = [];
 	const prompts: string[] = [];
@@ -127,6 +127,7 @@ function harness(task = "Fix camera", maxRuntimeMs = 0) {
 				} as AgentSessionEvent);
 				asked.resolve();
 				await turnStopped.promise;
+				if (rejectStoppedTurn) throw new Error("Turn stopped for worker question");
 			} else if (text.startsWith("Answer to ask-camera")) answer(text);
 			return true;
 		},
@@ -230,4 +231,16 @@ test("a structured worker ask resumes on the lead's IRC answer without a synthet
 	await h.asked;
 	h.answer();
 	expect((await h.result).aborted).toBe(false);
+});
+
+test("a rejected question-stop prompt remains parked until the lead answers", async () => {
+	const h = harness("Fix camera", 0, true);
+	await h.asked;
+	await Bun.sleep(350);
+	expect(h.prompts).toEqual(["Fix camera"]);
+	expect(h.abortCalls()).toBe(1);
+	h.answer();
+	const result = await h.result;
+	expect(result.exitCode).toBe(0);
+	expect(result.aborted).toBe(false);
 });

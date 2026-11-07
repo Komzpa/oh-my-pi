@@ -1346,6 +1346,8 @@ interface RunMonitorArgs {
  * for one assignment run.
  */
 interface SubagentRunMonitor {
+	workerQuestionStopRequested(): boolean;
+	waitForWorkerQuestionStop(): Promise<void>;
 	readonly progress: AgentProgress;
 	/** Fires when the run was asked to stop (caller signal, timeout, budget, terminate). */
 	readonly abortSignal: AbortSignal;
@@ -1593,6 +1595,17 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					logger.debug("Subagent budget-stop abort failed", {
 						error: error instanceof Error ? error.message : String(error),
 					});
+				})
+			: Promise.resolve();
+	};
+
+	// Question parking belongs to the assignment, independently of terminal-yield policy.
+	let workerQuestionStopPromise: Promise<void> | null = null;
+	const requestWorkerQuestionStop = () => {
+		if (workerQuestionStopPromise || abortSent || resolved) return;
+		workerQuestionStopPromise = activeSession
+			? activeSession.abort().catch(error => {
+					logger.debug("Subagent question-stop abort failed", { error: String(error) });
 				})
 			: Promise.resolve();
 	};
@@ -2001,7 +2014,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					!event.result.details.workingDefaults
 				) {
 					// Stop only the free-running turn; retain the assignment and its journal for the answer.
-					requestYieldTurnStop();
+					requestWorkerQuestionStop();
 				}
 				const finished = activeTools.get(event.toolCallId);
 				if (
@@ -2009,7 +2022,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					!event.isError &&
 					["agent://main", "agent://lead", "agent://parent"].includes(String(finished?.input?.path))
 				)
-					requestYieldTurnStop();
+					requestWorkerQuestionStop();
 				activeTools.delete(event.toolCallId);
 				if (finished) {
 					progress.recentTools.unshift({
@@ -2061,7 +2074,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				// An unanswered question cannot be finalized by a late yield in the stopped turn.
 				if (event.toolName === "yield" && activeSession && pendingWorkerAsks(activeSession.messages).length) {
 					yieldCallPending = false;
-					requestYieldTurnStop();
+					requestWorkerQuestionStop();
 					break;
 				}
 
@@ -2417,6 +2430,12 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	};
 
 	return {
+		workerQuestionStopRequested: () => workerQuestionStopPromise !== null,
+		waitForWorkerQuestionStop: async () => {
+			const pending = workerQuestionStopPromise;
+			await pending;
+			if (workerQuestionStopPromise === pending) workerQuestionStopPromise = null;
+		},
 		progress,
 		abortSignal,
 		accumulatedUsage,
@@ -2618,6 +2637,21 @@ async function driveSessionToResult(
 			abortSignal.removeEventListener("abort", onAbort);
 		}
 	};
+	const awaitSessionTurn = async (turn: Promise<unknown>): Promise<void> => {
+		try {
+			await awaitAbortable(turn);
+		} catch (error) {
+			// Parking may reject prompt/restore/idle while leaving the run resumable.
+			if (
+				!monitor.workerQuestionStopRequested() ||
+				abortSignal.aborted ||
+				error instanceof PromptDroppedError ||
+				error instanceof AgentBusyError
+			) {
+				throw error;
+			}
+		}
+	};
 	/**
 	 * Send a headless prompt, retrying pre-provider drops (`PromptDroppedError`).
 	 * Local slash commands are disabled so an assignment always reaches the
@@ -2634,7 +2668,7 @@ async function driveSessionToResult(
 		for (let attempt = 1; attempt <= MAX_PROMPT_DISPATCH_ATTEMPTS; attempt++) {
 			if (forceFinalYield) monitor.markFinalYieldForced(true);
 			try {
-				await awaitAbortable(session.prompt(text, { ...promptOptions, runCommands: false, throwOnDrop: true }));
+				await awaitSessionTurn(session.prompt(text, { ...promptOptions, runCommands: false, throwOnDrop: true }));
 				return;
 			} catch (err) {
 				if (!(err instanceof PromptDroppedError)) throw err;
@@ -2668,7 +2702,7 @@ async function driveSessionToResult(
 			let promptAttempts = 0;
 			for (;;) {
 				try {
-					if (restore) await awaitAbortable(session.restoreInterruptedTurn());
+					if (restore) await awaitSessionTurn(session.restoreInterruptedTurn());
 					else await dispatchPrompt(task, { attribution: "agent", solutionSpace }, "initial prompt");
 					break;
 				} catch (error) {
@@ -2677,7 +2711,7 @@ async function driveSessionToResult(
 					await onPromptBusy();
 				}
 			}
-			await awaitAbortable(session.waitForIdle());
+			await awaitSessionTurn(session.waitForIdle());
 		} catch (err) {
 			// A budget stop or a yield turn-stop (terminal yield parked behind
 			// the async quiescence barrier) cancels the free-running turn by
@@ -2696,7 +2730,7 @@ async function driveSessionToResult(
 		const awaitWorkerAnswers = async (): Promise<void> => {
 			while (!abortSignal.aborted) {
 				// An unanswered ask parks this assignment, without spending yield retries or destroying its state.
-				await awaitAbortable(monitor.waitForYieldTurnStop());
+				await awaitAbortable(monitor.waitForWorkerQuestionStop());
 				const questions = pendingWorkerAsks(session.messages);
 				if (!questions.length) return;
 				const defaultsAuthorized = task.includes("[worker-ask-defaults]");
@@ -2739,7 +2773,7 @@ async function driveSessionToResult(
 					);
 				} else {
 					await awaitAbortable(Bun.sleep(250));
-					await awaitAbortable(session.waitForIdle());
+					await awaitSessionTurn(session.waitForIdle());
 				}
 			}
 		};
@@ -2797,7 +2831,7 @@ async function driveSessionToResult(
 						"yield reminder",
 						{ forceFinalYield: isFinalRetry },
 					);
-					await awaitAbortable(session.waitForIdle());
+					await awaitSessionTurn(session.waitForIdle());
 				} catch (err) {
 					if (endsRun(err)) throw err;
 					if (abortSignal.aborted || err instanceof ToolAbortError) {
@@ -2899,7 +2933,7 @@ async function driveSessionToResult(
 		}
 
 		if (!monitor.yieldCalled()) {
-			await awaitAbortable(session.waitForIdle());
+			await awaitSessionTurn(session.waitForIdle());
 		}
 
 		const lastAssistant = session.getLastAssistantMessage();
