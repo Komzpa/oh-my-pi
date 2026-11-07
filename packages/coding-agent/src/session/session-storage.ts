@@ -694,8 +694,8 @@ function writeLinesToFileSync(target: string, lines: readonly string[]): void {
 }
 
 /**
- * Async {@link writeLinesToFileSync} through a buffered Bun file sink.
- * `target` must be a fresh path: a sink does not truncate an existing file.
+ * Async {@link writeLinesToFileSync} through bounded I/O-pool writes.
+ * `target` must be a fresh staging path.
  */
 async function writeLinesToFile(
 	target: string,
