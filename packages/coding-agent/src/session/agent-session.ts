@@ -3077,11 +3077,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (this.#asyncJobManager && this.#agentId) {
 			const manager = this.#asyncJobManager;
 			this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(this.#agentId, (jobId, text, job) =>
-				this.#inLogContext(() => this.#deliverAsyncJobResult(manager, jobId, text, job)),
+				this.#inLogContext(() =>
+					withLoopPhase("async-result.deliver", () => this.#deliverAsyncJobResult(manager, jobId, text, job)),
+				),
 			);
 			this.yieldQueue.register<AsyncResultEntry>("async-result", {
 				isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
-				build: buildAsyncResultBatchMessage,
+				build: entries => withLoopPhase("async-result.build", () => buildAsyncResultBatchMessage(entries)),
 			});
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
@@ -6386,9 +6388,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	/** Cancel scheduled continuations; `reason` labels a continuation already running, as `agent.abort(reason)` does. */
 	async #cancelPostPromptTasks(reason?: string): Promise<void> {
-		this.#postPromptTasksAbortController.abort(reason);
+		withLoopPhase("resource-release.cancel-post-prompt", () => this.#postPromptTasksAbortController.abort(reason));
 		this.#postPromptTasksAbortController = new AbortController();
-		this.#ttsr.resolveResume();
+		withLoopPhase("resource-release.resume", () => this.#ttsr.resolveResume());
 
 		const pendingTasks = Array.from(this.#postPromptTasks);
 		if (pendingTasks.length === 0) {
@@ -7372,7 +7374,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	#disposeCall?: Promise<void>;
 	dispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
-		if (!this.#disposeCall) this.#disposeCall = this.#doDispose(options);
+		if (!this.#disposeCall)
+			this.#disposeCall = withLoopPhase("resource-release.dispose", () => this.#doDispose(options));
 		return this.#disposeCall;
 	}
 
@@ -7642,7 +7645,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// dead weight from here on. Dropping it lets a parked subagent's session
 		// graph shed its heavy payloads even while the lifecycle adoption record's
 		// reviver closure still references the session object. Fixes #8003.
-		this.#releaseRetainedSessionMemory();
+		withLoopPhase("resource-release.memory", () => this.#releaseRetainedSessionMemory());
 		// A run past the deadline may still resolve keys, so the account pools
 		// are lifted only once the run has settled: here when it drained,
 		// otherwise in the deferred pass below. Each lease lifts only the
@@ -7663,7 +7666,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			void (async () => {
 				await this.agent.waitForIdle();
 				await this.#drainInFlightEventHandlers();
-				this.#releaseRetainedSessionMemory();
+				withLoopPhase("resource-release.memory", () => this.#releaseRetainedSessionMemory());
 				this.#accountPoolScope?.release();
 			})().catch(error => logger.warn("Deferred dispose finalization failed", { error: String(error) }));
 		}

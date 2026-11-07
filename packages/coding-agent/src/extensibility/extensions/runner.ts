@@ -2091,7 +2091,7 @@ export class ExtensionRunner {
 								event.type === "tool_call" || SESSION_BEFORE_EVENTS[event.type] === true ? budget : undefined,
 							);
 							result = await this.#toolRegistrationScope.run(registrationScope, () =>
-								handler(event, handlerContext),
+								launchStep(`extension.event:${event.type}:${ext.path}`, () => handler(event, handlerContext)),
 							);
 						} catch (error) {
 							handlerFailure = { error };
