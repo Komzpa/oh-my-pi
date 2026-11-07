@@ -10,7 +10,7 @@ import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
-import { getTodoArchiveBranchEntries, getLiveTodoBranchEntries, getLatestTodoArchiveFromEntries, withTodoArchive, isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { readTodoArchiveState, getLiveTodoBranchEntries, withTodoArchive } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -47,7 +47,7 @@ import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
 export function dispatchTodoArchive(ctx: ExtensionContext): TodoScheduleInput {
-  return getLatestTodoArchiveFromEntries(getTodoArchiveBranchEntries(ctx.sessionManager));
+  return readTodoArchiveState(ctx.sessionManager).phases;
 }
 
 // Only these synthetic arrays carry a native immutable owner snapshot. Durable
