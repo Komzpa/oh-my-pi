@@ -17,7 +17,7 @@ function readIdentity(entry: TimedNoteMessage): TimedNoteIdentity | undefined {
 }
 
 function latestIdentity(ctx: TimedNoteContext, customType: string): TimedNoteIdentity | undefined {
-	for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom_message")) {
+	for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom_message" && (metadata.customType === undefined || metadata.customType === customType))) {
 		if (entry?.type !== "custom_message" || entry.customType !== customType) continue;
 		return readIdentity(entry);
 	}
