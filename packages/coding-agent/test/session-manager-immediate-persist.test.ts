@@ -311,7 +311,7 @@ describe("SessionManager JSONL software-crash durability", () => {
 		const sessionFile = manager.getSessionFile();
 		if (!sessionFile) throw new Error("Expected session file");
 
-		const rewrite = manager.rewriteEntries();
+		const rewrite = manager.rewriteEntries({ forceFullRewrite: true });
 		await storage.rewriteStarted.promise;
 
 		manager.appendMessage({ role: "user", content: "fenced-user", timestamp: Date.now() });
