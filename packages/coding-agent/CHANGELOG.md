@@ -2440,7 +2440,7 @@ Older entries are archived in [packages/coding-agent/CHANGELOG.md@72d5cf31d861](
 - Graceful restart preserves terminal foreground ownership, final journal entries and visible handoff status ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 - Preserve long-session responsiveness when recording retry outcomes and discarding retry turns; stream cold records during explicit journal rewrites ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
-- Kept large sessions responsive during branch-tail reads without loading archived payloads ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
+- Keep model-role selection and branch-tail reads responsive without loading archived payloads ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
 - Bound executor-observation replay memory without rewriting the session journal on resume ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
