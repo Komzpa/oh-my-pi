@@ -2566,6 +2566,8 @@ Older entries are archived in [packages/coding-agent/CHANGELOG.md@72d5cf31d861](
 
 ### Changed
 
+- Slow subagent launches now report SDK substep timings, prompt/context sizes and main-thread phase names ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
+
 - ovnfs turns on by itself when its binary is found (`ovnfs.path`, else `ovnfs` on PATH): agents get the separate-checkout guidance, and isolated subagents use ovnfs checkouts when `isolation.backend` is `auto`
 - Text Verbosity now defaults to low and applies to Codex too, matching the official Codex client: shorter answers that finish sooner; set `textVerbosity` to `medium` for the old length
 - A cost cap set on the main thread now applies to running subagents immediately
