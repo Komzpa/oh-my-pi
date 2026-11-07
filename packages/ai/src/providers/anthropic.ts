@@ -1,4 +1,11 @@
 import {
+	recordThinkingPrefixDispatch,
+	snapshotThinkingPrefix,
+	thinkingPrefixDiagnostic,
+	type ThinkingPrefixDiagnostic,
+	type PrefixSnapshot,
+} from "./thinking-prefix-diagnostics";
+import {
 	anthropicApiVersionAcceptsSamplingParams,
 	isAnthropicSigningProxyUrl,
 	isOfficialAnthropicApiUrl,
@@ -1644,6 +1651,8 @@ export function isInvalidThinkingSignatureError(message: string): boolean {
 	return INVALID_THINKING_SIGNATURE_PATTERN.test(message) || MISSING_THINKING_SIGNATURE_PATTERN.test(message);
 }
 
+const prefixBeforeHooks = new WeakMap<object, PrefixSnapshot>();
+
 const INPUT_TRANSFORMATION_PATH_PATTERN = /^messages\.(\d+)\.content\.(\d+)$/;
 const PREFIX_BINDING_ERROR_PATH_PATTERN = /messages\.(\d+)\.content\.(\d+)/;
 
@@ -1759,12 +1768,18 @@ function reportedDropKey(params: MessageCreateParamsStreaming, path: string | un
  * every path at debug. One prefix change can drop hundreds of blocks in a
  * single request, which would otherwise flood the log one line per block.
  */
-export function logDroppedThinking(provider: string, model: string, paths: Array<string | undefined>): void {
+export function logDroppedThinking(
+	provider: string,
+	model: string,
+	paths: Array<string | undefined>,
+	diagnostic?: ThinkingPrefixDiagnostic,
+): void {
 	if (paths.length === 0) return;
 	logger.warn(`${provider}: dropped thinking block after conversation prefix changed`, {
 		model,
 		count: paths.length,
 		path: paths[0],
+		prefixDiagnostic: diagnostic ?? { baseline: "unavailable", comparison: "unavailable", stage: "unknown" },
 	});
 	if (paths.length > 1) logger.debug(`${provider}: dropped thinking block paths`, { model, paths });
 }
@@ -1814,7 +1829,7 @@ function applyReportedInputTransformations(
 		}
 		dropped.push(transformation.path);
 	}
-	logDroppedThinking("anthropic", output.model, dropped);
+	logDroppedThinking("anthropic", output.model, dropped, thinkingPrefixDiagnostic(params));
 	if (repeated > 0) {
 		logger.debug("anthropic: API re-dropped previously reported thinking blocks", {
 			model: output.model,
@@ -2318,6 +2333,7 @@ const streamAnthropicOnce = (
 				if (dropFastMode) {
 					dropAnthropicFastMode(nextParams);
 				}
+				const beforePayloadHook = options?.onPayload ? snapshotThinkingPrefix(nextParams) : undefined;
 				const replacementPayload = transport ? undefined : await options?.onPayload?.(nextParams, model);
 				if (replacementPayload !== undefined) {
 					nextParams = replacementPayload as typeof nextParams;
@@ -2345,6 +2361,7 @@ const streamAnthropicOnce = (
 					];
 				}
 				nextParams = toWellFormedDeep(nextParams) as typeof nextParams;
+				if (beforePayloadHook) prefixBeforeHooks.set(nextParams, beforePayloadHook);
 				if (transport) {
 					const preparedRequest = await transport.prepareRequest(nextParams, requestExtraBetas);
 					transportPayload = preparedRequest.payload;
@@ -2687,6 +2704,7 @@ const streamAnthropicOnce = (
 					maxRetries: 0,
 					...(requestHeaders ? { headers: requestHeaders } : {}),
 				};
+				recordThinkingPrefixDispatch(params, options, `${baseUrl}:${model.id}`, prefixBeforeHooks.get(params));
 				const anthropicRequest: unknown =
 					isOAuthToken && client.beta
 						? client.beta.messages.create({ ...wireParams, stream: true }, requestOptions)
