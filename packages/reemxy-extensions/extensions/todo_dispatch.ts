@@ -6500,11 +6500,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         sendHarnessNotice("todo-gate-steering", `${update.task}:${update.owner}`, prompt.render(gateNoticeInstructions, { steering: true, row: JSON.stringify(update.task), owner: update.owner }).trim());
       }
       const hints = scheduleCalibrationHints(event, ctx, pendingTodo);
-      const hintPart = hints.length ? [{ type: "text" as const, text: hints.join("\n") }] : [];
+      const hintPart = hints.length ? [{ type: "text" as const, text: hints.join("\n"), harnessNotice: true as const }] : [];
       const check = await planCheck(ctx, pendingTodo);
       if (!check) return hintPart.length ? { content: [...(event.content ?? []), ...hintPart] } : undefined;
       markSizingNotices();
-      return { content: [...(event.content ?? []), ...hintPart, { type: "text" as const, text: check }] };
+      return { content: [...(event.content ?? []), ...hintPart, { type: "text" as const, text: check, harnessNotice: "record" as const }] };
     }
     if (event.toolName !== "task") return;
     lastTaskDispatchRefused = Boolean(event.isError);
@@ -6628,11 +6628,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     let result = await handleToolResult(event, ctx);
     const nag = zeroActiveNag(ctx);
     if (nag && !isStaffingCall(event.toolName, event.input))
-      result = { ...result, content: [{ type: "text", text: nag }, ...(result?.content ?? event.content ?? [])] };
+      result = { ...result, content: [{ type: "text", text: nag, harnessNotice: true as const }, ...(result?.content ?? event.content ?? [])] };
     else if (event.toolName === "task" && !event.isError)
-      result = { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: staffingAdvice.trim() }] };
+      result = { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: staffingAdvice.trim(), harnessNotice: true as const }] };
     const block = fixNow(ctx);
-    return block ? { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: block }] } : result;
+    return block ? { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: block, harnessNotice: true as const }] } : result;
   });
 
   let calibrationKey = "";
@@ -6785,12 +6785,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         : message === last && rows.length ? [{ ...message, content: prompt.render(gateNoticeInstructions, staffingData(rows)).trim() }] : []);
     }
     const block = fixNow(ctx);
-    if (!block && !messages.some(message => message.runtimeSupervisor || (message.role === "custom" && typeof message.content === "string" && message.content.includes("\n\nFIX NOW:")) || (message.role === "toolResult" && message.content.some(part => part.type === "text" && part.text.startsWith("FIX NOW:"))))) return { messages };
+    if (!block && !messages.some(message => message.runtimeSupervisor || (message.role === "custom" && typeof message.content === "string" && message.content.includes("\n\nFIX NOW:")) || (message.role === "toolResult" && message.content.some(part => part.type === "text" && part.harnessNotice === true && part.text.startsWith("FIX NOW:"))))) return { messages };
     messages = messages.filter(message => !(message.role === "user" && message.runtimeSupervisor === true));
     messages = messages.map(message => {
       if (message.role === "toolResult") {
-        const content = message.content.filter(part => part.type !== "text" || !part.text.startsWith("FIX NOW:"));
-        return { ...message, content: block ? [...content, { type: "text", text: block }] : content };
+        const content = message.content.filter(part => part.type !== "text" || part.harnessNotice !== true || !part.text.startsWith("FIX NOW:"));
+        return { ...message, content: block ? [...content, { type: "text", text: block, harnessNotice: true as const }] : content };
       }
       return message.role === "custom" && typeof message.content === "string" && /^(todo-|requirements[_-]|lead-plan-critic)/.test(message.customType)
       ? { ...message, content: withChiefFixNow(message.content, block) } : message;

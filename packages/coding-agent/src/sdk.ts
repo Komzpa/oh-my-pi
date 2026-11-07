@@ -1,3 +1,5 @@
+import { convertWithHarnessNotices } from "./session/harness-notices";
+import { resolveHarnessNoticeRole } from "./config/harness-notices";
 import { buildTodoSchedulePatchEdit, patchTodoSchedule } from "./session/todo-schedule-patch";
 import { selectBranchNewestFirst } from "./session/branch-selection";
 import * as path from "node:path";
@@ -4679,12 +4681,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// whose blocks would otherwise be normalized and published for nothing.
 		// Read both dynamically so a `/model` switch or setting change takes
 		// effect on the next turn.
-		const convertToLlmWithBlockImages = (messages: AgentMessage[]): Message[] => {
-			const converted = convertToLlm(messages);
+		const convertToLlmWithBlockImages = (messages: AgentMessage[], requestModel?: Model): Message[] => {
+			const activeModel = requestModel ?? agent?.state.model ?? model;
+			const converted = convertWithHarnessNotices(
+				messages,
+				resolveHarnessNoticeRole(activeModel, settings),
+				convertToLlm,
+			);
 			if (cfgImagesBlockImages.get(settings)) {
 				return replaceLlmImagesWithText(converted, "Image reading is disabled.");
 			}
-			const activeModel = agent?.state.model ?? model;
 			if (activeModel && !sendsImageInputOnWire(activeModel)) {
 				return replaceLlmImagesWithText(
 					converted,
@@ -4696,8 +4702,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		// Final convertToLlm: live provider replay drops API-level refusal errors,
 		// then applies secret obfuscation to the remaining outbound context.
-		const convertToLlmFinal = (messages: AgentMessage[]): Message[] => {
-			const converted = filterProviderReplayMessages(convertToLlmWithBlockImages(messages));
+		const convertToLlmFinal = (messages: AgentMessage[], requestModel?: Model): Message[] => {
+			const converted = filterProviderReplayMessages(convertToLlmWithBlockImages(messages, requestModel));
 			if (!obfuscator?.hasSecrets()) return converted;
 			return obfuscateMessages(obfuscator, converted);
 		};

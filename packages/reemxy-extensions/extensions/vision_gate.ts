@@ -44,5 +44,5 @@ export function visionResultRefusal(event: { content?: unknown; details?: unknow
 	const details = event.details as { screenshots?: unknown[] } | undefined;
 	const image = Array.isArray(event.content) && event.content.some(part => part?.type === "image");
 	if (!image && !details?.screenshots?.length) return;
-	return { isError: true, content: [{ type: "text" as const, text: VISION_REFUSAL }] };
+	return { isError: true, content: [{ type: "text" as const, text: VISION_REFUSAL, harnessNotice: true as const }] };
 }
