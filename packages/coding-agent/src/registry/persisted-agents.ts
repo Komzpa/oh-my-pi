@@ -5,12 +5,13 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { ADVISOR_TRANSCRIPT_FILENAME, isAdvisorTranscriptName } from "../advisor/transcript-recorder";
 import { resolveExplicitModelRole } from "../config/model-resolver";
+import { isLocalAgentSession } from "../session/agent-session-handle";
 import { assistantTurnProducedOutput } from "../session/messages";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, PREWALK_MODEL_CHANGE_ROLE } from "../session/session-entries";
 import { readSessionHeaderId, visitEntriesFromFileStream } from "../session/session-loader";
 import { loadBundledAgents } from "../task/agents";
 import { isReadOnlyAgent } from "../task/read-only-policy";
-import { persistedVibeChildIds } from "../vibe/lifecycle";
+import { persistedVibeChildIds, VIBE_LIFECYCLE_CUSTOM_TYPE } from "../vibe/lifecycle";
 import {
 	type AgentHistorySummary,
 	type AgentMetricsSummary,
@@ -455,7 +456,21 @@ async function readPersistedAgentMetadata(
 	};
 }
 
-async function readPersistedVibeChildIds(sessionFile: string, shouldContinue: () => boolean): Promise<Set<string>> {
+async function readPersistedVibeChildIds(
+	registry: AgentRegistryApi,
+	sessionFile: string,
+	shouldContinue: () => boolean,
+): Promise<Set<string>> {
+	// A running root already indexed its lifecycle facts. Re-reading its whole
+	// journal here makes every cold roster scan depend on gigabytes of history.
+	// Match the manager's actual file: a registry ref can outlive a session switch.
+	for (const ref of registry.list()) {
+		const manager = ref.session && isLocalAgentSession(ref.session) ? ref.session.sessionManager : undefined;
+		const loadedFile = manager?.getSessionFile();
+		if (manager && loadedFile && path.resolve(loadedFile) === path.resolve(sessionFile)) {
+			return persistedVibeChildIds(manager.iterateEntries("custom", VIBE_LIFECYCLE_CUSTOM_TYPE));
+		}
+	}
 	const ids = new Set<string>();
 	try {
 		await visitEntriesFromFileStream(
@@ -752,7 +767,7 @@ export async function registerPersistedSubagents(
 	const vibeOwned = () =>
 		options.vibeOwnedIds !== undefined
 			? Promise.resolve(options.vibeOwnedIds)
-			: (vibeOwnedIds ??= readPersistedVibeChildIds(sessionFile, shouldContinue));
+			: (vibeOwnedIds ??= readPersistedVibeChildIds(registry, sessionFile, shouldContinue));
 	const root = sessionFile.slice(0, -6);
 	const selectedFiles = options.sessionFiles
 		? new Set(
