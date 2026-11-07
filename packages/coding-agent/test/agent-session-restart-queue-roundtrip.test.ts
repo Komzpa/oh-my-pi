@@ -1,3 +1,5 @@
+import restartQueuedPrompt from "../src/prompts/restart-queued.md" with { type: "text" };
+import { currentRuntimeIdentity, formatRuntimeIdentity } from "../src/session/runtime-identity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { IrcBridge } from "@oh-my-pi/pi-coding-agent/session/irc-bridge";
@@ -548,6 +550,120 @@ describe("AgentSession restart queue round trip", () => {
 		expect(checkpoint?.type === "custom" ? checkpoint.data : undefined).toMatchObject({ pendingNextTurn: [active] });
 		lease.release();
 	});
+
+	it.each([false, true])(
+		"wakes a completed root once after retiring its checkpoint request (running: %s)",
+		async rootWasRunning => {
+			// DC 14:44:46Z snapshot: seven custom follow-ups and four next-turn inputs,
+			// including a queued checkpoint request; completion preceded child revival.
+			const manager = currentManager();
+			appendPriorAssistant(manager);
+			const sessionId = manager.getSessionId();
+			const requestId = "claude-dc-1845-calibfix-editgrant-roster";
+			const stale = {
+				role: "custom" as const,
+				customType: "restart-queued",
+				content: `Restart ${requestId} is queued. ${restartQueuedPrompt.trim()}`,
+				display: true,
+				details: { requestId, state: "queued" },
+				timestamp: Date.now(),
+			};
+			manager.appendCustomMessageEntry(stale.customType, stale.content, true, stale.details);
+			manager.appendCustomEntry("omp:restart-pending-queues", {
+				steering: [stale],
+				followUp: [
+					stale,
+					...Array.from({ length: rootWasRunning ? 7 : 0 }, (_, i) =>
+						hiddenNextTurnMessage(`preserved worker result ${i}`),
+					),
+				],
+				pendingNextTurn: rootWasRunning
+					? [
+							hiddenNextTurnMessage("preserved user reply obligation"),
+							hiddenNextTurnMessage("preserved schedule"),
+							stale,
+							hiddenNextTurnMessage("preserved staffing"),
+						]
+					: [stale],
+			});
+			manager.appendCustomEntry("restart_request_transition", {
+				version: 1,
+				identity: { instanceId: "before", sessionId, generation: 0 },
+				record: {
+					version: 1,
+					requestId,
+					sessionId,
+					state: "completed",
+					requestedAt: Date.now(),
+					updatedAt: Date.now(),
+					rootWasRunning,
+				},
+			});
+			await manager.ensureOnDisk();
+			const file = manager.getSessionFile()!;
+			await manager.close();
+			sessionManager = undefined;
+			const inputs: string[] = [];
+			const restored = await reopenSession(
+				file,
+				Array.from({ length: 12 }, () => ({ content: ["resume ready work"], stopReason: "stop" as const })),
+				inputs,
+			);
+			AgentRegistry.resetGlobalForTests();
+			IrcBus.resetGlobalForTests();
+			AgentRegistry.global().register({
+				id: MAIN_AGENT_ID,
+				displayName: "Root",
+				kind: "main",
+				session: restored,
+				sessionFile: file,
+				status: "idle",
+			});
+			const options = {
+				session: restored,
+				identity: () => ({ instanceId: "after", sessionId, generation: 1 }),
+				restart: async () => {},
+			};
+			const controller = createRestartQueueController(options);
+			try {
+				await controller.restore();
+				await restored.waitForIrcReplies();
+				await restored.waitForIdle();
+				const providerInput = inputs.join("\n");
+				expect(providerInput).not.toContain(stale.content);
+				for (let i = 0; i < (rootWasRunning ? 7 : 0); i++)
+					expect(providerInput).toContain(`preserved worker result ${i}`);
+				if (rootWasRunning) expect(providerInput).toContain("preserved user reply obligation");
+				expect(providerInput).toContain(`Restart ${requestId} completed`);
+				expect(providerInput).toContain(`build ${formatRuntimeIdentity(currentRuntimeIdentity())}`);
+				const delivered = () =>
+					restored.sessionManager
+						.getEntries()
+						.filter(
+							entry =>
+								entry.type === "custom" &&
+								entry.customType === "root_restart_continuation_receipt" &&
+								(entry.data as { outcome?: string }).outcome === "continuation-delivered",
+						);
+				expect(delivered()).toHaveLength(1);
+				const calls = inputs.length;
+				await controller.restore();
+				const secondController = createRestartQueueController(options);
+				try {
+					await secondController.restore();
+				} finally {
+					secondController.dispose();
+				}
+				await restored.waitForIdle();
+				expect(inputs).toHaveLength(calls);
+				expect(delivered()).toHaveLength(1);
+			} finally {
+				controller.dispose();
+				AgentRegistry.resetGlobalForTests();
+				IrcBus.resetGlobalForTests();
+			}
+		},
+	);
 
 	it.each(["checkpointed", "queued"] as const)(
 		"reconciles loaded %s restart notices at the production provider boundary",

@@ -754,12 +754,9 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				restoreComplete = true;
 				if (askSettled) {
 					await this.#resumeAfterRestoredAsk(record, askAnswered);
-				} else if (
-					!pendingAsk &&
-					restartCompleted &&
-					record &&
-					(record.rootWasRunning || this.#session.getRestartPendingInputCount() > 0)
-				) {
+				} else if (!pendingAsk && restartCompleted && record) {
+					// A completed idle root still needs a wake after stale lifecycle inputs
+					// are removed. The durable continuation receipt owns deduplication.
 					await sendRootContinuationOnce(this.#session, record.requestId, recoveryReport);
 				}
 			};
