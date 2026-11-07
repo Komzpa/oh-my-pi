@@ -78,6 +78,7 @@ import submitReminderTemplate from "../prompts/system/subagent-yield-reminder.md
 import { AgentLifecycleManager, type AgentReviver } from "../registry/agent-lifecycle";
 import { AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { ensurePersistedRoster, isCurrentSessionRosterRef } from "../registry/persisted-agents";
+import { resolveSubagentLaunchRoster } from "../registry/launch-roster";
 import {
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
@@ -4100,6 +4101,7 @@ async function driveFollowUpTurn(
 /** Inputs of a subagent's rendered system prompt, fixed at spawn. */
 interface SubagentPromptInputs {
 	id: string;
+	parentAgentId?: string;
 	model?: string;
 	agentSystemPrompt: string;
 	context: string;
@@ -4263,13 +4265,14 @@ async function refreshSubagentIrcRoot(
 ): Promise<void> {
 	if (!inputs.ircEnabled) return;
 	const registry = AgentRegistry.global();
-	inputs.ircRoot.sessionFile = await ensurePersistedRoster(
-		registry,
+	const hint =
 		sessionManager.getSessionFile() ??
-			sessionFile ??
-			registry.get(inputs.id)?.sessionFile ??
-			registry.get(MAIN_AGENT_ID)?.sessionFile,
-	);
+		sessionFile ??
+		registry.get(inputs.id)?.sessionFile ??
+		registry.get(MAIN_AGENT_ID)?.sessionFile;
+	inputs.ircRoot.sessionFile =
+		resolveSubagentLaunchRoster(registry, hint, inputs.parentAgentId) ??
+		(await ensurePersistedRoster(registry, hint));
 }
 
 /** Recipe for a subagent's settings overlay: its parent plus the overlay's own writes. */
@@ -5077,6 +5080,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				preparedSession: preparedSession ? { promptSuffix: preparedSession.promptSuffix } : undefined,
 				prompt: {
 					id,
+					parentAgentId: options.parentAgentId,
 					model: progress.resolvedModel,
 					agentSystemPrompt: agent.systemPrompt,
 					context: options.context?.trim() ?? "",
