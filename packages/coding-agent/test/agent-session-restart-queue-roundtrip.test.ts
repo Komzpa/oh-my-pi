@@ -733,7 +733,9 @@ describe("AgentSession restart queue round trip", () => {
 					expect(providerInput).toContain(`preserved worker result ${i}`);
 				if (rootWasRunning) expect(providerInput).toContain("preserved user reply obligation");
 				expect(providerInput).toContain(`Restart ${requestId} completed`);
-				expect(providerInput).toContain(`build ${currentRuntimeIdentity().commit}`);
+				// A build without git metadata names itself by its binary hash instead.
+				const commit = currentRuntimeIdentity().commit;
+				expect(providerInput).toContain(commit ? `build ${commit}` : "; build ");
 				const delivered = () =>
 					restored.sessionManager
 						.getEntries()
