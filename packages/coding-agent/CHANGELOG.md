@@ -224,6 +224,7 @@
 ### Fixed
 
 - Read-only workers retain command and browser tools for QA, while tracked checkout changes fail the worker ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Seance consultations keep compacted context without duplicating the parent journal or recording unrelated worker activity; journal observers read appended records asynchronously.
 
 - Worker resends use flat attempt names; admission failures are shown separately and three identical infrastructure failures block further dispatch ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Avoid freezes and out-of-memory errors when reading or searching full session history ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
