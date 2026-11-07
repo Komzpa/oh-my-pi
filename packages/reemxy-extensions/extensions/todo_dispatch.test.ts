@@ -1501,6 +1501,7 @@ test("idle lifecycle wakes once per active plan/alarm and suppresses paused or c
     },
   ];
   const branch: unknown[] = [
+    ...Array.from({ length: 300_000 }, () => ({ type: "custom_message", customType: "unrelated", content: "old notice" })),
     { type: "custom", customType: "pi-goal-focus", data: { focusedGoalId: "goal-1" } },
     {
       type: "custom",
@@ -1542,9 +1543,20 @@ test("idle lifecycle wakes once per active plan/alarm and suppresses paused or c
     sendMessage: (...args: unknown[]) => sent.push(args),
   } as unknown as ExtensionAPI;
   await todoDispatch(api);
+  let decoded = 0;
+  const decode = entry => { decoded++; return entry; };
+  const indexed = {
+    getBranch: () => { throw new Error("idle timer materialized the branch"); },
+    getBranchMatching: predicate => branch.filter(entry => predicate(sessionContextEntryMetadata(entry))).map(decode),
+    getLatestBranchMatching: predicate => { const entry = branch.findLast(entry => predicate(sessionContextEntryMetadata(entry))); return entry && decode(entry); },
+    *iterateBranchMatchingNewestFirst(predicate) {
+      for (let i = branch.length - 1; i >= 0; i--) if (predicate(sessionContextEntryMetadata(branch[i]))) yield decode(branch[i]);
+    },
+    getBranchTailMatching: (limit, predicate) => branch.slice(-limit).filter(entry => predicate(sessionContextEntryMetadata(entry))).map(decode),
+  };
   const ctx = {
     cwd,
-    sessionManager: { getHeader: () => header, ...branchMock(() => branch) },
+    sessionManager: { getHeader: () => header, ...indexed },
     getAsyncJobSnapshot: () => emptyJobs,
     getTaskMaxConcurrency: () => 2,
     isIdle: () => idle,
@@ -1587,7 +1599,12 @@ test("idle lifecycle wakes once per active plan/alarm and suppresses paused or c
     handlers.get("agent_start")!({}, ctx);
     (await agentEnd());
     expect(timers[0]?.delay).toBe(30_000);
-    (await fireNext());
+    decoded = 0;
+    for (let check = 0; check < 10; check++) {
+      (await fireNext());
+      expect(timers[0]?.delay).toBe(30_000);
+    }
+    expect(decoded).toBeLessThan(200);
     expect(sent).toHaveLength(1);
 
     pending = true;

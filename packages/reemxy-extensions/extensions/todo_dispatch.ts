@@ -1422,6 +1422,9 @@ function retroFacilitatorResultId(event: unknown): string | undefined {
 // behavior (demand persists until the next retro) instead of breaking the cap.
 const RETRO_RECEIPT_SCAN_ENTRIES = 500;
 function recentBranchMessages(ctx: ExtensionContext) {
+  const source = ctx.sessionManager as BranchSource;
+  if (source.getBranchTailMatching) return source.getBranchTailMatching(RETRO_RECEIPT_SCAN_ENTRIES,
+    metadata => metadata.type === "message" || metadata.type === "custom_message");
   let branchEntryCount = 0;
   selectBranchEntries(ctx.sessionManager, () => {
     branchEntryCount += 1;

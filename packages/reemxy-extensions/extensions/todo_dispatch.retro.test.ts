@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { formatPlanForecast, formatTaskForecast, forecastTodoPlan, type TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import todoDispatch from "./todo_dispatch";
+import todoDispatch, { branchRetroReceiptIds } from "./todo_dispatch";
 
 function branchMock(getBranch: () => unknown[]) {
   return {
@@ -655,4 +655,18 @@ test("a new incident after covered reports uses lead evidence without relisting 
     await f.finish();
     expect(await f.check()).not.toContain("retrospective due");
   } finally { setSystemTime(); }
+});
+
+
+test("periodic retro receipt lookup uses the indexed 500-entry tail", () => {
+  const history = Array.from({ length: 300_000 }, () => ({ type: "custom", customType: "unrelated" }));
+  history.push({ type: "custom_message", content: '<task-result id="retro-1" agent="retro-facilitator" status="completed">done</task-result>' });
+  let visited = 0;
+  const ctx = { sessionManager: {
+    getBranch: () => { throw new Error("periodic receipt lookup decoded the whole branch"); },
+    getBranchMatching: () => { throw new Error("periodic receipt lookup walked the whole branch"); },
+    getBranchTailMatching: (limit, predicate) => history.slice(-limit).filter(entry => { visited++; return predicate(sessionContextEntryMetadata(entry)); }),
+  } } as unknown as ExtensionContext;
+  for (let turn = 0; turn < 10; turn++) expect(branchRetroReceiptIds(ctx)).toEqual(["retro-1"]);
+  expect(visited).toBe(5_000);
 });
