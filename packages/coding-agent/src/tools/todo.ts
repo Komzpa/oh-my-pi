@@ -1,3 +1,4 @@
+import { logger } from "@oh-my-pi/pi-utils";
 import { getTodoPlanCalibrationStore, type TodoPlanCalibrationStore } from "./todo-plan-calibration";
 import { patchTodoSchedule } from "../session/todo-schedule-patch";
 import {
@@ -40,7 +41,7 @@ import {
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 
-import { logger, isRecord, prompt } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -2263,6 +2264,9 @@ function attachLiveTodoDetails(
 
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly name = "todo";
+	#calibrationReady = getTodoPlanCalibrationStore()
+		.refresh()
+		.catch(error => logger.warn("Forecast calibration load failed", { error }));
 	readonly approval = "read" as const;
 	readonly label = "Todo";
 	readonly summary = "Write a structured todo list to track progress within a session";
@@ -2278,9 +2282,6 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(todoDescription);
-		void getTodoPlanCalibrationStore()
-			.refresh()
-			.catch(error => logger.warn("Forecast calibration load failed", { error }));
 	}
 
 	/** Consume a verified page decision through the ordinary review transition. */
@@ -2343,6 +2344,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		_onUpdate?: AgentToolUpdateCallback<TodoToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<TodoToolDetails>> {
+		await this.#calibrationReady;
 		const previousPhases = clonePhases(this.session.getTodoPhases?.() ?? []);
 		const storage = this.session.getSessionFile() ? "session" : "memory";
 		const resolved = resolveTodoParams(params, previousPhases.length > 0);

@@ -14,7 +14,8 @@ that runtime is authorized. No source checkout or default path is seeded by test
 `recommended_fixture_exclusion`). It freezes read boundaries and preserves its
 explicit fixture exclusions, without importing any research prediction. Without
 a manifest, the collector inventories JSONL byte boundaries first and excludes
-explicit harness markers. Temporary worktree naming alone is retained.
+explicit harness markers in temporary or .claude/jobs working directories.
+Temporary worktree naming alone is retained.
 
 The replay streams each journal and keeps current TODO state plus frozen hourly
 targets, never the complete journal. It uses the shipped TODO reconstruction and
