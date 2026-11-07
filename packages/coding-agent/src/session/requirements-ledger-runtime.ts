@@ -1,6 +1,5 @@
 import {
 	matchingRequirementBranch,
-	cachedRequirementBranch,
 	latestRequirementsFromSession,
 	matchingRequirementBranchNewestFirst,
 	type RequirementEntryMetadata,
@@ -84,6 +83,9 @@ import { discoverAgents, getAgent } from "../task/discovery";
 import {
 	bindRequirementRowArtifact,
 	getLatestTodoPhasesFromEntries,
+	getRequirementArtifactTodoPhases,
+	getRequirementGateBranch,
+	historicalRequirementRowChanges,
 	getCompletedTodoRows,
 	getClosedTodoRows,
 	getAcceptedTodoRows,
@@ -121,12 +123,6 @@ function isTodoStateEntryMetadata(entry: RequirementEntryMetadata): boolean {
 		(entry.type === "message" && entry.messageRole === "toolResult" && entry.toolName === "todo")
 	);
 }
-
-const isPublicationEntryMetadata = (entry: RequirementEntryMetadata): boolean =>
-	(entry.type === "custom" && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) || isTodoStateEntryMetadata(entry);
-const isFreshnessEntryMetadata = (entry: RequirementEntryMetadata): boolean =>
-	isPublicationEntryMetadata(entry) ||
-	(entry.type === "custom" && entry.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE);
 
 /** The harness renames a worker whose requested name is taken by appending `-<n>`. */
 function sameWorkerIdentity(a: string, b: string): boolean {
@@ -277,7 +273,6 @@ export class RequirementsLedgerRuntime {
 	readonly #pendingAuditors = new Map<string, RequirementAuditAssignment>();
 	#publicationGeneration = 0;
 	#publicationState = "";
-	#publicationBranch?: readonly SessionEntry[];
 	#noticeState = "";
 	#linkedRowNotices: Promise<void> = Promise.resolve();
 	readonly #stablePublicationGate: RequirementPublicationGate = (message, signal) =>
@@ -1163,17 +1158,25 @@ export class RequirementsLedgerRuntime {
 		}>;
 	}> {
 		const sessionId = this.#sessionId();
-		const branch = cachedRequirementBranch(this.#host.sessionManager, isFreshnessEntryMetadata);
-		const requirements = getLatestRequirements(branch);
-		const phases = getLatestTodoPhasesFromEntries(branch);
-		const changes = getTodoRowChanges(branch);
+		const latest = latestRequirementsFromSession(this.#host.sessionManager);
+		if (!latest.some(requirement => requirement.classification === "linked"))
+			return { requirements: latest, staleById: new Map(), awaitingUserIssues: new Set(), staleRows: [] };
+		const requirements = latest;
+		const phases = getRequirementArtifactTodoPhases(this.#host.sessionManager);
+		const branch = getRequirementGateBranch(
+			this.#host.sessionManager,
+			requirements,
+			new Set(requirements.filter(item => item.classification === "linked").flatMap(item => item.rows)),
+			phases,
+		);
+		let changes: Map<string, { at: string; id: string }> | undefined;
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 		const gitStatusSnapshots: RequirementGitStatusSnapshots = new Map();
 		const open = await evaluateRequirementDoneGate(
 			requirements,
 			[...new Set(requirements.filter(item => item.classification === "linked").flatMap(item => item.rows))],
-			async (row, receipt) => ({
-				...(await getRequirementRowArtifact(
+			async (row, receipt) => {
+				const artifact = await getRequirementRowArtifact(
 					{
 						cwd: this.#host.cwd(),
 						sessionManager: this.#host.sessionManager,
@@ -1184,9 +1187,11 @@ export class RequirementsLedgerRuntime {
 					row,
 					phases,
 					checkoutCache,
-				)),
-				lastChange: changes.get(row),
-			}),
+				);
+				if (receipt && !artifact.identityCheck && !artifact.sha256 && (!artifact.head || artifact.dirty))
+					changes ??= historicalRequirementRowChanges(this.#host.sessionManager);
+				return { ...artifact, lastChange: changes?.get(row) };
+			},
 			getPersistedRequirementAuditRejections(branch, this.#sessionId()),
 			getCompletedTodoRows(branch),
 			new Set(
@@ -1201,11 +1206,7 @@ export class RequirementsLedgerRuntime {
 		const unchanged = () =>
 			this.#sessionId() === sessionId &&
 			JSON.stringify(latestRequirementsFromSession(this.#host.sessionManager)) === JSON.stringify(requirements) &&
-			JSON.stringify(
-				getLatestTodoPhasesFromEntries(
-					matchingRequirementBranch(this.#host.sessionManager, isTodoStateEntryMetadata),
-				),
-			) === JSON.stringify(phases);
+			JSON.stringify(getRequirementArtifactTodoPhases(this.#host.sessionManager)) === JSON.stringify(phases);
 		if (invalidated.some((requirement, index) => requirement !== requirements[index]) && unchanged()) {
 			// Queue the retry using the original pass before persisting its stale
 			// state, so the generation retry cannot lose the exact audit identity.
@@ -1839,13 +1840,10 @@ export class RequirementsLedgerRuntime {
 	}
 
 	#getPublicationGeneration(): number {
-		const branch = cachedRequirementBranch(this.#host.sessionManager, isPublicationEntryMetadata);
-		if (Object.isFrozen(branch) && this.#publicationBranch === branch) return this.#publicationGeneration;
-		this.#publicationBranch = Object.isFrozen(branch) ? branch : undefined;
 		const state = JSON.stringify([
 			this.#sessionId(),
-			getLatestRequirements(branch),
-			getLatestTodoPhasesFromEntries(branch),
+			latestRequirementsFromSession(this.#host.sessionManager),
+			getRequirementArtifactTodoPhases(this.#host.sessionManager),
 		]);
 		if (state !== this.#publicationState) {
 			this.#publicationState = state;

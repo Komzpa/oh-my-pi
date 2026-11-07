@@ -56,7 +56,31 @@ test("publishing without requirements never decodes 300k obsolete todo snapshots
 			version: 1,
 			requirements: createRequirementCandidates([], ["deliver the fix"], new Date().toISOString()),
 		});
-		await gate(createAssistantMessage("finished"), new AbortController().signal);
+		decoded = 0;
+		for (let turn = 0; turn < 10; turn++)
+			await gate(createAssistantMessage("finished"), new AbortController().signal);
+		expect(decoded).toBeLessThan(200);
+		expect(statuses.at(-1)).toBe("requirement audits: 1 of 1 need verification");
+		manager.appendCustomEntry("user_todo_edit", {
+			phases: [
+				{
+					name: "Live",
+					tasks: [
+						{ content: "current", status: "pending", schedule: { resources: ["/missing-publication-fixture"] } },
+					],
+				},
+			],
+		});
+		manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
+			version: 1,
+			requirements: createRequirementCandidates([], ["deliver the fix"], new Date().toISOString()).map(
+				requirement => ({ ...requirement, classification: "linked", rows: ["current"] }),
+			),
+		});
+		decoded = 0;
+		for (let turn = 0; turn < 10; turn++)
+			await gate(createAssistantMessage("finished"), new AbortController().signal);
+		expect(decoded).toBeLessThan(300);
 		expect(statuses.at(-1)).toBe("requirement audits: 1 of 1 need verification");
 	} finally {
 		await manager.close();

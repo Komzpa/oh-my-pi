@@ -60,6 +60,7 @@ import {
 	getPersistedRequirementAuditRejections,
 	prepareAwaitingUserCheck,
 	type RequirementsLedgerAppender,
+	type RequirementLedgerItem,
 	type RequirementDoneGateIssue,
 } from "./requirements-ledger";
 
@@ -163,6 +164,7 @@ export interface RequirementRowArtifactContext {
 		getBranchMatching?(predicate: (metadata: RequirementEntryMetadata) => boolean): SessionEntry[];
 		getCachedBranchMatching?(predicate: (metadata: RequirementEntryMetadata) => boolean): SessionEntry[];
 		getLeafId?(): string | null;
+		getSessionId?(): string | null;
 		getEntryCount?(): number;
 		readonly bodyRevision?: number;
 	};
@@ -534,7 +536,7 @@ const requirementRowChangeHistories = new WeakMap<
 >();
 
 /** Exact legacy receipt history is demanded explicitly; subsequent checks fold only its new tail. */
-function historicalRequirementRowChanges(
+export function historicalRequirementRowChanges(
 	manager: NonNullable<RequirementRowArtifactContext["sessionManager"]>,
 ): Map<string, { at: string; id: string }> {
 	const cached = requirementRowChangeHistories.get(manager);
@@ -617,6 +619,53 @@ function requirementArtifactPlan(
 	const plan = { phases, latest, historical, historicalLoaded: includeHistorical };
 	if (cacheable) requirementArtifactPlans.set(manager, { leaf, revision, count, entries, plan });
 	return plan;
+}
+
+/** Share the completion/publication gate's current plan and demanded archived row facts. */
+export function getRequirementGateBranch(
+	manager: NonNullable<RequirementRowArtifactContext["sessionManager"]>,
+	requirements: readonly RequirementLedgerItem[],
+	targetRows: ReadonlySet<string>,
+	phases: readonly TodoPhase[],
+): SessionEntry[] {
+	const branch = currentRequirementTodoEntries(manager);
+	for (const entry of matchingRequirementBranchNewestFirst(
+		manager,
+		metadata => metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
+	)) {
+		if (
+			entry.type === "custom" &&
+			isRecord(entry.data) &&
+			entry.data.sessionId === manager.getSessionId?.() &&
+			Array.isArray(entry.data.rejected)
+		) {
+			branch.push(entry);
+			break;
+		}
+	}
+	const liveRows = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
+	const archivedRows = requirements
+		.filter(
+			requirement => requirement.classification === "linked" && requirement.rows.some(row => targetRows.has(row)),
+		)
+		.flatMap(requirement => requirement.rows)
+		.filter(row => !liveRows.has(row));
+	if (archivedRows.length > 0) {
+		const historical = requirementArtifactPlan(manager, true).historical;
+		const tasks = archivedRows.flatMap(row => {
+			const task = historical.get(row);
+			return task ? [task] : [];
+		});
+		branch.unshift({
+			type: "custom",
+			customType: USER_TODO_EDIT_CUSTOM_TYPE,
+			id: "archived-requirement-rows",
+			parentId: null,
+			timestamp: new Date(0).toISOString(),
+			data: { phases: [{ name: "Archived", tasks }] },
+		});
+	}
+	return branch;
 }
 
 /** Read the active TODO snapshot through the append-aware artifact-plan selection cache.
@@ -2019,46 +2068,12 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 		if (selectorErrors.length === 0) {
 			const currentRequirements = latestRequirementsFromSession(sessionManager);
 			if (currentRequirements.length === 0) return undefined;
-			const branch = currentRequirementTodoEntries(sessionManager);
-			for (const entry of matchingRequirementBranchNewestFirst(
+			const branch = getRequirementGateBranch(
 				sessionManager,
-				metadata =>
-					metadata.type === "custom" && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
-			)) {
-				if (
-					entry.type === "custom" &&
-					isRecord(entry.data) &&
-					entry.data.sessionId === sessionManager.getSessionId?.() &&
-					Array.isArray(entry.data.rejected)
-				) {
-					branch.push(entry);
-					break;
-				}
-			}
-			const liveRows = new Set(previousPhases.flatMap(phase => phase.tasks.map(task => task.content)));
-			const targetRows = new Set(targets.map(target => target.content));
-			const archivedRows = currentRequirements
-				.filter(
-					requirement =>
-						requirement.classification === "linked" && requirement.rows.some(row => targetRows.has(row)),
-				)
-				.flatMap(requirement => requirement.rows)
-				.filter(row => !liveRows.has(row));
-			if (archivedRows.length > 0) {
-				const historical = requirementArtifactPlan(sessionManager, true).historical;
-				const tasks = archivedRows.flatMap(row => {
-					const task = historical.get(row);
-					return task ? [task] : [];
-				});
-				branch.unshift({
-					type: "custom",
-					customType: USER_TODO_EDIT_CUSTOM_TYPE,
-					id: "archived-requirement-rows",
-					parentId: null,
-					timestamp: new Date(0).toISOString(),
-					data: { phases: [{ name: "Archived", tasks }] },
-				});
-			}
+				currentRequirements,
+				new Set(targets.map(target => target.content)),
+				previousPhases,
+			);
 			let changes: Map<string, { at: string; id: string }> | undefined;
 			const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 			const gitStatusSnapshots: RequirementGitStatusSnapshots = new Map();
