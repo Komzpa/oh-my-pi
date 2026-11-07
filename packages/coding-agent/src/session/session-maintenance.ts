@@ -4322,12 +4322,7 @@ export class SessionMaintenance {
 	 * `entries` (the projected branch when the compaction is not committed yet). Native Responses
 	 * history replaces the display summary and excludes opaque ciphertext.
 	 */
-	#countProjectedMessages(
-		rebuilt: AgentMessage[],
-		entries: readonly SessionEntry[] = this.#host.sessionManager.getBranchMatching(
-			metadata => metadata.type === "compaction",
-		),
-	): number {
+	#countProjectedMessages(rebuilt: AgentMessage[], entries?: readonly SessionEntry[]): number {
 		const messages = this.#messagesAsRead(rebuilt, entries);
 		const options = { excludeEncryptedReasoning: true } as const;
 		const archives: AgentMessage[] = [];
@@ -5034,8 +5029,7 @@ export class SessionMaintenance {
 		if (typeof known === "boolean") return known;
 		const leafId = this.#host.sessionManager.getLeafId();
 		if (known === leafId) return false;
-		const branch = this.#host.sessionManager.getBranchMatching(metadata => metadata.type === "compaction");
-		const entry = this.#archiveEntry(message, branch);
+		const entry = this.#archiveEntry(message);
 		const archive = entry && snapcompact.getPreservedArchive(entry.preserveData);
 		if (!archive) {
 			this.#replaysThinking.set(message, leafId);
@@ -5056,7 +5050,7 @@ export class SessionMaintenance {
 	 */
 	#messagesAsRead(
 		messages: AgentMessage[],
-		entries: readonly SessionEntry[],
+		entries: readonly SessionEntry[] | undefined,
 		model: Model | undefined = this.#model,
 	): AgentMessage[] {
 		if (!model) return messages;
@@ -5081,18 +5075,23 @@ export class SessionMaintenance {
 	}
 
 	/** The compaction entry among `entries` whose snapcompact archive `message` was built from. */
-	#archiveEntry(message: CompactionSummaryMessage, entries: readonly SessionEntry[]): CompactionEntry | undefined {
+	#archiveEntry(message: CompactionSummaryMessage, entries?: readonly SessionEntry[]): CompactionEntry | undefined {
 		const cached = this.#summaryEntries.get(message);
 		if (cached) return cached;
-		const entry = entries.findLast(
-			(entry): entry is CompactionEntry =>
-				entry.type === "compaction" &&
-				entry.summary === message.summary &&
-				new Date(entry.timestamp).getTime() === message.timestamp &&
-				snapcompact.getPreservedArchive(entry.preserveData) !== undefined,
-		);
-		if (entry) this.#summaryEntries.set(message, entry);
-		return entry;
+		const matches = (entry: SessionEntry): entry is CompactionEntry =>
+			entry.type === "compaction" &&
+			entry.summary === message.summary &&
+			new Date(entry.timestamp).getTime() === message.timestamp &&
+			snapcompact.getPreservedArchive(entry.preserveData) !== undefined;
+		const candidates = entries
+			? entries.toReversed()
+			: this.#host.sessionManager.iterateBranchMatchingNewestFirst(metadata => metadata.type === "compaction");
+		for (const entry of candidates) {
+			if (!matches(entry)) continue;
+			this.#summaryEntries.set(message, entry);
+			return entry;
+		}
+		return undefined;
 	}
 
 	/** `message` rebuilt from the archive view `reader` reads, or `message` itself when that is the original. */
@@ -5101,10 +5100,7 @@ export class SessionMaintenance {
 		model: Model,
 		reader: ArchiveReader,
 	): Promise<CompactionSummaryMessage> {
-		const entry = this.#archiveEntry(
-			message,
-			this.#host.sessionManager.getBranchMatching(metadata => metadata.type === "compaction"),
-		);
+		const entry = this.#archiveEntry(message);
 		let view: snapcompact.ArchiveView | undefined;
 		if (entry) {
 			view = reader.withoutFrames
