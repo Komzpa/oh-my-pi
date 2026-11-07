@@ -40,14 +40,16 @@ import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDeadlineUserMessage, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState, resolveTimeZone, STATE_ENTRY as GOAL_DEADLINE_STATE_ENTRY, type DeadlineState } from "./deadlines";
 import unansweredUserInstructions from "./unanswered-user-reply.md" with { type: "text" };
 import unpushedInstructions from "./unpushed-work.md" with { type: "text" };
+import { zeroActiveGate } from "./zero-active";
 import zeroActiveInstructions from "./zero-active.md" with { type: "text" };
+import planCheckInstructions from "./plan-check.md" with { type: "text" };
 import staffingAdvice from "./staffing-advice.md" with { type: "text" };
 import gateNoticeInstructions from "./gate-notices.md" with { type: "text" };
 import chatChoiceInstructions from "./chat-choice-gate.md" with { type: "text" };
 import riskReplanInstructions from "./risk-replan.md" with { type: "text" };
 import deadlineMissInstructions from "./deadline-miss.md" with { type: "text" };
 import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
-import { countLiveWorkerModels } from "./agent_router";
+import { assignedResourceRefusals, countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
 import { planChurnRows, planSlipMinutes, appendTimedNote, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
@@ -1032,6 +1034,7 @@ export function decideGateCall(
   call: GateCall,
   gates: readonly ActiveGate[],
 ): GateDecision {
+  if (call.name === "todo" && [undefined, "view", "history"].includes(todoOpOf(call))) return { allowed: true, remedyGateIds: [] };
   if (READ_TIER.has(call.name)) return { allowed: true, remedyGateIds: [] };
   // A planning problem must not prevent the lead from delivering an owner question.
   if (call.name === "ask") return { allowed: true, remedyGateIds: [] };
@@ -4005,7 +4008,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (pauseGate?.paused || gateSwitchedOff(ctx)) return;
     const decision = measured ?? currentDecision(ctx, now, pending);
     const displayContext = leadDisplayContext(ctx, phases, decision);
-    const rows = staffingRows(phases, displayContext);
+    const refusals = assignedResourceRefusals(phases, ctx);
+    const rows = staffingRows(phases, displayContext).filter(row => !refusals.has(row.content));
     if (rows.length) notice("staffing", JSON.stringify(rows.map(row => [row.content, row.owner, row.previous ?? null])), staffingData(rows));
     const tasks = [...new Set(getTodoPlanningIssues(phases).map(issue => issue.task))];
     if (tasks.length) notice("schedule", JSON.stringify(tasks), { schedule: true, rows: tasks.map(task => JSON.stringify(task)).join(", "), tasks });
@@ -4061,13 +4065,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const runningOwnerNames = (ctx: ExtensionContext): Set<string> => new Set((ctx.getAsyncJobSnapshot()?.running ?? [])
     .flatMap((job) => [job.id, job.agentId, job.label].filter((name): name is string => typeof name === "string")));
   let zeroActiveCalls = 0;
-  let zeroActiveBriefReads = 0;
   const zeroActiveNag = (ctx: ExtensionContext): string | undefined => {
     if (singleWriterLane || !isMain(ctx) || gateSwitchedOff(ctx) || pauseGate?.paused || !pi.getActiveTools().includes("task")) return;
     const jobs = ctx.getAsyncJobSnapshot();
     if (!jobs || jobs.running.some(job => job.status === "running" && !job.queued && (job.type === "task" || jobs.nonJobAgents?.some(agent => agent.live && agent.id === job.agentId)))) {
       zeroActiveCalls = 0;
-      zeroActiveBriefReads = 0;
       return;
     }
     const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
@@ -4078,10 +4080,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     });
     if (!rows.length) {
       zeroActiveCalls = 0;
-      zeroActiveBriefReads = 0;
       return;
     }
-    return prompt.render(zeroActiveInstructions, { count: rows.length,
+    const refusals = assignedResourceRefusals(phases, ctx);
+    const conflicts = rows.flatMap(row => refusals.has(row.content) ? [{row: row.content, reason: refusals.get(row.content)}] : []);
+    return prompt.render(zeroActiveInstructions, { count: rows.length, conflicts,
       rows: rows.map(row => row.content.replace(/\s+/g, " ")).join("; ").slice(0, 185),
     }).trim();
   };
@@ -5329,7 +5332,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           pendingTaskReconciliation = null;
         }
       }
-      const dispatchable = decision.dispatchableReady ?? [];
+      const claimRefusals = assignedResourceRefusals(todoPhases(ctx), ctx);
+      const dispatchable = (decision.dispatchableReady ?? []).filter(row => !claimRefusals.has(row.content));
       const available = decision.capacity === 0
         ? dispatchable.length
         : Math.max(0, decision.capacity - (decision.activeTaskCount ?? 0));
@@ -5466,11 +5470,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const nag = zeroActiveNag(ctx);
     if (nag && !isStaffingCall(event.toolName, event.input)) {
       zeroActiveCalls += 1;
-      if (zeroActiveCalls >= 3) {
-        const briefRead = event.toolName === "read" && typeof event.input?.path === "string" && event.input.path.startsWith("agent://");
-        if (!briefRead || zeroActiveBriefReads >= 2) return { block: true, reason: nag };
-        zeroActiveBriefReads += 1;
-      }
+      const gate = zeroActiveGate(nag);
+      const verdict = decideGateCall({ name: event.toolName, arguments: event.input ?? {} }, [gate]);
+      // Inspection and every named remedy stay open; repeated warnings never become a read ban.
+      if (zeroActiveCalls >= 3 && zeroActiveCalls <= 5 && !verdict.allowed) return { block: true, reason: nag };
     }
     const originalTaskItems = event.toolName === "task" ? taskItems(event.input) : [];
     let contractInput;
@@ -5582,7 +5585,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const display = leadDisplayContext(ctx, phases, decision);
       const needy = phases.flatMap(phase => phase.tasks).filter(row => isOpenRowStatus(row.status) && classifyTodoDisplayRow(row, phases, display).state === "needs worker");
       const previous = needy.filter(row => classifyTodoDisplayRow(row, phases, display).previous);
-      const priority = previous.length ? previous : needy;
+      const claimRefusals = assignedResourceRefusals(phases, ctx);
+      const priority = (previous.length ? previous : needy).filter(row => !claimRefusals.has(row.content));
       const jobs = ctx.getAsyncJobSnapshot();
       const capacity = ctx.getTaskMaxConcurrency?.();
       const active = jobs?.running.filter(job => job.type === "task" && job.status === "running" && !job.queued).length ?? 0;
@@ -6071,7 +6075,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     });
     const distantBlocked = phasesNow
       .flatMap((phase) => phase.tasks.map((task) => ({ phase: phase.name, task })))
-      .filter(({ task }) => task.status === "blocked" && typeof task.blocker === "string" && isDistantWaitReason(task.blocker))
+      .filter(({ task }) => task.status === "blocked" && typeof task.blocker === "string" && isDistantWaitReason(task.blocker) &&
+        !(task.schedule?.dependencies ?? []).some(dependency => phasesNow.some(phase => phase.tasks.some(row => row.content === dependency && isNonClosedRowStatus(row.status)))))
       .map(({ task }) => `DROP blocked row ${JSON.stringify(task.content)} (${JSON.stringify(task.blocker)}); record a trigger note "when X changes -> do Y". Reserve blocked for waits of hours.`);
     const workerRows = workerInfos.flatMap(({ id, row, trace, age, p95Text }) => {
       if (!row) return [];
@@ -6222,7 +6227,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // Background ticks must not wake the chief for healthy worker telemetry.
     if (problemsOnly && problems.length === 0) return null;
     return problems.length
-      ? `PLAN CHECK: ${problems.length} problem(s). ${problems.map((line, i) => `(${i + 1}) ${line}`).join(" ")}.${workerStatus ? ` ${workerStatus}` : ""} Fix them with the pass of skill://chief-of-staff.`
+      ? prompt.render(planCheckInstructions, {count: problems.length, problems: problems.map((line, i) => `(${i + 1}) ${line}`).join(" "), workerStatus}).trim()
       : workerStatus
         ? `${PLAN_CHECK_CLEAN} ${workerStatus}`
         : PLAN_CHECK_CLEAN;
@@ -6601,10 +6606,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const anchor = rehydrateDeadlineState(dispatchStateEntries(ctx));
     const late = planSlipMinutes(anchor?.baselineDeadlineAt === undefined ? decision.deadline?.deadlineAt : anchor.baselineDeadlineAt * 1_000, Date.now(), open.length > 0);
     if (late) defects.push({ row: "", action: `Plan late ${late}m: cut/split/parallelize or ask owner`, severity: 0 });
+    const claimRefusals = assignedResourceRefusals(phases, ctx);
     const staffing = staffingRows(phases, display);
     for (const row of staffing) {
       const forecast = decision.forecast?.rows.find(item => item.content === row.content);
-      defects.push({ row: row.content, action: lastTaskDispatchRefused ? "Repair refused staffing for" : "Staff", severity: forecast?.overdue ? 1 : 3 });
+      defects.push({ row: row.content, action: claimRefusals.has(row.content) ? "Repair claim for" : lastTaskDispatchRefused ? "Repair refused staffing for" : "Staff", severity: forecast?.overdue ? 1 : 3 });
     }
     const push = ownsBranchWork(ctx) && gitStateCache?.cwd === ctx.cwd ? gitStateCache.state : undefined;
     if (push?.unpushed && (push.oldestUnpushedAgeMs ?? 0) >= (push.pushThresholdMs ?? STALE_PUSH_MS))
@@ -6665,7 +6671,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return wait && userUnblockWasAsked(ctx, row.content, wait.question);
     }).map(row => row.content));
     const displayContext = leadDisplayContext(ctx, phases, decision);
-    const rowInstructions = chief ? renderLeadRowInstructions(phases, displayContext, { now, forecast: decision.forecast, reviewAnswers, userBlockAsked }) : "";
+    const rowInstructions = chief ? renderLeadRowInstructions(phases, displayContext, { now, forecast: decision.forecast, reviewAnswers, userBlockAsked, dispatchRefusals: assignedResourceRefusals(phases, ctx) }) : "";
     const visibleRows = chief ? phases.flatMap(phase => phase.tasks).filter(row => isNonClosedRowStatus(row.status) || isTodoAwaitingReview(row)).map(row => classifyTodoDisplayRow(row, phases, displayContext)) : [];
     const questions = phases.flatMap(phase => phase.tasks).filter(row => row.status === "blocked" && row.schedule?.owner && row.blocker && !parseUserWait(row.blocker))
       .map(row => ({ worker: row.schedule.owner, question: row.blocker }));
@@ -6779,7 +6785,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     let messages = event.messages;
     if (isMain(ctx) && event.messages.some(isStaffing)) {
       const phases = todoPhases(ctx);
-      const rows = staffingRows(phases, leadDisplayContext(ctx, phases, currentDecision(ctx)));
+      const refusals = assignedResourceRefusals(phases, ctx);
+      const rows = staffingRows(phases, leadDisplayContext(ctx, phases, currentDecision(ctx))).filter(row => !refusals.has(row.content));
       const last = event.messages.findLast(isStaffing);
       messages = event.messages.flatMap(message => !isStaffing(message) ? [message]
         : message === last && rows.length ? [{ ...message, content: prompt.render(gateNoticeInstructions, staffingData(rows)).trim() }] : []);

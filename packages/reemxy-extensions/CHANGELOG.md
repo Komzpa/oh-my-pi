@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep inspection and claim recovery available during zero-active staffing, with executable remedies and bounded refusals ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Keep read-only audits from blocking writers and allow per-task resource scopes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Refuse conflicting task items before reporting spawned workers, while starting independent siblings ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

@@ -66,3 +66,55 @@ ad46530ea5b8edace114ebbeeb4c29ac17ea45e3bc5bb45963ca49efc89efa66  lead-eval-base
 ca355d0ff17480074dd2e22e7093357d9bf6ba0d713cc68bfc1ae06b7db41187  lead-eval-after-final.json
 857a3d425b48fb66eeececfa705e1dc6a9d9ec15d83712453ffdd7d6a09bdd20  lead-eval-after-corrected.json
 ```
+
+## 2026-11-07 gate and deadlock extension
+
+The new lane extends the previous report; its baseline is `a4991eb837d0cd6196461208a98b31083dab931f`. See [evidence/telepathy.md](../evidence/telepathy.md) for the causal fix, invariant replay, exact checks, decision, budget and receipt hashes. Gates: **0/8 → 8/8** on codex-lb/gpt-6-luna, four unique contexts, no returned tool execution. Structural regression: **1 pass / 2 fail → 3 pass / 0 fail**. Haiku credentials were absent, so that model remains unverified.
+
+| Scenario           | First executable action                                                                | Before | After |
+| ------------------ | -------------------------------------------------------------------------------------- | ------ | ----- |
+| rootclaim          | task: restore preview; read-only ROOT auditor does not conflict                        | 0/1    | 1/1   |
+| zeroactive         | task: restore preview; inspection stays available                                      | 0/1    | 1/1   |
+| harnessrole        | task: obey explicit runtime NEXT ACTION delivered through user-role harness wrapper    | 0/1    | 1/1   |
+| spawnconflict      | read agent://AuditPower; then narrow the actual claim or kill a confirmed stuck holder | 0/1    | 1/1   |
+| composite-deadlock | read agent://AuditPower; claim repair precedes another dispatch                        | 0/1    | 1/1   |
+| fixlist            | task: first FIX NOW row                                                                | 0/1    | 1/1   |
+| criticstale        | task: stale current critic action becomes FIX NOW #1                                   | 0/1    | 1/1   |
+| compactloop        | todo view: inspect pinned plan before reducing resident context                        | 0/1    | 1/1   |
+
+The full current suite scored **27/38 → 34/38**; the 30 pre-existing scenarios scored **27/30 → 26/30**. Scorers were preserved. Per-scenario single-response results follow; these counts are not a reliability claim.
+
+| Existing scenario          | Before | After |
+| -------------------------- | ------ | ----- |
+| unseen-product-decision    | 1/1    | 1/1   |
+| missing-executable-proof   | 1/1    | 1/1   |
+| working                    | 1/1    | 1/1   |
+| waiting                    | 1/1    | 0/1   |
+| verifying                  | 1/1    | 1/1   |
+| audit-queued               | 1/1    | 1/1   |
+| head-moved                 | 1/1    | 1/1   |
+| handoff-pending            | 1/1    | 1/1   |
+| never-handed-to-owner      | 1/1    | 1/1   |
+| auditing                   | 1/1    | 1/1   |
+| ready-to-close             | 1/1    | 1/1   |
+| needs-you                  | 1/1    | 1/1   |
+| findings-only              | 1/1    | 1/1   |
+| aborted                    | 1/1    | 1/1   |
+| failed                     | 1/1    | 1/1   |
+| refused                    | 1/1    | 1/1   |
+| lost-after-restart         | 1/1    | 1/1   |
+| audit-fail                 | 1/1    | 0/1   |
+| eta-reached                | 1/1    | 1/1   |
+| user-answered-review       | 0/1    | 1/1   |
+| review-page-accept         | 1/1    | 1/1   |
+| review-page-drop           | 1/1    | 1/1   |
+| review-page-redo           | 1/1    | 1/1   |
+| owner-question-telegram    | 1/1    | 1/1   |
+| running-worker-scope       | 1/1    | 1/1   |
+| blocked-on-user            | 0/1    | 0/1   |
+| blocked-user-already-asked | 1/1    | 1/1   |
+| estimate-cap               | 0/1    | 0/1   |
+| external-blocker           | 1/1    | 1/1   |
+| capacity-full              | 1/1    | 1/1   |
+
+All 136 requests, including failed corrective iterations, reserved $0.681686 against the unchanged $2 cap; provider usage reported $0.06197812. Raw evidence: `/home/kom/proj/ai_pr/omp-telepathy-20261107/evidence/lead-instructions`. The final eight-gate receipt supersedes only the eight gate rows from the full final run.

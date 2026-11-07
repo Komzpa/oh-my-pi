@@ -1,3 +1,6 @@
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { convertWithHarnessNotices } from "../../coding-agent/src/session/harness-notices";
+import { convertToLlm } from "../../coding-agent/src/session/messages";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,9 +17,16 @@ import { workerToolPreflight } from "./dispatch_preflight";
 import todoDescription from "../../coding-agent/src/prompts/tools/todo.md" with { type: "text" };
 import churn from "./fixtures/dc-verify-churn.json";
 import live from "./fixtures/dc-rowclose-1645.json";
-import todoDispatch from "./todo_dispatch";
+import todoDispatch, { decideGateCall } from "./todo_dispatch";
+import { admitAssignedResources } from "./agent_router";
+import { zeroActiveGate } from "./zero-active";
 
 export interface LeadInstructionScenario {
+	decisions?: Array<{
+		call: { name: string; arguments?: Record<string, unknown> };
+		allowed: boolean;
+		reason?: string;
+	}>;
 	id: string;
 	context: string;
 	todoDescription: string;
@@ -29,7 +39,7 @@ export interface LeadInstructionScenario {
 	answer?: string;
 	expectedReview?: string;
 }
-interface Case {
+export interface Case {
 	id: string;
 	row: TodoScheduleInputTask;
 	state: TodoDisplayState;
@@ -40,6 +50,9 @@ interface Case {
 	userBlockAsked?: boolean;
 	pageAnswer?: "accept" | "redo" | "drop";
 	scopeRefused?: boolean;
+	harnessRole?: boolean;
+	extraRows?: TodoScheduleInputTask[];
+	probeCalls?: Array<{ name: string; arguments?: Record<string, unknown> }>;
 }
 
 /** Independent consumer expectation: adding a display state requires a decision here. */
@@ -329,10 +342,10 @@ export async function leadInstructionScenarios(): Promise<LeadInstructionScenari
 	return results;
 }
 
-async function capture(item: Case): Promise<LeadInstructionScenario> {
+export async function capture(item: Case): Promise<LeadInstructionScenario> {
 	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-instruction-turn-"));
 	try {
-		let phases = [{ name: "Delivery", tasks: [structuredClone(item.row)] }];
+		let phases = [{ name: "Delivery", tasks: [structuredClone(item.row), ...structuredClone(item.extraRows ?? [])] }];
 		if (item.id === "waiting")
 			phases[0]!.tasks.push({
 				content: "DependencyWorker",
@@ -474,11 +487,61 @@ async function capture(item: Case): Promise<LeadInstructionScenario> {
 			);
 		if (item.pageAnswer)
 			await hooks.get("tool_call")?.({ toolName: "read", input: { path: "review-page" } } as never, ctx as never);
+		const decisions = [];
+		for (const call of item.probeCalls ?? []) {
+			const result = (await hooks.get("tool_call")!(
+				{ toolName: call.name, input: call.arguments, toolCallId: "probe" } as never,
+				ctx as never,
+			)) as { block?: boolean; reason?: string } | undefined;
+			decisions.push({ call, allowed: !result?.block, reason: result?.reason });
+		}
 		await hooks.get("turn_end")!({} as never, ctx as never);
 		const view = formatTodoView(phases as TodoPhase[], {
 			now: Date.now(),
 			capacity: item.context?.capacityFull ? workers.length : 20,
 		});
+		const viewResult = item.harnessRole
+			? ((await hooks.get("tool_result")!(
+					{
+						toolName: "todo",
+						input: { op: "view" },
+						toolCallId: "visible-view",
+						content: [{ type: "text", text: view }],
+						isError: false,
+					} as never,
+					ctx as never,
+				)) as { content?: unknown[] } | undefined)
+			: undefined;
+		const shaped = item.harnessRole
+			? ((await hooks.get("context")!(
+					{
+						messages: [
+							{
+								role: "toolResult",
+								toolName: "todo",
+								toolCallId: "visible-view",
+								content: viewResult?.content ?? [{ type: "text", text: view }],
+								isError: false,
+								timestamp: Date.now(),
+							},
+							...messages.map(message => ({
+								...message,
+								role: "custom",
+								display: false,
+								timestamp: Date.now(),
+							})),
+						],
+					} as never,
+					ctx as never,
+				)) as { messages: AgentMessage[] })
+			: undefined;
+		const visibleNotices = shaped
+			? convertWithHarnessNotices(shaped.messages, "user", convertToLlm).flatMap(message =>
+					typeof message.content === "string"
+						? [message.content]
+						: message.content.flatMap(part => (part.type === "text" ? [part.text] : [])),
+				)
+			: messages.map(message => message.content);
 		const finalRow = phases[0]!.tasks[0]!;
 		const state = schedule.classifyTodoDisplayRow(finalRow, phases, displayContext).state;
 		page?.stop(true);
@@ -491,6 +554,7 @@ async function capture(item: Case): Promise<LeadInstructionScenario> {
 			: undefined;
 		return {
 			id: item.id,
+			decisions,
 			phases: phases as TodoPhase[],
 			answer: item.pageAnswer,
 			expectedReview:
@@ -512,7 +576,7 @@ async function capture(item: Case): Promise<LeadInstructionScenario> {
 					: []),
 				...(item.userMessage ? [item.userMessage] : []),
 				view,
-				...messages.map(message => message.content),
+				...visibleNotices,
 			].join("\n\n"),
 		};
 	} finally {
@@ -525,6 +589,32 @@ export async function verifyLeadRoundTrip(
 	scenario: LeadInstructionScenario,
 	calls: Array<{ name: string; arguments: unknown }>,
 ): Promise<boolean> {
+	if (scenario.decisions?.length) {
+		for (const call of calls) {
+			if (typeof call.arguments !== "object" || call.arguments === null) return false;
+			const args = call.arguments as Record<string, unknown>;
+			const matching = scenario.decisions.filter(
+				decision =>
+					decision.call.name === call.name &&
+					decision.call.arguments?.op === args.op &&
+					decision.call.arguments?.path === args.path,
+			);
+			if (matching.some(decision => !decision.allowed)) return false;
+			if (!decideGateCall({ name: call.name, arguments: args }, [zeroActiveGate(scenario.context)]).allowed)
+				return false;
+			if (call.name === "task") {
+				for (const item of (args.tasks ?? []) as Array<Record<string, unknown>>) {
+					const ctx = {
+						cwd: "/fixture",
+						getTodoPhases: () => scenario.phases,
+						updateTodoSchedule: () => true,
+					} as unknown as ExtensionContext;
+					if (admitAssignedResources(item, ctx)) return false;
+				}
+			}
+		}
+		return true;
+	}
 	if (
 		calls.some(
 			call => call.name === "ask" || (call.name === "write" && JSON.stringify(call.arguments).includes("/kill")),

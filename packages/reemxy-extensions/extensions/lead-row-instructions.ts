@@ -15,6 +15,7 @@ import notices from "./gate-notices.md" with { type: "text" };
 
 export interface LeadRowInstructionOptions {
 	now: number;
+	dispatchRefusals?: ReadonlyMap<string, string>;
 	forecast?: TodoPlanForecast;
 	reviewAnswers?: ReadonlySet<string>;
 	userBlockAsked?: ReadonlySet<string>;
@@ -69,6 +70,10 @@ export function renderLeadRowInstructions(
 					data.waitReview = !data.reviewAction;
 					break;
 				case "needs worker":
+					if (options.dispatchRefusals?.has(row.content)) {
+						data.dispatchRefusal = options.dispatchRefusals.get(row.content);
+						break;
+					}
 					data.workerAction = true;
 					data.proofAction =
 						after?.kind === "needs-worker" &&

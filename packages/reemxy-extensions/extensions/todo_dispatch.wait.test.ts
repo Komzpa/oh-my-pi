@@ -211,7 +211,7 @@ test("an idle chief gets a persisted continuation demand for ready and overdue r
 		expect(demand?.content).toContain("0 workers running");
 		expect(demand?.content).toContain("Row 1");
 		expect(demand?.content.length).toBeLessThanOrEqual(300);
-		expect(demand?.content).toContain("Dispatch them now with task");
+		expect(demand?.content).toContain("NEXT ACTION: dispatch with task");
 		expect(demand?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: true });
 		expect(h.entries.some(entry => entry.type === "message" && entry.message?.customType === "todo-idle-plan-demand")).toBe(true);
 	} finally { h.shutdown(); }
@@ -2147,7 +2147,7 @@ test("a newer human correction cannot wait behind an earlier unplanned probe", a
 });
 
 
-test("zero-active live shape nags first, refuses third call, permits staffing and two brief reads", async () => {
+test("zero-active staffing never blocks inspection or named remedies after repeated reads", async () => {
 	const now = Date.now();
 	const phases = chainedPlan(3, now);
 	for (const row of phases[0].tasks) { row.status = "pending"; row.schedule.owner = undefined; row.schedule.dependencies = []; }
@@ -2158,28 +2158,27 @@ test("zero-active live shape nags first, refuses third call, permits staffing an
 		expect((await call("todo", { op: "view" }))?.block).not.toBe(true);
 		const view = await result("todo", { op: "view" });
 		expect(view.content[0].text).toContain("0 workers running while 3 rows need one:");
-		expect(view.content[0].text.length).toBeLessThanOrEqual(300);
+		expect(view.content[0].text.length).toBeLessThanOrEqual(2000);
 		expect(view.content[1].text).toBe("original output");
 		expect((await call("read", { path: "proc://list" }))?.block).not.toBe(true);
-		expect((await result("read", { path: "proc://list" }, true)).content[0].text).toContain("Dispatch them now with task");
+		expect((await result("read", { path: "proc://list" }, true)).content[0].text).toContain("NEXT ACTION: dispatch with task");
 		const refusal = await call("todo", { op: "view" });
-		expect(refusal?.block).toBe(true);
-		expect(refusal.reason.length).toBeLessThanOrEqual(300);
+		expect(refusal?.block).not.toBe(true);
 		expect((await call("read", { path: "agent://prior" }))?.block).not.toBe(true);
 		expect((await call("read", { path: "agent://other" }))?.block).not.toBe(true);
-		expect((await call("read", { path: "agent://third" }))?.block).toBe(true);
+		expect((await call("read", { path: "agent://third" }))?.block).not.toBe(true);
 		expect((await call("ask", { question: "scope?" }))?.block).not.toBe(true);
 		expect((await call("todo", { op: "schedule", updates: [] }))?.reason ?? "").not.toContain("0 workers running");
 		expect((await call("task", { tasks: [{ name: "ProduceRow", agent: "task", task: "Row 1" }] }))?.block).not.toBe(true);
 		await result("task", {}, true);
-		expect((await call("read", { path: "proc://list" }))?.block).toBe(true);
+		expect((await call("read", { path: "proc://list" }))?.block).not.toBe(true);
 		for (let turn = 0; turn < 6; turn++) {
 			await h.handlers.get("turn_start")({}, h.ctx);
 			await h.handlers.get("session_stop")({}, h.ctx);
 		}
 		const nags = h.notices.filter(n => n.customType === "todo-idle-plan-demand");
 		expect(nags).toHaveLength(6);
-		expect(nags.every(n => n.delivery.triggerTurn && n.content.length <= 300)).toBe(true);
+		expect(nags.every(n => n.delivery.triggerTurn && n.content.length <= 2000)).toBe(true);
 		h.setRunning([{ id: "worker-a", agentId: "worker-a", label: "Row 1", type: "task", status: "running" }]);
 		expect((await call("read", { path: "proc://list" }))?.block).not.toBe(true);
 		expect(await result("read")).toBeUndefined();
