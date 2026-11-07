@@ -1,6 +1,6 @@
 import { loadRowRisk } from "../task/row-risk";
 import type { RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { isTodoSelectionEntryMetadata } from "../tools/todo";
+import { getLiveTodoBranchEntries, isTodoSelectionEntryMetadata } from "../tools/todo";
 import { selectBranchEntries } from "../session/branch-selection";
 /**
  * Interactive mode for the coding agent.
@@ -5467,10 +5467,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#syncTodoHudState(owner: AgentViewSession): void {
 		this.#cancelTodoAutoClearTimer();
 		const phases = this.todoPhases;
-		const persisted = getTodoHudVisibility(
-			selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
-			phases,
-		);
+		const persisted = getTodoHudVisibility(getLiveTodoBranchEntries(owner.sessionManager), phases);
 		this.#todoHudHidden = persisted === "dismissed";
 		if (persisted || phases.length === 0) return;
 		const tasks = phases.flatMap(phase => phase.tasks);
@@ -5492,7 +5489,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			await owner.settleInFlightMessagePersistence();
 			if (!isCurrent()) return;
 			const data = createTodoHudStateData(
-				selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
+				getLiveTodoBranchEntries(owner.sessionManager),
 				this.todoPhases,
 				"dismissed",
 			);
@@ -10435,7 +10432,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				owner.sessionManager.appendCustomEntry(TODO_HUD_STATE_CUSTOM_TYPE, data);
 			};
 			const data = createTodoHudStateData(
-				selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
+				getLiveTodoBranchEntries(owner.sessionManager),
 				this.todoPhases,
 				"revealed",
 			);
@@ -10462,7 +10459,7 @@ export class InteractiveMode implements InteractiveModeContext {
 						)
 							return;
 						const settledData = createTodoHudStateData(
-							selectBranchEntries(owner.sessionManager, isTodoSelectionEntryMetadata),
+							getLiveTodoBranchEntries(owner.sessionManager),
 							this.todoPhases,
 							"revealed",
 						);
