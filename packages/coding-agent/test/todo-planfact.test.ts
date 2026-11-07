@@ -1,6 +1,7 @@
 import { afterEach, expect, test, spyOn } from "bun:test";
-import { applyOpsToPhases } from "../src/tools/todo";
-import { forecastTodoPlan } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { applyOpsToPhases, markdownToPhases, phasesToMarkdown } from "../src/tools/todo";
+import { forecastTodoPlan, formatTaskForecastDisplay } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { applyTodoExecutorObservation } from "../src/tools/todo-executor";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
 afterEach(() => {
@@ -38,11 +39,16 @@ test("owner changes and reopening retain first promise, clock and revision histo
 	expect(schedule.firstEstimate?.likelySeconds).toBe(60);
 	expect(schedule.firstEstimate?.updatedAt).toBe(start);
 	expect(schedule.startedAt).toBe(start);
-	expect(schedule.reestimateCount).toBe(3);
+	expect(schedule.reestimateCount).toBe(0);
+	expect(schedule.cumulativeReestimateCount).toBe(3);
+	expect(markdownToPhases(phasesToMarkdown(phases)).phases[0]!.tasks[0]!.schedule).toEqual(schedule);
+	expect(
+		formatTaskForecastDisplay(forecastTodoPlan(phases, { now: start + 180_000 }).rows[0]!, start + 180_000),
+	).toContain("reestimated 3×");
 	const progress = applyOpsToPhases(phases, [
 		{ op: "schedule", updates: [{ task: "Deliver", evidence: "still checking" }] },
 	]);
-	expect(progress.phases[0]!.tasks[0]!.schedule?.reestimateCount).toBe(3);
+	expect(progress.phases[0]!.tasks[0]!.schedule?.cumulativeReestimateCount).toBe(3);
 	expect(progress.phases[0]!.tasks[0]!.schedule?.firstEstimate).toEqual(schedule.firstEstimate);
 });
 
@@ -82,4 +88,43 @@ test("completed session rows calibrate remaining work with bounded ratios and re
 	expect(forecastTodoPlan(phases, { now: start }).calibration?.ratio).toBe(20);
 	delete phases[0]!.tasks[0]!.schedule!.startedAt;
 	expect(forecastTodoPlan(phases, { now: start }).calibration).toEqual({ ratio: 1, samples: 0 });
+});
+
+test("successor launch retains cumulative churn and first clock while refreshing its owner budget", () => {
+	const first = { ...estimate(60), updatedAt: start };
+	const phases: TodoPhase[] = [
+		{
+			name: "Ship",
+			tasks: [
+				{
+					content: "Deliver",
+					status: "in_progress",
+					schedule: {
+						owner: "A",
+						reestimateCount: 5,
+						firstEstimate: first,
+						estimate: first,
+						startedAt: start,
+					},
+				},
+			],
+		},
+	];
+	const updated = applyTodoExecutorObservation(phases, {
+		row: "Deliver",
+		workerId: "B",
+		startedAt: start + 600_000,
+		runningWorkerIds: new Set(),
+	})!;
+	expect(updated[0]!.tasks[0]!.schedule).toMatchObject({
+		owner: "B",
+		reestimateCount: 0,
+		cumulativeReestimateCount: 5,
+		firstEstimate: first,
+		startedAt: start,
+	});
+	const revised = applyOpsToPhases(updated, [
+		{ op: "schedule", updates: [{ task: "Deliver", estimate: estimate(30) }] },
+	]).phases;
+	expect(revised[0]!.tasks[0]!.schedule).toMatchObject({ reestimateCount: 1, cumulativeReestimateCount: 6 });
 });

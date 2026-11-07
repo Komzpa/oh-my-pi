@@ -116,7 +116,7 @@ test("a passed automatic forecast deadline creates a mandatory replan and report
 	expect(demand?.reminder[0].content).toContain("Ship the package");
 });
 
-test("new estimates answer the forecast replan and keep the automatic deadline on the revised finish", async () => {
+test("new estimates answer the forecast replan without moving the anchored automatic deadline", async () => {
 	const now = Date.now();
 	const task = { content: "Ship the package", status: "pending", schedule: { dependencies: [], resources: ["package"], estimate: estimate(now - 1_000, 1_800) } };
 	const h = await demandHarness([task], undefined, now - 60_000);
@@ -128,5 +128,6 @@ test("new estimates answer the forecast replan and keep the automatic deadline o
 	expect(afterReplan?.toolName).toBe("task");
 	const state = h.branch.filter(entry => entry.customType === STATE_ENTRY).at(-1).data;
 	expect(state.auto).toBe(true);
-	expect(state.baselineDeadlineAt * 1_000).toBeGreaterThan(Date.now());
+	expect(state.baselineDeadlineAt).toBe(Math.floor((now - 60_000) / 1_000));
+	expect(state.stages[0].deadlineAt).toBe(state.baselineDeadlineAt);
 });
