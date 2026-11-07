@@ -5535,7 +5535,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		hasRegistered = true;
 		if (options.peerCoordination) {
 			peerRuntime = new PeerRuntime(session, resolvedAgentId, cwd, agentRegistry);
-			await peerRuntime.initialize();
+			peerRuntime.startInitialization();
 			disposeCallbacks.add(() => peerRuntime?.dispose());
 		}
 		// MCP notification bridge cleanup — assigned when the bridge is wired below,

@@ -287,6 +287,8 @@
 ### Fixed
 
 - On macOS, the browser tool's headless Chromium keeps background tabs at normal CPU priority, so on a busy machine `tab.traceStart()`, opening a second tab, and other calls into background tabs no longer stall or time out
+- Subagents start without waiting for peer Git status, while early mutations remain attributed and disposal cancels baseline discovery ([Komzpa/oh-my-pi#146](https://github.com/Komzpa/oh-my-pi/pull/146) by [@Komzpa](https://github.com/Komzpa))
+
 - Subagents loading MCP tools (such as Kata's `load_*`) no longer change the main session's tools or system prompt
 - Mounting an MCP tool mid-session on prefix-bound models no longer changes the eval tool description, and the mount notice now reaches the model
 - Worker-thread subagents are faster: switching views on long transcripts no longer lags, `wait` no longer streams full transcripts, and they stall less on a busy main thread
