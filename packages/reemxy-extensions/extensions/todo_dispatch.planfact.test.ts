@@ -1,6 +1,9 @@
 // @ts-nocheck -- extension event harness uses the public host boundary.
 import { afterEach, expect, test, spyOn, mock } from "bun:test";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import * as calibration from "@oh-my-pi/pi-coding-agent/tools/todo-plan-calibration";
+import { forecastTodoLivePlan } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { TODO_PREDICTION_VERSION } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch from "./todo_dispatch";
 import * as leadNotes from "./lead_time_notes";
 import { readGoalDeadline } from "./deadlines";
@@ -74,4 +77,42 @@ test("failed attempts demand a strategy change; on-time work has no urgency and 
   expect(note).not.toContain("URGENCY");
   row.status = "completed";
   expect(leadNotes.renderPlanFactNote(phases, now, now - 60_000)).toBe("");
+});
+
+// Without shared history the note reports 0 origins while todo reports calibrated coverage.
+test("time note and todo forecast consume the same seeded cross-session calibration store", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "note-calibration-"));
+  const store = new calibration.TodoPlanCalibrationStore(join(cwd, "history.jsonl"));
+  try {
+    for (let session = 0; session < 5; session++) for (let hour = 1; hour <= 4; hour++)
+      await store.append({ members: ["row"], prediction: {
+        sessionId: `s${session}`, originAt: hour * 3_600_000,
+        rawP50Finish: hour * 3_600_000 + 60_000, actualFinish: hour * 3_600_000 + 7_200_000,
+        upperFinish: hour * 3_600_000 + 8_000_000, observedAt: 100_000_000, predictionVersion: TODO_PREDICTION_VERSION, membershipFingerprint: "row",
+      } });
+    await store.refresh();
+    spyOn(calibration, "getTodoPlanCalibrationStore").mockReturnValue(store);
+    spyOn(Date, "now").mockReturnValue(200_000_000);
+    const plan = [{ name: "Work", tasks: [{ content: "Implement", status: "pending", schedule: {
+      dependencies: [], estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180,
+        confidence: "medium", basis: "fixture", updatedAt: 200_000_000 },
+    } }] }];
+    const handlers = new Map(); const sent = [];
+    await todoDispatch({ on: (name, fn) => handlers.set(name, fn), getActiveTools: () => ["task", "todo"],
+      pi: { forecastTodoPlan, formatPlanForecast, formatTaskForecast, getLatestTodoPhasesFromEntries, readGoalDeadline: () => undefined },
+      appendEntry: () => {}, sendMessage: message => sent.push(message),
+    });
+    const ctx = { cwd, sessionManager: { getHeader: () => ({ id: "fresh" }), getBranch: () => [] },
+      getTodoSnapshot: () => plan, getAsyncJobSnapshot: () => ({ running: [], recent: [] }), getTaskMaxConcurrency: () => 4,
+      isIdle: () => false, hasPendingMessages: () => false, setTimeout: () => ({}), clearTimer: () => {},
+    };
+    await handlers.get("agent_end")({}, ctx);
+    await handlers.get("turn_end")({}, ctx);
+    const forecast = forecastTodoLivePlan(plan, [], { now: Date.now(), capacity: 4 });
+    expect(forecast.calibrationOrigins).toBeGreaterThan(0);
+    const coverage = forecast.calibrationCoverage;
+    const note = sent.find(message => message.customType === "todo-dispatch-time-note").content;
+    expect(note).toContain(`observed coverage ${coverage.covered}/${coverage.total}, ${forecast.calibrationSessions} sessions`);
+    expect(note).not.toContain("0 origins, 0 sessions");
+  } finally { await rm(cwd, { recursive: true, force: true }); }
 });

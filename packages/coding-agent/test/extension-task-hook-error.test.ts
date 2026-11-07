@@ -7,7 +7,7 @@ import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensi
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
-test("task hook failures expose the hook and attempted readonly property", async () => {
+test.each(["error", "staffing"])("refused task (%s) starts with no-spawn outcome before details", async mode => {
 	const tempDir = TempDir.createSync("@task-hook-error-");
 	const extensionsDir = tempDir.path();
 	const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
@@ -17,7 +17,11 @@ test("task hook failures expose the hook and attempted readonly property", async
 		const extensionPath = path.join(extensionsDir, "readonly.ts");
 		await Bun.write(
 			extensionPath,
-			`export default function(pi) {
+			mode === "staffing"
+				? `export default function(pi) {
+            pi.on("tool_call", () => ({ block: true, reason: 'Staff "Push: project gates" via task before waiting.' }));
+        }`
+				: `export default function(pi) {
             pi.on("tool_call", function readonlyTaskHook() {
                 const row = Object.freeze({ schedule: {} });
                 row.schedule = { review: "user" };
@@ -41,6 +45,11 @@ test("task hook failures expose the hook and attempted readonly property", async
 			input: {},
 		});
 		expect(result?.block).toBe(true);
+		expect(result?.reason).toStartWith("REFUSED: no worker was spawned.\n");
+		if (mode === "staffing") {
+			expect(result?.reason).toContain('Staff "Push: project gates"');
+			return;
+		}
 		expect(result?.reason).toContain("tool_call (task)");
 		expect(result?.reason).toContain("readonlyTaskHook");
 		expect(result?.reason).toContain("row.schedule");
