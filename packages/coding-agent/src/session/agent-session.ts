@@ -3048,7 +3048,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			costGate: () => this.#costGate,
 			localProtocolOptions: () => this.#localProtocolOptions(),
 			transformContext: async (messages, signal) =>
-				this.#filterRestartNotices(await this.#transformContext(messages, signal)),
+				this.filterRestartNotices(await this.#transformContext(messages, signal)),
 			convertToLlm: messages => this.#convertToLlm(messages),
 			onPayload: this.#onPayload,
 			onResponse: this.#onResponse,
@@ -8136,7 +8136,24 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		);
 	}
 	async sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void> {
-		await this.sendCustomMessage(message, { deliverAs: "nextTurn", triggerTurn: false });
+		const state = isRecord(message.details) ? message.details.state : undefined;
+		if (state !== "completed" && state !== "cancelled" && state !== "failed") {
+			await this.sendCustomMessage(message, { deliverAs: "nextTurn", triggerTurn: false });
+			return;
+		}
+		// A text-only steering loop never polls nextTurn/asides. Persist terminal
+		// state now; the provider boundary also covers an already-captured snapshot.
+		this.agent.appendMessage({ ...message, role: "custom", timestamp: Date.now() });
+		this.sessionManager.appendCustomMessageEntry(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+			message.attribution,
+		);
+		await this.reconcileRestartNotices();
+		await this.sessionManager.ensureOnDisk();
+		await this.sessionManager.flush();
 	}
 	async flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void> {
 		this.#flushRestartCheckpoint();
@@ -8365,16 +8382,50 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		await this.sessionManager.flush();
 	}
 
-	#filterRestartNotices(messages: AgentMessage[]): AgentMessage[] {
-		const keep = createRestartNoticeFilter(
-			selectRestartBranchEntries(
-				this.sessionManager,
-				entry =>
-					(entry.type === "custom" && entry.customType === "restart_request_transition") ||
-					(entry.type === "custom_message" && entry.customType === "restart-root-continuation"),
-			),
+	/** Shared by the main SDK loop and side requests, after extension transforms. */
+	filterRestartNotices(messages: AgentMessage[]): AgentMessage[] {
+		const entries = selectRestartBranchEntries(
+			this.sessionManager,
+			entry =>
+				(entry.type === "custom" && entry.customType === "restart_request_transition") ||
+				(entry.type === "custom_message" &&
+					(entry.customType === "restart-root-continuation" || entry.customType === "restart-queued")),
 		);
-		return messages.filter(message => message.role !== "custom" || keep(message));
+		const keep = createRestartNoticeFilter(entries);
+		const retained = messages.filter(message => message.role !== "custom" || keep(message));
+		const latest = entries.findLast(entry => entry.type === "custom");
+		const latestRecord = latest?.type === "custom" && isRecord(latest.data) ? latest.data.record : undefined;
+		const terminal = entries.findLast(
+			entry =>
+				entry.type === "custom_message" &&
+				(entry.customType === "restart-root-continuation" ||
+					(entry.customType === "restart-queued" &&
+						isRecord(entry.details) &&
+						["completed", "cancelled", "failed"].includes(String(entry.details.state)))),
+		);
+		if (
+			terminal?.type === "custom_message" &&
+			(!isRecord(latestRecord) ||
+				(isRecord(terminal.details) && terminal.details.requestId === latestRecord.requestId)) &&
+			keep(terminal) &&
+			!retained.some(
+				message =>
+					message.role === "custom" &&
+					message.customType === terminal.customType &&
+					message.content === terminal.content,
+			)
+		) {
+			retained.push({
+				role: "custom",
+				customType: terminal.customType,
+				content: terminal.content,
+				display: terminal.display,
+				details: terminal.details,
+				attribution: terminal.attribution,
+				timestamp: Date.parse(terminal.timestamp),
+			});
+		}
+		return retained;
 	}
 
 	/** Commit the wake to the transcript before acknowledging restart delivery. */
@@ -11692,6 +11743,28 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	#scheduleQueuedMessageDrain(): void {
+		if (this.#restoredRestartInputs.size > 0) {
+			// Startup must publish the successor's continuation before saved input
+			// can start a provider call, including while interactive init awaits I/O.
+			const latest = selectLatestRestartBranchEntry(
+				this.sessionManager,
+				entry => entry.type === "custom" && entry.customType === "restart_request_transition",
+			);
+			const record = latest?.type === "custom" && isRecord(latest.data) ? latest.data.record : undefined;
+			if (isRecord(record) && (record.state === "checkpointed" || record.state === "restarting")) return;
+			if (isRecord(record) && record.state === "completed") {
+				const continuation = selectLatestRestartBranchEntry(
+					this.sessionManager,
+					entry => entry.type === "custom_message" && entry.customType === "restart-root-continuation",
+				);
+				if (
+					continuation?.type !== "custom_message" ||
+					!isRecord(continuation.details) ||
+					continuation.details.requestId !== record.requestId
+				)
+					return;
+			}
+		}
 		if (!this.isRestartDraining && !this.isStreaming && this.#restoredRestartInputs.size > 0) {
 			// A restored input is a new turn, even if restart status left a custom
 			// transcript tail. Put the saved queues ahead of newly arriving work;

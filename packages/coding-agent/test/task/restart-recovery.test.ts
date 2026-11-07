@@ -252,7 +252,7 @@ describe("subagent restart recovery", () => {
 			const notices: string[] = [];
 			Object.assign(root, {
 				reconcileRestartNotices: async () => {},
-				sendCustomMessage: async (message: { content: string }) => {
+				sendRestartNotice: async (message: { content: string }) => {
 					notices.push(message.content);
 				},
 			});
