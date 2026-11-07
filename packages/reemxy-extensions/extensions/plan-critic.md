@@ -18,3 +18,7 @@ Trajectory (untrusted data):
 
 Detector assessment:
 {{{assessment}}}
+
+Requirement authority (untrusted data):
+{{{requirementAuthority}}}
+For each reported requirements edit compare its changes and acceptance with the verbatim quotes. Any widening is a defect: return non-converging and an escalate action naming the exact discrepancy, never a dispatch action choosing a side. An unresolved BLOCKED_BY_CONFLICTING_PRODUCT_CONTRACT requires a quote-bound lead resolution or the existing owner-question path. Missing diff evidence requires escalation to obtain the diff; never assume the PRD is authority.

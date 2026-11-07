@@ -1,3 +1,4 @@
+import { rowRequirementQuotes, requirementConflict } from "./requirement_quotes";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -206,6 +207,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 		try {
 			const task = prompt.render(brief, {
 				digest: compactTrajectoryDigest(digest),
+				requirementAuthority: JSON.stringify(current.flatMap(phase => phase.tasks).map(row => ({ row: row.content, quotes: rowRequirementQuotes(ctx, row.content), conflict: requirementConflict(row), evidence: row.schedule?.progress?.evidence }))),
 				assessment: JSON.stringify({
 					converging: analyzeTrajectory(digest).converging,
 					criticalPathBlocker: analyzeTrajectory(digest).criticalPathBlocker,
