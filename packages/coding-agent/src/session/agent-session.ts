@@ -4251,7 +4251,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// current array is safe against (un)subscribes made by a listener.
 		for (const l of this.#eventListeners) {
 			try {
-				const result = l(event) as unknown;
+				const result = withLoopPhase(`session.listener:${event.type}:${l.name || "anonymous"}`, () =>
+					l(event),
+				) as unknown;
 				// Listener may be an async function whose returned Promise we don't await;
 				// attach a catch so a rejection does not become an unhandled rejection.
 				if (isPromise(result)) {
@@ -4484,7 +4486,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * event/persistence pipeline during teardown.
 	 */
 	#handleAgentEvent = (event: AgentEvent): Promise<void> => {
-		const processing = this.#dispatchAgentEvent(event);
+		const processing = withLoopPhase(`session.dispatch:${event.type}`, () => this.#dispatchAgentEvent(event));
 		this.#inFlightEventHandlers.add(processing);
 		void processing.finally(() => this.#inFlightEventHandlers.delete(processing)).catch(() => {});
 		return processing;
