@@ -84,13 +84,13 @@ import {
 	bindRequirementRowArtifact,
 	getLatestTodoPhasesFromEntries,
 	getRequirementArtifactTodoPhases,
+	currentRequirementTodoEntries,
 	getRequirementGateBranch,
 	historicalRequirementRowChanges,
 	getCompletedTodoRows,
 	getClosedTodoRows,
 	getAcceptedTodoRows,
 	getRequirementRowArtifact,
-	getTodoRowChanges,
 	getTodoActionRows,
 	USER_TODO_EDIT_CUSTOM_TYPE,
 	type RequirementRowArtifact,
@@ -116,13 +116,6 @@ import rowAuditTemplate from "../prompts/session/requirements-ledger-row-audit.m
 import linkedRowTemplate from "../prompts/session/requirements-ledger-linked-row.md" with { type: "text" };
 import flowNoticeTemplate from "../prompts/session/requirements-ledger-flow-notice.md" with { type: "text" };
 import unavailableToolsTemplate from "../prompts/session/requirements-ledger-tools-unavailable.md" with { type: "text" };
-
-function isTodoStateEntryMetadata(entry: RequirementEntryMetadata): boolean {
-	return (
-		(entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) ||
-		(entry.type === "message" && entry.messageRole === "toolResult" && entry.toolName === "todo")
-	);
-}
 
 /** The harness renames a worker whose requested name is taken by appending `-<n>`. */
 function sameWorkerIdentity(a: string, b: string): boolean {
@@ -274,6 +267,7 @@ export class RequirementsLedgerRuntime {
 	#publicationGeneration = 0;
 	#publicationState = "";
 	#noticeState = "";
+	#historySessionId: string | null | undefined;
 	#linkedRowNotices: Promise<void> = Promise.resolve();
 	readonly #stablePublicationGate: RequirementPublicationGate = (message, signal) =>
 		this.#publicationGate(message, signal);
@@ -303,12 +297,7 @@ export class RequirementsLedgerRuntime {
 	/** Synchronously commit a prepared candidate at the exact input-admission boundary. */
 	commitCandidate(prepared: PreparedRequirementCandidate): RequirementCandidateCommit {
 		if (this.#host.agentKind() !== "main" || this.#sessionId() !== prepared.sessionId) return { committed: false };
-		const requirements = getLatestRequirements(
-			matchingRequirementBranch(
-				this.#host.sessionManager,
-				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
-			),
-		);
+		const requirements = latestRequirementsFromSession(this.#host.sessionManager);
 		const before = requirements
 			.filter(requirement => requirement.classification === "candidate")
 			.map(requirement => requirement.id);
@@ -316,21 +305,15 @@ export class RequirementsLedgerRuntime {
 			this.#appender(),
 			createRequirementCandidates(requirements, [prepared.sourceText], new Date().toISOString(), [prepared.images]),
 		);
-		const after = getUnclassifiedRequirementCandidates(
-			matchingRequirementBranch(
-				this.#host.sessionManager,
-				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
-			),
+		const after = latestRequirementsFromSession(this.#host.sessionManager).filter(
+			requirement => requirement.classification === "candidate",
 		);
 		const added = after.filter(
 			requirement => requirement.classification === "candidate" && !before.includes(requirement.id),
 		);
 		let notice: RequirementCandidateNotice | undefined;
 		if (added.length > 0) {
-			const branch = matchingRequirementBranch(
-				this.#host.sessionManager,
-				metadata => metadata.type === "custom" || metadata.type === "message",
-			);
+			const branch = this.#currentRequirementBranch();
 			const rows = openTodoRowContents(branch);
 			const ids = added.map(requirement => requirement.id);
 			const details = formatUnclassifiedCandidateReminder(added, rows);
@@ -348,12 +331,7 @@ export class RequirementsLedgerRuntime {
 	/** A removed queue entry is an owner withdrawal, not an unfinished obligation. */
 	withdrawQueuedCandidates(sessionId: string, ids: readonly string[]): void {
 		if (this.#sessionId() !== sessionId || ids.length === 0) return;
-		const requirements = getLatestRequirements(
-			matchingRequirementBranch(
-				this.#host.sessionManager,
-				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
-			),
-		);
+		const requirements = latestRequirementsFromSession(this.#host.sessionManager);
 		const withdrawn = requirements.map(requirement =>
 			ids.includes(requirement.id) &&
 			(requirement.classification === "candidate" || requirement.classification === "linked")
@@ -406,12 +384,7 @@ export class RequirementsLedgerRuntime {
 		if (this.#host.agentKind() !== "main" || toolName !== "todo" || !isRecord(input)) return;
 		const op = input.op;
 		if (op !== "done" && op !== "rm" && op !== "drop" && op !== "init") return;
-		const branch = matchingRequirementBranch(
-			this.#host.sessionManager,
-			metadata =>
-				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
-				isTodoStateEntryMetadata(metadata),
-		);
+		const branch = this.#currentRequirementBranch();
 		const requirements = getLatestRequirements(branch).filter(requirement => requirement.classification === "linked");
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const requested = getTodoActionRows(
@@ -471,7 +444,7 @@ export class RequirementsLedgerRuntime {
 	async #announceFlowNotice(key: string, action: string, details: string): Promise<void> {
 		const branch = matchingRequirementBranch(
 			this.#host.sessionManager,
-			metadata => metadata.type === "custom" || metadata.type === "message",
+			metadata => metadata.type === "custom" && metadata.customType === "requirements_flow_notice",
 		);
 		if (
 			branch.some(
@@ -504,10 +477,15 @@ export class RequirementsLedgerRuntime {
 		) {
 			return undefined;
 		}
-		const branch = matchingRequirementBranch(
-			this.#host.sessionManager,
-			metadata => metadata.type === "custom" || metadata.type === "message",
-		);
+		const branch = this.#currentRequirementBranch();
+		for (const predicate of [
+			(metadata: RequirementEntryMetadata) => metadata.type === "message" && metadata.messageRole === "user",
+			(metadata: RequirementEntryMetadata) =>
+				metadata.type === "custom" && metadata.customType === "requirements_candidate_reminder",
+		]) {
+			const entry = matchingRequirementBranchNewestFirst(this.#host.sessionManager, predicate).next().value;
+			if (entry) branch.push(entry);
+		}
 		const candidates = getUnclassifiedRequirementCandidates(branch);
 		if (candidates.length === 0) return undefined;
 		const rows = openTodoRowContents(branch);
@@ -532,12 +510,7 @@ export class RequirementsLedgerRuntime {
 		const sessionId = this.#sessionId();
 		if (!sessionId) return undefined;
 
-		const branch = matchingRequirementBranch(
-			this.#host.sessionManager,
-			metadata =>
-				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
-				isTodoStateEntryMetadata(metadata),
-		);
+		const branch = this.#currentRequirementBranch();
 		const requirements = getLatestRequirements(branch);
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		const multiple = Array.isArray(input.tasks);
@@ -589,7 +562,7 @@ export class RequirementsLedgerRuntime {
 				const rows = [
 					...new Set([
 						...phases.flatMap(phase => phase.tasks.map(task => task.content)),
-						...getTodoRowChanges(branch).keys(),
+						...historicalRequirementRowChanges(this.#host.sessionManager).keys(),
 					]),
 				];
 				return [
@@ -780,7 +753,7 @@ export class RequirementsLedgerRuntime {
 					}
 					const artifactText = formatRequirementGateArtifact(
 						!artifact.head && !artifact.sha256
-							? { ...artifact, lastChange: getTodoRowChanges(branch).get(row) }
+							? { ...artifact, lastChange: historicalRequirementRowChanges(this.#host.sessionManager).get(row) }
 							: artifact,
 						row,
 					);
@@ -871,12 +844,7 @@ export class RequirementsLedgerRuntime {
 
 	async #announceLinkedRows(sessionId: string | null, rows: readonly string[]): Promise<void> {
 		if (this.#sessionId() !== sessionId) return;
-		const branch = matchingRequirementBranch(
-			this.#host.sessionManager,
-			metadata =>
-				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
-				isTodoStateEntryMetadata(metadata),
-		);
+		const branch = this.#currentRequirementBranch();
 		const requirements = getLatestRequirements(branch).filter(item => item.classification === "linked");
 		const phases = getLatestTodoPhasesFromEntries(branch);
 		for (const row of new Set(rows)) {
@@ -1338,12 +1306,7 @@ export class RequirementsLedgerRuntime {
 		) {
 			return `${expectedIds.join(", ")}: auditor assignment session or worker identity did not match`;
 		}
-		const branch = matchingRequirementBranch(
-			this.#host.sessionManager,
-			metadata =>
-				(metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
-				isTodoStateEntryMetadata(metadata),
-		);
+		const branch = this.#currentRequirementBranch();
 		const requirements = getLatestRequirements(branch);
 		const expected = expectedIds.map(id => requirements.find(requirement => requirement.id === id));
 		if (expected.some(requirement => !requirement || requirement.classification !== "linked")) {
@@ -1459,7 +1422,7 @@ export class RequirementsLedgerRuntime {
 			};
 		});
 		const phases = getLatestTodoPhasesFromEntries(branch);
-		const changes = getTodoRowChanges(branch);
+		const changes = historicalRequirementRowChanges(this.#host.sessionManager);
 		// Declared targets must still match dispatch before any typed probe can reach a newly declared URL or unit.
 		if (
 			assignment.rowDeclarations !== undefined &&
@@ -1597,12 +1560,7 @@ export class RequirementsLedgerRuntime {
 			}
 			updates.set(receipt.id, rowVerdicts);
 		}
-		const currentRequirements = getLatestRequirements(
-			matchingRequirementBranch(
-				this.#host.sessionManager,
-				metadata => metadata.type === "custom" && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE,
-			),
-		);
+		const currentRequirements = latestRequirementsFromSession(this.#host.sessionManager);
 		if (
 			expectedIds.some(
 				id => currentRequirements.find(requirement => requirement.id === id)?.classification !== "linked",
@@ -1610,9 +1568,7 @@ export class RequirementsLedgerRuntime {
 			requirementAuditSnapshot(currentRequirements, expectedIds) !== assignment.snapshot ||
 			(assignment.rowDeclarations !== undefined &&
 				requirementRowDeclarationSnapshot(
-					getLatestTodoPhasesFromEntries(
-						matchingRequirementBranch(this.#host.sessionManager, isTodoStateEntryMetadata),
-					),
+					getRequirementArtifactTodoPhases(this.#host.sessionManager),
 					assignment.rows ?? [],
 				) !== assignment.rowDeclarations)
 		) {
@@ -1773,6 +1729,20 @@ export class RequirementsLedgerRuntime {
 				assignmentEntry = entry;
 			if (foundLedger && assignmentEntry) break;
 		}
+		if (this.#host.agentKind() === "main" && this.#historySessionId !== sessionId) {
+			this.#historySessionId = sessionId;
+			const linkedRows = new Set(
+				requirements.filter(item => item.classification === "linked").flatMap(item => item.rows),
+			);
+			// Resume builds the archived-row index once; turns only advance it across appended TODO edits.
+			if (linkedRows.size > 0)
+				getRequirementGateBranch(
+					this.#host.sessionManager,
+					requirements,
+					linkedRows,
+					getRequirementArtifactTodoPhases(this.#host.sessionManager),
+				);
+		}
 		const restored = getPersistedRequirementAuditorAssignments(
 			assignmentEntry ? [assignmentEntry] : [],
 			sessionId,
@@ -1851,6 +1821,20 @@ export class RequirementsLedgerRuntime {
 		}
 		return this.#publicationGeneration;
 	}
+	#currentRequirementBranch(): SessionEntry[] {
+		return [
+			...currentRequirementTodoEntries(this.#host.sessionManager),
+			{
+				type: "custom",
+				customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE,
+				id: "current-requirements",
+				parentId: null,
+				timestamp: new Date(0).toISOString(),
+				data: { version: 1, requirements: latestRequirementsFromSession(this.#host.sessionManager) },
+			},
+		];
+	}
+
 	syncPublicationGate(): void {
 		// A running AgentLoopConfig retains this wrapper even before a queued
 		// user message creates the first requirement.
