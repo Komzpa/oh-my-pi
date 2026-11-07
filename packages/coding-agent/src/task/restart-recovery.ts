@@ -1,4 +1,3 @@
-import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { reserveRestoringAgents } from "../registry/restoring-agents";
 import {
 	preserveRestartIsolation,
@@ -31,7 +30,8 @@ import {
 } from "../session/exit-diagnostics";
 import { SessionManager, hasConversationalHistory } from "../session/session-manager";
 import type { SessionEntry } from "../session/session-entries";
-import { currentRuntimeIdentity, formatRuntimeIdentity } from "../session/runtime-identity";
+import { sha256File } from "../utils/file-hash";
+import { currentRuntimeIdentity } from "../session/runtime-identity";
 
 const RESTART_HANDOFF_TYPE = "subagent_restart_handoff";
 const RESTART_RECEIPT_TYPE = "subagent_restart_receipt";
@@ -524,7 +524,7 @@ async function recordRootContinuationReceipt(
 export async function sendRootContinuationOnce(
 	session: AgentSession,
 	requestId: string,
-	report?: RestartRecoveryReport,
+	_report?: RestartRecoveryReport,
 ): Promise<RootContinuationResult> {
 	const rootSessionId = session.sessionManager.getSessionId();
 	const rootRef = AgentRegistry.global()
@@ -561,23 +561,8 @@ export async function sendRootContinuationOnce(
 			prompt
 				.render(restartRootContinuationPrompt, {
 					requestId,
-					build: formatRuntimeIdentity(currentRuntimeIdentity()),
-					workers: (report?.resumed ?? []).map(id => ({
-						id,
-						rows: ((session.getTodoPhases?.() ?? []) as TodoScheduleInput)
-							.flatMap(phase => phase.tasks)
-							.filter(row => {
-								const schedule = row.schedule as
-									| { owner?: string; executor?: { workerId?: string } }
-									| undefined;
-								return schedule?.owner === id || schedule?.executor?.workerId === id;
-							})
-							.map(row => row.content)
-							.join("; "),
-					})),
-					count: report?.resumed.length ?? 0,
-					idle: report?.restoredIdle ?? [],
-					lost: report?.failures ?? [],
+					build: currentRuntimeIdentity().commit ?? (await sha256File(process.execPath)),
+					completedAt: new Date().toTimeString().slice(0, 5),
 				})
 				.trim(),
 		);

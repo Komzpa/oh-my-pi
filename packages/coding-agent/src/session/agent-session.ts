@@ -950,7 +950,9 @@ function restartQueueMessageId(message: AgentMessage): string {
 	if (id !== undefined) return id;
 	if (
 		message.role === "custom" &&
-		(message.customType === "goal-continuation" || message.customType === "restart-queued")
+		(message.customType === "goal-continuation" ||
+			message.customType === "restart-queued" ||
+			customMessageSupersedes(message) !== undefined)
 	) {
 		const normalized = { ...(message as unknown as Record<string, unknown>) };
 		delete normalized.timestamp;
@@ -8367,7 +8369,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const keep = createRestartNoticeFilter(
 			selectRestartBranchEntries(
 				this.sessionManager,
-				entry => entry.type === "custom" && entry.customType === "restart_request_transition",
+				entry =>
+					(entry.type === "custom" && entry.customType === "restart_request_transition") ||
+					(entry.type === "custom_message" && entry.customType === "restart-root-continuation"),
 			),
 		);
 		return messages.filter(message => message.role !== "custom" || keep(message));
@@ -8395,6 +8399,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		);
 		await this.sessionManager.ensureOnDisk();
 		await this.sessionManager.flush();
+		await this.reconcileRestartNotices();
 		const generation = this.#sessionGeneration;
 		this.#schedulePostPromptTask(async signal => {
 			await this.agent.waitForIdle();
@@ -8420,7 +8425,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const keepRestartNotice = createRestartNoticeFilter(
 			selectRestartBranchEntries(
 				this.sessionManager,
-				metadata => metadata.type === "custom" && metadata.customType === "restart_request_transition",
+				metadata =>
+					(metadata.type === "custom" && metadata.customType === "restart_request_transition") ||
+					(metadata.type === "custom_message" && metadata.customType === "restart-root-continuation"),
 			),
 		);
 		const keepMessage = (message: AgentMessage): boolean => message.role !== "custom" || keepRestartNotice(message);
@@ -8459,7 +8466,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			const keepRestartNotice = createRestartNoticeFilter(
 				selectRestartBranchEntries(
 					this.sessionManager,
-					metadata => metadata.type === "custom" && metadata.customType === "restart_request_transition",
+					metadata =>
+						(metadata.type === "custom" && metadata.customType === "restart_request_transition") ||
+						(metadata.type === "custom_message" && metadata.customType === "restart-root-continuation"),
 				),
 			);
 			const keepMessage = (message: AgentMessage): boolean =>

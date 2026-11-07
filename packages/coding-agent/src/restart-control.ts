@@ -14,6 +14,8 @@ export const RESTART_CONTROL_PROTOCOL_VERSION = 1;
 const MAX_REQUEST_BYTES = 4 * 1024;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 10_000;
+// Preparing and persisting acceptance can outlast an observed 6–12 second event-loop stall.
+const ACCEPT_TIMEOUT_MS = 30_000;
 const ID_PATTERN = /^[a-z0-9-]{8,64}$/;
 const SUN_PATH_LIMIT = process.platform === "darwin" ? 104 : 108;
 
@@ -37,6 +39,7 @@ export type RestartControlErrorCode =
 	| "unsupported_protocol"
 	| "unsupported_platform"
 	| "unreachable"
+	| "delivery_uncertain"
 	| "authentication_failed"
 	| "stale_identity"
 	| "invalid_request"
@@ -270,8 +273,19 @@ function query(meta: Metadata, payload: Omit<WireRequest, "v" | "token">): Promi
 	const { promise, resolve, reject } = Promise.withResolvers<unknown>();
 	let buffer = "";
 	let settled = false;
+	let written = false;
+	const deliveryError = (): RestartControlError =>
+		written && payload.op === "request"
+			? new RestartControlError(
+					"delivery_uncertain",
+					`Restart ${payload.request?.requestId ?? "request"} was sent but its acceptance reply was lost; inspect status for this request ID before retrying.`,
+				)
+			: new RestartControlError("unreachable");
 	const socket = net.createConnection({ path: meta.endpoint });
-	const timer = setTimeout(() => finish(new RestartControlError("unreachable")), REQUEST_TIMEOUT_MS);
+	const timer = setTimeout(
+		() => finish(deliveryError()),
+		payload.op === "request" ? ACCEPT_TIMEOUT_MS : REQUEST_TIMEOUT_MS,
+	);
 	const finish = (result: unknown): void => {
 		if (settled) return;
 		settled = true;
@@ -280,13 +294,14 @@ function query(meta: Metadata, payload: Omit<WireRequest, "v" | "token">): Promi
 		if (result instanceof Error) reject(result);
 		else resolve(result);
 	};
-	socket.once("error", () => finish(new RestartControlError("unreachable")));
+	socket.once("error", () => finish(deliveryError()));
 	socket.once("connect", () => {
 		const line = `${JSON.stringify({ v: RESTART_CONTROL_PROTOCOL_VERSION, token: meta.token, ...payload })}\n`;
 		if (Buffer.byteLength(line, "utf8") > MAX_REQUEST_BYTES) {
 			finish(new RestartControlError("request_too_large"));
 			return;
 		}
+		written = true;
 		socket.write(line);
 	});
 	socket.setEncoding("utf8");
@@ -328,7 +343,7 @@ function query(meta: Metadata, payload: Omit<WireRequest, "v" | "token">): Promi
 		finish(response.snapshot);
 	});
 	socket.once("close", () => {
-		if (!settled) finish(new RestartControlError("unreachable"));
+		if (!settled) finish(deliveryError());
 	});
 	return promise;
 }
@@ -342,6 +357,7 @@ function isControlErrorCode(value: unknown): value is RestartControlErrorCode {
 			"unsupported_protocol",
 			"unsupported_platform",
 			"unreachable",
+			"delivery_uncertain",
 			"authentication_failed",
 			"stale_identity",
 			"invalid_request",

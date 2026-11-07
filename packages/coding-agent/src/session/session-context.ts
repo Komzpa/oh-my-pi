@@ -102,13 +102,18 @@ function restartTransitionRecord(entry: SessionEntry): { requestId: string; stat
 export function createRestartNoticeFilter(
 	entries: readonly SessionEntry[],
 ): (notice: Pick<CustomMessageEntry, "customType" | "content" | "details">) => boolean {
+	const completedContinuations = new Set<string>();
 	const restartLatestStateById = new Map<string, string>();
 	const restartLastIndexById = new Map<string, number>();
 	for (let index = 0; index < entries.length; index++) {
 		const entry = entries[index];
 		if (!entry) continue;
-		const record = restartTransitionRecord(entry);
-		if (!record) continue;
+		const record =
+			entry.type === "custom_message" && entry.customType === "restart-root-continuation"
+				? { requestId: restartNoticeRequestId(entry), state: "completed" }
+				: restartTransitionRecord(entry);
+		if (!record?.requestId) continue;
+		if (entry.type === "custom_message") completedContinuations.add(record.requestId);
 		restartLatestStateById.set(record.requestId, record.state);
 		restartLastIndexById.set(record.requestId, index);
 	}
@@ -124,9 +129,10 @@ export function createRestartNoticeFilter(
 
 	return entry => {
 		if (entry.customType !== RESTART_QUEUED_NOTICE_TYPE) return true;
+		const requestId = restartNoticeRequestId(entry);
+		if (requestId !== undefined && completedContinuations.has(requestId)) return false;
 		const detailState = restartNoticeDetailState(entry);
 		if (detailState !== undefined && RESTART_TERMINAL_STATE[detailState] === true) return true;
-		const requestId = restartNoticeRequestId(entry);
 		if (requestId === undefined) return true;
 		const latestState = restartLatestStateById.get(requestId);
 		if (latestState !== undefined && RESTART_TERMINAL_STATE[latestState] === true) return false;
