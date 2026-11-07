@@ -1,0 +1,3 @@
+Preparing worktree (detached HEAD 782feabe086)
+HEAD is now at 782feabe086 full-76
+PASS: 77/77 pinned heads are ancestors; manifest order

@@ -1283,7 +1283,8 @@ export type ReadonlySessionManager = Pick<
 	| "getUsageStatistics"
 	| "putBlob"
 	| "putBlobSync"
->;
+> &
+	Partial<Pick<SessionManager, "getBranchTailMatching">>;
 
 interface SessionManagerStateSnapshot {
 	cwd: string;

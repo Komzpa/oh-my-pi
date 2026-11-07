@@ -1,0 +1,3 @@
+ancestorEntries = ["packages/coding-agent/src/session/session-manager.ts"]
+ourEntries = ["packages/coding-agent/src/session/session-manager.ts"]
+theirEntries = ["packages/coding-agent/src/session/session-manager.ts"]
