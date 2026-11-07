@@ -4318,7 +4318,7 @@ export class SessionManager {
 		normalizeLoadedUsage(history);
 		// A seance persists only the context the consultant receives, never the parent's
 		// retired messages, runtime state or other workers' startup contracts.
-		const forked = options?.seance ? SessionManager.#seanceSnapshot(history) : history;
+		const forked = options?.seance ? SessionManager.#seanceSnapshot(manager, history) : history;
 		if (options?.resetInheritedCost) SessionManager.#resetInheritedUsageCost(forked);
 		manager.#resetToNewSession(
 			{
@@ -4357,10 +4357,14 @@ export class SessionManager {
 		return manager;
 	}
 
-	static #seanceSnapshot(history: SessionEntry[]): SessionEntry[] {
+	static #seanceSnapshot(manager: SessionManager, history: SessionEntry[]): SessionEntry[] {
+		// Resolve the source's model context through the manager's own leaf-path builder.
+		manager.#entries = history;
+		manager.#index.rebuild(history);
+		const { messages } = manager.buildSessionContext();
 		const snapshot: SessionEntry[] = [];
 		let parentId: string | null = null;
-		for (const message of buildSessionContext(history).messages) {
+		for (const message of messages) {
 			const id = Bun.randomUUIDv7();
 			snapshot.push({ type: "message", id, parentId, timestamp: nowIso(), message });
 			parentId = id;
