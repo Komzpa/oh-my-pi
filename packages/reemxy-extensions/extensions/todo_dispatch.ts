@@ -2997,7 +2997,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     healPlanTicker(ctx);
   });
   pi.on("turn_start", (_event, ctx) => {
-    if (!singleWriterLane && !pauseGate?.paused && isMain(ctx) && (chainDemand(todoPhases(ctx)) || recoveryFor(ctx))) {
+    if (!singleWriterLane && !pauseGate?.paused && !gateSwitchedOff(ctx) && isMain(ctx) && (chainDemand(todoPhases(ctx)) || recoveryFor(ctx))) {
       const wake = prepareWake(ctx);
       pi.sendMessage({ customType: "todo-dispatch-action-required", content: wake.actionDemand, display: false, attribution: "agent" }, { deliverAs: "steer", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
     }
@@ -5332,7 +5332,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const originalTaskItems = event.toolName === "task" ? taskItems(event.input) : [];
     let contractInput;
     if (wakeTurn) wakeTurn.toolCalls += 1;
-    if (isMain(ctx) && !pauseGate?.paused && !singleWriterLane) {
+    if (isMain(ctx) && !pauseGate?.paused && !singleWriterLane && !gateSwitchedOff(ctx)) {
       if (event.toolName === "todo_dispatch_forecast" && recovery?.pending?.kind === "deadline") return;
       if (["wait", "yield"].includes(event.toolName) && recovery?.pending && (recoveryReceipt(ctx)?.misses ?? 0) >= 2)
         return { block: true, reason: recovery.pending.action };
