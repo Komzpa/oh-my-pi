@@ -30,6 +30,9 @@ test("sub-second admission deaths do not inflate work attempts; task failures an
 	expect(todoInfraBreaker([infra, infra, infra])).toBe(infra.infraFailureError);
 	expect(todoInfraBreaker([infra, failure("spawn error: missing executable"), infra])).toBeUndefined();
 	expect(todoInfraBreaker([infra, infra, work])).toBeUndefined();
+	expect(todoInfraBreaker([infra, failure("spawn error: missing executable"), infra, infra])).toBe(
+		infra.infraFailureError,
+	);
 });
 
 test("HUD separates legacy infrastructure deaths from work attempts without rewriting their receipts", () => {
