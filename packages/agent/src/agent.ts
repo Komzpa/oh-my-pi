@@ -2047,7 +2047,8 @@ export class Agent {
 			maxRetryDelayMs: this.#maxRetryDelayMs,
 			kimiApiFormat: this.#kimiApiFormat,
 			preferWebsockets: this.#preferWebsockets,
-			convertToLlm: this.#convertToLlm,
+			convertToLlm: (messages, requestModel) =>
+				this.#convertToLlm(messages, requestModel ?? this.#state.model ?? model),
 			transformProviderContext: this.#transformProviderContext,
 			sentToolDefinitions: this.#sentToolDefinitions,
 			transformContext: this.#transformContext,

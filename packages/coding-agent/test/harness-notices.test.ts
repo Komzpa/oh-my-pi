@@ -128,6 +128,20 @@ test("Responses fixture keeps completed turn prefix byte-identical when another 
 	expect(next?.slice(0, first?.length)).toEqual(first);
 
 	const items = next ?? [];
+	const outstanding = new Set<string>();
+	for (const item of items) {
+		if ("type" in item && item.type === "function_call") outstanding.add(item.call_id);
+		else if ("type" in item && item.type === "function_call_output") {
+			expect(outstanding.has(item.call_id)).toBe(true);
+			outstanding.delete(item.call_id);
+		} else if ("role" in item && item.role === "user") expect(outstanding.size).toBe(0);
+	}
+	expect(outstanding.size).toBe(0);
+	expect(
+		items.filter(
+			item => "role" in item && item.role === "user" && JSON.stringify(item).includes("Harness (not Darafei):"),
+		),
+	).toHaveLength(2);
 	const types = items.map(item => ("type" in item ? item.type : "message"));
 	expect(types.filter(type => type === "function_call_output")).toHaveLength(5);
 	expect(JSON.stringify(first)).not.toContain('"role":"developer"');
