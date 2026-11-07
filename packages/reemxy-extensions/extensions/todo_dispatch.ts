@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { JournalCursor } from "@oh-my-pi/pi-coding-agent/session/journal-cursor";
 import planCritic from "./plan_critic";
 import { chiefFixNow, isLegacyFixNow, fixNowIdentity, fixNowQuestion, withChiefFixNow, type ChiefDefect } from "./fix_now";
 import { prepareAttemptBrief } from "./attempt_receipt";
@@ -147,7 +148,7 @@ export type SprintState = {
 type TaskRow = TodoScheduleInput[number]["tasks"][number];
 type SnapshotRow = { number: number; phase: string; task: TaskRow };
 type AgentMessageDelivery = { delivered: boolean; text: string };
-type WorkerCompactionCursor = { path: string; offset: number; pending: string; buffer: Buffer; at?: number };
+type WorkerCompactionCursor = { cursor: JournalCursor; at?: number };
 type AgentMessageContext = ExtensionContext & {
   sendAgentMessage?: (to: string, message: string) => Promise<AgentMessageDelivery>;
 };
@@ -4881,56 +4882,31 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return dir ? join(dir, `${id}.jsonl`) : null;
   };
   // Read each child's appended session events once, including a preexisting compaction on first observation.
-  const workerCompactionAt = (worker: { name: string; path?: string; size?: number }): number | undefined => {
+  const workerCompactionAt = async (worker: { name: string; path?: string; size?: number }): Promise<number | undefined> => {
     const manager = AgentRegistry.global().get(worker.name)?.session?.sessionManager;
     if (manager && worker.path && typeof manager.getSessionFile === "function" && manager.getSessionFile() === worker.path) {
       const entry = selectLatestBranchEntry(manager, metadata => metadata.type === "compaction");
       const at = entry ? Date.parse(entry.timestamp) : undefined;
       return at !== undefined && Number.isFinite(at) ? at : undefined;
     }
-    if (!worker.path || worker.size === undefined) return undefined;
-    let cursor = workerCompactionCursors.get(worker.name);
-    if (!cursor || cursor.path !== worker.path || cursor.offset > worker.size) {
-      cursor = { path: worker.path, offset: 0, pending: "", buffer: Buffer.allocUnsafe(64 * 1024) };
-      workerCompactionCursors.set(worker.name, cursor);
+    if (!worker.path) return undefined;
+    let state = workerCompactionCursors.get(worker.name);
+    if (!state) {
+      state = { cursor: new JournalCursor() };
+      workerCompactionCursors.set(worker.name, state);
     }
-    if (cursor.offset === worker.size) return cursor.at;
-    let fd: number | undefined;
+    const current = state;
     try {
-      fd = openSync(worker.path, "r");
-      while (cursor.offset < worker.size) {
-        const count = readSync(
-          fd,
-          cursor.buffer,
-          0,
-          Math.min(cursor.buffer.length, worker.size - cursor.offset),
-          cursor.offset,
-        );
-        if (count <= 0) break;
-        cursor.offset += count;
-        let start = 0;
-        for (let index = 0; index < count; index++) {
-          if (cursor.buffer[index] !== 10) continue;
-          const line = cursor.pending + cursor.buffer.toString("utf8", start, index);
-          cursor.pending = "";
-          start = index + 1;
-          if (!line.includes("compaction")) continue;
-          try {
-            const entry = JSON.parse(line) as { type?: unknown; timestamp?: unknown };
-            if (entry.type !== "compaction" || typeof entry.timestamp !== "string") continue;
-            const at = Date.parse(entry.timestamp);
-            if (Number.isFinite(at)) cursor.at = at;
-          } catch {}
-        }
-        if (start < count) cursor.pending += cursor.buffer.toString("utf8", start, count);
-      }
+      await current.cursor.read(worker.path, entry => {
+        if (entry.type !== "compaction") return;
+        const at = Date.parse(entry.timestamp);
+        if (Number.isFinite(at)) current.at = at;
+      }, () => { current.at = undefined; });
     } catch {
       workerCompactionCursors.delete(worker.name);
       return undefined;
-    } finally {
-      if (fd !== undefined) closeSync(fd);
     }
-    return cursor.at;
+    return current.at;
   };
   const readTail = (path: string, max = 256 * 1024) => {
     const stat = statSync(path);
@@ -6096,16 +6072,16 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const workerStatus = workerRows.length
       ? `Worker status: ${workerRows.slice(0, 8).join(" | ")}${workerRows.length > 8 ? ` | … ${workerRows.length - 8} more` : ""}`
       : "";
-    const sizing = running.flatMap(job => {
+    const sizing = (await Promise.all(running.map(async job => {
       if (workerSizingNoticed.has(job.id)) return [];
       const id = job.agentId ?? job.id;
       const observed = activityByName.get(id);
-      const compactedAt = observed ? workerCompactionAt(observed) : undefined;
+      const compactedAt = observed ? await workerCompactionAt(observed) : undefined;
       if (compactedAt !== undefined) return [{ id, jobId: job.id, fact: `compacted at ${hhmm(compactedAt, decision.deadline?.timezone)}` }];
       if (typeof job.startTime === "number" && now - job.startTime > SILENT_MS)
         return [{ id, jobId: job.id, fact: `running ${minutes(now - job.startTime)}` }];
       return [];
-    });
+    }))).flat();
     pendingSizingNoticeIds = sizing.map(worker => worker.jobId);
     const runningByContent = new Map((decision.ownerRunStates ?? []).map((row) => [row.content, row.running]));
     // A row that waits on unfinished rows (a running worker, a queued stage, or a user wait) cannot be

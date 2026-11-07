@@ -4280,9 +4280,8 @@ export class SessionManager {
 	 *
 	 * `seance` creates a read-only consult fork instead: artifacts stay in the
 	 * source (the header's `seanceSource` points lookups at them), inherited
-	 * workspace roots are dropped, and the source's `session_init` contracts
-	 * become inert `source_session_init` custom entries so revival never
-	 * mistakes them for the fork's own.
+	 * workspace roots and startup contracts are dropped. Only the canonical
+	 * compacted model context is persisted; retired parent history stays at source.
 	 */
 	static async forkFrom(
 		sourcePath: string,
@@ -4315,7 +4314,20 @@ export class SessionManager {
 		await resolveBlobRefsInEntries(sourceEntries, manager.#blobs);
 
 		const sourceHeader = sourceEntries.find(entry => entry.type === "session") as SessionHeader | undefined;
-		const history = sourceEntries.filter(entry => entry.type !== "session") as SessionEntry[];
+		let history = sourceEntries.filter(entry => entry.type !== "session") as SessionEntry[];
+		if (options?.seance) {
+			// Persist only the context the consultant receives, never the parent's
+			// retired messages, runtime state or other workers' startup contracts.
+			const context = buildSessionContext(history);
+			const snapshot: SessionEntry[] = [];
+			let parentId: string | null = null;
+			for (const message of context.messages) {
+				const id = Bun.randomUUIDv7();
+				snapshot.push({ type: "message", id, parentId, timestamp: nowIso(), message });
+				parentId = id;
+			}
+			history = snapshot;
+		}
 		normalizeLoadedUsage(history);
 		if (options?.resetInheritedCost) SessionManager.#resetInheritedUsageCost(history);
 		manager.#resetToNewSession(
@@ -4335,7 +4347,6 @@ export class SessionManager {
 			manager.#additionalDirectories.length > 0 ? manager.#additionalDirectories : undefined;
 		if (options?.seance) {
 			manager.#header.seanceSource = path.resolve(sourcePath);
-			SessionManager.#neutralizeSessionInits(history);
 		}
 		manager.#sessionName = manager.#header.title;
 		manager.#titleSource = manager.#header.titleSource;
@@ -4354,23 +4365,6 @@ export class SessionManager {
 			await copySessionArtifacts(sourcePath, manager.#sessionFile!);
 		}
 		return manager;
-	}
-
-	/** Replace inherited `session_init` entries, in place, with inert custom entries keeping the same tree position. */
-	static #neutralizeSessionInits(history: SessionEntry[]): void {
-		for (let index = 0; index < history.length; index++) {
-			const entry = history[index]!;
-			if (entry.type !== "session_init") continue;
-			const neutralized: CustomEntry = {
-				type: "custom",
-				customType: "source_session_init",
-				id: entry.id,
-				parentId: entry.parentId,
-				timestamp: entry.timestamp,
-				data: entry,
-			};
-			history[index] = neutralized;
-		}
 	}
 
 	/**

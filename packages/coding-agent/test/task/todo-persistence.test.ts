@@ -83,6 +83,31 @@ describe("task todo persistence", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("keeps a seance journal free of unrelated worker todo and activity events", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [], projectAgentsDir: null });
+		const bus = new EventBus();
+		const writes: Array<{ phases?: TodoPhase[]; edit?: TodoPersistedEdit }> = [];
+		const session = createSession(heavyTodoPlan(2), writes, bus);
+		const append = vi.fn();
+		Object.assign(session, {
+			seanceSourceArtifactsDir: "/tmp/source",
+			sessionManager: { appendCustomEntry: append },
+		});
+		await TaskTool.create(session);
+		for (const followUpTurn of [false, true]) {
+			bus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+				id: "other-worker",
+				agent: "task",
+				status: "started",
+				description: "Task 001 with retained schedule history",
+				followUpTurn,
+				at: Date.now(),
+			});
+		}
+		expect(writes).toEqual([]);
+		expect(append).not.toHaveBeenCalled();
+	});
+
 	it("persists task owner links as compact edits for a 300-row plan", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [{ name: "task", description: "Task agent", systemPrompt: "Run work", source: "bundled" }],

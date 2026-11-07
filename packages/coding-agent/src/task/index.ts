@@ -1443,7 +1443,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		this.#blockedAgent = $env.PI_BLOCKED_AGENT;
 		this.#discoveredAgents = discoveredAgents;
 		const bus = session.subagentEventBus ?? session.eventBus;
-		if (bus && session.getTodoPhases && session.setTodoPhases && session.persistTodoPhases) {
+		if (
+			bus &&
+			!session.seanceSourceArtifactsDir &&
+			session.getTodoPhases &&
+			session.setTodoPhases &&
+			session.persistTodoPhases
+		) {
 			const stopLifecycle = bus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
 				if (!data || typeof data !== "object") return;
 				const event = data as Partial<SubagentLifecyclePayload>;
