@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Name requirement audit workers after their linked row ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 - Row auditors start without decoding unrelated archived parent messages ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep final replies responsive in long sessions without a requirements ledger ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
