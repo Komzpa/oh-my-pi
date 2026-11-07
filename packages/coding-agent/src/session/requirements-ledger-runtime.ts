@@ -861,7 +861,9 @@ export class RequirementsLedgerRuntime {
 					.render(linkedRowTemplate, {
 						call: JSON.stringify({
 							agent: "qa-auditor",
-							name: "qa-auditor",
+							name: `Audit${(row.match(/[\p{L}\p{N}]+/gu) ?? [])
+								.map(word => word.charAt(0).toUpperCase() + word.slice(1))
+								.join("")}`.slice(0, 32),
 							requirementIds: ids,
 							task: prompt.render(rowAuditTemplate, { ids: ids.join(", "), row: JSON.stringify(row) }).trim(),
 						}),
