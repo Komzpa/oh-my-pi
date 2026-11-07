@@ -57,7 +57,7 @@ error: script "check:types" exited with code 1
 
 ## Broader test limitations
 
-A broader optional sweep across all executor tests, four restore/crash tests and all extension todo tests is not green. These failures are not hidden by the required 96-test receipt. Raw complete output is retained in `yieldcompat-proof-main92-v4-tests.log` and `yieldcompat-proof-main92-108-v4-tests.log`. Original #92 baseline output is in `yieldcompat-baseline.log` and `yieldcompat-baseline-resume.log`; it reproduces the unchanged yield-loop, wall-clock, result-acceptance, crash-recovery and soft-budget failures. Ownership is existing #92 (topic/rt-agent-runtime-core); neither #108 nor another branch was changed to repair these.
+A broader optional sweep across all executor tests, four restore/crash tests and all extension todo tests is not green. These failures are not hidden by the required 96-test receipt. Raw complete output is retained in `yieldcompat-proof-main92-v4-tests.log` and `yieldcompat-proof-main92-108-v4-tests.log`. Original #92 baseline output is in `yieldcompat-baseline.log` and `yieldcompat-baseline-resume.log`; it reproduces the unchanged yield-loop, wall-clock, result-acceptance, crash-recovery and soft-budget failures. Ownership: existing #92 (topic/rt-agent-runtime-core) for resume, lifecycle, soft-budget and pass-through fixtures; #108 (fix/yield-terminal-once) also owns the changed yield-loop tests in the union. `yieldcompat-negative-extra.log` reproduces the union yield-loop and pass-through failures using the original #92 plus unchanged #108. Neither branch was expanded to repair these unrelated fixtures. Not every broad failure has an individual baseline classification.
 
 Exact failure names and observed errors from the broader runs follow:
 
@@ -71,9 +71,7 @@ Received: {
 (fail) runSubprocess wall clock (task.maxRuntimeMs) > a cancelled late initializer cannot replace a newer same-id worker [0.59ms]
 error: expect(received).toEqual(expected)
 (fail) runSubprocess incremental yield loops > retries a dropped assignment before sending any yield reminder [1.40ms]
-error: expect(received).toEqual(expected)
 (fail) runSubprocess incremental yield loops > fails after four dropped assignments without sending a yield reminder [0.59ms]
-error: expect(received).toEqual(expected)
 (fail) runSubprocess incremental yield loops > delivers an assignment on the fourth attempt [0.61ms]
 error: expect(received).toBe(expected)
 Expected: 0
@@ -81,101 +79,31 @@ Received: 1
 (fail) runSubprocess incremental yield loops > retries a dropped yield reminder without consuming another reminder [0.56ms]
 error: expect(received).toHaveLength(expected)
 (fail) runSubprocess incremental yield loops > fails when every attempt to send a yield reminder is dropped [0.49ms]
-error: expect(received).toHaveLength(expected)
 (fail) runSubprocess incremental yield loops > keeps a section from another turn incremental while a dropped final reminder retries [0.47ms]
-error: expect(received).toBe(expected)
 Expected: true
 Received: false
 (fail) runSubprocess incremental yield loops > keeps a run of incremental-yield-only turns inside the soft budget [0.46ms]
-error: expect(received).toHaveLength(expected)
 (fail) runSubprocess incremental yield loops > ends the run when the forced final yield comes back incremental [0.44ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess incremental yield loops > does not finalize a section submitted after the forced yield parked [0.43ms]
-error: expect(received).toHaveLength(expected)
 (fail) runSubprocess incremental yield loops > fails when every async-pending notice dispatch is dropped [0.45ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess result acceptance > terminalizes the ref and stamps the run lifecycle when the yield is accepted [0.75ms]
 (fail) runSubprocess result acceptance > settles the owning task job when Agent Hub tombstones a running subagent [30002.16ms]
   ^ this test timed out after 30000ms.
 TypeError: session.getTodoSnapshot is not a function. (In 'session.getTodoSnapshot()', 'session.getTodoSnapshot' is undefined)
 (fail) kill/replay through ordinary resume > goes on with each subagent cut off mid-turn as a job its parent receives, not with finished or killed ones [5.04ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess parent-discovery pass-through (issue #2190) > forwards an exact credential resolver without replacing it [0.30ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess parent-discovery pass-through (issue #2190) > forwards undefined when the parent has not pre-discovered state [0.24ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess parent-discovery pass-through (issue #2190) > removes MCP and fresh discovery sources for a restricted child [0.31ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess parent-discovery pass-through (issue #2190) > persists write when the original subagent contract grants it [0.21ms]
-TypeError: session.getTodoSnapshot is not a function. (In 'session.getTodoSnapshot()', 'session.getTodoSnapshot' is undefined)
 (fail) ordinary resume continues the crashed row from its transcript and retained isolated workspace under a new id [789.43ms]
-error: expect(received).toBe(expected)
 Expected: 1
 Received: undefined
 (fail) runSubprocess soft request budget > a budget stop drives one forced final yield and finishes as a normal completion [1.43ms]
-error: expect(received).toBe(expected)
-Expected: true
-Received: false
-(fail) runSubprocess soft request budget > a budget hard-abort keeps the kept-alive agent adopted and messageable via irc [1.21ms]
-error: expect(received).toBe(expected)
-Expected: true
-Received: false
-(fail) runSubprocess soft request budget > fails an irc wake when the parked transcript has no message history [0.73ms]
-error: expect(received).toBe(expected)
-Expected: true
-Received: false
-(fail) runSubprocess soft request budget > a shutdown racing a budget hard-abort follows the shutdown release path [2.48ms]
-(fail) runSubprocess soft request budget > manager shutdown restores a running kept-alive agent as parked without a tombstone [30000.38ms]
-  ^ this test timed out after 30000ms.
-(fail) runSubprocess soft request budget > a nested spawn reaches the root RPC surface through the inherited observability bus [30008.65ms]
-  ^ this test timed out after 30000ms.
-error: expect(received).toEqual(expected)
-(fail) runSubprocess soft request budget > an aliased observability bus does not duplicate lifecycle frames [1.64ms]
-error: expect(received).toBe(expected)
-Expected: true
-Received: false
-(fail) runSubprocess soft request budget > a caller-signal abort keeps the kept-alive agent resumable via irc [1.06ms]
-(fail) DC lead waits on both overdue executors, refuses missing or stalled workers, and cannot stop [0.47ms]
-(fail) runSubprocess wall clock (task.maxRuntimeMs) > a cancelled late initializer cannot replace a newer same-id worker [0.59ms]
-(fail) runSubprocess incremental yield loops > retries a dropped assignment before sending any yield reminder [1.40ms]
-(fail) runSubprocess incremental yield loops > fails after four dropped assignments without sending a yield reminder [0.59ms]
-(fail) runSubprocess incremental yield loops > delivers an assignment on the fourth attempt [0.61ms]
-(fail) runSubprocess incremental yield loops > retries a dropped yield reminder without consuming another reminder [0.56ms]
-(fail) runSubprocess incremental yield loops > fails when every attempt to send a yield reminder is dropped [0.49ms]
-(fail) runSubprocess incremental yield loops > keeps a section from another turn incremental while a dropped final reminder retries [0.47ms]
-(fail) runSubprocess incremental yield loops > keeps a run of incremental-yield-only turns inside the soft budget [0.46ms]
-(fail) runSubprocess incremental yield loops > ends the run when the forced final yield comes back incremental [0.44ms]
-(fail) runSubprocess incremental yield loops > does not finalize a section submitted after the forced yield parked [0.43ms]
-(fail) runSubprocess incremental yield loops > fails when every async-pending notice dispatch is dropped [0.45ms]
-(fail) runSubprocess result acceptance > terminalizes the ref and stamps the run lifecycle when the yield is accepted [0.75ms]
-(fail) runSubprocess result acceptance > settles the owning task job when Agent Hub tombstones a running subagent [30002.16ms]
-  ^ this test timed out after 30000ms.
-(fail) kill/replay through ordinary resume > goes on with each subagent cut off mid-turn as a job its parent receives, not with finished or killed ones [5.04ms]
-(fail) runSubprocess parent-discovery pass-through (issue #2190) > forwards an exact credential resolver without replacing it [0.30ms]
-(fail) runSubprocess parent-discovery pass-through (issue #2190) > forwards undefined when the parent has not pre-discovered state [0.24ms]
-(fail) runSubprocess parent-discovery pass-through (issue #2190) > removes MCP and fresh discovery sources for a restricted child [0.31ms]
-(fail) runSubprocess parent-discovery pass-through (issue #2190) > persists write when the original subagent contract grants it [0.21ms]
-(fail) ordinary resume continues the crashed row from its transcript and retained isolated workspace under a new id [789.43ms]
-(fail) runSubprocess soft request budget > a budget stop drives one forced final yield and finishes as a normal completion [1.43ms]
 (fail) runSubprocess soft request budget > a budget hard-abort keeps the kept-alive agent adopted and messageable via irc [1.21ms]
 (fail) runSubprocess soft request budget > fails an irc wake when the parked transcript has no message history [0.73ms]
 (fail) runSubprocess soft request budget > a shutdown racing a budget hard-abort follows the shutdown release path [2.48ms]
 (fail) runSubprocess soft request budget > manager shutdown restores a running kept-alive agent as parked without a tombstone [30000.38ms]
-  ^ this test timed out after 30000ms.
 (fail) runSubprocess soft request budget > a nested spawn reaches the root RPC surface through the inherited observability bus [30008.65ms]
-  ^ this test timed out after 30000ms.
 (fail) runSubprocess soft request budget > an aliased observability bus does not duplicate lifecycle frames [1.64ms]
 (fail) runSubprocess soft request budget > a caller-signal abort keeps the kept-alive agent resumable via irc [1.06ms]
 ```
@@ -191,125 +119,43 @@ error: expect(received).toBe(expected)
 Expected: 0
 Received: 1
 (fail) runSubprocess incremental yield loops > accepted terminal A keeps the first result after 18 refused yields [6.72ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess incremental yield loops > accepted terminal B refuses incremental and terminal follow-ups without appending [0.89ms]
 error: expect(received).toEqual(expected)
 (fail) runSubprocess incremental yield loops > retries a dropped assignment before sending any yield reminder [0.61ms]
-error: expect(received).toEqual(expected)
 (fail) runSubprocess incremental yield loops > fails after four dropped assignments without sending a yield reminder [0.43ms]
-error: expect(received).toEqual(expected)
 (fail) runSubprocess incremental yield loops > delivers an assignment on the fourth attempt [0.43ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess incremental yield loops > retries a dropped yield reminder without consuming another reminder [0.41ms]
 error: expect(received).toHaveLength(expected)
 (fail) runSubprocess incremental yield loops > fails when every attempt to send a yield reminder is dropped [0.41ms]
-error: expect(received).toHaveLength(expected)
 (fail) runSubprocess incremental yield loops > keeps a section from another turn incremental while a dropped final reminder retries [0.43ms]
-error: expect(received).toBe(expected)
 Expected: true
 Received: false
 (fail) runSubprocess incremental yield loops > keeps a run of incremental-yield-only turns inside the soft budget [0.40ms]
-error: expect(received).toHaveLength(expected)
 (fail) runSubprocess incremental yield loops > ends the run when the forced final yield comes back incremental [0.43ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess incremental yield loops > latches a real forced-final incremental yield before accepting another call [0.52ms]
-error: expect(received).toHaveLength(expected)
 (fail) runSubprocess incremental yield loops > completes the forced terminal yield even with owner work pending [0.45ms]
-error: expect(received).toHaveLength(expected)
 (fail) runSubprocess incremental yield loops > never dispatches an async-pending notice after terminal acceptance [0.48ms]
-TypeError: session.getTodoSnapshot is not a function. (In 'session.getTodoSnapshot()', 'session.getTodoSnapshot' is undefined)
 (fail) kill/replay through ordinary resume > goes on with each subagent cut off mid-turn as a job its parent receives, not with finished or killed ones [3.84ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess parent-discovery pass-through (issue #2190) > forwards an exact credential resolver without replacing it [0.26ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess parent-discovery pass-through (issue #2190) > forwards undefined when the parent has not pre-discovered state [0.23ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess parent-discovery pass-through (issue #2190) > removes MCP and fresh discovery sources for a restricted child [0.34ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
 (fail) runSubprocess parent-discovery pass-through (issue #2190) > persists write when the original subagent contract grants it [0.46ms]
 error: expect(received).toBeNull()
 Received: {
 (fail) runSubprocess wall clock (task.maxRuntimeMs) > a cancelled late initializer cannot replace a newer same-id worker [0.53ms]
-error: expect(received).toBe(expected)
 Expected: 1
 Received: undefined
 (fail) runSubprocess soft request budget > a budget stop drives one forced final yield and finishes as a normal completion [0.98ms]
-error: expect(received).toBe(expected)
-Expected: true
-Received: false
-(fail) runSubprocess soft request budget > a budget hard-abort keeps the kept-alive agent adopted and messageable via irc [1.03ms]
-error: expect(received).toBe(expected)
-Expected: true
-Received: false
-(fail) runSubprocess soft request budget > fails an irc wake when the parked transcript has no message history [0.66ms]
-error: expect(received).toBe(expected)
-Expected: true
-Received: false
-(fail) runSubprocess soft request budget > a shutdown racing a budget hard-abort follows the shutdown release path [0.85ms]
-(fail) runSubprocess soft request budget > manager shutdown restores a running kept-alive agent as parked without a tombstone [30002.25ms]
-  ^ this test timed out after 30000ms.
-(fail) runSubprocess soft request budget > a nested spawn reaches the root RPC surface through the inherited observability bus [30000.26ms]
-  ^ this test timed out after 30000ms.
-error: expect(received).toEqual(expected)
-(fail) runSubprocess soft request budget > an aliased observability bus does not duplicate lifecycle frames [1.58ms]
-error: expect(received).toBe(expected)
-Expected: true
-Received: false
-(fail) runSubprocess soft request budget > a caller-signal abort keeps the kept-alive agent resumable via irc [0.94ms]
-error: expect(received).toBe(expected)
-Expected: 0
-Received: 1
-(fail) runSubprocess result acceptance > terminalizes the ref and stamps the run lifecycle when the yield is accepted [0.79ms]
-(fail) runSubprocess result acceptance > settles the owning task job when Agent Hub tombstones a running subagent [30000.86ms]
-  ^ this test timed out after 30000ms.
-(fail) DC lead waits on both overdue executors, refuses missing or stalled workers, and cannot stop [0.40ms]
-(fail) ordinary resume continues the crashed row from its transcript and retained isolated workspace under a new id [342.04ms]
-(fail) runSubprocess incremental yield loops > accepted terminal A keeps the first result after 18 refused yields [6.72ms]
-(fail) runSubprocess incremental yield loops > accepted terminal B refuses incremental and terminal follow-ups without appending [0.89ms]
-(fail) runSubprocess incremental yield loops > retries a dropped assignment before sending any yield reminder [0.61ms]
-(fail) runSubprocess incremental yield loops > fails after four dropped assignments without sending a yield reminder [0.43ms]
-(fail) runSubprocess incremental yield loops > delivers an assignment on the fourth attempt [0.43ms]
-(fail) runSubprocess incremental yield loops > retries a dropped yield reminder without consuming another reminder [0.41ms]
-(fail) runSubprocess incremental yield loops > fails when every attempt to send a yield reminder is dropped [0.41ms]
-(fail) runSubprocess incremental yield loops > keeps a section from another turn incremental while a dropped final reminder retries [0.43ms]
-(fail) runSubprocess incremental yield loops > keeps a run of incremental-yield-only turns inside the soft budget [0.40ms]
-(fail) runSubprocess incremental yield loops > ends the run when the forced final yield comes back incremental [0.43ms]
-(fail) runSubprocess incremental yield loops > latches a real forced-final incremental yield before accepting another call [0.52ms]
-(fail) runSubprocess incremental yield loops > completes the forced terminal yield even with owner work pending [0.45ms]
-(fail) runSubprocess incremental yield loops > never dispatches an async-pending notice after terminal acceptance [0.48ms]
-(fail) kill/replay through ordinary resume > goes on with each subagent cut off mid-turn as a job its parent receives, not with finished or killed ones [3.84ms]
-(fail) runSubprocess parent-discovery pass-through (issue #2190) > forwards an exact credential resolver without replacing it [0.26ms]
-(fail) runSubprocess parent-discovery pass-through (issue #2190) > forwards undefined when the parent has not pre-discovered state [0.23ms]
-(fail) runSubprocess parent-discovery pass-through (issue #2190) > removes MCP and fresh discovery sources for a restricted child [0.34ms]
-(fail) runSubprocess parent-discovery pass-through (issue #2190) > persists write when the original subagent contract grants it [0.46ms]
-(fail) runSubprocess wall clock (task.maxRuntimeMs) > a cancelled late initializer cannot replace a newer same-id worker [0.53ms]
-(fail) runSubprocess soft request budget > a budget stop drives one forced final yield and finishes as a normal completion [0.98ms]
 (fail) runSubprocess soft request budget > a budget hard-abort keeps the kept-alive agent adopted and messageable via irc [1.03ms]
 (fail) runSubprocess soft request budget > fails an irc wake when the parked transcript has no message history [0.66ms]
 (fail) runSubprocess soft request budget > a shutdown racing a budget hard-abort follows the shutdown release path [0.85ms]
 (fail) runSubprocess soft request budget > manager shutdown restores a running kept-alive agent as parked without a tombstone [30002.25ms]
   ^ this test timed out after 30000ms.
 (fail) runSubprocess soft request budget > a nested spawn reaches the root RPC surface through the inherited observability bus [30000.26ms]
-  ^ this test timed out after 30000ms.
 (fail) runSubprocess soft request budget > an aliased observability bus does not duplicate lifecycle frames [1.58ms]
 (fail) runSubprocess soft request budget > a caller-signal abort keeps the kept-alive agent resumable via irc [0.94ms]
 (fail) runSubprocess result acceptance > terminalizes the ref and stamps the run lifecycle when the yield is accepted [0.79ms]
 (fail) runSubprocess result acceptance > settles the owning task job when Agent Hub tombstones a running subagent [30000.86ms]
-  ^ this test timed out after 30000ms.
 ```
 
 The todo red-rows ENOENT is a throwaway setup prerequisite (`.tmp` absent), subsequently created for focused tests. Broader failures are outside this semantic compatibility change. This is source/test proof, with no installed or live-session behavior claim.
@@ -317,3 +163,10 @@ The todo red-rows ENOENT is a throwaway setup prerequisite (`.tmp` absent), subs
 ## Publication and rollback
 
 Publish only fork `topic/rt-agent-runtime-core`, preserving original head as an ancestor. Expected remote old head: `4d8a368c84f271a2cf4820ab89fd896731e1ed50`. Use the user-specified lease and read back with `git ls-remote fork refs/heads/topic/rt-agent-runtime-core`. Rollback target is that original head; no rollback is executed by this lane. No PR comments or description changes.
+
+## Completed broad sweep and publication readback
+
+- main + #92 optional broad run: 649 pass, 28 fail (677 tests, 60 files).
+- main + #92 + #108 optional broad run: 657 pass, 31 fail (688 tests, 60 files).
+- These are additional failures, not successful proof of an all-green executor suite. Required worker-ask/restore/todo tests: 96/96 pass in each configuration.
+- First publication was a fast-forward to `e8b284a57602832181f9ed97bff5c411c09213de`; `git ls-remote fork refs/heads/topic/rt-agent-runtime-core` matched it. This final evidence completion is a documentation-only descendant; the final remote head is read back in the lane publication log and final response.
