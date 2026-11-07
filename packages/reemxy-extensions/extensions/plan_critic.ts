@@ -38,6 +38,8 @@ export interface Binding {
 	addressed: Record<string, { reason: string; toolCallId?: string }>;
 	wakes: number;
 	trigger?: string;
+	/** Row evidence at the time of the decision; absent on legacy journal entries. */
+	trajectories?: Record<string, string>;
 }
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object";
 const text = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
@@ -135,12 +137,42 @@ export function criticInterval(value: string | undefined): number {
 	return minutes * 60_000;
 }
 
+/** Omit whole actions rather than truncating an owner's quote into a different meaning. */
+export function compactBindingHistory(bindings: Binding[]): string {
+	const recent = bindings.slice(-3).reverse().map(item => ({
+		id: item.id,
+		actions: item.verdict.actions.map(action => ({ ...action, addressed: item.addressed[action.id] })),
+		omittedActions: 0,
+	}));
+	while (new TextEncoder().encode(JSON.stringify(recent)).byteLength > 4096) {
+		const oldest = recent.at(-1)!;
+		if (recent.length > 1) recent.pop();
+		else if (oldest.actions.length) { oldest.actions.pop(); oldest.omittedActions++; }
+		else return "[]";
+	}
+	return JSON.stringify(recent);
+}
+function rowTrajectories(current: TodoScheduleInput): Record<string, string> {
+	const digest = buildTrajectoryDigest([], current, 0);
+	return Object.fromEntries(current.flatMap(phase => phase.tasks).map(task => {
+		const row = digest.rows.find(item => item.row === task.content)!;
+		return [task.content, JSON.stringify({
+			attempts: task.schedule?.attemptHistory ?? [], reestimates: row.reestimates,
+			audit: task.schedule?.audit, evidence: task.schedule?.progress?.evidence,
+			executor: task.schedule?.executor, status: task.status, dependencies: row.dependencies,
+			owner: row.owner, blocker: row.blocker,
+		})];
+	}));
+}
+
 export default function planCritic(pi: ExtensionAPI): void {
 	// Partial SDK harnesses without tool registration cannot host the critic.
 	if (!pi.typebox || !pi.registerTool) return;
 	const { Type } = pi.typebox;
 	const interval = criticInterval(Bun.env.OMP_PLAN_CRITIC_MINUTES);
 	let binding: Binding | undefined;
+	let history: Binding[] = [];
+	let lastSaved = "";
 	let lastAttempt = 0;
 	let lastSuccess = 0;
 	let inFlight = false;
@@ -162,7 +194,12 @@ export default function planCritic(pi: ExtensionAPI): void {
 		return !!header && (ctx.agent ? ctx.agent.kind === "main" : !header.parentSession);
 	};
 	const save = () => {
-		if (binding) pi.appendEntry(PLAN_CRITIC_ENTRY, structuredClone(binding));
+		if (!binding) return;
+		const serialized = JSON.stringify(binding);
+		if (serialized === lastSaved) return;
+		pi.appendEntry(PLAN_CRITIC_ENTRY, structuredClone(binding));
+		lastSaved = serialized;
+		history = [...history.filter(item => item.id !== binding!.id), structuredClone(binding)].slice(-3);
 	};
 	const notify = (escalated: boolean) => {
 		if (!binding || !pendingActions(binding).length) return;
@@ -221,9 +258,10 @@ export default function planCritic(pi: ExtensionAPI): void {
 				.flatMap(entry => "data" in entry && object(entry.data) ? [entry.data] : []);
 			const task = prompt.render(brief, {
 				digest: compactTrajectoryDigest(digest),
+				priorBindings: compactBindingHistory(history),
 				requirementAuthority: JSON.stringify(current.flatMap(phase => phase.tasks).map(row => ({
 					row: row.content, quotes: rowRequirementQuotes(ctx, row.content, entries), conflict: requirementConflict(row),
-					evidence: row.schedule?.progress?.evidence,
+					evidence: row.schedule?.progress?.evidence, head: row.schedule?.audit?.head,
 					diffAudit: requirementAudits.findLast(data => data.row === row.content &&
 						data.head === row.schedule?.audit?.head && data.delivery === row.schedule?.audit?.delivery),
 				}))),
@@ -241,7 +279,20 @@ export default function planCritic(pi: ExtensionAPI): void {
 			const titles = new Set(current.flatMap(phase => phase.tasks.map(row => row.content)));
 			if (verdict.actions.some(action => !titles.has(action.row)))
 				throw new Error("Plan critic named an unknown row");
-			binding = { id: crypto.randomUUID(), at: now, verdict, addressed: {}, wakes: 0, trigger };
+			const trajectories = rowTrajectories(current);
+			const addressed: Binding["addressed"] = {};
+			for (const action of verdict.actions) {
+				for (const previous of history.toReversed()) {
+					const prior = previous.verdict.actions.find(item => item.kind === action.kind && item.row === action.row);
+					const reason = prior && previous.addressed[prior.id]?.reason;
+					if (reason && (reason.startsWith("reject: ") || reason.startsWith("previously rejected: ")) &&
+						previous.trajectories?.[action.row] === trajectories[action.row]) {
+						addressed[action.id] = { reason: reason.startsWith("previously rejected: ") ? reason : `previously rejected: ${reason.slice(8)}` };
+						break;
+					}
+				}
+			}
+			binding = { id: crypto.randomUUID(), at: now, verdict, addressed, wakes: 0, trigger, trajectories };
 			lastSuccess = now;
 			lastTrigger = trigger;
 			save();
@@ -258,6 +309,8 @@ export default function planCritic(pi: ExtensionAPI): void {
 		inFlight = false;
 		before.clear();
 		binding = undefined;
+		history = [];
+		lastSaved = "";
 		lastAttempt = 0;
 		lastSuccess = 0;
 		if (timer) {
@@ -272,8 +325,12 @@ export default function planCritic(pi: ExtensionAPI): void {
 		);
 		if (token !== generation) return skip("start:session-changed");
 		for (const entry of saved) {
-			if (entry.type === "custom") binding = entry.data as Binding;
+			if (entry.type === "custom") {
+				binding = entry.data as Binding;
+				history = [...history.filter(item => item.id !== binding!.id), binding].slice(-3);
+			}
 		}
+		lastSaved = binding ? JSON.stringify(binding) : "";
 		lastSuccess = binding?.at ?? 0;
 		lastTrigger = binding?.trigger ?? "";
 		lastWake = Date.now();
@@ -354,6 +411,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 					details: { verdictId: binding.id, actionId: action.id },
 				});
 			binding.addressed[action.id] = { reason: `${params.decision}: ${params.reason}` };
+			binding.trajectories = { ...binding.trajectories, [action.row]: rowTrajectories(phases(ctx))[action.row]! };
 			save();
 			return { content: [{ type: "text", text: JSON.stringify({ remaining: pendingActions(binding) }) }] };
 		},
