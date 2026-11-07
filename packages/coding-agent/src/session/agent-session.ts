@@ -4150,7 +4150,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// current array is safe against (un)subscribes made by a listener.
 		for (const l of this.#eventListeners) {
 			try {
-				const result = withLoopPhase(`session.listener:${event.type}:${l.name || "anonymous"}`, () =>
+				const result = withLoopPhase(`session.listener:${event.type}:${l.name.slice(0, 80) || "anonymous"}`, () =>
 					l(event),
 				) as unknown;
 				// Listener may be an async function whose returned Promise we don't await;
