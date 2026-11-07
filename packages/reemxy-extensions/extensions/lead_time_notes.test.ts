@@ -43,13 +43,13 @@ test("large plan identities do not duplicate the plan in persisted note details"
 	expect(sent?.details?.semanticKey.length).toBeLessThanOrEqual(16);
 });
 
-test("a busy note check selects note metadata without hydrating TODO history", async () => {
+test("a busy note check selects note metadata without hydrating 300k unrelated notices", async () => {
 	let examined = 0;
 	const entry = { type: "custom_message", customType: "lead-note", details: { semanticKey: Bun.hash("same").toString(16), emittedAt: 1000 }, timestamp: "2026-11-06T00:00:00Z" };
 	const ctx = { sessionManager: {
 		getBranch: () => { throw new Error("hydrated complete journal"); },
-		*iterateBranchMatchingNewestFirst(predicate: (metadata: { type: string }) => boolean) {
-			for (let i = 0; i < 1400; i++) if (predicate({ type: "custom" })) throw new Error("hydrated TODO snapshot");
+		*iterateBranchMatchingNewestFirst(predicate: (metadata: { type: string; customType?: string }) => boolean) {
+			for (let i = 0; i < 300_000; i++) if (predicate({ type: "custom_message", customType: "unrelated-notice" })) throw new Error("hydrated unrelated notice");
 			examined++;
 			if (predicate(entry)) yield entry;
 		},

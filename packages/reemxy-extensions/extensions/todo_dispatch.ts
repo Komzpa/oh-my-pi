@@ -1582,7 +1582,7 @@ function latestBranchUserMessage(source: BranchSource) {
 }
 
 function lastUserUnblockAsk(ctx: ExtensionContext, row: string): number | undefined {
-  for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom_message")) {
+  for (const entry of selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom_message" && (metadata.customType === undefined || metadata.customType === USER_UNBLOCK_CUSTOM_TYPE))) {
     if (entry.type !== "custom_message" || entry.customType !== USER_UNBLOCK_CUSTOM_TYPE) continue;
     const details = (entry.details ?? entry.data) as { row?: unknown; at?: unknown } | undefined;
     if (details?.row === row && typeof details.at === "number") return details.at;
