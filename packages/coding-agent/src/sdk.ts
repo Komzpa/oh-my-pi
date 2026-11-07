@@ -5157,7 +5157,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// path below (issue #9553): a large advisor transcript would otherwise
 		// block createAgentSession for tens of seconds while the whole file is
 		// streamed and parsed on the main thread.
-		session = launchConstruct("session.construct", AgentSession, {
+		session = new AgentSession({
 			cacheWarmer,
 			costGate: options.costGate,
 			advisorWatchdogPrompt,
