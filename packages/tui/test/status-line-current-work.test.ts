@@ -113,7 +113,7 @@ it("invalidates the ANSI component cache and refreshes native preview titles as 
 			getSessionId: () => "",
 			getUsageStatistics: () => createContext().usageStats,
 		},
-		modelRegistry: { isUsingOAuth: () => false },
+		modelRegistry: { isUsingSubscription: () => false },
 		getContextUsage: () => undefined,
 		autoResolvedThinkingLevel: () => undefined,
 		isFastModeActive: () => false,
