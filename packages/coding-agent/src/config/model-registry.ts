@@ -3698,20 +3698,26 @@ export class ModelRegistry {
 		sessionId?: string,
 		options?: { signal?: AbortSignal },
 	): Promise<string | undefined> {
+		return logger.time("modelRegistry.apiKey.wait", () => this.#resolveModelApiKey(model, sessionId, options));
+	}
+
+	async #resolveModelApiKey(
+		model: Model<Api>,
+		sessionId?: string,
+		options?: { signal?: AbortSignal },
+	): Promise<string | undefined> {
 		// A disabled provider gets no credential, so no request reaches it however
 		// its model was obtained.
 		if (this.#isProviderDisabled(model.provider)) return undefined;
 		if (this.#isKeylessProvider(model.provider)) {
 			return kNoAuth;
 		}
-		return logger.time("modelRegistry.apiKey.wait", () =>
-			this.authStorage.keys.get(model.provider, sessionId, {
-				baseUrl: model.baseUrl,
-				modelId: model.id,
-				accountIds: model.accountAccess && Object.keys(model.accountAccess),
-				signal: options?.signal,
-			}),
-		);
+		return this.authStorage.keys.get(model.provider, sessionId, {
+			baseUrl: model.baseUrl,
+			modelId: model.id,
+			accountIds: model.accountAccess && Object.keys(model.accountAccess),
+			signal: options?.signal,
+		});
 	}
 
 	/** Resolve request authentication through the historical Pi extension facade. */
