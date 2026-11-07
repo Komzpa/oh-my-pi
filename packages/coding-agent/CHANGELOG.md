@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Share empirical TODO forecast calibration across sessions and replay historical journals with the current scheduler ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Preserve the initial TODO forecast across re-planning and restarts, and record immutable hourly plan predictions ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Reject incomplete row-audit results and accept corrected verdicts within the same attempt ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

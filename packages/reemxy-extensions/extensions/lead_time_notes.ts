@@ -1,5 +1,6 @@
 import { formatLocalTimestamp, type DeadlineState } from "./deadlines";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { singleLine, truncateToWidth } from "@oh-my-pi/pi-tui";
 import type { TodoScheduleInput, TodoPlanForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import chainInstructions from "./todo_dispatch-chain.md" with { type: "text" };
 import { todoRowAfterWorker } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -167,7 +168,7 @@ export function renderCurrentSetForecast(plan: TodoPlanForecast, anchor: Deadlin
 	const lateMinutes = baseline === undefined ? 0 : Math.max(0, Math.ceil((now / 1_000 - baseline) / 60));
 	const endpoint = plan.rows.filter(row => row.status !== "completed" && row.status !== "abandoned" && row.expectedResourceFinish !== undefined)
 		.sort((a, b) => b.expectedResourceFinish! - a.expectedResourceFinish!)[0];
-	const driver = endpoint ? `${endpoint.fixedPath?.join(" → ") || endpoint.content}${endpoint.owner ? ` (owner ${endpoint.owner})` : ""}` : "unknown";
+	const driver = endpoint ? `${truncateToWidth(singleLine(endpoint.content), 80).slice(0, 80)}${endpoint.owner ? ` (owner ${singleLine(endpoint.owner)})` : ""}` : "unknown";
 	return [
 		`Current set: point ${stamp(point)}; empirical upper ${empirical}.`,
 		`Driver: ${driver}; empirical allowance ${allowance === undefined ? "unknown" : `${allowance.toFixed(2)}h`}.`,

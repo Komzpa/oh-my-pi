@@ -1,3 +1,4 @@
+import { getTodoPlanCalibrationStore, type TodoPlanCalibrationStore } from "./todo-plan-calibration";
 import { patchTodoSchedule } from "../session/todo-schedule-patch";
 import {
 	selectLatestBranchEntry,
@@ -39,7 +40,7 @@ import {
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 
-import { isRecord, prompt } from "@oh-my-pi/pi-utils";
+import { logger, isRecord, prompt } from "@oh-my-pi/pi-utils";
 
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -975,10 +976,17 @@ export function forecastTodoLivePlan(
 		deadlineAt?: number;
 		risk?: RowRiskOptions;
 		history?: readonly TodoPlanPrediction[];
+		calibrationStore?: TodoPlanCalibrationStore;
 	},
 ): TodoPlanForecast {
 	const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
-	const forecast = forecastTodoPlan(withTodoArchive(phases, archived), options);
+	const forecast = forecastTodoPlan(withTodoArchive(phases, archived), {
+		...options,
+		history: [
+			...(options.calibrationStore ?? getTodoPlanCalibrationStore()).snapshot(options.now),
+			...(options.history ?? []),
+		],
+	});
 	forecast.rows = forecast.rows.filter(row => liveContents.has(row.content));
 	return forecast;
 }
@@ -2270,6 +2278,9 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(todoDescription);
+		void getTodoPlanCalibrationStore()
+			.refresh()
+			.catch(error => logger.warn("Forecast calibration load failed", { error }));
 	}
 
 	/** Consume a verified page decision through the ordinary review transition. */
@@ -2453,8 +2464,20 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 					now,
 					op === "init",
 				);
-				if (settled) manager.appendCustomEntry(TODO_PLAN_HISTORY_CUSTOM_TYPE, settled);
+				if (settled) {
+					manager.appendCustomEntry(TODO_PLAN_HISTORY_CUSTOM_TYPE, settled);
+					try {
+						await getTodoPlanCalibrationStore().append(settled);
+					} catch (error) {
+						logger.warn("Forecast calibration append failed", { error });
+					}
+				}
 			}
+		}
+		try {
+			await getTodoPlanCalibrationStore().refresh();
+		} catch (error) {
+			logger.warn("Forecast calibration refresh failed", { error });
 		}
 		const forecast = forecastTodoLivePlan(effective, [...archivedPhases, ...newArchive], {
 			history: todoPlanCalibrationHistory(historyRecords, now),
