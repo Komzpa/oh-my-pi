@@ -12,9 +12,14 @@
 
 ### Added
 
+- Added an `env` parameter to the `bash` tool for finite, async, auto-backgrounded, PTY, ACP-terminal and service commands; caller values win over defaults ([#99](https://github.com/Komzpa/oh-my-pi/pull/99) by [@Komzpa](https://github.com/Komzpa))
+
 - RPC `bash` accepts `excludeFromContext: true` to keep a run out of model context like terminal `!!`; runtimes advertise support with `supportsBashExcludeFromContext` in the `ready` frame, and the Python SDK exposes that frame as `client.ready` ([#18206](https://github.com/can1357/oh-my-pi/pull/18206) by [@andrebrait](https://github.com/andrebrait))
 
 ### Fixed
+
+- Fixed named bash services rejecting materialized `async: false` / `timeout: 0` defaults; explicit requests are reported with a notice ([#99](https://github.com/Komzpa/oh-my-pi/pull/99) by [@Komzpa](https://github.com/Komzpa))
+- Bash refuses commands that replace desktop session processes, mutate user D-Bus services, or remove user runtime files across all execution backends, while keeping literal shell data and inspection commands available ([#99](https://github.com/Komzpa/oh-my-pi/pull/99) by [@Komzpa](https://github.com/Komzpa))
 
 - A function defined inside a command substitution in a here-document body (`cat <<E` / `$(f() { …; }; f)` / `E`) no longer crashes the built-in shell.
 - An ovnfs checkout stays recoverable with `omp worktree clear` when removing it fails, or when creating it fails after the daemon may already have it, instead of being forgotten ([#18337](https://github.com/can1357/oh-my-pi/pull/18337) by [@eggpeat](https://github.com/eggpeat))
