@@ -2706,7 +2706,8 @@ async function driveSessionToResult(
 					else await dispatchPrompt(task, { attribution: "agent", solutionSpace }, "initial prompt");
 					break;
 				} catch (error) {
-					if (monitor.workerQuestionStopRequested() && !abortSignal.aborted && !(error instanceof AgentBusyError)) break;
+					if (monitor.workerQuestionStopRequested() && !abortSignal.aborted && !(error instanceof AgentBusyError))
+						break;
 					promptAttempts++;
 					if (!(error instanceof AgentBusyError) || promptAttempts >= 3 || !onPromptBusy) throw error;
 					await onPromptBusy();
