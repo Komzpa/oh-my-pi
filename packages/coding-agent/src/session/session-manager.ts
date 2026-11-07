@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
+	AssistantRetryRecovery,
 	ImageContent,
 	Message,
 	MessageAttribution,
@@ -76,6 +77,8 @@ import {
 	lastSelfSelectedLeafId,
 	type NewSessionOptions,
 	type ResetBoundaryEntry,
+	RETRY_RECOVERY_ENTRY,
+	retryRecoveryEntryData,
 	type ServiceTierChangeEntry,
 	sessionEntryLeafId,
 	type SessionEntry,
@@ -171,8 +174,6 @@ export interface DraftImage {
 
 const draftImageFile = (index: number): string => `draft-image-${index}.b64`;
 const DISCARDED_ENTRY_BRANCH_MARKER = "discarded-entry-branch";
-/** `model_usage` purpose carrying the billed usage of an assistant turn removed by `discardEntryDurably`. */
-const DISCARDED_TURN_USAGE_PURPOSE = "discarded-turn";
 /**
  * Read-back-and-retry passes one full rewrite makes after meeting another
  * writer's entries. Each pass re-reads the file, so only a writer that appends
@@ -663,6 +664,7 @@ export class SessionEntryIndex {
 	#readerFd?: number;
 	#readerPath?: string;
 	#active = new Map<string, SessionEntry>();
+	#retryRecoveries?: Map<string, AssistantRetryRecovery>;
 
 	clear(closeReader = true): void {
 		this.#metadataCache = undefined;
@@ -676,6 +678,7 @@ export class SessionEntryIndex {
 		this.#leaf = null;
 		this.#usage = emptyUsageStatistics();
 		this.#active.clear();
+		this.#retryRecoveries = undefined;
 		this.#generation++;
 		this.#branchCache = undefined;
 		if (closeReader) {
@@ -739,6 +742,9 @@ export class SessionEntryIndex {
 		this.#entriesById.set(entry.id, indexed);
 		// Late usage is physically last but replays to the leaf captured at append time.
 		const nextLeaf = sessionEntryLeafId(entry);
+		if (nextLeaf !== previousLeaf && entry.parentId !== previousLeaf) this.#retryRecoveries = undefined;
+		const annotation = retryRecoveryEntryData(entry);
+		if (annotation && this.#retryRecoveries) this.#retryRecoveries.set(annotation.entryId, annotation.retryRecovery);
 		this.#leaf = nextLeaf;
 		this.#generation++;
 		const metadataCache = this.#metadataCache;
@@ -894,15 +900,38 @@ export class SessionEntryIndex {
 		const indexed = this.#entriesById.get(id);
 		if (!indexed) return undefined;
 		const strong = indexed.entry ?? this.#active.get(id);
-		if (strong) return strong;
+		if (strong) return this.#withRetryRecovery(strong);
 		const retained = indexed.weak?.deref();
-		if (retained) return retained;
+		if (retained) return this.#withRetryRecovery(retained);
 		if (!this.#read) throw new Error(`Session entry ${id} has no payload source`);
 		const entry = this.#read(indexed);
 		// Metadata scans must not create WeakRefs: JS keeps newly referenced
 		// targets alive until the end of the job, defeating one-record iteration.
 		if (retainIdentity) indexed.weak = new WeakRef(entry);
-		return entry;
+		return this.#withRetryRecovery(entry);
+	}
+
+	#withRetryRecovery(entry: SessionEntry): SessionEntry {
+		if (entry.type !== "message" || entry.message.role !== "assistant") return entry;
+		if (!this.#retryRecoveries) {
+			const recoveries = new Map<string, AssistantRetryRecovery>();
+			for (const metadata of this.#metadataLeafPath()) {
+				if (metadata.type !== "custom" || metadata.customType !== RETRY_RECOVERY_ENTRY) continue;
+				const data = retryRecoveryEntryData(this.get(metadata.id, false)!);
+				if (data && !recoveries.has(data.entryId)) recoveries.set(data.entryId, data.retryRecovery);
+			}
+			this.#retryRecoveries = recoveries;
+		}
+		const recovery = this.#retryRecoveries.get(entry.id);
+		return recovery ? { ...entry, message: { ...entry.message, retryRecovery: recovery } } : entry;
+	}
+
+	openSerializationReader(): number | undefined {
+		return this.#readerPath ? fs.openSync(this.#readerPath, "r") : undefined;
+	}
+
+	*serializationSources(): IterableIterator<IndexedSessionEntry> {
+		yield* this.#ordered;
 	}
 
 	count(type?: SessionEntry["type"]): number {
@@ -942,6 +971,7 @@ export class SessionEntryIndex {
 		if (this.#leaf === id) return;
 		this.#leaf = id;
 		this.#active.clear();
+		this.#retryRecoveries = undefined;
 		this.#generation++;
 		this.#branchCache = undefined;
 	}
@@ -1252,7 +1282,24 @@ interface SessionBodyStamp {
  * order plus their total UTF-8 byte length. Kept as lines so the file backend
  * streams them instead of materializing one string the size of the session.
  */
+/** Read a bounded raw JSONL piece without splitting a multibyte UTF-8 character. */
+function readSessionUtf8Piece(fd: number, offset: number, length: number, begin: number, end: number): string {
+	const bytes = Buffer.allocUnsafe(Math.min(length, end + 3) - begin);
+	let read = 0;
+	while (read < bytes.length) {
+		const count = fs.readSync(fd, bytes, read, bytes.length - read, offset + begin + read);
+		if (count === 0) throw new Error("Session record truncated during rewrite");
+		read += count;
+	}
+	let first = 0;
+	while (first < bytes.length && (bytes[first]! & 0xc0) === 0x80) first++;
+	let last = end - begin;
+	while (last < bytes.length && (bytes[last]! & 0xc0) === 0x80) last++;
+	return bytes.toString("utf8", first, last);
+}
+
 interface SessionFileBody {
+	dispose?: () => void;
 	lines: string[];
 	bytes: number;
 	stamp: SessionBodyStamp;
@@ -1262,6 +1309,7 @@ interface SessionFileBody {
 		length: number;
 		revision: number;
 		line: number;
+		serializedLine?: () => string;
 		entry?: WeakRef<SessionEntry>;
 	}>;
 }
@@ -2091,11 +2139,11 @@ export class SessionManager {
 			// Pair every published byte range with the replacement reader before
 			// comparing live payloads: serialization can fail while writing a blob.
 			this.#index.setFileReader(source, this.#blobs, true, undefined, body.positions);
-			for (const { id, offset, length, revision, line, entry: snapshotEntry } of body.positions) {
+			for (const { id, offset, length, revision, line, serializedLine, entry: snapshotEntry } of body.positions) {
 				const entry = this.#index.retainedEntry(id) ?? snapshotEntry?.deref();
 				const changed =
 					this.#index.revision(id) !== revision ||
-					(entry !== undefined && this.#lineFor(entry) !== body.lines[line]);
+					(entry !== undefined && this.#lineFor(entry) !== (serializedLine?.() ?? body.lines[line]));
 				this.#index.setPosition(id, offset, length, changed ? -1 : revision, changed ? entry : undefined);
 				if (changed && this.#atomicRewriteFenceEpoch !== null) this.#atomicRewriteDirty = true;
 				yield;
@@ -2181,7 +2229,7 @@ export class SessionManager {
 		return { lines, bytes, stamp, positions };
 	}
 
-	/** Serialize the full indexed prefix cooperatively, including off-branch history. */
+	/** Stream cold canonical custom records without decoding or retaining their payloads. */
 	async #serializeBodyAsync(): Promise<SessionFileBody> {
 		if ((this.#expectedDiskSize ?? 0) < LARGE_SESSION_REWRITE_BYTES) return this.#serializeBody();
 		const titleLine = this.#titleSlotLine();
@@ -2191,35 +2239,70 @@ export class SessionManager {
 		const revision = this.#bodyRevision;
 		let sliceStart = performance.now();
 		const lines = [titleLine, headerLine];
-		let bytes = Buffer.byteLength(titleLine, "utf8") + Buffer.byteLength(headerLine, "utf8");
+		let bytes = Buffer.byteLength(titleLine) + Buffer.byteLength(headerLine);
 		const positions: SessionFileBody["positions"] = [];
-		for (const entry of this.#index.entries()) {
-			if (positions.length === entryCount) break;
-			const line = this.#lineFor(entry);
-			const length = Buffer.byteLength(line, "utf8");
-			positions.push({
-				id: entry.id,
-				offset: bytes,
-				length,
-				revision: this.#index.revision(entry.id),
-				line: lines.length,
-				entry: this.#index.retainedEntry(entry.id) ? new WeakRef(entry) : undefined,
-			});
-			bytes += length;
-			lines.push(line);
-			if (performance.now() - sliceStart >= 4) {
-				await Bun.sleep(1);
-				sliceStart = performance.now();
+		const fd = this.#index.openSerializationReader();
+		try {
+			for (const source of this.#index.serializationSources()) {
+				if (positions.length === entryCount) break;
+				const retained = this.#index.retainedEntry(source.id);
+				const lineIndex = lines.length;
+				let length: number;
+				let serializedLine: (() => string) | undefined;
+				if (
+					fd !== undefined &&
+					source.rawCopy &&
+					!retained &&
+					source.offset !== undefined &&
+					source.length !== undefined
+				) {
+					const offset = source.offset;
+					length = source.length;
+					// Each lazy piece ends on a UTF-8 boundary. Storage can yield even
+					// inside a 33 MB restart snapshot, and never holds the whole body.
+					for (let begin = 0; begin < length; begin += 256 * 1024) {
+						const pieceStart = begin;
+						const pieceEnd = Math.min(length, begin + 256 * 1024);
+						const recordLength = length;
+						Object.defineProperty(lines, lines.length, {
+							enumerable: true,
+							get: () => readSessionUtf8Piece(fd, offset, recordLength, pieceStart, pieceEnd),
+						});
+					}
+					const recordLength = length;
+					serializedLine = () => readSessionUtf8Piece(fd, offset, recordLength, 0, recordLength);
+				} else {
+					const entry = retained ?? this.#index.get(source.id, false)!;
+					const line = this.#lineFor(entry);
+					length = Buffer.byteLength(line);
+					lines.push(line);
+				}
+				positions.push({
+					id: source.id,
+					offset: bytes,
+					length,
+					revision: this.#index.revision(source.id),
+					line: lineIndex,
+					serializedLine,
+					entry: retained ? new WeakRef(retained) : undefined,
+				});
+				bytes += length;
+				if (performance.now() - sliceStart >= 4) {
+					await Bun.sleep(1);
+					sliceStart = performance.now();
+				}
 			}
+			return {
+				lines,
+				bytes,
+				positions,
+				dispose: fd === undefined ? undefined : () => fs.closeSync(fd),
+				stamp: { entries, entryCount, lastEntry: entries.at(-1), revision, prefix: titleLine + headerLine },
+			};
+		} catch (error) {
+			if (fd !== undefined) fs.closeSync(fd);
+			throw error;
 		}
-		const stamp: SessionBodyStamp = {
-			entries,
-			entryCount,
-			lastEntry: entries.at(-1),
-			revision,
-			prefix: titleLine + headerLine,
-		};
-		return { lines, bytes, stamp, positions };
 	}
 	/** Drain only newly appended entries, keeping the fence until they are durable. */
 	async #appendRewriteTail(start: number): Promise<void> {
@@ -2421,6 +2504,7 @@ export class SessionManager {
 		this.#atomicRewriteFenceEpoch = epoch;
 		this.#largeRewriteFence = (this.#expectedDiskSize ?? 0) >= LARGE_SESSION_REWRITE_BYTES;
 		let recoveries = 0;
+		let activeBody: SessionFileBody | undefined;
 		try {
 			do {
 				this.#atomicRewriteDirty = false;
@@ -2429,7 +2513,10 @@ export class SessionManager {
 				const sessionFile = this.#sessionFile;
 				if (!sessionFile) return false;
 				if (this.#diskEpoch !== epoch) return false;
+				activeBody?.dispose?.();
+				activeBody = undefined;
 				const body = await this.#serializeBodyAsync();
+				activeBody = body;
 				const options = {
 					expectedSize: this.#expectedDiskSize,
 					fencedAsyncPublish: this.#largeRewriteFence,
@@ -2474,6 +2561,7 @@ export class SessionManager {
 			} while (this.#atomicRewriteDirty);
 			return true;
 		} finally {
+			activeBody?.dispose?.();
 			// Only relinquish the fence if we still own it. A superseding
 			// synchronous rewrite (`flushSync` → `#rewriteSynchronously`) may
 			// have reset `#diskTail`, scheduled a fresh atomic task at the new
@@ -5076,62 +5164,34 @@ export class SessionManager {
 		this.#setLeaf(null);
 	}
 
-	/**
-	 * Durably move the active branch past a discarded entry.
-	 *
-	 * The loader reconstructs the active branch from the last physical journal
-	 * entry, so changing the in-memory leaf alone is lost on reload. Known
-	 * metadata children are chained onto the discarded entry's parent before the
-	 * entry is removed. If any child may carry content, the subtree is preserved
-	 * off-branch instead. Both paths append a metadata-only branch marker and
-	 * rewrite the journal, making the selected path durable.
-	 *
-	 * A removed assistant turn was still billed, so its usage is re-journaled as
-	 * an off-branch `model_usage` entry; session totals and `omp stats` keep
-	 * counting it. A subtree preserved off-branch keeps its own usage.
-	 */
+	/** Leave discarded content off-branch and append a durable selection marker. Billing stays on the original entry. */
 	async discardEntryDurably(entryId: string): Promise<void> {
 		const entry = this.#index.get(entryId);
 		if (!entry) return;
 		const children = this.#index.childrenOf(entryId);
-		const canReparentChildren = children.every(
-			child => child.type === "service_tier_change" || child.type === "tool_result_prune",
-		);
 		let leafId = entry.parentId;
-		if (canReparentChildren) {
+		if (children.every(child => child.type === "service_tier_change" || child.type === "tool_result_prune")) {
+			// Copy only administrative children onto the surviving path. Old records
+			// stay immutable, including their original parents and billed usage.
 			for (const child of children) {
-				child.parentId = leafId;
-				leafId = child.id;
-			}
-			this.#entries = this.getEntries().filter(candidate => candidate.id !== entryId);
-			this.#branchSelections = new WeakMap();
-			this.#index.rebuild(this.#entries);
-			if (entry.type === "message" && entry.message.role === "assistant") {
-				const { api, provider, model, usage, stopReason, errorMessage } = entry.message;
-				// Off-branch like late usage: totals count every entry, and the kept
-				// chain stays made of entries collab guests replicate.
-				this.#recordEntry({
-					type: "model_usage",
-					id: generateId(this.#index),
-					parentId: leafId,
-					timestamp: entry.timestamp,
-					runtime: currentRuntimeIdentity(),
-					activeLeafId: leafId,
-					purpose: DISCARDED_TURN_USAGE_PURPOSE,
-					api,
-					provider,
-					model,
-					usage,
-					stopReason,
-					...(errorMessage === undefined ? {} : { errorMessage }),
-				});
+				const copy = { ...child, id: generateId(this.#index), parentId: leafId };
+				this.#recordEntry(copy);
+				leafId = copy.id;
 			}
 		}
 		this.branchWithSummary(leafId, "", {
 			kind: DISCARDED_ENTRY_BRANCH_MARKER,
 			discardedEntryId: entryId,
 		});
-		await this.rewriteEntries();
+		await this.flush();
+	}
+
+	/** Persist a retry outcome without rewriting the assistant payload or historical journal. */
+	appendRetryRecovery(entryId: string, retryRecovery: AssistantRetryRecovery): void {
+		const entry = this.#index.get(entryId);
+		if (entry?.type !== "message" || entry.message.role !== "assistant") return;
+		this.appendCustomEntry(RETRY_RECOVERY_ENTRY, { entryId, retryRecovery });
+		this.#bodyRevision++;
 	}
 
 	/** Like branch(), but also records a branch_summary of the abandoned path. */

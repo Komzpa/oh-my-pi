@@ -648,6 +648,8 @@ export async function loadEntriesFromFile(
 
 /** Physical payload source and migrated identity shared by resume and read-only history. */
 export interface PositionedSessionEntry extends SessionContextEntryMetadata {
+	/** Current custom record whose physical bytes are already canonical. */
+	rawCopy?: boolean;
 	offset: number;
 	length: number;
 	firstKeptEntryId?: string;
@@ -693,6 +695,7 @@ export async function visitSessionFileForResume(
 			? new ExecutorObservationCompactor(references.ids, (entry, compacted) => {
 					if (entry.type === "session") return;
 					const position = positions.get(entry)!;
+					if (position.parentId !== entry.parentId) position.rawCopy = false;
 					position.parentId = entry.parentId;
 					if (compacted) position.entry = entry;
 					visit(entry, position);
@@ -762,6 +765,7 @@ export async function visitSessionFileForResume(
 					}
 				}
 				const position: PositionedSessionEntry = {
+					rawCopy: version >= CURRENT_SESSION_VERSION && entry.type === "custom",
 					...sessionContextEntryMetadata(entry),
 					offset,
 					length,
