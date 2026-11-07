@@ -467,7 +467,7 @@ test("a todo block waiting on the user is refused with the action-first text; th
   const live = await call({ op: "block", task: "Compare page", reason: LIVE_BLOCKER });
   expect(live?.block).toBe(true);
   expect(live.reason).toBe(USER_WAIT_REFUSAL);
-  expect(live.reason).toStartWith("Proceed on your default; the user is never a dependency.");
+  expect(live.reason).toStartWith("Deliver the unresolved owner question through review-questions-page and ask");
   // The user-review label alone is enough, whatever the reason says.
   expect((await call({ op: "block", task: "Compare page", reason: "round 2 is ready" }))?.block).toBe(true);
   // Neighbour: an ordinary external blocker is untouched.
