@@ -25,6 +25,8 @@ import {
 	verifyLeadRoundTrip,
 	type LeadInstructionScenario,
 } from "../lead-instructions.scenarios";
+import { leadGateScenarios } from "../lead-gates.scenarios";
+import { validateToolCall } from "@oh-my-pi/pi-ai/utils/validation";
 import { CODEX_LB_PROVIDER } from "../codex_lb_provider";
 
 logger.setTransports({ file: false }); // Evaluation must not create ~/.omp log files.
@@ -38,6 +40,7 @@ interface Scenario {
 interface Budget {
 	calls: number;
 	reservedTokens: number;
+	reservedUsd: number;
 }
 interface Result {
 	id: string;
@@ -69,16 +72,19 @@ const { values } = parseArgs({
 		"budget-file": { type: "string", default: "reports/lead-instructions/budget.json" },
 		"max-calls": { type: "string", default: "140" },
 		"max-tokens": { type: "string", default: "5000000" },
+		"max-usd": { type: "string", default: "2" },
 	},
 });
 if (values.help) {
 	console.log(
-		"bun run eval:lead-instructions [--model provider/id] [--contexts scenarios.json] [--output receipt.json] [--budget-file shared-before-after-budget.json] [--max-calls 140] [--max-tokens 5000000]",
+		"bun run eval:lead-instructions [--model provider/id] [--contexts scenarios.json] [--output receipt.json] [--budget-file shared-before-after-budget.json] [--max-calls 140] [--max-tokens 5000000] [--max-usd 2]",
 	);
 	process.exit(0);
 }
 const scenarios = (
-	values.contexts ? await Bun.file(values.contexts).json() : await leadInstructionScenarios()
+	values.contexts
+		? await Bun.file(values.contexts).json()
+		: [...(await leadInstructionScenarios()), ...(await leadGateScenarios())]
 ) as Scenario[];
 if (
 	!Array.isArray(scenarios) ||
@@ -90,7 +96,15 @@ if (
 }
 const maxCalls = Number(values["max-calls"]);
 const maxTokens = Number(values["max-tokens"]);
-if (!Number.isSafeInteger(maxCalls) || maxCalls < 1 || !Number.isSafeInteger(maxTokens) || maxTokens < 1)
+const maxUsd = Number(values["max-usd"]);
+if (
+	!Number.isSafeInteger(maxCalls) ||
+	maxCalls < 1 ||
+	!Number.isSafeInteger(maxTokens) ||
+	maxTokens < 1 ||
+	!Number.isFinite(maxUsd) ||
+	maxUsd <= 0
+)
 	throw new Error("Budgets must be positive integers");
 await fs.mkdir(path.dirname(values["budget-file"]), { recursive: true });
 const budgetLock = `${values["budget-file"]}.lock`;
@@ -98,12 +112,14 @@ await fs.mkdir(budgetLock); // A second runner must not spend the same aggregate
 await using budgetLease = {
 	[Symbol.asyncDispose]: () => fs.rm(budgetLock, { recursive: true, force: true }),
 };
-let budget: Budget = { calls: 0, reservedTokens: 0 };
+let budget: Budget = { calls: 0, reservedTokens: 0, reservedUsd: 0 };
 try {
 	budget = await Bun.file(values["budget-file"]).json();
 } catch (error) {
 	if (!isEnoent(error)) throw error;
 }
+if (![budget.calls, budget.reservedTokens, budget.reservedUsd].every(value => Number.isFinite(value) && value >= 0))
+	throw new Error("Budget receipt lacks valid aggregate reservations; preserve it, do not reset spent budget");
 if (await Bun.file(values.output).exists())
 	throw new Error("Receipt already exists; preserve it and choose a new --output path (keep the shared budget file)");
 const outputCap = 1024;
@@ -176,10 +192,26 @@ try {
 	if (!model) throw new Error(`Model unavailable in existing configuration: ${values.model}`);
 	const credentials = await registry.getApiKeyAndHeaders(model);
 	if (!credentials.ok) throw new Error(credentials.error);
+	const cost = model.cost;
+	if (
+		![cost.input, cost.output, cost.cacheWrite, cost.cacheRead].every(rate => Number.isFinite(rate) && rate >= 0) ||
+		(cost.input === 0 && cost.output === 0)
+	)
+		throw new Error(`Unknown billable model price; refusing request: ${values.model}`);
+	const usdReserves = reserves.map(
+		tokens =>
+			((tokens - outputCap) * Math.max(cost.input, cost.cacheWrite, cost.cacheRead) + outputCap * cost.output) /
+			1_000_000,
+	);
+	const preflightUsd = usdReserves.reduce((a, b) => a + b, 0);
+	if (budget.reservedUsd + preflightUsd > maxUsd) throw new Error("Whole-run aggregate USD budget preflight failed");
 	for (let i = 0; i < requests.length; i++) {
 		const { scenario, aliases, context } = requests[i];
+		if (budget.reservedUsd + usdReserves[i] > maxUsd)
+			throw new Error("Aggregate USD budget exhausted before request");
 		budget.calls++;
 		budget.reservedTokens += reserves[i];
+		budget.reservedUsd += usdReserves[i];
 		await Bun.write(values["budget-file"], JSON.stringify(budget, null, 2));
 		const response = await stream(
 			model,
@@ -218,7 +250,15 @@ try {
 			"expectedReview" in scenario &&
 			scenario.expectedReview &&
 			response.content.some(b => b.type === "text" && b.text.includes("?"));
-		const pass = passes(scenario.expected) && roundTrip && !repeatsQuestion;
+		const schemaValid = calls.every(call => {
+			try {
+				validateToolCall(tools, call);
+				return true;
+			} catch {
+				return false;
+			}
+		});
+		const pass = passes(scenario.expected) && roundTrip && !repeatsQuestion && schemaValid;
 		const result: Result = {
 			id: scenario.id,
 			pass,
@@ -244,7 +284,8 @@ try {
 					pass:
 						passes(alias.expected) &&
 						("phases" in alias ? await verifyLeadRoundTrip(alias as LeadInstructionScenario, calls) : true) &&
-						!repeatsQuestion,
+						!repeatsQuestion &&
+						schemaValid,
 					aliasOf: scenario.id,
 				})),
 			)),

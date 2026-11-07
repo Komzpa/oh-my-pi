@@ -9,6 +9,7 @@ import { getLiveTodoBranchEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { workerYieldRefusal, type WorkerContinuationState } from "./worker_continue";
+import resourceClaimInstructions from "./resource-claim-refusal.md" with { type: "text" };
 import gateNotices from "./gate-notices.md" with { type: "text" };
 import { shortenPath, truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -454,7 +455,7 @@ export async function requestResourceScope(ctx: ExtensionContext, paths: string[
 }
 
 /** Persist only caller-assigned paths, after canonical overlap checks, before any worker starts. */
-export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: ExtensionContext): string | undefined {
+export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: ExtensionContext, persist = true): string | undefined {
 	const explicit = Array.isArray(event.resources);
 	if (explicit && event.resources.some(value => typeof value !== "string" || !value.startsWith("/")))
 		return "resources must contain absolute paths; use tasks[].resources to narrow the row.";
@@ -502,16 +503,27 @@ export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: Ext
 					const scope = checkoutScopesFromResources([resource]);
 					return scope && checkoutScopesOverlap(scope, held);
 				}),
-			)} held by row ${JSON.stringify(other.content)} (owner ${other.schedule?.owner ?? other.schedule?.executor?.workerId ?? "unassigned"}); narrow tasks[].resources to disjoint absolute paths within the row, or wait for its writer`;
+			)} held by row ${JSON.stringify(other.content)} (owner ${other.schedule?.owner ?? other.schedule?.executor?.workerId ?? "unassigned"}); narrow tasks[].resources to disjoint absolute paths within the row, or wait for its writer. ${prompt.render(resourceClaimInstructions, {row: other.content, owner: other.schedule?.owner ?? other.schedule?.executor?.workerId}).trim()}`;
 	}
 	const owner = stringValue(event.spawnKey) ?? row.schedule?.owner;
 	if (
-		(JSON.stringify(resources) !== JSON.stringify(row.schedule?.resources ?? []) ||
+		persist && (JSON.stringify(resources) !== JSON.stringify(row.schedule?.resources ?? []) ||
 			owner !== row.schedule?.owner ||
 			readOnly !== row.schedule?.readOnly) &&
 		ctx.updateTodoSchedule?.(row.content, { resources, owner, readOnly }) !== true
 	)
 		return "Could not persist assigned row resources; retry dispatch after updating the row.";
+}
+
+/** Inspect the same admission policy for notices without changing row ownership. */
+export function assignedResourceRefusals(phases: TodoScheduleInput, ctx: ExtensionContext): Map<string, string> {
+	const view = { ...ctx, getTodoPhases: () => phases };
+	return new Map(phases.flatMap(phase => phase.tasks)
+		.filter(row => row.status !== "completed" && row.status !== "abandoned")
+		.flatMap(row => {
+			const reason = admitAssignedResources({ row: row.content, task: row.content }, view, false);
+			return reason ? [[row.content, reason] as const] : [];
+		}));
 }
 
 export function routeSubagentSpawn(

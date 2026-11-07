@@ -108,7 +108,13 @@ const nativeAndIntegrationPackages = [
 const leadInstructionTestCommand: TestCommand = {
 	label: "lead instruction coverage",
 	cwd: ".",
-	command: ["bun", "test", ...onlyFailuresArgs, "./packages/reemxy-extensions/extensions/lead-instructions.test.ts"],
+	command: [
+		"bun",
+		"test",
+		...onlyFailuresArgs,
+		"./packages/reemxy-extensions/extensions/lead-instructions.test.ts",
+		"./packages/reemxy-extensions/extensions/lead-gates.test.ts",
+	],
 	parallel: 1,
 };
 

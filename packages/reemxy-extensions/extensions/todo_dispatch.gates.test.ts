@@ -2644,8 +2644,8 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
       expect(spawn?.block, agent).toBe(true);
     }
     expect(await toolCall({ toolName: "read", toolCallId: "u2", input: CALLS.read!.arguments }, ctx)).toBeUndefined();
-    // A third status-only call must staff the zero-active plan.
-    expect((await toolCall({ toolName: "todo", toolCallId: "u2v", input: { op: "view" } }, ctx))?.reason).toContain("0 workers running");
+    // Inspection remains available when staffing is refused by another gate.
+    expect((await toolCall({ toolName: "todo", toolCallId: "u2v", input: { op: "view" } }, ctx))?.block).not.toBe(true);
     // Plan bookkeeping passes (classify, block); adding rows is more work, not a plan fix.
     expect(await toolCall({ toolName: "todo", toolCallId: "u2c", input: { op: "classify", id: "R1", classification: "not-a-requirement", reason: "test" } }, ctx)).toBeUndefined();
     // A split adds rows, so append passes; starting their workers is what stays refused (live 2026-10-28).
