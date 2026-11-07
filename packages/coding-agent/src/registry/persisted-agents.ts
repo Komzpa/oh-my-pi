@@ -22,7 +22,12 @@ import { getAgentTombstonePath } from "./agent-tombstone";
 
 /** Maximum prefix entries inspected for task metadata. */
 const MAX_METADATA_LINES = 64;
-/** Retain the legacy advisor history budget; incremental observation must not expand it. */
+/**
+ * Upper bound on records scanned to compute an advisor transcript's Hub metrics.
+ * Well above any healthy advisor file (post issue #9553 the file grows O(new
+ * content)); it exists only so a legacy multi-GB transcript can't stall the
+ * render thread when the Hub roster is built.
+ */
 const MAX_ADVISOR_HISTORY_LINES = 200_000;
 
 interface PersistedAgentMetadata {
