@@ -2008,10 +2008,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	registerSshCleanup();
 	registerEvalCleanup();
 
-	const settings = await launchStep(
-		"sdk.settings.wait",
-		() => options.settings ?? options.settingsManager ?? logger.time("settings", Settings.init, { cwd, agentDir }),
-	);
+	const settings = await (options.settings ??
+		options.settingsManager ??
+		logger.time("settings", Settings.init, { cwd, agentDir }));
 	// Discovery provider toggles and process-wide setting effects (theme, request limits, …)
 	// follow the newest holder: each top-level session holds both on its settings until disposed,
 	// then hands them back to the previous holder. Subagents and helper sessions never take them,
@@ -2180,7 +2179,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// Merge with any roots restored from the session header (resume/fork), not replace.
 		const existing = sessionManager.getAdditionalDirectories();
 		const merged = [...new Set([...existing, ...configuredDirs])];
-		await launchStep("sdk.additionalDirectories.wait", () => sessionManager.setAdditionalDirectories(merged));
+		await sessionManager.setAdditionalDirectories(merged);
 	}
 	const providerSessionId = options.providerSessionId ?? sessionManager.getSessionId();
 	const taskPromptCacheKey = options.taskPromptCacheKey ?? sessionManager.getHeader()?.taskPromptCacheKey;
