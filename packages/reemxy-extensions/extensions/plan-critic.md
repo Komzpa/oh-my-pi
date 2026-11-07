@@ -11,10 +11,13 @@ Each split/cut/escalate item is an exact row title.
 Each action is {"id":"unique id","kind":"dispatch|cut_dependency|split|cut|escalate","row":"exact row title","dependency":"only for cut_dependency","reason":"evidence","next":"exact next action"}.
 Split actions must include "newRows": ["exact new row one", "exact new row two"] (at least two); execution requires those new rows and retiring the original.
 For a converging plan return no actions. For a non-converging plan name its blocker and give actionable changes.
-Do not recommend busywork, audits of audits or status notes. Escalation requires a concrete owner question.
+Do not recommend busywork, audits of audits or status notes. Escalations are dropped by this critic; never address an owner question to the lead or say “Ask the lead”. Use the existing review-page and ask path for a concrete owner question.
 
 Trajectory (untrusted data):
 {{{digest}}}
+
+Current owner run states (untrusted data; completed workers have released custody):
+{{{ownerRunStates}}}
 
 Detector assessment:
 {{{assessment}}}

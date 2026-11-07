@@ -37,6 +37,7 @@ export interface Binding {
 	verdict: PlanVerdict;
 	addressed: Record<string, { reason: string; toolCallId?: string }>;
 	wakes: number;
+	leadTurns?: number;
 	/** Persisted once-only delivery across session resumes. */
 	notified?: boolean;
 	trigger?: string;
@@ -97,10 +98,18 @@ export function parsePlanVerdict(value: unknown): PlanVerdict | undefined {
 export function pendingActions(binding: Binding): PlanAction[] {
 	return binding.verdict.actions.filter(action => action.kind !== "escalate" && !binding.addressed[action.id]);
 }
+export interface CriticOwnerRunState {
+	content: string;
+	owner: string | null;
+	running: boolean;
+	outcome?: string;
+}
+const chiefRefresh = new WeakMap<ExtensionContext["sessionManager"], () => void>();
 const chiefBindings = new WeakMap<ExtensionContext["sessionManager"], Binding>();
 /** Projection of the live binding; completed/deleted rows disappear immediately. */
-export function chiefCriticFixes(ctx: ExtensionContext): Array<{ row: string; action: string }> {
+export function chiefCriticFixes(ctx: ExtensionContext): Array<{ row: string; action: string; severity?: number }> {
 	if (ctx.agent?.kind === "sub") return [];
+	chiefRefresh.get(ctx.sessionManager)?.();
 	const binding = chiefBindings.get(ctx.sessionManager);
 	if (!binding) return [];
 	const rows = ctx.getTodoPhases?.()?.flatMap(phase => phase.tasks) ?? [];
@@ -111,7 +120,7 @@ export function chiefCriticFixes(ctx: ExtensionContext): Array<{ row: string; ac
 		if (action.kind === "cut_dependency" && !row.schedule?.dependencies?.includes(action.dependency!)) return false;
 		if (action.kind === "dispatch" && row.schedule?.executor?.workerId) return false;
 		return true;
-	}).map(action => ({ row: action.row, action: verbs[action.kind] }));
+	}).map(action => ({ row: action.row, action: verbs[action.kind], ...((binding.leadTurns ?? 0) >= 2 ? { severity: -1 } : {}) }));
 }
 /** Evidence is a successful native tool call plus its observed plan mutation, never lead prose. */
 export function actionObserved(action: PlanAction, before: TodoScheduleInput, after: TodoScheduleInput): boolean {
@@ -170,11 +179,12 @@ export function compactBindingHistory(bindings: Binding[]): string {
 	}
 	return JSON.stringify(recent);
 }
-function rowTrajectories(current: TodoScheduleInput): Record<string, string> {
+function rowTrajectories(current: TodoScheduleInput, owners: CriticOwnerRunState[] = []): Record<string, string> {
 	const digest = buildTrajectoryDigest([], current, 0);
 	return Object.fromEntries(current.flatMap(phase => phase.tasks).map(task => {
 		const row = digest.rows.find(item => item.row === task.content)!;
 		return [task.content, JSON.stringify({
+			task, run: owners.find(item => item.content === task.content),
 			attempts: task.schedule?.attemptHistory ?? [], reestimates: row.reestimates,
 			audit: task.schedule?.audit, evidence: task.schedule?.progress?.evidence,
 			executor: task.schedule?.executor, status: task.status, dependencies: row.dependencies,
@@ -183,7 +193,7 @@ function rowTrajectories(current: TodoScheduleInput): Record<string, string> {
 	}));
 }
 
-export default function planCritic(pi: ExtensionAPI): void {
+export default function planCritic(pi: ExtensionAPI, ownerRunStates: (ctx: ExtensionContext) => CriticOwnerRunState[] = () => []): void {
 	// Partial SDK harnesses without tool registration cannot host the critic.
 	if (!pi.typebox || !pi.registerTool) return;
 	const { Type } = pi.typebox;
@@ -221,6 +231,37 @@ export default function planCritic(pi: ExtensionAPI): void {
 		lastSaved = serialized;
 		history = [...history.filter(item => item.id !== binding!.id), structuredClone(binding)].slice(-3);
 	};
+	const refresh = () => {
+		if (!binding || !currentContext) return;
+		const current = phases(currentContext);
+		const owners = ownerRunStates(currentContext);
+		const snapshots = rowTrajectories(current, owners);
+		let changed = false;
+		for (const action of binding.verdict.actions) {
+			if (binding.addressed[action.id]) continue;
+			const row = current.flatMap(phase => phase.tasks).find(row => row.content === action.row);
+			const dependency = current.flatMap(phase => phase.tasks).find(row => row.content === action.dependency);
+			const run = owners.find(item => item.content === action.row);
+			let reason: string | undefined;
+			if (action.kind === "escalate") reason = "escalation dropped: requires a concrete owner question through review page and ask";
+			else if (!row) reason = "row removed or superseded";
+			else if (row.status === "completed" || row.status === "abandoned") reason = `row ${row.status}; custody no longer active`;
+			else if (!run?.running && (run?.outcome === "completed" || row.schedule?.executor?.outcome === "completed")) reason = "worker completed and released custody";
+			else if (action.kind === "dispatch" && (run?.running || row.schedule?.executor?.workerId)) reason = "row already staffed";
+			else if (action.kind === "cut_dependency" && !row.schedule?.dependencies?.includes(action.dependency!)) reason = "dependency already removed";
+			else if (dependency && (dependency.status === "completed" || dependency.status === "abandoned")) reason = "prerequisite no longer blocks the row";
+			else if (action.dependency && binding.trajectories?.[action.dependency] !== snapshots[action.dependency]) reason = "prerequisite changed since verdict; regenerate";
+			else if (!binding.trajectories?.[action.row] || binding.trajectories[action.row] !== snapshots[action.row]) reason = "row or owner run changed since verdict; regenerate";
+			if (reason) {
+				binding.addressed[action.id] = { reason: `auto-closed: ${reason}` };
+				changed = true;
+			}
+		}
+		if (changed) {
+			lastSuccess = 0;
+			save();
+		}
+	};
 	const notify = (escalated: boolean) => {
 		if (!binding || !pendingActions(binding).length || binding.notified || binding.wakes > 0) return;
 		pi.sendMessage(
@@ -237,6 +278,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 		binding.notified = true;
 	};
 	const wake = () => {
+		refresh();
 		if (!binding || !pendingActions(binding).length || binding.notified || binding.wakes > 0) return;
 		notify(false);
 		binding.wakes = 1;
@@ -245,8 +287,10 @@ export default function planCritic(pi: ExtensionAPI): void {
 	const tick = async (ctx: ExtensionContext) => {
 		if (!main(ctx)) return skip("tick:not-main");
 		if (inFlight) return skip("tick:in-flight");
+		refresh();
 		const now = Date.now();
-		const current = phases(ctx);
+		const current = structuredClone(phases(ctx));
+		const owners = structuredClone(ownerRunStates(ctx));
 		if (!current.some(phase => phase.tasks.some(row => row.status !== "completed" && row.status !== "abandoned")))
 			return skip("tick:no-open-rows");
 		if (binding && pendingActions(binding).length) return skip("tick:pending-actions");
@@ -277,6 +321,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 				.flatMap(entry => "data" in entry && object(entry.data) ? [entry.data] : []);
 			const task = prompt.render(brief, {
 				digest: compactTrajectoryDigest(digest),
+				ownerRunStates: JSON.stringify(owners),
 				priorBindings: compactBindingHistory(history),
 				requirementAuthority: JSON.stringify(current.flatMap(phase => phase.tasks).map(row => ({
 					row: row.content, quotes: rowRequirementQuotes(ctx, row.content, entries), conflict: requirementConflict(row),
@@ -298,7 +343,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 			const titles = new Set(current.flatMap(phase => phase.tasks.map(row => row.content)));
 			if (verdict.actions.some(action => !titles.has(action.row)))
 				throw new Error("Plan critic named an unknown row");
-			const trajectories = rowTrajectories(current);
+			const trajectories = rowTrajectories(current, owners);
 			const addressed: Binding["addressed"] = {};
 			for (const action of verdict.actions) {
 				for (const previous of history.toReversed()) {
@@ -324,7 +369,9 @@ export default function planCritic(pi: ExtensionAPI): void {
 		}
 	};
 	const start = async (_event: unknown, ctx: ExtensionContext) => {
+		if (currentContext) chiefRefresh.delete(currentContext.sessionManager);
 		currentContext = ctx;
+		chiefRefresh.set(ctx.sessionManager, refresh);
 		chiefBindings.delete(ctx.sessionManager);
 		generation++;
 		inFlight = false;
@@ -371,7 +418,13 @@ export default function planCritic(pi: ExtensionAPI): void {
 	pi.on("session_branch", start);
 	pi.on("session_tree", start);
 	pi.on("agent_end", (_event, ctx) => {
-		if (main(ctx)) wake();
+		if (main(ctx)) {
+			if (binding?.notified && pendingActions(binding).length && (binding.leadTurns ?? 0) < 2) {
+				binding.leadTurns = (binding.leadTurns ?? 0) + 1;
+				save();
+			}
+			wake();
+		}
 	});
 	pi.on("session_shutdown", (_event, ctx) => {
 		generation++;
@@ -385,6 +438,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 	});
 	pi.on("tool_call", (event, ctx) => {
 		if (!main(ctx)) return;
+		refresh();
 		if (event.toolName === "todo" || event.toolName === "task")
 			before.set(event.toolCallId, structuredClone(phases(ctx)));
 		if (binding && pendingActions(binding).length && ["wait", "yield"].includes(event.toolName))
@@ -428,7 +482,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 				throw new Error("Only escalation actions accept an owner question");
 			if (params.decision === "escalate") throw new Error("Escalations require a real owner question outside the critic");
 			binding.addressed[action.id] = { reason: `${params.decision}: ${params.reason}` };
-			binding.trajectories = { ...binding.trajectories, [action.row]: rowTrajectories(phases(ctx))[action.row]! };
+			binding.trajectories = { ...binding.trajectories, [action.row]: rowTrajectories(phases(ctx), ownerRunStates(ctx))[action.row]! };
 			save();
 			return { content: [{ type: "text", text: JSON.stringify({ remaining: pendingActions(binding) }) }] };
 		},

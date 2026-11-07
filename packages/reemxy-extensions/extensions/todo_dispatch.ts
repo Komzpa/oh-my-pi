@@ -2436,7 +2436,7 @@ export function syncCriticalFast(
 }
 
 export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe; reviewPageOpener?: (url: string) => void; deliveryCriticRecord?: (row: DeliveryRow, verdict: DeliveryVerdict) => Promise<void> } = {}): Promise<void> {
-  planCritic(pi);
+  planCritic(pi, ctx => currentDecision(ctx).ownerRunStates ?? []);
   installWorkerAskInterrupt(pi);
   installRequirementResolution(pi);
   const priorDeliveries = new Set<string>();
@@ -6609,7 +6609,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const push = ownsBranchWork(ctx) && gitStateCache?.cwd === ctx.cwd ? gitStateCache.state : undefined;
     if (push?.unpushed && (push.oldestUnpushedAgeMs ?? 0) >= (push.pushThresholdMs ?? STALE_PUSH_MS))
       defects.push({ row: pushRowTitle(push), action: "Push", severity: 2 });
-    for (const action of chiefCriticFixes(ctx)) defects.push({ ...action, severity: 2 });
+    for (const action of chiefCriticFixes(ctx)) defects.push({ severity: 2, ...action });
     for (const issue of decision.forecast?.planningIssues ?? [])
       defects.push({ row: issue.task, action: issue.code === "missing-estimate" ? "Estimate" : issue.code === "task-too-large" ? "Split" : "Replan", severity: 4 });
     for (const row of unresolvedForecastRows(decision.forecast))
