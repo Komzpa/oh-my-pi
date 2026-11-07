@@ -109,7 +109,11 @@ test("DC idle observation clears when its row is staffed; spare slots alone cann
 });
 
 test("DC load with no deadline still ages ready work and demands staffing after ten minutes beside CHURN", async () => {
-	const h = await harness(structuredClone(replay.entries).slice(1));
+	// A focused goal without a deadline keeps this case about idle recovery;
+	// the calibrated auto forecast may now legitimately create a deadline otherwise.
+	const entries = structuredClone(replay.entries).slice(1);
+	entries.push({ type: "custom", customType: "pi-goal-state", data: { goal: { id: "idle-goal", createdAt: replay.now, status: "active" } } });
+	const h = await harness(entries);
 	await h.hooks.get("session_start")({}, h.ctx);
 	expect(h.receipt().recovery.pending).toBeUndefined();
 	expect(
