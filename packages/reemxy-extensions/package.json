@@ -43,8 +43,7 @@
 			"extensions/codex_lb_provider.ts",
 			"extensions/goal_deadlines.ts",
 			"extensions/todo_dispatch.ts",
-			"extensions/agent_router.ts",
-			"extensions/plan_critic.ts"
+			"extensions/agent_router.ts"
 		]
 	},
 	"scripts": {

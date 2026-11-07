@@ -20,6 +20,8 @@ export function sessionContextEntryMetadata(entry: SessionEntry): SessionContext
 type Predicate = (metadata: SessionContextEntryMetadata) => boolean;
 export type BranchSource = {
 	getBranch(): readonly SessionEntry[];
+	getLeafId?: () => string | null;
+	getEntry?: (id: string) => SessionEntry | undefined;
 	getBranchTailMatching?: (limit: number, predicate: Predicate) => SessionEntry[];
 	getBranchMatching?: (predicate: Predicate) => SessionEntry[];
 	getCachedBranchMatching?: (predicate: Predicate) => SessionEntry[];
@@ -56,4 +58,23 @@ export function isTodoSelectionEntryMetadata(metadata: {
 			(metadata.customType === "user_todo_edit" || metadata.customType === "todo_hud_state")) ||
 		(metadata.type === "message" && metadata.messageRole === "toolResult" && metadata.toolName === "todo")
 	);
+}
+
+/** Walk indexed parents cooperatively: no branch materialization or transcript filtering. */
+export async function selectBranchEntriesCooperatively(
+	source: BranchSource,
+	predicate: Predicate,
+): Promise<SessionEntry[]> {
+	if (!source.getLeafId || !source.getEntry) return selectBranchEntries(source, predicate);
+	const selected: SessionEntry[] = [];
+	let id = source.getLeafId();
+	let count = 0;
+	while (id) {
+		const entry = source.getEntry(id);
+		if (!entry) break;
+		if (predicate(sessionContextEntryMetadata(entry))) selected.push(entry);
+		id = entry.parentId;
+		if (++count % 256 === 0) await Bun.sleep(0);
+	}
+	return selected.reverse();
 }
