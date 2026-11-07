@@ -1,4 +1,3 @@
-import { launchPhaseDetails } from "@oh-my-pi/pi-utils/launch-trace";
 import { performance } from "node:perf_hooks";
 import { logger, resetLoopPhaseWindow, takeLoopPhaseAttribution } from "@oh-my-pi/pi-utils";
 
@@ -162,7 +161,7 @@ export class LoopWatchdog {
 					logger.warn("ui.loop-blocked", {
 						blockedMs: Math.round(blockedMs),
 						cpuMs: Math.round(cpuMs),
-						...launchPhaseDetails(phase?.label, this.#expected, now),
+						phase: phase?.label ?? "unknown",
 						...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
 					});
 				}
