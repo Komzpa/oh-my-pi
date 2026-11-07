@@ -7,7 +7,6 @@ import { resolveExplicitModelRole } from "../config/model-resolver";
 import { assistantTurnProducedOutput } from "../session/messages";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, PREWALK_MODEL_CHANGE_ROLE } from "../session/session-entries";
 import { readSessionHeaderId, visitEntriesFromFileStream } from "../session/session-loader";
-import { JournalCursor } from "../session/journal-cursor";
 import { loadBundledAgents } from "../task/agents";
 import { isReadOnlyAgent } from "../task/read-only-policy";
 import { persistedVibeChildIds } from "../vibe/lifecycle";
@@ -160,66 +159,23 @@ function isFilesystemError(error: unknown): boolean {
 	return typeof code === "string" && code !== "ENOENT";
 }
 
-interface HistoryCursorState {
-	records: number;
-	cursor: JournalCursor;
-	parents: Map<string, string | undefined>;
-	assistantById: Map<string, AssistantMetrics>;
-	modelChangeById: Map<string, { model: string; role?: string; resolvedModelIsFallback: boolean }>;
-	leafId?: string;
-	selfSelectedLeafId?: string;
-	leafTimestamp?: number;
-	directCost: number;
-}
-const historyCursors = new WeakMap<AgentRef, HistoryCursorState>();
-
-const historyReads = new WeakMap<AgentRef, Promise<AgentHistorySummary>>();
-function readPersistedAgentHistory(
+async function readPersistedAgentHistory(
 	transcript: PersistedTranscript,
-	ref: AgentRef,
 	shouldContinue: () => boolean,
 ): Promise<AgentHistorySummary> {
-	const pending = historyReads.get(ref);
-	const read = (pending ?? Promise.resolve())
-		.catch(() => {})
-		.then(() => refreshPersistedAgentHistory(transcript, ref, shouldContinue))
-		.finally(() => {
-			if (historyReads.get(ref) === read) historyReads.delete(ref);
-		});
-	historyReads.set(ref, read);
-	return read;
-}
-
-async function refreshPersistedAgentHistory(
-	transcript: PersistedTranscript,
-	ref: AgentRef,
-	shouldContinue: () => boolean,
-): Promise<AgentHistorySummary> {
-	let state = historyCursors.get(ref);
-	if (!state) {
-		state = {
-			records: 0,
-			cursor: new JournalCursor(),
-			parents: new Map(),
-			assistantById: new Map(),
-			modelChangeById: new Map(),
-			directCost: 0,
-		};
-		historyCursors.set(ref, state);
-	}
-	const { parents, assistantById, modelChangeById } = state;
-	const currentState = state;
-	const maxRecords = isAdvisorTranscriptName(path.basename(transcript.sessionFile))
-		? MAX_ADVISOR_HISTORY_LINES
-		: Number.POSITIVE_INFINITY;
-	let { leafId, selfSelectedLeafId, leafTimestamp, directCost } = state;
+	const parents = new Map<string, string | undefined>();
+	const assistantById = new Map<string, AssistantMetrics>();
+	const modelChangeById = new Map<string, { model: string; role?: string; resolvedModelIsFallback: boolean }>();
+	// Raw-record copy of `sessionEntryLeafId`/`resolveSessionLeafId` (session-entries.ts); keep them in sync.
+	let leafId: string | undefined;
+	let selfSelectedLeafId: string | undefined;
+	let leafTimestamp: number | undefined;
+	let directCost = 0;
 	// Direct cost mirrors lifetime SessionManager usage; legacy metrics below stay leaf-scoped.
 	try {
-		await state.cursor.read(
+		await visitEntriesFromFileStream(
 			transcript.sessionFile,
 			entry => {
-				if (currentState.records >= maxRecords) return;
-				currentState.records++;
 				const record = recordOf(entry);
 				if (!record) return;
 				const id = typeof record.id === "string" ? record.id : undefined;
@@ -261,20 +217,19 @@ async function refreshPersistedAgentHistory(
 					directCost += assistant.cost;
 				}
 			},
-			() => {
-				currentState.records = 0;
-				parents.clear();
-				assistantById.clear();
-				modelChangeById.clear();
-				leafId = undefined;
-				selfSelectedLeafId = undefined;
-				leafTimestamp = undefined;
-				directCost = 0;
+			// Advisor transcripts are the one file that can grow pathologically large
+			// (issue #9553); cap their scan so one bad transcript can't stall the Hub
+			// on the render thread. Healthy advisor files sit far below this bound,
+			// so their metrics stay exact; a capped legacy file reports approximate
+			// (lower-bound) cost/tokens rather than freezing `hub list`.
+			{
+				shouldContinue,
+				maxRecords: isAdvisorTranscriptName(path.basename(transcript.sessionFile))
+					? MAX_ADVISOR_HISTORY_LINES
+					: undefined,
 			},
-			() => shouldContinue() && currentState.records < maxRecords,
 		);
 	} catch (error) {
-		historyCursors.delete(ref);
 		// Malformed and truncated records are skipped in-band; a vanished file
 		// (ENOENT) degrades to empty history. Any other filesystem fault is
 		// transient and surfaces to the caller instead of masquerading as a
@@ -283,7 +238,6 @@ async function refreshPersistedAgentHistory(
 		return {};
 	}
 
-	Object.assign(state, { leafId, selfSelectedLeafId, leafTimestamp, directCost });
 	if (leafId !== undefined && !parents.has(leafId)) leafId = selfSelectedLeafId;
 	const metrics: AgentMetricsSummary = {
 		tokens: 0,
@@ -758,7 +712,7 @@ export async function registerPersistedSubagents(
 			if (!ref || ref.sessionFile !== transcript.sessionFile) continue;
 			const stamp = await transcriptStamp(transcript.sessionFile);
 			if (stamp !== undefined && historyStamps.get(ref) === stamp) continue;
-			const history = await readPersistedAgentHistory(transcript, ref, shouldContinue);
+			const history = await readPersistedAgentHistory(transcript, shouldContinue);
 			if (!shouldContinue()) return;
 			if (registry.setHistory(transcript.id, history, transcript.sessionFile) && stamp !== undefined) {
 				historyStamps.set(ref, stamp);
