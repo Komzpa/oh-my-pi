@@ -5144,19 +5144,14 @@ export class SessionManager {
 	 * role the session was last assigned.
 	 */
 	getLastModelChangeRole(options?: { skipEphemeral?: boolean }): string | undefined {
-		let role: string | undefined;
-		for (const entry of this.iterateBranch("model_change")) {
+		for (const entry of this.iterateBranchMatchingNewestFirst(metadata => metadata.type === "model_change")) {
 			if (entry.type !== "model_change") continue;
-			const entryRole = entry.role ?? "default";
-			if (
-				options?.skipEphemeral &&
-				(entryRole === EPHEMERAL_MODEL_CHANGE_ROLE || entryRole === PREWALK_MODEL_CHANGE_ROLE)
-			) {
+			const role = entry.role ?? "default";
+			if (options?.skipEphemeral && (role === EPHEMERAL_MODEL_CHANGE_ROLE || role === PREWALK_MODEL_CHANGE_ROLE))
 				continue;
-			}
-			role = entryRole;
+			return role;
 		}
-		return role;
+		return undefined;
 	}
 
 	/**
