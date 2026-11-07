@@ -177,3 +177,19 @@ test("a recursive child launched after parent readiness gets its own summary", a
 	expect(summaries.map(summary => summary?.id)).toEqual(["parent", "child"]);
 	expect(summaries[1]?.spans).toEqual([expect.objectContaining({ name: "child.init" })]);
 });
+
+test("background completion cannot extend launch attribution beyond readiness", async () => {
+	capture();
+	let now = 0;
+	spyOn(performance, "now").mockImplementation(() => now);
+	const resume = Promise.withResolvers<void>();
+	await runLaunchTrace({ id: "background" }, async () => {
+		const background = launchStep("background.wait", () => resume.promise);
+		now = 10;
+		finishLaunchTrace();
+		now = 100;
+		resume.resolve();
+		await background;
+		expect(takeLaunchPhaseCandidates(20, 100)).toEqual([]);
+	});
+});
