@@ -208,10 +208,10 @@ test("an idle chief gets a persisted continuation demand for ready and overdue r
 		h.entries.push({ type: "mode_change", mode: "goal_paused", data: { goal: { id: "paused-plan", status: "paused", createdAt: now } } });
 		await h.handlers.get("session_stop")!({}, h.ctx);
 		const demand = h.notices.find(notice => notice.customType === "todo-idle-plan-demand");
-		expect(demand?.content).toContain('Overdue: "Row 1"');
-		expect(demand?.content).toContain('Ready: "Row 1"');
-		expect(demand?.content).toContain("Re-estimate each overdue row");
-		expect(demand?.content).toContain("staff every ready row");
+		expect(demand?.content).toContain("0 workers running");
+		expect(demand?.content).toContain("Row 1");
+		expect(demand?.content.length).toBeLessThanOrEqual(300);
+		expect(demand?.content).toContain("Dispatch them now with task");
 		expect(demand?.delivery).toMatchObject({ deliverAs: "nextTurn", triggerTurn: true });
 		expect(h.entries.some(entry => entry.type === "message" && entry.message?.customType === "todo-idle-plan-demand")).toBe(true);
 	} finally { h.shutdown(); }
@@ -264,8 +264,8 @@ test("wait calls do not reset an unchanged idle continuation demand", async () =
 			await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
 			await h.handlers.get("session_stop")!({}, h.ctx);
 		}
-		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(2);
-		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation")).toHaveLength(1);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(4);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation")).toHaveLength(0);
 	} finally { h.shutdown(); }
 });
 
@@ -288,7 +288,7 @@ test("a changed plan rearms an idle demand without dropping dependent work", asy
 		const demands = h.notices.filter(notice => notice.customType === "todo-idle-plan-demand");
 		expect(demands).toHaveLength(2);
 		expect(demands[0]?.content).toContain("Investigate service failure");
-		expect(demands[1]?.content).toContain('Ready: "Row 1"');
+		expect(demands[1]?.content).toContain("Row 1");
 		expect(phases[0]!.tasks[1]!.schedule.dependencies).toEqual(["Row 1"]);
 	} finally { h.shutdown(); }
 });
@@ -320,13 +320,10 @@ test("unchanged actionable TODO state blocks status-only stops after reads, hist
 			const call = await h.handlers.get("tool_call")!({ toolName, input: toolName === "todo" ? { op: "history" } : {} }, h.ctx);
 			if (toolName === "wait" && turn >= 2) expect(call?.block).toBe(true);
 			const stop = await h.handlers.get("session_stop")!({}, h.ctx);
-			if (turn >= 2) {
-				expect(stop?.decision).toBe("block");
-				expect(stop?.reason).toContain("REQUIRED STATE CHANGE");
-			} else expect(stop?.decision).not.toBe("block");
+			expect(stop?.reason ?? "").not.toContain("REQUIRED STATE CHANGE");
 		}
-		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(2);
-		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation")).toHaveLength(1);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(6);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation")).toHaveLength(0);
 		// A genuine mutation resets enforcement; completed work needs no more wakes.
 		row.status = "completed";
 		await h.handlers.get("turn_start")!({}, h.ctx);
@@ -1334,7 +1331,7 @@ test("an unstaffed ready row announces staffing before wait and chief-work refus
 		const notices = () => h.notices.filter(notice => notice.customType === "todo-gate-staffing");
 		expect(notices()).toHaveLength(1);
 		expect(notices()[0].content).toContain('"Row 1"');
-		expect(notices()[0].content).toContain("wait will be refused until staffed");
+		expect(notices()[0].content).toContain("with task");
 		const wait = await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
 		actionable(wait.reason, "Row 1");
 		const bash = await h.handlers.get("tool_call")!({ toolName: "bash", input: { command: "bun test" } }, h.ctx);
@@ -2147,4 +2144,62 @@ test("a newer human correction cannot wait behind an earlier unplanned probe", a
 		h.setRunning([{ id: "probe-job", agentId: "SpawnProbe", label: "SpawnProbe", type: "task", status: "running" }]);
 		expect((await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx))?.block).toBe(true);
 	} finally { h.shutdown(); }
+});
+
+
+test("zero-active live shape nags first, refuses third call, permits staffing and two brief reads", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(3, now);
+	for (const row of phases[0].tasks) { row.status = "pending"; row.schedule.owner = undefined; row.schedule.dependencies = []; }
+	const h = await noticeHarness(phases, now + 86400000);
+	const call = (toolName, input = {}) => h.handlers.get("tool_call")({ toolName, input }, h.ctx);
+	const result = (toolName, input = {}, isError = false) => h.handlers.get("tool_result")({ toolName, input, isError, content: [{ type: "text", text: "original output" }] }, h.ctx);
+	try {
+		expect((await call("todo", { op: "view" }))?.block).not.toBe(true);
+		const view = await result("todo", { op: "view" });
+		expect(view.content[0].text).toContain("0 workers running while 3 rows need one:");
+		expect(view.content[0].text.length).toBeLessThanOrEqual(300);
+		expect(view.content[1].text).toBe("original output");
+		expect((await call("read", { path: "proc://list" }))?.block).not.toBe(true);
+		expect((await result("read", { path: "proc://list" }, true)).content[0].text).toContain("Dispatch them now with task");
+		const refusal = await call("todo", { op: "view" });
+		expect(refusal?.block).toBe(true);
+		expect(refusal.reason.length).toBeLessThanOrEqual(300);
+		expect((await call("read", { path: "agent://prior" }))?.block).not.toBe(true);
+		expect((await call("read", { path: "agent://other" }))?.block).not.toBe(true);
+		expect((await call("read", { path: "agent://third" }))?.block).toBe(true);
+		expect((await call("ask", { question: "scope?" }))?.block).not.toBe(true);
+		expect((await call("todo", { op: "schedule", updates: [] }))?.reason ?? "").not.toContain("0 workers running");
+		expect((await call("task", { tasks: [{ name: "ProduceRow", agent: "task", task: "Row 1" }] }))?.reason ?? "").not.toContain("0 workers running");
+		expect((await call("read", { path: "proc://list" }))?.block).toBe(true);
+		for (let turn = 0; turn < 6; turn++) {
+			await h.handlers.get("turn_start")({}, h.ctx);
+			await h.handlers.get("session_stop")({}, h.ctx);
+		}
+		const nags = h.notices.filter(n => n.customType === "todo-idle-plan-demand");
+		expect(nags).toHaveLength(6);
+		expect(nags.every(n => n.delivery.triggerTurn && n.content.length <= 300)).toBe(true);
+		h.setRunning([{ id: "worker-a", agentId: "worker-a", label: "Row 1", type: "task", status: "running" }]);
+		expect((await call("read", { path: "proc://list" }))?.block).not.toBe(true);
+		expect(await result("read")).toBeUndefined();
+	} finally { h.shutdown(); }
+});
+
+test("zero-active neighbours keep user-blocked and live dependency plans quiet", async () => {
+	for (const userBlocked of [true, false]) {
+		const now = Date.now();
+		const phases = chainedPlan(2, now);
+		if (userBlocked) for (const row of phases[0].tasks) { row.status = "blocked"; row.blocker = "waits for user: approve"; row.schedule.owner = undefined; }
+		const h = await noticeHarness(phases, now + 86400000);
+		if (!userBlocked) h.setRunning([{ id: "worker-a", agentId: "worker-a", label: "Row 1", type: "task", status: "running" }]);
+		try {
+			for (let i = 0; i < 5; i++) {
+				expect((await h.handlers.get("tool_call")({ toolName: "read", input: { path: "proc://list" } }, h.ctx))?.block).not.toBe(true);
+				expect(await h.handlers.get("tool_result")({ toolName: "read", input: {}, content: [], isError: false }, h.ctx)).toBeUndefined();
+				await h.handlers.get("turn_start")({}, h.ctx);
+				await h.handlers.get("session_stop")({}, h.ctx);
+			}
+			expect(h.notices.filter(n => n.customType === "todo-idle-plan-demand")).toHaveLength(0);
+		} finally { h.shutdown(); }
+	}
 });

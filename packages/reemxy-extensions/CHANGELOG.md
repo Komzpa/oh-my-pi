@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Nag unstaffed leads on every tool result, block status loops after two calls, and keep waking until ready rows have workers ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Single read-only probes can wait for their result before replying, without acquiring an unplanned retrospective ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep forecast drivers to the final critical row and a short title ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

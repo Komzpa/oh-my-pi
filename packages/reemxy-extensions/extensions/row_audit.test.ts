@@ -179,7 +179,8 @@ test("DC 16:45 replay: delivered rows verify, finished-without-change rows need 
 			.join("; "),
 	});
 	for (const content of DELIVERED) expect(notice).not.toContain(content);
-	expect(notice).toContain('"Mac call: attribute 30 fps drop untraced" from agent://MacCallAttrib-3 (findings)');
+	expect(notice).toContain("Mac call: attribute 30 fps drop untraced");
+	expect(notice.length).toBeLessThanOrEqual(300);
 	expect(after.decision.verifyingRows.sort()).toEqual([...DELIVERED].sort());
 });
 

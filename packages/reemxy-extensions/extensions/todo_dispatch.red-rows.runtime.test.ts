@@ -172,7 +172,8 @@ test("lead default opens a 200 review URL once and opens its replacement", async
 	await poll();
 	expect(h.opened).toEqual(["https://review.example/first"]);
 	row.schedule.reviewPage = "https://review.example/second";
-	await poll();
+	// Staffing controls remain available after two zero-active reads.
+	await h.hooks.get("tool_call")({ toolName: "todo", input: { op: "schedule", updates: [] } }, h.ctx);
 	expect(h.opened).toEqual(["https://review.example/first", "https://review.example/second"]);
 });
 
