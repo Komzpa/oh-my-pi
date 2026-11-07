@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { getBaseConfigRoot, isEnoent } from "@oh-my-pi/pi-utils";
 import type { RestartControlIdentity, RestartControlRequest, RestartControlSnapshot } from "./task/restart-queue";
+import { writeFileAtomically } from "./utils/atomic-file";
 
 export const RESTART_CONTROL_PROTOCOL_VERSION = 1;
 const MAX_REQUEST_BYTES = 4 * 1024;
@@ -438,7 +439,7 @@ export async function publishRestartControl(
 	return {
 		async prepareHandoff(): Promise<void> {
 			meta.handoff = source.snapshot();
-			await Bun.write(metadataPath, JSON.stringify(meta));
+			await writeFileAtomically(metadataPath, JSON.stringify(meta));
 		},
 		async dispose(): Promise<void> {
 			if (disposed) return;
