@@ -12,7 +12,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { listeningPorts, PeerRuntime } from "@oh-my-pi/pi-coding-agent/task/peer-runtime";
+import { checkPeerSessionHandover, listeningPorts, PeerRuntime } from "@oh-my-pi/pi-coding-agent/task/peer-runtime";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const sessions: AgentSession[] = [];
@@ -71,7 +71,7 @@ it("actual SDK write produces a clash, gates yield, and accepts a structured agr
 		const write = writer.getToolByName("write")!;
 		await write.execute("write-owned", { path: path.join(root, "src/out.txt"), content: "owned" });
 		const yieldTool = writer.getToolByName("yield")!;
-		expect((await yieldTool.execute("disjoint", { data: { ready: true } })).details?.status).toBe("success");
+		expect(await checkPeerSessionHandover(writer)).toBeUndefined();
 		await write.execute("write-evidence", { path: path.join(root, "evidence/out.txt"), content: "proof" });
 		expect(await Bun.file(path.join(root, "evidence/out.txt")).text()).toBe("proof");
 		await expect(yieldTool.execute("refused", { data: { ready: true } })).rejects.toThrow("Handover refused");
@@ -240,6 +240,7 @@ it("disposal aborts pending baseline and prevents late attribution or further re
 it("reconciles early unhooked edits and deletions without attributing untouched dirty or sibling paths", async () => {
 	using temp = TempDir.createSync("@omp-peer-early-");
 	const fixture = startupFixture(temp.path());
+	await Bun.write(temp.join(".gitignore"), "src/ignored.txt\n");
 	await Bun.write(temp.join("src/dirty.txt"), "old dirty");
 	await Bun.write(temp.join("src/untouched.txt"), "untouched dirty");
 	await Bun.write(temp.join("src/deleted.txt"), "delete me");
@@ -254,6 +255,8 @@ it("reconciles early unhooked edits and deletions without attributing untouched 
 		});
 		await Bun.write(temp.join("src/dirty.txt"), "early shell edit without mutation hook");
 		await fs.rm(temp.join("src/deleted.txt"));
+		await Bun.write(temp.join("src/new.txt"), "created after cached status snapshot");
+		await Bun.write(temp.join("src/ignored.txt"), "ignored output");
 		await Bun.write(temp.join("sibling/out.txt"), "other worker");
 		await Bun.sleep(30);
 		fixture.status.resolve("?? src/dirty.txt\0?? src/untouched.txt\0 D src/deleted.txt\0?? sibling/out.txt\0");
@@ -262,6 +265,7 @@ it("reconciles early unhooked edits and deletions without attributing untouched 
 			[
 				`path:${path.resolve(temp.join("src/deleted.txt"))}`,
 				`path:${path.resolve(temp.join("src/dirty.txt"))}`,
+				`path:${path.resolve(temp.join("src/new.txt"))}`,
 			].toSorted(),
 		);
 		expect(await fixture.runtime.checkHandover(undefined)).toContain("src/dirty.txt");
