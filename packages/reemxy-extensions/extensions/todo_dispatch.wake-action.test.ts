@@ -4,7 +4,7 @@ import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch from "./todo_dispatch";
 
-async function harness(journal = []) {
+async function harness(journal = [], chain = false) {
   const hooks = new Map();
   const sent = [];
   const timers = [];
@@ -13,6 +13,11 @@ async function harness(journal = []) {
     dependencies: [], cumulativeReestimateCount: 4,
     estimate: { optimisticSeconds: 60, likelySeconds: 120, pessimisticSeconds: 180, confidence: "medium", basis: "test", updatedAt: now },
   } }] }];
+  if (chain) {
+    phases[0].tasks[0].content = "Labels";
+    for (const [content, dependency] of [["11 MW", "Labels"], ["Levels", "11 MW"], ["Collateral", "Levels"], ["Collateral2", "Collateral"]])
+      phases[0].tasks.push({ content, status: "pending", schedule: { dependencies: [dependency], estimate: { ...phases[0].tasks[0].schedule.estimate } } });
+  }
   const jobs = { running: [], recent: [], nonJobAgents: [] };
   const api = { on: (name, fn) => hooks.set(name, fn), getActiveTools: () => ["todo", "task"],
     appendEntry: (customType, data) => journal.push({ type: "custom", customType, data }),
@@ -80,4 +85,93 @@ test("CHURN cannot be satisfied by dispatching unrelated work; splitting its dep
   await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule" }, content: [], isError: false }, h.ctx);
   await h.hooks.get("turn_end")({}, h.ctx);
   expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data).toMatchObject({ misses: 0, mutations: 1 });
+});
+
+
+test("CHURN chain review persists every link, survives reload and rejects unrelated work or head retries", async () => {
+  const h = await harness([], true);
+  await h.wake();
+  const first = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand");
+  expect(first?.data.edges).toEqual([
+    { task: "11 MW", dependency: "Labels" }, { task: "Collateral", dependency: "Levels" },
+    { task: "Collateral2", dependency: "Collateral" }, { task: "Levels", dependency: "11 MW" },
+  ]);
+  await h.hooks.get("tool_result")({ toolName: "task", input: { tasks: [{ name: "Retry", task: "Labels" }] }, content: [], isError: false }, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data).toMatchObject({ misses: 1, mutations: 0 });
+  h.phases[0].tasks[0].schedule.owner = "New owner";
+  await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule" }, content: [], isError: false }, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.misses).toBe(2);
+  const resumed = await harness(h.journal, true);
+  await resumed.wake();
+  expect(resumed.sent.findLast(message => message.options?.triggerTurn)?.content).toContain("ESCALATED");
+  expect(resumed.sent.findLast(message => message.options?.triggerTurn)?.content).toContain("Collateral2");
+  // A slot-only edge is removed by a real todo mutation, preserving the rest of the graph.
+  resumed.phases[0].tasks[1].schedule.dependencies = [];
+  await resumed.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule" }, content: [], isError: false }, resumed.ctx);
+  await resumed.hooks.get("turn_end")({}, resumed.ctx);
+  expect(resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data).toMatchObject({ misses: 0, mutations: 1 });
+});
+
+test("real chain dependencies can be rejected with a persisted per-link reason, changed graphs rearm review", async () => {
+  const h = await harness([], true);
+  await h.wake();
+  const head = h.phases[0].tasks[0];
+  const persisted = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand");
+  expect(persisted?.data.key).toMatch(/^chain:/);
+  const key = persisted.data.key;
+  head.schedule.progress = { at: Date.now(), evidence: `Dependency review ${key}:
+11 MW <- Labels: consumes label ids
+Levels <- 11 MW: consumes capacity
+Collateral <- Levels: consumes levels
+Collateral2 <- Collateral: consumes first collateral output` };
+  await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule" }, content: [], isError: false }, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  const receipt = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand");
+  expect(receipt.data.rejection).toBe(head.schedule.progress.evidence);
+  const resumed = await harness(h.journal, true);
+  resumed.phases[0].tasks[0].schedule.progress = structuredClone(head.schedule.progress);
+  await resumed.wake();
+  expect(resumed.sent.findLast(message => message.options?.triggerTurn)?.content).not.toContain("WAIT-CHAIN REVIEW");
+  resumed.phases[0].tasks[4].schedule.dependencies.push("Labels");
+  await resumed.wake();
+  expect(resumed.sent.findLast(message => message.options?.triggerTurn)?.content).toContain("WAIT-CHAIN REVIEW");
+});
+
+
+test("AUDIT-FAIL heads trigger chain review during ordinary turns; a lone head and healthy chains do not", async () => {
+  const h = await harness([], true);
+  const head = h.phases[0].tasks[0];
+  head.schedule.cumulativeReestimateCount = 0;
+  head.schedule.executor = { workerId: "AuditWorker", startedAt: 100, finishedAt: 200, outcome: "completed" };
+  head.schedule.audit = { delivery: schedule.todoRowDeliveryKey(head.schedule), agent: "qa-auditor", verdict: "fail", findings: "wrong label ids" };
+  await h.hooks.get("turn_start")({}, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand")?.data.edges).toHaveLength(4);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.misses).toBe(1);
+  const healthy = await harness([], true);
+  healthy.phases[0].tasks[0].schedule.cumulativeReestimateCount = 0;
+  await healthy.wake();
+  expect(healthy.sent.findLast(message => message.options?.triggerTurn)?.content).not.toContain("WAIT-CHAIN REVIEW");
+  const short = await harness([], true);
+  short.phases[0].tasks.splice(1);
+  await short.wake();
+  expect(short.sent.findLast(message => message.options?.triggerTurn)?.content).not.toContain("WAIT-CHAIN REVIEW");
+});
+
+test("dependent dispatch must succeed in an isolated worktree and have no unfinished logical dependency", async () => {
+  const h = await harness([], true);
+  await h.wake();
+  const call = { toolName: "task", input: { tasks: [{ name: "Capacity", task: "11 MW", isolated: true }] }, content: [] };
+  await h.hooks.get("tool_result")({ ...call, isError: false }, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data).toMatchObject({ mutations: 0, misses: 1 });
+  h.phases[0].tasks[0].status = "completed";
+  await h.hooks.get("tool_result")({ ...call, isError: true }, h.ctx);
+  // A failed call cannot claim the dependent was dispatched. A non-isolated dispatch cannot either.
+  await h.hooks.get("tool_result")({ ...call, input: { ...call.input, tasks: [{ ...call.input.tasks[0], isolated: false }] }, isError: false }, h.ctx);
+  await h.hooks.get("tool_result")({ ...call, isError: false }, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data).toMatchObject({ mutations: 1, misses: 0 });
 });
