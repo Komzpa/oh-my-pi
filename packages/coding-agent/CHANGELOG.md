@@ -12,9 +12,14 @@
 
 ### Added
 
+- Added an `env` parameter to the `bash` tool for finite, async, auto-backgrounded, PTY, ACP-terminal and service commands; caller values win over defaults ([#99](https://github.com/Komzpa/oh-my-pi/pull/99) by [@Komzpa](https://github.com/Komzpa))
+
 - RPC `bash` accepts `excludeFromContext: true` to keep a run out of model context like terminal `!!`; runtimes advertise support with `supportsBashExcludeFromContext` in the `ready` frame, and the Python SDK exposes that frame as `client.ready` ([#18206](https://github.com/can1357/oh-my-pi/pull/18206) by [@andrebrait](https://github.com/andrebrait))
 
 ### Fixed
+
+- Fixed named bash services rejecting materialized `async: false` / `timeout: 0` defaults; explicit requests are reported with a notice ([#99](https://github.com/Komzpa/oh-my-pi/pull/99) by [@Komzpa](https://github.com/Komzpa))
+- Bash refuses commands that replace desktop session processes, mutate user D-Bus services, or remove user runtime files across all execution backends, while keeping literal shell data and inspection commands available ([#99](https://github.com/Komzpa/oh-my-pi/pull/99) by [@Komzpa](https://github.com/Komzpa))
 
 - A function defined inside a command substitution in a here-document body (`cat <<E` / `$(f() { …; }; f)` / `E`) no longer crashes the built-in shell.
 - An ovnfs checkout stays recoverable with `omp worktree clear` when removing it fails, or when creating it fails after the daemon may already have it, instead of being forgotten ([#18337](https://github.com/can1357/oh-my-pi/pull/18337) by [@eggpeat](https://github.com/eggpeat))
@@ -61,7 +66,6 @@
 
 ### Added
 
-- Added an `env` parameter to the `bash` tool for finite, async, auto-backgrounded, PTY, ACP-terminal and service commands; caller values win over defaults ([#99](https://github.com/Komzpa/oh-my-pi/pull/99) by [@Komzpa](https://github.com/Komzpa))
 - Bash commands, foreground and background, now show a live execution visualization in Raw or Python-like Pseudo view, with variable values and replay history; disable with `display.shellVisualization` (default on).
 - `grep` and `glob` inside an ovnfs checkout ask the ovnfs daemon to search the checkout in-process, avoiding per-file mount round trips; the daemon and its mount come from `ovnfs --json status` when the ovnfs binary is found. They fall back to the native search when the daemon is unavailable or rejects the request, and cancelling the tool cancels the daemon's search. ovnfs with admin protocol 5 is required.
 - Added `skills.manualSkills` glob patterns to hide skills from the model catalog while keeping them manually invocable ([#18114](https://github.com/can1357/oh-my-pi/pull/18114) by [@Shadorain](https://github.com/Shadorain))
@@ -117,8 +121,6 @@
 - On macOS, the browser tool's headless Chromium keeps background tabs at normal CPU priority, so on a busy machine `tab.traceStart()`, opening a second tab, and other calls into background tabs no longer stall or time out
 - Subagents loading MCP tools (such as Kata's `load_*`) no longer change the main session's tools or system prompt
 - Mounting an MCP tool mid-session on prefix-bound models no longer changes the eval tool description, and the mount notice now reaches the model
-- Fixed named bash services rejecting materialized `async: false` / `timeout: 0` defaults; explicit requests are reported with a notice ([#99](https://github.com/Komzpa/oh-my-pi/pull/99) by [@Komzpa](https://github.com/Komzpa))
-- Bash refuses commands that replace desktop session processes, mutate user D-Bus services, or remove user runtime files across all execution backends, while keeping literal shell data and inspection commands available ([#99](https://github.com/Komzpa/oh-my-pi/pull/99) by [@Komzpa](https://github.com/Komzpa))
 - Worker-thread subagents are faster: switching views on long transcripts no longer lags, `wait` no longer streams full transcripts, and they stall less on a busy main thread
 - Streaming a large batch `task` call no longer slows quadratically (about 80 ms → 2 ms for a 200 KB call)
 - `computer` from Eval now uses `zoom` for legible close-ups instead of cropping the downscaled screenshot ([#18158](https://github.com/can1357/oh-my-pi/pull/18158) by [@will-bogusz](https://github.com/will-bogusz))
