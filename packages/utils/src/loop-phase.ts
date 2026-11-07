@@ -2,6 +2,7 @@
 export interface LoopPhaseAttribution {
 	readonly label: string;
 	/** Total time this label was the innermost active phase inside the late window [start, end]. */
+	// Zero for an explicitly labeled launch-overlap candidate: no synchronous attribution.
 	readonly ms: number;
 }
 
@@ -23,6 +24,11 @@ export interface LoopPhaseAttribution {
  * misattribute or leak phases. Instrument only synchronous spans; for async
  * work, push/pop around each synchronous chunk, not across the await.
  */
+let fallback: ((start: number, end: number) => string | undefined) | undefined;
+/** Register bounded wall-overlap diagnostics for work that resumes after an await. */
+export function setLoopPhaseFallback(provider: (start: number, end: number) => string | undefined): void {
+	fallback = provider;
+}
 const stack: string[] = [];
 const defaultClock = () => performance.now();
 let windowStart = Number.POSITIVE_INFINITY;
@@ -88,7 +94,13 @@ export function takeLoopPhaseAttribution(end?: number): LoopPhaseAttribution | u
 			winnerMs = ms;
 		}
 	}
-	const result = winner !== undefined && winnerMs > unknownMs ? { label: winner, ms: winnerMs } : undefined;
+	const candidate = fallback?.(windowStart, t);
+	const result =
+		winner !== undefined && winnerMs > unknownMs
+			? { label: winner, ms: winnerMs }
+			: candidate
+				? { label: candidate, ms: 0 }
+				: undefined;
 	resetLoopPhaseWindow();
 	return result;
 }
