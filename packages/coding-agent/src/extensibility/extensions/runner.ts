@@ -2334,8 +2334,8 @@ export class ExtensionRunner {
 						block: true,
 						reason:
 							kind === "timeout"
-								? `Extension ${ext.path} tool_call (${event.toolName}) timed out after ${timeoutMs}ms`
-								: `Extension ${ext.path} tool_call (${event.toolName}) failed: ${error instanceof Error ? Bun.inspect(error, { colors: false }) : message}`,
+								? `Extension ${ext.path} timed out after ${timeoutMs}ms`
+								: `Extension ${ext.path} failed: ${message}\nHook: tool_call (${event.toolName})\n${error instanceof Error ? Bun.inspect(error, { colors: false }) : ""}`,
 					}),
 					signal,
 				)) as ToolCallEventResult | undefined;
