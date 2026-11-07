@@ -255,7 +255,7 @@ test("synchronous fallback refuses a conflicting item and runs its free sibling"
 	expect(f.jobs.getRunningJobs()).toHaveLength(0);
 });
 
-test("ROOT reader and four disjoint or unscoped writers all start; reader tools cannot mutate", async () => {
+test("ROOT reader and four disjoint or unscoped writers all start; reader keeps shell without mutation tools", async () => {
 	const f = await fixture();
 	f.phases[0].tasks = ["Audit", "Alpha", "Beta", "Gamma", "Delta"].map(content => ({
 		content,
@@ -281,7 +281,9 @@ test("ROOT reader and four disjoint or unscoped writers all start; reader tools 
 	for (const item of tasks) await f.jobs.getJob(item.name)?.promise;
 	expect(f.run).toHaveBeenCalledTimes(5);
 	const audit = f.run.mock.calls.find(([options]) => options.id === "Audit")![0];
-	expect(audit.agent.tools).not.toContain("bash");
+	expect(audit.agent.tools).toContain("bash");
+	expect(audit.agent.tools).not.toContain("edit");
+	expect(audit.agent.tools).not.toContain("ast_edit");
 	expect(audit.agent.tools).not.toContain("write");
 	expect(audit.restrictToolNames).toBe(true);
 	expect(audit.enableMCP).toBe(false);
@@ -339,7 +341,8 @@ for (const agent of ["qa-auditor", "observer"])
 		await f.jobs.getJob("Writer")?.promise;
 		expect(f.run).toHaveBeenCalledTimes(2);
 		const reader = f.run.mock.calls.find(([options]) => options.id === "Reader")![0];
-		expect(reader.agent.tools).not.toContain("bash");
+		if (agent === "qa-auditor") expect(reader.agent.tools).toEqual(["read", "bash"]);
+		else expect(reader.agent.tools).not.toContain("bash");
 		expect(reader.restrictToolNames).toBe(true);
 		expect(f.phases[0].tasks[1].schedule?.readOnly).toBe(true);
 	});

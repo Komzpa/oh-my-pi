@@ -176,6 +176,7 @@ export function persistedAgentName(displayName: string, init: PersistedSessionIn
 export function persistedAgentDefinition(displayName: string, init: PersistedSessionInit): AgentDefinition {
 	return {
 		name: displayName,
+		readOnly: init.readOnly,
 		description: "",
 		systemPrompt: init.systemPrompt.join("\n\n"),
 		source: "user",

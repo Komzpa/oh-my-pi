@@ -137,6 +137,7 @@ import { attributeSubagentError } from "./error-attribution";
 import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
 import { isReadOnlyAgent } from "./read-only-policy";
+import { createReadOnlyGuard } from "./read-only-guard";
 import { formatTaskResultSummary } from "./result-summary";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import type { WorkPoolYieldItem } from "./workpool-yield";
@@ -3020,6 +3021,7 @@ async function driveSessionToResult(
 }
 
 interface FinalizeRunArgs {
+	checkReadOnly?: () => Promise<string | undefined>;
 	monitor: SubagentRunMonitor;
 	done: { exitCode: number; error?: string; aborted?: boolean; abortReason?: string; durationMs: number };
 	index: number;
@@ -3096,6 +3098,11 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 	rawOutput = finalized.rawOutput;
 	exitCode = finalized.exitCode;
 	stderr = finalized.stderr;
+	const readOnlyFailure = await args.checkReadOnly?.();
+	if (readOnlyFailure) {
+		exitCode = 1;
+		stderr = readOnlyFailure;
+	}
 	// Salvage for cancelled/aborted children that produced no completed output:
 	// surface the last assistant text + stats instead of "(no output)" so the
 	// parent doesn't redo work the child already finished.
@@ -3517,6 +3524,8 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				.filter(Boolean)
 				.join("\n\n") || "IRC follow-up";
 		const turnStartTime = Date.now();
+		const readOnlyGuard = isReadOnlyAgent(agent) ? createReadOnlyGuard(session.sessionManager.getCwd()) : undefined;
+		const checkReadOnly = async () => (await readOnlyGuard)?.();
 		const previousAssistant = session.getLastAssistantMessage();
 		const relay = Promise.withResolvers<void>();
 		session.trackIrcReply(relay.promise);
@@ -3683,6 +3692,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			let finalizeError: unknown;
 			try {
 				result = await finalizeRunResult({
+					checkReadOnly,
 					monitor: turnMonitor,
 					done: {
 						exitCode: aborted || error ? 1 : 0,
@@ -4069,6 +4079,9 @@ async function driveFollowUpTurn(
 		}
 	};
 	await acquireOwnership();
+	const checkReadOnly = isReadOnlyAgent(agent)
+		? await createReadOnlyGuard(session.sessionManager.getCwd())
+		: undefined;
 	// Revalidate until the worker survives an install round-trip unchanged: the
 	// waits/rebuild above can outlast the idle TTL, letting park() detach this
 	// instance mid-install. Each observed replacement means another full park
@@ -4190,6 +4203,7 @@ async function driveFollowUpTurn(
 		}
 
 		return await finalizeRunResult({
+			checkReadOnly,
 			monitor,
 			done: { ...outcome, abortReason: outcome.abortReasonText, durationMs: Date.now() - startTime },
 			index,
@@ -5211,6 +5225,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					mcpManager,
 					// MCP proxies are minted per build as `mcpTools` in buildSubagentSessionOptions.
 					customTools: options.customTools,
+					allowRestrictedCustomTools: isReadOnlyAgent(agent),
 					localProtocolOptions: options.localProtocolOptions,
 					telemetry: subagentTelemetry,
 					// Seance isolation overrides every inherited field above in one place.
@@ -5717,11 +5732,13 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 		};
 	};
 
+	const checkReadOnly = isReadOnlyAgent(agent) ? await createReadOnlyGuard(cwd) : undefined;
 	try {
 		const done = await runSubagent();
 		monitor.finish();
 
 		const result = await finalizeRunResult({
+			checkReadOnly,
 			monitor,
 			done,
 			index,
