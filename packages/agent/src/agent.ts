@@ -425,7 +425,7 @@ export class Agent {
 	#queueListeners = new Set<() => void>();
 	#pauseListeners = new Set<(paused: boolean) => void>();
 	#abortController?: AbortController;
-	#convertToLlm: (messages: AgentMessage[], model?: Model) => Message[] | Promise<Message[]>;
+	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	#transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 	#sentToolDefinitions = new SentToolDefinitions();
@@ -574,7 +574,9 @@ export class Agent {
 		if (opts.initialState?.pendingToolCalls)
 			this.#state.pendingToolCalls = new Set(opts.initialState.pendingToolCalls);
 		this.#syncTokenizer(this.#state.model);
-		this.#convertToLlm = opts.convertToLlm || defaultConvertToLlm;
+		const convertToLlm = opts.convertToLlm ?? defaultConvertToLlm;
+		this.#convertToLlm = (messages, requestModel?: Model) =>
+			convertToLlm(messages, requestModel ?? this.#state.model);
 		this.#transformContext = opts.transformContext;
 		this.#steeringMode = opts.steeringMode || "one-at-a-time";
 		this.#followUpMode = opts.followUpMode || "one-at-a-time";
@@ -2047,8 +2049,7 @@ export class Agent {
 			maxRetryDelayMs: this.#maxRetryDelayMs,
 			kimiApiFormat: this.#kimiApiFormat,
 			preferWebsockets: this.#preferWebsockets,
-			convertToLlm: (messages, requestModel) =>
-				this.#convertToLlm(messages, requestModel ?? this.#state.model ?? model),
+			convertToLlm: this.#convertToLlm,
 			transformProviderContext: this.#transformProviderContext,
 			sentToolDefinitions: this.#sentToolDefinitions,
 			transformContext: this.#transformContext,
