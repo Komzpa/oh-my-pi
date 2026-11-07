@@ -1,4 +1,5 @@
 // @ts-nocheck -- fixture rows are the live wire shape, not the typed TODO model.
+import coolingYields from "./fixtures/row-audit-cooling-yields.json";
 import { beforeEach, expect, test } from "bun:test";
 import { prompt } from "@oh-my-pi/pi-utils";
 import {
@@ -127,7 +128,7 @@ function harness(
 				row.status = "completed";
 			return true;
 		},
-		runRowAudit: (task: string, agent: string, _signal, onStarted, subject) => {
+		runRowAudit: (task: string, agent: string, _signal, onStarted, subject, assignedRows, onResult) => {
 			expect(subject).toBeTruthy();
 			expect(task).toContain(subject.split(" ")[0]);
 			onStarted?.("HelpfulVole");
@@ -135,6 +136,7 @@ function harness(
 				launches.push({
 					task,
 					agent,
+					onResult,
 					resolve: output => resolve({ details: { results: [{ output: JSON.stringify(output) }] } }),
 					reject,
 				});
@@ -590,4 +592,34 @@ test("timestamp-only evidence updates cannot restart an exhausted audit", async 
 	expect(todoRowAfterWorker(delivered)).toMatchObject({ kind: "needs-worker" });
 	delivered.schedule.progress.evidence = "New executable receipt at abc1234: bun test, exit 0";
 	expect(await h.check()).toBe(1);
+});
+
+
+test("Cooling late corrected yield supersedes omitted only within its unchanged audit attempt", async () => {
+	const valid = coolingYields[1].arguments.data;
+	const row = structuredClone(clone().flatMap(phase => phase.tasks).find(row => row.content === AUDITED[1]));
+	row.content = valid.rows[0].row;
+
+	const h = harness([{ name: "Cooling", tasks: [row] }]);
+	await h.check();
+	expect(h.launches).toHaveLength(1);
+	await h.settle(0, { rows: [{ row: row.content, verdict: "inconclusive", findings: "retry" }] });
+	await h.settle(1, coolingYields[0].arguments.data);
+	// Keep the same attempt: the old harness has already recorded its omitted result.
+	const current = h.rows()[0];
+	expect(current.schedule.audit.verdict).toBe("omitted");
+	h.launches[1].onResult(valid);
+	for (let i = 0; i < 5; i++) await Bun.sleep(0);
+	expect(current.schedule.audit.verdict).toBe("pass");
+	expect(current.status).toBe("completed");
+	expect(current.schedule.audit.attempts).toBe(2);
+	const accepted = structuredClone(current.schedule);
+	h.launches[1].onResult({ rows: [{ ...valid.rows[0], verdict: "fail" }] });
+	for (let i = 0; i < 5; i++) await Bun.sleep(0);
+	expect(current.schedule).toEqual(accepted);
+	// A newer delivery/attempt is outside this callback's authority.
+	current.schedule.audit = { ...accepted.audit, verdict: "pending", startedAt: accepted.audit.startedAt + 1 };
+	h.launches[1].onResult(valid);
+	for (let i = 0; i < 5; i++) await Bun.sleep(0);
+	expect(current.schedule.audit.verdict).toBe("pending");
 });

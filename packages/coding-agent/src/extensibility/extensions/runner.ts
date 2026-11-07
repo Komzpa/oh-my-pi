@@ -1,3 +1,5 @@
+import { rowAuditOutputSchema } from "../../task/row-audit";
+import { buildOutputValidator } from "../../tools/output-schema-validator";
 import { purposeAgentName } from "../../task/name-generator";
 import type { TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 import {
@@ -1816,19 +1818,37 @@ export class ExtensionRunner {
 					{ agent: "reviewer", name: purposeAgentName("Critic", subject ?? "Delivery"), task, effort: "lo" },
 					{ signal, waitForCompletion: true },
 				),
-			runRowAudit: (task, agent, signal, onStarted, subject) =>
-				this.invokeNativeTool<TaskToolDetails>(
+			runRowAudit: (task, agent, signal, onStarted, subject, rows, onResult) => {
+				const outputSchema = rows ? rowAuditOutputSchema(rows) : undefined;
+				const validator = buildOutputValidator(outputSchema).validator;
+				return this.invokeNativeTool<TaskToolDetails>(
 					"task",
-					{ agent, name: subject ? purposeAgentName("Audit", subject) : purposeAgentName(agent), task },
+					{
+						agent,
+						name: subject ? purposeAgentName("Audit", subject) : purposeAgentName(agent),
+						task,
+						...(outputSchema ? { outputSchema, schemaMode: "strict" } : {}),
+					},
 					{
 						signal,
 						waitForCompletion: true,
 						onUpdate: update => {
 							const id = update.details?.progress?.[0]?.id;
 							if (id) onStarted?.(id);
+							const yields = update.details?.progress?.[0]?.extractedToolData?.yield;
+							if (validator && Array.isArray(yields)) {
+								for (const item of [...yields].reverse()) {
+									if (!item || typeof item !== "object" || !("data" in item)) continue;
+									if (validator.validate(item.data).success) {
+										onResult?.(item.data);
+										break;
+									}
+								}
+							}
 						},
 					},
-				),
+				);
+			},
 			getTodoPhases: () => this.getTodoPhases?.(),
 			getTodoSnapshot: () => this.getTodoSnapshot?.() ?? this.getTodoPhases?.(),
 			applyReviewPageAnswer: answer => this.applyReviewPageAnswer?.(answer) ?? Promise.resolve(false),

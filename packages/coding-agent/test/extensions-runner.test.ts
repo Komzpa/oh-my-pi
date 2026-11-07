@@ -1,3 +1,6 @@
+import coolingYields from "../../reemxy-extensions/extensions/fixtures/row-audit-cooling-yields.json";
+import { YieldTool } from "../src/tools/yield";
+import type { ToolSession } from "../src/tools";
 /**
  * Tests for ExtensionRunner - conflict detection, error handling, tool wrapping.
  */
@@ -4951,6 +4954,65 @@ describe("ExtensionRunner", () => {
 				effort: "lo",
 			});
 			expect(result?.content).toEqual([{ type: "text", text: "final verdict" }]);
+		});
+
+		it("Cooling audit rejects malformed and missing-row yields in-tool, then forwards the corrected verdict", async () => {
+			const seen: { params?: unknown; onUpdate?: unknown } = {};
+			const runner = await runnerWithNative({ ...nativeProbe(seen), name: "task" });
+			const valid = coolingYields[1].arguments.data!;
+			const row = valid.rows![0].row;
+			const received: unknown[] = [];
+			await runner
+				.createContext()
+				.runRowAudit?.("audit", "qa-auditor", undefined, undefined, row, [row], output => received.push(output));
+			const params = seen.params as { outputSchema?: unknown; schemaMode?: "strict" };
+			const tool = new YieldTool({
+				cwd: tempDir.path(),
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				outputSchema: params.outputSchema,
+				outputSchemaMode: params.schemaMode,
+			} as ToolSession);
+			// Repetition must never reach the permissive schema override.
+			for (let i = 0; i < 5; i++) {
+				await expect(tool.execute("bad", coolingYields[0].arguments)).rejects.toThrow(
+					JSON.stringify(params.outputSchema, null, 2),
+				);
+			}
+			await expect(tool.execute("missing", { data: { rows: [] } })).rejects.toThrow("does not match schema");
+			const result = await tool.execute("corrected", { data: valid });
+			expect(result.details?.status).toBe("success");
+			const update = seen.onUpdate as (value: unknown) => void;
+			update({
+				details: {
+					progress: [
+						{
+							id: "audit",
+							extractedToolData: { yield: [{ data: coolingYields[0].arguments.data }, result.details] },
+						},
+					],
+				},
+			});
+			expect(received).toEqual([valid]);
+			// Multi-row coverage rejects duplicates even if the array has the right length.
+			await runner
+				.createContext()
+				.runRowAudit?.("audit", "qa-auditor", undefined, undefined, row, [row, "Other row"]);
+			const multi = seen.params as { outputSchema: unknown };
+			const multiTool = new YieldTool({
+				cwd: tempDir.path(),
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				outputSchema: multi.outputSchema,
+				outputSchemaMode: "strict",
+			} as ToolSession);
+			await expect(
+				multiTool.execute("duplicate", { data: { rows: [valid.rows![0], valid.rows![0]] } }),
+			).rejects.toThrow("does not match schema");
 		});
 
 		it("names row audits and plan critics at native dispatch by purpose", async () => {
