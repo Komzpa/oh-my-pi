@@ -179,7 +179,7 @@ export interface TodoHudStateEntryData extends TodoSnapshotIdentity {
 }
 
 function todoPhasesFingerprint(phases: readonly TodoPhase[]): string {
-	using phase = launchScope("state.serialize:todo-fingerprint");
+	using _phase = launchScope("state.serialize:todo-fingerprint");
 	return JSON.stringify(
 		phases.map(phase => ({
 			name: phase.name,

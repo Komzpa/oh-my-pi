@@ -2782,7 +2782,7 @@ export class SessionManager {
 	}
 
 	#appendToSessionFile(entry: SessionEntry): void {
-		using phase = launchScope("journal.write");
+		using _phase = launchScope("journal.write");
 		if (this.#released || !this.#persist || !this.#sessionFile) return;
 		if (this.#atomicEntryBatch) return;
 
@@ -3065,7 +3065,7 @@ export class SessionManager {
 	}
 
 	#recordEntry(entry: SessionEntry): void {
-		using phase = launchScope("journal.record");
+		using _phase = launchScope("journal.record");
 		if (this.#released) {
 			logger.warn("Dropped session entry appended after terminal release", { type: entry.type });
 			return;

@@ -71,7 +71,7 @@ export class YieldQueue {
 	}
 
 	enqueueWithReceipt<P>(kind: string, entry: P): Promise<void> {
-		using phase = launchScope(`async-result.enqueue:${kind.slice(0, 96)}`);
+		using _phase = launchScope(`async-result.enqueue:${kind.slice(0, 96)}`);
 		const { promise, resolve, reject } = Promise.withResolvers<void>();
 		if (!this.#enqueue(kind, { value: entry, resolve, reject })) {
 			reject(new Error(`Yield queue entry ignored for unregistered kind: ${kind}`));

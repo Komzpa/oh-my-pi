@@ -20,8 +20,6 @@ interface Trace {
 }
 interface Scope {
 	trace?: Trace;
-	label: string;
-	closed: boolean;
 	depth?: number;
 }
 const storage = new AsyncLocalStorage<Scope>();
@@ -41,6 +39,22 @@ export function takeLaunchPhaseCandidates(start: number, end: number): string[] 
 		.filter(phase => phase.start < end && phase.end > start)
 		.sort((a, b) => b.depth - a.depth || a.start - b.start);
 	return [...new Set(relevant.map(phase => phase.name))].slice(0, 3);
+}
+/** Separate exact synchronous attribution from merely overlapping launch work. */
+export function launchPhaseDetails(
+	label: string | undefined,
+	start: number,
+	end: number,
+): {
+	phase: string;
+	launchCandidates?: string[];
+	phaseSource?: string;
+} {
+	const launchCandidates = takeLaunchPhaseCandidates(start, end);
+	return {
+		phase: label ?? (launchCandidates.length ? `launch-overlap:${launchCandidates[0]}` : "unknown"),
+		...(launchCandidates.length ? { launchCandidates, ...(!label ? { phaseSource: "wall-overlap" } : {}) } : {}),
+	};
 }
 const maxSpans = 256;
 const maxName = 160;
@@ -64,7 +78,7 @@ export async function runLaunchTrace<T>(identity: Record<string, string | number
 		overflow: 0,
 		closed: false,
 	};
-	return storage.run({ trace, label: "subagent.launch", closed: false }, async () => {
+	return storage.run({ trace }, async () => {
 		let failed = true;
 		try {
 			const result = await withAsyncLoopPhase("subagent.launch", fn);
@@ -138,27 +152,24 @@ export function launchStep<T, A extends unknown[]>(name: string, fn: (...args: A
 			completedPhases.push(phase);
 		}
 		if (trace.closed) return;
-		recordSpan(trace, label, performance.now() - started, syncPrefixMs);
+		recordSpan(trace, label, phase.end - started, syncPrefixMs);
 	};
 	const depth = (storage.getStore()?.depth ?? 0) + 1;
 	const phase: PendingPhase = { name: label, start: started, end: Number.POSITIVE_INFINITY, depth };
 	if (pendingPhases.size < maxSpans) pendingPhases.add(phase);
-	const scope: Scope = { trace, label, closed: false, depth };
+	const scope: Scope = { trace, depth };
 	try {
 		const result = storage.run(scope, () => withLoopPhase(label, () => fn(...args)));
 		syncPrefixMs = performance.now() - started;
 		if (isPromise(result)) {
 			return result.finally(() => {
-				scope.closed = true;
 				finish();
 			}) as T;
 		}
-		scope.closed = true;
 		finish();
 		return result;
 	} catch (error) {
 		syncPrefixMs = performance.now() - started;
-		scope.closed = true;
 		finish();
 		throw error;
 	}
