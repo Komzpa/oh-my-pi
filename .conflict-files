@@ -1,0 +1,3 @@
+ancestorEntries = ["packages/coding-agent/CHANGELOG.md"]
+ourEntries = ["packages/coding-agent/CHANGELOG.md"]
+theirEntries = ["packages/coding-agent/CHANGELOG.md"]

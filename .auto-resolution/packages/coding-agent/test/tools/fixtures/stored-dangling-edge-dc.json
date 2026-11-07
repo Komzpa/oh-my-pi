@@ -1,0 +1,1118 @@
+{
+  "source": "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221.jsonl",
+  "snapshotLine": 85312,
+  "callLine": 85558,
+  "phases": [
+    {
+      "name": "Follow-ups",
+      "tasks": [
+        {
+          "content": "Adaptive Facility: no crash, callout leaders clear of hall",
+          "status": "abandoned",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793856773500,
+            "previewTracked": true,
+            "previewPending": false,
+            "previewIdentityMissing": false,
+            "previewPartial": false,
+            "visibleAt": 1793864581774,
+            "dependencies": [],
+            "reestimateCount": 0,
+            "estimateRevision": 11,
+            "estimate": {
+              "optimisticSeconds": 4134,
+              "likelySeconds": 4134,
+              "pessimisticSeconds": 8268,
+              "confidence": "low",
+              "basis": "Measured floor: previous attempt took 69m",
+              "updatedAt": 1793863876349
+            },
+            "progress": {
+              "at": 1793864683628,
+              "evidence": "11:41 cause found: leader backdrop copy from MSAA default FB; FacilityBlitFix dispatched"
+            },
+            "owner": "FacilityBlitWarmup",
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/facility-blit"
+            ],
+            "executor": {
+              "workerId": "FacilityBlitWarmup",
+              "agentProfile": "task",
+              "resolvedModel": "codex-lb/gpt-6.1-sol",
+              "thinkingLevel": "medium",
+              "startedAt": 1793865990543
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "LeadersLand:1793859338797",
+                "workerName": "LeadersLand",
+                "resolvedModel": "anthropic/claude-opus-5-5",
+                "effort": "low",
+                "startedAt": 1793859338797,
+                "finishedAt": 1793863440987,
+                "durationMs": 4133240,
+                "terminalStatus": "failed",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/LeadersLand.md"
+                ],
+                "infraFailureError": "Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. The same verified blocker kind and evidence must appear in three consecutive yields. Verify that you have worked every part of the brief the blocker does not touch and tried every available safe way around it. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding.",
+                "infraFailureLine": "attempt 1 failed: Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. The same verified blocker kind and evidence must appear in three consecutive yields. Verify that you have worked every part of the brief the blocker does not touch and tried every available safe way around it. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding."
+              }
+            ],
+            "review": "user",
+            "finishedAt": 1793866862158
+          }
+        },
+        {
+          "content": "Guide Hall rack model step: readable layout",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793860503905,
+            "previewTracked": true,
+            "previewPending": false,
+            "previewIdentityMissing": false,
+            "previewPartial": false,
+            "visibleAt": 1793861584419,
+            "dependencies": [],
+            "owner": "RackTilesGate",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/guide-rack-layout"
+            ],
+            "estimateRevision": 4,
+            "estimate": {
+              "optimisticSeconds": 742,
+              "likelySeconds": 800,
+              "pessimisticSeconds": 1500,
+              "confidence": "low",
+              "basis": "ui-coder p50 floor; remaining: lint/tsc/spec, commit",
+              "updatedAt": 1793866963642
+            },
+            "progress": {
+              "at": 1793866963642,
+              "evidence": "Fixed in ROOT: the empty state shows a single 'Not set', the filled state shows values, all 5 fields right=944"
+            },
+            "executor": {
+              "workerId": "RackTilesGate",
+              "agentProfile": "gate-runner",
+              "resolvedModel": "codex-lb/gpt-6.1-sol",
+              "thinkingLevel": "low",
+              "startedAt": 1793867345675,
+              "finishedAt": 1793868337618,
+              "outcome": "completed"
+            },
+            "review": "user"
+          }
+        },
+        {
+          "content": "Facility 2D: too much empty space around site",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793860950648,
+            "previewTracked": true,
+            "previewPending": false,
+            "previewIdentityMissing": false,
+            "previewPartial": false,
+            "visibleAt": 1793864277169,
+            "dependencies": [],
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/facility-empty-space"
+            ],
+            "estimateRevision": 6,
+            "estimate": {
+              "optimisticSeconds": 1800,
+              "likelySeconds": 3000,
+              "pessimisticSeconds": 3600,
+              "confidence": "low",
+              "basis": "redo with a fresh owner",
+              "updatedAt": 1793866963642
+            },
+            "executor": {
+              "workerId": "BuildingSquare-2",
+              "agentProfile": "task",
+              "resolvedModel": "codex-lb/gpt-6.1-terra",
+              "thinkingLevel": "medium",
+              "startedAt": 1793865990452,
+              "finishedAt": 1793866766639,
+              "outcome": "failed"
+            },
+            "progress": {
+              "at": 1793866963642,
+              "evidence": "BuildingSquare-2 failed without a commit; prototype in tmp/building-square/building-square-prototype.patch"
+            },
+            "review": "user",
+            "speculativeOn": "Land crash and Guide fixes on PR #109, push",
+            "attemptHistory": [
+              {
+                "attemptId": "SquareFootprintUI:1793865647292",
+                "workerName": "SquareFootprintUI",
+                "resolvedModel": "codex-lb/gpt-6.1-terra",
+                "effort": "medium",
+                "startedAt": 1793865647292,
+                "finishedAt": 1793865688506,
+                "durationMs": 48160,
+                "terminalStatus": "aborted",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/SquareFootprintUI.md"
+                ],
+                "infraFailureError": "The operation was aborted.",
+                "infraFailureLine": "attempt 1 failed: The operation was aborted."
+              },
+              {
+                "attemptId": "BuildingSquare-2:1793865990452",
+                "workerName": "BuildingSquare-2",
+                "resolvedModel": "codex-lb/gpt-6.1-terra",
+                "effort": "medium",
+                "startedAt": 1793865990452,
+                "finishedAt": 1793866766639,
+                "durationMs": 797301,
+                "terminalStatus": "failed",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/BuildingSquare-2.md"
+                ],
+                "infraFailureError": "Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: Uncommitted tracked changes: commit or discard, then yield Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding.",
+                "infraFailureLine": "attempt 2 failed: Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: Uncommitted tracked changes: commit or discard, then yield Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding."
+              }
+            ]
+          }
+        },
+        {
+          "content": "Callouts during rotation match settled layout",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793861110514,
+            "previewTracked": true,
+            "previewPending": false,
+            "previewIdentityMissing": false,
+            "previewPartial": false,
+            "dependencies": [
+              "Collateral for \"Callouts during rotation match settled layout\": \"Transformer A\", \"Transformer B\" and \"Gas meter\" use a visibly larger font than the other labels; the base used one size for all. The \"Gas meter\" leader line runs past the bottom edge of the 3D view to an object outside it."
+            ],
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/followup-pr-2026-11-05"
+            ],
+            "estimateRevision": 13,
+            "estimate": {
+              "optimisticSeconds": 60,
+              "likelySeconds": 120,
+              "pessimisticSeconds": 300,
+              "confidence": "high",
+              "basis": "Closes when the font row's rotation spec passes; Dry cooler collateral dropped (not a defect under PRD:461)",
+              "updatedAt": 1793882741821
+            },
+            "progress": {
+              "at": 1793882741821,
+              "evidence": "CalloutsAudit-2: R189, R191 and R207 pass at c6f01a0ce (0 px movement after release, no re-solve). Closure waits only on the collateral attribution."
+            },
+            "executor": {
+              "workerId": "CalloutsAudit-2",
+              "agentProfile": "qa-auditor",
+              "resolvedModel": "anthropic/claude-opus-5-5",
+              "thinkingLevel": "medium",
+              "startedAt": 1793881970983,
+              "finishedAt": 1793882454295,
+              "outcome": "completed"
+            },
+            "riskEstimateMeanSeconds": 2150,
+            "speculativeOn": "Camera stays above ground, orbit pivot at viewport centre",
+            "visibleAt": 1793881781591,
+            "owner": "FollowupPush",
+            "attemptHistory": [
+              {
+                "attemptId": "CalloutsAudit:1793881920233",
+                "workerName": "CalloutsAudit",
+                "resolvedModel": "abliteration/abliterated-model",
+                "effort": "unresolved",
+                "startedAt": 1793881920233,
+                "finishedAt": 1793881920430,
+                "durationMs": 13406,
+                "terminalStatus": "failed",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/CalloutsAudit.md"
+                ],
+                "infraFailureError": "abliteration: provider unavailable (entitlement)",
+                "infraFailureLine": "attempt 1 failed: abliteration: provider unavailable (entitlement)"
+              }
+            ],
+            "review": "user"
+          }
+        },
+        {
+          "content": "Substation wires: no 90° bends in mid-air",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793863730966,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [
+              "Dev server stops reloading every few seconds"
+            ],
+            "owner": "NewFollowupPr",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/wire-followup"
+            ],
+            "estimateRevision": 3,
+            "estimate": {
+              "optimisticSeconds": 590,
+              "likelySeconds": 610,
+              "pessimisticSeconds": 910,
+              "confidence": "medium",
+              "basis": "Same pipeline read-off",
+              "updatedAt": 1793869860582
+            },
+            "executor": {
+              "workerId": "WireFollowup",
+              "agentProfile": "git-pr-owner",
+              "resolvedModel": "codex-lb/gpt-6.1-terra",
+              "thinkingLevel": "low",
+              "startedAt": 1793866427278,
+              "finishedAt": 1793866960154,
+              "outcome": "failed"
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "WireFollowup:1793866427278",
+                "workerName": "WireFollowup",
+                "resolvedModel": "codex-lb/gpt-6.1-terra",
+                "effort": "low",
+                "startedAt": 1793866427278,
+                "finishedAt": 1793866960154,
+                "durationMs": 533542,
+                "terminalStatus": "failed",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/WireFollowup.md"
+                ],
+                "infraFailureError": "Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: Uncommitted tracked changes: commit or discard, then yield Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding.",
+                "infraFailureLine": "attempt 1 failed: Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: Uncommitted tracked changes: commit or discard, then yield Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding."
+              }
+            ],
+            "progress": {
+              "at": 1793869860582,
+              "evidence": "In PR #111; combined tsc, lint, precommit 1959 and build all 0"
+            },
+            "review": "user"
+          }
+        },
+        {
+          "content": "Main deploy pipeline: restore lost deploy script",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793866675834,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [],
+            "owner": "AuditDeploy",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/main-deploy-fix"
+            ],
+            "estimateRevision": 4,
+            "estimate": {
+              "optimisticSeconds": 250,
+              "likelySeconds": 300,
+              "pessimisticSeconds": 700,
+              "confidence": "medium",
+              "basis": "Measured 5m floor; qa-auditor run, pipeline already green",
+              "updatedAt": 1793870152021
+            },
+            "progress": {
+              "at": 1793869860582,
+              "evidence": "PR #111 opened at aeb1c278b; deploy script identical to main; pipeline #1289 IN_PROGRESS"
+            },
+            "executor": {
+              "workerId": "AuditDeploy",
+              "agentProfile": "qa-auditor",
+              "resolvedModel": "anthropic/claude-opus-5-5",
+              "thinkingLevel": "medium",
+              "startedAt": 1793870178406,
+              "finishedAt": 1793870279931,
+              "outcome": "completed"
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "qa-auditor-6:1793867586738",
+                "workerName": "qa-auditor-6",
+                "resolvedModel": "abliteration/abliterated-model",
+                "effort": "medium",
+                "startedAt": 1793867586738,
+                "finishedAt": 1793867589049,
+                "durationMs": 28545,
+                "terminalStatus": "failed",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/qa-auditor-6.md"
+                ],
+                "infraFailureError": "provider unavailable (entitlement)",
+                "infraFailureLine": "attempt 1 failed: provider unavailable (entitlement)"
+              }
+            ],
+            "review": "user"
+          }
+        },
+        {
+          "content": "Dev server stops reloading every few seconds",
+          "status": "completed",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793866675834,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [],
+            "owner": "AuditDevServer3",
+            "reestimateCount": 1,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/vite.config.ts"
+            ],
+            "estimateRevision": 7,
+            "estimate": {
+              "optimisticSeconds": 300,
+              "likelySeconds": 600,
+              "pessimisticSeconds": 1200,
+              "confidence": "low",
+              "basis": "Waits on an intake fix, not product work",
+              "updatedAt": 1793870827521
+            },
+            "progress": {
+              "at": 1793870827521,
+              "evidence": "R200 passed twice (AuditDevServer, AuditDevServer2). Intake has no accepted collateral form for a config-only artifact; reported via report_issue. Not re-auditing a third time."
+            },
+            "executor": {
+              "workerId": "AuditDevServer3",
+              "agentProfile": "qa-auditor",
+              "resolvedModel": "codex-lb/gpt-6-astra",
+              "thinkingLevel": "medium",
+              "startedAt": 1793877468682,
+              "finishedAt": 1793877469074,
+              "outcome": "completed"
+            },
+            "riskEstimateMeanSeconds": 650,
+            "finishedAt": 1793877496487
+          }
+        },
+        {
+          "content": "Adaptive Facility: WebGL blit errors and tenant panes",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793866675834,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": false,
+            "previewPartial": true,
+            "dependencies": [],
+            "owner": "TenantCageMesh",
+            "reestimateCount": 1,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/facility-blit-warmup",
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/tenant-cage-mesh"
+            ],
+            "estimateRevision": 3,
+            "estimate": {
+              "optimisticSeconds": 900,
+              "likelySeconds": 1800,
+              "pessimisticSeconds": 3000,
+              "confidence": "low",
+              "basis": "Committed-head :2128 gate after the browser queue (RackTilesGate, then FollowupLanding), then add to the new PR",
+              "updatedAt": 1793867736911
+            },
+            "executor": {
+              "workerId": "TenantCageMesh",
+              "agentProfile": "task",
+              "resolvedModel": "codex-lb/gpt-6.1-sol",
+              "thinkingLevel": "medium",
+              "startedAt": 1793865990654,
+              "finishedAt": 1793867717797,
+              "outcome": "completed"
+            },
+            "progress": {
+              "at": 1793878294784,
+              "evidence": "Not part of today's Lyosha follow-ups; tenant mesh worktree preserved at tmp/tenant-cage-mesh; restaff after push2"
+            },
+            "postDeadline": true
+          }
+        },
+        {
+          "content": "Yellow wires render as zigzag sawtooth at grey box",
+          "status": "blocked",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793873810447,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [],
+            "owner": "WireZigzag3",
+            "reestimateCount": 0,
+            "estimateRevision": 3,
+            "estimate": {
+              "optimisticSeconds": 1200,
+              "likelySeconds": 2200,
+              "pessimisticSeconds": 3500,
+              "confidence": "low",
+              "basis": "WireZigzag2 hypothesis in facilityScene; needs the project/view from the user to reproduce",
+              "updatedAt": 1793876210841
+            },
+            "riskEstimateMeanSeconds": 1900,
+            "executor": {
+              "workerId": "WireZigzag3",
+              "agentProfile": "coder-strong",
+              "resolvedModel": "codex-lb/gpt-6.1-sol",
+              "thinkingLevel": "high",
+              "startedAt": 1793877347029,
+              "finishedAt": 1793877358408,
+              "outcome": "completed"
+            },
+            "resources": [],
+            "progress": {
+              "at": 1793884012465,
+              "evidence": "Question asked again 17:02 in chat; no answer"
+            }
+          },
+          "blocker": "Two lanes could not reproduce; need Darafei's project/view/layer for the screenshot"
+        },
+        {
+          "content": "Plan click opens same panel as left list, abbreviations expanded",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [],
+            "owner": "PlanClickBrowser",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/plan-click-parity"
+            ],
+            "estimateRevision": 5,
+            "estimate": {
+              "optimisticSeconds": 1800,
+              "likelySeconds": 3000,
+              "pessimisticSeconds": 4500,
+              "confidence": "low",
+              "basis": "27 specs on candidate plus base reruns of failures, repairs; gate queue",
+              "updatedAt": 1793879704606
+            },
+            "riskEstimateMeanSeconds": 2683.3333333333335,
+            "executor": {
+              "workerId": "PlanClickBrowser",
+              "agentProfile": "coder-strong",
+              "resolvedModel": "anthropic/claude-opus-5-5",
+              "thinkingLevel": "high",
+              "startedAt": 1793879812404,
+              "finishedAt": 1793880495553,
+              "outcome": "completed"
+            },
+            "progress": {
+              "at": 1793879704606,
+              "evidence": "Integrated a5bdae397 (E, A, B, C, D plus PRD fix and 9 resolver tests); tsc, lint and 59 unit tests pass; the unit negative control fails as expected. Patches in /home/kom/proj/sunbim/evidence/plan-click-integrated/. Browser proof and repair: PlanClickBrowser."
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "PlanClickParity:1793876172325",
+                "workerName": "PlanClickParity",
+                "resolvedModel": "codex-lb/gpt-6.1-terra",
+                "effort": "medium",
+                "startedAt": 1793876172325,
+                "finishedAt": 1793877557409,
+                "durationMs": 1389839,
+                "terminalStatus": "aborted",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/PlanClickParity.md"
+                ],
+                "infraFailureError": "The operation was aborted.",
+                "infraFailureLine": "attempt 1 failed: The operation was aborted."
+              }
+            ],
+            "review": "user"
+          }
+        },
+        {
+          "content": "Camera stays above ground, orbit pivot at viewport centre",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [
+              "Buried routes drawn slightly above floor level"
+            ],
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/camera-bounds"
+            ],
+            "estimateRevision": 2,
+            "estimate": {
+              "optimisticSeconds": 600,
+              "likelySeconds": 1200,
+              "pessimisticSeconds": 2400,
+              "confidence": "medium",
+              "basis": "git am plus 3 spec runs on base and candidate",
+              "updatedAt": 1793877484655
+            },
+            "riskEstimateMeanSeconds": 2150,
+            "executor": {
+              "workerId": "IntegrateCamera",
+              "agentProfile": "git-pr-owner",
+              "resolvedModel": "codex-lb/gpt-6.1-terra",
+              "thinkingLevel": "low",
+              "startedAt": 1793877535047
+            },
+            "progress": {
+              "at": 1793880028495,
+              "evidence": "Only shared reds: product-root:1675 frame assertion fails on both candidate and base. Closes with push1."
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "IntegrateCamera:1793877535047",
+                "workerName": "IntegrateCamera",
+                "resolvedModel": "codex-lb/gpt-6.1-terra",
+                "effort": "low",
+                "startedAt": 1793877535047,
+                "finishedAt": 1793878971129,
+                "durationMs": 1443746,
+                "terminalStatus": "aborted",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/IntegrateCamera.md"
+                ],
+                "infraFailureError": "The operation was aborted.",
+                "infraFailureLine": "attempt 1 failed: The operation was aborted."
+              }
+            ],
+            "review": "user"
+          }
+        },
+        {
+          "content": "Buried routes drawn slightly above floor level",
+          "status": "completed",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": false,
+            "previewIdentityMissing": false,
+            "previewPartial": false,
+            "visibleAt": 1793881781591,
+            "dependencies": [],
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/followup-pr-2026-11-05"
+            ],
+            "estimateRevision": 4,
+            "estimate": {
+              "optimisticSeconds": 600,
+              "likelySeconds": 900,
+              "pessimisticSeconds": 1500,
+              "confidence": "medium",
+              "basis": "Single requirement audit at pushed head",
+              "updatedAt": 1793881897857
+            },
+            "riskEstimateMeanSeconds": 2050,
+            "executor": {
+              "workerId": "BuriedAudit-2",
+              "agentProfile": "qa-auditor",
+              "resolvedModel": "anthropic/claude-opus-5-5",
+              "thinkingLevel": "medium",
+              "startedAt": 1793881948713,
+              "finishedAt": 1793882248341,
+              "outcome": "completed"
+            },
+            "progress": {
+              "at": 1793880028495,
+              "evidence": "Integrated at 629b47aa8; production keys pass, draw calls 159/310; closes with push1."
+            },
+            "owner": "BuriedAudit-2",
+            "attemptHistory": [
+              {
+                "attemptId": "BuriedAudit:1793881907728",
+                "workerName": "BuriedAudit",
+                "resolvedModel": "abliteration/abliterated-model",
+                "effort": "medium",
+                "startedAt": 1793881907728,
+                "finishedAt": 1793881912357,
+                "durationMs": 5171,
+                "terminalStatus": "failed",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/BuriedAudit.md"
+                ],
+                "infraFailureError": "provider unavailable (entitlement)",
+                "infraFailureLine": "attempt 1 failed: provider unavailable (entitlement)"
+              }
+            ],
+            "finishedAt": 1793882322146
+          }
+        },
+        {
+          "content": "Equipment panels show abbreviation expansions again",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": false,
+            "previewIdentityMissing": false,
+            "previewPartial": false,
+            "visibleAt": 1793881781591,
+            "dependencies": [],
+            "owner": "PublishBatchOne",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/abbrev-expansions"
+            ],
+            "estimateRevision": 5,
+            "estimate": {
+              "optimisticSeconds": 600,
+              "likelySeconds": 1200,
+              "pessimisticSeconds": 2400,
+              "confidence": "medium",
+              "basis": "Bitbucket pipeline ~10-20 min, plus checkout switch and server restart",
+              "updatedAt": 1793880641545
+            },
+            "riskEstimateMeanSeconds": 1850,
+            "executor": {
+              "workerId": "PublishBatchOne",
+              "agentProfile": "git-pr-owner",
+              "resolvedModel": "codex-lb/gpt-6-luna",
+              "thinkingLevel": "low",
+              "startedAt": 1793881575329,
+              "finishedAt": 1793881692027,
+              "outcome": "failed"
+            },
+            "progress": {
+              "at": 1793881574643,
+              "evidence": "Pushed c6f01a0ce to PR #111 (old aeb1c278b): precommit 0 (2032 tests), finance manifest regenerated (cause 511cbc51b glossary, PRD:963). Pipeline, description and review checkout in progress."
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "PublishBatchOne:1793881575329",
+                "workerName": "PublishBatchOne",
+                "resolvedModel": "codex-lb/gpt-6-luna",
+                "effort": "low",
+                "startedAt": 1793881575329,
+                "finishedAt": 1793881692027,
+                "durationMs": 121663,
+                "terminalStatus": "failed",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/PublishBatchOne.md"
+                ],
+                "infraFailureError": "Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: requirement 1 (Wait for/report pipeline on c6f01a0ce, including failing step if red): command has no successful result in this worker's history: Blocked by explicit instruction to stop when current checkout HEAD is not an ancestor. Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding.",
+                "infraFailureLine": "attempt 1 failed: Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: requirement 1 (Wait for/report pipeline on c6f01a0ce, including failing step if red): command has no successful result in this worker's history: Blocked by explicit instruction to stop when current checkout HEAD is not an ancestor. Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding."
+              }
+            ],
+            "review": "user"
+          }
+        },
+        {
+          "content": "Schematic clicks use left-panel mapping",
+          "status": "abandoned",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [
+              "Plan click opens same panel as left list, abbreviations expanded"
+            ],
+            "reestimateCount": 0,
+            "estimateRevision": 3,
+            "estimate": {
+              "optimisticSeconds": 1200,
+              "likelySeconds": 2100,
+              "pessimisticSeconds": 3300,
+              "confidence": "low",
+              "basis": "runs with the integrated plan-click browser gate",
+              "updatedAt": 1793879047025
+            },
+            "progress": {
+              "at": 1793879047025,
+              "evidence": "Slice D committed as 7b95b506f (12 specs plus helpers, tsc and lint exit 0); patch handed to PlanClickIntegration. Browser proof runs on the integrated head."
+            },
+            "riskEstimateMeanSeconds": 2683.3333333333335,
+            "executor": {
+              "workerId": "SchematicSpecs",
+              "agentProfile": "coder",
+              "resolvedModel": "codex-lb/gpt-6.1-sol",
+              "thinkingLevel": "medium",
+              "startedAt": 1793877928567,
+              "finishedAt": 1793879036780,
+              "outcome": "completed"
+            },
+            "finishedAt": 1793879773246,
+            "speculativeOn": "Plan click opens same panel as left list, abbreviations expanded"
+          }
+        },
+        {
+          "content": "Plan-click branch: no new browser failures, push",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [
+              "Plan click on dry cooler at 390: camera height matches left list"
+            ],
+            "owner": "PlanClickCamera",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/plan-click-parity"
+            ],
+            "estimateRevision": 4,
+            "estimate": {
+              "optimisticSeconds": 1200,
+              "likelySeconds": 1800,
+              "pessimisticSeconds": 3000,
+              "confidence": "low",
+              "basis": "27-spec discovery with 4 workers (~20 min), plus rebasing onto the followup push",
+              "updatedAt": 1793884743981
+            },
+            "riskEstimateMeanSeconds": 3200,
+            "executor": {
+              "workerId": "PlanClickRepair",
+              "agentProfile": "coder",
+              "resolvedModel": "codex-lb/gpt-6.1-sol",
+              "thinkingLevel": "medium",
+              "startedAt": 1793881828574,
+              "finishedAt": 1793884732436,
+              "outcome": "completed"
+            },
+            "progress": {
+              "at": 1793884012465,
+              "evidence": "17:02 cause found: the plan-click camera height doesn't resync after resize (syncTopCamera); scope granted"
+            }
+          }
+        },
+        {
+          "content": "Collateral for \"Buried routes drawn slightly above floor level\": The new grazing above-ground pose clutters the canvas. About 50 equipment labels are spread over the whole canvas, with long crossing leader lines (yellow and cyan) running far from their objects. The site itself is a thin strip at y≈440, and the labels do not show what they point to. (The base was an empty underground view.)",
+          "status": "in_progress",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [],
+            "owner": "GrazingCamera",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/grazing-camera"
+            ],
+            "estimateRevision": 1,
+            "estimate": {
+              "optimisticSeconds": 1500,
+              "likelySeconds": 2400,
+              "pessimisticSeconds": 3500,
+              "confidence": "low",
+              "basis": "Camera clamp parameters live in facilityScene.ts keepCameraAboveGround; needs a pan clamp plus a polar cap, an oracle and an e2e check",
+              "updatedAt": 1793882283870
+            },
+            "riskEstimateMeanSeconds": 2433.3333333333335,
+            "executor": {
+              "workerId": "GrazingCamera",
+              "agentProfile": "coder",
+              "resolvedModel": "codex-lb/gpt-6.1-terra",
+              "thinkingLevel": "medium",
+              "startedAt": 1793882314614,
+              "finishedAt": 1793883665037,
+              "outcome": "failed"
+            },
+            "attemptHistory": [
+              {
+                "attemptId": "GrazingCamera:1793882314614",
+                "workerName": "GrazingCamera",
+                "resolvedModel": "codex-lb/gpt-6.1-terra",
+                "effort": "medium",
+                "startedAt": 1793882314614,
+                "finishedAt": 1793883665037,
+                "durationMs": 1373814,
+                "terminalStatus": "failed",
+                "deliverablePaths": [
+                  "/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221/GrazingCamera.md"
+                ],
+                "infraFailureError": "Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: requirement 3 (Focused unit test): command has no successful result in this worker's history: npx vitest run src/__tests__/facilityCameraPreset.test.ts --project=precommit --maxWorkers=1 Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. The same verified blocker kind and evidence must appear in three consecutive yields. Verify that you have worked every part of the brief the blocker does not touch and tried every available safe way around it. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding.",
+                "infraFailureLine": "attempt 1 failed: Subagent submitted invalid yield results 6 times; stopping to avoid an infinite submit loop. Last yield error: Continue: requirement 3 (Focused unit test): command has no successful result in this worker's history: npx vitest run src/__tests__/facilityCameraPreset.test.ts --project=precommit --maxWorkers=1 Your brief stays the goal; do not shrink it to what is done so far. Keep working through all remaining requirements, verifying each as you go. Yield with requirements: [{requirement, done, evidence}], where evidence is one of {commit: sha}, {path}, or {command}. Commands must have succeeded in your own tool history; commits must exist and be reachable from HEAD. Commit or discard tracked changes before yielding. The same verified blocker kind and evidence must appear in three consecutive yields. Verify that you have worked every part of the brief the blocker does not touch and tried every available safe way around it. If remaining work is blocked, include blocker: {kind, evidence}; otherwise finish every requirement before yielding."
+              }
+            ],
+            "review": "user"
+          }
+        },
+        {
+          "content": "Collateral for \"Buried routes drawn slightly above floor level\": The value line of the \"Redundancy level\" row under Power is cut off at its bottom edge by the Layers section: only the tops of its glyphs show. (Base: a different, unclipped row list.)",
+          "status": "abandoned",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [],
+            "owner": "RedundancyClip",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/redundancy-clip"
+            ],
+            "estimateRevision": 1,
+            "estimate": {
+              "optimisticSeconds": 900,
+              "likelySeconds": 1500,
+              "pessimisticSeconds": 2700,
+              "confidence": "medium",
+              "basis": "CSS layout of the left list or Layers section plus a bbox oracle",
+              "updatedAt": 1793882283870
+            },
+            "riskEstimateMeanSeconds": 1600,
+            "executor": {
+              "workerId": "RedundancyClip",
+              "agentProfile": "ui-coder",
+              "resolvedModel": "codex-lb/gpt-6.1-terra",
+              "thinkingLevel": "medium",
+              "startedAt": 1793882301886,
+              "finishedAt": 1793882637075,
+              "outcome": "completed"
+            },
+            "finishedAt": 1793882644320
+          }
+        },
+        {
+          "content": "Collateral for \"Callouts during rotation match settled layout\": AI Project shows 24 labels where the base showed 52. UPS, PDU A, Switchgear A, Batteries, the galleries and Power room now have no label. Possibly intentional label-limit work elsewhere in the 712-commit diff; needs confirming.",
+          "status": "completed",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [],
+            "owner": "LabelCollaterals",
+            "reestimateCount": 0,
+            "resources": [],
+            "estimateRevision": 1,
+            "estimate": {
+              "optimisticSeconds": 600,
+              "likelySeconds": 1200,
+              "pessimisticSeconds": 2400,
+              "confidence": "low",
+              "basis": "History attribution against aeb1c278b by LabelCollaterals",
+              "updatedAt": 1793882494036
+            },
+            "finishedAt": 1793882815077
+          }
+        },
+        {
+          "content": "Collateral for \"Callouts during rotation match settled layout\": \"Transformer A\", \"Transformer B\" and \"Gas meter\" use a visibly larger font than the other labels; the base used one size for all. The \"Gas meter\" leader line runs past the bottom edge of the 3D view to an object outside it.",
+          "status": "completed",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [],
+            "owner": "FollowupPush",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/followup-pr-2026-11-05"
+            ],
+            "estimateRevision": 4,
+            "estimate": {
+              "optimisticSeconds": 900,
+              "likelySeconds": 1500,
+              "pessimisticSeconds": 2700,
+              "confidence": "medium",
+              "basis": "Cherry-pick 3 commits (~3 min), 9 rotation tests + orbit spec (~6 min), precommit/lint/build (~10 min), plus slot queue",
+              "updatedAt": 1793884562990
+            },
+            "progress": {
+              "at": 1793884562990,
+              "evidence": "LabelScaleFix 17:12: 3f6b3fddd font fix, oracle base red / candidate green (2 keys). Rotation spec not yet run; moves to FollowupPush"
+            },
+            "finishedAt": 1793885761545
+          }
+        },
+        {
+          "content": "Collateral for \"Callouts during rotation match settled layout\": \"Dry cooler A\" and \"Dry cooler B\" sit about 350 px below their objects at the bottom of the view, on long leader lines that cross the building.",
+          "status": "abandoned",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [
+              "Collateral for \"Callouts during rotation match settled layout\": \"Transformer A\", \"Transformer B\" and \"Gas meter\" use a visibly larger font than the other labels; the base used one size for all. The \"Gas meter\" leader line runs past the bottom edge of the 3D view to an object outside it."
+            ],
+            "owner": "LabelScaleFix",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/label-scale-fix"
+            ],
+            "estimateRevision": 2,
+            "estimate": {
+              "optimisticSeconds": 600,
+              "likelySeconds": 1500,
+              "pessimisticSeconds": 3000,
+              "confidence": "low",
+              "basis": "Same lane; distinguish a carried slot from a fresh-load path and check PRD:461 crossing on fresh load",
+              "updatedAt": 1793882816839
+            },
+            "finishedAt": 1793884540972
+          }
+        },
+        {
+          "content": "Collateral for \"Callouts during rotation match settled layout\": none (the base's overlapping labels during drag, e.g. \"Transfo…/Switchgear A/PDU\", \"CRAH 3 ea…/UPS A\", are gone)",
+          "status": "abandoned",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "finishedAt": 1793882676691
+          }
+        },
+        {
+          "content": "Push camera and label fixes to PR #111",
+          "status": "pending",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "FollowupPushGit",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [
+              "Collateral for \"Callouts during rotation match settled layout\": \"Transformer A\", \"Transformer B\" and \"Gas meter\" use a visibly larger font than the other labels; the base used one size for all. The \"Gas meter\" leader line runs past the bottom edge of the 3D view to an object outside it."
+            ],
+            "owner": "FollowupPushGit",
+            "reestimateCount": 0,
+            "estimateRevision": 1,
+            "estimate": {
+              "optimisticSeconds": 300,
+              "likelySeconds": 600,
+              "pessimisticSeconds": 1500,
+              "confidence": "medium",
+              "basis": "git-pr-owner push with lease (~3 min), fast-forward the review checkout, pipeline readback (~8 min)",
+              "updatedAt": 1793884562990
+            },
+            "progress": {
+              "at": 1793885835302,
+              "evidence": "17:35 pushed 666aabef7 (lease c6f01a0ce); review checkout fast-forwarded; FollowupPushGit: description, pipeline, :5174"
+            }
+          }
+        },
+        {
+          "content": "Plan click on dry cooler at 390: camera height matches left list",
+          "status": "completed",
+          "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+          "artifactOwner": "main",
+          "schedule": {
+            "firstRequirementAt": 1793876087823,
+            "previewTracked": true,
+            "previewPending": true,
+            "previewIdentityMissing": true,
+            "previewPartial": false,
+            "dependencies": [],
+            "owner": "PlanClickCamera",
+            "reestimateCount": 0,
+            "resources": [
+              "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/plan-click-parity"
+            ],
+            "estimateRevision": 1,
+            "estimate": {
+              "optimisticSeconds": 1200,
+              "likelySeconds": 2100,
+              "pessimisticSeconds": 3500,
+              "confidence": "low",
+              "basis": "bisect over a few branch commits with one 390 key (~2 min per step), then a fix, then the key on candidate and base",
+              "updatedAt": 1793884562990
+            },
+            "progress": {
+              "at": 1793886068564,
+              "evidence": "17:38 03e35ea06: camera parity passes; plant390 passes; phone yard golden 12% NEW (old golden shows the retired panel), desktop golden SHARED"
+            },
+            "finishedAt": 1793886198350
+          }
+        }
+      ]
+    }
+  ],
+  "arguments": {
+    "op": "schedule",
+    "updates": [
+      {
+        "task": "Facility 2D: too much empty space around site",
+        "dependencies": []
+      },
+      {
+        "task": "Plan-click branch: no new browser failures, push",
+        "owner": "PlanClickLand",
+        "dependencies": [],
+        "evidence": "17:42 03e35ea06: camera parity fixed (Δy 0). Phone yard golden NEW: expected shows 'Current: Direct-to-chip' + 'Selected: Dry cooler A'; actual shows the unified Cooling row editor without the current option name",
+        "estimate": {
+          "optimisticSeconds": 1800,
+          "likelySeconds": 3000,
+          "pessimisticSeconds": 3500,
+          "confidence": "low",
+          "basis": "left-row panel comparison base vs branch (~8 min), golden or panel fix (~5 min), rebase onto 666aabef7 (~5 min), 27-spec discovery with 4 workers (~20 min)"
+        }
+      }
+    ]
+  },
+  "replayedEditLines": [
+    85363,
+    85454,
+    85528
+  ]
+}

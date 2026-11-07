@@ -1,0 +1,315 @@
+{
+  "candidate": "52c1088b927b627eef6141e3660349681b850ad2",
+  "union": "b2f3a318794ae33566bbda95d9138a9b568894af",
+  "heads": [
+    {
+      "ref": "fork/upstream/output-id-collision-chain^{commit}",
+      "sha": "cae4c3d48209c20243dbc26692c021934e83f9eb"
+    },
+    {
+      "ref": "fork/upstream/yield-args-stray-closer^{commit}",
+      "sha": "efb86089a667a035b4ea54057aa0ce7b028525fb"
+    },
+    {
+      "ref": "fork/upstream/xiaomi-token-plan-request-host^{commit}",
+      "sha": "9426f3deb6eed0851ac7f18839e4106037a35aa9"
+    },
+    {
+      "ref": "fork/upstream/queue-message-behind-child-brief^{commit}",
+      "sha": "26bccc43146a317466825e137b37ff77cb39055f"
+    },
+    {
+      "ref": "fork/upstream/tui-stream-sole-waited-worker^{commit}",
+      "sha": "afdba1a2599b5b0ce2020dc18bcc821615a93cce"
+    },
+    {
+      "ref": "fork/upstream/task-effort-guidance^{commit}",
+      "sha": "1f636ff5d867890ea12609d51083494a3c292a97"
+    },
+    {
+      "ref": "fork/upstream/jfind-cancel-initial-scans^{commit}",
+      "sha": "4bc628573d9c45a400576d00e81a40d9da4f8100"
+    },
+    {
+      "ref": "fork/upstream/task-eval-tools-builtin-names^{commit}",
+      "sha": "60bbd6e056beaa1275bda0ac9376b4e956b75668"
+    },
+    {
+      "ref": "fork/upstream/soft-requirement-skip^{commit}",
+      "sha": "e023924a1020a1d203b77fd67a5f45f3efe1c1d2"
+    },
+    {
+      "ref": "fork/upstream/tui-compact-skill-reads^{commit}",
+      "sha": "c8df3938c895b6c03dae8284171016ecbd01c8d7"
+    },
+    {
+      "ref": "fork/upstream/skill-read-unchanged-stub^{commit}",
+      "sha": "7323825d34880168db2b3500754e30bad9002a9e"
+    },
+    {
+      "ref": "fork/fix/retry-stream-incomplete-error-event^{commit}",
+      "sha": "b48204f20cff72041904862770d1878a6dee57c5"
+    },
+    {
+      "ref": "fork/feat/peer-session-messages^{commit}",
+      "sha": "8b34179cb9c55d427a295fad13a43ec51f3a32b1"
+    },
+    {
+      "ref": "fork/upstream/extension-context-copy-on-write^{commit}",
+      "sha": "ef3a865867bbc6bb9732ac6f2afb0e10a8ae0896"
+    },
+    {
+      "ref": "fork/feat/tui-fps-meter^{commit}",
+      "sha": "b2118d2d8191da5bd3ae4f4334288dc4f714c6bf"
+    },
+    {
+      "ref": "fork/upstream/tui-keypress-render-lag^{commit}",
+      "sha": "969ef6ff375fba95b588b2714217d476bb09548f"
+    },
+    {
+      "ref": "fork/feat/subagent-time-signals^{commit}",
+      "sha": "3ce084f5b65f68914379ece20943aa8a0c4c124a"
+    },
+    {
+      "ref": "fork/feat/requirements-ledger^{commit}",
+      "sha": "d6ab1abcf2f9c9732b74ae634da694579900fd38"
+    },
+    {
+      "ref": "fork/fix/extension-builtin-resolution^{commit}",
+      "sha": "db3656a56d7b95bdc76b54241f943d6178d79b7c"
+    },
+    {
+      "ref": "fork/topic/natives-process^{commit}",
+      "sha": "b206d0f05c87d7071e105a641ab11844396801fe"
+    },
+    {
+      "ref": "fork/upstream/isolated-worktrees-clean-head^{commit}",
+      "sha": "533f8e3cd6b4c226d2669f90881064b4293b499c"
+    },
+    {
+      "ref": "fork/topic/task-runtime-fixes^{commit}",
+      "sha": "65679686a5d219d0ef0666a006731c8a34259135"
+    },
+    {
+      "ref": "52c1088b927b627eef6141e3660349681b850ad2^{commit}",
+      "sha": "52c1088b927b627eef6141e3660349681b850ad2"
+    },
+    {
+      "ref": "fork/topic/rt-restart-queue^{commit}",
+      "sha": "9426d17b50af1ad33162bdf97e00f7f93c349839"
+    },
+    {
+      "ref": "fork/upstream/tab-title-project^{commit}",
+      "sha": "745f0eaeef424a5ca6875868a62237e99bc932e0"
+    },
+    {
+      "ref": "fork/fix/impl-worker-effort-cap^{commit}",
+      "sha": "d11a57d676d59f03698f59e4f34c98b9498b61b7"
+    },
+    {
+      "ref": "fork/upstream/provider-exhaustion-cooldown^{commit}",
+      "sha": "a0a008ccdcebe268b5a8000378b9dcc34835bde5"
+    },
+    {
+      "ref": "fork/fix/bash-service-async-env^{commit}",
+      "sha": "3b911480cc6be31a50b4303ae6225826577a2232"
+    },
+    {
+      "ref": "fork/upstream/read-raster-raw-lines^{commit}",
+      "sha": "e55d758397a97d0c63674da31030a371c5171780"
+    },
+    {
+      "ref": "fork/upstream/semicolon-internal-url-lists^{commit}",
+      "sha": "2fd8430aaaff88ca4c52abac5dcbcb3ab1586469"
+    },
+    {
+      "ref": "fork/upstream/edit-reject-invalid-put^{commit}",
+      "sha": "ea89c5bc7eedd470c8afb179c932b401464c7758"
+    },
+    {
+      "ref": "fork/fix/yield-terminal-once^{commit}",
+      "sha": "bd127b4057808edd5cf5a4ecc71c05d043cd5e27"
+    },
+    {
+      "ref": "fork/upstream/readonly-agent-reply^{commit}",
+      "sha": "03379d47077d9974ae51f576178242854907b65d"
+    },
+    {
+      "ref": "fork/fix/isolated-merge-back^{commit}",
+      "sha": "08abf0230aa8241194eb052c6e49bd7d3d456131"
+    },
+    {
+      "ref": "fork/upstream/tool-env-no-node-channel^{commit}",
+      "sha": "e3afc491b3084e38f4c3e30ec974311a5565295f"
+    },
+    {
+      "ref": "fork/upstream/models-last-good-retention^{commit}",
+      "sha": "912ef72f79f354c68f1b84dee772fafbea12889d"
+    },
+    {
+      "ref": "fork/upstream/model-id-explicit-fail-closed^{commit}",
+      "sha": "2482479e5a2792a53d1ee1c10a8951fd862937db"
+    },
+    {
+      "ref": "fork/upstream/spawn-model-fail-closed^{commit}",
+      "sha": "ff96970c674aeb7967c86327592d2e9722b180ae"
+    },
+    {
+      "ref": "fork/fix/task-fallback-trigger-attribution^{commit}",
+      "sha": "b8741bf19e3fd09c012be65341f7cebd5a893c6e"
+    },
+    {
+      "ref": "fork/upstream/oversized-tool-call-args^{commit}",
+      "sha": "02e03aaff9729e8184e5a1051186e71b2de517d6"
+    },
+    {
+      "ref": "fork/upstream/responses-heartbeat-idle^{commit}",
+      "sha": "7f08145aaff62b9ae72e5fd3f66f658f88b443ce"
+    },
+    {
+      "ref": "fork/upstream/parallel-check-runner^{commit}",
+      "sha": "df0c72a7c90bc039c6132275ed7ef6e5cf7a7930"
+    },
+    {
+      "ref": "fork/upstream/worker-workspace-dependency-owner^{commit}",
+      "sha": "494bb2b68acd71a6ef160efd5b12aa3348c17102"
+    },
+    {
+      "ref": "fork/upstream/bun-discovery-chunk-paths^{commit}",
+      "sha": "e6eb56848438339e6a11571d06d4d3421dbc3d14"
+    },
+    {
+      "ref": "fork/upstream/scrapers-discourse-gitlab^{commit}",
+      "sha": "9506390007daf209347ae7b38100d4a413cd9f0d"
+    },
+    {
+      "ref": "fork/upstream/todo-open-panel^{commit}",
+      "sha": "f421e93c68afe79be85348c74150ded634365e90"
+    },
+    {
+      "ref": "fork/upstream/subagent-progress-redraw-unchanged^{commit}",
+      "sha": "30cd81229bca9cc84d01527b885870f2eea85727"
+    },
+    {
+      "ref": "fork/upstream/ephemeral-turn-history-detach^{commit}",
+      "sha": "4fa8ac6964b0b8160919bab3173f5abea6df72e9"
+    },
+    {
+      "ref": "fork/upstream/custom-answer-note-key^{commit}",
+      "sha": "0e11058919e825ac07e009913ab6266d7797c2ab"
+    },
+    {
+      "ref": "fork/upstream/sixel-chip-thumbnails^{commit}",
+      "sha": "309983d9fd2d6bf5349e649a1a7268725e4a1aa2"
+    },
+    {
+      "ref": "fork/fix/sixel-viewport-scroll^{commit}",
+      "sha": "fa5f9c43328fcaefb8248c09361a74cf83a3b8f4"
+    },
+    {
+      "ref": "fork/upstream/services-survive-client-restart^{commit}",
+      "sha": "ac50eef053d946fbf0ae9846cee42dedd7116bf5"
+    },
+    {
+      "ref": "fork/upstream/persisted-history-off-thread^{commit}",
+      "sha": "c1254f604b887a8629b8efe3b48230e55c19d578"
+    },
+    {
+      "ref": "fork/fix/prune-active-history^{commit}",
+      "sha": "4d62e0920bc1824412003cadc0e028f77738f663"
+    },
+    {
+      "ref": "fork/upstream/cache-available-provider-models^{commit}",
+      "sha": "17b82a44118d0791c869989e2f3662fdd3d21af2"
+    },
+    {
+      "ref": "fork/topic/task-coordination-advisory-ownership^{commit}",
+      "sha": "82c6592884c1fe24f38338cfc1ad840059148027"
+    },
+    {
+      "ref": "fork/feat/session-model-preset^{commit}",
+      "sha": "dbc56d2a6750b285af733f38f237d8f8843a83a1"
+    },
+    {
+      "ref": "fork/feat/model-role-pools^{commit}",
+      "sha": "7d8d56f9248106e202daf1524b37423fefffee0e"
+    },
+    {
+      "ref": "fork/topic/task-agent-fixed-effort^{commit}",
+      "sha": "32f7447881edd00bbbae60ef46885119a674f8a5"
+    },
+    {
+      "ref": "fork/topic/owner-model-blacklist^{commit}",
+      "sha": "9c7c4381abbdde7fcfcc188137e610964626b681"
+    },
+    {
+      "ref": "fork/fix/auth-db-salvage-credentials^{commit}",
+      "sha": "81746e462ea0ea2ce855b94432f15b5ad2f0b72c"
+    },
+    {
+      "ref": "fork/fix/free-pool-account-cooldown^{commit}",
+      "sha": "8a56c8a74e5c8fdbbf6d604547d00b47368cee09"
+    },
+    {
+      "ref": "fork/fix/goal-no-auto-pause^{commit}",
+      "sha": "780df7698c6dd580d05bafa3e86cfdb0247ff689"
+    },
+    {
+      "ref": "fork/fix/codex-ws-limit-reconnect^{commit}",
+      "sha": "3192ee9a3fbf8f8e424f8ef62b702de859a7b726"
+    },
+    {
+      "ref": "fork/fix/paste-blank-image^{commit}",
+      "sha": "f2605aec2337e1d2329d74b46b845d078b5aec7b"
+    },
+    {
+      "ref": "fork/fix/muse-402-fallback^{commit}",
+      "sha": "dff37c1ef1cc981895dec507d97c7e84f1c042aa"
+    },
+    {
+      "ref": "fork/fix/instruction-file-refresh^{commit}",
+      "sha": "6e9c89c1379ea5b13e75faec38916daa0505a42c"
+    },
+    {
+      "ref": "fork/fix/libei-device-discovery-readiness^{commit}",
+      "sha": "183b61e71d27b4d14bd3c8ae58e9124cf1cb6a33"
+    },
+    {
+      "ref": "fork/feat/task-project-agents-md^{commit}",
+      "sha": "e327f3608fc73a88097b047b96b0507b13501468"
+    },
+    {
+      "ref": "fork/fix/persisted-revive-extension-roots^{commit}",
+      "sha": "db6c34fb5df4502d17c7d18605bce6bbaedaf05b"
+    },
+    {
+      "ref": "fork/fix/status-current-work-title^{commit}",
+      "sha": "d397adf02b6169c3533411b295503bbc5689f66e"
+    },
+    {
+      "ref": "fork/upstream/stable-system-prompt-prefix^{commit}",
+      "sha": "605acc112826800e3ea92c8b964cc44eecfa2e6f"
+    },
+    {
+      "ref": "fork/fix/session-rewrite-latency^{commit}",
+      "sha": "6be1554f2b64aa08cd48f72e5752b89d72347881"
+    },
+    {
+      "ref": "fork/topic/usage-shared-backoff^{commit}",
+      "sha": "8f5a56c55b36e2c7e0524fbee9f8c86d8a0e17a5"
+    },
+    {
+      "ref": "fork/fix/anthropic-thread-cache-budget^{commit}",
+      "sha": "8b0f997bb93d5bbd3f9f63f793d211ae20400f33"
+    },
+    {
+      "ref": "fork/fix/tui-job-control-raw-mode^{commit}",
+      "sha": "a1e86e2dfdfa1ab0822245ab62b82467be4321ec"
+    },
+    {
+      "ref": "fork/fix/anthropic-thinking-drop-diagnostics^{commit}",
+      "sha": "f9b00c8980e0738f0f456e9f9bdf78a4dbe32d82"
+    }
+  ],
+  "count": 77
+}

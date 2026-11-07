@@ -1,0 +1,2 @@
+Infra breaker: {{row}} is blocked after three identical infrastructure failures. Cause: {{cause}}
+Do not re-dispatch this row. Read the named holder with agent:// first; narrow its actual todo schedule resources or, for a confirmed stuck holder, kill it with proc://<holder>/kill and read its receipt. For a spawn/gate error, repair the named admission cause. Inspect todo view/history, then explicitly unblock this row only after the cause is repaired. Renaming its owner does not repair the cause.
