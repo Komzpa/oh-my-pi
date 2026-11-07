@@ -6,6 +6,10 @@
 
 - Cancelled queue drains preserve pending input for the next turn without reporting an assistant-role error ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
+### Changed
+
+- Tool-result pruning now returns pure decisions with stable branch-local projections instead of mutating historical messages.
+
 ## [18.17.0] - 2026-11-06
 
 ### Added
@@ -183,10 +187,6 @@
 - Fixed OpenAI V1/V2 remote compaction failing outright when the history, kept tail included, exceeds the context window (a large final response or tool output after the last check); it retries on the history before the kept tail ([#15712](https://github.com/can1357/oh-my-pi/pull/15712) by [@H4vC](https://github.com/H4vC))
 - Fixed fitted output caps overflowing the context window on strict hosts (llama.cpp-family) after turns with many parallel tool results; chat-template framing is now charged per locally counted message ([#15699](https://github.com/can1357/oh-my-pi/issues/15699))
 - Fixed leaked DeepSeek DSML markup reaching saved history from reasoning blocks and from turns that also made a valid tool call ([#15485](https://github.com/can1357/oh-my-pi/issues/15485))
-
-### Changed
-
-- Tool-result pruning now returns pure decisions with stable branch-local projections instead of mutating historical messages.
 
 ## [18.10.4] - 2026-10-13
 
