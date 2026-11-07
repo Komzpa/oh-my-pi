@@ -58,7 +58,7 @@ Unknown producers and some generated contexts remain a scope gap. This is a cons
 
 `harnessNotices.role: user | developer | tool | off-legacy`; optional scoped `harnessNotices.overrides` selects provider, class, family, exact/glob models and priority. KDL catalog default opts in `gpt-6.1` / `gpt-6.1-*` on OpenAI/Codex Responses, including codex-lb. Others retain legacy. The same catalog resolve target and cascade ranking as PR174 are reused; generated `rules.json` accompanies KDL. See `docs/harness-notices.md` for examples.
 
-Agent-loop passes its actual request model to the converter, including live steering. SDK resolves the setting on every conversion, so model switch, fallback and child/capture agents do not use the parent's cached choice. Existing one-argument converter callbacks remain compatible.
+Agent’s config adapter passes its current model using the same state/model fallback as getModel; live steering passes prepared.model explicitly. SDK resolves the setting on every conversion, so model switch, fallback and child/capture agents do not use the parent's cached choice. Existing one-argument converter callbacks remain compatible.
 
 Only explicit runtime metadata promotes tool fragments. `isError`, textual prefixes, tool name, and `<system-reminder>` text never confer trust. A real owner message is unchanged. Every emitted selected notice has exactly `Harness (not Darafei):`, with agent attribution. Authorization vocabulary is conservatively left in the paired tool record with a neutral status; it is never asserted as owner intent.
 
@@ -76,3 +76,5 @@ All real function outputs in an assistant group are emitted first. Notes are tri
 ## Lane decisions
 
 Invoked `python3 .../tools/codex/lane_ask.py <facts/question> --context .../omp-harnessrole-20261107/brief.md` for delivery owner, 77-vs-current79 composite, baseline Rust formatting, and conservative mixed worker notes. Decisions: extend PR92 (no independent conversion owner); validate current79 heads and record drift; leave unrelated Rust formatting as a disclosed baseline gap; publish conservative partial scope. Last decision: “Partial scope is acceptable; continue with conservative handling and document both gaps. ... Keep raw worker content low-trust in composite notes and audits, using neutral status where separation is impossible.”
+
+Independence repair: scratch union on fork/main first found an owned overlap with the assistant-replay topic at the main convertToLlm call. Lane decision: pass model through Agent’s config adapter, leaving the replay expression on its owner branch; keep explicit prepared.model for live steering. Focused tests rerun below.
