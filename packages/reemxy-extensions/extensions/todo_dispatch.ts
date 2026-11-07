@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { prepareAttemptBrief } from "./attempt_receipt";
 import { prepareRequirementBrief, installRequirementResolution } from "./requirement_quotes";
 import { installWorkerAskInterrupt, pendingWorkerQuestions } from "./worker_asks";
 import { resetDeliveryCriticTimers, queueDeliveryCritic, type DeliveryRow, type DeliveryVerdict } from "./delivery_critic";
@@ -5284,6 +5285,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return undefined;
   };
   pi.on("tool_call", async (event, ctx) => {
+    const originalTaskItems = event.toolName === "task" ? taskItems(event.input) : [];
+    let contractInput;
     if (wakeTurn) wakeTurn.toolCalls += 1;
     // A non-read tool call (a todo change, a task dispatch, an edit, a command) is progress for the absence wake.
     if (!READ_ONLY_TOOLS.has(event.toolName) && !(event.toolName === "todo" && ["view", undefined].includes((event.input as { op?: string } | undefined)?.op))) progressEvents += 1;
@@ -5360,9 +5363,25 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }
       }
     }
+    if (event.toolName === "task" && isMain(ctx)) {
+      const input = event.input;
+      contractInput = Array.isArray(input) ? input.map(item => ({ ...item }))
+        : Array.isArray(input?.tasks) ? { ...input, tasks: input.tasks.map(item => ({ ...item })) } : { ...input };
+      const phases = todoPhases(ctx);
+      for (const item of taskItems(contractInput)) {
+        for (const row of speculativeTaskRows(item, phases)) {
+          const attempt = prepareAttemptBrief(row, String(item.task ?? ""));
+          if (attempt.refusal) return { block: true, reason: attempt.refusal };
+          const grounded = prepareRequirementBrief(row, ctx, attempt.task);
+          if (grounded.refusal) return { block: true, reason: grounded.refusal };
+          item.task = grounded.task;
+        }
+      }
+      event = { ...event, input: contractInput };
+    }
     await refreshLiveWorkerModels(ctx);
-    if (gateSwitchedOff(ctx)) return;
-    if (singleWriterLane) return;
+    if (gateSwitchedOff(ctx)) return contractInput ? { input: contractInput } : undefined;
+    if (singleWriterLane) return contractInput ? { input: contractInput } : undefined;
     const badWorkerName = refusePlanningFailureWorkerName(event as { toolName: string; input?: unknown }, ctx);
     if (badWorkerName) return badWorkerName;
     if (event.toolName === "task" && isMain(ctx) && !pauseGate?.paused) {
@@ -5454,8 +5473,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }
       }
     }
-    let preparedInput;
-    const originalTaskItems = event.toolName === "task" ? taskItems(event.input) : [];
+    let preparedInput = contractInput;
     if (event.toolName === "task" && isMain(ctx)) {
       // Dispatch annotations belong to this call, never to provider arguments or owner snapshots.
       const input = event.input;
@@ -5469,9 +5487,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const brief = String(item.task ?? "");
         const boundRows = speculativeTaskRows(item, phases);
         for (const row of boundRows) {
-          const grounded = prepareRequirementBrief(row, ctx, String(item.task ?? ""));
-          if (grounded.refusal) return { block: true, reason: grounded.refusal };
-          item.task = grounded.task;
           const refusal = refuseProofReview(row, item.agent, Date.now());
           if (refusal) return { block: true, reason: refusal };
           gateTrace(ctx, "speculative-review-checked", { row: row.content, agent: item.agent, readOnly: readOnlyAudit(item), speculativeOn: row.schedule?.speculativeOn, dependencies: (row.schedule?.dependencies ?? []).map((content) => { const target = rows.find((candidate) => candidate.content === content); return { content, status: target?.status, review: target?.schedule?.review }; }) });
