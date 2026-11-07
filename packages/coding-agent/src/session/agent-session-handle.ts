@@ -47,6 +47,7 @@ import type {
 	SteerOptions,
 } from "./agent-session-types";
 import type { BlobPutOptions, BlobPutResult } from "./blob-store";
+import type { SessionContextEntryMetadata } from "./session-context";
 import type { IdleMaintenanceOptions } from "./idle-maintenance";
 import type { CustomMessage, CustomMessagePayload } from "./messages";
 import type { ServingModel } from "./retry-fallback-chains";
@@ -182,6 +183,10 @@ export interface AgentViewSessionManager extends AgentSessionManagerHandle {
 	getEntries(): SessionEntry[];
 	/** Entries from the root to `fromId` (default: the current leaf). */
 	getBranch(fromId?: string): SessionEntry[];
+	/** Metadata-first newest iteration for bounded live state readers. */
+	iterateBranchMatchingNewestFirst?: (
+		predicate: (metadata: SessionContextEntryMetadata) => boolean,
+	) => Iterable<SessionEntry>;
 	/** Id of the current leaf entry. */
 	getLeafId(): string | null;
 	/** The newest entry that moves the conversation, when the active branch ends at it (`conversationTip`). */
