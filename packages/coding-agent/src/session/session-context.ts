@@ -475,13 +475,20 @@ export function selectSessionContextEntriesFromLeafPath(
 					entry.type === "service_tier_change" ||
 					entry.type === "mode_change" ||
 					entry.type === "ttsr_injection" ||
-					(entry.type === "custom" &&
-						(entry.customType === CONTEXT_NOTES_ENTRY_TYPE ||
-							entry.customType === RESTART_REQUEST_TRANSITION_TYPE ||
-							entry.customType === "tool_execution_start" ||
-							entry.customType === "session_exit"))),
+					(entry.type === "custom" && !isContextBookkeepingEntry(entry))),
 		)
 		.map(entry => read(entry.id));
+}
+
+/** Journal-only custom records do not change the context being prepared. */
+export function isContextBookkeepingEntry(entry: SessionContextEntryMetadata): boolean {
+	return (
+		entry.type === "custom" &&
+		entry.customType !== CONTEXT_NOTES_ENTRY_TYPE &&
+		entry.customType !== RESTART_REQUEST_TRANSITION_TYPE &&
+		entry.customType !== "tool_execution_start" &&
+		entry.customType !== "session_exit"
+	);
 }
 
 export function buildSessionContext(

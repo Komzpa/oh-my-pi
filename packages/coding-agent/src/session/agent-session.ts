@@ -1523,6 +1523,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#restoredRestartInputs = new Set<AgentMessage>();
 	#restartRestoreWarning: string | undefined;
 	#lastRestartPendingQueuesSignature: string | undefined;
+	#lastRestartPendingQueuesEntryId: string | undefined;
 	#restartCheckpointTimer: NodeJS.Timeout | undefined;
 	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
 
@@ -4809,7 +4810,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// with the queue checkpoint; only a transcript commit may ack it.
 			return this.sessionManager.appendEntriesAtomically(() => {
 				const queues = this.agent.snapshotPendingQueues();
-				this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+				this.#appendRestartCheckpoint({
 					...queues,
 					pendingNextTurn: [...this.#pendingNextTurnMessages],
 				});
@@ -4834,7 +4835,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			.appendEntriesAtomically(() => {
 				const afterCommit = this.#persistMessageEndEntry(message, promptGeneration);
 				const queues = this.agent.snapshotPendingQueues(message, queuedDelivery);
-				this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+				this.#appendRestartCheckpoint({
 					...queues,
 					pendingNextTurn: [...this.#pendingNextTurnMessages],
 				});
@@ -4908,7 +4909,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					queuedDelivery === undefined
 						? this.agent.snapshotPendingQueues()
 						: this.agent.snapshotPendingQueues(message, queuedDelivery);
-				this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, {
+				this.#appendRestartCheckpoint({
 					...queues,
 					pendingNextTurn: [...this.#pendingNextTurnMessages],
 				});
@@ -7971,6 +7972,20 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
+	#appendRestartCheckpoint(checkpoint: RestartPendingQueues): boolean {
+		const signature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(checkpoint)}`;
+		if (
+			signature === this.#lastRestartPendingQueuesSignature &&
+			this.#lastRestartPendingQueuesEntryId &&
+			this.sessionManager.getEntry(this.#lastRestartPendingQueuesEntryId)
+		)
+			return false;
+		const entryId = this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, checkpoint);
+		this.#lastRestartPendingQueuesSignature = signature;
+		this.#lastRestartPendingQueuesEntryId = entryId;
+		return true;
+	}
+
 	async #persistPendingRestartMessages(): Promise<void> {
 		this.#resumeStrandedIrcAsides();
 		const pendingNextTurn = [...this.#pendingNextTurnMessages];
@@ -7979,10 +7994,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			...queues,
 			pendingNextTurn,
 		};
-		const signature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(checkpoint)}`;
-		if (signature === this.#lastRestartPendingQueuesSignature) return;
-		this.#lastRestartPendingQueuesSignature = signature;
-		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, checkpoint);
+		if (!this.#appendRestartCheckpoint(checkpoint)) return;
 		this.#restartPendingQueuesCheckpointActive = true;
 		if (pendingNextTurn.length > 0 || queues.steering.length > 0 || queues.followUp.length > 0) {
 			this.#restartDrainNeedsResume = true;
@@ -8032,10 +8044,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			...this.agent.snapshotPendingQueues(),
 			pendingNextTurn: [...this.#pendingNextTurnMessages],
 		};
-		const signature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(checkpoint)}`;
-		if (signature === this.#lastRestartPendingQueuesSignature) return;
-		this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, checkpoint);
-		this.#lastRestartPendingQueuesSignature = signature;
+		this.#appendRestartCheckpoint(checkpoint);
 	}
 
 	async #queueRestartMessage(message: CustomMessage): Promise<void> {
@@ -8112,6 +8121,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				}
 			}
 			this.#lastRestartPendingQueuesSignature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(entry.data)}`;
+			this.#lastRestartPendingQueuesEntryId = entry.id;
 			this.#restartPendingQueuesCheckpointActive = true;
 			return;
 		}
