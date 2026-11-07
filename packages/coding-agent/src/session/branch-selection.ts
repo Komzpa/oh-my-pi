@@ -12,7 +12,7 @@ export function sessionContextEntryMetadata(entry: SessionEntry): SessionContext
 	return {
 		id: entry.id,
 		type: entry.type,
-		customType: entry.type === "custom" ? entry.customType : undefined,
+		customType: entry.type === "custom" || entry.type === "custom_message" ? entry.customType : undefined,
 		messageRole: entry.type === "message" ? entry.message.role : undefined,
 		toolName: entry.type === "message" && entry.message.role === "toolResult" ? entry.message.toolName : undefined,
 	};
