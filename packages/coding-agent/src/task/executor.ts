@@ -1,4 +1,3 @@
-import { finishLaunchTrace, launchMetric, launchStep, runLaunchTrace } from "@oh-my-pi/pi-utils/launch-trace";
 /**
  * Subagent execution.
  *
@@ -8,6 +7,7 @@ import { finishLaunchTrace, launchMetric, launchStep, runLaunchTrace } from "@oh
  */
 
 import * as fs from "node:fs/promises";
+import { finishLaunchTrace, launchMetric, launchStep, runLaunchTrace } from "@oh-my-pi/pi-utils/launch-trace";
 import path from "node:path";
 import type { AgentEvent, AgentIdentity, AgentMessage, AgentTelemetryConfig } from "@oh-my-pi/pi-agent-core";
 import { AgentBusyError, recordHandoff, resolveTelemetry } from "@oh-my-pi/pi-agent-core";

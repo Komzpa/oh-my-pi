@@ -24,6 +24,7 @@ interface Scope {
 }
 const storage = new AsyncLocalStorage<Scope>();
 interface PendingPhase {
+	trace: Trace;
 	name: string;
 	start: number;
 	end: number;
@@ -87,7 +88,15 @@ export function finishLaunchTrace(failed = false): void {
 	const trace = storage.getStore()?.trace;
 	if (!trace || trace.closed) return;
 	trace.closed = true;
-	const totalMs = performance.now() - trace.started;
+	const ended = performance.now();
+	const totalMs = ended - trace.started;
+	for (const phase of pendingPhases) {
+		if (phase.trace !== trace) continue;
+		phase.end = ended;
+		pendingPhases.delete(phase);
+		if (completedPhases.length === maxSpans) completedPhases.shift();
+		completedPhases.push(phase);
+	}
 	const spans = [...trace.spans.values()];
 	logger.debug("subagent launch spans", {
 		...trace.identity,
@@ -144,7 +153,7 @@ export function launchStep<T, A extends unknown[]>(name: string, fn: (...args: A
 		recordSpan(trace, label, phase.end - started, syncPrefixMs);
 	};
 	const depth = (storage.getStore()?.depth ?? 0) + 1;
-	const phase: PendingPhase = { name: label, start: started, end: Number.POSITIVE_INFINITY, depth };
+	const phase: PendingPhase = { trace, name: label, start: started, end: Number.POSITIVE_INFINITY, depth };
 	if (pendingPhases.size < maxSpans) pendingPhases.add(phase);
 	const scope: Scope = { trace, depth };
 	try {

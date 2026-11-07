@@ -10,7 +10,8 @@ export interface LoopPhaseAttribution {
  * Process-global synchronous loop phases. The watchdog arms a late window and
  * reads attribution via {@link takeLoopPhaseAttribution}; attribution totals
  * only the innermost label's time inside that window. A label is named only
- * when its total outweighs all unlabeled time, otherwise the block remains
+ * when its total outweighs all unlabeled time, otherwise an optional fallback names overlapping launch work with the explicit
+ * "launch-overlap:" prefix and ms=0 (no synchronous attribution), or stays
  * "unknown". Disarmed push/pop do not read the clock.
  *
  * This is deliberately a process-global stack and not part of the logger span
@@ -80,7 +81,7 @@ export function resetLoopPhaseWindow(start = Number.POSITIVE_INFINITY, now: () =
 	labeledMs = 0;
 }
 
-/** Attribute the window [start, end] and disarm it. Returns undefined when no window is armed or no label outweighs unlabeled time. */
+/** Attribute the window [start, end] and disarm it. Returns undefined when no window is armed, or neither synchronous attribution nor a fallback names work. */
 export function takeLoopPhaseAttribution(end?: number): LoopPhaseAttribution | undefined {
 	if (windowStart === Number.POSITIVE_INFINITY) return undefined;
 	const t = end ?? clock();
