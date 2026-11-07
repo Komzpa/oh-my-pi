@@ -194,6 +194,7 @@ import {
 	type PlanYolo,
 	type Prewalk,
 } from "./session/agent-session";
+import type { AgentSessionDisposeOptions } from "./session/agent-session-types";
 import {
 	createAuthStorageSettingsSync,
 	discoverAuthStorage as discoverAuthStorageFromConfig,
@@ -926,6 +927,8 @@ export interface CreateAgentSessionOptions {
 	 * top-level "Main" session, which has no parent.
 	 */
 	parentAgentId?: string;
+	/** Reserve a newly spawned child's first prompt for its executor before attaching the session. */
+	initialPromptPending?: boolean;
 
 	/** Session manager. Default: session stored under the configured agentDir sessions root */
 	sessionManager?: SessionManager;
@@ -1736,6 +1739,7 @@ const CAPTURE_DROPPED_KEYS = [
 	"approval",
 	"formatApprovalDetails",
 	"approvalCacheTargets",
+	"bindApprovalTargets",
 	"approvalRestrictionPaths",
 	"renderCall",
 	"renderResult",
@@ -4548,6 +4552,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
 			status: "running" as const,
+			initialPromptPending: options.initialPromptPending,
 		};
 		registeredAgentRef =
 			options.expectedAgentRef === undefined
@@ -5534,7 +5539,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		{
 			const originalDispose = session.dispose.bind(session);
 			let tinyClientReleased = false;
-			session.dispose = async () => {
+			session.dispose = async (disposeOptions?: AgentSessionDisposeOptions) => {
 				try {
 					// Reject new session work (eval starts) the moment disposal
 					// begins — the lifecycle await below opens an async gap before
@@ -5558,7 +5563,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						await vibeRegistry.suspendScope(vibeRegistry.ownerScope(vibeParentSession), scopedAsyncJobManager);
 						await AgentLifecycleManager.global().dispose();
 					}
-					await originalDispose();
+					await originalDispose(disposeOptions);
 				} finally {
 					// The tiny-model client is a process singleton shared by every session.
 					// Only the session that owns process state drops its connections, once:

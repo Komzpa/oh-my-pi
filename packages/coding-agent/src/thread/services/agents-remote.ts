@@ -12,7 +12,12 @@
 import type { IrcDeliveryReceipt, IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentAwaitsApi } from "../../registry/agent-awaits";
-import type { AdoptOptions, AgentLifecycleApi, PersistedSubagentReviverFactory } from "../../registry/agent-lifecycle";
+import type {
+	AdoptOptions,
+	AgentLifecycleApi,
+	AgentReleaseOptions,
+	PersistedSubagentReviverFactory,
+} from "../../registry/agent-lifecycle";
 import type {
 	AgentHistorySummary,
 	AgentRef,
@@ -121,6 +126,10 @@ export class RemoteAgentRegistry implements AgentRegistryApi {
 		return this.#remote.callSync("markResultAccepted", id, expected, responseAt);
 	}
 
+	clearInitialPromptPending(id: string, session: AgentSessionHandle): boolean {
+		return this.#remote.callSync("clearInitialPromptPending", id, session);
+	}
+
 	staleAcceptedRuns(): AgentRef[] {
 		return this.#remote.callSync("staleAcceptedRuns");
 	}
@@ -215,7 +224,7 @@ export class RemoteAgentLifecycle implements AgentLifecycleApi {
 		return this.#remote.call("ensureLive", id);
 	}
 
-	release(id: string, expected?: AgentRefExpectation, options?: { tombstone?: boolean }): Promise<boolean> {
+	release(id: string, expected?: AgentRefExpectation, options?: AgentReleaseOptions): Promise<boolean> {
 		return this.#remote.call("release", id, expected, options);
 	}
 
