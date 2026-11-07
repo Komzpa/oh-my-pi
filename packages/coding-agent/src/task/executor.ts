@@ -1,4 +1,3 @@
-import { pendingWorkerAsks, workerAskDefaultWaitMs } from "./worker-questions";
 /**
  * Subagent execution.
  *
@@ -129,6 +128,7 @@ import { runFollowUpTurnOnHome, runSubprocessPlaced } from "../thread/executor-r
 import { existingSubagentWorkerPool, subagentWorkerPool } from "../thread/subagent-worker";
 import { buildNamedToolChoice } from "../utils/tool-choice";
 import type { WorkspaceTree } from "../workspace-tree";
+import { pendingWorkerAsks, workerAskDefaultWaitMs } from "./worker-questions";
 import { isCompletionProbeEnabled, startCompletionProbe } from "./completion-probe";
 import { appendToolResult, createTaskWidgetInputs, TOOLS_SOURCE_LABEL } from "./widget-inputs";
 import { TextTap } from "../job-widgets/text-tap";
@@ -2058,6 +2058,13 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					progress.inflightTaskDetails = undefined;
 				}
 
+				// An unanswered question cannot be finalized by a late yield in the stopped turn.
+				if (event.toolName === "yield" && activeSession && pendingWorkerAsks(activeSession.messages).length) {
+					yieldCallPending = false;
+					requestYieldTurnStop();
+					break;
+				}
+
 				// Check for registered subagent tool handler
 				const handler = subprocessToolRegistry.getHandler(event.toolName);
 				const eventRecord: unknown = event;
@@ -2103,11 +2110,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					const forcedFinalYield = event.toolName === "yield" && finalYieldForced && yieldCalled;
 					endsRun = wantsTerminate || forcedFinalYield;
 					if (endsRun) {
-						if (
-							event.toolName === "yield" &&
-							(sessionHasPendingAsyncWork() ||
-								(activeSession && pendingWorkerAsks(activeSession.messages).length))
-						) {
+						if (event.toolName === "yield" && sessionHasPendingAsyncWork()) {
 							// Terminal yield with owner jobs still pending: park the
 							// run behind the quiescence barrier instead of completing
 							// it (see requestYieldTurnStop).
@@ -2689,6 +2692,58 @@ async function driveSessionToResult(
 		// The forced final turn must answer through `yield`, or with no tools at all.
 		const reminderToolChoice = structured ? buildNamedToolChoice("yield", session.model) : "none";
 
+		const proposedDefaults = new Set<string>();
+		const awaitWorkerAnswers = async (): Promise<void> => {
+			while (!abortSignal.aborted) {
+				// An unanswered ask parks this assignment, without spending yield retries or destroying its state.
+				await awaitAbortable(monitor.waitForYieldTurnStop());
+				const questions = pendingWorkerAsks(session.messages);
+				if (!questions.length) return;
+				const defaultsAuthorized = task.includes("[worker-ask-defaults]");
+				const proposed = questions.filter(
+					q =>
+						defaultsAuthorized &&
+						!q.critical &&
+						q.proposedDefault &&
+						!proposedDefaults.has(`${q.id}:${q.questionId}`),
+				);
+				if (proposed.length) {
+					await session.sendCustomMessage(
+						{
+							customType: "worker-ask-default-proposed",
+							display: true,
+							content: prompt.render(workerAskDefaultProposedTemplate, { questions: proposed }).trim(),
+							details: { questions: proposed, waitMs: workerAskDefaultWaitMs() },
+							attribution: "agent",
+						},
+						{ triggerTurn: false },
+					);
+					for (const q of proposed) proposedDefaults.add(`${q.id}:${q.questionId}`);
+				}
+				const due = questions.filter(
+					q =>
+						defaultsAuthorized &&
+						!q.critical &&
+						q.proposedDefault &&
+						Date.now() - q.at >= workerAskDefaultWaitMs(),
+				);
+				if (due.length) {
+					session.sessionManager.appendCustomEntry("worker-ask-default-applied", {
+						questions: due,
+						at: Date.now(),
+					});
+					await dispatchPrompt(
+						prompt.render(workerAskDefaultTemplate, { questions: due }).trim(),
+						{ attribution: "agent" },
+						"authorized worker defaults",
+					);
+				} else {
+					await awaitAbortable(Bun.sleep(250));
+					await awaitAbortable(session.waitForIdle());
+				}
+			}
+		};
+
 		const runYieldLadder = async (): Promise<void> => {
 			let retryCount = 0;
 			let retriesForced = false;
@@ -2696,6 +2751,8 @@ async function driveSessionToResult(
 				// A budget stop collapses the reminder ladder to a single forced
 				// final yield: wait for the stop's session abort to settle, then
 				// prompt once with the wrap-up reminder + named tool choice.
+				await awaitWorkerAnswers();
+				if (monitor.yieldCalled() || abortSignal.aborted) break;
 				const budgetStop = monitor.budgetStopRequested();
 				if (!structured && !budgetStop) break;
 				if (budgetStop) {
@@ -2761,6 +2818,7 @@ async function driveSessionToResult(
 					}
 				}
 			}
+			await awaitWorkerAnswers();
 		};
 
 		// Yield ladder + quiescence barrier (structured concurrency), one
@@ -2788,56 +2846,7 @@ async function driveSessionToResult(
 		// Runs that exhaust the ladder with no pending work, or hit a terminal
 		// model error, skip the barrier; teardown reaps their jobs.
 		let asyncPendingNoticeSent = false;
-		const proposedDefaults = new Set<string>();
 		while (!abortSignal.aborted) {
-			// An unanswered ask parks this assignment, without spending yield retries or destroying its state.
-			await awaitAbortable(monitor.waitForYieldTurnStop());
-			const questions = pendingWorkerAsks(session.messages);
-			if (questions.length) {
-				const defaultsAuthorized = task.includes("[worker-ask-defaults]");
-				const proposed = questions.filter(
-					q =>
-						defaultsAuthorized &&
-						!q.critical &&
-						q.proposedDefault &&
-						!proposedDefaults.has(`${q.id}:${q.questionId}`),
-				);
-				if (proposed.length) {
-					await session.sendCustomMessage(
-						{
-							customType: "worker-ask-default-proposed",
-							display: true,
-							content: prompt.render(workerAskDefaultProposedTemplate, { questions: proposed }).trim(),
-							details: { questions: proposed, waitMs: workerAskDefaultWaitMs() },
-							attribution: "agent",
-						},
-						{ triggerTurn: false },
-					);
-					for (const q of proposed) proposedDefaults.add(`${q.id}:${q.questionId}`);
-				}
-				const due = questions.filter(
-					q =>
-						defaultsAuthorized &&
-						!q.critical &&
-						q.proposedDefault &&
-						Date.now() - q.at >= workerAskDefaultWaitMs(),
-				);
-				if (due.length) {
-					session.sessionManager.appendCustomEntry("worker-ask-default-applied", {
-						questions: due,
-						at: Date.now(),
-					});
-					await dispatchPrompt(
-						prompt.render(workerAskDefaultTemplate, { questions: due }).trim(),
-						{ attribution: "agent" },
-						"authorized worker defaults",
-					);
-				} else {
-					await awaitAbortable(Bun.sleep(250));
-					await awaitAbortable(session.waitForIdle());
-				}
-				continue;
-			}
 			if (!monitor.yieldCalled()) {
 				await runYieldLadder();
 				if (
