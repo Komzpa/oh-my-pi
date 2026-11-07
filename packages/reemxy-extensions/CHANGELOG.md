@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Surface overdue unpushed commits in the HUD and schedule project gates plus a PR-branch push using live remote heads ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Dispatch task batches without readonly-property failures while preserving shared TODO snapshots ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Read current dispatch, deadline, and staffing state without replaying long session histories ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

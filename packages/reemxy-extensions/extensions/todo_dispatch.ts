@@ -33,6 +33,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDeadlineUserMessage, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState, resolveTimeZone, STATE_ENTRY as GOAL_DEADLINE_STATE_ENTRY, type DeadlineState } from "./deadlines";
 import unansweredUserInstructions from "./unanswered-user-reply.md" with { type: "text" };
+import unpushedInstructions from "./unpushed-work.md" with { type: "text" };
 import gateNoticeInstructions from "./gate-notices.md" with { type: "text" };
 import chatChoiceInstructions from "./chat-choice-gate.md" with { type: "text" };
 import riskReplanInstructions from "./risk-replan.md" with { type: "text" };
@@ -220,8 +221,9 @@ function survivingCompactionCustomType(ctx: ExtensionContext, customType: string
 // resolved merge open for hours behind feature rows and gates while main moved on, and spawned a
 // fresh round of merge workers for every move. Past these ages the gate demands commit, then push.
 export const STALE_MERGE_MS = 30 * 60_000;
-// Same horizon as AUTO_GOAL_MIN_LEAD_MS: a finished worker's commit should not wait longer than one worker run.
-export const STALE_PUSH_MS = 15 * 60_000;
+// Publication alarm; projects may lower it with omp.unpushedThresholdMinutes.
+export const STALE_PUSH_MS = 60 * 60_000;
+export const PUSH_POLL_MS = 3 * 60_000;
 // No word boundary: worker names are CamelCase ("E2EMergeOwner").
 const MERGE_WORK = /merg|conflict|rebas|cherry-pick/i;
 const GIT_COMMIT = /\bgit\b[^;&|\n]*\b(commit|merge\s+--continue)\b/;
@@ -271,16 +273,44 @@ export interface GitIntegrationState {
   head?: string;
   unpushed?: number;
   oldestUnpushedAgeMs?: number;
+  pushBranch?: string;
+  pushRemote?: string;
+  pushThresholdMs?: number;
 }
-export async function readGitIntegrationState(cwd: string, now: number): Promise<GitIntegrationState | null> {
-  const git = async (...args: string[]): Promise<string | null> => {
-    try {
-      const { stdout } = await execFileAsync("git", args, { cwd, encoding: "utf8", timeout: 5_000, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } });
-      return stdout.trim();
-    } catch {
-      return null;
-    }
+export function pushRowTitle(state: GitIntegrationState): string {
+  return `Push: run project gates and push ${state.pushRemote}/${state.pushBranch}`;
+}
+export function reconcilePushRow(phases: TodoPhase[], state: GitIntegrationState, cwd: string, now: number): TodoPhase[] {
+  if (state.unpushed === undefined || !state.pushBranch) return phases;
+  const title = pushRowTitle(state);
+  const row = phases.flatMap(phase => phase.tasks).find(task => task.content === title);
+  if (state.unpushed === 0) {
+    if (!row || row.status === "completed") return phases;
+    return phases.map(phase => ({ ...phase, tasks: phase.tasks.map(task => task === row
+      ? { ...task, status: "completed", schedule: { ...task.schedule, finishedAt: now } } : task) }));
+  }
+  if ((state.oldestUnpushedAgeMs ?? 0) < (state.pushThresholdMs ?? STALE_PUSH_MS)) return phases;
+  if (row && ["pending", "in_progress"].includes(row.status)) return phases;
+  const pending = { content: title, status: "pending", schedule: {
+    agentProfile: "git-pr-owner", dependencies: [], resources: [`checkout:${cwd}`],
+    estimate: { optimisticSeconds: 60, likelySeconds: 300, pessimisticSeconds: 900,
+      confidence: "low", basis: "Run required project gates, then push and read back the PR branch", updatedAt: now },
+  } };
+  // First phase / first row makes publication visible ahead of ordinary feature work.
+  const rest = phases.map(phase => ({ ...phase, tasks: phase.tasks.filter(task => task !== row) }));
+  return [{ name: "Push overdue work", tasks: [pending] }, ...rest.filter(phase => phase.tasks.length)];
+}
+export async function readGitIntegrationState(cwd: string, now: number, env: NodeJS.ProcessEnv = process.env, probePush = true): Promise<GitIntegrationState | null> {
+  const gitInput = async (args: string[], input?: string): Promise<string | null> => {
+    const result = Promise.withResolvers<string | null>();
+    const child = execFile("git", args, { cwd, encoding: "utf8", timeout: 5_000,
+      env: { ...env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" } },
+      (error, stdout) => result.resolve(error ? null : stdout.trim()));
+    child.stdin?.on("error", () => {});
+    child.stdin?.end(input);
+    return result.promise;
   };
+  const git = (...args: string[]) => gitInput(args);
   const head = await git("rev-parse", "HEAD");
   if (!head) return null;
   const state: GitIntegrationState = { head };
@@ -294,13 +324,37 @@ export async function readGitIntegrationState(cwd: string, now: number): Promise
       state.unmerged = unmerged ? new Set(unmerged.split("\n").filter(Boolean)).size : 0;
     } catch {}
   }
-  const unpushed = await git("log", "--format=%ct", "@{upstream}..HEAD");
+  if (!probePush) return state;
+  const branch = await git("symbolic-ref", "--quiet", "--short", "HEAD");
+  state.pushBranch = await git("config", "--get", "omp.pushBranch") || branch || undefined;
+  state.pushRemote = (branch && await git("config", "--get", `branch.${branch}.pushRemote`))
+    || await git("config", "--get", "remote.pushDefault")
+    || (branch && await git("config", "--get", `branch.${branch}.remote`)) || "origin";
+  const configured = Number(await git("config", "--get", "omp.unpushedThresholdMinutes"));
+  state.pushThresholdMs = configured > 0 && Number.isFinite(configured) ? configured * 60_000 : STALE_PUSH_MS;
+  const remotes = await git("remote");
+  if (remotes === null || !remotes) return state;
+  const advertised = new Set<string>();
+  for (const remote of remotes.split("\n")) {
+    const heads = await git("ls-remote", "--heads", remote);
+    // Unknown is not published. Preserve the row on network/authentication failures.
+    if (heads === null) return state;
+    for (const line of heads.split("\n")) {
+      const sha = line.split(/\s+/)[0];
+      if (sha && /^[0-9a-f]{40,64}$/.test(sha)) advertised.add(sha);
+    }
+  }
+  const checked = advertised.size ? await gitInput(["cat-file", "--batch-check=%(objectname) %(objecttype)"], [...advertised].join("\n") + "\n") : "";
+  if (checked === null) return state;
+  const live = checked.split("\n").flatMap(line => line.endsWith(" commit") ? [line.split(" ")[0]] : []);
+  // Only live heads: stale tracking refs can hide work after a remote force-push.
+  const unpushed = await git("log", "--format=%ct", head, "--not", ...live);
   if (unpushed !== null) {
     const times = unpushed.split("\n").filter(Boolean).map(Number);
     state.unpushed = times.length;
-    if (times.length) state.oldestUnpushedAgeMs = now - Math.min(...times) * 1000;
+    if (times.length) state.oldestUnpushedAgeMs = Math.max(0, now - Math.min(...times) * 1000);
   }
-  return state;
+  return await git("rev-parse", "HEAD") === head ? state : null;
 }
 
 const execFileAsync = promisify(execFile);
@@ -2842,6 +2896,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     refreshRowRisk(ctx);
     releaseLapsedPostDeadline(ctx);
     announceGates(ctx);
+    void refreshPush(ctx);
   };
   pi.on("session_start", loadAndRefresh);
   pi.on("session_switch", loadAndRefresh);
@@ -4446,10 +4501,19 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (isCorrectionInput(event.text, event.source)) sprintState = { ...sprintState, correctionPending: true };
   });
   let gitStateCache: { cwd: string; at: number; state: GitIntegrationState | null } | null = null;
+  let mergeStateCache: { cwd: string; at: number; state: GitIntegrationState | null } | null = null;
+  const refreshMerge = async (ctx: ExtensionContext, now: number) => {
+    const state = await readGitIntegrationState(ctx.cwd, now, process.env, false);
+    mergeStateCache = { cwd: ctx.cwd, at: now, state };
+    return state;
+  };
   const lastChiefHead = new Map<string, string>();
   let gitStatePending: { cwd: string; promise: Promise<GitIntegrationState | null> } | null = null;
   const gitState = async (ctx: ExtensionContext, now: number, force = false): Promise<GitIntegrationState | null> => {
-    if (!force && gitStateCache?.cwd === ctx.cwd && now - gitStateCache.at <= 15_000) return gitStateCache.state;
+    if (!force && gitStateCache?.cwd === ctx.cwd && now - gitStateCache.at <= PUSH_POLL_MS) {
+      const state = gitStateCache.state;
+      return state?.oldestUnpushedAgeMs === undefined ? state : { ...state, oldestUnpushedAgeMs: state.oldestUnpushedAgeMs + now - gitStateCache.at };
+    }
     if (gitStatePending?.cwd === ctx.cwd) return gitStatePending.promise;
     const pending = { cwd: ctx.cwd, promise: readGitIntegrationState(ctx.cwd, now) };
     gitStatePending = pending;
@@ -4461,12 +4525,45 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (gitStatePending === pending) gitStatePending = null;
     }
   };
+  const refreshPush = async (ctx: ExtensionContext, force = false) => {
+    if (singleWriterLane || !isMain(ctx)) return;
+    const session = AgentRegistry.global().list().find(ref => ref.kind === "main"
+      && ref.session?.sessionManager === ctx.sessionManager)?.session;
+    if (!session) return;
+    const state = await gitState(ctx, Date.now(), force);
+    ctx.ui?.setStatus?.("todo-unpushed", state?.unpushed === undefined ? undefined
+      : state.unpushed ? `${state.unpushed} unpushed · oldest ${Math.floor((state.oldestUnpushedAgeMs ?? 0) / 60_000)}m` : undefined);
+    if (state?.unpushed === undefined || !state.pushBranch) return;
+    if (state.unpushed === 0) {
+      const key = noticeKey("todo-unpushed", `${ctx.cwd}:${pushRowTitle(state)}`);
+      if (sprintState.lastNotices[key]) {
+        const { [key]: _cleared, ...rest } = sprintState.lastNotices;
+        sprintState = { ...sprintState, lastNotices: rest };
+        persistSprintState();
+      }
+    }
+    const phases = todoPhases(ctx);
+    const next = reconcilePushRow(phases, state, ctx.cwd, Date.now());
+    if (next !== phases) {
+      // Use the owning session's canonical live-cache + durable-entry writer.
+      session.commitTodoPhases(next);
+      cachedDecision = null;
+    }
+    if (state.unpushed && (state.oldestUnpushedAgeMs ?? 0) >= (state.pushThresholdMs ?? STALE_PUSH_MS)) {
+      const row = pushRowTitle(state);
+      sendHarnessNotice("todo-unpushed", `${ctx.cwd}:${row}`, prompt.render(unpushedInstructions, {
+        count: state.unpushed, minutes: Math.floor((state.oldestUnpushedAgeMs ?? 0) / 60_000), row,
+      }).trim(), { head: state.head, cwd: ctx.cwd }, row, { triggerTurn: ctx.isIdle?.() === true });
+    }
+  };
   const resolvedMerge = (state: GitIntegrationState | null) =>
     state?.mergeHead !== undefined && state.unmerged === 0 && (state.mergeAgeMs ?? 0) >= STALE_MERGE_MS ? state : null;
-  const integrationRequirement = (ctx: ExtensionContext, goalActive: boolean, now: number) => {
+  const integrationRequirement = (ctx: ExtensionContext, _goalActive: boolean, now: number) => {
     // This host callback is synchronous. Never run a child process here or use
     // expired advice; context/tool admission refreshes the canonical snapshot.
-    const state = gitStateCache?.cwd === ctx.cwd && now - gitStateCache.at <= 15_000 ? gitStateCache.state : null;
+    const push = gitStateCache?.cwd === ctx.cwd && now - gitStateCache.at <= PUSH_POLL_MS ? gitStateCache.state : null;
+    const mergeState = mergeStateCache?.cwd === ctx.cwd && now - mergeStateCache.at <= 15_000 ? mergeStateCache.state : null;
+    const state = mergeState ? { ...(push?.head === mergeState.head ? push : {}), ...mergeState } : push;
     const merge = resolvedMerge(state);
     if (state?.mergeHead) sendHarnessNotice("todo-gate-merge", state.mergeHead, prompt.render(gateNoticeInstructions, { merge: true, head: state.mergeHead }).trim());
     if (merge) {
@@ -4486,7 +4583,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }],
       };
     }
-    if (goalActive && state && !state.mergeHead && (state.unpushed ?? 0) > 0 && (state.oldestUnpushedAgeMs ?? 0) >= STALE_PUSH_MS) {
+    if (state && !state.mergeHead && (state.unpushed ?? 0) > 0 && (state.oldestUnpushedAgeMs ?? 0) >= (state.pushThresholdMs ?? STALE_PUSH_MS)) {
       const minutes = Math.round((state.oldestUnpushedAgeMs ?? 0) / 60_000);
       gateTrace(ctx, "push-demand", { unpushed: state.unpushed, minutes });
       return {
@@ -4866,7 +4963,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       : "";
   };
   const integrationFacts = async (ctx: ExtensionContext, now: number) => {
-    const state = await gitState(ctx, now, true);
+    void refreshPush(ctx);
+    const local = await refreshMerge(ctx, now);
+    const pushed = gitStateCache?.cwd === ctx.cwd && gitStateCache.state?.head === local?.head ? gitStateCache.state : null;
+    const state = local ? { ...pushed, ...local } : pushed;
     const lines: string[] = [];
     const sessionId = ctx.sessionManager.getHeader?.()?.id ?? "unknown";
     const headKey = `${ctx.cwd}\0${sessionId}`;
@@ -5381,7 +5481,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       // A checkout path can contain "rebase" or "merge" without assigning merge work.
       const mergeItems = taskItems(event.input).filter((item) => MERGE_WORK.test(`${item.name ?? ""} ${item.task ?? ""}`));
       const mergeWork = event.toolName === "task" ? mergeItems.length > 0 : MERGE_WORK.test(text);
-      const integration = mergeWork && adds ? await gitState(ctx, Date.now(), true) : null;
+      const integration = mergeWork && adds ? await readGitIntegrationState(ctx.cwd, Date.now(), process.env, false) : null;
       const merge = adds && !/\bcommit/i.test(text) ? resolvedMerge(integration) : null;
       const open = event.toolName === "task" ? integration : null;
       if (open?.mergeHead && !merge) {
@@ -5948,6 +6048,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (pauseGate?.paused) return planTrace(ctx, "pause-gate");
       if (!isMain(ctx)) return planTrace(ctx, "not-main");
       if (!pi.getActiveTools().includes("task")) return planTrace(ctx, "task-tool-inactive");
+      if (!gateSwitchedOff(ctx)) await refreshPush(ctx);
       await refreshLiveWorkerModels(ctx);
       if (!gateSwitchedOff(ctx)) absenceTick(ctx, Date.now());
       const check = await planCheck(ctx, [], true);
@@ -6023,6 +6124,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
   };
   pi.on("tool_result", async (event, ctx) => {
+    if (event.toolName === "todo" && !event.isError) await refreshPush(ctx, true);
     if (previewConfig(ctx).enabled && isMain(ctx)) {
       if (event.toolName === "todo" && !event.isError) {
         const exception = previewReason(event.input);
@@ -6308,7 +6410,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // Context shaping is append-only: all model-facing reminders are persisted at turn end.
   pi.on("context", async (event, ctx) => {
     await refreshLiveWorkerModels(ctx);
-    if (!singleWriterLane && isMain(ctx)) await gitState(ctx, Date.now(), true);
+    if (!singleWriterLane && isMain(ctx)) { await refreshMerge(ctx, Date.now()); await refreshPush(ctx); }
     if (!singleWriterLane && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) currentDecision(ctx);
     // Startup warnings may have been queued before child restoration. Revalidate at consumption.
     const isStaffing = message => message.role === "custom" && message.customType === "todo-gate-staffing";
