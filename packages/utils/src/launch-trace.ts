@@ -144,13 +144,14 @@ export function launchStep<T, A extends unknown[]>(name: string, fn: (...args: A
 	const started = performance.now();
 	let syncPrefixMs = 0;
 	const finish = () => {
-		phase.end = performance.now();
+		const ended = performance.now();
 		if (pendingPhases.delete(phase)) {
+			phase.end = ended;
 			if (completedPhases.length === maxSpans) completedPhases.shift();
 			completedPhases.push(phase);
 		}
 		if (trace.closed) return;
-		recordSpan(trace, label, phase.end - started, syncPrefixMs);
+		recordSpan(trace, label, ended - started, syncPrefixMs);
 	};
 	const depth = (storage.getStore()?.depth ?? 0) + 1;
 	const phase: PendingPhase = { trace, name: label, start: started, end: Number.POSITIVE_INFINITY, depth };
