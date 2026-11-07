@@ -72,7 +72,7 @@ for (const {
 					dependencies: [],
 					review: "user",
 					reviewPagePending: true,
-					attemptHistory: [{ workerName: "Earlier", terminalStatus: "completed", finishedAt: 2 }],
+					attemptHistory: [{ workerName: "Earlier", terminalStatus: "completed", finishedAt: 2, finalReportParagraph: "Previous delivery is ready for speculative review" }],
 				},
 			})),
 		);
@@ -122,4 +122,22 @@ test("read-only audits leave frozen review metadata and task arguments untouched
 	const result = await h.hooks.get("tool_call")({ type: "tool_call", toolName: "task", input }, h.ctx);
 	expect(h.patches).toEqual([]);
 	expect(result?.input).toBeUndefined();
+});
+
+test("registered dispatch refuses a retry without findings and attaches the previous same-row receipt", async () => {
+	const row = { content: "PushFitCamera", status: "pending", schedule: {
+		dependencies: [], executor: { workerId: "PushFitCamera-10", finishedAt: 20, outcome: "failed" },
+	} };
+	const h = await harness([row]);
+	const input = { agent: "task", row: row.content, task: "Fix and oracle are missing" };
+	const dispatch = () => h.hooks.get("tool_call")({ type: "tool_call", toolName: "task", input }, h.ctx);
+	expect((await dispatch()).reason).toContain("no previous attempt findings");
+	row.schedule.attemptHistory = [{ attemptId: "10", workerName: "PushFitCamera-10", finishedAt: 20,
+		terminalStatus: "failed", finalReportParagraph: "Fix and oracle already exist on cae9987d0; screenshot failed", rejectionReason: "camera clipped" }];
+	row.blocker = "Which camera target?";
+	const result = await dispatch();
+	expect(result?.block).not.toBe(true);
+	expect(result.input.task).toContain("cae9987d0");
+	expect(result.input.task).toContain("camera clipped");
+	expect(result.input.task).toContain("Which camera target?");
 });

@@ -227,7 +227,7 @@ test("attempt two dispatches speculatively with a queued handoff, then honors co
   const phases = [{ name: "Work", tasks: [{
     content: "Implement header navigation",
     status: "pending",
-    schedule: { decision: "owner", owner: "NavWorker", dependencies: [], attemptHistory: [{ attemptId: "1", terminalStatus: "completed" }] },
+    schedule: { decision: "owner", owner: "NavWorker", dependencies: [], attemptHistory: [{ attemptId: "1", terminalStatus: "completed", finalReportParagraph: "Navigation delivered; await owner review" }] },
   }] }];
   const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
   const beforeHandoff = { tasks: [{ agent: "Coder", task: "Implement header navigation" }] };
@@ -375,7 +375,7 @@ test("negated review words do not authorize publication or abandon dependent wor
 
 test("handed-off attempt can continue speculatively while the customer is absent", async () => {
 	const phases = reviewPlan();
-	phases[0].tasks[0].schedule.attemptHistory = [{ attemptId: "1", terminalStatus: "completed" }];
+	phases[0].tasks[0].schedule.attemptHistory = [{ attemptId: "1", terminalStatus: "completed", finalReportParagraph: "Delivered UI; owner review pending" }];
 	const harness = await reviewHookHarness(phases, {
 		running: [
 			{ id: "Docs", agentId: "Docs", type: "task", status: "running", label: "Independent docs", startTime: now },
@@ -699,7 +699,10 @@ test("DC audit dispatch survives all five refused calls and the intervening reme
 				label: row.content,
 				startTime: now,
 			}));
-		const harness = await reviewHookHarness(capture.phases, { running, recent: [], nonJobAgents: [] });
+		const phases = structuredClone(capture.phases);
+        for (const row of phases.flatMap(phase => phase.tasks))
+          if (targets.has(row.content)) row.schedule = { ...row.schedule, progress: { evidence: "Replay fixture: previous delivery needs verification" } };
+        const harness = await reviewHookHarness(phases, { running, recent: [], nonJobAgents: [] });
 		const result = await harness.handlers.get("tool_call")(
 			{ toolName: "task", input: structuredClone(capture.input) },
 			harness.ctx,
@@ -758,14 +761,17 @@ test("DC handoff refusals admit product workers without a review-page round trip
   }
 });
 
-test("aborted and failed workers with only a report path retry without handoff", async () => {
+test("aborted and failed workers need receipt findings before retry, without demanding handoff", async () => {
   for (const terminalStatus of ["aborted", "failed"]) {
     const row = { content: "Move closer frames a single rack large enough (12)", status: "pending", schedule: {
       dependencies: [], attemptHistory: [{ attemptId: "FrameSingleRackOnMoveCloser:1793895220647", terminalStatus,
         deliverablePaths: ["/home/kom/.omp/agent/sessions/dc/FrameSingleRackOnMoveCloser.md"] }],
     } };
     const harness = await reviewHookHarness([{ name: "Work", tasks: [row] }], { running: [], recent: [], nonJobAgents: [] });
-    expect((await harness.handlers.get("tool_call")({ toolName: "task", input: { tasks: [{ agent: "ui-coder", task: row.content }] } }, harness.ctx))?.block).not.toBe(true);
+    const dispatch = () => harness.handlers.get("tool_call")({ toolName: "task", input: { tasks: [{ agent: "ui-coder", task: row.content }] } }, harness.ctx);
+    expect((await dispatch())?.reason).toContain("no previous attempt findings");
+    row.schedule.attemptHistory[0].finalReportParagraph = "Camera fix exists; screenshot oracle remains open";
+    expect((await dispatch())?.block).not.toBe(true);
     expect(harness.phases()[0].tasks[0].schedule.review).toBeUndefined();
     expect(harness.phases()[0].tasks[0].schedule.reviewPagePending).toBeUndefined();
   }
@@ -826,7 +832,7 @@ test("runtime completion queues one delivery critic before the batch and clean r
 });
 
 for (const answered of [false, true]) test(`restaffing does not request review for ${answered ? "answered product content" : "an owner-specified cosmetic fix"}`, async () => {
- const row = { content: "Power source rows: remove red frame", status: "pending", schedule: { owner: "FrameWorker", dependencies: [], attemptHistory: [{ attemptId: "1", terminalStatus: "completed" }], ...(answered ? { decision: "owner", reviewAnswers: ["page/card/hash/accept"] } : {}) } };
+ const row = { content: "Power source rows: remove red frame", status: "pending", schedule: { owner: "FrameWorker", dependencies: [], attemptHistory: [{ attemptId: "1", terminalStatus: "completed", finalReportParagraph: "Navigation delivered; await owner review" }], ...(answered ? { decision: "owner", reviewAnswers: ["page/card/hash/accept"] } : {}) } };
  const h = await reviewHookHarness([{ name: "Work", tasks: [row] }], { running: [], recent: [], nonJobAgents: [] });
  await h.handlers.get("tool_call")({ toolName: "task", input: { tasks: [{ agent: "Coder", task: row.content }] } }, h.ctx);
  expect(h.phases()[0].tasks[0].schedule.review).toBeUndefined();

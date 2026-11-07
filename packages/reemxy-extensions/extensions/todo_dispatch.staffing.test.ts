@@ -51,6 +51,7 @@ const failed = {
 	status: "in_progress",
 	schedule: {
 		owner: "ContinentalSnail",
+		progress: { evidence: "Previous frame attempt failed; repair remains open" },
 		dependencies: [],
 		executor: { workerId: "ContinentalSnail", startedAt: 1, finishedAt: 2, outcome: "failed" },
 	},
@@ -132,7 +133,9 @@ test("turn_start keeps three restored row owners working despite stale failed ex
 });
 
 test("task refuses a restored live row owner and admits replacement only after the owner stops", async () => {
-	const h = await harness([structuredClone(failed)]);
+	const row = structuredClone(failed);
+	row.schedule.progress = { evidence: "Worker failed; power source frame remains open" };
+	const h = await harness([row]);
 	let live = true;
 	h.ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [], nonJobAgents: [{ id: failed.schedule.owner, live }] });
 	const invoke = input => h.hooks.get("tool_call")({ toolName: "task", input }, h.ctx);
