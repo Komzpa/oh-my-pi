@@ -973,6 +973,7 @@ test("restored roster excludes settled children but keeps parked children separa
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
       handlers.set(event, handler),
     getActiveTools: () => ["task"],
+    appendEntry: () => undefined,
     pi: extensionSdk,
   } as unknown as ExtensionAPI);
   const ctx = {
@@ -1002,6 +1003,7 @@ test("restored roster drops children unknown to the current process after restar
   await todoDispatch({
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
     getActiveTools: () => ["task"],
+    appendEntry: () => undefined,
     pi: extensionSdk,
   } as unknown as ExtensionAPI);
   const ctx = {
@@ -1045,6 +1047,7 @@ test("first-context 13-row dispatch becomes observation-only when paused", async
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
       handlers.set(event, handler),
     getActiveTools: () => ["task"],
+    appendEntry: () => undefined,
     registerSoftToolRequirementProvider: () => undefined,
     pi: {
       ...extensionSdk,
@@ -1134,6 +1137,7 @@ test("agent_end and shutdown persist child IDs but drop stale IDs on an empty-sn
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
       resumedHandlers.set(event, handler),
     getActiveTools: () => ["task"],
+    appendEntry: () => undefined,
     pi: extensionSdk,
   } as unknown as ExtensionAPI);
   const resumedCtx = { ...ctx, getAsyncJobSnapshot: () => emptyJobs } as ExtensionContext;
@@ -1161,6 +1165,7 @@ test("an unchanged open plan retains history alongside the current supervisor on
     on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) =>
       handlers.set(event, handler),
     getActiveTools: () => ["task"],
+    appendEntry: () => undefined,
     pi: extensionSdk,
   } as unknown as ExtensionAPI);
   const ctx = {
