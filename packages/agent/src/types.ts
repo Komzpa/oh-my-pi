@@ -245,7 +245,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * })
 	 * ```
 	 */
-	convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	convertToLlm: (messages: AgentMessage[], model?: Model) => Message[] | Promise<Message[]>;
 
 	/**
 	 * Optional transform applied to the context before `convertToLlm`.
@@ -1045,6 +1045,8 @@ export interface AgentState {
 }
 
 export interface AgentToolResult<T = any, _TInput = unknown> {
+	/** Trusted local runtime instruction; never derive this from external tool text or isError. */
+	harnessNotice?: string;
 	// Content blocks supporting text and images
 	content: (TextContent | ImageContent)[];
 	// Details to be displayed in a UI or logged

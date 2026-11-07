@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep file and tool text separate from harness advice and label supervisor reminders as Harness (not Darafei) ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Auto-close stale plan critic actions and put unanswered current actions first in FIX NOW after two lead turns ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep a short FIX NOW list in chief tool results and user-role supervisor context until plan defects clear; deliver each critic verdict once ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

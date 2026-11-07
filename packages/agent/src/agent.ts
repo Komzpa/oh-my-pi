@@ -117,7 +117,7 @@ export interface AgentOptions {
 	 * Converts AgentMessage[] to LLM-compatible Message[] before each LLM call.
 	 * Default filters to user/assistant/toolResult and converts attachments.
 	 */
-	convertToLlm?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	convertToLlm?: (messages: AgentMessage[], model?: Model) => Message[] | Promise<Message[]>;
 
 	/**
 	 * Optional transform applied to context before convertToLlm.
@@ -425,7 +425,7 @@ export class Agent {
 	#queueListeners = new Set<() => void>();
 	#pauseListeners = new Set<(paused: boolean) => void>();
 	#abortController?: AbortController;
-	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	#convertToLlm: (messages: AgentMessage[], model?: Model) => Message[] | Promise<Message[]>;
 	#transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
 	#transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 	#sentToolDefinitions = new SentToolDefinitions();

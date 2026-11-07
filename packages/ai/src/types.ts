@@ -908,6 +908,8 @@ export interface TextSignatureV1 {
 }
 
 export interface TextContent {
+	/** Trusted harness-authored fragment, never inferred from tool text. */
+	harnessNotice?: true | "record";
 	type: "text";
 	text: string;
 	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
@@ -1403,6 +1405,8 @@ export interface AssistantMessage {
 }
 
 export interface ToolResultMessage<TDetails = unknown> {
+	/** Explicit refusal instruction supplied by the runtime, separate from external output. */
+	harnessNotice?: string;
 	role: "toolResult";
 	toolCallId: string;
 	toolName: string;

@@ -900,14 +900,14 @@ export interface RpcHostToolCancelRequest {
 export interface RpcHostToolUpdate {
 	type: "host_tool_update";
 	id: string;
-	partialResult: AgentToolResult<unknown>;
+	partialResult: Omit<AgentToolResult<unknown>, "harnessNotice">;
 }
 
 /** Sent by the host to complete a pending tool call. */
 export interface RpcHostToolResult {
 	type: "host_tool_result";
 	id: string;
-	result: AgentToolResult<unknown>;
+	result: Omit<AgentToolResult<unknown>, "harnessNotice">;
 	isError?: boolean;
 }
 

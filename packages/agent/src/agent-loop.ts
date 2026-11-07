@@ -640,6 +640,7 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 			content,
 			details,
 			providerMetadata,
+			...(typeof rawObj?.harnessNotice === "string" ? { harnessNotice: rawObj.harnessNotice } : {}),
 			...(isError ? { isError: true } : {}),
 			...(useless && !isError ? { useless: true } : {}),
 		},
@@ -1989,7 +1990,10 @@ function openLiveSteering(
 			const transformed = config.transformContext
 				? await config.transformContext(messages, bound(signal))
 				: messages;
-			const converted = normalizeMessagesForProvider(await config.convertToLlm(transformed), prepared.model);
+			const converted = normalizeMessagesForProvider(
+				await config.convertToLlm(transformed, prepared.model),
+				prepared.model,
+			);
 			const userMessages: UserMessage[] = [];
 			for (const message of converted) {
 				if (message.role !== "user") return undefined;
@@ -2039,7 +2043,7 @@ async function prepareProviderCall(
 		messages = await config.transformContext(messages, signal);
 	}
 
-	const llmMessages = await config.convertToLlm(messages);
+	const llmMessages = await config.convertToLlm(messages, model);
 	const normalizedMessages = normalizeMessagesForProvider(llmMessages, model);
 	const ownedDialect: Dialect | undefined =
 		(config.getDialect ? config.getDialect(model) : config.dialect) ?? resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT);
@@ -3582,6 +3586,7 @@ async function executeToolCalls(
 			content: result.content,
 			details: result.details,
 			providerMetadata: result.providerMetadata,
+			...(result.harnessNotice !== undefined ? { harnessNotice: result.harnessNotice } : {}),
 			isError,
 			...(result.useless && !isError ? { useless: true } : {}),
 			timestamp: Date.now(),
@@ -3777,6 +3782,7 @@ async function executeToolCalls(
 				result = {
 					content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
 					details: {},
+					...(e instanceof ToolCallBlockedError ? { harnessNotice: e.message } : {}),
 				};
 				isError = true;
 			}
@@ -3805,6 +3811,7 @@ async function executeToolCalls(
 							isError: after.isError ?? result.isError,
 							providerMetadata: after.providerMetadata ?? result.providerMetadata,
 							useless: after.useless ?? result.useless,
+							harnessNotice: result.harnessNotice,
 						});
 						result = coerced.result;
 						isError = coerced.malformed || (after.isError ?? isError);
@@ -4111,6 +4118,7 @@ export function createSyntheticToolResultMessage(
 		toolName: toolCall.name,
 		content: [{ type: "text", text: errorMessage ? `${message}: ${errorMessage}` : `${message}.` }],
 		details,
+		harnessNotice: message,
 		isError: true,
 		timestamp: Date.now(),
 	};
@@ -4188,11 +4196,13 @@ function createSkippedToolResult(
 		reason = "a queued background completion (job or supervised process)";
 		blocker = "completion notice";
 	}
+	const message = `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`;
 	return {
+		harnessNotice: message,
 		content: [
 			{
 				type: "text",
-				text: `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`,
+				text: message,
 			},
 		],
 		details: executionStarted
