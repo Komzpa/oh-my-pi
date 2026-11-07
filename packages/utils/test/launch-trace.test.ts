@@ -1,10 +1,17 @@
 import { afterEach, expect, spyOn, test, vi } from "bun:test";
-import { finishLaunchTrace, launchMetric, launchStep, runLaunchTrace } from "../src/launch-trace";
+import {
+	finishLaunchTrace,
+	launchMetric,
+	launchStep,
+	runLaunchTrace,
+	takeLaunchPhaseCandidates,
+} from "../src/launch-trace";
 import * as logger from "../src/logger";
 import { currentLoopPhase } from "../src/loop-phase";
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	takeLaunchPhaseCandidates(Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY);
 });
 function capture() {
 	return spyOn(logger, "debug").mockImplementation(() => {});
@@ -137,4 +144,22 @@ test("slow warnings retain late bottlenecks beyond the name cap and aggregate re
 	]);
 	expect(logs.mock.calls[0]?.[1]?.spans).toHaveLength(256);
 	expect(logs.mock.calls[0]?.[1]?.overflow).toBe(3);
+});
+
+test("awaited extension work supplies bounded overlap candidates without claiming CPU attribution", async () => {
+	capture();
+	let now = 0;
+	spyOn(performance, "now").mockImplementation(() => now);
+	await runLaunchTrace({ id: "delayed" }, () =>
+		launchStep("sdkCreate", () =>
+			launchStep("extension.init:delayed", async () => {
+				await Promise.resolve();
+				now = 350;
+				expect(currentLoopPhase()).toBeUndefined();
+				expect(takeLaunchPhaseCandidates(250, 350)).toEqual(["extension.init:delayed", "sdkCreate"]);
+			}),
+		),
+	);
+	expect(takeLaunchPhaseCandidates(250, 350)).toEqual(["extension.init:delayed", "sdkCreate"]);
+	expect(takeLaunchPhaseCandidates(350, 700)).toEqual([]);
 });
