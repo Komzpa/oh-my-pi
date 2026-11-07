@@ -148,6 +148,51 @@ afterEach(() => {
 });
 
 describe("structured subagent primitive", () => {
+	it("lets a read-only QA row execute commands without granting edits or writer claims", async () => {
+		mockDiscovery({ ...AGENT, tools: ["read", "bash", "browser", "write", "edit", "ast_edit", "task"], spawns: "*" });
+		const parent = session();
+		parent.getToolByName = name =>
+			name === "browser"
+				? {
+						name,
+						label: "Browser",
+						description: "QA existing preview",
+						parameters: { type: "object", properties: {} },
+						execute: async () => ({ content: [{ type: "text", text: "preview inspected" }] }),
+					}
+				: undefined;
+		parent.getTodoPhases = () => [
+			{ name: "QA", tasks: [{ content: "Probe", status: "pending", schedule: { readOnly: true } }] },
+		];
+		const events: BeforeSubagentSpawnEvent[] = [];
+		parent.emitBeforeSubagentSpawn = async event => {
+			events.push(event);
+		};
+		const run = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(result());
+		await runStructuredSubagent(
+			request({ session: parent, assignment: "Probe: run pwd and git rev-parse --short HEAD" }),
+		);
+		expect(run.mock.calls[0]?.[0].agent.tools).toEqual(["read", "bash", "browser"]);
+		expect(run.mock.calls[0]?.[0].agent.spawns).toBeUndefined();
+		expect(events[0]?.readOnly).toBe(true);
+		const browser = run.mock.calls[0]?.[0].customTools?.find(tool => tool.name === "browser");
+		expect(await browser?.execute("qa", {}, undefined, undefined!)).toEqual({
+			content: [{ type: "text", text: "preview inspected" }],
+		});
+	});
+
+	it("preserves bundled scout tools and grants default task bash on explicit readOnly", async () => {
+		const scout = getBundledAgent("scout")!;
+		mockDiscovery(scout);
+		const scoutPolicy = await resolveEffectiveSubagentPolicy(request({ agent: "scout", readOnly: true }));
+		expect(scoutPolicy.effectiveAgent.tools).toEqual(scout.tools);
+		expect(scoutPolicy.effectiveAgent.tools).not.toContain("bash");
+		mockDiscovery({ ...AGENT, tools: undefined });
+		const defaultPolicy = await resolveEffectiveSubagentPolicy(request({ readOnly: true }));
+		expect(defaultPolicy.effectiveAgent.tools).toContain("bash");
+		expect(defaultPolicy.effectiveAgent.tools).not.toContain("write");
+	});
+
 	it("ordinary to strong dispatch resolves the selected family and never authenticates via parent Luna", async () => {
 		const models = ["gpt-6-luna", "gpt-6.1-sol"].map(id =>
 			buildModel({

@@ -27,6 +27,7 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { createSessionDefaults } from "../helpers/session-defaults";
 import { manyToolName } from "../fixtures/many-tools-mcp";
@@ -124,7 +125,33 @@ function createModelRegistry(
 
 describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 	afterEach(() => {
+		AgentRegistry.resetGlobalForTests();
 		vi.restoreAllMocks();
+	});
+
+	it("fails a read-only shell worker that changes a tracked file even after successful yield", async () => {
+		const cwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "readonly-shell-"));
+		try {
+			await Bun.$`git init -q ${cwd}`.quiet();
+			await Bun.write(path.join(cwd, "tracked.txt"), "original");
+			await Bun.$`git -C ${cwd} add tracked.txt`.quiet();
+			const session = createMockSession(async ({ emit }) => {
+				await Bun.$`printf changed > ${path.join(cwd, "tracked.txt")}`.quiet();
+				emitYield(emit);
+			});
+			vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+			const failed = await runSubprocess({
+				...baseOptions,
+				cwd,
+				id: "read-only-mutation",
+				agent: { ...baseAgent, readOnly: true, tools: ["bash", "yield"] },
+			});
+			expect(failed.exitCode).toBe(1);
+			expect(failed.error).toContain("Read-only worker failed: tracked checkout changed");
+			expect(failed.error).toContain("inspect git diff/status");
+		} finally {
+			await fs.promises.rm(cwd, { recursive: true, force: true });
+		}
 	});
 
 	it("forwards rules, extension-root policy, prepared extensions, and preloaded source paths to createAgentSession", async () => {
@@ -575,6 +602,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 
 describe("runSubprocess per-agent compaction threshold overrides", () => {
 	afterEach(() => {
+		AgentRegistry.resetGlobalForTests();
 		vi.restoreAllMocks();
 	});
 
@@ -616,6 +644,7 @@ describe("runSubprocess per-agent compaction threshold overrides", () => {
 
 describe("runSubprocess per-agent service-tier overrides", () => {
 	afterEach(() => {
+		AgentRegistry.resetGlobalForTests();
 		vi.restoreAllMocks();
 	});
 

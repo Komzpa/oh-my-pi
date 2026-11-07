@@ -353,6 +353,8 @@ export function canSpawnAtDepth(maxRecursionDepth: number, taskDepth: number): b
 
 /** Agent definition (bundled or discovered) */
 export interface AgentDefinition {
+	/** Effective dispatch contract; independent of shell/browser capabilities. */
+	readOnly?: boolean;
 	name: string;
 	description: string;
 	systemPrompt: string;

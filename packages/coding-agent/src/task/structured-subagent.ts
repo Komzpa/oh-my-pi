@@ -1,4 +1,4 @@
-import { isReadOnlyAgent, isReadOnlyWorkerRole, READ_ONLY_TOOL_NAMES } from "./read-only-policy";
+import { isReadOnlyAgent, isReadOnlyWorkerRole, readOnlyWorkerTools } from "./read-only-policy";
 /**
  * Shared policy resolution and execution for task and eval subagents.
  *
@@ -40,7 +40,7 @@ import isolationRecoveryHintTemplate from "../prompts/tools/isolation-recovery-h
 import salvagedChildHintTemplate from "../prompts/tools/salvaged-child-hint.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { AUTO_THINKING, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
-import type { ToolSession } from "../tools";
+import { BUILTIN_TOOLS, type ToolSession } from "../tools";
 import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";
@@ -578,11 +578,27 @@ export async function resolveEffectiveSubagentPolicy(
 		row?.schedule?.readOnly === true ||
 		isReadOnlyWorkerRole(row?.schedule?.agentProfile ?? "") ||
 		isReadOnlyWorkerRole(agentName);
-	if ((readOnly || isReadOnlyAgent(agent)) && request.customTools?.length)
+	if (
+		(readOnly || isReadOnlyAgent(agent)) &&
+		request.customTools?.some(tool => !["browser", "puppeteer"].includes(tool.name))
+	)
 		throw new StructuredSubagentError("preflight", "Read-only dispatch cannot use custom tools.");
 	const baseAgent = planMode ? createPlanModeAgent(agent) : agent;
 	const effectiveAgent = readOnly
-		? { ...baseAgent, tools: [...READ_ONLY_TOOL_NAMES], spawns: undefined, prewalk: undefined }
+		? {
+				...baseAgent,
+				readOnly: true,
+				tools: readOnlyWorkerTools(
+					baseAgent.tools ?? [
+						...Object.keys(BUILTIN_TOOLS),
+						"yield",
+						...(request.customTools?.map(tool => tool.name) ?? []),
+						...["browser", "puppeteer"].filter(name => request.session.getToolByName?.(name)),
+					],
+				),
+				spawns: undefined,
+				prewalk: undefined,
+			}
 		: baseAgent;
 	// An agent declaring `structured: true` keeps its result contract when the caller opts out (`task.structured` off).
 	const structured = request.structured !== false || effectiveAgent.structured === true;
@@ -815,6 +831,22 @@ function buildExecutorOptions(
 		policy.planMode ||
 		isReadOnlyAgent(policy.effectiveAgent) ||
 		session.restrictToolNames === true;
+	const customTools = [...(request.customTools ?? [])];
+	if (isReadOnlyAgent(policy.effectiveAgent)) {
+		for (const name of policy.effectiveAgent.tools ?? []) {
+			if (!["browser", "puppeteer"].includes(name) || customTools.some(tool => tool.name === name)) continue;
+			const tool = session.getToolByName?.(name);
+			if (!tool) continue;
+			customTools.push({
+				name,
+				label: tool.label,
+				description: tool.description,
+				parameters: tool.parameters,
+				execute: (id, params, onUpdate, _context, signal) =>
+					tool.execute(id, params, signal, onUpdate, session.getToolContext?.()),
+			});
+		}
+	}
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
 	return {
 		cwd: session.cwd,
@@ -881,7 +913,7 @@ function buildExecutorOptions(
 		mcpManager: enableMCP ? (session.mcpManager ?? MCPManager.instance()) : undefined,
 		mcpToolScope: session.mcpToolScope,
 		enableMCP,
-		customTools: request.customTools,
+		customTools: customTools.length ? customTools : undefined,
 		workPoolYieldItems: request.workPoolYieldItems,
 		contextFiles: session.contextFiles,
 		noContextFiles: session.noContextFiles,
