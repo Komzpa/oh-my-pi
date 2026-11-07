@@ -17,7 +17,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TodoTool, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { formatTodoArchiveSummary, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 function createToolSession(cwd: string, settings: Settings, overrides: Partial<ToolSession> = {}): ToolSession {
@@ -488,18 +488,28 @@ describe("InteractiveMode goal mode integration", () => {
 			{ name: "Current work", tasks: [{ content: "Continue the release", status: "in_progress" }] },
 		]);
 
+		// Handoff consumes a persisted archive; blocking unrelated work does not
+		// trigger archival or change the native closed-row retention policy.
+		const phases = harness.session.getTodoPhases();
+		harness.session.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			edit: {
+				v: 1,
+				kind: "archive",
+				at: now,
+				archivedPhases: phases.filter(phase => phase.name === "Finished work"),
+			},
+		});
+		harness.session.setTodoPhases(phases.filter(phase => phase.name === "Current work"));
 		const todo = new TodoTool({
 			...harness.toolSession,
 			sessionManager: harness.session.sessionManager,
 		});
-		const result = await todo.execute("archive-current-plan", {
+		const result = await todo.execute("block-current-plan", {
 			op: "block",
 			task: "Continue the release",
 			reason: "Waiting for release approval",
 		});
-		const archiveEdit = result.details?.edit;
-		if (!archiveEdit || archiveEdit.kind !== "archive") throw new Error("Expected an archive edit");
-		harness.session.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit: archiveEdit });
+		expect(result.isError).not.toBe(true);
 
 		const requestContents: string[] = [];
 		harness.session.agent.streamFn = (_model, context) => {
@@ -561,10 +571,9 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(requestContent).not.toContain("archive-actual-private");
 		expect(requestContent.match(/<goal_context>/g)).toHaveLength(1);
 		expect(requestContent.match(/<todo_context>/g)).toHaveLength(1);
-		expect(requestContent.match(/^Archive summary: .*$/gm)).toHaveLength(1);
-		expect(requestContent).toContain(
-			`Archive summary: ${summary.count} archived task${summary.count === 1 ? "" : "s"} (${new Date(summary.fromAt).toISOString()} to ${new Date(summary.toAt).toISOString()}).`,
-		);
+		expect(summary).toMatchObject({ count: 1, done: 1, dropped: 0 });
+		const renderedSummary = formatTodoArchiveSummary(summary);
+		expect(requestContent.split(renderedSummary)).toHaveLength(2);
 	});
 
 	it("renders todo context text without raw line/control characters", async () => {
