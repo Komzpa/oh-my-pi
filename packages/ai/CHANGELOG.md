@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed Anthropic thread continuations exceeding the four prompt-cache breakpoint limit after resuming long histories
+
 ## [18.17.0] - 2026-11-06
 
 ### Added
