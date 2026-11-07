@@ -1809,7 +1809,7 @@ function simulateRowRisk(
 	const risk = options.risk!;
 	const key = JSON.stringify([
 		calibrationRatio,
-		nodes.map(node => [node.content, node.status, node.schedule]),
+		nodes.map(node => [node.content, node.status, node.schedule, node.calibrationRatio]),
 		capacity,
 		risk,
 		// The HUD displays minute precision; keypress renders must reuse this simulation.
