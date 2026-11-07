@@ -219,7 +219,10 @@ import {
 	type DateCwdReminderJournal,
 	DateCwdReminderInjector,
 } from "./session/date-cwd-reminder";
-import { createInterruptedToolResults, createSessionInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
+import {
+	createSessionInterruptedToolResults,
+	createSessionInterruptedTurnAbortMessage,
+} from "./session/exit-diagnostics";
 import { recoverInlineSloppyEdit } from "./session/inline-edit-recovery";
 import {
 	type CustomMessage,
@@ -2238,18 +2241,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	// rebuilding runtime context. The helper is idempotent once that record exists.
 	const interruptedTurnAbort = createSessionInterruptedTurnAbortMessage(sessionManager);
 	if (interruptedTurnAbort) {
-		for (const result of createInterruptedToolResults(sessionManager.iterateBranch()))
-			sessionManager.appendMessage(result);
+		for (const result of createSessionInterruptedToolResults(sessionManager)) sessionManager.appendMessage(result);
 		sessionManager.appendMessage(interruptedTurnAbort);
 	}
 	let existingSession = logger.time("loadSessionContext", () =>
 		deobfuscateSessionContext(sessionManager.buildSessionContext(), obfuscator),
 	);
-	let hasExistingSession = false;
-	for (const _entry of sessionManager.iterateBranch()) {
-		hasExistingSession = true;
-		break;
-	}
+	const hasExistingSession = sessionManager.getLeafId() !== null;
 	const hasThinkingEntry =
 		sessionManager.getLatestBranchMatching(metadata => metadata.type === "thinking_level_change") !== undefined;
 	const hasServiceTierEntry =
@@ -3773,7 +3771,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				model: model.id,
 			});
 			if (selectedModelAbort) {
-				for (const result of createInterruptedToolResults(sessionManager.iterateBranch()))
+				for (const result of createSessionInterruptedToolResults(sessionManager))
 					sessionManager.appendMessage(result);
 				sessionManager.appendMessage(selectedModelAbort);
 				existingSession = logger.time("loadRecoveredUserTailContext", () =>

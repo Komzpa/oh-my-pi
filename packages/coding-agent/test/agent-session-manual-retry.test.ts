@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn, vi } from "bun:test";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
@@ -10,7 +10,8 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { SessionEntryIndex, SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { createAssistantMessage } from "./helpers/agent-session-setup";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 function lastAgentMessage(session: AgentSession): AssistantMessage {
@@ -35,6 +36,7 @@ describe("AgentSession manual retry", () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		if (session) {
 			await session.dispose();
 			session = undefined;
@@ -54,7 +56,7 @@ describe("AgentSession manual retry", () => {
 
 		const mock = createMockModel({
 			responses: [
-				{ throw: "manual retry test failure" },
+				{ content: ["partial failed answer"], stopReason: "error", errorMessage: "manual retry test failure" },
 				{ content: ["recovered after manual retry"], stopReason: "stop" },
 			],
 		});
@@ -68,14 +70,26 @@ describe("AgentSession manual retry", () => {
 			},
 			streamFn: mock.stream,
 		});
+		const manager = SessionManager.inMemory();
+		for (let i = 0; i < 300_000; i++) manager.appendMessage(createAssistantMessage("old completed answer"));
+		manager.appendCompaction("old compacted history", "old history", manager.getLeafId()!, 1);
 		session = new AgentSession({
 			agent,
-			sessionManager: SessionManager.inMemory(),
+			sessionManager: manager,
 			settings: Settings.isolated({ "compaction.enabled": false, "retry.enabled": false }),
 			modelRegistry,
 		});
 		session.subscribe(() => {});
 
+		let decoded = 0;
+		const original = SessionEntryIndex.prototype.get;
+		const read = spyOn(SessionEntryIndex.prototype, "get").mockImplementation(
+			function (this: SessionEntryIndex, id, retainIdentity) {
+				read.mockClear();
+				decoded++;
+				return original.call(this, id, retainIdentity);
+			},
+		);
 		await session.prompt("fail once");
 		await session.waitForIdle();
 		expect(lastAgentMessage(session).stopReason).toBe("error");
@@ -83,6 +97,7 @@ describe("AgentSession manual retry", () => {
 		await expect(session.retry()).resolves.toBe(true);
 		await session.waitForIdle();
 
+		expect(decoded).toBeLessThan(100);
 		expect(mock.calls.length).toBe(2);
 		expect(lastAgentMessage(session).stopReason).toBe("stop");
 		expect(lastAgentMessage(session).content).toContainEqual({ type: "text", text: "recovered after manual retry" });

@@ -326,6 +326,27 @@ export function createInterruptedToolResults(
 	return results;
 }
 
+/** Resolve only the interrupted assistant's tail; earlier calls cannot belong to it. */
+export function createSessionInterruptedToolResults(
+	session: Pick<SessionManager, "iterateBranchMatchingNewestFirst" | "getLatestBranchMatching">,
+	context: "process-exit" | "fork" = "process-exit",
+): ToolResultMessage[] {
+	const assistant = session.getLatestBranchMatching(
+		metadata => metadata.type === "message" && metadata.messageRole === "assistant",
+	);
+	if (!assistant) return [];
+	const entries: SessionEntry[] = [];
+	for (const entry of session.iterateBranchMatchingNewestFirst(
+		metadata =>
+			metadata.type === "message" ||
+			(metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE),
+	)) {
+		entries.push(entry);
+		if (entry.id === assistant.id) break;
+	}
+	return createInterruptedToolResults(entries.reverse(), context);
+}
+
 function isToolCallContent(value: unknown): value is ToolCallContent {
 	if (!isObject(value)) return false;
 	return value.type === "toolCall" && (typeof value.name === "string" || typeof value.id === "string");

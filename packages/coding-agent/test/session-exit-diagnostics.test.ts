@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
@@ -13,6 +13,7 @@ import {
 	collectPendingToolCalls,
 	collectSessionPendingToolCalls,
 	createInterruptedToolResults,
+	createSessionInterruptedToolResults,
 	createInterruptedTurnAbortMessage,
 	createSessionInterruptedTurnAbortMessage,
 	describePendingToolCalls,
@@ -23,7 +24,7 @@ import {
 	type ToolExecutionStartData,
 } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
-import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { SessionEntryIndex, SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
 
 const pendingAssistant: AssistantMessage = {
@@ -633,3 +634,35 @@ describe("selective interrupted-turn recovery", () => {
 		},
 	);
 });
+
+it("resume pairs only the latest assistant calls without reading 300k archived payloads", async () => {
+	const manager = SessionManager.inMemory();
+	for (let i = 0; i < 300_000; i++) manager.appendMessage({ role: "user", content: "old", timestamp: 1 });
+	manager.appendMessage(pendingAssistant);
+	manager.appendCustomEntry(TOOL_EXECUTION_START_CUSTOM_TYPE, {
+		toolCallId: "toolu_repro",
+		toolName: "bash",
+		startedAt: "2026-11-07T00:00:00Z",
+	});
+	let decoded = 0;
+	const original = SessionEntryIndex.prototype.get;
+	const read = spyOn(SessionEntryIndex.prototype, "get").mockImplementation(
+		function (this: SessionEntryIndex, id, retainIdentity) {
+			read.mockClear();
+			decoded++;
+			return original.call(this, id, retainIdentity);
+		},
+	);
+	try {
+		for (const context of ["process-exit", "fork"] as const) {
+			const results = createSessionInterruptedToolResults(manager, context);
+			expect(results.map(result => [result.toolCallId, result.toolName, result.isError])).toEqual([
+				["toolu_repro", "bash", true],
+			]);
+		}
+		expect(decoded).toBeLessThan(10);
+	} finally {
+		read.mockRestore();
+		await manager.close();
+	}
+}, 60_000);
