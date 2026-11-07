@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import * as fs from "node:fs";
 import { defaultStateFile } from "./agent_router";
 
 /**
@@ -30,49 +30,93 @@ export function stripThinkingSuffix(spec: string): string {
 	return spec.replace(/:(?:off|minimal|low|medium|high|xhigh|max)$/i, "");
 }
 
-let cache: { file: string; mtimeMs: number; size: number; history: DurationHistory } | undefined;
+let cache:
+	| {
+			file: string;
+			stat: fs.Stats;
+			offset: number;
+			history: DurationHistory;
+	  }
+	| undefined;
 
 /** Read the router journal; a missing or unreadable file is an empty history, never an error. */
 export function readDurationHistory(file: string = defaultStateFile()): DurationHistory {
 	const empty: DurationHistory = { samples: [], spawns: new Map() };
 	try {
-		if (!existsSync(file)) return empty;
-		const stat = statSync(file);
-		if (cache && cache.file === file && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) return cache.history;
-		const history: DurationHistory = { samples: [], spawns: new Map() };
-		for (const line of readFileSync(file, "utf8").split("\n")) {
-			if (!line.trim()) continue;
-			let record: Record<string, unknown>;
-			try {
-				record = JSON.parse(line) as Record<string, unknown>;
-			} catch {
-				continue;
+		const stat = fs.statSync(file);
+		const sameFile = cache?.file === file && cache.stat.dev === stat.dev && cache.stat.ino === stat.ino;
+		if (
+			sameFile &&
+			cache &&
+			cache.stat.mtimeMs === stat.mtimeMs &&
+			cache.stat.size === stat.size &&
+			cache.stat.ctimeMs === stat.ctimeMs
+		)
+			return cache.history;
+		const append = sameFile && cache && stat.size > cache.stat.size;
+		const history: DurationHistory = append ? cache!.history : { samples: [], spawns: new Map() };
+		let offset = append ? cache!.offset : 0;
+		const fd = fs.openSync(file, "r");
+		try {
+			// Only complete records advance the cursor: an in-flight append is replayed next time.
+			const buffer = Buffer.allocUnsafe(64 * 1024);
+			let pending = Buffer.alloc(0);
+			let position = offset;
+			while (position < stat.size) {
+				const count = fs.readSync(fd, buffer, 0, Math.min(buffer.length, stat.size - position), position);
+				if (!count) break;
+				position += count;
+				const chunk = pending.length
+					? Buffer.concat([pending, buffer.subarray(0, count)])
+					: buffer.subarray(0, count);
+				let start = 0;
+				for (let i = 0; i < chunk.length; i++) {
+					if (chunk[i] !== 10) continue;
+					const line = chunk.toString("utf8", start, i);
+					offset += i - start + 1;
+					start = i + 1;
+					consume(line, history);
+				}
+				pending = Buffer.from(chunk.subarray(start));
 			}
-			const role = typeof record.agent === "string" ? record.agent : undefined;
-			const key = typeof record.spawnKey === "string" ? record.spawnKey : undefined;
-			if (!role || !key) continue;
-			const modelSpec =
-				typeof record.resolvedModel === "string"
-					? record.resolvedModel
-					: typeof record.chosen === "string"
-						? record.chosen
-						: undefined;
-			const model = modelSpec ? stripThinkingSuffix(modelSpec) : undefined;
-			history.spawns.set(key, { role, model });
-			if (
-				record.kind === "outcome" &&
-				record.status === "completed" &&
-				typeof record.durationMs === "number" &&
-				Number.isFinite(record.durationMs) &&
-				record.durationMs > 0
-			) {
-				history.samples.push({ spawnKey: key, role, model, seconds: record.durationMs / 1000 });
-			}
+		} finally {
+			fs.closeSync(fd);
 		}
-		cache = { file, mtimeMs: stat.mtimeMs, size: stat.size, history };
+		cache = { file, stat, offset, history };
 		return history;
 	} catch {
+		cache = undefined;
 		return empty;
+	}
+}
+
+function consume(line: string, history: DurationHistory): void {
+	if (!line.trim()) return;
+	let record: Record<string, unknown>;
+	try {
+		record = JSON.parse(line) as Record<string, unknown>;
+	} catch {
+		return;
+	}
+	const role = typeof record.agent === "string" ? record.agent : undefined;
+	const key = typeof record.spawnKey === "string" ? record.spawnKey : undefined;
+	if (!role || !key) return;
+	const modelSpec =
+		typeof record.resolvedModel === "string"
+			? record.resolvedModel
+			: typeof record.chosen === "string"
+				? record.chosen
+				: undefined;
+	const model = modelSpec ? stripThinkingSuffix(modelSpec) : undefined;
+	history.spawns.set(key, { role, model });
+	if (
+		record.kind === "outcome" &&
+		record.status === "completed" &&
+		typeof record.durationMs === "number" &&
+		Number.isFinite(record.durationMs) &&
+		record.durationMs > 0
+	) {
+		history.samples.push({ spawnKey: key, role, model, seconds: record.durationMs / 1000 });
 	}
 }
 
