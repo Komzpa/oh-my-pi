@@ -1,4 +1,5 @@
-import { beginRestartTerminalHandoff } from "./restart-terminal";
+import { restartChildrenEnvironment } from "./restart-children";
+import { type RestartTerminalHandoff, beginRestartTerminalHandoff } from "./restart-terminal";
 /** Authenticated local control for exact live session generations. */
 import * as crypto from "node:crypto";
 import * as fsp from "node:fs/promises";
@@ -580,20 +581,30 @@ export async function waitForRestartResult(
 
 const RESTART_SESSION_ENV = "OMP_RESTART_SESSION_ID";
 /** Replace the runtime in place: preserve the shell's PID/TTY contract without retaining its heap. */
-export function execRestartSuccessor(cmd: string[], sessionId: string, instanceId?: string): never {
+export function execRestartSuccessor(
+	cmd: string[],
+	sessionId: string,
+	instanceId?: string,
+	handoff?: RestartTerminalHandoff,
+): never {
 	if (typeof process.execve !== "function")
 		throw new Error("Graceful restart requires process.execve on this platform");
 	const executable = Bun.which(cmd[0]!);
 	if (!executable) throw new Error(`Restart executable not found: ${cmd[0]}`);
-	const terminal = beginRestartTerminalHandoff();
+	const terminal = handoff ?? beginRestartTerminalHandoff();
 	terminal.reclaim();
-	terminal.restore();
-	process.execve(executable, cmd, {
-		...process.env,
-		[RESTART_SESSION_ENV]: sessionId,
-		...(instanceId ? { OMP_RESTART_CONTROL_INSTANCE_ID: instanceId } : {}),
-	});
-	throw new Error("Restart execve unexpectedly returned");
+	try {
+		process.execve(executable, cmd, {
+			...process.env,
+			...terminal.execEnvironment(),
+			...restartChildrenEnvironment(),
+			[RESTART_SESSION_ENV]: sessionId,
+			...(instanceId ? { OMP_RESTART_CONTROL_INSTANCE_ID: instanceId } : {}),
+		});
+		throw new Error("Restart execve unexpectedly returned");
+	} finally {
+		terminal.restore();
+	}
 }
 
 /** Exec has no parent handshake. An already-running old build still uses IPC for its first handoff. */
