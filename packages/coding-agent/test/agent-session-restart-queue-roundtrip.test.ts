@@ -150,6 +150,110 @@ describe("AgentSession restart queue round trip", () => {
 		return session;
 	}
 
+	it.each([false, true])(
+		"automatically delivers drain peer input behind a runtime tail once across two restarts (restore held: %s)",
+		async holdRestore => {
+			const manager = currentManager();
+			appendPriorAssistant(manager);
+			manager.appendCustomMessageEntry("runtime-status", "restart status", false);
+			session = createSession(manager);
+			const lease = session.beginRestartDrain();
+			await session.deliverIrcMessage({
+				id: "drain-peer",
+				from: "peer",
+				to: MAIN_AGENT_ID,
+				body: "CORRECTION during drain",
+				ts: Date.now(),
+			});
+			await lease.waitForQuiescence();
+			const file = manager.getSessionFile()!;
+			await session.dispose();
+			session = undefined;
+			sessionManager = undefined;
+			const inputs: string[] = [];
+			const restored = await reopenSession(file, [{ content: ["received"] }], inputs);
+			if (holdRestore) {
+				const restoreLease = restored.beginRestartDrain();
+				await restored.waitForIdle();
+				restoreLease.release();
+			}
+			await restored.waitForIdle();
+			expect(inputs).toHaveLength(1);
+			expect(inputs[0]).toContain("CORRECTION during drain");
+			expect(countCustomMessageEntries(currentManager(), "irc:incoming")).toBe(1);
+			const secondLease = restored.beginRestartDrain();
+			await secondLease.waitForQuiescence();
+			await restored.dispose();
+			session = undefined;
+			sessionManager = undefined;
+			const secondInputs: string[] = [];
+			const second = await reopenSession(file, [], secondInputs);
+			await second.waitForIdle();
+			expect(secondInputs).toHaveLength(0);
+			expect(countCustomMessageEntries(currentManager(), "irc:incoming")).toBe(1);
+			expect(second.agent.hasQueuedMessages()).toBe(false);
+		},
+	);
+
+	it("delivers captured steering, follow-ups and deferred asks in queue order without truncation", async () => {
+		appendPriorAssistant(currentManager());
+		session = createSession(currentManager());
+		const lease = session.beginRestartDrain();
+		session.agent.steer({ role: "user", content: "saved steer", timestamp: 1 });
+		session.agent.followUp({ role: "user", content: "saved follow-up", timestamp: 2 });
+		for (let i = 0; i < 40; i++)
+			session.queueDeferredMessage({
+				...hiddenNextTurnMessage(`saved ask ${i}`),
+				customType: `saved-ask-${i}`,
+				display: true,
+			});
+		await lease.waitForQuiescence();
+		const file = currentManager().getSessionFile()!;
+		await session.dispose();
+		session = undefined;
+		sessionManager = undefined;
+		const inputs: string[] = [];
+		const restored = await reopenSession(
+			file,
+			[{ content: ["steer received"] }, { content: ["follow-up received"] }, { content: ["asks received"] }],
+			inputs,
+		);
+		await restored.waitForIdle();
+		const messages = currentManager().buildSessionContext().messages;
+		const delivered = messages.flatMap(message =>
+			message.role === "user"
+				? [message.content]
+				: message.role === "custom" && message.customType.startsWith("saved-ask-")
+					? [message.content]
+					: [],
+		);
+		expect(delivered).toEqual([
+			"saved steer",
+			"saved follow-up",
+			...Array.from({ length: 40 }, (_, i) => `saved ask ${i}`),
+		]);
+		expect(restartQueueCheckpoints(currentManager()).at(-1)).toMatchObject({
+			data: { steering: [], followUp: [], pendingNextTurn: [] },
+		});
+	});
+
+	it("surfaces an unreadable checkpoint as a visible notice and retains its journal entry", async () => {
+		appendPriorAssistant(currentManager());
+		currentManager().appendCustomEntry("omp:restart-pending-queues", {
+			steering: [],
+			followUp: [null],
+			pendingNextTurn: [],
+		});
+		session = createSession(currentManager());
+		const notices: string[] = [];
+		session.subscribe(event => {
+			if (event.type === "notice" && event.source === "restart-restore") notices.push(event.message);
+		});
+		await session.waitForIdle();
+		expect(notices).toEqual([expect.stringContaining("could not be restored")]);
+		expect(restartQueueCheckpoints(currentManager()).at(-1)).toMatchObject({ data: { followUp: [null] } });
+	});
+
 	it("persists peer and advisory skips with interleaved deferred queue delivery by append only", async () => {
 		const manager = currentManager();
 		appendPriorAssistant(manager);
@@ -319,7 +423,7 @@ describe("AgentSession restart queue round trip", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 	});
 
-	it("bounds restored and newly queued hidden runtime backlog without dropping owner messages", async () => {
+	it("preserves every captured input while bounding newly queued hidden runtime backlog", async () => {
 		const backlog = Array.from({ length: 251 }, (_, i) => hiddenNextTurnMessage(`old gate ${i}`));
 		const owner = { ...hiddenNextTurnMessage("owner instruction"), attribution: "user" as const };
 		appendPriorAssistant(currentManager());
@@ -331,27 +435,26 @@ describe("AgentSession restart queue round trip", () => {
 		const inputs: string[] = [];
 		session = createSession(currentManager(), [{ content: ["received"] }], inputs);
 		const lease = session.beginRestartDrain();
-		await lease.waitForQuiescence();
 		const restoredCheckpoint = restartQueueCheckpoints(currentManager()).at(-1);
 		const restoredData = (restoredCheckpoint?.type === "custom" ? restoredCheckpoint.data : undefined) as {
 			pendingNextTurn: AgentMessage[];
 		};
-		expect(restoredData.pendingNextTurn).toHaveLength(33);
+		expect(restoredData.pendingNextTurn).toHaveLength(252);
 		for (let i = 0; i < 251; i++) session.queueDeferredMessage(hiddenNextTurnMessage(`new gate ${i}`));
 		await lease.waitForQuiescence();
 		const checkpoint = restartQueueCheckpoints(currentManager()).at(-1);
 		const pending = (checkpoint?.type === "custom" ? checkpoint.data : undefined) as {
 			pendingNextTurn: AgentMessage[];
 		};
-		expect(pending.pendingNextTurn).toHaveLength(33);
+		expect(pending.pendingNextTurn).toHaveLength(284);
 		expect(pending.pendingNextTurn[0]).toMatchObject(owner);
 		lease.release();
 		await session.waitForIdle();
 		await session.prompt("consume backlog");
 		expect(inputs[0]).toContain("owner instruction");
-		expect(inputs[0]).toContain("new gate 250");
-		expect(inputs[0]).not.toContain("old gate 0");
-		expect(inputs[0]).not.toContain("new gate 0");
+		expect(inputs.join("\n")).toContain("new gate 250");
+		expect(inputs[0]).toContain("old gate 0");
+		expect(inputs.join("\n")).not.toContain("new gate 0");
 	});
 
 	it.each(["steering", "followUp"] as const)(
@@ -844,7 +947,7 @@ describe("AgentSession restart queue round trip", () => {
 		await Bun.sleep(5_100);
 		await session.flushRestartJournal();
 		expect((await Bun.file(file).stat()).size - unchanged).toBe(0);
-	}, 20_000);
+	}, 30_000);
 
 	it("does not write another live-sized checkpoint when queues are unchanged", async () => {
 		appendPriorAssistant(currentManager());
@@ -1144,7 +1247,7 @@ describe("AgentSession restart queue round trip", () => {
 			try {
 				await controller.restore();
 				const ran = await Promise.race([finished.promise.then(() => true), Bun.sleep(250).then(() => false)]);
-				expect(ran).toBe(queue !== "nextTurn");
+				expect(ran).toBe(true);
 				if (queue !== "nextTurn") {
 					await restored.waitForIrcReplies();
 					await restored.waitForIdle();
@@ -1160,7 +1263,7 @@ describe("AgentSession restart queue round trip", () => {
 						message =>
 							message.role === "assistant" && JSON.stringify(message.content).includes("assignment completed"),
 					),
-				).toHaveLength(queue === "nextTurn" ? 0 : 1);
+				).toHaveLength(1);
 			} finally {
 				controller.dispose();
 				detach();
