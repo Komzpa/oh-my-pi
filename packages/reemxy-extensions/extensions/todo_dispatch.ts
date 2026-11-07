@@ -728,10 +728,16 @@ function median(values: readonly number[]): number | undefined {
 
 function durationFloors(now: number): DurationFloors {
   if (durationFloorsCache && now - durationFloorsCache.readAt < 60_000) return durationFloorsCache.floors;
-  let floors: DurationFloors = { profiles: new Map(), all: [] };
+  const floors: DurationFloors = { profiles: new Map(), all: [] };
   try {
-    const content = readFileSync(ROUTER_SPAWNS_PATH, "utf8");
-    floors = successfulDurationFloors(content.trim().split("\n"));
+    const history = readDurationHistory(ROUTER_SPAWNS_PATH);
+    for (const sample of history.samples) {
+      const durationMs = sample.seconds * 1000;
+      const samples = floors.profiles.get(sample.role) ?? [];
+      samples.push(durationMs);
+      floors.profiles.set(sample.role, samples);
+      floors.all.push(durationMs);
+    }
   } catch {}
   durationFloorsCache = { readAt: now, floors };
   return floors;
