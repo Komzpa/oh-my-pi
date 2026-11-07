@@ -472,6 +472,7 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 		values: ["off", "semantic"],
 	},
 	"delegation-bias": { key: "delegationBias", set: "catalog", shape: "scalar", values: DELEGATION_BIASES },
+	"normal-prose-spacing": { key: "normalProseSpacing", set: "catalog", shape: "scalar", values: [true, false] },
 	"discovery-api": { key: "discoveryApi", set: "catalog", shape: "scalar" },
 	"edit-prompt-variant": { key: "editPromptVariant", set: "catalog", shape: "scalar", values: ["full", "compact"] },
 	"edit-revision": { key: "editRevision", set: "catalog", shape: "scalar" },
