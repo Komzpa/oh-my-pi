@@ -72,6 +72,8 @@ export interface TodoSchedule {
 	/** Exclusive identifiers while this task is running. `undefined` means undeclared. */
 	resources?: string[];
 	estimate?: TodoEstimate;
+	/** Immutable first accepted estimate for session calibration and original promise. */
+	firstEstimate?: TodoEstimate;
 	/** Server-owned revisions; first estimate is revision 1, with zero reestimates. */
 	estimateRevision?: number;
 	/** PERT mean captured at first dispatch, used by empirical attempt ratios. */
@@ -253,6 +255,7 @@ export type TodoDeadlineStatus = "overdue" | "will-miss" | "at-risk" | "on-track
 export interface TodoPlanForecast {
 	risk?: RowRiskForecast;
 	riskModelUnavailable?: boolean;
+	calibration?: { ratio: number; samples: number };
 	rows: TodoTaskForecast[];
 	now: number;
 	deadlineAt?: number;
@@ -1136,7 +1139,10 @@ function finiteTimestamp(value: number | undefined): value is number {
 
 /** Re-observing a plan cannot grant more time; only an estimate or real start can. */
 function estimateAnchor(node: PlanNode): number {
-	return Math.max(node.estimate!.updatedAt, finiteTimestamp(node.schedule?.startedAt) ? node.schedule!.startedAt! : 0);
+	return Math.max(
+		node.schedule?.firstEstimate?.updatedAt ?? node.estimate!.updatedAt,
+		finiteTimestamp(node.schedule?.startedAt) ? node.schedule!.startedAt! : 0,
+	);
 }
 
 function latestTimestamp(values: Iterable<number | undefined>): number | undefined {
@@ -1183,12 +1189,50 @@ function componentData(validNodes: PlanNode[]): { nodes: PlanNode[]; complete: b
 	return components;
 }
 
-/** Compute PERT-mean CPM and path-aware P95 resource forecasts with optimistic/pessimistic scenarios. */
+/** Completed rows with both clocks calibrate this session only; missing clocks are excluded. */
+function sessionCalibration(phases: TodoScheduleInput): { ratio: number; samples: number } {
+	const ratios: number[] = [];
+	for (const row of phases.flatMap(phase => phase.tasks)) {
+		const schedule = row.schedule;
+		const first = schedule?.firstEstimate;
+		if (
+			row.status !== "completed" ||
+			!isValidEstimate(first) ||
+			first.likelySeconds <= 0 ||
+			!finiteTimestamp(schedule?.startedAt) ||
+			!finiteTimestamp(schedule?.finishedAt)
+		)
+			continue;
+		const seconds = (schedule!.finishedAt! - Math.max(schedule!.startedAt!, first.updatedAt)) / 1000;
+		if (seconds > 0) ratios.push(seconds / first.likelySeconds);
+	}
+	ratios.sort((a, b) => a - b);
+	const middle = Math.floor(ratios.length / 2);
+	const median = ratios.length ? (ratios[middle]! + ratios[Math.floor((ratios.length - 1) / 2)]!) / 2 : 1;
+	return { ratio: Math.max(0.25, Math.min(20, median)), samples: ratios.length };
+}
+
+/** Compute CPM and resource forecasts, calibrated to completed rows of this session. */
 export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecastOptions): TodoPlanForecast {
 	const now = options.now;
 	const deferred = phases.flatMap(phase => phase.tasks).filter(row => row.schedule?.postDeadline);
 	const scoped = phases.map(phase => ({ ...phase, tasks: phase.tasks.filter(row => !row.schedule?.postDeadline) }));
 	const analysis = analyzeDependencies(scoped);
+	const calibration = sessionCalibration(phases);
+	for (const node of analysis.nodes) {
+		const first = node.schedule?.firstEstimate;
+		if (isClosed(node.status) || !isValidEstimate(first) || !isValidEstimate(node.estimate)) continue;
+		const anchor = Math.max(first.updatedAt, node.schedule?.startedAt ?? first.updatedAt);
+		const elapsedAtRevision = Math.max(0, (node.estimate.updatedAt - anchor) / 1000);
+		const durations = estimateDurations(node.estimate);
+		// Keep the first clock: a revised remaining budget is added to time already spent.
+		node.durationEstimates = {
+			optimistic: elapsedAtRevision + durations.optimistic * calibration.ratio,
+			expected: elapsedAtRevision + durations.expected * calibration.ratio,
+			pessimistic: elapsedAtRevision + durations.pessimistic * calibration.ratio,
+			spread: durations.spread * calibration.ratio,
+		};
+	}
 	const planningIssues = collectTodoPlanningIssues(phases, analysis);
 	const issues: string[] = [];
 	const deadlineAt = finiteTimestamp(options.deadlineAt) ? options.deadlineAt : undefined;
@@ -1573,6 +1617,7 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		if (issue.code === "duplicate-task" && !issues.includes(issue.message)) issues.push(issue.message);
 	}
 	const plan: TodoPlanForecast = {
+		calibration,
 		rows,
 		now,
 		deadlineAt,
@@ -1593,7 +1638,13 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		issues: [...new Set(issues)],
 	};
 	if (options.risk && !hasUnresolvedOpen) {
-		plan.risk = simulateRowRisk(validNodes, schedulerCapacity, taskPriority(validTopological), options);
+		plan.risk = simulateRowRisk(
+			validNodes,
+			schedulerCapacity,
+			taskPriority(validTopological),
+			options,
+			calibration.ratio,
+		);
 		if (deadlineAt !== undefined && !deadlineMissed && plan.risk.onTimeProbability !== undefined) {
 			plan.deadlineStatus =
 				plan.risk.onTimeProbability < 0.5
@@ -1617,9 +1668,11 @@ function simulateRowRisk(
 	capacity: number,
 	priority: Map<PlanNode, number>,
 	options: TodoForecastOptions,
+	calibrationRatio: number,
 ): RowRiskForecast {
 	const risk = options.risk!;
 	const key = JSON.stringify([
+		calibrationRatio,
 		nodes.map(node => [node.content, node.status, node.schedule]),
 		capacity,
 		risk,
@@ -1639,7 +1692,9 @@ function simulateRowRisk(
 	for (let sample = 0; sample < samples; sample++) {
 		const durations = new Map<PlanNode, number>();
 		for (const node of open) {
-			const start = node.schedule?.executor?.startedAt ?? node.schedule?.startedAt;
+			const start = node.schedule?.firstEstimate
+				? Math.max(node.estimate!.updatedAt, node.schedule.startedAt ?? 0)
+				: (node.schedule?.executor?.startedAt ?? node.schedule?.startedAt);
 			const elapsed =
 				node.status === "in_progress" && start !== undefined ? Math.max(0, (options.now - start) / 1000) : 0;
 			durations.set(
@@ -1647,7 +1702,9 @@ function simulateRowRisk(
 				drawAttemptChain(
 					risk,
 					workerType(node),
-					node.schedule?.riskEstimateMeanSeconds ?? nodeDurations(node).expected,
+					node.schedule?.firstEstimate
+						? todoEstimateMeanSeconds(node.estimate!) * calibrationRatio
+						: (node.schedule?.riskEstimateMeanSeconds ?? nodeDurations(node).expected),
 					(node.schedule?.attemptHistory?.length ?? 0) + 1,
 					elapsed,
 					random,
@@ -1961,7 +2018,10 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 	} else if (worked) parts.push(worked);
 	if (row.onProposal?.length) parts.push("on proposal");
 	if (row.criticalityKnown === true && row.critical) parts.push("critical");
-	if (row.reestimateCount >= 3) parts.push(`reestimated ${row.reestimateCount}×`);
+	if (row.reestimateCount >= 3) {
+		parts.push(`reestimated ${row.reestimateCount}×`);
+		if (row.schedule?.firstEstimate) parts.push(`first ${Math.ceil(row.schedule.firstEstimate.likelySeconds / 60)}m`);
+	}
 	if (expanded) {
 		if (row.owner && !["main", "root"].includes(row.owner.toLowerCase())) parts.push(`owner ${safeText(row.owner)}`);
 		if (row.planningIssues?.length)

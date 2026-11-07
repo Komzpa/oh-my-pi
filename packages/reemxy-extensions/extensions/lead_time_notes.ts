@@ -1,7 +1,11 @@
+import { prompt } from "@oh-my-pi/pi-utils";
+import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import planfactNote from "./planfact-note.md" with { type: "text" };
 import { selectBranchNewestFirst } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 
+export const LEAD_NOTE_MAX_CHARS = 8192;
 export const LEAD_NOTE_INTERVAL_MS = 5 * 60_000;
 
 type TimedNoteMessage = Extract<SessionEntry, { type: "custom_message" }>;
@@ -51,7 +55,7 @@ export async function appendTimedNote(
 	await pi.sendMessage(
 		{
 			customType,
-			content: `${localClock} · ${content}`,
+			content: `${localClock} · ${content}`.slice(0, LEAD_NOTE_MAX_CHARS),
 			display: false,
 			details: { semanticKey: identity, emittedAt: now },
 			attribution: "agent",
@@ -59,4 +63,24 @@ export async function appendTimedNote(
 		delivery,
 	);
 	return true;
+}
+
+export function renderPlanFactNote(
+	phases: TodoScheduleInput,
+	now: number,
+	deadlineAt: number | undefined,
+	questions: Array<{ worker: string; question: string }> = [],
+	forecastFinish?: number,
+): string {
+	const open = phases.flatMap(phase => phase.tasks).filter(row => row.status !== "completed" && row.status !== "abandoned");
+	const churn = open.flatMap(row => {
+		const failures = row.schedule?.attemptHistory?.filter(attempt => attempt.terminalStatus !== "completed" || attempt.rejectionReason).length ?? 0;
+		const reestimates = row.schedule?.reestimateCount ?? 0;
+		return failures >= 3 || reestimates >= 3 ? [{ row: row.content.slice(0, 180), failures, reestimates }] : [];
+	}).slice(0, 8);
+	const slip = deadlineAt === undefined || !open.length ? 0 : Math.max(now, forecastFinish ?? 0) - deadlineAt;
+	return prompt.render(planfactNote, {
+		churn, slipped: slip > 0, slipMinutes: Math.ceil(slip / 60_000),
+		questions: questions.slice(0, 4).map(item => ({ worker: item.worker.slice(0, 80), question: item.question.slice(0, 400) })),
+	}).trim();
 }

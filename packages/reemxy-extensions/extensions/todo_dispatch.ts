@@ -42,7 +42,7 @@ import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
-import { appendTimedNote } from "./lead_time_notes";
+import { appendTimedNote, renderPlanFactNote } from "./lead_time_notes";
 import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
@@ -178,7 +178,8 @@ export function autoGoalDeadlineState(input: {
       : undefined;
   const planReplaced = current?.auto === true && current.autoPlanKey !== planKey;
   const deadlinePassed = currentDue !== undefined && now >= currentDue;
-  if (current?.auto === true && !planReplaced && !deadlinePassed) return undefined;
+  // A forecast is an anchor, not a rolling target. Keep it for this plan even after it slips.
+  if (current?.auto === true && current.active) return undefined;
   if (
     forecastFinish === undefined ||
     !Number.isFinite(forecastFinish) ||
@@ -6309,7 +6310,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     };
   });
 
-  const appendLeadTimeNote = async (ctx: ExtensionContext) => {
+  const appendLeadTimeNote = async (ctx: ExtensionContext, onlyPlanFact = false) => {
     const now = Date.now();
     if (singleWriterLane) return;
     const decision = currentDecision(ctx, now);
@@ -6337,7 +6338,27 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const displayContext = leadDisplayContext(ctx, phases, decision);
     const rowInstructions = chief ? renderLeadRowInstructions(phases, displayContext, { now, forecast: decision.forecast, reviewAnswers, userBlockAsked }) : "";
     const visibleRows = chief ? phases.flatMap(phase => phase.tasks).filter(row => isNonClosedRowStatus(row.status) || isTodoAwaitingReview(row)).map(row => classifyTodoDisplayRow(row, phases, displayContext)) : [];
+    const questions = phases.flatMap(phase => phase.tasks).filter(row => row.status === "blocked" && row.schedule?.owner && row.blocker && !parseUserWait(row.blocker))
+      .map(row => ({ worker: row.schedule.owner, question: row.blocker }));
+    for (const job of [...(ctx.getAsyncJobSnapshot()?.running ?? []), ...(ctx.getAsyncJobSnapshot()?.recent ?? [])].filter(job => job.type === "task")) {
+      const session = AgentRegistry.global().get(job.agentId ?? job.id)?.session;
+      const messages = session?.messages?.slice(-100) ?? [];
+      for (let index = messages.length - 1; index >= 0; index--) {
+        const message = messages[index];
+        if (message.role !== "toolResult" || message.toolName !== "ask" || !message.details?.pending || message.details.workingDefaults) continue;
+        const pending = message.details.pending;
+        for (const question of pending.questions ?? []) {
+          const answered = messages.slice(index + 1).some(reply => reply.role === "user" && JSON.stringify(reply.content).includes(`Answer to ${pending.id} [${question.id}]:`));
+          if (!answered && typeof question.question === "string") questions.push({ worker: job.agentId ?? job.id, question: question.question });
+        }
+        break;
+      }
+    }
+    const planFact = renderPlanFactNote(phases, now, decision.deadline?.deadlineAt, questions,
+      decision.forecast?.expectedResourceFinish);
+    if (onlyPlanFact && (!planFact || questions.length === 0)) return;
     const content = [
+      ...(planFact ? [planFact] : []),
       ...(notice && !notice.shown ? [notice.text] : []),
       ...(chief ? [prompt.render(leadTimeSummary, {
         open: decision.forecast?.rows.filter(row => row.status !== "completed" && row.status !== "abandoned").length ?? 0,
@@ -6361,6 +6382,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       activeDemand: chief ? activeDemand : null,
       retroDue,
       rowInstructions,
+      planFact,
       plan: decision.key,
       alarms: decision.alarms.filter((alarm) => !alarm.startsWith("overdue-todo-minute:")),
       deadline: decision.deadline ?? null,
@@ -6488,6 +6510,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     dispatchGateBaseline = null;
     taskCallBaselines.clear();
     dispatchedAgents.clear();
+    await appendLeadTimeNote(ctx, true);
     armIdleCheck(ctx, decision);
   });
 }

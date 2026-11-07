@@ -243,6 +243,8 @@
 
 ### Fixed
 
+- Keep original TODO estimates, start clocks and re-estimate counts across worker changes. ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Show the failing extension hook and source property in task-call errors ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Stop retrying undelivered worker continuations without a state change ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
