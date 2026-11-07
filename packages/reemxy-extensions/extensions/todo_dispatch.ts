@@ -12,7 +12,7 @@ import { prompt } from "@oh-my-pi/pi-utils";
 import { truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@oh-my-pi/pi-coding-agent";
 import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
 import { readTodoArchiveState, getLiveTodoBranchEntries, withTodoArchive } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { getTodoPlanCalibrationStore } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-calibration";
@@ -39,6 +39,8 @@ import { dirname, isAbsolute, join, normalize, resolve } from "node:path";
 import { formatLocalClock, formatLocalTimestamp, isUserDeadlineMissed, latestDeadlineUserMessage, lifecycleGoal, readGoalDeadline, rehydrateDeadlineState, resolveTimeZone, STATE_ENTRY as GOAL_DEADLINE_STATE_ENTRY, type DeadlineState } from "./deadlines";
 import unansweredUserInstructions from "./unanswered-user-reply.md" with { type: "text" };
 import unpushedInstructions from "./unpushed-work.md" with { type: "text" };
+import zeroActiveInstructions from "./zero-active.md" with { type: "text" };
+import staffingAdvice from "./staffing-advice.md" with { type: "text" };
 import gateNoticeInstructions from "./gate-notices.md" with { type: "text" };
 import chatChoiceInstructions from "./chat-choice-gate.md" with { type: "text" };
 import riskReplanInstructions from "./risk-replan.md" with { type: "text" };
@@ -3979,7 +3981,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return state.state === "needs worker" ? [{ content: task.content, owner: task.schedule?.owner, previous: state.previous, reason: state.reason, findings: todoRowAfterWorker(task)?.findings }] : [];
   });
   const staffingData = rows => ({
-    staffing: true, rows: rows.map(row => JSON.stringify(row.content)).join(", "),
+    staffing: true, rows: rows.map(row => JSON.stringify(row.content)).join(", ").slice(0, 140),
+    previous: rows.map(row => row.previous).filter(Boolean).join(", ").slice(0, 60),
     continuations: rows.filter(row => row.previous).map(row =>
       `${JSON.stringify(row.content)} from agent://${row.previous} (${row.reason}${row.findings ? `: ${shorten(row.findings)}` : ""})`).join("; "),
   });
@@ -4050,8 +4053,46 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   const runningOwnerNames = (ctx: ExtensionContext): Set<string> => new Set((ctx.getAsyncJobSnapshot()?.running ?? [])
     .flatMap((job) => [job.id, job.agentId, job.label].filter((name): name is string => typeof name === "string")));
+  let zeroActiveCalls = 0;
+  let zeroActiveBriefReads = 0;
+  const zeroActiveNag = (ctx: ExtensionContext): string | undefined => {
+    if (singleWriterLane || !isMain(ctx) || gateSwitchedOff(ctx) || pauseGate?.paused || !pi.getActiveTools().includes("task")) return;
+    const jobs = ctx.getAsyncJobSnapshot();
+    if (!jobs || jobs.running.some(job => job.status === "running" && !job.queued && (job.type === "task" || jobs.nonJobAgents?.some(agent => agent.live && agent.id === job.agentId)))) {
+      zeroActiveCalls = 0;
+      zeroActiveBriefReads = 0;
+      return;
+    }
+    const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
+    const display = leadDisplayContext(ctx, phases, { capacity: 0, activeTaskCount: 0 });
+    const rows = phases.flatMap(phase => phase.tasks).filter(row => {
+      const state = classifyTodoDisplayRow(row, phases, display).state;
+      return isOpenRowStatus(row.status) && state === "needs worker";
+    });
+    if (!rows.length) {
+      zeroActiveCalls = 0;
+      zeroActiveBriefReads = 0;
+      return;
+    }
+    return prompt.render(zeroActiveInstructions, { count: rows.length,
+      rows: rows.map(row => row.content.replace(/\s+/g, " ")).join("; ").slice(0, 185),
+    }).trim();
+  };
+  const isStaffingCall = (name: string, input: { op?: string } | undefined) =>
+    name === "task" || name === "ask" || (name === "todo" && ![undefined, "view", "history"].includes(input?.op));
   const demandIdlePlanContinuation = (ctx: ExtensionContext, advance = true): string | undefined => {
     if (singleWriterLane || !isMain(ctx) || gateSwitchedOff(ctx) || pauseGate?.paused) return;
+    const nag = zeroActiveNag(ctx);
+    if (nag) {
+      if (!advance) return nag;
+      if (!idlePlanDemandedThisTurn) {
+        idlePlanDemandedThisTurn = true;
+        pi.sendMessage({ customType: "todo-idle-plan-demand", content: nag, display: false,
+          attribution: "agent", details: { silentAssistant: false } },
+          { deliverAs: "nextTurn", triggerTurn: true, interruptWait: false });
+      }
+      return;
+    }
     const now = Date.now();
     const decision = currentDecision(ctx, now, [], true, true);
     if (!decision.forecast || !decision.staffingSnapshotComplete) return;
@@ -4244,6 +4285,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     );
   };
   pi.on("session_stop", async (_event, ctx) => {
+    if (zeroActiveNag(ctx)) demandIdlePlanContinuation(ctx);
     const redReason = await redRowsIdleReason(ctx, "stop");
     if (redReason) return { decision: "block", reason: redReason };
     const reason = unansweredUserReason(ctx);
@@ -5414,6 +5456,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return undefined;
   };
   pi.on("tool_call", async (event, ctx) => {
+    const nag = zeroActiveNag(ctx);
+    if (nag && !isStaffingCall(event.toolName, event.input)) {
+      zeroActiveCalls += 1;
+      if (zeroActiveCalls >= 3) {
+        const briefRead = event.toolName === "read" && typeof event.input?.path === "string" && event.input.path.startsWith("agent://");
+        if (!briefRead || zeroActiveBriefReads >= 2) return { block: true, reason: nag };
+        zeroActiveBriefReads += 1;
+      }
+    }
     const originalTaskItems = event.toolName === "task" ? taskItems(event.input) : [];
     let contractInput;
     if (wakeTurn) wakeTurn.toolCalls += 1;
@@ -5537,7 +5588,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (jobs && missing.length && !onlyPriority && capacity !== undefined && (capacity === 0 || active < capacity)) {
         announceGates(ctx);
         return { block: true, reason: prompt.render(gateNoticeInstructions, { staffing: true,
-          rows: missing.map(row => JSON.stringify(row.content)).join(", "),
+          rows: missing.map(row => JSON.stringify(row.content)).join(", ").slice(0, 140),
+          previous: missing.map(row => classifyTodoDisplayRow(row, phases, display).previous).filter(Boolean).join(", ").slice(0, 60),
           continuations: missing.map(row => { const previous = classifyTodoDisplayRow(row, phases, display).previous; return previous ? `${JSON.stringify(row.content)} from agent://${previous}` : JSON.stringify(row.content); }).join("; "),
         }).trim() };
       }
@@ -6326,7 +6378,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return [];
     }
   };
-  pi.on("tool_result", async (event, ctx) => {
+  const handleToolResult = async (event: ToolResultEvent, ctx: ExtensionContext) => {
     if (!event.isError && recovery?.pending && isMain(ctx)) {
       const pending = recovery.pending;
       const ownerQuestion = pending.kind === "deadline" && selectBranchEntries(ctx.sessionManager, metadata => metadata.customType === "todo-user-unblock" || metadata.customType === "lead-plan-critic-question").some(entry => {
@@ -6531,6 +6583,17 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       linkDemanded: false,
       linkAnswered: false,
     };
+  };
+  pi.on("tool_result", async (event, ctx) => {
+    const result = await handleToolResult(event, ctx);
+    const nag = zeroActiveNag(ctx);
+    if (nag && !isStaffingCall(event.toolName, event.input)) {
+      return { ...result, content: [{ type: "text", text: nag }, ...(result?.content ?? event.content ?? [])] };
+    }
+    if (event.toolName === "task" && !event.isError) {
+      return { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: staffingAdvice.trim() }] };
+    }
+    return result;
   });
 
   let calibrationKey = "";
@@ -6684,8 +6747,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
 
   const armIdleCheck = (ctx: ExtensionContext, decision = currentDecision(ctx)) => {
     clearIdleTimer();
+    const lifecycle = latestGoalLifecycleEntries(ctx);
     if (
       singleWriterLane ||
+      (lifecycle[0]?.mode === "none" || lifecycleGoal(lifecycle, [])?.status === "complete") ||
       isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx))) ||
       !pauseGate ||
       pauseGate.paused ||
