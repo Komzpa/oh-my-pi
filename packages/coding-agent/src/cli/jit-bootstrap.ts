@@ -1,3 +1,5 @@
+import { isMainThread } from "node:worker_threads";
+
 /** Marks the process image started by the restart below; never set by operators. */
 const REEXEC_MARK = "OMP_JIT_DEBUG_REEXEC";
 
@@ -15,7 +17,10 @@ export function bootstrapJitDebugInfo(
 	compiled: boolean,
 	interactive: boolean = Boolean(process.stdin.isTTY && process.stdout.isTTY),
 ): void {
-	if (process.platform !== "linux") return;
+	// execve replaces the whole process: only the main thread of the CLI process may do it.
+	// Subagent workers run this entry inside worker threads, where Bun throws
+	// "Calling process.execve is not supported in workers".
+	if (process.platform !== "linux" || !isMainThread) return;
 	if (process.env[REEXEC_MARK] === "1") {
 		delete process.env[REEXEC_MARK];
 		delete process.env.BUN_JSC_useGdbJITInfo;
