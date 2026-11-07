@@ -2627,12 +2627,15 @@ export class SessionTools {
 	): SessionEntry | undefined {
 		const indexed = manager as SessionManager & {
 			iterateBranchMatchingNewestFirst?: (
-				predicate: (metadata: { type: SessionEntry["type"] }) => boolean,
+				predicate: (metadata: { type: SessionEntry["type"]; customType?: string }) => boolean,
 			) => Iterable<SessionEntry>;
 		};
 		const entries = indexed.iterateBranchMatchingNewestFirst
 			? indexed.iterateBranchMatchingNewestFirst(
-					metadata => metadata.type === "reset_boundary" || metadata.type === "custom_message",
+					metadata =>
+						metadata.type === "reset_boundary" ||
+						(metadata.type === "custom_message" &&
+							(metadata.customType === undefined || metadata.customType === customType)),
 				)
 			: manager.getBranch().toReversed();
 		for (const entry of entries) {
