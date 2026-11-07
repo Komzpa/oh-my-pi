@@ -1183,7 +1183,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		return restored;
 	}
 
-	async #prepareRework(route: ReworkRoute, signal?: AbortSignal): Promise<string | undefined> {
+	async #prepareRework(
+		route: ReworkRoute,
+		policy: EffectiveSubagentPolicy,
+		signal?: AbortSignal,
+	): Promise<string | undefined> {
 		if (route.failedLine) {
 			route.context = route.failedLine;
 			return undefined;
