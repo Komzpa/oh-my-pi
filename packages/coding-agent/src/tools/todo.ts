@@ -1,6 +1,6 @@
 import { patchTodoSchedule } from "../session/todo-schedule-patch";
 import {
-	selectBranchEntries,
+	selectLatestBranchEntry,
 	selectBranchNewestFirst,
 	isTodoSelectionEntryMetadata,
 	type BranchSource,
@@ -557,8 +557,41 @@ function replayTodoEdit(
 
 export { isTodoSelectionEntryMetadata } from "../session/branch-selection";
 
-function getTodoBranchEntries(manager: ToolSession["sessionManager"]): SessionEntry[] {
-	return manager ? selectBranchEntries(manager, isTodoSelectionEntryMetadata) : [];
+interface TodoArchiveBranchSource extends BranchSource {
+	readonly bodyRevision?: number;
+}
+const todoArchiveBranches = new WeakMap<object, { latest: unknown; bodyRevision?: number; entries: SessionEntry[] }>();
+
+/** Fold archive history during resume without retaining decoded historical entries. */
+export function getTodoArchiveBranchEntries(manager: TodoArchiveBranchSource | undefined): SessionEntry[] {
+	if (!manager) return [];
+	const latest = selectLatestBranchEntry(manager, isTodoSelectionEntryMetadata);
+	const revision = latest?.id ?? latest;
+	const cached = todoArchiveBranches.get(manager);
+	const sameBody = cached?.bodyRevision === manager.bodyRevision;
+	if (cached && sameBody && cached.latest === revision) return cached.entries;
+	function* history(): IterableIterator<SessionEntry> {
+		for (const entry of selectBranchNewestFirst(manager!, isTodoSelectionEntryMetadata)) {
+			if (cached && sameBody && (entry.id ?? entry) === cached.latest) {
+				yield* cached.entries.toReversed();
+				return;
+			}
+			yield entry;
+		}
+	}
+	const { phases, fromAt, toAt } = foldTodoArchiveNewestFirst(history());
+	const entries = Number.isFinite(fromAt)
+		? [fromAt, toAt].map((at, index): SessionEntry => ({
+				type: "custom",
+				id: `todo-archive-fold-${index}`,
+				parentId: null,
+				timestamp: new Date(0).toISOString(),
+				customType: USER_TODO_EDIT_CUSTOM_TYPE,
+				data: { edit: { v: 1, kind: "archive", at, archivedPhases: index === 0 ? phases : [] } },
+			}))
+		: [];
+	todoArchiveBranches.set(manager, { latest: revision, bodyRevision: manager.bodyRevision, entries });
+	return entries;
 }
 
 /** Latest full live snapshot and its compact edit/HUD tail; archives use the full history reader. */
@@ -787,38 +820,75 @@ export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPha
 }
 
 /** Recover archived rows from durable archive edits without changing the active live phases. */
-export function getLatestTodoArchiveFromEntries(
-	entries: SessionEntry[],
-	options: { includeRestored?: boolean } = {},
-): TodoPhase[] {
-	const archived = new Map<string, Map<string, TodoItem>>();
+function foldTodoArchiveNewestFirst(
+	entries: Iterable<SessionEntry>,
+	includeRestored = false,
+): { phases: TodoPhase[]; summary?: TodoArchiveSummary; fromAt: number; toAt: number } {
+	const archived = new Map<string, { order: number; tasks: Map<string, { order: number; task: TodoItem }> }>();
+	const restored = new Set<string>();
+	let order = 0;
+	let fromAt = Infinity;
+	let toAt = -Infinity;
 	for (const entry of entries) {
 		const edit = compactTodoEditFromEntry(entry);
-		if ((edit?.kind === "op" && edit.op === "init") || (edit?.kind === "archive" && edit.operation?.op === "init"))
-			archived.clear();
-		const operation = edit?.kind === "archive" ? edit.operation : edit?.kind === "op" ? edit : undefined;
-		if (!options.includeRestored && operation && isRecord(operation.params)) {
+		if (!edit) continue;
+		const operation = edit.kind === "archive" ? edit.operation : edit.kind === "op" ? edit : undefined;
+		if (edit.kind === "archive") {
+			fromAt = Math.min(fromAt, edit.at);
+			toAt = Math.max(toAt, edit.at);
+			for (const phase of edit.archivedPhases.toReversed()) {
+				let group = archived.get(phase.name);
+				if (!group) {
+					group = { order: -order++, tasks: new Map() };
+					archived.set(phase.name, group);
+				}
+				group.order = -order++;
+				for (const task of phase.tasks.toReversed()) {
+					if (restored.has(task.content)) continue;
+					const present = group.tasks.get(task.content);
+					group.tasks.set(task.content, { order: -order++, task: present?.task ?? structuredClone(task) });
+				}
+			}
+		}
+		if (operation?.op === "init") break;
+		if (!includeRestored && operation && isRecord(operation.params)) {
 			const params = operation.params;
 			const targets =
 				operation.op === "schedule" && Array.isArray(params.updates)
 					? params.updates.filter(isRecord).map(update => update.task)
 					: [params.task, ...(Array.isArray(params.items) ? params.items : [])];
-			for (const tasks of archived.values())
-				for (const target of targets) {
-					if (typeof target === "string") tasks.delete(target);
-				}
-		}
-		if (!edit || edit.kind !== "archive") continue;
-		for (const phase of edit.archivedPhases) {
-			let tasks = archived.get(phase.name);
-			if (!tasks) {
-				tasks = new Map();
-				archived.set(phase.name, tasks);
-			}
-			for (const task of phase.tasks) tasks.set(task.content, structuredClone(task));
+			for (const target of targets) if (typeof target === "string") restored.add(target);
 		}
 	}
-	return [...archived].map(([name, tasks]) => ({ name, tasks: [...tasks.values()] }));
+	const phases = [...archived]
+		.sort((a, b) => a[1].order - b[1].order)
+		.map(([name, group]) => ({
+			name,
+			tasks: [...group.tasks.values()].sort((a, b) => a.order - b.order).map(value => value.task),
+		}));
+	const tasks = phases.flatMap(phase => phase.tasks);
+	return {
+		phases,
+		fromAt,
+		toAt,
+		summary: tasks.length
+			? {
+					count: tasks.length,
+					done: tasks.filter(task => task.status === "completed").length,
+					dropped: tasks.filter(task => task.status === "abandoned").length,
+					fromAt,
+					toAt,
+				}
+			: undefined,
+	};
+}
+
+/** Recover archived rows without retaining or changing live phases. */
+export function getLatestTodoArchiveFromEntries(
+	entries: SessionEntry[],
+	options: { includeRestored?: boolean } = {},
+): TodoPhase[] {
+	return foldTodoArchiveNewestFirst(entries.toReversed(), options.includeRestored).phases;
 }
 
 export function getTodoArchiveSummaryFromEntries(
@@ -828,35 +898,10 @@ export function getTodoArchiveSummaryFromEntries(
 	const allEntries = additional
 		? [
 				...entries,
-				{
-					type: "custom",
-					customType: USER_TODO_EDIT_CUSTOM_TYPE,
-					data: { edit: additional },
-				} as SessionEntry,
+				{ type: "custom", customType: USER_TODO_EDIT_CUSTOM_TYPE, data: { edit: additional } } as SessionEntry,
 			]
 		: entries;
-	const tasks = getLatestTodoArchiveFromEntries(allEntries).flatMap(phase => phase.tasks);
-	let fromAt = Number.POSITIVE_INFINITY;
-	let toAt = Number.NEGATIVE_INFINITY;
-	for (const entry of allEntries) {
-		const edit = compactTodoEditFromEntry(entry);
-		if (edit?.kind === "op" && edit.op === "init") {
-			fromAt = Number.POSITIVE_INFINITY;
-			toAt = Number.NEGATIVE_INFINITY;
-		}
-		if (edit?.kind !== "archive") continue;
-		fromAt = Math.min(fromAt, edit.at);
-		toAt = Math.max(toAt, edit.at);
-	}
-	return tasks.length
-		? {
-				count: tasks.length,
-				done: tasks.filter(task => task.status === "completed").length,
-				dropped: tasks.filter(task => task.status === "abandoned").length,
-				fromAt,
-				toAt,
-			}
-		: undefined;
+	return foldTodoArchiveNewestFirst(allEntries.toReversed()).summary;
 }
 
 /** Archived completions remain dependency evidence, not live forecast rows. */
@@ -2257,7 +2302,7 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		const entry = resolved;
 		const op = entry.op;
 		const now = Date.now();
-		const todoEntries = getTodoBranchEntries(this.session.sessionManager);
+		const todoEntries = getTodoArchiveBranchEntries(this.session.sessionManager);
 		const healedRows = healStoredSelfEdges(previousPhases);
 		const healedEdges = healStoredDanglingEdges(previousPhases, getLatestTodoArchiveFromEntries(todoEntries));
 		const manager = this.session.sessionManager;

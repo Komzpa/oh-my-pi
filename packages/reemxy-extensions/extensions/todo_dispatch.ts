@@ -10,7 +10,7 @@ import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
-import { getLiveTodoBranchEntries, getLatestTodoArchiveFromEntries, withTodoArchive, isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { getTodoArchiveBranchEntries, getLiveTodoBranchEntries, getLatestTodoArchiveFromEntries, withTodoArchive, isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -46,31 +46,8 @@ import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
-const dispatchArchiveCache = new WeakMap<object, { revision: unknown; phases: TodoScheduleInput }>();
-
-// Archive replay needs edits predating the latest full live snapshot. Retain only
-// the folded archive state, and inspect just the appended tail once warm.
 export function dispatchTodoArchive(ctx: ExtensionContext): TodoScheduleInput {
-  const source = ctx.sessionManager;
-  const latest = selectLatestBranchEntry(source, isTodoSelectionEntryMetadata);
-  const revision = latest?.id ?? latest;
-  const cached = dispatchArchiveCache.get(source);
-  if (cached && cached.revision === revision) return cached.phases;
-  const tail = [];
-  let extendsCached = false;
-  for (const entry of selectBranchNewestFirst(source, isTodoSelectionEntryMetadata)) {
-    if (cached && (entry.id ?? entry) === cached.revision) {
-      extendsCached = true;
-      break;
-    }
-    const edit = entry.type === "custom" ? entry.data?.edit : entry.message?.details?.edit;
-    if (edit !== undefined) tail.push(entry);
-  }
-  const seed = extendsCached ? [{ type: "custom", customType: "user_todo_edit", data: { edit: { v: 1, kind: "archive", at: 0, archivedPhases: cached.phases } } }] : [];
-  const entries = [...seed, ...tail.reverse()];
-  const phases = getLatestTodoArchiveFromEntries(entries);
-  dispatchArchiveCache.set(source, { revision, phases });
-  return phases;
+  return getLatestTodoArchiveFromEntries(getTodoArchiveBranchEntries(ctx.sessionManager));
 }
 
 // Only these synthetic arrays carry a native immutable owner snapshot. Durable
