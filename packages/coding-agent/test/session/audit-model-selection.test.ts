@@ -359,3 +359,183 @@ it("visual filtering pins a resolved selector so the executor cannot rematch a t
 	policy.modelOverride = ["claude"];
 	expect((await selectRowAuditModel(request, policy)).modelOverride).toEqual([opus.selector]);
 });
+
+it("row audits select from metadata without decoding unrelated parent payloads", async () => {
+	const { request, policy, manager } = await fixture();
+	const entries = manager.getBranch();
+	const unrelated = {
+		type: "custom" as const,
+		customType: "large_tool_archive",
+		get data(): never {
+			throw new Error("Unrelated multi-gigabyte body was decoded");
+		},
+	};
+	const indexed = [...entries, unrelated];
+	Object.assign(manager, {
+		iterateBranchMatchingNewestFirst: (
+			predicate: (metadata: {
+				type: string;
+				customType?: string;
+				messageRole?: string;
+				toolName?: string;
+			}) => boolean,
+		) =>
+			indexed
+				.toReversed()
+				.filter(entry =>
+					predicate({ type: entry.type, customType: entry.type === "custom" ? entry.customType : undefined }),
+				),
+	});
+	const branch = vi.spyOn(manager, "getBranch").mockImplementation(() => {
+		throw new Error("Full parent journal hydration");
+	});
+	expect((await selectRowAuditModel(request, policy)).modelOverride).toEqual([opus.selector]);
+	expect(branch).not.toHaveBeenCalled();
+	branch.mockRestore();
+	expect(manager.getBranch().at(-1)).toMatchObject({ data: { implementerVendors: ["openai"], rule: "cross_vendor" } });
+});
+
+it("worker model projections notice appended fallback models and replacement journals", async () => {
+	const { request, policy, manager } = await fixture();
+	const worker = path.join(request.session.getArtifactsDir!()!, "worker.jsonl");
+	await Promise.all([selectRowAuditModel(request, policy), selectRowAuditModel(request, policy)]);
+	expect(manager.getBranch().at(-1)).toMatchObject({ data: { auditorModel: opus.selector } });
+	await fs.appendFile(
+		worker,
+		`${JSON.stringify({ type: "message", message: { role: "assistant", provider: "anthropic", model: opus.model.id } })}\n`,
+	);
+	await selectRowAuditModel(request, policy);
+	expect(manager.getBranch().at(-1)).toMatchObject({
+		data: { implementerVendors: ["openai", "anthropic"], auditorModel: astra.selector },
+	});
+	await fs.rename(worker, `${worker}.old`);
+	await Bun.write(
+		worker,
+		`${JSON.stringify({ type: "message", message: { role: "assistant", provider: "xai", model: grok.model.id } })}\n`,
+	);
+	await selectRowAuditModel(request, policy);
+	expect(manager.getBranch().at(-1)).toMatchObject({ data: { implementerVendors: ["xai"], rule: "cross_vendor" } });
+	await fs.rm(worker);
+	await selectRowAuditModel(request, policy);
+	expect(manager.getBranch().at(-1)).toMatchObject({
+		data: { implementers: [{ model: "unknown" }], rule: "fallback" },
+	});
+});
+
+it("branching excludes owners from an abandoned row history", async () => {
+	const { request, policy, manager } = await fixture();
+	const leaf = manager.getLeafId()!;
+	await Bun.write(
+		path.join(request.session.getArtifactsDir!()!, "abandoned.jsonl"),
+		`${JSON.stringify({ type: "message", message: { role: "assistant", provider: "xai", model: grok.model.id } })}\n`,
+	);
+	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+		phases: [
+			{ name: "Work", tasks: [{ content: "UI row", status: "in_progress", schedule: { owner: "abandoned" } }] },
+		],
+	});
+	await selectRowAuditModel(request, policy);
+	expect(manager.getBranch().at(-1)).toMatchObject({ data: { implementerVendors: ["openai", "xai"] } });
+	manager.branch(leaf);
+	await selectRowAuditModel(request, policy);
+	expect(manager.getBranch().at(-1)).toMatchObject({
+		data: { implementerVendors: ["openai"], auditorModel: opus.selector },
+	});
+});
+
+it("unbound audits stop at current snapshots before decoding obsolete TODO bodies", async () => {
+	const { request, policy, manager } = await fixture();
+	request.requirementIds = [];
+	const entries = manager.getBranch();
+	Object.assign(manager, {
+		*iterateBranchMatchingNewestFirst(predicate: (metadata: { type: string; customType?: string }) => boolean) {
+			for (const entry of entries.toReversed())
+				if (predicate({ type: entry.type, customType: entry.type === "custom" ? entry.customType : undefined }))
+					yield entry;
+			throw new Error("Obsolete TODO payload decoded for an unbound audit");
+		},
+	});
+	vi.spyOn(manager, "getBranch").mockImplementation(() => {
+		throw new Error("Full journal hydration");
+	});
+	expect(await selectRowAuditModel(request, policy)).toBe(policy);
+});
+
+it("repeated audits reuse historical owners and invalidate rewritten history", async () => {
+	const { request, policy, manager } = await fixture();
+	const entry = manager.getBranch()[0]!;
+	if (entry.type !== "custom") throw new Error("Expected TODO snapshot");
+	let reads = 0;
+	let data = entry.data;
+	Object.defineProperty(entry, "data", {
+		configurable: true,
+		get: () => {
+			reads++;
+			return data;
+		},
+	});
+	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+		phases: [{ name: "Work", tasks: [{ content: "UI row", status: "in_progress", schedule: { owner: "worker" } }] }],
+	});
+	await selectRowAuditModel(request, policy);
+	const previousReads = reads;
+	await selectRowAuditModel(request, policy);
+	expect(reads).toBe(previousReads);
+	data = {
+		phases: [{ name: "Work", tasks: [{ content: "UI row", status: "in_progress", schedule: { owner: "missing" } }] }],
+	};
+	await manager.rewriteEntries();
+	await selectRowAuditModel(request, policy);
+	expect(manager.getBranch().at(-1)).toMatchObject({ data: { rule: "fallback", implementerVendors: ["openai"] } });
+});
+
+it("Main owners retain fallback models while parent model projections follow branch changes", async () => {
+	const { request, policy, manager } = await fixture();
+	manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+		phases: [{ name: "Work", tasks: [{ content: "UI row", status: "in_progress", schedule: { owner: "Main" } }] }],
+	});
+	const append = (model: string) =>
+		manager.appendMessage({
+			role: "assistant",
+			content: [],
+			api: "openai-responses",
+			provider: "test",
+			model,
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: Date.now(),
+		});
+	append(luna.model.id);
+	const leaf = manager.getLeafId()!;
+	const old = manager.getLeafEntry()!;
+	if (old.type !== "message" || old.message.role !== "assistant") throw new Error("Expected assistant");
+	let reads = 0;
+	Object.defineProperty(old.message, "model", {
+		configurable: true,
+		get: () => {
+			reads++;
+			return luna.model.id;
+		},
+	});
+	await selectRowAuditModel(request, policy);
+	const previousReads = reads;
+	await selectRowAuditModel(request, policy);
+	expect(reads).toBe(previousReads);
+	append(opus.model.id);
+	await selectRowAuditModel(request, policy);
+	expect(manager.getBranch().at(-1)).toMatchObject({
+		data: { implementerVendors: ["openai", "anthropic"], auditorModel: astra.selector },
+	});
+	manager.branch(leaf);
+	await selectRowAuditModel(request, policy);
+	expect(manager.getBranch().at(-1)).toMatchObject({
+		data: { implementerVendors: ["openai"], auditorModel: opus.selector },
+	});
+});
