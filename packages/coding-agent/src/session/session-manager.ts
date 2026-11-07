@@ -3791,7 +3791,26 @@ export class SessionManager {
 	 * pre-seal hot-path appends are already in the page cache. Idempotent;
 	 * terminal.
 	 */
+	#restartHandoff = false;
+
+	/** Keep the journal writable while restart teardown callbacks finish. */
+	beginRestartHandoff(): void {
+		if (this.#released) throw new Error("Cannot hand off an already released session journal");
+		this.#restartHandoff = true;
+	}
+
+	/** Called after the final producer drains, immediately before exec. */
+	async finishRestartHandoff(): Promise<void> {
+		await this.close();
+		await this.writeIndexHandoff();
+		this.#restartHandoff = false;
+		this.seal();
+		await this.close();
+		this.releaseRetainedEntries();
+	}
+
 	seal(): void {
+		if (this.#restartHandoff) return;
 		if (this.#released) return;
 		this.#released = true;
 		this.#diskEpoch++;
@@ -3814,6 +3833,7 @@ export class SessionManager {
 	 * dispose, after the final `close()`; idempotent.
 	 */
 	releaseRetainedEntries(): void {
+		if (this.#restartHandoff) return;
 		this.seal();
 		this.#entries = [];
 		this.#branchSelections = new WeakMap();

@@ -74,6 +74,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { pickTableChart } from "../auto-graph/planner";
+import { beginRestartTerminalHandoff } from "../restart-terminal";
 import { restartArgv } from "../cli/flag-tables";
 import type { CollabGuestLink } from "../collab/guest";
 import { CollabController } from "../collab/controller";
@@ -8471,7 +8472,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			!this.#restartControlRestoring &&
 			!this.#restartControlInitializing &&
 			!this.session.isSessionTransitioning &&
-			!this.#isShuttingDown
+			(!this.#isShuttingDown || controller.snapshot().request?.state === "restarting")
 		) {
 			return { ...controller.snapshot(), identity, cwd: this.sessionManager.getCwd(), loadedExtensions };
 		}
@@ -8680,14 +8681,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		const draftAtSnapshot = this.editor.getText();
 		if (this.#signalTeardown) await this.#signalTeardown.saveDraft();
 		else await this.#sessionConnection.saveDraft(this.#inputController.getDraftText(), this.#draftEditorState());
-		// Release the writer claim before replacing the runtime with the exact checkpoint.
+		this.sessionManager.beginRestartHandoff();
+		// Flush the checkpoint; keep the journal writable through final teardown.
 		await this.#sessionConnection.checkpoint();
 		// Keys typed while the checkpoint flushed reached the editor after the snapshot; stopping the
 		// UI drains stdin, so persist the final text now or those keys are lost with the old process.
 		await this.#persistLateDraft(draftAtSnapshot);
 		await this.sessionManager.writeIndexHandoff();
-		this.ui.stop();
-		await this.#relaunch(cmd, sessionId, sessionFile);
+		const terminal = beginRestartTerminalHandoff();
+		try {
+			await this.#restartControlPublication?.prepareHandoff();
+			this.ui.stop();
+			await this.#relaunch(cmd, sessionId, sessionFile, terminal);
+		} finally {
+			terminal.reclaim();
+			terminal.restore();
+		}
 	}
 
 	/** Cursor, collapsed-content payloads and unsent image attachments of the composer. */
@@ -8734,7 +8743,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	/** Close the session, then replace this process with the relaunch command. */
-	async #relaunch(cmd: string[], sessionId: string, sessionFile: string): Promise<void> {
+	async #relaunch(
+		cmd: string[],
+		sessionId: string,
+		sessionFile: string,
+		terminal: { reclaim(): void; restore(): void },
+	): Promise<void> {
 		if (this.#isShuttingDown) throw new Error("Cannot restart while the session is already shutting down");
 		this.#beginClose();
 		try {
@@ -8751,7 +8765,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			process.stderr.write(`Restart cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
 		}
 		try {
-			execRestartSuccessor(cmd, sessionId);
+			await this.session.finishRestartHandoff();
+			terminal.reclaim();
+			terminal.restore();
+			execRestartSuccessor(cmd, sessionId, this.#restartInstanceId);
 		} catch (error) {
 			process.stderr.write(
 				`Restart failed; resume with omp --resume ${JSON.stringify(sessionFile)}: ${String(error)}\n`,
@@ -8837,7 +8854,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.closeNative();
 		// Drain any in-flight Kitty key release events before stopping.
 		// This prevents escape sequences from leaking to the parent shell over slow SSH.
-		await this.#disposeRestartControl();
+		if (this.#restartQueueController?.snapshot().request?.state !== "restarting") await this.#disposeRestartControl();
 		await this.ui.terminal.drainInput(1000);
 		// Stop the run-state spinner interval BEFORE restoring the shell title, so a
 		// pending tick cannot re-emit an OSC title after `popTerminalTitle` hands the

@@ -93,6 +93,37 @@ describe("restart-control local IPC", () => {
 		);
 	});
 
+	it("keeps replacing runtime visible after exec closes the control socket", async () => {
+		const runtimeDir = await setupDir();
+		const identity = { instanceId: "instance-handoff-1234", sessionId: "handoff", generation: 1 };
+		const snapshot: RestartControlSnapshot = {
+			identity,
+			pid: process.pid,
+			cwd: "/workspace",
+			request: {
+				version: 1,
+				requestId: "handoff",
+				sessionId: "handoff",
+				rootWasRunning: false,
+				state: "restarting",
+				requestedAt: 1,
+				updatedAt: 1,
+				drainStatus: { stage: "replace_runtime", stageStartedAt: 1, runningWorkers: [], queuedInputCount: 0 },
+			},
+		};
+		const publication = await publishRestartControl(
+			{ snapshot: () => snapshot, handle: async () => snapshot },
+			{ runtimeDir },
+		);
+		publications.push(publication);
+		await publication.prepareHandoff?.();
+		const metadata = await Bun.file(path.join(runtimeDir, `${identity.instanceId}.json`)).json();
+		await fs.unlink(metadata.endpoint);
+		expect((await listRestartControls({ runtimeDir }))[0]?.request?.drainStatus?.stage).toBe("replace_runtime");
+		expect((await sendRestartControl({ identity, op: "status" }, { runtimeDir })).request?.state).toBe("restarting");
+		await expect(sendRestartControl({ identity, op: "cancel" }, { runtimeDir })).rejects.toThrow();
+	});
+
 	it("discovers an exact target without probing an unrelated endpoint", async () => {
 		const runtimeDir = await setupDir();
 		const identity = { instanceId: "instance-target-1234", sessionId: "target", generation: 1 };
@@ -346,6 +377,7 @@ describe.skipIf(!liveRestartSupported)("restart process replacement CLI", () => 
 		const env: Record<string, string | undefined> = {
 			...process.env,
 			HOME: home,
+			PI_CONFIG_DIR: ".omp",
 			PI_CODING_AGENT_DIR: agentDir,
 			OMP_PROFILE: "",
 			PI_PROFILE: "",
