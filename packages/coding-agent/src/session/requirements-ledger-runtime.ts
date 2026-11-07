@@ -1708,8 +1708,8 @@ export class RequirementsLedgerRuntime {
 			this.#host.sessionManager,
 			metadata =>
 				metadata.type === "custom" &&
-				(metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE ||
-					metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE),
+				((!foundLedger && metadata.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) ||
+					(!assignmentEntry && metadata.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE)),
 		)) {
 			if (entry.type !== "custom") continue;
 			if (!foundLedger && entry.customType === REQUIREMENTS_LEDGER_CUSTOM_TYPE) {
