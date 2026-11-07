@@ -42,12 +42,12 @@ import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
-import { appendTimedNote, renderPlanFactNote } from "./lead_time_notes";
+import { appendTimedNote, renderPlanFactNote, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
 import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
-import { wakeDemand, countsAsWakeAction, type WakeReceipt } from "./dispatch_wake";
+import { wakeDemand as stalledWakeDemand, countsAsWakeAction, type WakeReceipt } from "./dispatch_wake";
 import dispatchWakeInstructions from "./dispatch-wake.md" with { type: "text" };
 
 function pendingWorkerQuestions(ctx: ExtensionContext): Array<{ worker: string; question: string }> {
@@ -2504,9 +2504,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let persistedChildren: PersistedChild[] = [];
   let sprintState: SprintState = blankSprintState();
   let wakeContext: ExtensionContext | undefined;
-  let wakeTurn: { before: TodoScheduleInput; toolCalls: number; mutations: number; target?: string } | undefined;
+  let wakeTurn: { before: TodoScheduleInput; toolCalls: number; mutations: number; target?: string; chain?: WaitChainDemand; rejection?: string } | undefined;
   let wakeJobs: string | undefined;
   let wakeHasEvent = false;
+  const chainDemand = (phases: TodoScheduleInput) => waitChainDemands(phases).find(demand => !waitChainRejection(demand, phases));
+  const wakeDemand = (phases, ...args) => chainDemand(phases) ?? stalledWakeDemand(phases, ...args);
   const prepareWake = (ctx: ExtensionContext) => {
     const before = todoPhases(ctx);
     const jobs = (ctx.getAsyncJobSnapshot()?.recent ?? []).filter(job => job.type === "task").map(job => [job.id, job.status]);
@@ -2519,6 +2521,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const decision = currentDecision(ctx);
     const demand = wakeDemand(before, runningOwnerNames(ctx), Date.now(), decision.deadline?.deadlineAt, decision.forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx));
     if (demand?.churn) wakeTurn.target = demand.row;
+    wakeTurn.chain = chainDemand(before);
+    if (wakeTurn.chain) pi.appendEntry("todo-dispatch-action-demand", { key: demand.key, action: demand.action, edges: wakeTurn.chain.edges, misses: receipt?.key === demand.key ? receipt.misses : 0, toolCalls: 0, mutations: 0 });
     const misses = demand && receipt?.key === demand.key ? receipt.misses : 0;
     return { silentAssistant: !realUpdate, ...(demand ? { actionDemand: prompt.render(dispatchWakeInstructions, { ...demand, misses, escalation: misses > 0 }).trim() } : {}) };
   };
@@ -2962,6 +2966,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     healPlanTicker(ctx);
   });
   pi.on("turn_start", (_event, ctx) => {
+    if (!singleWriterLane && !pauseGate?.paused && isMain(ctx) && chainDemand(todoPhases(ctx))) {
+      const wake = prepareWake(ctx);
+      pi.sendMessage({ customType: "todo-dispatch-action-required", content: wake.actionDemand, display: false, attribution: "agent" }, { deliverAs: "steer", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
+    }
     sprintState.lastNotices = Object.fromEntries(Object.entries(sprintState.lastNotices).filter(([key]) => !key.startsWith("todo-gate-staffing\0")));
     announceGates(ctx);
     idlePlanDemandedThisTurn = false;
@@ -6180,7 +6188,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
   };
   pi.on("tool_result", async (event, ctx) => {
-    if (wakeTurn && !event.isError && countsAsWakeAction(event.toolName, event.input, wakeTurn.before, todoPhases(ctx), wakeTurn.target)) wakeTurn.mutations += 1;
+    if (wakeTurn && !event.isError) {
+      const phases = todoPhases(ctx);
+      if (wakeTurn.chain) {
+        if (waitChainAction(wakeTurn.chain, event.toolName, event.input, wakeTurn.before, phases)) wakeTurn.mutations += 1;
+        if (event.toolName === "todo") wakeTurn.rejection = waitChainRejection(wakeTurn.chain, phases);
+      } else if (countsAsWakeAction(event.toolName, event.input, wakeTurn.before, phases, wakeTurn.target)) wakeTurn.mutations += 1;
+      wakeTurn.before = structuredClone(phases);
+    }
     if (event.toolName === "todo" && !event.isError) await refreshPush(ctx, true);
     if (previewConfig(ctx).enabled && isMain(ctx)) {
       if (event.toolName === "todo" && !event.isError) {
@@ -6448,17 +6463,21 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (wakeTurn && isMain(ctx)) {
       const decision = currentDecision(ctx);
       const demand = wakeDemand(todoPhases(ctx), runningOwnerNames(ctx), Date.now(), decision.deadline?.deadlineAt, decision.forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx));
-      if (demand && wakeTurn.mutations === 0) {
+      if (demand && wakeTurn.mutations === 0 && !wakeTurn.rejection) {
         const previous = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-demand")?.data as WakeReceipt | undefined;
         const misses = Math.min(100, previous?.key === demand.key ? previous.misses + 1 : 1);
         const receipt: WakeReceipt = { key: demand.key, action: demand.action, misses, toolCalls: wakeTurn.toolCalls, mutations: 0 };
         pi.appendEntry("todo-dispatch-action-demand", receipt);
         pi.sendMessage({ customType: "todo-dispatch-action-required", content: prompt.render(dispatchWakeInstructions, { ...receipt, escalation: misses > 1 }).trim(), display: false, attribution: "agent" }, { deliverAs: "steer", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
       }
+      if (wakeTurn.rejection) pi.appendEntry("todo-dispatch-action-demand", { key: wakeTurn.chain.key, action: wakeTurn.chain.action, edges: wakeTurn.chain.edges, rejection: wakeTurn.rejection, misses: 0, toolCalls: wakeTurn.toolCalls, mutations: 0 });
       if (wakeTurn.mutations > 0) pi.appendEntry("todo-dispatch-action-demand", { key: demand?.key ?? "resolved", action: demand?.action ?? "", misses: 0, toolCalls: wakeTurn.toolCalls, mutations: wakeTurn.mutations });
       wakeTurn.toolCalls = 0;
       wakeTurn.mutations = 0;
       wakeTurn.before = structuredClone(todoPhases(ctx));
+      wakeTurn.target = demand?.churn ? demand.row : undefined;
+      wakeTurn.chain = chainDemand(todoPhases(ctx));
+      wakeTurn.rejection = undefined;
     }
     releaseLapsedPostDeadline(ctx);
     checkDeliveries(ctx);

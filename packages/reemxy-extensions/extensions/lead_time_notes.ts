@@ -1,5 +1,7 @@
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import chainInstructions from "./todo_dispatch-chain.md" with { type: "text" };
+import { todoRowAfterWorker } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import planfactNote from "./planfact-note.md" with { type: "text" };
 import { selectBranchNewestFirst } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -83,4 +85,68 @@ export function renderPlanFactNote(
 		churn, slipped: slip > 0, slipMinutes: Math.ceil(slip / 60_000),
 		questions: questions.slice(0, 4).map(item => ({ worker: item.worker.slice(0, 80), question: item.question.slice(0, 400) })),
 	}).trim();
+}
+
+export type WaitChainDemand = { key: string; action: string; churn: true; row: string; edges: Array<{ task: string; dependency: string }> };
+
+/** Review logical edges, not resource ordering. Traverse through every open descendant. */
+export function waitChainDemands(phases: TodoScheduleInput): WaitChainDemand[] {
+	const rows = phases.flatMap(phase => phase.tasks).filter(row => row.status !== "completed" && row.status !== "abandoned");
+	return rows.flatMap(head => {
+		const failures = head.schedule?.attemptHistory?.filter(attempt => attempt.terminalStatus !== "completed" || attempt.rejectionReason).length ?? 0;
+		const churn = failures >= 3 || (head.schedule?.cumulativeReestimateCount ?? head.schedule?.reestimateCount ?? 0) >= 3;
+		const afterWorker = todoRowAfterWorker(head);
+		if (!churn && !(afterWorker?.kind === "needs-worker" && afterWorker.reason === "audit-failed")) return [];
+		const reached = new Set([head.content]);
+		const edges: WaitChainDemand["edges"] = [];
+		for (let changed = true; changed;) {
+			changed = false;
+			for (const row of rows) {
+				if (reached.has(row.content)) continue;
+				if (!(row.schedule?.dependencies ?? []).some(dep => reached.has(dep))) continue;
+				reached.add(row.content);
+				changed = true;
+			}
+		}
+		for (const row of rows) for (const dependency of row.schedule?.dependencies ?? []) {
+			if (row.content !== head.content && reached.has(row.content) && reached.has(dependency)) edges.push({ task: row.content, dependency });
+		}
+		// At least two rows including the head; cycles cannot inflate the count.
+		if (reached.size < 2) return [];
+		edges.sort((a, b) => a.task.localeCompare(b.task) || a.dependency.localeCompare(b.dependency));
+		const key = `chain:${Bun.hash(JSON.stringify([head.content, edges])).toString(16)}`;
+		return [{ key, edges, row: head.content, churn: true as const,
+			action: prompt.render(chainInstructions, { head: head.content, edges, key }).trim() }];
+	});
+}
+
+export function waitChainAction(
+	demand: WaitChainDemand,
+	toolName: string,
+	input: { op?: string; isolated?: boolean; tasks?: Array<{ name?: string; task?: string; isolated?: boolean }> } | undefined,
+	before: TodoScheduleInput,
+	after: TodoScheduleInput,
+): boolean {
+	const rows = after.flatMap(phase => phase.tasks);
+	if (toolName === "task") return input?.tasks?.some(task => demand.edges.some(edge => {
+		const row = rows.find(row => row.content === edge.task);
+		return (task.task === edge.task || (!!row?.schedule?.owner && task.name === row.schedule.owner)) && (task.isolated ?? input.isolated) === true && row !== undefined && row.status !== "blocked" &&
+			(row?.schedule?.dependencies ?? []).every(dep => rows.some(other => other.content === dep && (other.status === "completed" || other.status === "abandoned")));
+	})) ?? false;
+	if (toolName !== "todo") return false;
+	const previous = before.flatMap(phase => phase.tasks);
+	return demand.edges.some(edge => {
+		const row = rows.find(row => row.content === edge.task);
+		const prior = previous.find(row => row.content === edge.task);
+		return prior?.schedule?.dependencies?.includes(edge.dependency) && row !== undefined && !row.schedule?.dependencies?.includes(edge.dependency);
+	});
+}
+
+/** Explicit refusal is persisted on the head, and must explain every reviewed link. */
+export function waitChainRejection(demand: WaitChainDemand, phases: TodoScheduleInput): string | undefined {
+	const head = phases.flatMap(phase => phase.tasks).find(row => row.content === demand.row);
+	const reason = head?.schedule?.progress?.evidence;
+	if (!reason?.startsWith(`Dependency review ${demand.key}:`)) return;
+	if (!demand.edges.every(edge => reason.split("\n").some(line => line.startsWith(`${edge.task} <- ${edge.dependency}: `) && line.slice(`${edge.task} <- ${edge.dependency}: `.length).trim().length > 0))) return;
+	return reason;
 }
