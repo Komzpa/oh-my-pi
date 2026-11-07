@@ -128,8 +128,13 @@ test("50 native todo view/update calls stay off historical payloads after resume
 				: { op: "schedule", updates: [{ task: "Deliver", owner: `Worker${cycle}` }] },
 		);
 		expect(result.isError).not.toBe(true);
-		if (cycle % 2 === 0) expect(result.details?.archivedPhases?.[0]?.tasks[0]?.content).toBe("Shipped");
-		else history.push(entry(`update-${cycle}`, { phases }));
+		if (cycle % 2 === 0) {
+			expect(result.details?.archivedPhases?.[0]?.tasks[0]?.content).toBe("Shipped");
+			expect(result.details?.archiveSummary?.count).toBe(1);
+			// Results are owned by the caller; editing a view must not poison the folded cache.
+			result.details!.archivedPhases![0]!.tasks[0]!.content = "consumer edit";
+			result.details!.archiveSummary!.count = 99;
+		} else history.push(entry(`update-${cycle}`, { phases }));
 	}
 	expect(phases[0]?.tasks[0]?.schedule?.owner).toBe("Worker49");
 	expect(decoded - warmDecoded).toBeLessThanOrEqual(50);
