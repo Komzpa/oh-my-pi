@@ -7360,11 +7360,26 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
+	#restartHandoffSessions: AgentSession[] = [];
+
+	/** Retain local worker journals too: their shutdown hooks can append during root teardown. */
+	beginRestartHandoff(children: readonly AgentSession[] = []): void {
+		this.#restartHandoffSessions = [...new Set([...children, this])];
+		for (const session of this.#restartHandoffSessions) session.sessionManager.beginRestartHandoff();
+	}
+
 	/** Restart must not exec while a timed-out persistence handler is still unwinding. */
 	async finishRestartHandoff(): Promise<void> {
-		await this.agent.waitForIdle();
-		await this.#drainInFlightEventHandlers();
-		await this.sessionManager.finishRestartHandoff();
+		const sessions = this.#restartHandoffSessions.length ? this.#restartHandoffSessions : [this];
+		await Promise.all(
+			sessions.map(async session => {
+				await session.#disposeCall;
+				await session.agent.waitForIdle();
+				await session.#drainInFlightEventHandlers();
+			}),
+		);
+		for (const session of sessions) await session.sessionManager.finishRestartHandoff();
+		this.#restartHandoffSessions = [];
 	}
 
 	/** Drop the in-memory conversation state after the terminal dispose flush. */
