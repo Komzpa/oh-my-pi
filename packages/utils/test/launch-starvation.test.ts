@@ -11,6 +11,22 @@ afterEach(() => {
 // A parent timer is created outside all four launch scopes. It occupies the
 // main thread before resolving each continuation; child spans themselves stay fast.
 test("concurrent launch traces expose parent CPU bursts between fast child spans", async () => {
+	// Keep the deliberate multi-second blocks out of the suite's shared loop.
+	if (process.env.OMP_STARVATION_FIXTURE !== "1") {
+		const child = Bun.spawn([process.execPath, "test", import.meta.path], {
+			env: { ...process.env, OMP_STARVATION_FIXTURE: "1" },
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [stdout, stderr, code] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		console.log(stdout);
+		expect({ code, stderr }).toMatchObject({ code: 0 });
+		return;
+	}
 	const logs = vi.spyOn(logger, "debug").mockImplementation(() => {});
 	vi.spyOn(logger, "warn").mockImplementation(() => {});
 	for (const blockMs of [0, 1000]) {
