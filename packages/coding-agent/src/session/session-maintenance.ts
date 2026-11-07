@@ -766,12 +766,10 @@ export class SessionMaintenance {
 		const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
 		if (contextTokens >= thresholdTokens) return;
 		if (thresholdTokens - contextTokens > resolveSpeculationLeadTokens(thresholdTokens)) return;
-		const branch = this.#host.sessionManager.getBranchMatching(
+		const boundary = this.#host.sessionManager.getLatestBranchMatching(
 			metadata => metadata.type === "compaction" || metadata.type === "reset_boundary",
 		);
-		const boundaryId =
-			branch.findLast(entry => entry.type === "compaction" || entry.type === "reset_boundary")?.id ??
-			`uncompacted:${this.#host.sessionManager.getSessionId()}`;
+		const boundaryId = boundary?.id ?? `uncompacted:${this.#host.sessionManager.getSessionId()}`;
 		if (this.#experimentalNotesReminderBoundaryId === boundaryId) return;
 		this.#experimentalNotesReminderBoundaryId = boundaryId;
 		this.#host.queueExperimentalContextNotesReminder(experimentalContextNotesReminderPrompt);
@@ -2121,9 +2119,7 @@ export class SessionMaintenance {
 			);
 			if (!safeToContinue) {
 				const warning = this.#compactionDeadEndWarning("clear large tool output");
-				const entry = getLatestCompactionEntry(
-					this.#host.sessionManager.getBranchMatching(metadata => metadata.type === "compaction"),
-				);
+				const entry = this.#latestCompactionEntry();
 				if (entry) {
 					entry.warning = warning;
 					await this.#host.sessionManager.rewriteEntries();
@@ -3186,9 +3182,7 @@ export class SessionMaintenance {
 		// The error shouldn't trigger another compaction since we already compacted.
 		// Example: opus fails -> switch to codex -> compact -> switch back to opus -> opus error
 		// is still in context but shouldn't trigger compaction again.
-		const compactionEntry = getLatestCompactionEntry(
-			this.#host.sessionManager.getBranchMatching(metadata => metadata.type === "compaction"),
-		);
+		const compactionEntry = this.#latestCompactionEntry();
 		const errorIsFromBeforeCompaction =
 			compactionEntry !== null && assistantMessage.timestamp < new Date(compactionEntry.timestamp).getTime();
 		const payloadRejection =
@@ -4593,15 +4587,8 @@ export class SessionMaintenance {
 			),
 			Math.max(
 				0,
-				this.#estimateStoredContextTokens(
-					[],
-					tokenizer,
-					this.#messagesAsRead(
-						messages,
-						this.#host.sessionManager.getBranchMatching(metadata => metadata.type === "compaction"),
-						model,
-					),
-				) - storedExcludedTokens,
+				this.#estimateStoredContextTokens([], tokenizer, this.#messagesAsRead(messages, undefined, model)) -
+					storedExcludedTokens,
 			),
 		);
 		return residualTokens <= fitBudget;
@@ -5074,6 +5061,12 @@ export class SessionMaintenance {
 		return read ?? messages;
 	}
 
+	#latestCompactionEntry(): CompactionEntry | null {
+		const entry = this.#host.sessionManager.getLatestBranchMatching(metadata => metadata.type === "compaction");
+		const retained = entry && this.#host.sessionManager.getEntry(entry.id);
+		return retained?.type === "compaction" ? retained : null;
+	}
+
 	/** The compaction entry among `entries` whose snapcompact archive `message` was built from. */
 	#archiveEntry(message: CompactionSummaryMessage, entries?: readonly SessionEntry[]): CompactionEntry | undefined {
 		const cached = this.#summaryEntries.get(message);
@@ -5085,11 +5078,17 @@ export class SessionMaintenance {
 			snapcompact.getPreservedArchive(entry.preserveData) !== undefined;
 		const candidates = entries
 			? entries.toReversed()
-			: this.#host.sessionManager.iterateBranchMatchingNewestFirst(metadata => metadata.type === "compaction");
+			: this.#host.sessionManager.iterateBranchMatchingNewestFirst(
+					metadata =>
+						metadata.type === "compaction" &&
+						(metadata.compactionTimestamp === undefined || metadata.compactionTimestamp === message.timestamp),
+				);
 		for (const entry of candidates) {
 			if (!matches(entry)) continue;
-			this.#summaryEntries.set(message, entry);
-			return entry;
+			const retained = entries ? entry : this.#host.sessionManager.getEntry(entry.id);
+			if (retained?.type !== "compaction") continue;
+			this.#summaryEntries.set(message, retained);
+			return retained;
 		}
 		return undefined;
 	}
@@ -5612,9 +5611,7 @@ export class SessionMaintenance {
 					// immediately, so a later stamp would not appear until some
 					// unrelated rebuild.
 					if (deadEndWarning && frameRescueResult) {
-						const stampEntry = getLatestCompactionEntry(
-							this.#host.sessionManager.getBranchMatching(metadata => metadata.type === "compaction"),
-						);
+						const stampEntry = this.#latestCompactionEntry();
 						if (stampEntry) {
 							stampEntry.warning = deadEndWarning;
 							await this.#host.sessionManager.rewriteEntries();
@@ -6513,12 +6510,7 @@ export class SessionMaintenance {
 			}
 		}
 
-		if (
-			savedCompactionEntry &&
-			getLatestCompactionEntry(
-				this.#host.sessionManager.getBranchMatching(metadata => metadata.type === "compaction"),
-			)?.id === savedCompactionEntry.id
-		) {
+		if (savedCompactionEntry && this.#latestCompactionEntry()?.id === savedCompactionEntry.id) {
 			const postRescueTokensAfter =
 				isRecord(args.details) && args.details.kind === "experimental-context-rollover"
 					? this.#projectExperimentalContextRolloverTokens(args)
@@ -6541,10 +6533,7 @@ export class SessionMaintenance {
 			// the branch's LATEST compaction entry — a frame rescue may have
 			// superseded `savedCompactionEntry` with a rebuilt one, and the
 			// collapsed transcript badges only the active entry.
-			const stampEntry =
-				getLatestCompactionEntry(
-					this.#host.sessionManager.getBranchMatching(metadata => metadata.type === "compaction"),
-				) ?? savedCompactionEntry;
+			const stampEntry = this.#latestCompactionEntry() ?? savedCompactionEntry;
 			if (stampEntry) {
 				stampEntry.warning = deadEndWarning;
 				await this.#host.sessionManager.rewriteEntries();

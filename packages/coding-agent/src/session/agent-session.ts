@@ -364,7 +364,7 @@ import {
 } from "./async-job-delivery";
 import { type BashExecuteOptions, BashRunner, type BashRunnerHost } from "./bash-runner";
 import {
-	checkpointStartedAtFromEntry,
+	readCheckpointRewindState,
 	completedRewindFromEntry,
 	isSuccessfulCheckpointEntry,
 	semanticToolResult,
@@ -9279,44 +9279,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	#rehydrateCheckpointRewindState(): void {
 		this.#clearCheckpointRuntimeState();
-		let completed: CompletedRewindState | undefined;
-		let pending: { entryId: string; startedAt: string; messageCount: number } | undefined;
-		let messageCount = 0;
-		const messageCounts = new Map<string, number>();
-		const checkpointEntries = this.sessionManager.getBranchMatching(metadata => {
-			if (metadata.type === "message") messageCount++;
-			const candidate =
-				metadata.type === "custom_message" ||
-				(metadata.messageRole === "toolResult" &&
-					(metadata.toolName === "write" || semanticToolResult(metadata.toolName, {}) !== undefined));
-			if (candidate) messageCounts.set(metadata.id, messageCount);
-			return candidate;
-		});
-		for (const entry of checkpointEntries) {
-			if (isSuccessfulCheckpointEntry(entry)) {
-				completed = undefined;
-				pending = {
-					entryId: entry.id,
-					startedAt: checkpointStartedAtFromEntry(entry) ?? entry.timestamp,
-					messageCount: messageCounts.get(entry.id)!,
-				};
-				continue;
-			}
-			const completedFromEntry = completedRewindFromEntry(entry);
-			if (completedFromEntry) {
-				completed = completedFromEntry;
-				pending = undefined;
-			}
-		}
-		if (pending) {
-			this.#checkpointState = {
-				checkpointEntryId: pending.entryId,
-				startedAt: pending.startedAt,
-				checkpointMessageCount: pending.messageCount,
-			};
-			return;
-		}
-		this.#lastCompletedRewind = completed;
+		const state = readCheckpointRewindState(this.sessionManager);
+		this.#checkpointState = state.checkpoint;
+		this.#lastCompletedRewind = state.completed;
 	}
 
 	getCheckpointState(): CheckpointState | undefined {
