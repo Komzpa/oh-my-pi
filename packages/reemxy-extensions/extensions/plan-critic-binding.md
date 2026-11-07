@@ -1,6 +1,1 @@
-Plan critic verdict {{verdictId}}. Escalated: {{escalated}}.
-Execute every pending action using todo/task, or explicitly reject it with a reason via plan_critic_action.
-Escalation actions require a concrete owner question through that tool. Prose acknowledgements do not close actions.
-
-Pending actions:
-{{{pending}}}
+Plan critic verdict {{verdictId}}. Pending row actions are in FIX NOW. Execute them with todo/task or reject an action with its reason through plan_critic_action.

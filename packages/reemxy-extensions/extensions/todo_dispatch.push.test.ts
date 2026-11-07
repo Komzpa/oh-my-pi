@@ -111,12 +111,32 @@ test("live heads create one notice and priority push row, then a worker push cle
 			expect(phases[0].tasks[0].status).toBe("pending");
 			expect(statuses.at(-1)).toMatch(/1 unpushed · oldest 80m/);
 		} finally { sync.mockRestore(); }
+		// Live chief shape: three unstaffed own rows, overdue publication, refused spawn.
+		const readyRows = ["Cooling trunks", "Power source", "Render frame"].map(content => ({ content, status: "pending", schedule: { dependencies: [] } }));
+		phases[0].tasks.push(...readyRows);
+		const tailOf = result => result?.content?.at(-1)?.text ?? "receipt";
+		const refused = await handlers.get("tool_result")!({ toolName: "task", input: {}, isError: true, content: [{ type: "text", text: "refused: staff existing rows first" }] }, ctx);
+		const refusedTail = tailOf(refused);
+		expect(refusedTail).toStartWith("FIX NOW:");
+		expect(refusedTail).toContain("Push");
+		expect(refusedTail).toContain("Repair refused staffing for");
+		expect(refusedTail.indexOf("Cooling trunks")).toBeLessThan(refusedTail.indexOf("Power source"));
+		expect(refusedTail.indexOf("Power source")).toBeLessThan(refusedTail.indexOf("Render frame"));
+		for (const row of readyRows) {
+			row.status = "completed";
+			const result = await handlers.get("tool_result")!({ toolName: "read", input: {}, content: [{ type: "text", text: "receipt" }] }, ctx);
+			expect(tailOf(result)).not.toContain(row.content);
+			expect(tailOf(result)).toContain("Push");
+		}
+		await handlers.get("tool_result")!({ toolName: "task", input: {}, isError: false, content: [{ type: "text", text: "staffed" }] }, ctx);
 		const worker = join(dir, "worker");
 		git(work, id, "worktree", "add", "--detach", worker, "HEAD");
 		git(worker, id, "-c", "remote.origin.fetch=", "push", "-q", "origin", "HEAD:refs/heads/worker-published");
 		// A new remote branch deliberately leaves origin/<lead branch> stale.
 		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBe(0);
 		await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+		const cleared = await handlers.get("tool_result")!({ toolName: "read", input: {}, content: [{ type: "text", text: "receipt" }] }, ctx);
+		expect(cleared?.content?.at(-1)?.text ?? "").not.toContain("FIX NOW:");
 		expect(phases[0].tasks[0].status).toBe("completed");
 		expect(statuses.at(-1)).toBeUndefined();
 		expect(notices.filter(message => message.customType === "todo-unpushed")).toHaveLength(1);
@@ -130,7 +150,7 @@ test("live heads create one notice and priority push row, then a worker push cle
 		git(work, id, "config", "omp.unpushedThresholdMinutes", "15");
 		await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 		expect(notices.filter(message => message.customType === "todo-unpushed")).toHaveLength(2);
-		expect(phases.flatMap(phase => phase.tasks)).toHaveLength(2);
+		expect(phases.flatMap(phase => phase.tasks)).toHaveLength(5);
 		expect(phases[0].tasks[0].status).toBe("pending");
 		git(work, id, "remote", "set-url", "origin", join(dir, "missing.git"));
 		await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
