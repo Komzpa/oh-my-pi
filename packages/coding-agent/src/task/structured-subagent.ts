@@ -1,4 +1,5 @@
 import { isReadOnlyAgent, isReadOnlyWorkerRole, readOnlyWorkerTools } from "./read-only-policy";
+import { BUILTIN_TOOLS } from "../tools";
 /**
  * Shared policy resolution and execution for task and eval subagents.
  *
@@ -40,7 +41,7 @@ import isolationRecoveryHintTemplate from "../prompts/tools/isolation-recovery-h
 import salvagedChildHintTemplate from "../prompts/tools/salvaged-child-hint.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { AUTO_THINKING, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
-import { BUILTIN_TOOLS, type ToolSession } from "../tools";
+import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
 import { trackLateCleanup } from "../utils/late-cleanup";

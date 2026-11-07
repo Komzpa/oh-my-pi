@@ -55,3 +55,27 @@ test("a complete imported EOF record is observed once before its delayed newline
 	await read();
 	expect(ids).toEqual(["eof", "next"]);
 });
+
+test("an in-place rewrite that grows past the old size restarts from offset zero", async () => {
+	using dir = TempDir.createSync("journal-rewrite-");
+	const file = path.join(dir.path(), "session.jsonl");
+	const cursor = new JournalCursor();
+	const ids: string[] = [];
+	const read = () =>
+		cursor.read(
+			file,
+			entry => ids.push(entry.id),
+			() => {
+				ids.length = 0;
+			},
+		);
+	await Bun.write(file, '{"type":"custom","id":"old"}\n');
+	await read();
+	expect(ids).toEqual(["old"]);
+	const handle = await fs.open(file, "r+");
+	await handle.truncate(0);
+	await handle.write('{"type":"custom","id":"new-first"}\n{"type":"custom","id":"new-second"}\n', 0);
+	await handle.close();
+	await read();
+	expect(ids).toEqual(["new-first", "new-second"]);
+});

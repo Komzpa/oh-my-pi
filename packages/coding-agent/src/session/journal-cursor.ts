@@ -8,6 +8,8 @@ export class JournalCursor {
 	#identity: string | undefined;
 	#mtime = 0;
 	#size = 0;
+	/** First bytes seen at offset 0; an in-place rewrite that grows past the old size changes them. */
+	#prefix: Buffer | undefined;
 
 	#tail: Promise<void> = Promise.resolve();
 	read(
@@ -33,19 +35,33 @@ export class JournalCursor {
 			if (!isEnoent(error)) throw error;
 			this.#identity = undefined;
 			this.#offset = 0;
+			this.#prefix = undefined;
 			reset();
 			return;
 		}
 		try {
 			const stat = await handle.stat();
 			const identity = `${file}:${stat.dev}:${stat.ino}`;
+			let rewritten = false;
+			if (this.#prefix && identity === this.#identity && stat.size >= this.#prefix.length) {
+				const probe = Buffer.allocUnsafe(this.#prefix.length);
+				const { bytesRead } = await handle.read(probe, 0, probe.length, 0);
+				rewritten = bytesRead !== probe.length || !probe.equals(this.#prefix);
+			}
 			if (
+				rewritten ||
 				identity !== this.#identity ||
 				stat.size < this.#size ||
 				(stat.size === this.#size && stat.mtimeMs !== this.#mtime)
 			) {
 				this.#offset = 0;
+				this.#prefix = undefined;
 				reset();
+			}
+			if (!this.#prefix && stat.size > 0) {
+				const head = Buffer.allocUnsafe(Math.min(4096, stat.size));
+				const { bytesRead } = await handle.read(head, 0, head.length, 0);
+				this.#prefix = Buffer.from(head.subarray(0, bytesRead));
 			}
 			this.#identity = identity;
 			this.#size = stat.size;
@@ -99,6 +115,7 @@ export class JournalCursor {
 		} catch (error) {
 			this.#identity = undefined;
 			this.#offset = 0;
+			this.#prefix = undefined;
 			reset();
 			throw error;
 		} finally {
