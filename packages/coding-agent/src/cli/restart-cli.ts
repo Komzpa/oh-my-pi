@@ -1,10 +1,4 @@
-import {
-	getRestartControl,
-	listRestartControls,
-	RestartControlError,
-	sendRestartControl,
-	waitForRestartResult,
-} from "../restart-control";
+import { getRestartControl, listRestartControls, RestartControlError, sendRestartControl } from "../restart-control";
 import {
 	formatRestartRequestStatus,
 	type RestartControlRequest,
@@ -40,7 +34,7 @@ function printSnapshot(action: RestartAction, snapshot: RestartControlSnapshot):
 	if (action === "request") {
 		process.stdout.write(
 			request
-				? `Restart ${request.state} for ${snapshot.identity.instanceId} (${request.requestId}).\n`
+				? `Restart ${request.state} for ${snapshot.identity.instanceId} (${request.requestId}); stage ${request.drainStatus?.stage ?? request.state}.\n`
 				: `Restart request accepted for ${snapshot.identity.instanceId}.\n`,
 		);
 		return;
@@ -80,26 +74,7 @@ export async function runRestartCommand(command: RestartCommandArgs): Promise<vo
 			...(command.requestId === undefined ? {} : { requestId: command.requestId }),
 			...(command.reason === undefined ? {} : { reason: command.reason }),
 		};
-		let updated = await sendRestartControl(request);
-		if (command.action === "request") {
-			let previousStatus: string | undefined;
-			updated = await waitForRestartResult(updated, {
-				onProgress: snapshot => {
-					if (command.json) return;
-					const status = snapshot.request;
-					const key = `${status?.state}:${status?.drainStatus?.stage}`;
-					if (key === previousStatus) return;
-					previousStatus = key;
-					process.stderr.write(`${formatRestartRequestStatus(status)}\n`);
-				},
-			});
-			if (updated.request?.state === "failed") {
-				throw new RestartControlError(
-					"handler_failed",
-					updated.request.error ?? "Restart failed; the original process was kept alive",
-				);
-			}
-		}
+		const updated = await sendRestartControl(request);
 		if (command.json) process.stdout.write(`${JSON.stringify(updated, null, 2)}\n`);
 		else printSnapshot(command.action, updated);
 	} catch (error) {

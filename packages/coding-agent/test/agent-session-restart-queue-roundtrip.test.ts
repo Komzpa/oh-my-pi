@@ -1,6 +1,6 @@
 import { sendRootContinuationOnce } from "../src/task/restart-recovery";
 import restartQueuedPrompt from "../src/prompts/restart-queued.md" with { type: "text" };
-import { currentRuntimeIdentity, formatRuntimeIdentity } from "../src/session/runtime-identity";
+import { currentRuntimeIdentity } from "../src/session/runtime-identity";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { IrcBridge } from "@oh-my-pi/pi-coding-agent/session/irc-bridge";
@@ -733,7 +733,7 @@ describe("AgentSession restart queue round trip", () => {
 					expect(providerInput).toContain(`preserved worker result ${i}`);
 				if (rootWasRunning) expect(providerInput).toContain("preserved user reply obligation");
 				expect(providerInput).toContain(`Restart ${requestId} completed`);
-				expect(providerInput).toContain(`build ${formatRuntimeIdentity(currentRuntimeIdentity())}`);
+				expect(providerInput).toContain(`build ${currentRuntimeIdentity().commit}`);
 				const delivered = () =>
 					restored.sessionManager
 						.getEntries()
@@ -762,6 +762,45 @@ describe("AgentSession restart queue round trip", () => {
 			}
 		},
 	);
+
+	it("withdraws restored drain notices when the durable completion is the only terminal fact", async () => {
+		const manager = currentManager();
+		appendPriorAssistant(manager);
+		const stale = {
+			role: "custom" as const,
+			customType: "restart-queued",
+			content: "Restart offline is queued. checkpoint before restart",
+			display: true,
+			details: { requestId: "offline", state: "queued" },
+			timestamp: Date.now(),
+		};
+		manager.appendCustomMessageEntry(stale.customType, stale.content, true, stale.details);
+		manager.appendCustomEntry("omp:restart-pending-queues", {
+			steering: [stale],
+			followUp: [stale],
+			pendingNextTurn: [stale],
+		});
+		manager.appendCustomMessageEntry(
+			"restart-root-continuation",
+			"Restart offline completed at 01:51; build abc123; nothing pending — resume your plan.",
+			true,
+			{ requestId: "offline", state: "completed" },
+		);
+		await manager.ensureOnDisk();
+		const file = manager.getSessionFile()!;
+		await manager.close();
+		sessionManager = undefined;
+		const inputs: string[] = [];
+		const restored = await reopenSession(file, [{ content: ["resume plan work"], stopReason: "stop" }], inputs);
+		await restored.prompt("continue plan");
+		await restored.waitForIdle();
+		expect(inputs.join("\n")).not.toContain("checkpoint before restart");
+		const messages = JSON.parse(inputs[0]!) as { role: string; content: unknown }[];
+		const notices = messages.filter(message => JSON.stringify(message.content).includes("Restart offline"));
+		expect(notices).toHaveLength(1);
+		expect(notices[0]?.role).toBe("user");
+		expect(JSON.stringify(notices[0]?.content)).toContain("Harness (not Darafei): Restart offline completed");
+	});
 
 	it.each(["checkpointed", "queued"] as const)(
 		"reconciles loaded %s restart notices at the production provider boundary",
@@ -831,9 +870,9 @@ describe("AgentSession restart queue round trip", () => {
 				await restored.waitForIdle();
 				const input = modelInputs.join("\n");
 				if (state === "checkpointed") {
-					expect(input).toContain(`Restart ${requestId} completed; the earlier restriction no longer applies`);
+					expect(input).toContain(`Restart ${requestId} completed at`);
 					expect(input).not.toContain(restriction);
-					expect(input).toContain("OMP restarted after a graceful checkpoint");
+					expect(input).toContain("nothing pending — resume your plan.");
 					expect(
 						restored.agent.state.messages.filter(
 							message => message.role === "user" && message.content === "finish unfinished assignment",
@@ -1084,7 +1123,7 @@ describe("AgentSession restart queue round trip", () => {
 		expect(latest?.type === "custom" ? latest.data : undefined).toMatchObject({ pendingNextTurn: [] });
 	});
 
-	it("writes zero bytes when a queued notice is replaced with unchanged content", async () => {
+	it("does not rewrite checkpoints when a superseding plan notice only refreshes its timestamp", async () => {
 		appendPriorAssistant(currentManager());
 		session = createSession(currentManager());
 		const lease = session.beginRestartDrain();
@@ -1092,16 +1131,24 @@ describe("AgentSession restart queue round trip", () => {
 		lease.release();
 		session.agent.state.isStreaming = true;
 		try {
-			const notice = { customType: "goal-continuation", content: "same pending goal", display: false };
-			const options = { deliverAs: "nextTurn" as const, triggerTurn: false, supersedes: "goal-continuation" };
+			const notice = { customType: "todo-plan-check", content: "same pending plan", display: false };
+			const options = { deliverAs: "nextTurn" as const, triggerTurn: false, supersedes: "todo-plan-check" };
 			await session.sendCustomMessage(notice, options);
 			await session.flushRestartJournal();
 			const file = currentManager().getSessionFile();
 			if (!file) throw new Error("Expected durable journal");
 			const before = (await Bun.file(file).stat()).size;
+			const beforeEntries = restartQueueCheckpoints(currentManager()).length;
+			const started = performance.now();
 			for (let index = 0; index < 100; index++) await session.sendCustomMessage(notice, options);
 			await Bun.sleep(5_100);
 			await session.flushRestartJournal();
+			const seconds = (performance.now() - started) / 1000;
+			const bytes = (await Bun.file(file).stat()).size - before;
+			const entries = restartQueueCheckpoints(currentManager()).length - beforeEntries;
+			process.stdout.write(
+				`unchanged plan fixture: emissions=100 seconds=${seconds.toFixed(3)} entries=${entries} entries/min=${((entries * 60) / seconds).toFixed(3)} bytes=${bytes} bytes/min=${((bytes * 60) / seconds).toFixed(3)}\n`,
+			);
 			expect((await Bun.file(file).stat()).size - before).toBe(0);
 		} finally {
 			session.agent.state.isStreaming = false;

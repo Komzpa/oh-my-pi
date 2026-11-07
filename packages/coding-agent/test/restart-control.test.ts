@@ -1,5 +1,7 @@
+import * as restartControl from "../src/restart-control";
+import { runRestartCommand } from "../src/cli/restart-cli";
 import * as net from "node:net";
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -22,6 +24,7 @@ const tempDirs: string[] = [];
 const publications: Array<{ dispose(): Promise<void> }> = [];
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	for (const publication of publications.splice(0).reverse()) await publication.dispose();
 	for (const dir of tempDirs.splice(0)) await fs.rm(dir, { recursive: true, force: true });
 });
@@ -122,6 +125,137 @@ describe("restart-control local IPC", () => {
 		expect((await listRestartControls({ runtimeDir }))[0]?.request?.drainStatus?.stage).toBe("replace_runtime");
 		expect((await sendRestartControl({ identity, op: "status" }, { runtimeDir })).request?.state).toBe("restarting");
 		await expect(sendRestartControl({ identity, op: "cancel" }, { runtimeDir })).rejects.toThrow();
+	});
+
+	it("returns the accepted restart over a private socket without waiting for background drain", async () => {
+		const runtimeDir = await setupDir();
+		const identity = { instanceId: "instance-delayed-1234", sessionId: "delayed", generation: 1 };
+		const requestId = "accepted-delayed";
+		const accepted: RestartControlSnapshot = {
+			identity,
+			pid: process.pid,
+			cwd: "/workspace",
+			request: {
+				version: 1,
+				requestId,
+				sessionId: identity.sessionId,
+				state: "draining",
+				requestedAt: Date.now(),
+				updatedAt: Date.now(),
+				rootWasRunning: true,
+				drainStatus: {
+					stage: "root_quiescence",
+					stageStartedAt: Date.now(),
+					runningWorkers: [],
+					queuedInputCount: 0,
+				},
+			},
+		};
+		let acceptedOnce = false;
+		const publication = await publishRestartControl(
+			{
+				snapshot: () => accepted,
+				handle: async () => {
+					if (acceptedOnce) throw new Error("event loop unavailable after acceptance");
+					acceptedOnce = true;
+					return accepted;
+				},
+			},
+			{ runtimeDir },
+		);
+		publications.push(publication);
+		const send = sendRestartControl;
+		vi.spyOn(restartControl, "getRestartControl").mockResolvedValue(accepted);
+		vi.spyOn(restartControl, "sendRestartControl").mockImplementation(request => send(request, { runtimeDir }));
+		let output = "";
+		vi.spyOn(process.stdout, "write").mockImplementation(chunk => {
+			output += String(chunk);
+			return true;
+		});
+		const priorExitCode = process.exitCode;
+		try {
+			process.exitCode = 0;
+			await runRestartCommand({ action: "request", instanceId: identity.instanceId, requestId, json: true });
+			expect(process.exitCode).toBe(0);
+			const result = JSON.parse(output) as RestartControlSnapshot;
+			expect(result.request?.requestId).toBe(requestId);
+			expect(result.request?.drainStatus?.stage).toBe("root_quiescence");
+		} finally {
+			process.exitCode = priorExitCode;
+		}
+	});
+
+	it("keeps waiting for acceptance through an eleven-second busy lead", async () => {
+		const runtimeDir = await setupDir();
+		const identity = { instanceId: "instance-busy-1234", sessionId: "busy", generation: 1 };
+		const { source } = fixture(identity);
+		source.handle = async request => {
+			await Bun.sleep(11_000);
+			return {
+				...source.snapshot(),
+				request: {
+					version: 1,
+					requestId: request.requestId!,
+					sessionId: identity.sessionId,
+					state: "draining",
+					requestedAt: Date.now(),
+					updatedAt: Date.now(),
+					rootWasRunning: true,
+				},
+			};
+		};
+		publications.push(await publishRestartControl(source, { runtimeDir }));
+		const result = await sendRestartControl({ identity, op: "request", requestId: "busy-ack" }, { runtimeDir });
+		expect(result.request?.requestId).toBe("busy-ack");
+		expect(result.request?.state).toBe("draining");
+	}, 15_000);
+
+	it("reports uncertain delivery when the listener consumes a request then loses its reply", async () => {
+		const runtimeDir = await setupDir();
+		const identity = { instanceId: "instance-lost-1234", sessionId: "lost", generation: 1 };
+		const endpoint = path.join(runtimeDir, "lost.sock");
+		const listener = net.createServer(socket => socket.once("data", () => socket.destroy()));
+		const listening = Promise.withResolvers<void>();
+		listener.listen(endpoint, () => listening.resolve());
+		await listening.promise;
+		try {
+			await fs.writeFile(
+				path.join(runtimeDir, `${identity.instanceId}.json`),
+				JSON.stringify({
+					version: 1,
+					instanceId: identity.instanceId,
+					endpoint,
+					pid: process.pid,
+					token: "a".repeat(64),
+				}),
+				{ mode: 0o600 },
+			);
+			await expect(
+				sendRestartControl({ identity, op: "request", requestId: "lost-ack" }, { runtimeDir }),
+			).rejects.toMatchObject({ code: "delivery_uncertain" });
+		} finally {
+			listener.close();
+		}
+	});
+
+	it("reports unreachable when no private socket is listening", async () => {
+		const runtimeDir = await setupDir();
+		const identity = { instanceId: "instance-offline-1234", sessionId: "offline", generation: 1 };
+		const endpoint = path.join(runtimeDir, "offline.sock");
+		await fs.writeFile(
+			path.join(runtimeDir, `${identity.instanceId}.json`),
+			JSON.stringify({
+				version: 1,
+				instanceId: identity.instanceId,
+				endpoint,
+				pid: process.pid,
+				token: "a".repeat(64),
+			}),
+			{ mode: 0o600 },
+		);
+		await expect(sendRestartControl({ identity, op: "request" }, { runtimeDir })).rejects.toMatchObject({
+			code: "unreachable",
+		});
 	});
 
 	it("discovers an exact target without probing an unrelated endpoint", async () => {

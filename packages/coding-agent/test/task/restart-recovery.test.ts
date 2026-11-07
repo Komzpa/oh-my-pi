@@ -999,7 +999,7 @@ it("persists an unrevivable row as needing a worker with its previous transcript
 	).toMatchObject({ data: { phases } });
 });
 
-it("reserves three restoring owners before revival and names their rows in the root continuation", async () => {
+it("reserves three restoring owners before revival and sends a short completion", async () => {
 	const cwd = makeTempDir("@pi-restaff-");
 	const { manager, file } = await createRootSession(cwd, path.join(cwd, "sessions"));
 	const root = makeTestSession(manager).session;
@@ -1058,9 +1058,10 @@ it("reserves three restoring owners before revival and names their rows in the r
 		.getEntries()
 		.find(entry => entry.type === "custom_message" && entry.customType === "restart-root-continuation");
 	const body = wake?.type === "custom_message" ? String(wake.content) : "";
-	for (let i = 0; i < 3; i++) expect(body).toContain(`${children[i]!.id} → row ${i}`);
-	expect(body).toContain("3 workers restored and running");
-	expect(body).toContain("do not re-dispatch them");
+	expect(body).toMatch(
+		/^Restart restaff completed at \d{2}:\d{2}; build [a-f0-9]+; nothing pending — resume your plan\.$/,
+	);
+	expect(report.resumed.sort()).toEqual(children.map(child => child.id).sort());
 	expect(
 		during
 			?.filter(agent => agent.live)
