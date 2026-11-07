@@ -20,6 +20,8 @@
 
 ### Fixed
 
+- Keep fresh TODO steps on a row-local calibrated forecast so splitting work does not postpone the deadline ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Bound automatic TODO deadlines by measured completion pace and expose estimate-honesty defects ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Calibrate TODO forecasts from completed session rows while retaining elapsed work. ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

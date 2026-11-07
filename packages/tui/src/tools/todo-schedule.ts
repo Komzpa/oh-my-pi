@@ -275,6 +275,8 @@ export interface TodoPlanForecast {
 			reestimates: number;
 			failedAttempts: number;
 			remainingFloorSeconds: number;
+			calibrationRatio: number;
+			slipped: boolean;
 			honestyDefects: string[];
 		}[];
 	};
@@ -421,6 +423,7 @@ interface PlanNode {
 	naturalLatestStart?: number;
 	freeFloatSeconds?: number;
 	durationEstimates?: DurationEstimates;
+	calibrationRatio?: number;
 	fixedPathParent?: PlanNode;
 	fixedPathExpectedSeconds?: number;
 	fixedPathVarianceSeconds?: number;
@@ -1211,10 +1214,15 @@ function componentData(validNodes: PlanNode[]): { nodes: PlanNode[]; complete: b
 	return components;
 }
 
-/** Completed rows with both clocks calibrate this session only; missing clocks are excluded. */
-function sessionCalibration(phases: TodoScheduleInput, now: number): { ratio: number; samples: number } {
-	const rows = phases
-		.flatMap(phase => phase.tasks)
+interface CalibrationSample {
+	ratio: number;
+	likelySeconds: number;
+	ageSeconds: number;
+}
+
+/** Recent distinct closures each get one vote; a giant row cannot dominate the session. */
+function calibrationSamples(phases: TodoScheduleInput, now: number): CalibrationSample[] {
+	return [...new Map(phases.flatMap(phase => phase.tasks).map(row => [row.content, row])).values()]
 		.filter(
 			row =>
 				row.status === "completed" &&
@@ -1223,21 +1231,41 @@ function sessionCalibration(phases: TodoScheduleInput, now: number): { ratio: nu
 				row.schedule!.finishedAt! >= now - 72 * 3_600_000,
 		)
 		.sort((a, b) => b.schedule!.finishedAt! - a.schedule!.finishedAt!)
+		.flatMap(row => {
+			const first = row.schedule!.firstEstimate;
+			if (!isValidEstimate(first) || first.likelySeconds <= 0) return [];
+			const seconds = (row.schedule!.finishedAt! - first.updatedAt) / 1000;
+			if (seconds <= 0) return [];
+			return [{ ratio: seconds / first.likelySeconds, likelySeconds: first.likelySeconds, ageSeconds: seconds }];
+		})
 		.slice(0, 32);
-	let actual = 0;
-	let estimated = 0;
-	let samples = 0;
-	for (const row of rows) {
-		const schedule = row.schedule!;
-		const first = schedule.firstEstimate;
-		if (!isValidEstimate(first) || first.likelySeconds <= 0) continue;
-		const seconds = (schedule.finishedAt! - first.updatedAt) / 1000;
-		if (seconds <= 0) continue;
-		actual += seconds;
-		estimated += first.likelySeconds;
-		samples++;
+}
+
+function calibrationMedian(samples: CalibrationSample[], likelySeconds?: number, ageSeconds?: number): number {
+	const weighted = samples
+		.map(sample => ({
+			ratio: sample.ratio,
+			// Similar budgets and observed ages carry more weight, without dropping sparse history.
+			weight:
+				likelySeconds === undefined || ageSeconds === undefined
+					? 1
+					: 1 /
+						(1 +
+							Math.abs(Math.log((sample.likelySeconds + 1) / (likelySeconds + 1))) +
+							Math.abs(Math.log((sample.ageSeconds + 1) / (ageSeconds + 1)))),
+		}))
+		.sort((a, b) => a.ratio - b.ratio);
+	const half = weighted.reduce((sum, sample) => sum + sample.weight, 0) / 2;
+	let cumulative = 0;
+	for (const [index, sample] of weighted.entries()) {
+		cumulative += sample.weight;
+		if (cumulative >= half) {
+			const ratio =
+				cumulative === half && weighted[index + 1] ? (sample.ratio + weighted[index + 1]!.ratio) / 2 : sample.ratio;
+			return Math.max(1, Math.min(20, ratio));
+		}
 	}
-	return { ratio: Math.max(1, Math.min(20, estimated > 0 ? actual / estimated : 1)), samples };
+	return 1;
 }
 
 /** Compute CPM and resource forecasts, calibrated to completed rows of this session. */
@@ -1246,7 +1274,8 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 	const deferred = phases.flatMap(phase => phase.tasks).filter(row => row.schedule?.postDeadline);
 	const scoped = phases.map(phase => ({ ...phase, tasks: phase.tasks.filter(row => !row.schedule?.postDeadline) }));
 	const analysis = analyzeDependencies(scoped);
-	const calibration = sessionCalibration(phases, now);
+	const samples = calibrationSamples(phases, now);
+	const calibration = { ratio: calibrationMedian(samples), samples: samples.length };
 	const rowFactors: NonNullable<TodoPlanForecast["autoDeadlineForecast"]>["rowFactors"] = [];
 	for (const node of analysis.nodes) {
 		const first = node.schedule?.firstEstimate ?? node.estimate;
@@ -1254,13 +1283,6 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		const anchor = Math.max(first.updatedAt, node.schedule?.startedAt ?? first.updatedAt);
 		const elapsedAtRevision = Math.max(0, (node.estimate.updatedAt - anchor) / 1000);
 		const durations = estimateDurations(node.estimate);
-		// Keep the first clock: a revised remaining budget is added to time already spent.
-		node.durationEstimates = {
-			optimistic: elapsedAtRevision + durations.optimistic * calibration.ratio,
-			expected: elapsedAtRevision + durations.expected * calibration.ratio,
-			pessimistic: elapsedAtRevision + durations.pessimistic * calibration.ratio,
-			spread: durations.spread * calibration.ratio,
-		};
 		const ageSeconds = Math.max(0, (now - (node.schedule?.firstRequirementAt ?? first.updatedAt)) / 1000);
 		const reestimates =
 			node.schedule?.cumulativeReestimateCount ??
@@ -1270,6 +1292,21 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 			attempt => attempt.terminalStatus !== "completed" || attempt.rejectionReason,
 		);
 		const failedSeconds = Math.max(0, ...failed.map(attempt => attempt.durationMs / 1000));
+		// History is a modest prior until this row itself exhausts its pessimistic promise.
+		const slipped = ageSeconds > first.pessimisticSeconds || failed.length > 0;
+		const evidence = Math.max(ageSeconds / Math.max(1, first.pessimisticSeconds), reestimates, failed.length);
+		const ratio = Math.min(
+			calibrationMedian(samples, first.likelySeconds, ageSeconds),
+			slipped ? Math.max(2, evidence) : 2,
+		);
+		node.calibrationRatio = ratio;
+		// Keep the first clock: a revised remaining budget is added to time already spent.
+		node.durationEstimates = {
+			optimistic: elapsedAtRevision + durations.optimistic * ratio,
+			expected: elapsedAtRevision + durations.expected * ratio,
+			pessimistic: elapsedAtRevision + durations.pessimistic * ratio,
+			spread: durations.spread * ratio,
+		};
 		const remainingFloorSeconds = Math.max(reestimates >= 2 ? ageSeconds / reestimates : 0, failedSeconds);
 		const honestyDefects: string[] = [];
 		if (node.estimate.pessimisticSeconds < ageSeconds)
@@ -1283,6 +1320,8 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 			reestimates,
 			failedAttempts: failed.length,
 			remainingFloorSeconds,
+			calibrationRatio: ratio,
+			slipped,
 			honestyDefects,
 		});
 		if (remainingFloorSeconds > 0) {
@@ -1684,9 +1723,17 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 	const windowStartedAt = closures[0];
 	const hours = windowStartedAt === undefined ? 0 : (now - windowStartedAt) / 3_600_000;
 	const rowsPerHour = closures.length >= 3 && hours >= 1 ? (closures.length - 1) / hours : undefined;
-	const throughputFinish =
+	const measuredThroughputFinish =
 		rowsPerHour && openNodes.length ? now + (openNodes.length / rowsPerHour) * 3_600_000 : undefined;
 	const calibratedPertFinish = fixedPathP95Finish ?? resourceFinish;
+	// Counts are comparable only after the current plan has shown slippage. Fresh
+	// decomposition adds rows, not work; it must not extend a deadline by itself.
+	const throughputFinish =
+		measuredThroughputFinish === undefined
+			? undefined
+			: rowFactors.some(row => row.slipped)
+				? measuredThroughputFinish
+				: Math.min(measuredThroughputFinish, calibratedPertFinish ?? measuredThroughputFinish);
 	const finish = globalForecastKnown ? latestTimestamp([calibratedPertFinish, throughputFinish]) : undefined;
 	const autoDeadlineForecast: NonNullable<TodoPlanForecast["autoDeadlineForecast"]> = {
 		finish,
@@ -1792,7 +1839,7 @@ function simulateRowRisk(
 					risk,
 					workerType(node),
 					node.schedule?.firstEstimate
-						? todoEstimateMeanSeconds(node.estimate!) * calibrationRatio
+						? todoEstimateMeanSeconds(node.estimate!) * (node.calibrationRatio ?? 1)
 						: (node.schedule?.riskEstimateMeanSeconds ?? nodeDurations(node).expected),
 					(node.schedule?.attemptHistory?.length ?? 0) + 1,
 					elapsed,
