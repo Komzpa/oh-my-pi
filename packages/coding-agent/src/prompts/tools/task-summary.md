@@ -15,6 +15,9 @@
 {{preview}}
 </output>
 {{/if}}
+{{#if abandonedJobIds}}
+<warning>Terminal yield abandoned running processes: {{abandonedJobIds}}. Task cleanup cancels unfinished owner jobs.</warning>
+{{/if}}
 {{#if mergeSummary}}
 <merge-summary>
 {{mergeSummary}}

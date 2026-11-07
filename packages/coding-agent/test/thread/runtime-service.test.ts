@@ -252,6 +252,26 @@ describe("runtime thread services: async jobs", () => {
 		manager.publishCompleted("task", "after exit", { text: "late" }, { ownerId: "Worker" });
 		expect(await manager.drainDeliveries({ timeoutMs: 1_000 })).toBe(true);
 	});
+
+	it("lets worker yield guards see foreground owner jobs while excluding other owners and settled jobs", async () => {
+		const manager = newManager();
+		const probe = await startWorker();
+		const pending = Promise.withResolvers<string>();
+		const owned = manager.register("bash", "foreground", () => pending.promise, {
+			ownerId: "Worker",
+			foreground: true,
+		});
+		manager.register("bash", "other owner", () => pending.promise, { ownerId: "Other", foreground: true });
+		const root = manager.register("eval", "root", () => pending.promise, { foreground: true });
+		expect(manager.getRunningJobs({ ownerId: "Worker" })).toEqual([]);
+		expect(await probe("runningJobs", manager, "Worker", true)).toEqual([owned]);
+		expect(manager.getRunningJobs({ ownerId: undefined }, { includeForeground: true }).map(job => job.id)).toEqual([
+			root,
+		]);
+		pending.resolve("done");
+		await manager.getJob(owned)?.promise;
+		expect(await probe("runningJobs", manager, "Worker", true)).toEqual([]);
+	});
 });
 
 describe("runtime thread services: cost gate, event bus, artifacts, storage", () => {

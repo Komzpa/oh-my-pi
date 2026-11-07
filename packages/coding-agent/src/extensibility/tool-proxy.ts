@@ -1,6 +1,7 @@
 /**
  * Defines lazy proxy properties on a wrapper so it forwards to the underlying tool.
  */
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { isArkSchema } from "@oh-my-pi/pi-ai/utils/schema";
 
 export function applyToolProxy<TTool extends object>(tool: TTool, wrapper: object): void {
@@ -31,5 +32,22 @@ export function applyToolProxy<TTool extends object>(tool: TTool, wrapper: objec
 			});
 		}
 		current = Object.getPrototypeOf(current);
+	}
+}
+
+/** Keep a tool's acceptance notification behind all result-rewriting wrappers. */
+export async function withDeferredToolResultAcceptance<T extends AgentToolResult<unknown>>(
+	tool: object,
+	toolCallId: string,
+	execute: () => Promise<T>,
+): Promise<T> {
+	const target = tool as { deferResultAcceptance?: (id: string) => (result?: AgentToolResult<unknown>) => void };
+	const settle = target.deferResultAcceptance?.(toolCallId);
+	let result: T | undefined;
+	try {
+		result = await execute();
+		return result;
+	} finally {
+		settle?.(result);
 	}
 }
