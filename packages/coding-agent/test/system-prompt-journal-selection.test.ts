@@ -46,10 +46,24 @@ function setup(memoryEnabled: boolean, startup?: string) {
 	const tools = new SessionTools(host, { baseSystemPrompt: [], getStartupContext: () => startup });
 	const fullRead = vi.spyOn(manager, "getBranch");
 	// Model an indexed store: metadata iteration never materializes unrelated payloads.
+	let decoded = 0;
 	const indexed = Object.assign(manager, {
-		*iterateBranchMatchingNewestFirst(predicate: (metadata: { type: SessionEntry["type"] }) => boolean) {
+		*iterateBranchMatchingNewestFirst(
+			predicate: (metadata: { type: SessionEntry["type"]; customType?: string }) => boolean,
+		) {
 			const entries = manager.getEntries();
-			for (let i = entries.length - 1; i >= 0; i--) if (predicate({ type: entries[i].type })) yield entries[i];
+			for (let i = entries.length - 1; i >= 0; i--) {
+				const entry = entries[i];
+				if (
+					predicate({
+						type: entry.type,
+						customType: entry.type === "custom_message" ? entry.customType : undefined,
+					})
+				) {
+					decoded++;
+					yield entry;
+				}
+			}
 		},
 	});
 	vi.spyOn(resolver, "resolveMemoryBackend").mockResolvedValue({
@@ -58,7 +72,7 @@ function setup(memoryEnabled: boolean, startup?: string) {
 		beforeAgentStartPrompt: async () => ({ context: "recall", commit: () => true }),
 		buildConversationContext: async () => "first context",
 	});
-	return { manager: indexed, tools, fullRead };
+	return { manager: indexed, tools, fullRead, decoded: () => decoded };
 }
 
 it("deduplicates startup context without hydrating archives and delivers it again after reset", async () => {
@@ -92,3 +106,13 @@ it("deduplicates scoped memory without hydrating archives and ignores delivery b
 	expect((await tools.buildSystemPromptForAgentStart("go", () => true)).memoryContext?.content).toBe("first context");
 	expect(fullRead).not.toHaveBeenCalled();
 });
+
+it("ten prompt preparations skip 300k unrelated custom messages while preserving startup deduplication", async () => {
+	const { manager, tools, decoded } = setup(false, "workspace");
+	manager.appendCustomMessageEntry("startup-context", "workspace", false, { cwd: "/fixture" });
+	for (let i = 0; i < 300_000; i++) manager.appendCustomMessageEntry("unrelated-notice", "old", false);
+	for (let turn = 0; turn < 10; turn++) {
+		expect((await tools.buildSystemPromptForAgentStart("go", () => true)).startupContext).toBeUndefined();
+	}
+	expect(decoded()).toBe(10);
+}, 60_000);
