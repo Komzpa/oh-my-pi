@@ -3525,7 +3525,9 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				.filter(Boolean)
 				.join("\n\n") || "IRC follow-up";
 		const turnStartTime = Date.now();
-		const readOnlyGuard = isReadOnlyDispatch(agent) ? createReadOnlyGuard(session.sessionManager.getCwd()) : undefined;
+		const readOnlyGuard = isReadOnlyDispatch(agent)
+			? createReadOnlyGuard(session.sessionManager.getCwd())
+			: undefined;
 		const checkReadOnly = async () => (await readOnlyGuard)?.();
 		const previousAssistant = session.getLastAssistantMessage();
 		const relay = Promise.withResolvers<void>();
