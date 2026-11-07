@@ -195,7 +195,11 @@ describe("plan critic runtime binding", () => {
 		await settle();
 		expect(h.run).toHaveBeenCalledTimes(1);
 		expect(h.event("tool_call", { toolName: "wait", toolCallId: "ok" })).toBeUndefined();
-		vi.spyOn(Date, "now").mockReturnValue(now + 61 * 60_000);
+		vi.spyOn(Date, "now").mockReturnValue(now + 45 * 60_000 - 1);
+		h.wake();
+		await settle();
+		expect(h.run).toHaveBeenCalledTimes(1);
+		vi.spyOn(Date, "now").mockReturnValue(now + 45 * 60_000);
 		h.wake();
 		await settle();
 		expect(h.run).toHaveBeenCalledTimes(2);

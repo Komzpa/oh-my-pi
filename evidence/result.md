@@ -1,69 +1,43 @@
-# Lead/worker harness — three fixes
+# Plan critic live-start repair (2026-11-07)
 
-PR: https://github.com/Komzpa/oh-my-pi/pull/92 (`topic/rt-agent-runtime-core`).
-Started at `4347f6d1573363a8c4415113f30600e5f0314343` on `lane/workerask`.
-Verified source head: `627068399f732f53aeb28641d237298a21d3baeb`.
+Target remains fork PR #92, `topic/rt-agent-runtime-core`, starting head `77054de61f7`, local lane `lane/criticlive`. #93 is outside this lane. No installation or production session operation is authorized.
 
-## Request and boundary
+The live configuration names three individual files in the installed reemxy-extensions package, rather than its package root. Adding `plan_critic.ts` only to `omp.extensions` therefore never registers it. The fix registers the critic from the already-configured `todo_dispatch.ts` and removes the separate manifest registration so package-root loading still creates one critic.
 
-Implement, in order: worker questions interrupt and park; requirement changes stay within exact user quotes; redispatch carries the previous same-row receipt. Owner approval supplied with the request: «чини чини чини».
+A second reproduced skip is the `parentSession` check: the real SDK moves a contested copied session to a sibling continuation with both `parentSession` and `continuationOf`. It remains a main agent. The critic now uses `ctx.agent.kind`, retaining the header fallback for older contexts. A depth-zero subagent remains excluded.
 
-No installation, updater, live/provider session, desktop operation, or intentional `~/.omp` mutation was performed. Tests used disposable/mock sessions. Only the requested fork branch was published. GitButler refused this linked worktree; its documented local-Git commit exception was used. The existing #92 history and authorship are preserved.
+Polling is once a minute; the review interval remains 45 minutes. An empty initial plan can become reviewable without waiting 45 minutes. Tick/start skip reasons each produce one debug and one warning per extension instance. History selection follows indexed parent entries and yields every 256 entries, without constructing/filtering a full transcript branch. The selected requirement ledger and audit receipts are reused by the digest instead of rereading the branch for each row.
 
-The historical DC lead journal was inspected read-only from its bounded tail (last 32 MiB): `/home/kom/.omp/agent/sessions/-proj-sunbim-datacenter-decision-graph/2026-10-31T13-18-21-335Z_01a1921c-7697-72a8-b4a3-4efdbbf06221.jsonl`. At 2026-11-07 08:08Z, PushFitCamera-10 reported two unanswered questions despite the fix/oracle existing on `cae9987d0`; at 08:25Z, LabelsBrowserProof-10 reported the unresolved PRD conflict. These are historical evidence, not a claim that a live session has been repaired.
+Verification uses the exact base/head regression and full-suite receipts under `criticlive/`.
 
-## 1. Worker questions
 
-Before: pending asks could consume yield retries or hit the runtime deadline; a churning row could outrank a question. Direct lead writes and incoming IRC answers were not retained as one question lifecycle.
+## Earlier completed work
 
-After: structured asks and successful direct worker writes to the lead become pending obligations. The lead receives worker, question and proposed default as steering input and the last contextual input, ahead of dispatcher/time notices. Successful answer/reject writes to that worker discharge the obligation; prose, failed writes, unrelated dispatch and progress messages do not. Wait/yield are blocked and an unanswered turn triggers another lead turn. The same worker assignment parks without yield retries or runtime-deadline cancellation; explicit caller cancellation still works. A late terminal yield cannot finalize an unanswered ask.
+The worker/question/requirement/receipt delivery report remains in the history at `77054de61f7:evidence/result.md`, with its proof under `evidence/workerask/`. It is not rerun or republished as this repair.
 
-A brief opts into defaults with `[worker-ask-defaults]`. The driver publishes “I will do X unless told otherwise”, applies only a noncritical proposed default after `OMP_WORKER_ASK_DEFAULT_WAIT_MS` (default 600000 ms), and records `worker-ask-default-applied`. A recommendation alone grants no authority.
+## Frozen journal and reproduction
 
-Commits: `bb23bbe46d0`, `4eebe14e5a4`, `627068399f7`.
-Regression: the current runtime-deadline test fails against the starting executor/ask implementation because the returned assignment is aborted; it passes at head. Priority, real answer/reject, direct IRC, cancellation and authorized/default-negative cases also pass.
+`criticlive/fixture.json` records the exact private 2,564,978,964-byte snapshot and SHA-256. It was copied with `cp --reflink=auto`; production JSONL was read only. The later snapshot has six open rows. The journal bytes stay in the lane, outside git.
 
-## 2. Requirement quote authority
+The installed-shape package is a lane-local copy under `node_modules/@oh-my-pi/reemxy-extensions`, with the same individual extension entry paths as the live configuration. `probe.ts` uses the real SDK `SessionManager.open` + `createAgentSession` + `initializeExtensions`; restore additionally enters the CLI's `restoreSession`. The reviewer tool is stubbed and lead model streaming throws if called. A normal-exit marker on the copy prevents replaying its interrupted turn; background child restoration is disabled. No actual re-exec, live provider judgment, installed-binary acceptance, installation or production session operation is claimed.
 
-Before: “solar should not block levels” could widen into “levels never refused”; a passing audit had no required quote/diff comparison, and a worker contract conflict could be redispatched without a recorded resolution.
+Base `77054de61f78ccb780462e1d26fb531a9a9a30b2` loads those entries with no loader errors but dispatches zero critics in 60.47 seconds. Patched normal resume reaches one reviewer in 0.72 seconds; final patched restore reaches one in 0.43 seconds after initialization starts. Both use the copied full journal. An earlier probe loading the package root passed on base, which is why a package-root-only test missed the production configuration defect.
 
-After: requirement-editing rows carry linked ledger `rawText` verbatim, never the synthesized requirement. Missing quotes refuse dispatch. The requirement auditor compares every changed requirement hunk to quote IDs; omitted comparison is inconclusive and widening fails even when executable checks pass. Its row/head/delivery-bound diff receipt reaches the existing plan critic; stale receipts are excluded. A returned `BLOCKED_BY_CONFLICTING_PRODUCT_CONTRACT` refuses redispatch until the lead records a tool resolution bound to that row, conflict and quote snapshot, or obtains clarification through the existing owner `ask` path. New/changed quotes invalidate an old resolution. Physical infeasibility remains a conflict; solar artefacts do not authorize hiding it.
+Boundary deviation: the first two standalone probes used the default logger and wrote their own process logs under `~/.omp/logs` (PIDs 1883255 and 1921142); ordinary SDK ownership/cache bookkeeping was not fully isolated either. They never opened the production journal for writing or operated the live lead. Subsequent probes redirect logs, and the retained probe now refuses a config root outside the lane. The no-`~/.omp`-writes requirement was therefore not fully met by this run. No installed files or live configuration were edited.
 
-Commits: `e3c59156eb1`, `372bfa4e440`.
-Regression: the current quote-audit test fails against the starting `row_audit.ts`, which accepts a pass without any quote comparison. Head rejects missing comparison, fails the widened clause, and accepts the solar-only change. Conflict/tool resolution and critic receipt tests pass.
+## Source delivery
 
-## 3. Previous attempt receipt
+Implementation commit: `cc3fa980db114ae90967a6087e89f0ff7a022321`. GitButler refused this linked worktree, so its documented Git commit exception was used. Existing #92 history and authorship remain intact. Publication is only to `fork:topic/rt-agent-runtime-core`, with an exact lease against `77054de61f78ccb780462e1d26fb531a9a9a30b2`. That starting head is the rollback source target; no rollback or installation was performed.
 
-Before: a redispatched brief could say the fix and oracle were missing after a previous worker had already delivered them.
-
-After: the registered task-dispatch hook adds the latest finished same-row attempt's status, commits/paths/findings, rejection/audit failure and open blocker to its brief. A prior attempt without findings refuses dispatch, including when staffing gates are disabled. Frozen owner state and provider arguments are preserved. A different row's receipt cannot satisfy it.
-
-Commit: `a665b1608eb`.
-Regression: the registered dispatch test fails against the starting `todo_dispatch.ts`, which allows a retry without findings. Head refuses it, then attaches `cae9987d0`, the failed screenshot and camera question once the receipt exists. Latest-attempt selection and unrelated-row controls pass.
 
 ## Verification
 
-Source checks on `627068399f732f53aeb28641d237298a21d3baeb`, 2026-11-07 UTC:
+- Full extensions: `bun test --parallel packages/reemxy-extensions/extensions/*.test.ts`: 707 pass, zero fail, 66 files. The tests cover configured-path loading, normal resume, restore, one package-root critic, continued-main versus depth-zero child, bounded skip logging, the first-minute poll and the exact 45-minute repeat boundary.
+- New behavioral regressions fail against the starting production implementation (legacy resume/restore dispatch, first-minute polling, and continued-main identity), then pass on the patch. `regression-base.txt` and `regression-head.txt` retain the first comparison; `extensions.txt` is the final full run including the logging test and tighter periodic boundary.
+- Cooperative selection: the active ancestry is ordered, a detached later sample is excluded, `getBranch()` throws if used, and an event-loop heartbeat runs before collection completes. This is an executed behavior check, not a source-text assertion.
+- Final `bun run check:ts` passes; final extension-only types also pass. `bun check` remains red only on inherited Rust comment formatting at `crates/pi-shell/src/bash/trace/viz/printer.rs:1216` and `runtime_tests.rs:93`. Neither Rust file changes here. The command is the repository script in [package.json](../package.json), rather than a guessed compiler invocation; Bun 1.4.4 help was consulted after its repeated generic exit message.
+- Canonical `tools/omp/stack_check.py` on fresh upstream fails at pre-existing #16530 in `packages/coding-agent/src/task/index.ts`, after seven clean PRs and before #92. Starting #92 and patched #92 produce the same blocker. A separate, explicitly pinned-base run of that same checker merges all 77 current manifest PRs cleanly on `9370e7bfe26e948d72f53f918e681b402e600383`, including #93. It is a rehearsal, not a current-upstream green result.
 
-| Check | Result |
-| --- | --- |
-| Full `bun test --parallel packages/reemxy-extensions/extensions/*.test.ts` | 701 pass, 0 fail; 65 files; 10020 assertions |
-| Coding-agent todo/task/subagent selection, exact ordered paths in `workerask/core-files.txt` | 1382 pass, 67 fail; 1449 tests, 136 files |
-| Same suite against starting implementation | 1375 pass, 67 fail; 1442 tests, 135 files; exactly the same 67 failure names, no new failures |
-| Focused final regressions | 21 pass, 0 fail; 5 files |
-| Executor question + prompt-cache integration | 38 pass, 0 fail; 2 files |
-| Three negative controls | One concrete regression per item fails with its relevant starting implementation restored; all files restored before head checks |
-| `bun run check:ts`, `git diff --check` | Pass |
-| `bun check` | Not green: inherited Rust comment formatting at `crates/pi-shell/src/bash/trace/viz/printer.rs:1216` and `runtime_tests.rs:93`; no Rust/Cargo delta in these fixes |
-| Canonical `tools/omp/stack_check.py`, whole 77-entry live manifest, candidate override | Current upstream stops at pre-existing #16530 in `task/index.ts`, before #92 |
-| Same canonical checker and manifest, pinned starting upstream `9370e7bfe26e948d72f53f918e681b402e600383` | All 77 entries merge cleanly; original #92 also passes on this base |
+Full todo/session baseline and final counts, failure-name comparison, exact ordered paths and log hashes are retained in `criticlive/core-comparison.json` and the associated receipts. These broad suites are not claimed green.
 
-The pinned-base rehearsal imports the canonical checker and substitutes only its `rev-parse FETCH_HEAD` result; it does not change the live manifest or refs. Stack integration exposed #93/#108/#146 interactions; the question-parking placement now composes with all 77 entries. The live-manifest SHA-256 is recorded in `workerask/suite-comparison.json` with the exact baseline/head failure names, log hashes and summaries. The intentional `Cannot find module './gone'` worker-death fixture is followed by its passing startup-failure test; it is not one of the suite failures.
-
-Reproduce the selected suite with `bun test $(cat evidence/workerask/core-files.txt)`. Negative-control logs, final regression output, both stack outputs and the forge source-head readback are committed under `evidence/workerask/`. No live model judgment or installed-runtime behavior is claimed.
-
-## Publication readback
-
-The source was pushed to `fork:topic/rt-agent-runtime-core` using exactly `--force-with-lease=refs/heads/topic/rt-agent-runtime-core:4347f6d1573363a8c4415113f30600e5f0314343`. Both `gh pr view 92 --repo Komzpa/oh-my-pi` and `git ls-remote fork refs/heads/topic/rt-agent-runtime-core` returned `627068399f732f53aeb28641d237298a21d3baeb`; PR #92 was OPEN. See `workerask/source-pr-readback.json`.
-
-This evidence-only commit follows that verified source head and is published with a lease against it. Its final PR-head readback is reported in the delivery response, avoiding a self-referential commit hash in this file. The rollback source target remains the starting `4347f6d1573363a8c4415113f30600e5f0314343`; it has not been applied.
+Final broad run: **3133 pass, 18 skip, 31 fail, one between-tests error; 3182 tests / 319 files** (adds the cooperative-selection test). Base: **3129 pass, 18 skip, 34 fail, three between-tests errors; 3181 tests / 318 files**. One named final-only failure was a 6.05-second prompt-cache setup-hook timeout, followed by a late `authStorage.keys` setup error. Its exact case passes in isolation on both base and head (`cache-base.txt`, `cache-head.txt`). Four base-only failure names are timing-sensitive memory/queued-delivery cases and are not claimed fixed. All other final failure names occur on base. The recorded broad failures remain open outside this critic repair.
