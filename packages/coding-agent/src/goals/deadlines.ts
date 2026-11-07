@@ -1,4 +1,9 @@
-import { selectBranchEntries, type SessionContextEntryMetadata, type BranchSource } from "../session/branch-selection";
+import {
+	selectBranchNewestFirst,
+	selectLatestBranchEntry,
+	type SessionContextEntryMetadata,
+	type BranchSource,
+} from "../session/branch-selection";
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -92,9 +97,43 @@ export function isGoalDeadlineEntryMetadata(metadata: SessionContextEntryMetadat
 
 type GoalDeadlineBranchSource = BranchSource;
 
-/** Read only entries that can resolve goal focus or deadline state, in branch order. */
+/** Select the newest deadline state and authoritative focus without hydrating older states. */
 export function getGoalDeadlineBranchEntries(manager: GoalDeadlineBranchSource): readonly unknown[] {
-	return selectBranchEntries(manager, isGoalDeadlineEntryMetadata);
+	const state = selectLatestBranchEntry(
+		manager,
+		metadata =>
+			(metadata.type === "custom" && metadata.customType === STATE_ENTRY) ||
+			(metadata.type === "message" &&
+				metadata.messageRole === "toolResult" &&
+				metadata.toolName === GOAL_DEADLINE_TOOL_NAME),
+	);
+	const entries: unknown[] = state ? [state] : [];
+	// A malformed/inactive newest state masks older deadlines; focus cannot revive it.
+	if (!rehydrateDeadlineState(entries)?.active) return entries;
+	// A fixed user constraint is authoritative independently of goal focus.
+	if (readGoalDeadline(entries)) return entries;
+	for (const entry of selectBranchNewestFirst(
+		manager,
+		metadata =>
+			metadata.type === "mode_change" ||
+			(metadata.type === "custom" && metadata.customType === GOAL_FOCUS_CUSTOM_TYPE),
+	)) {
+		if (
+			entry.type === "custom" ||
+			(entry.type === "mode_change" &&
+				(entry.mode === "goal" || entry.mode === "goal_paused" || entry.mode === "none"))
+		) {
+			entries.unshift(entry);
+			return entries;
+		}
+	}
+	// Passive legacy state applies only when no explicit native/plugin choice exists.
+	const legacy = selectLatestBranchEntry(
+		manager,
+		metadata => metadata.type === "custom" && metadata.customType === GOAL_STATE_CUSTOM_TYPE,
+	);
+	if (legacy) entries.unshift(legacy);
+	return entries;
 }
 
 /** Resolve the deadline over the manager's selective goal/focus branch slice. */
