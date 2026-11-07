@@ -43,6 +43,7 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 
+import { launchScope } from "@oh-my-pi/pi-utils/launch-trace";
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import type { SessionContextEntryMetadata } from "../session/session-context";
