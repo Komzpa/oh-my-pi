@@ -26,6 +26,7 @@ import {
 	type LeadInstructionScenario,
 } from "../lead-instructions.scenarios";
 import { fixNowScenarios } from "../fix-now.scenarios";
+import { resourceScopeNotice } from "../agent_router";
 import { leadGateScenarios } from "../lead-gates.scenarios";
 import { validateToolCall } from "@oh-my-pi/pi-ai/utils/validation";
 import { contains, runLeadSequence } from "./lead-sequence";
@@ -86,7 +87,15 @@ if (values.help) {
 const scenarios = (
 	values.contexts
 		? await Bun.file(values.contexts).json()
-		: [...(await leadInstructionScenarios()), ...(await leadGateScenarios()), ...(await fixNowScenarios())]
+		: [...(await leadInstructionScenarios()), ...(await leadGateScenarios()), ...(await fixNowScenarios()), {
+			id: "scopegrant-telepathy",
+			context: resourceScopeNotice("AdaptiveBatch", { op: "schedule", updates: [{
+				task: "Finish assigned worktree edit", resources: ["/fixture/AdaptiveBatch"],
+			}] }),
+			expected: { tool: "todo", args: { op: "schedule", updates: [{
+				task: "Finish assigned worktree edit", resources: ["/fixture/AdaptiveBatch"],
+			}] } },
+		}]
 ) as Scenario[];
 if (
 	!Array.isArray(scenarios) ||

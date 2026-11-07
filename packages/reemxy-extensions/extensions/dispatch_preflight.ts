@@ -417,13 +417,13 @@ export async function workerToolPreflight(
 					path.isAbsolute(resourcePath) &&
 					(inside(await canonical(resourcePath), resolved) || inside(resolved, await canonical(resourcePath)))
 				)
-					return { block: true, reason: `Write conflicts with row ${JSON.stringify(other.content)}.` };
+					return { block: true, reason: `Write conflicts with row ${JSON.stringify(other.content)} (owner ${other.schedule?.owner ?? other.schedule?.executor?.workerId ?? "unassigned"}); wait for that writer, or have Main call todo {op:"schedule",updates:[{task:${JSON.stringify(rows[0]?.content ?? "<worker row>")},resources:[<disjoint absolute paths>]}]}.` };
 			}
 		}
 		if (!roots.some(allowed => inside(allowed, resolved)))
 			return {
 				block: true,
-				reason: `Outside your worktree: add ${resolved} to row ${JSON.stringify(rows.map(row => row.content).join(", ") || ctx.agent?.id || "<worker row>")} resources via todo schedule; applies to the running worker. Use an absolute path. If its worktree disappeared, restore it or put the replacement absolute worktree path in that row resources, then retry. Call resource_scope with the absolute paths; assigned paths return granted immediately.`,
+				reason: `Outside your worktree: add ${resolved} to row ${JSON.stringify(rows.map(row => row.content).join(", ") || ctx.agent?.id || "<worker row>")} resources via todo schedule; applies to the running worker. Use an absolute path. If its worktree disappeared, restore it or put the replacement absolute worktree path in that row resources, then retry. Call resource_scope {paths:[${JSON.stringify(resolved)}]}, then yield with error:"Scope pending: awaiting lead schedule" if pending; Main receives the exact todo schedule call.`,
 			};
 	}
 	if (scope?.lead.session && targets.length) {

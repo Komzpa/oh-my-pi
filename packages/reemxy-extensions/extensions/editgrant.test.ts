@@ -31,7 +31,7 @@ async function fixture() {
 	];
 	const registry = new AgentRegistry();
 	vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
-	const steer = vi.fn(async (_text: string) => {});
+	const steer = vi.fn(async (_text: string, _images?: unknown, _options?: { attribution: string }) => {});
 	registry.register({
 		id: "Lead",
 		kind: "main",
@@ -158,8 +158,9 @@ test("resource scope requests restating assignments grant without lead work; new
 			update: undefined,
 			ctx: ExtensionContext,
 		) => Promise<{ details: { status: string } }>;
+		let toolCall: (event: unknown, ctx: ExtensionContext) => Promise<unknown> = async () => { throw new Error("tool_call hook missing"); };
 		agentRouter({
-			on() {},
+			on(name: string, handler: typeof toolCall) { if (name === "tool_call") toolCall = handler; },
 			zod: z,
 			registerTool(tool: { name: string; execute: typeof execute }) {
 				if (tool.name === "resource_scope") execute = tool.execute;
@@ -171,18 +172,39 @@ test("resource scope requests restating assignments grant without lead work; new
 		expect((await request([`${f.dir}/new-proof`])).details.status).toBe("pending");
 		expect((await request([`${f.dir}/new-proof`])).details.status).toBe("pending");
 		expect(f.steer).toHaveBeenCalledTimes(1);
+		expect(await toolCall({ toolName: "yield", input: { error: "Scope pending: awaiting the lead todo schedule action" } }, f.worker)).toBeUndefined();
 		f.phases()[0]!.tasks.push({
 			content: "Other writer",
 			status: "in_progress",
 			schedule: { owner: "Other", resources: [f.assigned] },
 		});
 		expect((await request([`${f.assigned}/capture.png`])).details.status).toBe("conflict");
-		expect(f.steer.mock.calls[0]![0]).toContain('"op":"schedule"');
+		expect(f.steer.mock.calls[0]![2]).toEqual({ attribution: "agent" });
+		expect(f.steer.mock.calls[0]![0]).toContain('todo {"op":"schedule"');
+		// Apply the notice's actual tool arguments, then retry the running worker.
+		const action = JSON.parse(f.steer.mock.calls[0]![0].match(/todo (\{.*\}), or/)![1]!);
+		for (const update of action.updates) f.lead.updateTodoSchedule!(update.task, { resources: update.resources });
+		expect(await workerToolPreflight({ toolName: "write", input: { path: `${f.dir}/new-proof/a` } }, f.worker)).toBeUndefined();
 		expect(f.steer.mock.calls[0]![0]).toContain(`${f.dir}/new-proof`);
 		expect(
-			await workerToolPreflight({ toolName: "write", input: { path: `${f.dir}/new-proof/a` } }, f.worker),
+			await workerToolPreflight({ toolName: "write", input: { path: `${f.dir}/unassigned/a` } }, f.worker),
 		).toMatchObject({ block: true });
 	} finally {
 		await f.cleanup();
 	}
 });
+
+for (const declaration of ["Worktree", "cwd:", '"scope":{"root":']) {
+	test(`assigned ${declaration} overrides stale row resources even with explicit file resources`, async () => {
+		const f = await fixture();
+		try {
+			const event = { agent: "task", spawnKey: "BragPrScreenshots", row: "Capture screenshots",
+				resources: [`${f.assigned}/src/file.ts`],
+				assignment: `Capture screenshots\n${declaration} "${f.assigned}"` };
+			expect(routeSubagentSpawn(event, f.lead, undefined, { stateFile: `${f.dir}/spawns` })).toBeUndefined();
+			expect(await workerToolPreflight({ toolName: "edit", input: { path: `${f.assigned}/other.ts` } }, f.worker)).toBeUndefined();
+			f.phases()[0]!.tasks.push({ content: "Held", status: "in_progress", schedule: { owner: "Holder", resources: [f.assigned] } });
+			expect(routeSubagentSpawn(event, f.lead, undefined, { stateFile: `${f.dir}/spawns` })).toMatchObject({ block: true, reason: expect.stringContaining("Holder") });
+		} finally { await f.cleanup(); }
+	});
+}

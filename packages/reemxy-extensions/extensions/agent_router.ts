@@ -98,6 +98,15 @@ export function lanePathsFromText(text: string): string[] {
 	return found;
 }
 
+/** Only explicit worktree declarations supplement an explicit per-item resource list.
+ * Other absolute paths (reference inputs, evidence) retain the existing narrowing policy. */
+export function assignedWorktrees(text: string): string[] {
+	const roots: string[] = [];
+	const declarations = /(?:worktree|scope\.root|cwd|["']root["'])["'`\s]*[:=]?["'`\s]*(\/[^\s"'`,;]+)/gi;
+	for (const match of text.matchAll(declarations)) roots.push(...lanePathsFromText(match[1]!));
+	return [...new Set(roots)];
+}
+
 function ownedCheckoutScopes(
 	event: BeforeSubagentSpawnEvent,
 	ctx: ExtensionContext,
@@ -426,6 +435,10 @@ function memoLatestTodo(
 			(getter && ctx.sessionManager ? getter(getLiveTodoBranchEntries(ctx.sessionManager)) : []));
 }
 
+export function resourceScopeNotice(worker: string, action: unknown): string {
+	return prompt.render(gateNotices, { scopeRequest: true, worker, action: JSON.stringify(action) }).trim();
+}
+
 export async function requestResourceScope(ctx: ExtensionContext, paths: string[], pending = new Set<string>()) {
 	if (!paths.length || paths.some(target => !target.startsWith("/")))
 		return { status: "invalid", reason: "Use absolute paths." };
@@ -445,14 +458,19 @@ export async function requestResourceScope(ctx: ExtensionContext, paths: string[
 	const action = { op: "schedule", updates };
 	const key = JSON.stringify(action);
 	if (!pending.has(key)) {
-		await scope.lead.session.steer(
-			prompt
-				.render(gateNotices, { scopeRequest: true, worker: ctx.agent?.id, action: JSON.stringify(action) })
-				.trim(),
-		);
 		pending.add(key);
+		try {
+			await scope.lead.session.steer(
+				resourceScopeNotice(ctx.agent?.id ?? "worker", action),
+				undefined,
+				{ attribution: "agent" },
+			);
+		} catch (error) {
+			pending.delete(key);
+			throw error;
+		}
 	}
-	return { status: "pending", lead: scope.lead.id, action };
+	return { status: "pending", lead: scope.lead.id, action, next: 'Yield with error:"Scope pending: awaiting the lead todo schedule action"; the lead must schedule these resources before retrying. Do not repeat the request.' };
 }
 
 /** Persist only caller-assigned paths, after canonical overlap checks, before any worker starts. */
@@ -460,14 +478,16 @@ export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: Ext
 	const explicit = Array.isArray(event.resources);
 	if (explicit && event.resources.some(value => typeof value !== "string" || !value.startsWith("/")))
 		return "resources must contain absolute paths; use tasks[].resources to narrow the row.";
-	const assigned = explicit ? event.resources : lanePathsFromText(spawnTaskText(event) ?? "");
+	const text = spawnTaskText(event) ?? "";
+	const worktrees = assignedWorktrees(text);
+	const assigned = [...new Set([...(explicit ? event.resources : lanePathsFromText(text)), ...worktrees])];
 	const scopes = checkoutScopesFromResources(assigned);
 	if (assigned.length && !scopes) return "Cannot resolve assigned resources.";
 	if (ctx.agent?.kind === "sub") {
 		const inherited = workerRowScope(ctx);
 		const allowed = checkoutScopesFromResources(inherited?.rows.flatMap(row => row.schedule?.resources ?? []));
 		if (scopes && (!allowed || !checkoutScopesContain(allowed, scopes)))
-			return "Nested worker assignment exceeds its parent's row resources; request resource_scope from the lead.";
+			return `Nested worker assignment exceeds its parent's row resources; call resource_scope {paths:[<absolute path>]} in this worker, then yield with error:"Scope pending: awaiting lead schedule".`;
 		return;
 	}
 	const phases = ctx.getTodoPhases?.() ?? [];
@@ -485,7 +505,9 @@ export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: Ext
 	const row = matched[0];
 	if (row.status === "blocked" && todoInfraBreaker(row.schedule?.attemptHistory)) return row.blocker ?? "Infra breaker: inspect todo history and repair admission before unblocking this row.";
 	const previous = checkoutScopesFromResources(row.schedule?.resources);
-	if (explicit && previous && scopes && !checkoutScopesContain(previous, scopes))
+	const narrowed = checkoutScopesFromResources(event.resources);
+	if (explicit && previous && narrowed &&
+		!checkoutScopesContain([...previous, ...(checkoutScopesFromResources(worktrees) ?? [])], narrowed))
 		return `resources exceed row ${JSON.stringify(row.content)}; update its todo schedule resources before expanding.`;
 	const resources = explicit ? assigned : [...new Set([...(row.schedule?.resources ?? []), ...assigned])];
 	const readOnly = event.readOnly === true || readOnlyRow(row);
@@ -1075,6 +1097,11 @@ export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbe
 		const preflight = await workerToolPreflight(event, ctx, probes);
 		if (preflight) return preflight;
 		if (event.toolName === "yield" && ctx.agent?.kind === "sub") {
+			// A delivered scope request has no local work left: report it once to the lead.
+			// The ordinary completion gate would otherwise demand evidence for an edit
+			// the resource gate has just forbidden.
+			if (pendingScopes.size && typeof event.input?.error === "string" && event.input.error.startsWith("Scope pending:"))
+				return undefined;
 			const budgetMs = options.yieldGateBudgetMs ?? YIELD_GATE_BUDGET_MS;
 			const startedAt = Date.now();
 			let timer: ReturnType<typeof setTimeout> | undefined;
