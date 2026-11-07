@@ -242,7 +242,7 @@ test("attempt two dispatches speculatively with a queued handoff, then honors co
   const afterVerdict = { tasks: [{ agent: "Coder", task: "Implement header navigation" }] };
   const allowed = await harness.handlers.get("tool_call")!({ toolName: "task", input: afterVerdict }, harness.ctx) as { reason?: string } | undefined;
   expect(allowed?.reason).toBeUndefined();
-  expect(afterVerdict.tasks[0].task).toContain("USER CORRECTION TO HONOR: redo Implement header navigation with the buttons left aligned");
+  expect(allowed.input.tasks[0].task).toContain("USER CORRECTION TO HONOR: redo Implement header navigation with the buttons left aligned");
 });
 
 test("user accept resolves review and demands fast publication of the dependent work", async () => {
@@ -386,7 +386,7 @@ test("handed-off attempt can continue speculatively while the customer is absent
 	const call = { tasks: [{ agent: "Coder", task: "Delivered UI" }] };
 	const result = await harness.handlers.get("tool_call")({ toolName: "task", input: call }, harness.ctx);
 	expect(result?.block).not.toBe(true);
-	expect(call.tasks[0].task).toContain("SPECULATIVE");
+	expect(result.input.tasks[0].task).toContain("SPECULATIVE");
 	expect(harness.phases()[0].tasks[0].schedule.speculativeOn).toBe("Delivered UI");
 });
 
@@ -654,8 +654,8 @@ test("redo reopens a completed row and sends the user's actual note as the next 
   expect(row.status).toBe("in_progress");
   expect(row.schedule.finishedAt).toBeUndefined();
   const input = { tasks: [{ agent: "Coder", task: "Delivered UI" }] };
-  await harness.handlers.get("tool_call")({ toolName: "task", input }, harness.ctx);
-  expect(input.tasks[0].task).toContain(`USER CORRECTION TO HONOR: ${note}`);
+  const result = await harness.handlers.get("tool_call")({ toolName: "task", input }, harness.ctx);
+  expect(result.input.tasks[0].task).toContain(`USER CORRECTION TO HONOR: ${note}`);
 });
 
 test("drop abandons the reviewed row and releases its dependants", async () => {
@@ -796,8 +796,9 @@ test("published user-review row dispatches a speculative redo", async () => {
   const harness = await reviewHookHarness([{ name: "Work", tasks: [row] }], { running: [], recent: [], nonJobAgents: [] });
   harness.ctx.getTodoPreviewConfig = () => ({ enabled: false, paths: [], thresholdMinutes: 15, openReviewPages: false });
   const input = { tasks: [{ agent: "coder", task: row.content }] };
-  expect((await harness.handlers.get("tool_call")({ toolName: "task", input }, harness.ctx))?.block).not.toBe(true);
-  expect(input.tasks[0].task).toContain("SPECULATIVE");
+  const result = await harness.handlers.get("tool_call")({ toolName: "task", input }, harness.ctx);
+  expect(result?.block).not.toBe(true);
+  expect(result.input.tasks[0].task).toContain("SPECULATIVE");
   expect(harness.phases()[0].tasks[0].schedule.speculativeOn).toBe(row.content);
 });
 

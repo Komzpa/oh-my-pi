@@ -1968,7 +1968,7 @@ export class ExtensionRunner {
 		ctx: ExtensionContext,
 		ext: Extension,
 		timeoutMs: number,
-		onFailure?: (kind: "timeout" | "error", message: string) => R,
+		onFailure?: (kind: "timeout" | "error", message: string, error?: unknown) => R,
 		outerSignal?: AbortSignal,
 	): Promise<R | undefined> {
 		// `session_stop` carries its own signal on the event; `tool_call` receives
@@ -2046,7 +2046,7 @@ export class ExtensionRunner {
 				error: message,
 				stack,
 			});
-			return onFailure?.("error", message);
+			return onFailure?.("error", message, handlerFailure.error);
 		}
 		return handlerResult as R | undefined;
 	}
@@ -2330,12 +2330,12 @@ export class ExtensionRunner {
 					ctx,
 					ext,
 					timeoutMs,
-					(kind, message) => ({
+					(kind, message, error) => ({
 						block: true,
 						reason:
 							kind === "timeout"
-								? `Extension ${ext.path} timed out after ${timeoutMs}ms`
-								: `Extension ${ext.path} failed: ${message}`,
+								? `Extension ${ext.path} tool_call (${event.toolName}) timed out after ${timeoutMs}ms`
+								: `Extension ${ext.path} tool_call (${event.toolName}) failed: ${error instanceof Error ? Bun.inspect(error, { colors: false }) : message}`,
 					}),
 					signal,
 				)) as ToolCallEventResult | undefined;
