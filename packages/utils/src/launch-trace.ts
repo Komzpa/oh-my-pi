@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isPromise } from "node:util/types";
 import * as logger from "./logger";
-import { withLoopPhase } from "./loop-phase";
+import { pushLoopPhase, popLoopPhase, withLoopPhase } from "./loop-phase";
 
 interface Span {
 	name: string;
@@ -151,4 +151,21 @@ logger.setTimingObserver(launchStep);
 /** Time a constructor without an extra async boundary. */
 export function launchConstruct<T, A extends unknown[]>(name: string, ctor: new (...args: A) => T, ...args: A): T {
 	return launchStep(name, () => new ctor(...args));
+}
+
+/** Synchronous functions only: dispose before any await or async return boundary. */
+export function launchScope(name: string): Disposable {
+	const trace = storage.getStore()?.trace;
+	const label = name.slice(0, maxName);
+	const started = trace && !trace.closed ? performance.now() : undefined;
+	pushLoopPhase(label);
+	return {
+		[Symbol.dispose]() {
+			popLoopPhase();
+			if (trace && !trace.closed && started !== undefined) {
+				const elapsed = performance.now() - started;
+				recordSpan(trace, label, elapsed, elapsed);
+			}
+		},
+	};
 }

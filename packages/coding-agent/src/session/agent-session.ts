@@ -15,6 +15,8 @@ import { selectBranchEntries } from "./branch-selection";
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
+import { launchScope } from "@oh-my-pi/pi-utils/launch-trace";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7645,7 +7647,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// dead weight from here on. Dropping it lets a parked subagent's session
 		// graph shed its heavy payloads even while the lifecycle adoption record's
 		// reviver closure still references the session object. Fixes #8003.
-		withLoopPhase("resource-release.memory", () => this.#releaseRetainedSessionMemory());
+		this.#releaseRetainedSessionMemory();
 		// A run past the deadline may still resolve keys, so the account pools
 		// are lifted only once the run has settled: here when it drained,
 		// otherwise in the deferred pass below. Each lease lifts only the
@@ -7666,7 +7668,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			void (async () => {
 				await this.agent.waitForIdle();
 				await this.#drainInFlightEventHandlers();
-				withLoopPhase("resource-release.memory", () => this.#releaseRetainedSessionMemory());
+				this.#releaseRetainedSessionMemory();
 				this.#accountPoolScope?.release();
 			})().catch(error => logger.warn("Deferred dispose finalization failed", { error: String(error) }));
 		}
@@ -7696,6 +7698,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	/** Drop the in-memory conversation state after the terminal dispose flush. */
 	#releaseRetainedSessionMemory(): void {
+		using phase = launchScope("resource-release.memory");
 		this.#releaseQueuedTtsrReservations();
 		this.agent.reset();
 		this.#tools.releaseRestoredTranscript();

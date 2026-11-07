@@ -1,6 +1,6 @@
-import { launchStep, launchMetric } from "@oh-my-pi/pi-utils/launch-trace";
-import { withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import * as fs from "node:fs";
+import { launchScope, launchStep, launchMetric } from "@oh-my-pi/pi-utils/launch-trace";
+import { withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import * as path from "node:path";
 import type {
 	AssistantRetryRecovery,
@@ -2785,6 +2785,7 @@ export class SessionManager {
 	}
 
 	#appendToSessionFile(entry: SessionEntry): void {
+		using phase = launchScope("journal.write");
 		if (this.#released || !this.#persist || !this.#sessionFile) return;
 		if (this.#atomicEntryBatch) return;
 
@@ -2872,7 +2873,7 @@ export class SessionManager {
 			const writer = this.#appendWriter();
 			const line = this.#lineFor(entry);
 			if (writer.appendSync && !this.#storage.defersSyncPublish) {
-				launchStep("journal.write", () => writer.appendSync!(line));
+				writer.appendSync(line);
 				this.#recordDurableAppend(line);
 			} else {
 				// A backend that only queues the publish (indexed) has no synchronous
@@ -2880,7 +2881,7 @@ export class SessionManager {
 				// the line: a lost publish must not leave the record describing bytes
 				// the store never accepted, or the next recovery rewrite hands the
 				// backend CAS an impossible `expectedSize`.
-				if (writer.appendSync) launchStep("journal.write", () => writer.appendSync!(line));
+				if (writer.appendSync) writer.appendSync(line);
 				const confirmed = writer.appendSync ? writer.flush() : writer.append(line);
 				void confirmed
 					.then(() => this.#recordDurableAppend(line))
