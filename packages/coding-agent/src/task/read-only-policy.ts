@@ -24,14 +24,17 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 export function isReadOnlyAgent(agent: AgentDefinition): boolean {
-	return (
-		agent.readOnly === true || (!!agent.tools?.length && agent.tools.every(tool => READ_ONLY_TOOL_NAMES.has(tool)))
-	);
+	return !!agent.tools?.length && agent.tools.every(tool => READ_ONLY_TOOL_NAMES.has(tool));
 }
 
 /** Roles whose contract forbids checkout mutation, even if an old definition lists bash. */
 export function isReadOnlyWorkerRole(name: string): boolean {
 	return ["qa-auditor", "explore", "scout", "reviewer", "security-reviewer"].includes(name);
+}
+
+/** A worker dispatched read-only keeps its shell, so its tool list alone no longer proves read-only. */
+export function isReadOnlyDispatch(agent: AgentDefinition): boolean {
+	return agent.readOnly === true || isReadOnlyAgent(agent);
 }
 
 /** Preserve the role's capabilities; read-only dispatch removes direct mutation and delegation. */
