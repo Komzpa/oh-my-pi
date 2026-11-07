@@ -163,3 +163,17 @@ test("awaited extension work supplies bounded overlap candidates without claimin
 	expect(takeLaunchPhaseCandidates(250, 350)).toEqual(["extension.init:delayed", "sdkCreate"]);
 	expect(takeLaunchPhaseCandidates(350, 700)).toEqual([]);
 });
+
+test("a recursive child launched after parent readiness gets its own summary", async () => {
+	const logs = capture();
+	await runLaunchTrace({ id: "parent" }, async () => {
+		launchStep("parent.init", () => 1);
+		finishLaunchTrace();
+		await runLaunchTrace({ id: "child" }, async () => {
+			launchStep("child.init", () => 2);
+		});
+	});
+	const summaries = logs.mock.calls.map(call => call[1]);
+	expect(summaries.map(summary => summary?.id)).toEqual(["parent", "child"]);
+	expect(summaries[1]?.spans).toEqual([expect.objectContaining({ name: "child.init" })]);
+});
