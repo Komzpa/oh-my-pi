@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Read current dispatch, deadline, and staffing state without replaying long session histories ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Replace pending gate notices by subject so busy leads receive only the latest staffing and ETA state ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Keep TODO dispatch responsive in long sessions and load archived rows during resume ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 

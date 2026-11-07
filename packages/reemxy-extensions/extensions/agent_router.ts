@@ -5,7 +5,7 @@ import { availableParallelism, homedir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { ModelPresetSwitchResult } from "@oh-my-pi/pi-coding-agent/config/model-presets";
-import { isTodoSelectionEntryMetadata } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { getLiveTodoBranchEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { workerYieldRefusal, type WorkerContinuationState } from "./worker_continue";
@@ -391,13 +391,13 @@ function memoLatestTodo(
 	getter: LatestTodoGetter | undefined,
 	ctx: ExtensionContext,
 ): (() => TodoScheduleInput) | undefined {
-	if (!ctx.getTodoPhases && (!getter || !ctx.sessionManager?.getBranchMatching)) return undefined;
+	if (!ctx.getTodoPhases && (!getter || !ctx.sessionManager)) return undefined;
 	let cached: TodoScheduleInput | undefined;
 	return () =>
 		(cached ??=
 			ctx.getTodoPhases?.() ??
-			(getter && ctx.sessionManager?.getBranchMatching
-				? getter(ctx.sessionManager.getBranchMatching(isTodoSelectionEntryMetadata))
+			(getter && ctx.sessionManager
+				? getter(getLiveTodoBranchEntries(ctx.sessionManager))
 				: []));
 }
 

@@ -488,7 +488,7 @@ test("vetoes native and plugin goal completion until branch TODO work is closed"
 	branch.push({ id: "closed-branch", type: "custom", customType: "user_todo_edit", data: { phases } });
 	expect(invoke("goal", { op: "complete" })).toBeUndefined();
 	expect(invoke("update_goal", { status: "complete" })).toBeUndefined();
-	expect(reducerBranches[2]).toEqual(branch);
+	expect(getLatestTodoPhasesFromEntries(reducerBranches[2] as unknown[])).toEqual(phases);
 	expect(branchReads).toHaveLength(4);
 
 	const callsBeforeUnrelated = branchReads.length;
