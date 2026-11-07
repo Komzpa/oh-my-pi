@@ -3521,6 +3521,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       "",
       "## ETA",
       `Current ETA/P95 finish: ${currentFinish === null ? "unknown" : safeTimestamp(currentFinish, decision.deadline?.timezone)}`,
+      `Deadline forecast: ${sdk.formatPlanForecast(decision.forecast, now)}`,
       "Recent ETA samples:",
       ...sampleLines,
       "",
