@@ -1,0 +1,18 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/todo_dispatch.readonly.test.ts:
+129 | 		dependencies: [], executor: { workerId: "PushFitCamera-10", finishedAt: 20, outcome: "failed" },
+130 | 	} };
+131 | 	const h = await harness([row]);
+132 | 	const input = { agent: "task", row: row.content, task: "Fix and oracle are missing" };
+133 | 	const dispatch = () => h.hooks.get("tool_call")({ type: "tool_call", toolName: "task", input }, h.ctx);
+134 | 	expect((await dispatch()).reason).toContain("no previous attempt findings");
+                              ^
+TypeError: undefined is not an object (evaluating '(await dispatch()).reason')
+      at <anonymous> (/home/kom/proj/ai_pr/omp-workerask-20261107/oh-my-pi/packages/reemxy-extensions/extensions/todo_dispatch.readonly.test.ts:134:25)
+(fail) registered dispatch refuses a retry without findings and attaches the previous same-row receipt [9.08ms]
+
+ 0 pass
+ 5 filtered out
+ 1 fail
+Ran 1 test across 1 file. [502.00ms]

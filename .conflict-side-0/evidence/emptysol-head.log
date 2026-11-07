@@ -1,0 +1,39 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/coding-agent/test/todo-wake-visibility.test.ts:
+(pass) dispatcher silence covers streamed text and persisted history; a real user and worker update remain visible [252.99ms]
+
+packages/coding-agent/test/agent-session-empty-stop-guard.test.ts:
+(pass) AgentSession empty stop guard > retries a silent dispatcher action demand until its tool runs [12.13ms]
+(pass) AgentSession empty stop guard > exposes the retry cap for a silent dispatcher demand instead of idling silently [5.98ms]
+(pass) AgentSession empty stop guard > accepts an idle silent dispatcher wake with no action demand [2.41ms]
+(pass) AgentSession empty stop guard > retries an empty assistant stop after a tool result [4.24ms]
+(pass) AgentSession empty stop guard > retries a tool-use stop that has no tool call or text [3.75ms]
+(pass) AgentSession empty stop guard > retries a stop that only contains thinking [5.78ms]
+(pass) AgentSession empty stop guard > continues with an output reminder after a Cloud Code Assist empty response [3.44ms]
+(pass) AgentSession empty stop guard > caps provider-empty recovery without consuming generic retries and accepts the next prompt [5.86ms]
+(pass) AgentSession empty stop guard > keeps a signed thinking-only stop instead of discarding it as empty [1.99ms]
+(pass) AgentSession empty stop guard > removes orphaned tool-use stops even when retry cap is hit [4.15ms]
+(pass) AgentSession empty stop guard > caps empty stop retries at three attempts and discards the final empty turn [6.68ms]
+(pass) AgentSession empty stop guard > does not revive capped empty responses through pending todo reminders [6.09ms]
+(pass) AgentSession empty stop guard > discards the capped empty stop durably without waiting on a stalled message_end hook [24.01ms]
+(pass) AgentSession empty stop guard > does not let a capped empty stop anchor the next context estimate [5.87ms]
+(pass) AgentSession empty stop guard > emits failed auto-retry end when repeated empty stops exhaust the retry cap [3.80ms]
+(pass) AgentSession empty stop guard > reports capped empty-stop diagnostics without inventing a cause for unknown reasoning usage [4.78ms]
+(pass) AgentSession empty stop guard > reports capped empty-stop diagnostics without inventing a cause for partial reasoning usage [3.20ms]
+(pass) AgentSession empty stop guard > reports capped empty-stop diagnostics without inventing a cause for reasoning-only usage [2.57ms]
+(pass) AgentSession empty stop guard > ends auto-retry state when empty stop retries hit the cap [10.07ms]
+(pass) AgentSession empty stop guard > preserves auto-retry budget across empty stop continuations [5.06ms]
+(pass) AgentSession empty stop guard > preserves Codex commentary when discarding a colliding empty final stop [5.16ms]
+(pass) AgentSession empty stop guard > does not retry normal stop or tool-use turns [4.15ms]
+
+packages/coding-agent/test/agent-session-yield-empty-stop-suppression.test.ts:
+(pass) AgentSession yield empty-stop suppression > settles a successful retry that ends in a terminal yield [4.61ms]
+(pass) AgentSession yield empty-stop suppression > stops at the terminal yield instead of consuming scripted trailing empty stops [2.43ms]
+(pass) AgentSession yield empty-stop suppression > clears yield-termination on the next prompt so empty stops retry normally [4.41ms]
+(pass) AgentSession yield empty-stop suppression > treats an idle IRC wake after a yielded run as a fresh turn for empty-stop retry [4.30ms]
+
+ 27 pass
+ 0 fail
+ 137 expect() calls
+Ran 27 tests across 3 files. [4.32s]

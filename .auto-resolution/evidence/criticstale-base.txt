@@ -1,0 +1,112 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/plan_critic.test.ts:
+439 | 		}
+440 | 		if (shape === "changed owner") next[0]!.tasks[1]!.schedule!.owner = "Replacement-3";
+441 | 		h.set(next);
+442 | 		h.event("agent_end");
+443 | 		expect(h.notices).toHaveLength(1);
+444 | 		expect(h.event("tool_call", { toolName: "wait", toolCallId: "released" })).toBeUndefined();
+                                                                                   ^
+error: expect(received).toBeUndefined()
+
+Received: {
+  block: true,
+  reason: "Plan critic e9886427-26b9-479e-a8a1-d743ffb07594 has unaddressed actions: cut-wait. Execute or explicitly reject each via plan_critic_action.",
+}
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-criticstale-20261107/oh-my-pi/packages/reemxy-extensions/extensions/plan_critic.test.ts:444:78)
+(fail) stale released worker auto-closes without a lead rejection or another delivery [7.61ms]
+439 | 		}
+440 | 		if (shape === "changed owner") next[0]!.tasks[1]!.schedule!.owner = "Replacement-3";
+441 | 		h.set(next);
+442 | 		h.event("agent_end");
+443 | 		expect(h.notices).toHaveLength(1);
+444 | 		expect(h.event("tool_call", { toolName: "wait", toolCallId: "released" })).toBeUndefined();
+                                                                                   ^
+error: expect(received).toBeUndefined()
+
+Received: {
+  block: true,
+  reason: "Plan critic 7020363e-e5ba-4654-9911-7a53fca18c93 has unaddressed actions: cut-wait. Execute or explicitly reject each via plan_critic_action.",
+}
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-criticstale-20261107/oh-my-pi/packages/reemxy-extensions/extensions/plan_critic.test.ts:444:78)
+(fail) stale abandoned reassigned row auto-closes without a lead rejection or another delivery [1.08ms]
+439 | 		}
+440 | 		if (shape === "changed owner") next[0]!.tasks[1]!.schedule!.owner = "Replacement-3";
+441 | 		h.set(next);
+442 | 		h.event("agent_end");
+443 | 		expect(h.notices).toHaveLength(1);
+444 | 		expect(h.event("tool_call", { toolName: "wait", toolCallId: "released" })).toBeUndefined();
+                                                                                   ^
+error: expect(received).toBeUndefined()
+
+Received: {
+  block: true,
+  reason: "Plan critic cc938a3a-69eb-4057-9f9d-29d51c5b6b3f has unaddressed actions: cut-wait. Execute or explicitly reject each via plan_critic_action.",
+}
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-criticstale-20261107/oh-my-pi/packages/reemxy-extensions/extensions/plan_critic.test.ts:444:78)
+(fail) stale changed owner auto-closes without a lead rejection or another delivery [0.69ms]
+457 | 	const fixes = chiefCriticFixes(h.ctx);
+458 | 	const block = chiefFixNow({ main: true, defects: [
+459 | 		{ row: "", action: "Plan late 35m", severity: 0 },
+460 | 		...fixes.map(fix => ({ severity: 2, ...fix })),
+461 | 	] });
+462 | 	expect(block).toContain("1. Unblock «Collateral»");
+                     ^
+error: expect(received).toContain(expected)
+
+Expected to contain: "1. Unblock «Collateral»"
+Received: "FIX NOW: 1. Plan late 35m; 2. Unblock «Collateral»"
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-criticstale-20261107/oh-my-pi/packages/reemxy-extensions/extensions/plan_critic.test.ts:462:16)
+(fail) fresh action delivered once becomes first FIX NOW after two lead turns [1.84ms]
+470 | 	h.run.mockImplementation(async () => response.promise);
+471 | 	await h.event("session_start"); await settle();
+472 | 	const next = makePlan(); next[0]!.tasks[1]!.status = "completed"; h.set(next);
+473 | 	response.resolve({ details: { results: [{ output: JSON.stringify(verdict) }] } });
+474 | 	await settle();
+475 | 	expect(h.notices).toEqual([]);
+                         ^
+error: expect(received).toEqual(expected)
+
+- []
++ [
++   {
++     "content": "Plan critic verdict 6df5bba4-8aa6-4f05-ba88-53ae48b62f25. Pending row actions are in FIX NOW. Execute them with todo/task or reject an action with its reason through plan_critic_action.",
++     "customType": "lead-plan-critic",
++     "details": {
++       "escalated": false,
++       "verdictId": "6df5bba4-8aa6-4f05-ba88-53ae48b62f25",
++     },
++     "display": true,
++   },
++ ]
+
+- Expected  - 1
++ Received  + 11
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-criticstale-20261107/oh-my-pi/packages/reemxy-extensions/extensions/plan_critic.test.ts:475:20)
+(fail) a row changed while reviewer runs is closed before its first notification [0.61ms]
+484 | 	await h.event("session_start"); await settle();
+485 | 	const originalId = (h.entries.filter(entry => entry.customType === PLAN_CRITIC_ENTRY).at(-1)!.data as Binding).id;
+486 | 	const next = makePlan(); next[0]!.tasks[1]!.schedule!.owner = "NewOwner-3"; h.set(next);
+487 | 	clock.mockReturnValue(now + 60_000);
+488 | 	h.wake(); await settle();
+489 | 	expect(h.run).toHaveBeenCalledTimes(2);
+                     ^
+error: expect(received).toHaveBeenCalledTimes(expected)
+
+Expected number of calls: 2
+Received number of calls: 1
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-criticstale-20261107/oh-my-pi/packages/reemxy-extensions/extensions/plan_critic.test.ts:489:16)
+(fail) changed row regenerates a verdict from current ownership instead of replaying it [4.85ms]
+
+ 0 pass
+ 22 filtered out
+ 6 fail
+ 15 expect() calls
+Ran 6 tests across 1 file. [75.00ms]

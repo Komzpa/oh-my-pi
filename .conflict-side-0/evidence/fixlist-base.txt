@@ -1,0 +1,39 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/fix_now.runtime.test.ts:
+51 | test("chief repeats bounded FIX NOW after every result, then removes resolved rows and uses USER supervisor", async () => {
+52 |  const h = await harness([row("Cooling trunks"), row("Power source"), row("Render frame")]);
+53 |  for (const toolName of ["read", "task", "wait", "bash"]) {
+54 |   const result = await h.hooks.get("tool_result")({toolName, toolCallId: toolName, input: {}, content: [{type:"text",text:"receipt"}], isError: toolName === "task"}, h.ctx);
+55 |   const tail = result.content.at(-1).text;
+56 |   expect(tail).toStartWith("FIX NOW:");
+                    ^
+error: expect(received).toStartWith(expected)
+
+Expected to start with: "FIX NOW:"
+Received: "receipt"
+
+      at <anonymous> (/tmp/omp-fixlist-base-20261107/packages/reemxy-extensions/extensions/fix_now.runtime.test.ts:56:16)
+(fail) chief repeats bounded FIX NOW after every result, then removes resolved rows and uses USER supervisor [5.54ms]
+(pass) subagent never gets chief FIX NOW tails or supervisor [2.36ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.push.test.ts:
+115 | 		const readyRows = ["Cooling trunks", "Power source", "Render frame"].map(content => ({ content, status: "pending", schedule: { dependencies: [] } }));
+116 | 		phases[0].tasks.push(...readyRows);
+117 | 		const tailOf = result => result?.content?.at(-1)?.text ?? "receipt";
+118 | 		const refused = await handlers.get("tool_result")!({ toolName: "task", input: {}, isError: true, content: [{ type: "text", text: "refused: staff existing rows first" }] }, ctx);
+119 | 		const refusedTail = tailOf(refused);
+120 | 		expect(refusedTail).toStartWith("FIX NOW:");
+                            ^
+error: expect(received).toStartWith(expected)
+
+Expected to start with: "FIX NOW:"
+Received: "receipt"
+
+      at <anonymous> (/tmp/omp-fixlist-base-20261107/packages/reemxy-extensions/extensions/todo_dispatch.push.test.ts:120:23)
+(fail) live heads create one notice and priority push row, then a worker push clears both without fetch [226.31ms]
+
+ 1 pass
+ 2 fail
+ 13 expect() calls
+Ran 3 tests across 2 files. [1163.00ms]

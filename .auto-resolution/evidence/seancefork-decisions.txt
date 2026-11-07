@@ -1,0 +1,9 @@
+2026-11-08. lane_ask.py --context ../brief.md
+
+Design question: forkFrom(seance) fully loads/copies the parent; every TaskTool subscribes to shared lifecycle events; persisted history rescans changed files. Prefer canonical compact context, suppress seance todo observers, incremental persisted refresh, ownership #92?
+
+DECISION: YES—use the compact session-context snapshot, suppress seance lifecycle todo observers, and incrementally refresh persisted history; this is the right ownership for #92.
+
+The snapshot avoids copying and replaying the parent’s full journal while retaining the context the seance actually needs. Suppressing the observers stops unrelated parent activity from being mirrored into read-only seance sessions; incremental refresh addresses the repeated full-file reads. The proposed scope matches the observed failure end to end.
+
+Proof question and answer follow verbatim in seancefork-decision-proof.txt.

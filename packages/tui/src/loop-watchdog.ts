@@ -1,5 +1,5 @@
+import { launchPhaseDetails } from "@oh-my-pi/pi-utils/launch-trace";
 import { performance } from "node:perf_hooks";
-import { takeLaunchPhaseCandidates } from "@oh-my-pi/pi-utils/launch-trace";
 import { logger, resetLoopPhaseWindow, takeLoopPhaseAttribution } from "@oh-my-pi/pi-utils";
 
 export interface LoopWatchdogOptions {
@@ -152,7 +152,6 @@ export class LoopWatchdog {
 		// Consume every valid tick, even without a warning, so no phase carries
 		// forward into a later, phase-less block.
 		const phase = takeLoopPhaseAttribution(now);
-		const launchCandidates = takeLaunchPhaseCandidates(this.#expected, now);
 		if (blockedMs > this.#thresholdMs) {
 			if (this.#isSuspension(blockedMs, cpuMs)) {
 				this.#wasBlocked = false;
@@ -163,11 +162,7 @@ export class LoopWatchdog {
 					logger.warn("ui.loop-blocked", {
 						blockedMs: Math.round(blockedMs),
 						cpuMs: Math.round(cpuMs),
-						phase:
-							phase?.label ?? (launchCandidates.length ? `launch-overlap:${launchCandidates[0]}` : "unknown"),
-						...(launchCandidates.length
-							? { launchCandidates, ...(!phase ? { phaseSource: "wall-overlap" } : {}) }
-							: {}),
+						...launchPhaseDetails(phase?.label, this.#expected, now),
 						...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
 					});
 				}

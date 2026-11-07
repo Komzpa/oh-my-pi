@@ -7397,8 +7397,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		releaseShellSessions(this.sessionManager.getSessionId());
 		const results = await Promise.allSettled([
-			this.#disposeOwnedAsyncJobs(),
-			this.#eval.disposeKernels(),
+			withLoopPhase("resource-release.async-jobs", () => this.#disposeOwnedAsyncJobs()),
+			withLoopPhase("resource-release.kernels", () => this.#eval.disposeKernels()),
 			this.#releaseOwnedBrowserTabs(this.#eval.getKernelOwnerId()),
 			this.#releaseOwnedComputerSessions(this.#eval.getKernelOwnerId()),
 			this.#disconnectOwnedMcp(),
@@ -7466,8 +7466,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// rewrites at their commit guard; hot-path appends drained above are
 		// already durable, and close() (scheduled post-seal) still flushes and
 		// closes the writer.
-		this.sessionManager.seal();
-		await this.sessionManager.close();
+		withLoopPhase("resource-release.journal-seal", () => this.sessionManager.seal());
+		await withLoopPhase("resource-release.journal-close", () => this.sessionManager.close());
 
 		// Release retained conversation memory. dispose() is terminal, and every
 		// revival path reopens the transcript from disk (AgentLifecycleManager
@@ -7526,7 +7526,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	/** Drop the in-memory conversation state after the terminal dispose flush. */
 	#releaseRetainedSessionMemory(): void {
-		using phase = launchScope("resource-release.memory");
+		using _phase = launchScope("resource-release.memory");
 		this.#releaseQueuedTtsrReservations();
 		this.agent.reset();
 		this.#tools.releaseRestoredTranscript();
@@ -7549,6 +7549,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	#closeAllProviderSessions(reason: string): void {
+		using _phase = launchScope("resource-release.providers");
 		for (const [providerKey, state] of this.#providerSessionState) {
 			try {
 				state.close();
