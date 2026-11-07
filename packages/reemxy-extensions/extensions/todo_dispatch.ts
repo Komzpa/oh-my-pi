@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import planCritic from "./plan_critic";
 import { prepareAttemptBrief } from "./attempt_receipt";
 import { prepareRequirementBrief, installRequirementResolution } from "./requirement_quotes";
 import { installWorkerAskInterrupt, pendingWorkerQuestions } from "./worker_asks";
@@ -2395,6 +2396,7 @@ export function syncCriticalFast(
 }
 
 export default async function todoDispatch(pi: ExtensionAPI, options: { externalOwnerProbe?: ExternalOwnerProbe; reviewPageProbe?: ReviewPageProbe; reviewPageOpener?: (url: string) => void; deliveryCriticRecord?: (row: DeliveryRow, verdict: DeliveryVerdict) => Promise<void> } = {}): Promise<void> {
+  planCritic(pi);
   installWorkerAskInterrupt(pi);
   installRequirementResolution(pi);
   const priorDeliveries = new Set<string>();

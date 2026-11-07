@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Start plan reviews for resumed leads using configured extensions and detect urgent plan triggers within a minute while keeping large journals responsive ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Carry the latest row receipt into retry briefs and refuse retries with missing findings ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Bind requirement edits and conflict resolution to verbatim user quotes and reject widened requirement audits ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

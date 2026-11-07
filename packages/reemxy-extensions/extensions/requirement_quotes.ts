@@ -1,3 +1,4 @@
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { selectBranchEntries, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { TodoScheduleInputTask } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -9,9 +10,9 @@ export interface RequirementQuote {
 	quote: string;
 }
 
-export function rowRequirementQuotes(ctx: ExtensionContext, row: string): RequirementQuote[] {
+export function rowRequirementQuotes(ctx: ExtensionContext, row: string, entries?: readonly SessionEntry[]): RequirementQuote[] {
 	if (!ctx.sessionManager.getBranch) return [];
-	const entry = selectLatestBranchEntry(
+	const entry = entries ? entries.findLast(entry => entry.type === "custom" && entry.customType === "requirements_ledger") : selectLatestBranchEntry(
 		ctx.sessionManager,
 		m => m.type === "custom" && m.customType === "requirements_ledger",
 	);

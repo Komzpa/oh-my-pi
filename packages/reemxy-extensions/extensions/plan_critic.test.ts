@@ -1,3 +1,4 @@
+import { logger } from "@oh-my-pi/pi-utils";
 import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
@@ -45,6 +46,7 @@ function harness(saved: Array<Record<string, unknown>> = [], response: PlanVerdi
 	const entries = [...saved];
 	const notices: Array<{ content: string; details: { escalated: boolean } }> = [];
 	let interval: (() => void) | undefined;
+	let pollMs = 0;
 	let tool:
 		| {
 				execute(
@@ -59,9 +61,11 @@ function harness(saved: Array<Record<string, unknown>> = [], response: PlanVerdi
 	const run = vi.fn(async (_task: string) => ({ details: { results: [{ output: JSON.stringify(response) }] } }));
 	const ctx = {
 		getTodoPhases: () => plan,
+		agent: { kind: "main", id: "Main", name: "main", depth: 0 },
 		sessionManager: { getHeader: () => ({ id: "test" }), getBranch: () => entries },
 		runDeliveryCritic: run,
-		setInterval: (fn: () => void) => {
+		setInterval: (fn: () => void, ms: number) => {
+			pollMs = ms;
 			interval = fn;
 			return 1;
 		},
@@ -88,6 +92,7 @@ function harness(saved: Array<Record<string, unknown>> = [], response: PlanVerdi
 		},
 		event: (name: string, event: Record<string, unknown> = {}) => handlers.get(name)?.(event, ctx),
 		wake: () => interval?.(),
+		pollMs: () => pollMs,
 	};
 }
 const settle = async () => {
@@ -134,9 +139,12 @@ describe("plan critic runtime binding", () => {
 		expect(binding.addressed[action.id]!.toolCallId).toBe("good");
 	});
 	test("unaddressed verdict escalates on next wake and survives session restart", async () => {
+		const now = Date.now();
+		vi.spyOn(Date, "now").mockReturnValue(now);
 		const h = harness();
 		h.event("session_start");
 		await settle();
+		vi.spyOn(Date, "now").mockReturnValue(now + 45 * 60_000);
 		expect(h.notices[0]!.details.escalated).toBe(false);
 		h.wake();
 		expect(h.notices.at(-1)!.details.escalated).toBe(true);
@@ -241,4 +249,44 @@ describe("plan critic runtime binding", () => {
 		changed[0]!.tasks[0]!.status = "completed";
 		expect(actionObserved(action, makePlan(), changed)).toBe(false);
 	});
+});
+
+ test("an empty startup followed by restored churn is reviewed by the next minute poll", async () => {
+	const h = harness([], { ...verdict, converging: true, actions: [] });
+	h.set([]);
+	await h.event("session_start");
+	await settle();
+	expect(h.run).not.toHaveBeenCalled();
+	const plan = makePlan();
+	plan[0]!.tasks[0]!.schedule = { cumulativeReestimateCount: 5 };
+	h.set(plan);
+	expect(h.pollMs()).toBeLessThanOrEqual(60_000);
+	h.wake();
+	await settle();
+	expect(h.run).toHaveBeenCalledTimes(1);
+});
+
+test("a continued lead with parentSession runs; a depth-zero task child does not", async () => {
+	const h = harness();
+	vi.spyOn(h.ctx.sessionManager, "getHeader").mockReturnValue({ type: "session", id: "continued", cwd: "/fixture", timestamp: new Date().toISOString(), parentSession: "old-lead", continuationOf: "old-lead" });
+	await h.event("session_start");
+	await settle();
+	expect(h.run).toHaveBeenCalledTimes(1);
+	const child = harness();
+	child.ctx.agent.kind = "sub";
+	await child.event("session_start");
+	await settle();
+	expect(child.run).not.toHaveBeenCalled();
+});
+
+test("repeated empty-plan polls log one debug and warning for their skip reason", async () => {
+	const warn = vi.spyOn(logger, "warn").mockImplementation(() => {});
+	const debug = vi.spyOn(logger, "debug").mockImplementation(() => {});
+	const h = harness();
+	h.set([]);
+	await h.event("session_start");
+	for (let i = 0; i < 10; i++) h.wake();
+	expect(warn.mock.calls.filter(call => call[1]?.reason === "tick:no-open-rows")).toHaveLength(1);
+	expect(debug.mock.calls.filter(call => call[1]?.reason === "tick:no-open-rows")).toHaveLength(1);
+	expect(h.run).not.toHaveBeenCalled();
 });

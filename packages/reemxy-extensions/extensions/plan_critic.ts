@@ -2,7 +2,7 @@ import { rowRequirementQuotes, requirementConflict } from "./requirement_quotes"
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { selectBranchEntries } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
+import { selectBranchEntriesCooperatively } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import bindingBrief from "./plan-critic-binding.md" with { type: "text" };
 import brief from "./plan-critic.md" with { type: "text" };
 import {
@@ -136,6 +136,8 @@ export function criticInterval(value: string | undefined): number {
 }
 
 export default function planCritic(pi: ExtensionAPI): void {
+	// Partial SDK harnesses without tool registration cannot host the critic.
+	if (!pi.typebox || !pi.registerTool) return;
 	const { Type } = pi.typebox;
 	const interval = criticInterval(Bun.env.OMP_PLAN_CRITIC_MINUTES);
 	let binding: Binding | undefined;
@@ -145,11 +147,19 @@ export default function planCritic(pi: ExtensionAPI): void {
 	let generation = 0;
 	let lastTrigger = "";
 	let timer: Timer | undefined;
+	let lastWake = 0;
+	const skipped = new Set<string>();
+	const skip = (reason: string) => {
+		if (skipped.has(reason)) return;
+		skipped.add(reason);
+		logger.debug("Plan critic skipped", { reason });
+		logger.warn("Plan critic skipped", { reason });
+	};
 	const before = new Map<string, TodoScheduleInput>();
 	const phases = (ctx: ExtensionContext): TodoScheduleInput => ctx.getTodoPhases?.() ?? [];
 	const main = (ctx: ExtensionContext) => {
 		const header = ctx.sessionManager.getHeader();
-		return !!header && !header.parentSession;
+		return !!header && (ctx.agent ? ctx.agent.kind === "main" : !header.parentSession);
 	};
 	const save = () => {
 		if (binding) pi.appendEntry(PLAN_CRITIC_ENTRY, structuredClone(binding));
@@ -177,41 +187,42 @@ export default function planCritic(pi: ExtensionAPI): void {
 		notify(binding.wakes > 1);
 	};
 	const tick = async (ctx: ExtensionContext) => {
-		if (!main(ctx) || inFlight) return;
+		if (!main(ctx)) return skip("tick:not-main");
+		if (inFlight) return skip("tick:in-flight");
 		const now = Date.now();
 		const current = phases(ctx);
 		if (!current.some(phase => phase.tasks.some(row => row.status !== "completed" && row.status !== "abandoned")))
-			return;
-		if (binding && pendingActions(binding).length) return;
-		const entries = selectBranchEntries(
-			ctx.sessionManager,
-			metadata =>
-				["user_todo_edit", "todo-dispatch-time-note", "goal-deadline-time-note"].includes(
-					metadata.customType ?? "",
-				) ||
-				(metadata.messageRole === "toolResult" && metadata.toolName === "todo"),
-		);
-		const digest = buildTrajectoryDigest(entries, current, now);
-		const trigger = JSON.stringify([
-			trajectoryTriggers(digest),
-			digest.rows.map(row => [row.row, row.attempts, row.reestimates, row.audit, row.dependencies]),
-			digest.deadlines.at(-1)?.due,
-		]);
-		const urgent = trajectoryTriggers(digest).length > 0 && trigger !== lastTrigger;
-		if (!urgent && (now - lastAttempt < 60_000 || now - lastSuccess < interval)) return;
-		if (!ctx.runDeliveryCritic) return;
-		lastAttempt = now;
-		lastTrigger = trigger;
+			return skip("tick:no-open-rows");
+		if (binding && pendingActions(binding).length) return skip("tick:pending-actions");
+		if (!ctx.runDeliveryCritic) return skip("tick:no-reviewer");
 		inFlight = true;
 		const token = generation;
 		try {
-			const requirementAudits = selectBranchEntries(ctx.sessionManager,
-				metadata => metadata.type === "custom" && metadata.customType === "requirement-diff-audit")
+			const entries = await selectBranchEntriesCooperatively(
+				ctx.sessionManager,
+				metadata =>
+					["user_todo_edit", "todo-dispatch-time-note", "goal-deadline-time-note", "requirement-diff-audit", "requirements_ledger"].includes(
+						metadata.customType ?? "",
+					) ||
+					(metadata.messageRole === "toolResult" && metadata.toolName === "todo"),
+			);
+			const digest = buildTrajectoryDigest(entries, current, now);
+			const trigger = JSON.stringify([
+				trajectoryTriggers(digest),
+				digest.rows.map(row => [row.row, row.attempts, row.reestimates, row.audit, row.dependencies]),
+				digest.deadlines.at(-1)?.due,
+			]);
+			const urgent = trajectoryTriggers(digest).length > 0 && trigger !== lastTrigger;
+			if (token !== generation) return skip("tick:session-changed");
+			if (!urgent && (now - lastAttempt < 60_000 || now - lastSuccess < interval)) return skip("tick:not-due");
+			lastAttempt = now;
+			lastTrigger = trigger;
+			const requirementAudits = entries.filter(entry => entry.type === "custom" && entry.customType === "requirement-diff-audit")
 				.flatMap(entry => "data" in entry && object(entry.data) ? [entry.data] : []);
 			const task = prompt.render(brief, {
 				digest: compactTrajectoryDigest(digest),
 				requirementAuthority: JSON.stringify(current.flatMap(phase => phase.tasks).map(row => ({
-					row: row.content, quotes: rowRequirementQuotes(ctx, row.content), conflict: requirementConflict(row),
+					row: row.content, quotes: rowRequirementQuotes(ctx, row.content, entries), conflict: requirementConflict(row),
 					evidence: row.schedule?.progress?.evidence,
 					diffAudit: requirementAudits.findLast(data => data.row === row.content &&
 						data.head === row.schedule?.audit?.head && data.delivery === row.schedule?.audit?.delivery),
@@ -223,7 +234,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 				}),
 			});
 			const result = await ctx.runDeliveryCritic(task, AbortSignal.timeout(10 * 60_000));
-			if (token !== generation) return;
+			if (token !== generation) return skip("tick:session-changed");
 			const details = result.details as { results?: Array<{ output?: unknown }> } | undefined;
 			const verdict = parsePlanVerdict(details?.results?.[0]?.output);
 			if (!verdict) throw new Error("Plan critic returned an invalid verdict");
@@ -242,27 +253,37 @@ export default function planCritic(pi: ExtensionAPI): void {
 			if (token === generation) inFlight = false;
 		}
 	};
-	const start = (_event: unknown, ctx: ExtensionContext) => {
+	const start = async (_event: unknown, ctx: ExtensionContext) => {
 		generation++;
 		inFlight = false;
 		before.clear();
 		binding = undefined;
 		lastAttempt = 0;
 		lastSuccess = 0;
-		for (const entry of selectBranchEntries(
+		if (timer) {
+			ctx.clearTimer(timer);
+			timer = undefined;
+		}
+		if (!main(ctx)) return skip("start:not-main");
+		const token = generation;
+		const saved = await selectBranchEntriesCooperatively(
 			ctx.sessionManager,
 			metadata => metadata.type === "custom" && metadata.customType === PLAN_CRITIC_ENTRY,
-		)) {
+		);
+		if (token !== generation) return skip("start:session-changed");
+		for (const entry of saved) {
 			if (entry.type === "custom") binding = entry.data as Binding;
 		}
 		lastSuccess = binding?.at ?? 0;
 		lastTrigger = binding?.trigger ?? "";
-		if (timer) ctx.clearTimer(timer);
-		if (!main(ctx)) return;
+		lastWake = Date.now();
 		timer = ctx.setInterval(() => {
-			wake();
+			if (Date.now() - lastWake >= interval) {
+				lastWake = Date.now();
+				wake();
+			}
 			void tick(ctx);
-		}, interval);
+		}, 60_000);
 		void tick(ctx);
 	};
 	pi.on("session_start", start);
