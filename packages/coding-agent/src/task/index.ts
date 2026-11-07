@@ -1577,16 +1577,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// File bytes must be captured at dispatch, not while arguments stream.
 		if (spawn.taskFile !== undefined) return undefined;
 		if (spawn.tools?.length && this.session.getPlanModeState?.()?.enabled === true) return undefined;
-		let policy: EffectiveSubagentPolicy;
+		let policy;
 		try {
 			policy = await this.#resolveSpawnPreflight(spawn);
 		} catch {
 			return undefined;
 		}
+		const blocking = policy.effectiveAgent.blocking === true;
 		const detached =
-			cfgAsyncEnabled.get(this.session.settings) &&
-			this.session.asyncJobManager !== undefined &&
-			policy.effectiveAgent.blocking !== true;
+			cfgAsyncEnabled.get(this.session.settings) && this.session.asyncJobManager !== undefined && !blocking;
 		const agentId = await this.#outputManager().allocate(spawn.name?.trim() || generateTaskName());
 		if (signal.aborted || (await this.#admitSpawn(spawn, policy, agentId, signal))) return undefined;
 		return this.#launch({ toolCallId, params: spawn, index, agentId, detached });
@@ -1870,7 +1869,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 							this.session.getSessionSpawns?.() ?? "*",
 						),
 					});
-			const result = await this.#executeSyncFanout(
+			const payload = await this.#executeSyncFanout(
 				toolCallId,
 				params,
 				spawnItems
@@ -1880,7 +1879,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				signal,
 				onUpdate,
 			);
-			if (!advisory) return { ...result, content: [...refusalContent, ...result.content] };
+			const result = { ...payload, content: [...refusalContent, ...payload.content] };
+			if (!advisory) return result;
 			let appended = false;
 			const content = result.content.map(part => {
 				if (!appended && part.type === "text" && typeof part.text === "string") {
@@ -1890,7 +1890,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				return part;
 			});
 			if (!appended) content.push({ type: "text", text: advisory });
-			return { ...result, content: [...refusalContent, ...content] };
+			return { ...result, content };
 		}
 
 		// Coordination only makes sense for spawns that keep running after this
