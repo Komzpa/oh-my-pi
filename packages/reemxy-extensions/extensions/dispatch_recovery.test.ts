@@ -19,6 +19,7 @@ test("SLIPPED demand keeps its key across ignored slip steps and rearms after sa
 	const later = recoveryDemand(phases, running, 1000 + RECOVERY_STEP_MS, 2, 2000, 3000, first);
 	expect(later.pending?.key).toBe(first.pending?.key);
 	const satisfied = { ...first, satisfied: first.pending!.key, pending: undefined };
+	expect(recoveryDemand(phases, running, 1000, 2, 2000, 2500, { ...satisfied, satisfied: "deadline:2000:3" }).pending).toBeUndefined();
 	expect(recoveryDemand(phases, running, 1000, 2, 2000, 3000, satisfied).pending).toBeUndefined();
 	expect(recoveryDemand(phases, running, 1000 + 2 * RECOVERY_STEP_MS, 2, 2000, 3000, satisfied).pending?.key).not.toBe(
 		first.pending?.key,

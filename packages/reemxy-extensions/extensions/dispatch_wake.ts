@@ -173,7 +173,9 @@ export function recoveryDemand(
 	const step = Math.ceil(slip / RECOVERY_STEP_MS);
 	const key = `deadline:${deadline}:${step}`;
 	const idle = ready.find(row => now - state.idleSince[row.content]! >= RECOVERY_STEP_MS);
-	const missed = slip > 0 && state.satisfied !== key;
+	const anchor = `deadline:${deadline}:`;
+	const satisfiedStep = state.satisfied?.startsWith(anchor) ? Number(state.satisfied.slice(anchor.length)) : 0;
+	const missed = slip > 0 && step > satisfiedStep;
 	if (!missed && !idle) return state;
 	state.pending = {
 		key: missed ? key : `idle:${idle!.content}:${state.idleSince[idle!.content]}`,
