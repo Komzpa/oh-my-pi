@@ -31,6 +31,7 @@ import {
 } from "../session/exit-diagnostics";
 import { SessionManager, hasConversationalHistory } from "../session/session-manager";
 import type { SessionEntry } from "../session/session-entries";
+import { currentRuntimeIdentity, formatRuntimeIdentity } from "../session/runtime-identity";
 
 const RESTART_HANDOFF_TYPE = "subagent_restart_handoff";
 const RESTART_RECEIPT_TYPE = "subagent_restart_receipt";
@@ -561,6 +562,8 @@ export async function sendRootContinuationOnce(
 			to: rootRef.id,
 			body: prompt
 				.render(restartRootContinuationPrompt, {
+					requestId,
+					build: formatRuntimeIdentity(currentRuntimeIdentity()),
 					workers: (report?.resumed ?? []).map(id => ({
 						id,
 						rows: ((session.getTodoPhases?.() ?? []) as TodoScheduleInput)
