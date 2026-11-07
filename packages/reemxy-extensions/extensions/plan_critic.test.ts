@@ -3,6 +3,7 @@ import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { chiefFixNow } from "./fix_now";
 import planCritic, {
 	actionObserved,
 	chiefCriticFixes,
@@ -11,6 +12,7 @@ import planCritic, {
 	parsePlanVerdict,
 	PLAN_CRITIC_ENTRY,
 	type Binding,
+	type CriticOwnerRunState,
 	type PlanAction,
 	type PlanVerdict,
 } from "./plan_critic";
@@ -44,6 +46,7 @@ const makePlan = (): TodoScheduleInput => [
 ];
 function harness(saved: Array<Record<string, unknown>> = [], response: PlanVerdict = verdict) {
 	let plan = makePlan();
+	let owners: CriticOwnerRunState[] = [];
 	const handlers = new Map<string, Handler>();
 	const entries = [...saved];
 	const notices: Array<{ content: string; details: { escalated: boolean } }> = [];
@@ -85,13 +88,14 @@ function harness(saved: Array<Record<string, unknown>> = [], response: PlanVerdi
 		appendEntry: (customType: string, data: unknown) =>
 			entries.push({ type: "custom", customType, data, timestamp: new Date().toISOString() }),
 		sendMessage: (message: (typeof notices)[number]) => notices.push(message),
-	} as unknown as ExtensionAPI);
+	} as unknown as ExtensionAPI, () => owners);
 	return {
 		ctx,
 		entries,
 		notices,
 		run,
 		tool: () => tool!,
+		owners: (next: CriticOwnerRunState[]) => { owners = next; },
 		set: (next: TodoScheduleInput) => {
 			plan = next;
 		},
@@ -153,7 +157,7 @@ describe("plan critic runtime binding", () => {
 		expect(h.notices[0]!.details.escalated).toBe(false);
 		for (let i = 0; i < 35; i++) { h.wake(); h.event("agent_end"); h.event("before_agent_start"); }
 		expect(h.notices).toHaveLength(1);
-		expect(chiefCriticFixes(h.ctx)).toEqual([{ row: "Collateral", action: "Unblock" }]);
+		expect(chiefCriticFixes(h.ctx)).toEqual([{ row: "Collateral", action: "Unblock", severity: -1 }]);
 		const restored = harness(h.entries);
 		restored.event("session_start");
 		await settle();
@@ -420,4 +424,71 @@ test("critic projection drops a completed or deleted own row and is hidden from 
 	expect(chiefCriticFixes(h.ctx)).toEqual([]);
 	h.set(makePlan()); h.ctx.agent.kind = "sub";
 	expect(chiefCriticFixes(h.ctx)).toEqual([]);
+});
+
+for (const shape of ["released worker", "abandoned reassigned row", "changed owner"] as const) {
+	test(`stale ${shape} auto-closes without a lead rejection or another delivery`, async () => {
+		const h = harness();
+		h.owners([{ content: "Collateral", owner: "CoolingEvidence-2", running: true }]);
+		await h.event("session_start"); await settle();
+		const next = makePlan();
+		if (shape === "released worker") h.owners([{ content: "Collateral", owner: "CoolingEvidence-2", running: false, outcome: "completed" }]);
+		if (shape === "abandoned reassigned row") {
+			next[0]!.tasks[1]!.status = "abandoned";
+			next[0]!.tasks = [...next[0]!.tasks, { content: "GestureLabels replacement", status: "in_progress", schedule: { owner: "GestureLabels-3" } }];
+		}
+		if (shape === "changed owner") next[0]!.tasks[1]!.schedule!.owner = "Replacement-3";
+		h.set(next);
+		h.event("agent_end");
+		expect(h.notices).toHaveLength(1);
+		expect(h.event("tool_call", { toolName: "wait", toolCallId: "released" })).toBeUndefined();
+		const latest = h.entries.filter(entry => entry.customType === PLAN_CRITIC_ENTRY).at(-1)!.data as Binding;
+		expect(latest.addressed[action.id]?.reason).toStartWith("auto-closed:");
+		expect(chiefCriticFixes(h.ctx)).toEqual([]);
+	});
+}
+
+test("fresh action delivered once becomes first FIX NOW after two lead turns", async () => {
+	const h = harness();
+	await h.event("session_start"); await settle();
+	h.event("agent_end");
+	expect(chiefCriticFixes(h.ctx)[0]?.severity).toBeUndefined();
+	h.event("agent_end");
+	const fixes = chiefCriticFixes(h.ctx);
+	const block = chiefFixNow({ main: true, defects: [
+		{ row: "", action: "Plan late 35m", severity: 0 },
+		...fixes.map(fix => ({ severity: 2, ...fix })),
+	] });
+	expect(block).toContain("1. Unblock «Collateral»");
+	for (let i = 0; i < 35; i++) h.event("agent_end");
+	expect(h.notices).toHaveLength(1);
+});
+
+test("a row changed while reviewer runs is closed before its first notification", async () => {
+	const h = harness();
+	const response = Promise.withResolvers<{ details: { results: Array<{ output: string }> } }>();
+	h.run.mockImplementation(async () => response.promise);
+	await h.event("session_start"); await settle();
+	const next = makePlan(); next[0]!.tasks[1]!.status = "completed"; h.set(next);
+	response.resolve({ details: { results: [{ output: JSON.stringify(verdict) }] } });
+	await settle();
+	expect(h.notices).toEqual([]);
+	const latest = h.entries.filter(entry => entry.customType === PLAN_CRITIC_ENTRY).at(-1)!.data as Binding;
+	expect(latest.addressed[action.id]?.reason).toContain("completed");
+});
+
+test("changed row regenerates a verdict from current ownership instead of replaying it", async () => {
+	const now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+	const h = harness();
+	await h.event("session_start"); await settle();
+	const originalId = (h.entries.filter(entry => entry.customType === PLAN_CRITIC_ENTRY).at(-1)!.data as Binding).id;
+	const next = makePlan(); next[0]!.tasks[1]!.schedule!.owner = "NewOwner-3"; h.set(next);
+	clock.mockReturnValue(now + 60_000);
+	h.wake(); await settle();
+	expect(h.run).toHaveBeenCalledTimes(2);
+	expect(h.run.mock.calls[1]![0]).toContain("NewOwner-3");
+	const latest = h.entries.filter(entry => entry.customType === PLAN_CRITIC_ENTRY).at(-1)!.data as Binding;
+	expect(latest.id).not.toBe(originalId);
+	expect(h.notices).toHaveLength(2);
 });
