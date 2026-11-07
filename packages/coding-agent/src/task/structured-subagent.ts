@@ -1,4 +1,3 @@
-import type { PeerScope } from "./peer-coordination";
 /**
  * Shared policy resolution and execution for task and eval subagents.
  *
@@ -6,6 +5,7 @@ import type { PeerScope } from "./peer-coordination";
  * every decision that affects what a child may run lives here.
  */
 import * as fs from "node:fs/promises";
+import type { PeerScope } from "./peer-coordination";
 import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
@@ -130,8 +130,9 @@ export interface StructuredSubagentRequest {
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
-	scope?: PeerScope;
 	context?: string;
+	/** Peer ownership agreement for this child. */
+	scope?: PeerScope;
 	agent?: string;
 	/** Saved source session selected for the bundled seance agent. */
 	sourceSession?: string;
