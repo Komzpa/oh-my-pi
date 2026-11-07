@@ -138,7 +138,7 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 	) {
 		const sessionManager = SessionManager.inMemory();
 		for (const message of persisted) sessionManager.appendMessage(message);
-		return open(model, sessionManager, tools, responses, evalToolSession);
+		return open(model, sessionManager, tools, responses, evalToolSession, modelInputs);
 	}
 
 	/** A session over `sessionManager`'s transcript, its model answering from `responses`. */
@@ -148,6 +148,7 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		tools: AgentTool[],
 		responses: MockHandler[],
 		evalToolSession?: ToolSession,
+		modelInputs?: string[],
 	) {
 		const mock = createMockModel({ responses });
 		const agent = new Agent({
