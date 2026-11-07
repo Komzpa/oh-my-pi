@@ -27,7 +27,11 @@ import {
 } from "../lead-instructions.scenarios";
 import { leadGateScenarios } from "../lead-gates.scenarios";
 import { validateToolCall } from "@oh-my-pi/pi-ai/utils/validation";
-import { CODEX_LB_PROVIDER } from "../codex_lb_provider";
+import { contains, runLeadSequence } from "./lead-sequence";
+import { GrepTool } from "../../../coding-agent/src/tools/grep";
+import { GlobTool } from "../../../coding-agent/src/tools/glob";
+import grepDescription from "../../../coding-agent/src/prompts/tools/grep.md" with { type: "text" };
+import globDescription from "../../../coding-agent/src/prompts/tools/glob.md" with { type: "text" };
 
 logger.setTransports({ file: false }); // Evaluation must not create ~/.omp log files.
 
@@ -48,6 +52,8 @@ interface Result {
 	pass: boolean;
 	expected: Scenario["expected"];
 	firstToolCall?: ToolCall;
+	toolCalls: ToolCall[];
+	failure?: string;
 	stopReason: string;
 	usage: unknown;
 	error?: string;
@@ -55,18 +61,13 @@ interface Result {
 	context: string;
 	responseText: string;
 }
-function contains(actual: unknown, expected: unknown, taskBrief = false, key = ""): boolean {
-	if (taskBrief && key === "task" && typeof actual === "string" && typeof expected === "string")
-		return actual.includes(expected);
-	if (typeof expected !== "object" || expected === null) return actual === expected;
-	if (typeof actual !== "object" || actual === null) return false;
-	return Object.entries(expected).every(([key, value]) => contains(Reflect.get(actual, key), value, taskBrief, key));
-}
 const { values } = parseArgs({
 	args: Bun.argv.slice(2),
 	options: {
 		help: { type: "boolean" },
 		contexts: { type: "string" },
+		"tool-schemas": { type: "string" },
+		"pricing-model": { type: "string" },
 		output: { type: "string", default: "reports/lead-instructions/current.json" },
 		model: { type: "string", default: "codex-lb/gpt-6-luna" },
 		"budget-file": { type: "string", default: "reports/lead-instructions/budget.json" },
@@ -77,7 +78,7 @@ const { values } = parseArgs({
 });
 if (values.help) {
 	console.log(
-		"bun run eval:lead-instructions [--model provider/id] [--contexts scenarios.json] [--output receipt.json] [--budget-file shared-before-after-budget.json] [--max-calls 140] [--max-tokens 5000000] [--max-usd 2]",
+		"bun run eval:lead-instructions [--model provider/id] [--contexts scenarios.json] [--tool-schemas union-schemas.json] [--pricing-model provider/id] [--output receipt.json] [--budget-file shared-before-after-budget.json] [--max-calls 140] [--max-tokens 5000000] [--max-usd 2]",
 	);
 	process.exit(0);
 }
@@ -139,6 +140,14 @@ tools.push({
 	description: prompt.render(taskDescription, { batchEnabled: true, asyncEnabled: true, defaultAgent: "task" }),
 	parameters: getTaskSchema({ isolationEnabled: false, batchEnabled: true, effortEnabled: true }),
 });
+for (const [tool, description] of [
+	[new GrepTool(metadataSession), grepDescription],
+	[new GlobTool(metadataSession), globDescription],
+] as const)
+	tools.push({ name: tool.name, parameters: tool.parameters, description: prompt.render(description) });
+const schemaText = values["tool-schemas"] ? await Bun.file(values["tool-schemas"]).text() : undefined;
+const schemaOverrides: Record<string, Tool["parameters"]> = schemaText ? JSON.parse(schemaText) : {};
+for (const tool of tools) if (schemaOverrides[tool.name]) tool.parameters = schemaOverrides[tool.name];
 const groups = new Map<string, { scenario: Scenario; aliases: Scenario[]; context: string }>();
 for (const scenario of scenarios) {
 	const context = prompt.render(turnTemplate, { context: scenario.context });
@@ -152,7 +161,7 @@ const requests = [...groups.values()];
 const toolBytes = Buffer.byteLength(
 	JSON.stringify(tools.map(t => ({ name: t.name, description: t.description, schema: toolWireSchema(t) }))),
 );
-const reserves = requests.map(r => Buffer.byteLength(r.context) + toolBytes + outputCap + 512);
+const reserves = requests.map(r => Buffer.byteLength(r.context) + toolBytes + outputCap + 4096);
 if (
 	budget.calls + requests.length > maxCalls ||
 	budget.reservedTokens + reserves.reduce((a, b) => a + b, 0) > maxTokens
@@ -185,14 +194,20 @@ try {
 	}
 	auth = await AuthStorage.create(path.join(dir, "auth.db"));
 	const registry = new ModelRegistry(auth, modelsPath, { cacheDbPath: path.join(dir, "models.db") });
-	registry.registerProvider("codex-lb", CODEX_LB_PROVIDER);
+	await registry.refreshDiscoverableProviders([values.model.split("/")[0]], "online");
 	const slash = values.model.indexOf("/");
 	if (slash < 1) throw new Error("Model must be provider/id");
 	const model = registry.find(values.model.slice(0, slash), values.model.slice(slash + 1));
 	if (!model) throw new Error(`Model unavailable in existing configuration: ${values.model}`);
 	const credentials = await registry.getApiKeyAndHeaders(model);
 	if (!credentials.ok) throw new Error(credentials.error);
-	const cost = model.cost;
+	const pricingSelector = values["pricing-model"];
+	const pricingSlash = pricingSelector?.indexOf("/") ?? -1;
+	const pricingModel = pricingSelector
+		? registry.find(pricingSelector.slice(0, pricingSlash), pricingSelector.slice(pricingSlash + 1))
+		: model;
+	if (!pricingModel) throw new Error("Pricing reference unavailable");
+	const cost = pricingModel.cost;
 	if (
 		![cost.input, cost.output, cost.cacheWrite, cost.cacheRead].every(rate => Number.isFinite(rate) && rate >= 0) ||
 		(cost.input === 0 && cost.output === 0)
@@ -207,31 +222,49 @@ try {
 	if (budget.reservedUsd + preflightUsd > maxUsd) throw new Error("Whole-run aggregate USD budget preflight failed");
 	for (let i = 0; i < requests.length; i++) {
 		const { scenario, aliases, context } = requests[i];
-		if (budget.reservedUsd + usdReserves[i] > maxUsd)
-			throw new Error("Aggregate USD budget exhausted before request");
-		budget.calls++;
-		budget.reservedTokens += reserves[i];
-		budget.reservedUsd += usdReserves[i];
-		await Bun.write(values["budget-file"], JSON.stringify(budget, null, 2));
-		const response = await stream(
-			model,
-			{ messages: [{ role: "user", content: context, timestamp: Date.now() }], tools },
-			{
-				apiKey: credentials.apiKey,
-				headers: credentials.headers,
-				maxTokens: outputCap,
-				maxHttpAttempts: 1,
-				signal: AbortSignal.timeout(90000),
+		const sequence = await runLeadSequence(
+			scenario,
+			tools,
+			[{ role: "user", content: context, timestamp: 0 }],
+			async messages => {
+				const tokens = Buffer.byteLength(JSON.stringify(messages)) + toolBytes + outputCap + 4096;
+				const usd =
+					((tokens - outputCap) * Math.max(cost.input, cost.cacheWrite, cost.cacheRead) +
+						outputCap * cost.output) /
+					1_000_000;
+				if (
+					budget.calls + 1 > maxCalls ||
+					budget.reservedTokens + tokens > maxTokens ||
+					budget.reservedUsd + usd > maxUsd
+				)
+					throw new Error("Aggregate budget exhausted before continuation; no request sent");
+				budget.calls++;
+				budget.reservedTokens += tokens;
+				budget.reservedUsd += usd;
+				await Bun.write(values["budget-file"], JSON.stringify(budget, null, 2));
+				return stream(
+					{ ...model, cost },
+					{ messages, tools },
+					{
+						apiKey: credentials.apiKey,
+						headers: credentials.headers,
+						maxTokens: outputCap,
+						maxHttpAttempts: 1,
+						signal: AbortSignal.timeout(90000),
+					},
+				).result();
 			},
-		).result();
-		const first = response.content.find(b => b.type === "toolCall");
+		);
+		const response = sequence.responses[sequence.responses.length - 1];
+		const first = sequence.terminalCall ?? sequence.calls[0];
 		const passes = (expected: Scenario["expected"]) =>
+			!sequence.failure &&
 			response.stopReason !== "error" &&
 			response.stopReason !== "aborted" &&
 			(expected === null
-				? first === undefined || first.name === "wait"
+				? sequence.terminalCall?.name === "wait" || response.content.every(b => b.type !== "toolCall")
 				: expected.tool === "text"
-					? first === undefined &&
+					? response.content.every(b => b.type !== "toolCall") &&
 						response.content.some(
 							b =>
 								b.type === "text" &&
@@ -241,7 +274,7 @@ try {
 								),
 						)
 					: first?.name === expected.tool && contains(first.arguments, expected.args, first.name === "task"));
-		const calls = response.content.filter(b => b.type === "toolCall");
+		const calls = sequence.calls;
 		const roundTrip =
 			!scenario.id.startsWith("estimate-cap") && "phases" in scenario
 				? await verifyLeadRoundTrip(scenario as LeadInstructionScenario, calls)
@@ -263,12 +296,15 @@ try {
 			id: scenario.id,
 			pass,
 			expected: scenario.expected,
-			firstToolCall: first,
+			firstToolCall: calls[0],
+			toolCalls: calls,
+			failure: sequence.failure,
 			stopReason: response.stopReason,
-			usage: response.usage,
+			usage: sequence.responses.map(r => r.usage),
 			error: response.errorMessage,
 			context,
-			responseText: response.content
+			responseText: sequence.responses
+				.flatMap(r => r.content)
 				.filter(b => b.type === "text")
 				.map(b => b.text)
 				.join("\n"),
@@ -292,14 +328,32 @@ try {
 		);
 		await Bun.write(
 			values.output,
-			JSON.stringify({ model: values.model, asOf: new Date().toISOString(), budget, results }, null, 2),
+			JSON.stringify(
+				{
+					model: values.model,
+					api: model.api,
+					pricingSource: pricingSelector ?? values.model,
+					cost,
+					schemaSource: values["tool-schemas"],
+					schemaHash: schemaText ? new Bun.CryptoHasher("sha256").update(schemaText).digest("hex") : undefined,
+					asOf: new Date().toISOString(),
+					budget,
+					results,
+				},
+				null,
+				2,
+			),
 		);
 		console.log(`${pass ? "PASS" : "FAIL"}\t${scenario.id}\t${first?.name ?? "no call"}`);
 		for (const alias of aliases)
 			console.log(
 				`${results.find(r => r.id === alias.id)?.pass ? "PASS" : "FAIL"}\t${alias.id}\talias of ${scenario.id}`,
 			);
-		if (response.stopReason === "error" || response.stopReason === "aborted")
+		if (
+			sequence.failure?.startsWith("Provider request stopped:") ||
+			response.stopReason === "error" ||
+			response.stopReason === "aborted"
+		)
 			throw new Error(`Provider stopped at ${scenario.id}; no retries or fallback. Receipt saved.`);
 	}
 } finally {
