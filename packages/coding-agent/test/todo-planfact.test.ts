@@ -79,14 +79,15 @@ test("completed session rows calibrate remaining work with bounded ratios and re
 			],
 		},
 	];
-	const forecast = forecastTodoPlan(phases, { now: start + 300_000 });
+	const forecast = forecastTodoPlan(phases, { now: start + 600_000 });
 	expect(forecast.calibration).toEqual({ ratio: 10, samples: 1 });
-	expect(forecast.rows.find(row => row.content === "Open")?.expectedResourceFinish).toBe(start + 600_000);
-	const later = forecastTodoPlan(phases, { now: start + 360_000 });
-	expect(later.expectedResourceFinish).toBe(forecast.expectedResourceFinish);
+	expect(forecast.rows.find(row => row.content === "Open")?.expectedResourceFinish).toBe(start + 800_000);
+	const later = forecastTodoPlan(phases, { now: start + 660_000 });
+	expect(later.expectedResourceFinish).toBeGreaterThan(forecast.expectedResourceFinish!);
 	phases[0]!.tasks[0]!.schedule!.finishedAt = start + 60_000_000;
-	expect(forecastTodoPlan(phases, { now: start }).calibration?.ratio).toBe(20);
-	delete phases[0]!.tasks[0]!.schedule!.startedAt;
+	expect(forecastTodoPlan(phases, { now: start }).calibration?.ratio).toBe(1);
+	expect(forecastTodoPlan(phases, { now: start + 60_000_000 }).calibration?.ratio).toBe(20);
+	delete phases[0]!.tasks[0]!.schedule!.firstEstimate;
 	expect(forecastTodoPlan(phases, { now: start }).calibration).toEqual({ ratio: 1, samples: 0 });
 });
 

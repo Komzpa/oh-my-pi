@@ -27,6 +27,8 @@ export interface DeadlineState {
 	stages: DeadlineStage[];
 	auto?: true;
 	autoPlanKey?: string;
+	autoAnchorRows?: string[];
+	autoScopeGrowthRows?: string[];
 	initialQuota?: QuotaSnapshot;
 	baselineDeadlineAt?: number;
 	/** User authority is durable even without goal focus; due time stays in baselineDeadlineAt. */

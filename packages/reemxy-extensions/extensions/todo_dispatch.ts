@@ -175,6 +175,7 @@ export function autoGoalDeadlineState(input: {
   current: DeadlineState | null;
   planKey: string;
   forecastFinish: number | undefined;
+  openRows?: string[];
   now: number;
   hasRealGoal: boolean;
   hasRealDeadline: boolean;
@@ -185,10 +186,23 @@ export function autoGoalDeadlineState(input: {
     current?.auto === true && current.baselineDeadlineAt !== undefined
       ? current.baselineDeadlineAt * 1_000
       : undefined;
+  let anchorRows = current?.autoAnchorRows;
+  if (!anchorRows && current?.autoPlanKey) {
+    try {
+      const saved = JSON.parse(current.autoPlanKey);
+      if (Array.isArray(saved)) anchorRows = saved.flatMap(phase => Array.isArray(phase?.[1]) ? phase[1].flatMap(row => typeof row === "string" ? [row] : Array.isArray(row) && typeof row[0] === "string" ? [row[0]] : []) : []);
+    } catch { /* Opaque legacy keys retain the active-anchor guard. */ }
+  }
   const planReplaced = current?.auto === true && current.autoPlanKey !== planKey;
   const deadlinePassed = currentDue !== undefined && now >= currentDue;
   // A forecast is an anchor, not a rolling target. Keep it for this plan even after it slips.
-  if (current?.auto === true && current.active) return undefined;
+  if (current?.auto === true && (current.active || (current.baselineDeadlineAt !== undefined && input.openRows?.some(row => anchorRows?.includes(row))))) {
+    const scopeGrowthRows = [...new Set([...(current.autoScopeGrowthRows ?? []), ...(input.openRows?.filter(row => !anchorRows?.includes(row)) ?? [])])];
+    if (input.openRows && anchorRows && (!current.autoAnchorRows || JSON.stringify(scopeGrowthRows) !== JSON.stringify(current.autoScopeGrowthRows ?? [])))
+      return { ...current, active: true, autoAnchorRows: anchorRows, autoScopeGrowthRows: scopeGrowthRows };
+    if (!current.active) return { ...current, active: true };
+    return undefined;
+  }
   if (
     forecastFinish === undefined ||
     !Number.isFinite(forecastFinish) ||
@@ -209,6 +223,8 @@ export function autoGoalDeadlineState(input: {
     active: true,
     auto: true,
     autoPlanKey: planKey,
+    autoAnchorRows: input.openRows,
+    autoScopeGrowthRows: [],
     stages: [
       {
         id: "auto-plan-forecast",
@@ -1231,6 +1247,7 @@ function markdownCell(value: string): string {
 export interface DispatchInput {
   risk?: RowRiskOptions;
   phases: TodoScheduleInput;
+  archivedPhases?: TodoScheduleInput;
   jobs: Jobs | null;
   externalOwnerProbe?: ExternalOwnerProbe;
   restoredChildren?: PersistedChild[];
@@ -1900,12 +1917,14 @@ export function decideTodoDispatch(
   const parking = away ? parkUserWaits(phases) : { phases, parked: [], onProposal: new Map<string, string[]>() };
   const parkedContent = new Set(parking.parked.map((row) => row.content));
   const userWaits = userWaitRows(phases);
-  const forecast = sdk.forecastTodoPlan(parking.phases, {
+  const forecast = sdk.forecastTodoPlan(withTodoArchive(parking.phases, input.archivedPhases ?? []), {
     risk: input.risk,
     now,
     deadlineAt: deadline?.deadlineAt,
     ...(capacity === undefined ? {} : { capacity }),
   });
+  const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
+  forecast.rows = forecast.rows.filter(row => liveContents.has(row.content));
   const basePlanningIssues = forecast.planningIssues ?? sdk.getTodoPlanningIssues?.(phases) ?? [];
   const planningIssues = [
     ...basePlanningIssues,
@@ -2261,7 +2280,7 @@ export function decideTodoDispatch(
   const forecastIssues = forecast.issues.map((issue) => `- ${JSON.stringify(issue)}`);
   const planningIssueLines = planningIssues
     .map((issue) => `- [${issue.code}] ${JSON.stringify(issue.task)}: ${issue.message}`);
-  const corrections = missed
+  const corrections = forecastRows.filter(row => missed.includes(row) || row.reestimateCount >= 5)
     .map((row) => row.reestimateCount >= 5
       ? `EXHAUSTED ${JSON.stringify(row.content)}: reestimates=${row.reestimateCount}. Do not reestimate this same row again; record the previous attempt's receipt and failing acceptance check, then split the remaining scope into new rows.`
       : `- ${JSON.stringify(row.content)}: revision=${row.estimateRevision}; reestimates=${row.reestimateCount}`);
@@ -3079,6 +3098,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const decisionInput = {
       risk,
       phases,
+      archivedPhases: dispatchTodoArchive(ctx),
       jobs,
       externalOwnerProbe: options.externalOwnerProbe,
       persistedChildren,
@@ -3107,9 +3127,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const autoState = autoGoalDeadlineState({
         current: deadlineState,
         planKey,
+        openRows: phases.flatMap(phase => phase.tasks).filter(task => task.status !== "completed" && task.status !== "abandoned").map(task => task.content),
         forecastFinish:
           decision.forecast?.unresolvedCount === 0
-            ? (decision.forecast.fixedPathP95Finish ?? decision.forecast.resourceFinish)
+            ? (decision.forecast.autoDeadlineForecast?.finish ?? decision.forecast.fixedPathP95Finish ?? decision.forecast.resourceFinish)
             : undefined,
         now,
         hasRealGoal: Boolean(realGoal && (realGoal.status === "active" || realGoal.status === "paused")),
@@ -6491,6 +6512,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (onlyPlanFact && (!planFact || questions.length === 0)) return;
     const content = [
       ...(planFact ? [planFact] : []),
+      ...(rehydrateDeadlineState(dispatchStateEntries(ctx))?.autoScopeGrowthRows?.length ? [`Auto goal scope growth since anchor: ${rehydrateDeadlineState(dispatchStateEntries(ctx))!.autoScopeGrowthRows!.join("; ")}`] : []),
       ...(notice && !notice.shown ? [notice.text] : []),
       ...(chief ? [prompt.render(leadTimeSummary, {
         open: decision.forecast?.rows.filter(row => row.status !== "completed" && row.status !== "abandoned").length ?? 0,

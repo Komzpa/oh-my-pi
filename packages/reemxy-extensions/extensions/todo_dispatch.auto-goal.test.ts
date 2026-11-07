@@ -1,6 +1,7 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
 import { expect, test } from "bun:test";
-import { autoGoalDeadlineState } from "./todo_dispatch";
+import { forecastTodoPlan, formatPlanForecast, formatTaskForecast } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { autoGoalDeadlineState, decideTodoDispatch } from "./todo_dispatch";
 import { readGoalDeadline, STATE_ENTRY } from "./deadlines";
 import { renderDeadlineReminder, renderDeadlineUi, renderPresence } from "./goal_deadlines";
 
@@ -71,4 +72,86 @@ test("a missed automatic forecast remains anchored even when estimates change", 
 	expect(renderDeadlineUi(first, Math.floor(revisedAt / 1_000), true).join(" ")).toContain("missed");
 	expect(renderPresence([], first, revisedAt)).toContain("missed");
 	expect(renderPresence([], first, revisedAt)).not.toContain("on track");
+});
+
+test("scope growth and estimate churn retain the original clock across an inactive checkpoint", () => {
+	const first = propose(now + 3 * 60 * 60_000, { openRows: ["original"] })!;
+	const grown = propose(now + 8 * 60 * 60_000, {
+		current: { ...first, active: false },
+		planKey: "revised",
+		openRows: ["original", "appended"],
+		now: now + 4 * 60 * 60_000,
+	})!;
+	expect(grown.goalStartedAt).toBe(first.goalStartedAt);
+	expect(grown.baselineDeadlineAt).toBe(first.baselineDeadlineAt);
+	expect(grown.active).toBe(true);
+	expect(grown.autoScopeGrowthRows).toEqual(["appended"]);
+	expect(readGoalDeadline([{ type: "custom", customType: STATE_ENTRY, data: grown }])?.deadlineAt).toBe(
+		first.baselineDeadlineAt! * 1000,
+	);
+});
+
+test("dispatcher includes archived closure pace without reviving archived rows", () => {
+	const phases = [
+		{
+			name: "live",
+			tasks: [
+				{
+					content: "open",
+					status: "pending",
+					schedule: {
+						dependencies: [],
+						owner: "worker",
+						resources: [],
+						estimate: {
+							optimisticSeconds: 1200,
+							likelySeconds: 1800,
+							pessimisticSeconds: 3600,
+							updatedAt: now,
+							confidence: "medium",
+							basis: "replay",
+						},
+					},
+				},
+			],
+		},
+	];
+	const archivedPhases = [
+		{
+			name: "archive",
+			tasks: Array.from({ length: 8 }, (_, i) => ({
+				content: `closed ${i}`,
+				status: "completed",
+				schedule: { finishedAt: now - (10 - (i * 10) / 7) * 3_600_000 },
+			})),
+		},
+	];
+	const decision = decideTodoDispatch(
+		{
+			phases,
+			archivedPhases,
+			jobs: { running: [], recent: [] },
+			now,
+			isMainSession: true,
+			taskEnabled: true,
+			capacity: 3,
+		},
+		{ forecastTodoPlan, formatPlanForecast, formatTaskForecast },
+	);
+	expect(decision.forecast.autoDeadlineForecast.rowsPerHour).toBeCloseTo(0.7);
+	expect(decision.forecast.rows.map(row => row.content)).toEqual(["open"]);
+	const state = propose(decision.forecast.autoDeadlineForecast.finish, { openRows: ["open"] });
+	expect(state.baselineDeadlineAt * 1000).toBeGreaterThanOrEqual(now + 3_600_000 / 0.7);
+});
+
+test("legacy plan identity recovers its missed anchor instead of granting a new clock", () => {
+	const first = propose(now + 3 * 60 * 60_000)!;
+	const next = propose(now + 8 * 60 * 60_000, {
+		current: { ...first, active: false },
+		planKey: "changed",
+		openRows: ["Deliver the patch", "new scope"],
+	});
+	expect(next.goalStartedAt).toBe(first.goalStartedAt);
+	expect(next.baselineDeadlineAt).toBe(first.baselineDeadlineAt);
+	expect(next.autoScopeGrowthRows).toEqual(["new scope"]);
 });
