@@ -318,6 +318,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 			timer = undefined;
 		}
 		if (!main(ctx)) return skip("start:not-main");
+		if (typeof ctx.setInterval !== "function") return skip("start:no-timer");
 		const token = generation;
 		const saved = await selectBranchEntriesCooperatively(
 			ctx.sessionManager,
