@@ -132,7 +132,10 @@ export class PeerRuntime {
 		// unusual trees (ENAMETOOLONG, EMFILE, ENOSPC) either synchronously or as an
 		// async "error" event; neither may take down the host process.
 		const dropWatcher = (error: unknown) => {
-			logger.warn("Peer startup watcher unavailable; early-path attribution degraded", { root, error: String(error) });
+			logger.warn("Peer startup watcher unavailable; early-path attribution degraded", {
+				root,
+				error: String(error),
+			});
 			try {
 				this.#startupWatcher?.close();
 			} catch {}
@@ -141,21 +144,22 @@ export class PeerRuntime {
 		// Opt-in: a recursive watch walks the whole worktree (node_modules, tmp trees) on
 		// every launch; on the DC repo it crashed the lead (ENAMETOOLONG) and blocked
 		// the main thread. Without it, early edits fall back to status-diff attribution.
-		if (process.env.OMP_PEER_STARTUP_WATCH === "1") try {
-			this.#startupWatcher = fs.watch(root, { recursive: true, persistent: false }, (_event, filename) => {
-				if (
-					!signal.aborted &&
-					this.#toolStarted &&
-					filename &&
-					filename !== ".git" &&
-					!filename.startsWith(`.git${path.sep}`)
-				)
-					this.#startupPaths.add(path.resolve(root, filename));
-			});
-			this.#startupWatcher.on("error", dropWatcher);
-		} catch (error) {
-			dropWatcher(error);
-		}
+		if (process.env.OMP_PEER_STARTUP_WATCH === "1")
+			try {
+				this.#startupWatcher = fs.watch(root, { recursive: true, persistent: false }, (_event, filename) => {
+					if (
+						!signal.aborted &&
+						this.#toolStarted &&
+						filename &&
+						filename !== ".git" &&
+						!filename.startsWith(`.git${path.sep}`)
+					)
+						this.#startupPaths.add(path.resolve(root, filename));
+				});
+				this.#startupWatcher.on("error", dropWatcher);
+			} catch (error) {
+				dropWatcher(error);
+			}
 		try {
 			const status = await repository.statusPorcelain({ untracked: "all", nulTerminated: true }, signal);
 			if (signal.aborted) return;

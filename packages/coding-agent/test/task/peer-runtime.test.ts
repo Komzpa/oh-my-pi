@@ -241,40 +241,40 @@ it("reconciles early unhooked edits and deletions without attributing untouched 
 	const previousWatch = process.env.OMP_PEER_STARTUP_WATCH;
 	process.env.OMP_PEER_STARTUP_WATCH = "1";
 	try {
-	using temp = TempDir.createSync("@omp-peer-early-");
-	const fixture = startupFixture(temp.path());
-	await Bun.write(temp.join(".gitignore"), "src/ignored.txt\n");
-	await Bun.write(temp.join("src/dirty.txt"), "old dirty");
-	await Bun.write(temp.join("src/untouched.txt"), "untouched dirty");
-	await Bun.write(temp.join("src/deleted.txt"), "delete me");
-	await Bun.write(temp.join("sibling/out.txt"), "sibling");
-	const initialization = fixture.runtime.initialize();
-	try {
-		fixture.emit({
-			type: "tool_execution_start",
-			toolCallId: "shell",
-			toolName: "bash",
-			args: { command: "fixture" },
-		});
-		await Bun.write(temp.join("src/dirty.txt"), "early shell edit without mutation hook");
-		await fs.rm(temp.join("src/deleted.txt"));
-		await Bun.write(temp.join("src/new.txt"), "created after cached status snapshot");
-		await Bun.write(temp.join("src/ignored.txt"), "ignored output");
-		await Bun.write(temp.join("sibling/out.txt"), "other worker");
-		await Bun.sleep(30);
-		fixture.status.resolve("?? src/dirty.txt\0?? src/untouched.txt\0 D src/deleted.txt\0?? sibling/out.txt\0");
-		await initialization;
-		expect(fixture.registry.get("early")?.history?.peerCoordination?.touched.toSorted()).toEqual(
-			[
-				`path:${path.resolve(temp.join("src/deleted.txt"))}`,
-				`path:${path.resolve(temp.join("src/dirty.txt"))}`,
-				`path:${path.resolve(temp.join("src/new.txt"))}`,
-			].toSorted(),
-		);
-		expect(await fixture.runtime.checkHandover(undefined)).toContain("src/dirty.txt");
-	} finally {
-		fixture.runtime.dispose();
-	}
+		using temp = TempDir.createSync("@omp-peer-early-");
+		const fixture = startupFixture(temp.path());
+		await Bun.write(temp.join(".gitignore"), "src/ignored.txt\n");
+		await Bun.write(temp.join("src/dirty.txt"), "old dirty");
+		await Bun.write(temp.join("src/untouched.txt"), "untouched dirty");
+		await Bun.write(temp.join("src/deleted.txt"), "delete me");
+		await Bun.write(temp.join("sibling/out.txt"), "sibling");
+		const initialization = fixture.runtime.initialize();
+		try {
+			fixture.emit({
+				type: "tool_execution_start",
+				toolCallId: "shell",
+				toolName: "bash",
+				args: { command: "fixture" },
+			});
+			await Bun.write(temp.join("src/dirty.txt"), "early shell edit without mutation hook");
+			await fs.rm(temp.join("src/deleted.txt"));
+			await Bun.write(temp.join("src/new.txt"), "created after cached status snapshot");
+			await Bun.write(temp.join("src/ignored.txt"), "ignored output");
+			await Bun.write(temp.join("sibling/out.txt"), "other worker");
+			await Bun.sleep(30);
+			fixture.status.resolve("?? src/dirty.txt\0?? src/untouched.txt\0 D src/deleted.txt\0?? sibling/out.txt\0");
+			await initialization;
+			expect(fixture.registry.get("early")?.history?.peerCoordination?.touched.toSorted()).toEqual(
+				[
+					`path:${path.resolve(temp.join("src/deleted.txt"))}`,
+					`path:${path.resolve(temp.join("src/dirty.txt"))}`,
+					`path:${path.resolve(temp.join("src/new.txt"))}`,
+				].toSorted(),
+			);
+			expect(await fixture.runtime.checkHandover(undefined)).toContain("src/dirty.txt");
+		} finally {
+			fixture.runtime.dispose();
+		}
 	} finally {
 		if (previousWatch === undefined) delete process.env.OMP_PEER_STARTUP_WATCH;
 		else process.env.OMP_PEER_STARTUP_WATCH = previousWatch;
