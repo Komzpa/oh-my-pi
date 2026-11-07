@@ -636,6 +636,7 @@ describe("AgentSession restart queue round trip", () => {
 			{ customType: "todo-dispatch-time-note", content: "current clock", display: false, attribution: "agent" },
 			{ deliverAs: "steer", triggerTurn: false, supersedes: "todo-dispatch-time-note" },
 		);
+		await restored.flushRestartJournal();
 		const checkpoint = restartQueueCheckpoints(currentManager()).at(-1);
 		expect(checkpoint?.type === "custom" ? checkpoint.data : undefined).toMatchObject({
 			steering: [],
@@ -651,6 +652,85 @@ describe("AgentSession restart queue round trip", () => {
 		const latest = restartQueueCheckpoints(currentManager()).at(-1);
 		expect(latest?.type === "custom" ? latest.data : undefined).toMatchObject({ pendingNextTurn: [] });
 	});
+
+	it("writes zero bytes when a queued notice is replaced with unchanged content", async () => {
+		appendPriorAssistant(currentManager());
+		session = createSession(currentManager());
+		const lease = session.beginRestartDrain();
+		await lease.waitForQuiescence();
+		lease.release();
+		session.agent.state.isStreaming = true;
+		try {
+			const notice = { customType: "goal-continuation", content: "same pending goal", display: false };
+			const options = { deliverAs: "nextTurn" as const, triggerTurn: false, supersedes: "goal-continuation" };
+			await session.sendCustomMessage(notice, options);
+			await session.flushRestartJournal();
+			const file = currentManager().getSessionFile();
+			if (!file) throw new Error("Expected durable journal");
+			const before = (await Bun.file(file).stat()).size;
+			for (let index = 0; index < 100; index++) await session.sendCustomMessage(notice, options);
+			await Bun.sleep(1_100);
+			await session.flushRestartJournal();
+			expect((await Bun.file(file).stat()).size - before).toBe(0);
+		} finally {
+			session.agent.state.isStreaming = false;
+		}
+	});
+
+	it("coalesces 100 live queue changes in ten seconds and restores the durable checkpoint after a crash", async () => {
+		appendPriorAssistant(currentManager());
+		session = createSession(currentManager());
+		const lease = session.beginRestartDrain();
+		await lease.waitForQuiescence();
+		lease.release();
+		const file = currentManager().getSessionFile();
+		if (!file) throw new Error("Expected durable journal");
+		const before = (await Bun.file(file).stat()).size;
+		const count = restartQueueCheckpoints(currentManager()).length;
+		session.agent.state.isStreaming = true;
+		for (let index = 0; index < 100; index++) {
+			await session.sendCustomMessage(
+				{ customType: `busy-${index % 32}`, content: `${index}:${"x".repeat(2_000)}`, display: false },
+				{ deliverAs: "nextTurn", triggerTurn: false, supersedes: `busy-${index % 32}` },
+			);
+			await Bun.sleep(100);
+		}
+		session.agent.state.isStreaming = false;
+		await session.flushRestartJournal();
+		const writes = restartQueueCheckpoints(currentManager()).length - count;
+		const bytes = (await Bun.file(file).stat()).size - before;
+		process.stderr.write(`busy lead: changes=100 seconds=10 writes=${writes} bytes/min=${bytes * 6}\n`);
+		expect(writes).toBeLessThanOrEqual(11);
+		const checkpoint = restartQueueCheckpoints(currentManager()).at(-1);
+		expect(checkpoint).toMatchObject({
+			data: {
+				pendingNextTurn: expect.arrayContaining([
+					expect.objectContaining({ customType: "busy-3", content: `99:${"x".repeat(2_000)}` }),
+				]),
+			},
+		});
+		// Freeze only durable bytes, without dispose/shutdown writing a final checkpoint.
+		const crashFile = path.join(tempDir.path(), "crashed.jsonl");
+		await Bun.write(crashFile, Bun.file(file));
+		const crashManager = await SessionManager.open(crashFile, tempDir.path(), undefined, {
+			suppressBreadcrumb: true,
+		});
+		const crashSession = createSession(crashManager);
+		try {
+			const recovery = crashSession.beginRestartDrain();
+			await recovery.waitForQuiescence();
+			const recovered = restartQueueCheckpoints(crashManager).at(-1);
+			expect(recovered?.type === "custom" ? recovered.data : undefined).toEqual(
+				checkpoint?.type === "custom" ? checkpoint.data : undefined,
+			);
+		} finally {
+			await crashSession.dispose();
+		}
+		const unchanged = (await Bun.file(file).stat()).size;
+		await Bun.sleep(1_100);
+		await session.flushRestartJournal();
+		expect((await Bun.file(file).stat()).size - unchanged).toBe(0);
+	}, 20_000);
 
 	it("does not write another live-sized checkpoint when queues are unchanged", async () => {
 		appendPriorAssistant(currentManager());
@@ -1387,6 +1467,7 @@ describe("AgentSession restart queue round trip", () => {
 		});
 		lease.release();
 		session.clearQueue();
+		await session.flushRestartJournal();
 		const sessionFile = currentManager().getSessionFile();
 		if (!sessionFile) throw new Error("Expected a resumable session file");
 		expect(restartQueueCheckpoints(currentManager()).at(-1)).toMatchObject({
