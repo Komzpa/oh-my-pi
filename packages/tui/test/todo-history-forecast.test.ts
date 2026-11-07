@@ -217,7 +217,7 @@ test("splitting fresh work preserves the deadline even with slow historical row 
 							};
 						}),
 						...(history
-							? longHistory(now).map(row => ({ ...row, schedule: { finishedAt: row.schedule.finishedAt } }))
+							? longHistory(now).map(row => ({ ...row, schedule: { finishedAt: row.schedule!.finishedAt } }))
 							: []),
 					],
 				},
