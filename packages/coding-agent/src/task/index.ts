@@ -1,3 +1,4 @@
+import { formatSpawnRefusal } from "./spawn-refusal";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import { isTaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 import { taskSubprocessRenderer } from "@oh-my-pi/pi-tui/tools/subprocess";
@@ -1576,16 +1577,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// File bytes must be captured at dispatch, not while arguments stream.
 		if (spawn.taskFile !== undefined) return undefined;
 		if (spawn.tools?.length && this.session.getPlanModeState?.()?.enabled === true) return undefined;
-		let blocking: boolean;
+		let policy: EffectiveSubagentPolicy;
 		try {
-			blocking = (await this.#resolveSpawnPreflight(spawn)).effectiveAgent.blocking === true;
+			policy = await this.#resolveSpawnPreflight(spawn);
 		} catch {
 			return undefined;
 		}
 		const detached =
-			cfgAsyncEnabled.get(this.session.settings) && this.session.asyncJobManager !== undefined && !blocking;
+			cfgAsyncEnabled.get(this.session.settings) &&
+			this.session.asyncJobManager !== undefined &&
+			policy.effectiveAgent.blocking !== true;
 		const agentId = await this.#outputManager().allocate(spawn.name?.trim() || generateTaskName());
-		if (signal.aborted) return undefined;
+		if (signal.aborted || (await this.#admitSpawn(spawn, policy, agentId, signal))) return undefined;
 		return this.#launch({ toolCallId, params: spawn, index, agentId, detached });
 	}
 
@@ -1638,6 +1641,35 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
 			maxRuntimeMs: cfgTaskMaxRuntimeMs.get(this.session.settings),
 		});
+	}
+
+	async #admitSpawn(
+		params: SpawnParams,
+		policy: EffectiveSubagentPolicy,
+		id: string,
+		signal?: AbortSignal,
+	): Promise<string | undefined> {
+		if (policy.preparedSession !== undefined) return;
+		try {
+			const result = await this.session.emitBeforeSubagentSpawn?.(
+				{
+					type: "before_subagent_spawn",
+					phase: "admission",
+					agent: policy.agentName,
+					invocationKind: "task",
+					modelRole: policy.modelRole,
+					patterns: policy.modelOverride ?? [],
+					spawnKey: id,
+					isolated: params.isolated === true,
+					assignment: params.task,
+					context: this.#isBatchEnabled() ? params.context : undefined,
+				},
+				signal,
+			);
+			if (result?.block) return formatSpawnRefusal(result.reason ?? "Subagent spawn blocked by extension.", id);
+		} catch (error) {
+			return formatSpawnRefusal(error instanceof Error ? error.message : String(error), id);
+		}
 	}
 
 	/**
@@ -1792,6 +1824,26 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			run.discard("task execution mode changed after speculative launch");
 			adopted.delete(index);
 		}
+		const admittedIds = new Map<number, string>();
+		const refused: string[] = [];
+		const outputManager = this.#outputManager();
+		for (const [index, item] of spawnItems.entries()) {
+			const run = adopted.get(index);
+			const id = run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
+			const refusal = run
+				? undefined
+				: await this.#admitSpawn(normalizedSpawnParams[index]!, policies[index]!, id, signal);
+			if (refusal) refused.push(refusal);
+			else admittedIds.set(index, id);
+		}
+		const refusalContent = refused.map(text => ({ type: "text" as const, text, harnessNotice: true as const }));
+		if (admittedIds.size === 0)
+			return {
+				content: refusalContent,
+				isError: true,
+				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
+			};
+
 		const depthCapacity = canSpawnAtDepth(
 			cfgTaskMaxRecursionDepth.get(this.session.settings),
 			this.session.taskDepth ?? 0,
@@ -1808,7 +1860,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const advisory = this.session.suppressSpawnAdvisory
 				? undefined
 				: composeSpawnAdvisory({
-						agents: resolvedAgents,
+						agents: resolvedAgents.filter((_, index) => admittedIds.has(index)),
 						items: asyncItems,
 						depthCapacity,
 						ircEnabled,
@@ -1821,12 +1873,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const result = await this.#executeSyncFanout(
 				toolCallId,
 				params,
-				spawnItems.map((item, index) => ({ item, index, run: adopted.get(index) })),
+				spawnItems
+					.map((item, index) => ({ item, index, run: adopted.get(index), preAllocatedId: admittedIds.get(index) }))
+					.filter(spawn => admittedIds.has(spawn.index)),
 				defaultAgent,
 				signal,
 				onUpdate,
 			);
-			if (!advisory) return result;
+			if (!advisory) return { ...result, content: [...refusalContent, ...result.content] };
 			let appended = false;
 			const content = result.content.map(part => {
 				if (!appended && part.type === "text" && typeof part.text === "string") {
@@ -1836,25 +1890,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				return part;
 			});
 			if (!appended) content.push({ type: "text", text: advisory });
-			return { ...result, content };
+			return { ...result, content: [...refusalContent, ...content] };
 		}
 
 		// Coordination only makes sense for spawns that keep running after this
 		// call returns (the async subset). Blocking items have already completed
 		// by then, so a "coordinate while they run" hint would misfire.
-		const advisory = this.session.suppressSpawnAdvisory
-			? undefined
-			: composeSpawnAdvisory({
-					agents: resolvedAgents,
-					items: asyncItems,
-					depthCapacity,
-					ircEnabled,
-					willRunAsync: asyncItems.length > 0,
-					scoutAvailable: isScoutSpawnable(
-						cfgTaskDisabledAgents.get(this.session.settings),
-						this.session.getSessionSpawns?.() ?? "*",
-					),
-				});
+
 		// Returns a fresh result (copied content array, copied text part) rather
 		// than mutating the caller's — task results are short-lived here, but an
 		// in-place edit on a shared/cached AgentToolResult would be a hidden trap.
@@ -1862,7 +1904,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		let respawnNote: string | undefined;
 		const withAdvisory = (result: AgentToolResult<TaskToolDetails>): AgentToolResult<TaskToolDetails> => {
 			const note = [respawnNote, advisory].filter(Boolean).join("\n\n");
-			if (!note) return result;
+			if (!note) return { ...result, content: [...refusalContent, ...result.content] };
 			let appended = false;
 			const content = result.content.map(part => {
 				if (!appended && part.type === "text" && typeof part.text === "string") {
@@ -1872,9 +1914,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				return part;
 			});
 			if (!appended) content.push({ type: "text", text: note });
-			return { ...result, content };
+			return { ...result, content: [...refusalContent, ...content] };
 		};
-		const outputManager = this.#outputManager();
 		const callStartedAt = Date.now();
 		const spawns: Array<{
 			agentId: string;
@@ -1889,8 +1930,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			const policy = policies[index]!;
 			const agentSource = policy.agent.source;
 			const run = adopted.get(index);
-			const agentId =
-				run?.identity.agentId ?? (await outputManager.allocate(item.name?.trim() || generateTaskName()));
+			const agentId = admittedIds.get(index);
+			if (!agentId) continue;
 			const assignment = item.task ?? "";
 			spawns.push({
 				agentId,
@@ -1918,8 +1959,22 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				},
 			});
 		}
+
 		const asyncSpawns = spawns.filter(spawn => !spawn.blocking);
 		const syncSpawns = spawns.filter(spawn => spawn.blocking);
+		const advisory = this.session.suppressSpawnAdvisory
+			? undefined
+			: composeSpawnAdvisory({
+					agents: asyncSpawns.map(spawn => spawn.progress.agent),
+					items: asyncSpawns.map(spawn => spawn.item),
+					depthCapacity,
+					ircEnabled,
+					willRunAsync: asyncSpawns.length > 0,
+					scoutAvailable: isScoutSpawnable(
+						cfgTaskDisabledAgents.get(this.session.settings),
+						this.session.getSessionSpawns?.() ?? "*",
+					),
+				});
 		const agentLabel = [...new Set(asyncSpawns.map(spawn => spawn.progress.agent))].join(", ");
 
 		// Aggregate state for the one tool call. Async spawns report into the
@@ -1929,7 +1984,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// the call returns, so post-return job updates never drop them.
 		let settledCount = 0;
 		let failedCount = 0;
-		let primaryJobId = asyncSpawns[0].agentId;
+		let primaryJobId = asyncSpawns[0]?.agentId ?? syncSpawns[0]!.agentId;
 		const syncResults: SingleResult[] = [];
 		// oxlint-disable-next-line prefer-const -- read by buildAsyncDetails before assignment
 		let syncUsage: Usage | undefined;

@@ -1,3 +1,4 @@
+import { formatSpawnRefusal } from "../../task/spawn-refusal";
 import { rowAuditOutputSchema } from "../../task/row-audit";
 import { buildOutputValidator } from "../../tools/output-schema-validator";
 import { purposeAgentName } from "../../task/name-generator";
@@ -2491,7 +2492,7 @@ export class ExtensionRunner {
 					return event.toolName === "task"
 						? {
 								...handlerResult,
-								reason: `REFUSED: no worker was spawned.\n${handlerResult.reason ?? "Task blocked by extension"}`,
+								reason: formatSpawnRefusal(handlerResult.reason ?? "Task blocked by extension"),
 							}
 						: handlerResult;
 				}
