@@ -1,3 +1,4 @@
+import { purposeAgentName } from "../../task/name-generator";
 import type { TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 import {
 	cfgTodoReviewOpen,
@@ -1809,16 +1810,16 @@ export class ExtensionRunner {
 			getTaskMaxConcurrency: () => (this.settings ? cfgTaskMaxConcurrency.get(this.settings) : undefined),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
-			runDeliveryCritic: (task, signal) =>
+			runDeliveryCritic: (task, signal, subject) =>
 				this.invokeNativeTool(
 					"task",
-					{ agent: "reviewer", task, effort: "lo" },
+					{ agent: "reviewer", name: purposeAgentName("Critic", subject ?? "Delivery"), task, effort: "lo" },
 					{ signal, waitForCompletion: true },
 				),
-			runRowAudit: (task, agent, signal, onStarted) =>
+			runRowAudit: (task, agent, signal, onStarted, subject) =>
 				this.invokeNativeTool<TaskToolDetails>(
 					"task",
-					{ agent, task },
+					{ agent, name: subject ? purposeAgentName("Audit", subject) : purposeAgentName(agent), task },
 					{
 						signal,
 						waitForCompletion: true,

@@ -7,6 +7,8 @@ import {
 	type EvalAgentResult,
 } from "@oh-my-pi/pi-coding-agent/eval/agent-bridge";
 import { runEvalWait } from "@oh-my-pi/pi-coding-agent/eval/handle-bridge";
+import { resetRegisteredArtifactDirsForTests } from "@oh-my-pi/pi-coding-agent/internal-urls/registry-helpers";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as taskDiscovery from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as taskExecutor from "@oh-my-pi/pi-coding-agent/task/executor";
@@ -97,6 +99,32 @@ describe("runEvalAgent", () => {
 		vi.restoreAllMocks();
 		await Promise.all([...jobManagers].map(manager => manager.dispose()));
 		jobManagers.clear();
+		resetRegisteredArtifactDirsForTests();
+		AgentRegistry.resetGlobalForTests();
+	});
+
+	it("reserves role names for unlabeled eval handles and preserves explicit labels", async () => {
+		const agent: AgentDefinition = {
+			name: "qa-auditor",
+			description: "Audit",
+			systemPrompt: "Audit",
+			source: "bundled",
+		};
+		vi.spyOn(taskDiscovery, "discoverAgents").mockResolvedValue({ agents: [agent], projectAgentsDir: null });
+		vi.spyOn(taskExecutor, "runSubprocess").mockResolvedValue(createResult());
+		const session = createBudgetSession(SessionManager.inMemory());
+		const manager = new AsyncJobManager({});
+		jobManagers.add(manager);
+		Object.assign(session, { asyncJobManager: manager });
+		const first = await runEvalAgent({ prompt: "audit cooling", agent: "qa-auditor" }, { session });
+		const second = await runEvalAgent({ prompt: "audit cooling", agent: "qa-auditor" }, { session });
+		const named = await runEvalAgent(
+			{ prompt: "audit cooling", agent: "qa-auditor", label: "CoolingPipes" },
+			{ session },
+		);
+		expect(first.id).toBe("QaAuditor");
+		expect(second.id).toBe("QaAuditor-2");
+		expect(named.id).toBe("CoolingPipes");
 	});
 
 	it("updates the real turn budget by output tokens only", async () => {

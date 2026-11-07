@@ -4923,7 +4923,12 @@ describe("ExtensionRunner", () => {
 			const native = { ...nativeProbe(seen), name: "task" };
 			const runner = await runnerWithNative(native);
 			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
-			expect(seen.params).toEqual({ agent: "reviewer", task: "Review completed rack controls", effort: "lo" });
+			expect(seen.params).toEqual({
+				agent: "reviewer",
+				name: "CriticDelivery",
+				task: "Review completed rack controls",
+				effort: "lo",
+			});
 			expect(result?.content).toEqual([{ type: "text", text: "native ran" }]);
 		});
 
@@ -4939,8 +4944,36 @@ describe("ExtensionRunner", () => {
 			};
 			const runner = await runnerWithNative(native);
 			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
-			expect(seen.params).toEqual({ agent: "reviewer", task: "Review completed rack controls", effort: "lo" });
+			expect(seen.params).toEqual({
+				agent: "reviewer",
+				name: "CriticDelivery",
+				task: "Review completed rack controls",
+				effort: "lo",
+			});
 			expect(result?.content).toEqual([{ type: "text", text: "final verdict" }]);
+		});
+
+		it("names row audits and plan critics at native dispatch by purpose", async () => {
+			const seen: { params?: unknown } = {};
+			const runner = await runnerWithNative({ ...nativeProbe(seen), name: "task" });
+			await runner
+				.createContext()
+				.runRowAudit?.("audit protocol", "qa-auditor", undefined, undefined, "Cooling pipes");
+			expect(seen.params).toEqual({ agent: "qa-auditor", task: "audit protocol", name: "AuditCoolingPipes" });
+			await runner.createContext().runRowAudit?.("audit protocol", "qa-auditor");
+			expect(seen.params).toMatchObject({ name: "QaAuditor" });
+			await runner
+				.createContext()
+				.runRowAudit?.(
+					"audit protocol",
+					"qa-auditor",
+					undefined,
+					undefined,
+					"Very long cooling pipes installation subject beyond the limit",
+				);
+			expect(seen.params).toMatchObject({ name: "AuditVeryLongCoolingPipesInstalla".slice(0, 32) });
+			await runner.createContext().runDeliveryCritic?.("plan protocol", undefined, "Plan");
+			expect(seen.params).toEqual({ agent: "reviewer", task: "plan protocol", effort: "lo", name: "CriticPlan" });
 		});
 
 		it("inherits the wrapper call's signal and onUpdate for a bare invokeTool", async () => {

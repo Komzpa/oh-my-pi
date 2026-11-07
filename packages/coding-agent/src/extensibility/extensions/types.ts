@@ -766,13 +766,14 @@ export interface ExtensionContext {
 	/** Apply one verified owner decision through the native todo acceptance path. */
 	applyReviewPageAnswer?(answer: ReviewPageAnswer): Promise<boolean>;
 	/** Launch the delivery critic through the native task pool. */
-	runDeliveryCritic?(task: string, signal?: AbortSignal): Promise<AgentToolResult>;
+	runDeliveryCritic?(task: string, signal?: AbortSignal, subject?: string): Promise<AgentToolResult>;
 	/** Launch one batched audit of delivered TODO rows through the native task pool. */
 	runRowAudit?(
 		task: string,
 		agent: string,
 		signal?: AbortSignal,
 		onStarted?: (workerId: string) => void,
+		subject?: string,
 	): Promise<AgentToolResult>;
 	getTodoPreviewConfig?(): { openReviewPages?: boolean; enabled: boolean; paths: string[]; thresholdMinutes: number };
 	/** Current hydrated plan, without replaying the session journal. Undefined before session initialization. */

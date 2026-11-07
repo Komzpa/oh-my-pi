@@ -271,7 +271,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 					triggers: trajectoryTriggers(digest),
 				}),
 			});
-			const result = await ctx.runDeliveryCritic(task, AbortSignal.timeout(10 * 60_000));
+			const result = await ctx.runDeliveryCritic(task, AbortSignal.timeout(10 * 60_000), "Plan");
 			if (token !== generation) return skip("tick:session-changed");
 			const details = result.details as { results?: Array<{ output?: unknown }> } | undefined;
 			const verdict = parsePlanVerdict(details?.results?.[0]?.output);

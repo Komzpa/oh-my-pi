@@ -166,7 +166,7 @@ export function queueDeliveryCritic(
 	// Await the ordinary worker inside the native task call; the delivery hook never awaits it.
 	void (async () => {
 		try {
-			const result = await ctx.runDeliveryCritic?.(task);
+			const result = await ctx.runDeliveryCritic?.(task, undefined, `Delivery ${row.content}`);
 			const details = result?.details as { results?: Array<{ output?: unknown }> } | undefined;
 			const verdict = parseDeliveryVerdict(details?.results?.[0]?.output);
 			if (!verdict) return;

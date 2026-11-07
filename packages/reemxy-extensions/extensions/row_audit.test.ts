@@ -127,7 +127,9 @@ function harness(
 				row.status = "completed";
 			return true;
 		},
-		runRowAudit: (task: string, agent: string, _signal, onStarted) => {
+		runRowAudit: (task: string, agent: string, _signal, onStarted, subject) => {
+			expect(subject).toBeTruthy();
+			expect(task).toContain(subject.split(" ")[0]);
 			onStarted?.("HelpfulVole");
 			return new Promise((resolve, reject) => {
 				launches.push({
