@@ -422,6 +422,8 @@ export interface UsageProvider {
 	/** Bump to retire cached reports of an older shape during last-good retention. */
 	cacheVersion?: number;
 	fetchUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null>;
+	/** Discard shared usage state after a confirmed quota reset. */
+	onReset?(params: UsageFetchParams): void;
 	/** Parse provider rate-limit response headers (lowercased keys) into a usage report, if supported. */
 	parseRateLimitHeaders?(
 		headers: Record<string, string>,

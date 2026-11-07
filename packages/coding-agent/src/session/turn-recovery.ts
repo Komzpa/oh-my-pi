@@ -93,6 +93,7 @@ import {
 	cfgRetryEnabled,
 	cfgRetryModelFallback,
 	cfgRetryUsageAwareFallback,
+	cfgRetryUsageConfirmTimeoutMs,
 	cfgRetryUsageReservePct,
 	cfgRetryUsageReservePolicy,
 } from "./settings";
@@ -1882,6 +1883,7 @@ export class TurnRecovery {
 	clearActiveRetryFallback(): void {
 		this.#activeRetryFallback = undefined;
 		this.#fallbackRoutedFor = undefined;
+		if (this.#reserveEpisode()) this.#host.sessionManager.appendCustomEntry("usage-reserve-decision", null);
 	}
 
 	/** Checks whether a fallback selector remains in cooldown. */
@@ -1977,12 +1979,60 @@ export class TurnRecovery {
 		);
 	}
 
+	#reserveEpisode(): { primary: string; decision: "stay" | "switch" } | undefined {
+		// Disk-backed managers can select by metadata without hydrating historical
+		// messages. Keep the topic compatible with managers predating that API.
+		const manager = this.#host.sessionManager as SessionManager & {
+			getLatestBranchMatching?: (
+				predicate: (metadata: { type: string; customType?: string }) => boolean,
+			) => SessionEntry | undefined;
+		};
+		const matches = (entry: { type: string; customType?: string }) =>
+			entry.type === "custom" && entry.customType === "usage-reserve-decision";
+		const entry = manager.getLatestBranchMatching
+			? manager.getLatestBranchMatching(matches)
+			: manager.getBranchView().findLast(matches);
+		if (entry?.type !== "custom" || !entry.data || typeof entry.data !== "object") return undefined;
+		const data = entry.data as Record<string, unknown>;
+		if (typeof data.primary !== "string" || (data.decision !== "stay" && data.decision !== "switch"))
+			return undefined;
+		return { primary: data.primary, decision: data.decision };
+	}
+
 	async #maybeApplyUsageAwareFallback(signal: AbortSignal, confirmer?: UsageFallbackConfirmer): Promise<boolean> {
 		if (!cfgRetryUsageAwareFallback.get(this.#host.settings)) return false;
 		const currentModel = this.#host.model();
 		if (!currentModel) return false;
 		const sessionId = this.#host.sessionManager.getSessionId();
 		const currentSelector = formatRetryFallbackSelector(currentModel, this.#host.thinkingLevel());
+		const episode = this.#reserveEpisode();
+		if (episode?.decision === "stay" && episode.primary === formatModelStringWithRouting(currentModel)) {
+			this.#usageReserveApproval = { model: episode.primary, sessionId };
+		}
+		// A resumed fallback must retain its reserve episode even when quota is unknown.
+		if (episode?.decision === "switch" && episode.primary !== formatModelStringWithRouting(currentModel)) {
+			const primary = resolveModelOverride([episode.primary], this.#host.modelRegistry, this.#host.settings).model;
+			if (primary) {
+				try {
+					const primaryHealth = await this.#host.modelRegistry.authStorage.health.model(primary.provider, {
+						modelId: primary.id,
+						sessionId: this.#host.sessionId(),
+						baseUrl: primary.baseUrl,
+						reserveFraction: cfgRetryUsageReservePct.get(this.#host.settings) / 100,
+						signal,
+					});
+					if (signal.aborted || !modelsAreEqual(this.#host.model(), currentModel)) return false;
+					if (
+						primaryHealth.state === "healthy" &&
+						primaryHealth.accounts.some(account => account.selected && account.state === "healthy")
+					) {
+						this.#host.sessionManager.appendCustomEntry("usage-reserve-decision", null);
+					}
+				} catch {
+					if (signal.aborted) return false;
+				}
+			}
+		}
 		let health: ModelUsageHealth;
 		try {
 			health = await this.#host.modelRegistry.authStorage.health.model(currentModel.provider, {
@@ -2005,7 +2055,12 @@ export class TurnRecovery {
 		const selectedAccount = health.accounts.find(account => account.selected);
 		if (health.state === "healthy") {
 			// A healthy sibling does not end the selected account's reserve episode.
-			if (selectedAccount?.state === "healthy") this.#usageReserveApproval = undefined;
+			if (selectedAccount?.state === "healthy") {
+				this.#usageReserveApproval = undefined;
+				if (episode?.primary === formatModelStringWithRouting(currentModel)) {
+					this.#host.sessionManager.appendCustomEntry("usage-reserve-decision", null);
+				}
+			}
 			if (
 				selectedAccount &&
 				selectedAccount.state !== "healthy" &&
@@ -2066,15 +2121,31 @@ export class TurnRecovery {
 		if (!shouldFallback) {
 			// Auto thinking changes effort between turns, not the coding-plan quota.
 			this.#usageReserveApproval = { model: formatModelStringWithRouting(currentModel), sessionId };
+			this.#host.sessionManager.appendCustomEntry("usage-reserve-decision", {
+				primary: formatModelStringWithRouting(currentModel),
+				decision: "stay",
+			});
 			return false;
 		}
 		this.#usageReserveApproval = undefined;
-		return this.applyRetryFallbackCandidate(fallback.role, fallback.selector, currentSelector, {
+		const applied = await this.applyRetryFallbackCandidate(fallback.role, fallback.selector, currentSelector, {
 			pinFallback: true,
 			apiKey: fallback.apiKey,
 			signal,
 			reason: describeUsageFallback(health, cfgRetryUsageReservePct.get(this.#host.settings)),
 		});
+		if (applied) {
+			// A usage switch must survive resume; the fallback role marks only retry-time swaps as ephemeral.
+			const switched = this.#host.model();
+			if (switched) {
+				this.#host.sessionManager.appendModelChange(formatModelStringWithRouting(switched), fallback.role, true);
+			}
+			this.#host.sessionManager.appendCustomEntry("usage-reserve-decision", {
+				primary: formatModelStringWithRouting(currentModel),
+				decision: "switch",
+			});
+		}
+		return applied;
 	}
 
 	/**
@@ -2166,13 +2237,33 @@ export class TurnRecovery {
 		signal: AbortSignal,
 	): Promise<boolean> {
 		if (signal.aborted) return false;
-		const aborted = Promise.withResolvers<boolean>();
-		const onAbort = () => aborted.resolve(false);
+		const decision = Promise.withResolvers<boolean>();
+		const uiController = new AbortController();
+		const configuredTimeout = cfgRetryUsageConfirmTimeoutMs.get(this.#host.settings);
+		const timeoutMs =
+			Number.isFinite(configuredTimeout) && configuredTimeout > 0
+				? Math.min(configuredTimeout, 2_147_483_647)
+				: 60_000;
+		const onAbort = () => {
+			decision.resolve(false);
+			uiController.abort(signal.reason);
+		};
 		signal.addEventListener("abort", onAbort, { once: true });
+		const timer = setTimeout(() => {
+			decision.resolve(true);
+			logger.warn(
+				`Reserve confirmation timed out after ${timeoutMs}ms; automatically choosing Yes: ${confirmation.to}`,
+			);
+			uiController.abort();
+		}, timeoutMs);
 		try {
-			return await Promise.race([confirmer(confirmation, signal), aborted.promise]);
+			// Resolve the shared decision before cancelling the UI, whose abort result is No.
+			void confirmer(confirmation, uiController.signal).then(decision.resolve, decision.reject);
+			return await decision.promise;
 		} finally {
+			clearTimeout(timer);
 			signal.removeEventListener("abort", onAbort);
+			uiController.abort();
 		}
 	}
 

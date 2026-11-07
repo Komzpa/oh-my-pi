@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Long sessions no longer pause between turns while checking saved usage reserve choices ([#168](https://github.com/Komzpa/oh-my-pi/pull/168) by [@Komzpa](https://github.com/Komzpa)).
+- Reserve confirmation now switches automatically after a configurable timeout and remembers the choice across resume ([#168](https://github.com/Komzpa/oh-my-pi/pull/168) by [@Komzpa](https://github.com/Komzpa)).
+
+### Breaking Changes
+
+- Rust SDK: `BashCommand` and `ReadyEvent` struct literals need `exclude_from_context: None` and `supports_bash_exclude_from_context: None` ([#18206](https://github.com/can1357/oh-my-pi/pull/18206) by [@andrebrait](https://github.com/andrebrait))
+
+### Changed
+
+- Agent `bash` commands run with `LANG`/`LC_ALL=C.UTF-8` on every platform instead of the inherited locale, so sort order, number formats and tool messages no longer vary by machine; a locale in the command's `env` or `.envrc` still wins, and `!` commands keep yours
+
 ### Added
 
 - Added `skills.manualSkills` glob patterns to keep skills available manually while hiding them from the model catalog, without editing their `SKILL.md` files ([#18114](https://github.com/can1357/oh-my-pi/pull/18114) by [@Shadorain](https://github.com/Shadorain))

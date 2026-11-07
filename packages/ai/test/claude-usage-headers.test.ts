@@ -42,6 +42,7 @@ async function fetchClaudeUsageReport(payload: Record<string, unknown>): Promise
 	return claudeUsageProvider.fetchUsage(
 		{
 			provider: "anthropic",
+			accountKey: crypto.randomUUID(),
 			credential: {
 				type: "oauth",
 				accessToken: "oat-test-access-token",
@@ -99,6 +100,7 @@ describe("claude usage request headers", () => {
 		await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: token,
@@ -147,6 +149,7 @@ describe("claude usage request headers", () => {
 		const report = await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: "oat-test-access-token",
@@ -209,6 +212,7 @@ describe("claude usage request headers", () => {
 		const report = await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: "oat-test-access-token",
@@ -278,6 +282,7 @@ describe("claude usage request headers", () => {
 		const report = await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: "oat-test-access-token",
@@ -332,6 +337,7 @@ describe("claude usage request headers", () => {
 		const report = await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: "oat-test-access-token",
@@ -373,6 +379,7 @@ describe("claude usage request headers", () => {
 		const report = await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: "oat-test-access-token",
@@ -410,6 +417,7 @@ describe("claude usage request headers", () => {
 		const report = await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: "oat-test-access-token",
