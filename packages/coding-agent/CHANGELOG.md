@@ -30,7 +30,7 @@
 
 ### Fixed
 
-- Session listings reuse assistant-turn scans as journals grow, avoiding repeated reads of old history.
+- Session listings reuse assistant-turn scans as journals grow, avoiding repeated reads of old history ([#173](https://github.com/Komzpa/oh-my-pi/pull/173) by [@Komzpa](https://github.com/Komzpa)).
 
 - Subagents receive task instructions with their blank lines, Markdown hard breaks, and table spacing intact, whether given inline or via `taskFile`.
 - Hindsight `retain` and `learn` memories are no longer lost when delivery fails or omp exits: they are kept on disk, retried, and delivered by the next session without duplicates ([#18176](https://github.com/can1357/oh-my-pi/pull/18176) by [@alphastorm](https://github.com/alphastorm))
