@@ -933,21 +933,27 @@ export class SessionEntryIndex {
 	}
 
 	/** Pin the exact indexed inode until its raw chunks and comparisons have been consumed. */
-	openSerializationReader(): { fd: number; dispose: () => void } | undefined {
+	openSerializationReader(): { fd: number; dispose: () => Promise<void> } | undefined {
 		const fd = this.#readerFd;
 		if (fd === undefined) return undefined;
 		this.#readerPins.set(fd, (this.#readerPins.get(fd) ?? 0) + 1);
 		let released = false;
 		return {
 			fd,
-			dispose: () => {
+			dispose: async () => {
 				if (released) return;
 				released = true;
 				const pins = this.#readerPins.get(fd)! - 1;
 				if (pins) this.#readerPins.set(fd, pins);
 				else {
 					this.#readerPins.delete(fd);
-					if (this.#retiredReaders.delete(fd)) fs.closeSync(fd);
+					if (this.#retiredReaders.delete(fd)) {
+						// Last close of a replaced multi-GB inode can block on filesystem
+						// reclamation even though this descriptor was read-only.
+						const closed = Promise.withResolvers<void>();
+						fs.close(fd, error => (error ? closed.reject(error) : closed.resolve()));
+						await closed.promise;
+					}
 				}
 			},
 		};
@@ -1351,7 +1357,7 @@ async function readSessionUtf8PieceAsync(
 
 interface SessionFileBody {
 	readLine?: (index: number) => string | Promise<string>;
-	dispose?: () => void;
+	dispose?: () => Promise<void>;
 	lines: string[];
 	bytes: number;
 	stamp: SessionBodyStamp;
@@ -2133,7 +2139,7 @@ export class SessionManager {
 			await this.#recordFullRewriteAsync(body, target);
 			return body.stamp.entryCount;
 		} finally {
-			body.dispose?.();
+			await body.dispose?.();
 		}
 	}
 
@@ -2389,7 +2395,7 @@ export class SessionManager {
 				stamp: { entries, entryCount, lastEntry: entries.at(-1), revision, prefix: titleLine + headerLine },
 			};
 		} catch (error) {
-			reader?.dispose();
+			await reader?.dispose();
 			throw error;
 		}
 	}
@@ -2602,7 +2608,7 @@ export class SessionManager {
 				const sessionFile = this.#sessionFile;
 				if (!sessionFile) return false;
 				if (this.#diskEpoch !== epoch) return false;
-				activeBody?.dispose?.();
+				await activeBody?.dispose?.();
 				activeBody = undefined;
 				const body = await this.#serializeBodyAsync();
 				activeBody = body;
@@ -2651,7 +2657,7 @@ export class SessionManager {
 			} while (this.#atomicRewriteDirty);
 			return true;
 		} finally {
-			activeBody?.dispose?.();
+			await activeBody?.dispose?.();
 			// Only relinquish the fence if we still own it. A superseding
 			// synchronous rewrite (`flushSync` → `#rewriteSynchronously`) may
 			// have reset `#diskTail`, scheduled a fresh atomic task at the new
