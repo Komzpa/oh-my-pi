@@ -127,3 +127,34 @@ it("repeated context subtype selection reads one payload across 300k unrelated n
 		await manager.close();
 	}
 }, 60_000);
+
+it("tail receipt queries visit 500 metadata rows and decode only matching payloads in a 300k branch", async () => {
+	const manager = SessionManager.inMemory();
+	manager.appendCustomMessageEntry("async-result", "outside receipt", false);
+	for (let i = 0; i < 300_000; i++) manager.appendCustomEntry("unrelated", { i });
+	const receipt = manager.appendCustomMessageEntry("async-result", "current receipt", false);
+	let decoded = 0;
+	const original = SessionEntryIndex.prototype.get;
+	const read = spyOn(SessionEntryIndex.prototype, "get").mockImplementation(
+		function (this: SessionEntryIndex, id, retainIdentity) {
+			read.mockClear();
+			decoded++;
+			return original.call(this, id, retainIdentity);
+		},
+	);
+	try {
+		for (let turn = 0; turn < 10; turn++) {
+			let visited = 0;
+			const selected = manager.getBranchTailMatching(500, metadata => {
+				visited++;
+				return metadata.type === "custom_message";
+			});
+			expect(visited).toBe(500);
+			expect(selected.map(entry => entry.id)).toEqual([receipt]);
+		}
+		expect(decoded).toBe(10);
+	} finally {
+		read.mockRestore();
+		await manager.close();
+	}
+}, 60_000);
