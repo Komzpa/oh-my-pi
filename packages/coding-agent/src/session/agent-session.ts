@@ -2959,6 +2959,18 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				if (this.#isDisposed) return;
 				this.#experimentalContextNotesReminder = { prompt, generation: this.#promptGeneration };
 			},
+			emitCompactionBackoffNotice: content => {
+				const message: CustomMessage = {
+					role: "custom",
+					customType: "compaction-backoff",
+					content,
+					display: false,
+					timestamp: Date.now(),
+				};
+				this.agent.appendMessage(message);
+				this.sessionManager.appendMessage(message);
+				this.emitNotice("warning", content, "compaction");
+			},
 			memoryBackendSession: () => this,
 			emitSessionEvent: (event, options) => this.#emitSessionEvent(event, options),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
@@ -13396,6 +13408,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 
 		await this.#reconcileModelDependentState(model);
+		if (isChanging || currentModel?.contextWindow !== model.contextWindow)
+			this.#maintenance.checkModelContextWindow();
 	}
 
 	async #reconcileModelDependentState(model: Model): Promise<void> {

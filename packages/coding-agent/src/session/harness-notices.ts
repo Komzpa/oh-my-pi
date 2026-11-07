@@ -14,6 +14,7 @@ export function isHarnessNotice(message: AgentMessage): boolean {
 	return (
 		/^(todo-|requirements[_-]|goal-deadline-|goal-completion-|agent-router-)/.test(message.customType) ||
 		[
+			"compaction-backoff",
 			"lead-plan-critic",
 			"chief-rules-after-compaction",
 			"worker-brief-after-compaction",
