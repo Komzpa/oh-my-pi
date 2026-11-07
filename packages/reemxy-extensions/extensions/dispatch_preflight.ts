@@ -1,3 +1,4 @@
+import { readOnlyRow, checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
 import { $ } from "bun";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -365,6 +366,9 @@ export async function workerScopeCovers(ctx: ExtensionContext, paths: string[]):
 	return true;
 }
 
+// Per canonical lead session, retained only while the owning row remains open.
+const writeClaims = new WeakMap<object, Map<string, string[]>>();
+
 export async function workerToolPreflight(
 	event: { toolName: string; input?: unknown },
 	ctx: ExtensionContext,
@@ -382,23 +386,37 @@ export async function workerToolPreflight(
 	const root = await canonical(path.resolve(ctx.cwd));
 	const scope = workerRowScope(ctx);
 	const rows = scope?.rows ?? [];
+	if (targets.length && rows.some(row => readOnlyRow(row)))
+		return { block: true, reason: "Read-only row cannot mutate files; dispatch a writer on a separate row." };
 	const declared = rows
 		.flatMap(row => row.schedule?.resources ?? [])
 		.map(resource => resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "").replace(/:[^/]+$/, ""))
 		.filter(resource => path.isAbsolute(resource));
 	const roots = declared.length ? await Promise.all(declared.map(canonical)) : [root];
+	const resolvedTargets: string[] = [];
 	for (const target of targets) {
 		if (target.includes("://")) continue;
 		const resolved = await canonical(
 			path.resolve(ctx.cwd, target.startsWith("~/") ? path.join(os.homedir(), target.slice(2)) : target),
 		);
+		resolvedTargets.push(resolved);
 		for (const other of scope?.phases.flatMap(phase => phase.tasks) ?? []) {
-			if (rows.includes(other) || other.status === "completed" || other.status === "abandoned") continue;
+			if (
+				rows.includes(other) ||
+				other.status === "completed" ||
+				other.status === "abandoned" ||
+				readOnlyRow(other) ||
+				(other.status === "pending" && !other.schedule?.owner && !other.schedule?.executor?.workerId)
+			)
+				continue;
 			for (const resource of other.schedule?.resources ?? []) {
 				const resourcePath = resource
 					.replace(/^(?:path|repo|repository|checkout|worktree):/, "")
 					.replace(/:[^/]+$/, "");
-				if (path.isAbsolute(resourcePath) && inside(await canonical(resourcePath), resolved))
+				if (
+					path.isAbsolute(resourcePath) &&
+					(inside(await canonical(resourcePath), resolved) || inside(resolved, await canonical(resourcePath)))
+				)
 					return { block: true, reason: `Write conflicts with row ${JSON.stringify(other.content)}.` };
 			}
 		}
@@ -408,6 +426,31 @@ export async function workerToolPreflight(
 				reason: `Outside your worktree: add ${resolved} to row ${JSON.stringify(rows.map(row => row.content).join(", ") || ctx.agent?.id || "<worker row>")} resources via todo schedule; applies to the running worker. Use an absolute path. If its worktree disappeared, restore it or put the replacement absolute worktree path in that row resources, then retry. Call resource_scope with the absolute paths; assigned paths return granted immediately.`,
 			};
 	}
+	if (scope?.lead.session && targets.length) {
+		const owner = rows[0]?.schedule?.owner ?? ctx.agent?.id;
+		const incoming = checkoutScopesFromResources(resolvedTargets);
+		if (owner && incoming) {
+			const claims = writeClaims.get(scope.lead.session) ?? new Map<string, string[]>();
+			writeClaims.set(scope.lead.session, claims);
+			const open = scope.phases
+				.flatMap(phase => phase.tasks)
+				.filter(row => row.status !== "completed" && row.status !== "abandoned" && !readOnlyRow(row));
+			// No await between observing and acquiring exact write targets.
+			for (const [holder, held] of claims) {
+				if (!open.some(row => row.schedule?.owner === holder || row.schedule?.executor?.workerId === holder)) {
+					claims.delete(holder);
+					continue;
+				}
+				if (holder !== owner && checkoutScopesOverlap(incoming, held))
+					return {
+						block: true,
+						reason: `Write conflicts with worker ${holder} on ${JSON.stringify(targets)}; narrow tasks[].resources or wait for its row to finish.`,
+					};
+			}
+			claims.set(owner, [...new Set([...(claims.get(owner) ?? []), ...incoming])]);
+		}
+	}
+
 	const app = input.app as { relay?: boolean; cdp_url?: string } | undefined;
 	const opensBrowser = event.toolName === "browser" && input.action === "open" && app?.relay !== true && !app?.cdp_url;
 	if (!opensBrowser && !actions.some(action => launchesTestProcess(action.argv))) return;

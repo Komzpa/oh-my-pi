@@ -42,3 +42,5 @@ Shared edits need one integration owner; give each task its files. Set interface
 {{else}}{{#if hasModelMentions}}`m<N>` = user-tagged model (`<model agent="m<N>" name="…"/>`), not specialist; spawn only when user names it.
 {{/if}}{{#list agents join=""}}- `{{name}}`{{#if readOnly}} (READ-ONLY; investigation only, no edits){{/if}}{{#if blocking}} (BLOCKING; inline result){{/if}}{{#if structured}} (STRUCTURED; schema result){{/if}}: {{description}}
 {{/list}}{{/if}}
+
+Resource scope: set `resources` per item to absolute file/subtree paths within its row resources. Use `readOnly: true` for audit/verify-only work; read-only roles cannot use mutation tools or unrestricted bash. Readers do not block writers and see each file at read time. Without declared/inferred paths the worker is unscoped, not a ROOT writer; declare scopes for shell work. Conflicts name the holder/path: narrow `tasks[].resources` or wait for that writer.

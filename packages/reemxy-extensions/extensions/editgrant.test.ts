@@ -77,7 +77,7 @@ async function fixture() {
 	};
 }
 
-test("lead task assignment and context paths become durable row scope before the first write; another row still conflicts", async () => {
+test("assignment paths become durable scope; shared context cannot grant writes; explicit scope still conflicts", async () => {
 	const f = await fixture();
 	try {
 		f.phases()[0]!.tasks[0]!.schedule!.owner = undefined;
@@ -93,6 +93,10 @@ test("lead task assignment and context paths become durable row scope before the
 			await workerToolPreflight({ toolName: "edit", input: { path: `${f.assigned}/facilityScene.ts` } }, f.worker),
 		).toBeUndefined();
 		expect(f.phases()[0]!.tasks[0]!.schedule!.resources).toContain(f.assigned);
+		expect(
+			await workerToolPreflight({ toolName: "write", input: { path: `${f.dir}/proof/capture.png` } }, f.worker),
+		).toMatchObject({ block: true });
+		f.lead.updateTodoSchedule!("Capture screenshots", { resources: [f.assigned, `${f.dir}/proof`] });
 		expect(
 			await workerToolPreflight({ toolName: "write", input: { path: `${f.dir}/proof/capture.png` } }, f.worker),
 		).toBeUndefined();

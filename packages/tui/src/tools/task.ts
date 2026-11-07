@@ -2251,6 +2251,10 @@ export interface TaskItem {
 	taskFile?: string;
 	/** Exact open todo content. */
 	row?: string;
+	/** Explicit absolute paths; narrows the row claim. */
+	resources?: string[];
+	/** Restrict this dispatch to read tools. */
+	readOnly?: boolean;
 	previewIntegration?: { task: string; kind: "refresh" | "integration" };
 	/** How open-ended the work is; required by the schema and the child's sole `auto` thinking classification input. */
 	solutionSpace?: string;
@@ -2289,6 +2293,10 @@ export interface TaskParams {
 	taskFile?: string;
 	/** Exact open todo content. */
 	row?: string;
+	/** Explicit absolute paths; narrows the row claim. */
+	resources?: string[];
+	/** Restrict this dispatch to read tools. */
+	readOnly?: boolean;
 	/** How open-ended the work is (flat form); see {@link TaskItem.solutionSpace}. */
 	solutionSpace?: string;
 	/** Chief's one-line rejection reason for redispatching a completed row. */

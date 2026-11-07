@@ -1,3 +1,4 @@
+import { isReadOnlyWorkerRole } from "@oh-my-pi/pi-coding-agent/task/read-only-policy";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
@@ -96,4 +97,8 @@ export function checkoutScopesContain(roots: string[], targets: string[]): boole
 
 export function checkoutScopesOverlap(left: string[], right: string[]): boolean {
 	return left.some(l => right.some(r => checkoutScopesContain([l], [r]) || checkoutScopesContain([r], [l])));
+}
+
+export function readOnlyRow(row: { schedule?: { readOnly?: boolean; agentProfile?: string } }): boolean {
+	return row.schedule?.readOnly === true || isReadOnlyWorkerRole(row.schedule?.agentProfile ?? "");
 }

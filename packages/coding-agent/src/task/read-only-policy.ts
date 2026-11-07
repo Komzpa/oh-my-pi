@@ -26,3 +26,8 @@ export const READ_ONLY_TOOL_NAMES: ReadonlySet<string> = new Set([
 export function isReadOnlyAgent(agent: AgentDefinition): boolean {
 	return !!agent.tools?.length && agent.tools.every(tool => READ_ONLY_TOOL_NAMES.has(tool));
 }
+
+/** Roles whose contract forbids checkout mutation, even if an old definition lists bash. */
+export function isReadOnlyWorkerRole(name: string): boolean {
+	return ["qa-auditor", "explore", "scout", "reviewer", "security-reviewer"].includes(name);
+}

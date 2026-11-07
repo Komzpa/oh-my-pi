@@ -438,6 +438,8 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 	if ("sourceSession" in params) item.sourceSession = params.sourceSession;
 	if ("model" in params) item.model = params.model;
 	if ("row" in params) item.row = params.row;
+	if ("resources" in params) item.resources = params.resources;
+	if ("readOnly" in params) item.readOnly = params.readOnly;
 	return [item];
 }
 
@@ -521,6 +523,8 @@ function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent
 	if (item.taskFile !== undefined) spawn.taskFile = item.taskFile;
 	if (item.taskFileSha256 !== undefined) spawn.taskFileSha256 = item.taskFileSha256;
 	if (item.row !== undefined) spawn.row = item.row;
+	if (item.resources !== undefined) spawn.resources = item.resources;
+	if (item.readOnly !== undefined) spawn.readOnly = item.readOnly;
 	if (item.solutionSpace !== undefined) spawn.solutionSpace = item.solutionSpace;
 	if (item.rework !== undefined) spawn.rework = item.rework;
 	if (params.context !== undefined) spawn.context = params.context;
@@ -1593,6 +1597,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			session: this.session,
 			invocationKind: "task",
 			assignment: (params.task ?? "").trim(),
+			row: params.row,
+			readOnly: params.readOnly,
 			context: this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined,
 			agent: params.agent,
 			sourceSession: params.sourceSession,
@@ -1615,6 +1621,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				{
 					type: "before_subagent_spawn",
 					phase: "admission",
+					row: params.row,
+					resources: params.resources,
+					readOnly: isReadOnlyAgent(policy.effectiveAgent),
 					agent: policy.agentName,
 					invocationKind: "task",
 					modelRole: policy.modelRole,
@@ -2568,6 +2577,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				...this.#effortParams(params),
 				solutionSpace: params.solutionSpace,
 				row: params.row,
+				resources: params.resources,
+				readOnly: params.readOnly,
 				...(route?.rung ? { model: route.rung.model } : {}),
 				...(params.tools?.length
 					? {

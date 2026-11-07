@@ -145,7 +145,7 @@ describe("agent router", () => {
 			let running: Array<{ id: string; agentId: string; type: string; status: string }> = [];
 			const context = ctx({ getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }) });
 			const first = await routeSubagentSpawn(
-				{ agent: "coder", spawnKey: "writer-1", isolated: false },
+				{ agent: "coder", spawnKey: "writer-1", isolated: false, resources: [dir] },
 				context,
 				state,
 				{ stateFile: file },
@@ -154,7 +154,7 @@ describe("agent router", () => {
 
 			running = [{ id: "writer-1", agentId: "writer-1", type: "task", status: "running" }];
 			const blocked = await routeSubagentSpawn(
-				{ agent: "ui-coder", spawnKey: "writer-2", isolated: false },
+				{ agent: "ui-coder", spawnKey: "writer-2", isolated: false, resources: [dir] },
 				context,
 				state,
 				{ stateFile: file },
@@ -210,10 +210,15 @@ describe("agent router", () => {
 					delivery: {},
 				}),
 			});
-			routeSubagentSpawn({ agent: "coder", spawnKey: longId }, ctx(), state, { stateFile: file });
-			const blocked = routeSubagentSpawn({ agent: "coder", spawnKey: "second-writer" }, context, state, {
-				stateFile: file,
-			});
+			routeSubagentSpawn({ agent: "coder", spawnKey: longId, resources: [dir] }, ctx(), state, { stateFile: file });
+			const blocked = routeSubagentSpawn(
+				{ agent: "coder", spawnKey: "second-writer", resources: [dir] },
+				context,
+				state,
+				{
+					stateFile: file,
+				},
+			);
 			const writerAction = blocked.reason.split("\n", 1)[0];
 			expect(writerAction.length).toBeLessThanOrEqual(100);
 			expect(writerAction).toContain("writer-");
@@ -231,7 +236,7 @@ describe("agent router", () => {
 			let running: Array<{ id: string; agentId: string; type: string; status: string }> = [];
 			const context = ctx({ getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }) });
 			const first = await routeSubagentSpawn(
-				{ agent: "coder", spawnKey: "writer-1", isolated: false },
+				{ agent: "coder", spawnKey: "writer-1", isolated: false, resources: [dir] },
 				context,
 				state,
 				{ stateFile: file },
@@ -240,7 +245,7 @@ describe("agent router", () => {
 			running = [{ id: "writer-1", agentId: "writer-1", type: "task", status: "running" }];
 			// A second file writer is still refused while the coder runs.
 			const blocked = await routeSubagentSpawn(
-				{ agent: "ui-coder", spawnKey: "writer-2", isolated: false },
+				{ agent: "ui-coder", spawnKey: "writer-2", isolated: false, resources: [dir] },
 				context,
 				state,
 				{ stateFile: file },
@@ -575,7 +580,7 @@ describe("agent router", () => {
 		}
 	});
 
-	test("checkout writer scopes require exact canonical ownership and keep unknown active writers conservative", async () => {
+	test("checkout writer scopes require exact canonical ownership and allow undeclared scopes without claiming ROOT", async () => {
 		const { dir, file } = tempStateFile();
 		try {
 			const original = join(dir, "original");
@@ -614,7 +619,7 @@ describe("agent router", () => {
 				["writer-2", [join(other, "broken-alias", "file.ts")]],
 			]) {
 				tasks.push({ content: `Write to ${other}`, status: "pending", schedule: { owner, resources } });
-				expect((await spawn("writer-2"))?.block).toBe(true);
+				expect((await spawn("writer-2"))?.block).toBeUndefined();
 				tasks.pop();
 			}
 			tasks.push({
@@ -631,11 +636,11 @@ describe("agent router", () => {
 						throw new Error("unavailable");
 					})
 				)?.block,
-			).toBe(true);
+			).toBeUndefined();
 			expect(
 				(await routeSubagentSpawn({ agent: "coder", spawnKey: "writer-2" }, context, state, { stateFile: file }))
 					?.block,
-			).toBe(true);
+			).toBeUndefined();
 			const unknownState = createRouterState();
 			running = [];
 			await routeSubagentSpawn({ agent: "coder", spawnKey: "writer-1" }, context, unknownState, { stateFile: file });
@@ -952,7 +957,10 @@ describe("agent router", () => {
 			expect(writeGate?.block).toBe(true);
 			expect(messages[0]?.content).toContain("empty or tiny tracked-file writes require replace: true");
 
-			handlers.get("before_subagent_spawn")!({ agent: "coder", spawnKey: "WriterR92", patterns: [] }, context);
+			handlers.get("before_subagent_spawn")!(
+				{ agent: "coder", spawnKey: "WriterR92", patterns: [], resources: [dir] },
+				context,
+			);
 			const started = {
 				toolName: "task",
 				isError: false,
@@ -969,7 +977,7 @@ describe("agent router", () => {
 			expect(messages[1]?.content).toContain("No overlapping writer");
 			expect(messages[1]?.content).toContain("todo schedule resources");
 			const gate = handlers.get("before_subagent_spawn")!(
-				{ agent: "coder", spawnKey: "WriterR93", patterns: [] },
+				{ agent: "coder", spawnKey: "WriterR93", patterns: [], resources: [dir] },
 				context,
 			);
 			expect(gate?.block).toBe(true);
@@ -1074,7 +1082,7 @@ describe("agent router", () => {
 		}
 	});
 
-	test("unknown-scope holder only blocks writers in the session-cwd repo", async () => {
+	test("unknown-scope holder does not block scoped writers", async () => {
 		const { dir, file } = tempStateFile();
 		try {
 			const repoA = join(dir, "repo-a");
@@ -1131,7 +1139,7 @@ describe("agent router", () => {
 				status: "pending",
 				schedule: { owner: "same-1", resources: [`${repoA}/src/same.ts:source-writer`] },
 			});
-			expect((await spawn("same-1"))?.block).toBe(true);
+			expect((await spawn("same-1"))?.block).toBeUndefined();
 			tasks.pop();
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -1146,9 +1154,9 @@ describe("agent router", () => {
 			execFileSync("git", ["init", "-q", repoA]);
 			const tasks = [
 				{
-					content: "Holder with no resource paths",
+					content: "Holder with explicit resource path",
 					status: "in_progress",
-					schedule: { owner: "holder-1", resources: [] },
+					schedule: { owner: "holder-1", resources: [repoA] },
 				},
 				{
 					content: "Same repo work",

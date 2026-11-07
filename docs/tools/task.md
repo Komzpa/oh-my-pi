@@ -273,3 +273,24 @@ The consult excludes additional roots, workspace tree, context files, skills, ru
 Warm or revived IRC follow-ups preserve this completion contract. A yielded follow-up republishes canonical `agent://<id>` output; successful, nonempty unstructured follow-ups also republish their final report when woken by a direct parent message (not an `agent://all` broadcast) or user-prompted, removing a stale `<id>.json` sidecar; peer-only unstructured replies and cancelled or empty follow-ups do not publish.
 
 Inherited source charges are zeroed; new consultation turns use existing task/Agent Hub usage tracking.
+
+### Resource claims
+
+Each task item (or flat task call) accepts `resources: ["/absolute/path"]` and
+`readOnly: true`. Resources narrow the matched open row's existing paths; to
+expand them, first update that row with `todo schedule`. A row can be selected
+with its exact `row` title. Shared batch context is background, not ownership.
+Readers hold no exclusive write claim, including when reading the checkout root.
+Reads observe the file version at each read, not a consistent filesystem snapshot.
+The read-only flag and `schedule.readOnly` restrict dispatched tools to read tools;
+qa-auditor, explore, scout, reviewer and security-reviewer are read-only roles.
+Shell-based review must use a writer role with explicit resources.
+
+Without explicit resources, the router uses the row resources and absolute paths
+in its assignment. With neither, it admits an unscoped worker instead of claiming
+ROOT. Known file mutations still check explicit writer claims and atomically
+reserve their exact targets for the owning row until it closes. Opaque shell
+scripts retain the existing limitation: their internal write targets cannot be
+inferred; declare their resources before dispatch. Pending unowned rows reserve
+nothing. A conflict refuses the item before spawn and names the holder and path;
+use disjoint `tasks[].resources` or wait for that writer.

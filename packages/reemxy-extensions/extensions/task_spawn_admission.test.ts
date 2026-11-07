@@ -11,9 +11,10 @@ import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discovery from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executor from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { convertToLlm } from "../../coding-agent/src/session/messages";
 import { convertWithHarnessNotices } from "../../coding-agent/src/session/harness-notices";
+import { type } from "@oh-my-pi/omptype";
 import { createRouterState, routeSubagentSpawn } from "./agent_router";
 
 const cleanups: (() => Promise<unknown>)[] = [];
@@ -26,7 +27,7 @@ async function fixture() {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "spawn-admission-"));
 	const stateFile = path.join(dir, "router.jsonl");
 	const target = path.join(dir, "shared.ts");
-	const phases: TodoScheduleInput = [
+	const phases: TodoPhase[] = [
 		{
 			name: "Work",
 			tasks: [
@@ -52,7 +53,17 @@ async function fixture() {
 		await fs.rm(dir, { recursive: true, force: true });
 	});
 	vi.spyOn(discovery, "discoverAgents").mockResolvedValue({
-		agents: [{ name: "task", description: "Task", systemPrompt: "Task", source: "bundled" }],
+		agents: [
+			{ name: "task", description: "Task", systemPrompt: "Task", source: "bundled" },
+			{
+				name: "qa-auditor",
+				description: "Audit",
+				systemPrompt: "Audit",
+				source: "bundled",
+				tools: ["read", "bash"],
+			},
+			{ name: "observer", description: "Read", systemPrompt: "Read", source: "bundled", tools: ["read", "grep"] },
+		],
 		projectAgentsDir: null,
 	});
 	const run = vi.spyOn(executor, "runSubprocess").mockImplementation(async options => ({
@@ -75,6 +86,7 @@ async function fixture() {
 		hasUI: false,
 		settings: Settings.isolated({ "async.enabled": true, "task.batch": true }),
 		getSessionFile: () => null,
+		getTodoPhases: () => phases,
 		getSessionSpawns: () => "*",
 		asyncJobManager: jobs,
 		emitBeforeSubagentSpawn: async event => routeSubagentSpawn(event, ctx, state, { stateFile }),
@@ -241,3 +253,92 @@ test("synchronous fallback refuses a conflicting item and runs its free sibling"
 	expect(f.run).toHaveBeenCalledTimes(1);
 	expect(f.jobs.getRunningJobs()).toHaveLength(0);
 });
+
+test("ROOT reader and four disjoint or unscoped writers all start; reader tools cannot mutate", async () => {
+	const f = await fixture();
+	f.phases[0].tasks = ["Audit", "Alpha", "Beta", "Gamma", "Delta"].map(content => ({
+		content,
+		status: "pending",
+		schedule: content === "Audit" ? { resources: [f.dir] } : {},
+	}));
+	const tasks = f.phases[0].tasks.map((row, index) => ({
+		name: row.content,
+		row: row.content,
+		task: row.content,
+		agent: "task",
+		readOnly: index === 0,
+		...(index === 1 || index === 2 ? { resources: [path.join(f.dir, `${row.content}.ts`)] } : {}),
+	}));
+	const validated = f.tool.parameters({
+		context: `Background checkout ${f.dir}`,
+		tasks: tasks.map(item => ({ ...item, solutionSpace: "bounded" })),
+	});
+	if (validated instanceof type.errors) throw new Error(validated.summary);
+	const result = await f.tool.execute("root-reader", validated);
+	expect(textOf(result)).not.toContain("REFUSED");
+	expect(result.details?.progress?.map(item => item.id)).toEqual(tasks.map(item => item.name));
+	for (const item of tasks) await f.jobs.getJob(item.name)?.promise;
+	expect(f.run).toHaveBeenCalledTimes(5);
+	const audit = f.run.mock.calls.find(([options]) => options.id === "Audit")![0];
+	expect(audit.agent.tools).not.toContain("bash");
+	expect(audit.agent.tools).not.toContain("write");
+	expect(audit.restrictToolNames).toBe(true);
+	expect(audit.enableMCP).toBe(false);
+	expect(f.phases[0].tasks[0].schedule?.readOnly).toBe(true);
+});
+
+test("explicit item scope narrows a broad row; second same-file writer is refused before spawn", async () => {
+	const f = await fixture();
+	f.phases[0].tasks = ["Alpha", "Beta"].map(content => ({
+		content,
+		status: "pending",
+		schedule: { resources: [f.dir] },
+	}));
+	const result = await f.tool.execute("narrow", {
+		context: `Background ${f.dir}`,
+		tasks: [
+			{ name: "Alpha", row: "Alpha", task: "Alpha", resources: [f.target] },
+			{ name: "Beta", row: "Beta", task: "Beta", resources: [f.target] },
+		],
+	});
+	expect(textOf(result)).toStartWith("REFUSED: no worker was spawned for Beta:");
+	expect(textOf(result)).toContain("tasks[].resources");
+	expect(f.jobs.getJob("Beta")).toBeUndefined();
+	expect(f.phases[0].tasks[0].schedule?.resources).toEqual([f.target]);
+	await f.jobs.getJob("Alpha")?.promise;
+	expect(f.run).toHaveBeenCalledTimes(1);
+});
+
+test("item scope outside the canonical row is refused without changing ownership", async () => {
+	const f = await fixture();
+	f.phases[0].tasks[1].schedule = { resources: [f.target] };
+	const result = await f.tool.execute("escape", {
+		context: "Scope boundary",
+		tasks: [{ ...f.items[0], resources: [path.join(f.dir, "outside.ts")] }],
+	});
+	expect(textOf(result)).toContain("resources exceed row");
+	expect(f.jobs.getRunningJobs()).toHaveLength(0);
+	expect(f.phases[0].tasks[1].schedule?.owner).toBeUndefined();
+});
+
+for (const agent of ["qa-auditor", "observer"])
+	test(`${agent} ROOT reading does not acquire a write claim`, async () => {
+		const f = await fixture();
+		f.phases[0].tasks[0].schedule!.resources = [];
+		f.phases[0].tasks[1].schedule = { resources: [f.dir] };
+		const result = await f.tool.execute("role-read", {
+			context: "Read and implement independently",
+			tasks: [
+				{ name: "Reader", agent, row: "Captures", task: "Captures" },
+				{ name: "Writer", row: "Independent", task: "Independent", resources: [f.target] },
+			],
+		});
+		expect(textOf(result)).not.toContain("REFUSED");
+		await f.jobs.getJob("Reader")?.promise;
+		await f.jobs.getJob("Writer")?.promise;
+		expect(f.run).toHaveBeenCalledTimes(2);
+		const reader = f.run.mock.calls.find(([options]) => options.id === "Reader")![0];
+		expect(reader.agent.tools).not.toContain("bash");
+		expect(reader.restrictToolNames).toBe(true);
+		expect(f.phases[0].tasks[1].schedule?.readOnly).toBe(true);
+	});

@@ -776,6 +776,9 @@ describe("structured subagent primitive", () => {
 				isolated: false,
 				assignment: "Inspect the target.",
 				context: "Assigned worktree /tmp/worker-evidence",
+				row: undefined,
+				resources: undefined,
+				readOnly: false,
 				spawnKey: undefined,
 			},
 		]);

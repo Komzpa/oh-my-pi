@@ -223,6 +223,8 @@
 
 ### Fixed
 
+- Keep read-only audits from blocking writers and allow per-task resource scopes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Stop repeated automatic compaction when resident context cannot fit, and warn when switching to a model with too small a window ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Refuse conflicting task items before reporting spawned workers, while starting independent siblings ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Refused task spawns now state that no worker was spawned before extension advice ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep read-only audits from blocking writers and allow per-task resource scopes ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Refuse conflicting task items before reporting spawned workers, while starting independent siblings ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Keep file and tool text separate from harness advice and label supervisor reminders as Harness (not Darafei) ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
