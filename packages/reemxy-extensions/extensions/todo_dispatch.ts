@@ -1,5 +1,6 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
-import planCritic from "./plan_critic";
+import planCritic, { chiefCriticFixes } from "./plan_critic";
+import { chiefFixNow, withChiefFixNow, type ChiefDefect } from "./fix_now";
 import { prepareAttemptBrief } from "./attempt_receipt";
 import { prepareRequirementBrief, installRequirementResolution } from "./requirement_quotes";
 import { installWorkerAskInterrupt, pendingWorkerQuestions } from "./worker_asks";
@@ -49,7 +50,7 @@ import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
 import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
-import { appendTimedNote, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
+import { planChurnRows, planSlipMinutes, appendTimedNote, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
 import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import oneShotInstructions from "./one-shot.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
@@ -1773,7 +1774,7 @@ function buildStaticPrompt(
   const recentTasks = jobs?.recent.filter((job) => job.type === "task") ?? [];
   const jobLines = (list: typeof running) =>
     list.map((job) =>
-      `- ${JSON.stringify(job.id)} ${job.status} agent=${JSON.stringify(job.agentId ?? null)} label=${JSON.stringify(shorten(job.label))}`,
+      `- ${JSON.stringify(job.id)} ${job.status} agent=${JSON.stringify(job.agentId ?? null)} label=${JSON.stringify(shorten(job.label ?? job.id))}`,
     );
   const runningLines = jobLines(running);
   const recentLines = jobLines(recentTasks).slice(0, MAX_ROWS);
@@ -5407,7 +5408,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // cached plan-check digests (and the repeat key) so the fresh check goes
     // out once.
     const keptNotices = Object.fromEntries(
-      Object.entries(sprintState.lastNotices).filter(([key]) => !key.startsWith("todo-plan-check ")),
+      Object.entries(sprintState.lastNotices).filter(([key]) => !key.startsWith("todo-plan-check\0")),
     );
     sprintState = { ...sprintState, lastNotices: keptNotices };
     lastIdlePlanCheck = null;
@@ -6590,16 +6591,48 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       linkAnswered: false,
     };
   };
+  const chiefDefects = (ctx: ExtensionContext): ChiefDefect[] => {
+    if (singleWriterLane || !isMain(ctx) || pauseGate?.paused || gateSwitchedOff(ctx)) return [];
+    const decision = currentDecision(ctx);
+    const phases = todoPhases(ctx);
+    const open = phases.flatMap(phase => phase.tasks).filter(task => isNonClosedRowStatus(task.status));
+    const display = leadDisplayContext(ctx, phases, decision);
+    const defects: ChiefDefect[] = [];
+    const anchor = rehydrateDeadlineState(dispatchStateEntries(ctx));
+    const late = planSlipMinutes(anchor?.baselineDeadlineAt === undefined ? decision.deadline?.deadlineAt : anchor.baselineDeadlineAt * 1_000, Date.now(), open.length > 0);
+    if (late) defects.push({ row: "", action: `Plan late ${late}m: cut/split/parallelize or ask owner`, severity: 0 });
+    const staffing = staffingRows(phases, display);
+    for (const row of staffing) {
+      const forecast = decision.forecast?.rows.find(item => item.content === row.content);
+      defects.push({ row: row.content, action: lastTaskDispatchRefused ? "Repair refused staffing for" : "Staff", severity: forecast?.overdue ? 1 : 3 });
+    }
+    const push = ownsBranchWork(ctx) && gitStateCache?.cwd === ctx.cwd ? gitStateCache.state : undefined;
+    if (push?.unpushed && (push.oldestUnpushedAgeMs ?? 0) >= (push.pushThresholdMs ?? STALE_PUSH_MS))
+      defects.push({ row: pushRowTitle(push), action: "Push", severity: 2 });
+    for (const action of chiefCriticFixes(ctx)) defects.push({ ...action, severity: 2 });
+    for (const issue of decision.forecast?.planningIssues ?? [])
+      defects.push({ row: issue.task, action: issue.code === "missing-estimate" ? "Estimate" : issue.code === "task-too-large" ? "Split" : "Replan", severity: 4 });
+    for (const row of unresolvedForecastRows(decision.forecast))
+      defects.push({ row: row.content, action: "Resolve dependencies for", severity: 4 });
+    for (const task of open) {
+      const state = classifyTodoDisplayRow(task, phases, display);
+      if (state.state === "audit queued") defects.push({ row: task.content, action: "Audit", severity: 4 });
+      if (state.state === "ready to close") defects.push({ row: task.content, action: "Close", severity: 4 });
+      if (state.state === "handoff pending") defects.push({ row: task.content, action: "Deliver", severity: 4 });
+    }
+    for (const demand of planChurnRows(phases)) defects.push({ row: demand.row, action: "Break churn on", severity: 1 });
+    return defects;
+  };
+  const fixNow = (ctx: ExtensionContext, supervisor = false) => chiefFixNow({ main: isMain(ctx), defects: chiefDefects(ctx) }, supervisor);
   pi.on("tool_result", async (event, ctx) => {
-    const result = await handleToolResult(event, ctx);
+    let result = await handleToolResult(event, ctx);
     const nag = zeroActiveNag(ctx);
-    if (nag && !isStaffingCall(event.toolName, event.input)) {
-      return { ...result, content: [{ type: "text", text: nag }, ...(result?.content ?? event.content ?? [])] };
-    }
-    if (event.toolName === "task" && !event.isError) {
-      return { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: staffingAdvice.trim() }] };
-    }
-    return result;
+    if (nag && !isStaffingCall(event.toolName, event.input))
+      result = { ...result, content: [{ type: "text", text: nag }, ...(result?.content ?? event.content ?? [])] };
+    else if (event.toolName === "task" && !event.isError)
+      result = { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: staffingAdvice.trim() }] };
+    const block = fixNow(ctx);
+    return block ? { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: block }] } : result;
   });
 
   let calibrationKey = "";
@@ -6637,7 +6670,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const questions = phases.flatMap(phase => phase.tasks).filter(row => row.status === "blocked" && row.schedule?.owner && row.blocker && !parseUserWait(row.blocker))
       .map(row => ({ worker: row.schedule.owner, question: row.blocker }));
     questions.push(...pendingWorkerQuestions(ctx));
-    const planFact = renderPlanFactNote(phases, now, decision.deadline?.deadlineAt, questions,
+    const anchor = rehydrateDeadlineState(dispatchStateEntries(ctx));
+    const slipDeadline = anchor?.baselineDeadlineAt === undefined ? decision.deadline?.deadlineAt : anchor.baselineDeadlineAt * 1_000;
+    const planFact = renderPlanFactNote(phases, now, slipDeadline, questions,
       decision.forecast?.expectedResourceFinish);
     if (onlyPlanFact && (!planFact || questions.length === 0)) return;
     const content = [
@@ -6741,14 +6776,27 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (!singleWriterLane && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) currentDecision(ctx);
     // Startup warnings may have been queued before child restoration. Revalidate at consumption.
     const isStaffing = message => message.role === "custom" && message.customType === "todo-gate-staffing";
+    let messages = event.messages;
     if (isMain(ctx) && event.messages.some(isStaffing)) {
       const phases = todoPhases(ctx);
       const rows = staffingRows(phases, leadDisplayContext(ctx, phases, currentDecision(ctx)));
       const last = event.messages.findLast(isStaffing);
-      return { messages: event.messages.flatMap(message => !isStaffing(message) ? [message]
-        : message === last && rows.length ? [{ ...message, content: prompt.render(gateNoticeInstructions, staffingData(rows)).trim() }] : []) };
+      messages = event.messages.flatMap(message => !isStaffing(message) ? [message]
+        : message === last && rows.length ? [{ ...message, content: prompt.render(gateNoticeInstructions, staffingData(rows)).trim() }] : []);
     }
-    return { messages: event.messages };
+    const block = fixNow(ctx);
+    if (!block && !messages.some(message => message.runtimeSupervisor || (message.role === "custom" && typeof message.content === "string" && message.content.includes("\n\nFIX NOW:")) || (message.role === "toolResult" && message.content.some(part => part.type === "text" && part.text.startsWith("FIX NOW:"))))) return { messages };
+    messages = messages.filter(message => !(message.role === "user" && message.runtimeSupervisor === true));
+    messages = messages.map(message => {
+      if (message.role === "toolResult") {
+        const content = message.content.filter(part => part.type !== "text" || !part.text.startsWith("FIX NOW:"));
+        return { ...message, content: block ? [...content, { type: "text", text: block }] : content };
+      }
+      return message.role === "custom" && typeof message.content === "string" && /^(todo-|requirements[_-]|lead-plan-critic)/.test(message.customType)
+      ? { ...message, content: withChiefFixNow(message.content, block) } : message;
+    });
+    if (block) messages = [...messages, { role: "user", content: [{ type: "text", text: fixNow(ctx, true) }], timestamp: Date.now(), attribution: "agent", runtimeSupervisor: true }];
+    return { messages };
   });
 
   const armIdleCheck = (ctx: ExtensionContext, decision = currentDecision(ctx)) => {

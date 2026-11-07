@@ -70,22 +70,33 @@ export async function appendTimedNote(
 	return true;
 }
 
+/** Elapsed lateness against the original anchor, shared by notes and FIX NOW. */
+export function planSlipMinutes(deadlineAt: number | undefined, now: number, hasOpen = true): number {
+	return deadlineAt === undefined || !hasOpen ? 0 : Math.max(0, Math.ceil((now - deadlineAt) / 60_000));
+}
+
+/** The shared churn predicate, before presentation limits or dependency-chain filtering. */
+export function planChurnRows(phases: TodoScheduleInput): Array<{ row: string; failures: number; reestimates: number }> {
+	return phases.flatMap(phase => phase.tasks).flatMap(row => {
+		if (row.status === "completed" || row.status === "abandoned") return [];
+		const failures = row.schedule?.attemptHistory?.filter(attempt => attempt.terminalStatus !== "completed" || attempt.rejectionReason).length ?? 0;
+		const reestimates = row.schedule?.cumulativeReestimateCount ?? row.schedule?.reestimateCount ?? 0;
+		return failures >= 3 || reestimates >= 3 ? [{ row: row.content, failures, reestimates }] : [];
+	});
+}
+
 export function renderPlanFactNote(
 	phases: TodoScheduleInput,
 	now: number,
 	deadlineAt: number | undefined,
 	questions: Array<{ worker: string; question: string }> = [],
-	forecastFinish?: number,
+	_forecastFinish?: number,
 ): string {
 	const open = phases.flatMap(phase => phase.tasks).filter(row => row.status !== "completed" && row.status !== "abandoned");
-	const churn = open.flatMap(row => {
-		const failures = row.schedule?.attemptHistory?.filter(attempt => attempt.terminalStatus !== "completed" || attempt.rejectionReason).length ?? 0;
-		const reestimates = row.schedule?.cumulativeReestimateCount ?? row.schedule?.reestimateCount ?? 0;
-		return failures >= 3 || reestimates >= 3 ? [{ row: row.content.slice(0, 180), failures, reestimates }] : [];
-	}).slice(0, 8);
-	const slip = deadlineAt === undefined || !open.length ? 0 : Math.max(now, forecastFinish ?? 0) - deadlineAt;
+	const churn = planChurnRows(phases).slice(0, 8).map(item => ({ ...item, row: item.row.slice(0, 180) }));
+	const slipMinutes = planSlipMinutes(deadlineAt, now, open.length > 0);
 	return prompt.render(planfactNote, {
-		churn, slipped: slip > 0, slipMinutes: Math.ceil(slip / 60_000),
+		churn, slipped: slipMinutes > 0, slipMinutes,
 		questions: questions.slice(0, 4).map(item => ({ worker: item.worker.slice(0, 80), question: item.question.slice(0, 400) })),
 	}).trim();
 }
@@ -95,9 +106,9 @@ export type WaitChainDemand = { key: string; action: string; churn: true; row: s
 /** Review logical edges, not resource ordering. Traverse through every open descendant. */
 export function waitChainDemands(phases: TodoScheduleInput): WaitChainDemand[] {
 	const rows = phases.flatMap(phase => phase.tasks).filter(row => row.status !== "completed" && row.status !== "abandoned");
+	const churnRows = new Set(planChurnRows(phases).map(row => row.row));
 	return rows.flatMap(head => {
-		const failures = head.schedule?.attemptHistory?.filter(attempt => attempt.terminalStatus !== "completed" || attempt.rejectionReason).length ?? 0;
-		const churn = failures >= 3 || (head.schedule?.cumulativeReestimateCount ?? head.schedule?.reestimateCount ?? 0) >= 3;
+		const churn = churnRows.has(head.content);
 		const afterWorker = todoRowAfterWorker(head);
 		if (!churn && !(afterWorker?.kind === "needs-worker" && afterWorker.reason === "audit-failed")) return [];
 		const reached = new Set([head.content]);
@@ -165,7 +176,7 @@ export function renderCurrentSetForecast(plan: TodoPlanForecast, anchor: Deadlin
 		: `unavailable (insufficient calibration; ${plan.calibrationOrigins ?? 0} origins, ${plan.calibrationSessions ?? 0} sessions)`;
 	const allowance = upper !== undefined && point !== undefined ? Math.max(0, upper - point) / 3_600_000 : undefined;
 	const baseline = anchor?.baselineDeadlineAt;
-	const lateMinutes = baseline === undefined ? 0 : Math.max(0, Math.ceil((now / 1_000 - baseline) / 60));
+	const lateMinutes = planSlipMinutes(baseline === undefined ? undefined : baseline * 1_000, now);
 	const endpoint = plan.rows.filter(row => row.status !== "completed" && row.status !== "abandoned" && row.expectedResourceFinish !== undefined)
 		.sort((a, b) => b.expectedResourceFinish! - a.expectedResourceFinish!)[0];
 	const title = endpoint?.content.match(/^Collateral for "[^"]*"/)?.[0] ?? endpoint?.content.split(/\r?\n/, 1)[0];

@@ -37,6 +37,8 @@ export interface Binding {
 	verdict: PlanVerdict;
 	addressed: Record<string, { reason: string; toolCallId?: string }>;
 	wakes: number;
+	/** Persisted once-only delivery across session resumes. */
+	notified?: boolean;
 	trigger?: string;
 	/** Row evidence at the time of the decision; absent on legacy journal entries. */
 	trajectories?: Record<string, string>;
@@ -93,7 +95,23 @@ export function parsePlanVerdict(value: unknown): PlanVerdict | undefined {
 	return { ...value, actions } as unknown as PlanVerdict;
 }
 export function pendingActions(binding: Binding): PlanAction[] {
-	return binding.verdict.actions.filter(action => !binding.addressed[action.id]);
+	return binding.verdict.actions.filter(action => action.kind !== "escalate" && !binding.addressed[action.id]);
+}
+const chiefBindings = new WeakMap<ExtensionContext["sessionManager"], Binding>();
+/** Projection of the live binding; completed/deleted rows disappear immediately. */
+export function chiefCriticFixes(ctx: ExtensionContext): Array<{ row: string; action: string }> {
+	if (ctx.agent?.kind === "sub") return [];
+	const binding = chiefBindings.get(ctx.sessionManager);
+	if (!binding) return [];
+	const rows = ctx.getTodoPhases?.()?.flatMap(phase => phase.tasks) ?? [];
+	const verbs = { dispatch: "Staff", cut_dependency: "Unblock", split: "Split", cut: "Cut", escalate: "Decide" };
+	return pendingActions(binding).filter(action => {
+		const row = rows.find(row => row.content === action.row);
+		if (!row || row.status === "completed" || row.status === "abandoned") return false;
+		if (action.kind === "cut_dependency" && !row.schedule?.dependencies?.includes(action.dependency!)) return false;
+		if (action.kind === "dispatch" && row.schedule?.executor?.workerId) return false;
+		return true;
+	}).map(action => ({ row: action.row, action: verbs[action.kind] }));
 }
 /** Evidence is a successful native tool call plus its observed plan mutation, never lead prose. */
 export function actionObserved(action: PlanAction, before: TodoScheduleInput, after: TodoScheduleInput): boolean {
@@ -127,7 +145,7 @@ export function actionObserved(action: PlanAction, before: TodoScheduleInput, af
 				(!current || current.status === "abandoned" || current.status === "completed")
 			);
 		case "escalate":
-			return false; // A concrete question must be explicitly recorded by the binding tool.
+			return false; // Escalations are dropped until a real owner-question path handles them.
 	}
 }
 export function criticInterval(value: string | undefined): number {
@@ -171,6 +189,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 	const { Type } = pi.typebox;
 	const interval = criticInterval(Bun.env.OMP_PLAN_CRITIC_MINUTES);
 	let binding: Binding | undefined;
+	let currentContext: ExtensionContext | undefined;
 	let history: Binding[] = [];
 	let lastSaved = "";
 	let lastAttempt = 0;
@@ -195,6 +214,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 	};
 	const save = () => {
 		if (!binding) return;
+		if (currentContext) chiefBindings.set(currentContext.sessionManager, binding);
 		const serialized = JSON.stringify(binding);
 		if (serialized === lastSaved) return;
 		pi.appendEntry(PLAN_CRITIC_ENTRY, structuredClone(binding));
@@ -202,26 +222,25 @@ export default function planCritic(pi: ExtensionAPI): void {
 		history = [...history.filter(item => item.id !== binding!.id), structuredClone(binding)].slice(-3);
 	};
 	const notify = (escalated: boolean) => {
-		if (!binding || !pendingActions(binding).length) return;
+		if (!binding || !pendingActions(binding).length || binding.notified || binding.wakes > 0) return;
 		pi.sendMessage(
 			{
 				customType: PLAN_CRITIC_ENTRY,
 				display: true,
 				content: prompt.render(bindingBrief, {
 					verdictId: binding.id,
-					escalated,
-					pending: JSON.stringify(pendingActions(binding)),
 				}),
 				details: { verdictId: binding.id, escalated },
 			},
 			{ deliverAs: "steer", triggerTurn: true },
 		);
+		binding.notified = true;
 	};
 	const wake = () => {
-		if (!binding || !pendingActions(binding).length) return;
-		binding.wakes++;
+		if (!binding || !pendingActions(binding).length || binding.notified || binding.wakes > 0) return;
+		notify(false);
+		binding.wakes = 1;
 		save();
-		notify(binding.wakes > 1);
 	};
 	const tick = async (ctx: ExtensionContext) => {
 		if (!main(ctx)) return skip("tick:not-main");
@@ -305,6 +324,8 @@ export default function planCritic(pi: ExtensionAPI): void {
 		}
 	};
 	const start = async (_event: unknown, ctx: ExtensionContext) => {
+		currentContext = ctx;
+		chiefBindings.delete(ctx.sessionManager);
 		generation++;
 		inFlight = false;
 		before.clear();
@@ -331,6 +352,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 				history = [...history.filter(item => item.id !== binding!.id), binding].slice(-3);
 			}
 		}
+		if (binding) chiefBindings.set(ctx.sessionManager, binding);
 		lastSaved = binding ? JSON.stringify(binding) : "";
 		lastSuccess = binding?.at ?? 0;
 		lastTrigger = binding?.trigger ?? "";
@@ -391,7 +413,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 		approval: "write",
 		loadMode: "essential",
 		description:
-			"Explicitly reject a plan critic action with a reason, or record the concrete owner question for an escalation. Executed actions are verified automatically from successful todo/task mutations.",
+			"Explicitly reject a plan critic action with a reason. Executed actions are verified automatically from successful todo/task mutations. Escalations are dropped by this critic; they require a real owner-question path.",
 		parameters: Type.Object({
 			verdictId: Type.String(),
 			actionId: Type.String(),
@@ -404,13 +426,7 @@ export default function planCritic(pi: ExtensionAPI): void {
 			if (!action || !params.reason.trim()) throw new Error("Pending action and nonempty reason required");
 			if (params.decision === "escalate" && action.kind !== "escalate")
 				throw new Error("Only escalation actions accept an owner question");
-			if (params.decision === "escalate")
-				pi.sendMessage({
-					customType: "lead-plan-critic-question",
-					display: true,
-					content: params.reason,
-					details: { verdictId: binding.id, actionId: action.id, row: action.row, at: Date.now() },
-				});
+			if (params.decision === "escalate") throw new Error("Escalations require a real owner question outside the critic");
 			binding.addressed[action.id] = { reason: `${params.decision}: ${params.reason}` };
 			binding.trajectories = { ...binding.trajectories, [action.row]: rowTrajectories(phases(ctx))[action.row]! };
 			save();

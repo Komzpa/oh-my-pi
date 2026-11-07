@@ -5,6 +5,7 @@ import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import planCritic, {
 	actionObserved,
+	chiefCriticFixes,
 	compactBindingHistory,
 	criticInterval,
 	parsePlanVerdict,
@@ -142,7 +143,7 @@ describe("plan critic runtime binding", () => {
 		const binding = h.entries.at(-1)!.data as Binding;
 		expect(binding.addressed[action.id]!.toolCallId).toBe("good");
 	});
-	test("unaddressed verdict escalates on next wake and survives session restart", async () => {
+	test("unaddressed verdict is delivered once across 35 wakes and session restart", async () => {
 		const now = Date.now();
 		vi.spyOn(Date, "now").mockReturnValue(now);
 		const h = harness();
@@ -150,12 +151,14 @@ describe("plan critic runtime binding", () => {
 		await settle();
 		vi.spyOn(Date, "now").mockReturnValue(now + 45 * 60_000);
 		expect(h.notices[0]!.details.escalated).toBe(false);
-		h.wake();
-		expect(h.notices.at(-1)!.details.escalated).toBe(true);
+		for (let i = 0; i < 35; i++) { h.wake(); h.event("agent_end"); h.event("before_agent_start"); }
+		expect(h.notices).toHaveLength(1);
+		expect(chiefCriticFixes(h.ctx)).toEqual([{ row: "Collateral", action: "Unblock" }]);
 		const restored = harness(h.entries);
 		restored.event("session_start");
 		await settle();
 		expect(restored.run).not.toHaveBeenCalled();
+		expect(restored.notices).toHaveLength(0);
 		expect(restored.event("tool_call", { toolName: "wait", toolCallId: "r" })).toMatchObject({ block: true });
 		const binding = restored.entries.filter(entry => entry.customType === PLAN_CRITIC_ENTRY).at(-1)!.data as Binding;
 		await expect(
@@ -223,7 +226,7 @@ describe("plan critic runtime binding", () => {
 		expect(h.run).toHaveBeenCalledTimes(1);
 		expect(h.run.mock.calls[0]![0]).not.toContain("PRIVATE-TRANSCRIPT-SENTINEL");
 		h.event("agent_end");
-		expect(h.notices.at(-1)!.details.escalated).toBe(true);
+		expect(h.notices).toHaveLength(1);
 	});
 	test("new churn triggers a review immediately inside the periodic interval", async () => {
 		const h = harness([], {
@@ -392,7 +395,29 @@ test("a rejection never suppresses a different action kind on the same row", asy
 	const h = harness();
 	await h.event("session_start"); await settle(); await rejectCurrent(h);
 	clock.mockReturnValue(now + 45 * 60_000);
-	const restored = harness(h.entries, { ...verdict, actions: [{ ...action, kind: "escalate" }] });
+	const restored = harness(h.entries, { ...verdict, actions: [{ ...action, kind: "dispatch" }] });
 	await restored.event("session_start"); await settle();
 	expect(restored.notices).toHaveLength(1);
+});
+
+
+test("escalations cannot become fake owner questions or self-addressed lead demands", async () => {
+	const h = harness([], { ...verdict, actions: [{ ...action, kind: "escalate", next: "Ask the lead: choose the checkout" }] });
+	await h.event("session_start"); await settle();
+	for (let i = 0; i < 35; i++) h.event("agent_end");
+	expect(h.notices).toEqual([]);
+	expect(chiefCriticFixes(h.ctx)).toEqual([]);
+	expect(h.event("tool_call", { toolName: "wait", toolCallId: "ok" })).toBeUndefined();
+});
+
+test("critic projection drops a completed or deleted own row and is hidden from children", async () => {
+	const h = harness();
+	await h.event("session_start"); await settle();
+	expect(chiefCriticFixes(h.ctx)).toEqual([{ row: "Collateral", action: "Unblock" }]);
+	const next = makePlan(); next[0]!.tasks[1]!.status = "completed"; h.set(next);
+	expect(chiefCriticFixes(h.ctx)).toEqual([]);
+	const unblocked = makePlan(); unblocked[0]!.tasks[1]!.schedule!.dependencies = []; h.set(unblocked);
+	expect(chiefCriticFixes(h.ctx)).toEqual([]);
+	h.set(makePlan()); h.ctx.agent.kind = "sub";
+	expect(chiefCriticFixes(h.ctx)).toEqual([]);
 });

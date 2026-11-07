@@ -986,7 +986,7 @@ test("restored roster excludes settled children but keeps parked children separa
   await handlers.get("session_start")!({}, ctx);
   const messages: unknown[] = [];
   const result = (await handlers.get("context")!({ messages }, ctx)) as { messages: unknown[] };
-  expect(result.messages).toBe(messages);
+  expect(result.messages.filter(message => !(typeof message === "object" && message !== null && "runtimeSupervisor" in message))).toEqual(messages);
 });
 
 test("restored roster drops children unknown to the current process after restart", async () => {
@@ -1012,7 +1012,7 @@ test("restored roster drops children unknown to the current process after restar
   await handlers.get("session_start")!({}, ctx);
   const messages: unknown[] = [];
   const result = (await handlers.get("context")!({ messages }, ctx)) as { messages: unknown[] };
-  expect(result.messages).toBe(messages);
+  expect(result.messages.filter(message => !(typeof message === "object" && message !== null && "runtimeSupervisor" in message))).toEqual(messages);
 });
 test("first-context 13-row dispatch becomes observation-only when paused", async () => {
   const liveNow = Date.now();
@@ -1060,7 +1060,7 @@ test("first-context 13-row dispatch becomes observation-only when paused", async
   const request = async () => {
     const messages: unknown[] = [];
     const result = (await handlers.get("context")!({ messages }, ctx)) as { messages: unknown[] };
-    expect(result.messages).toBe(messages);
+    expect(result.messages.filter(message => !(typeof message === "object" && message !== null && "runtimeSupervisor" in message))).toEqual(messages);
   };
   (await handlers.get("session_start")!({}, ctx));
   await request();
@@ -1140,7 +1140,7 @@ test("agent_end and shutdown persist child IDs but drop stale IDs on an empty-sn
   (await resumedHandlers.get("session_start")!({}, resumedCtx));
   const messages: unknown[] = [];
   const response = (await resumedHandlers.get("context")!({ messages }, resumedCtx)) as { messages: unknown[] };
-  expect(response.messages).toBe(messages);
+  expect(response.messages.filter(message => !(typeof message === "object" && message !== null && "runtimeSupervisor" in message))).toEqual(messages);
   const registryCtx = {
     ...ctx,
     getAsyncJobSnapshot: () => ({
@@ -1150,11 +1150,11 @@ test("agent_end and shutdown persist child IDs but drop stale IDs on an empty-sn
   } as ExtensionContext;
   const registryMessages: unknown[] = [];
   const registryResponse = (await resumedHandlers.get("context")!({ messages: registryMessages }, registryCtx)) as { messages: unknown[] };
-  expect(registryResponse.messages).toBe(registryMessages);
+  expect(registryResponse.messages.filter(message => !(typeof message === "object" && message !== null && "runtimeSupervisor" in message))).toEqual(registryMessages);
 });
 
 
-test("an unchanged open plan leaves context messages untouched on each request", async () => {
+test("an unchanged open plan retains history alongside the current supervisor on each request", async () => {
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
   const plan = phases;
   await todoDispatch({
@@ -1179,7 +1179,7 @@ test("an unchanged open plan leaves context messages untouched on each request",
   const request = async () => {
     const messages: unknown[] = [];
     const result = (await handlers.get("context")!({ messages }, ctx)) as { messages: unknown[] };
-    expect(result.messages).toBe(messages);
+    expect(result.messages.filter(message => !(typeof message === "object" && message !== null && "runtimeSupervisor" in message))).toEqual(messages);
   };
   await request();
   await request();
@@ -2098,7 +2098,7 @@ test("the main session is chief of staff: worker tools are refused while worker 
     // Context passes through; the chief role reaches the model as a persisted turn-end note.
     const roleMessages: unknown[] = [];
     const roleResult = await handlers.get("context")!({ type: "context", messages: roleMessages }, ctx) as { messages: unknown[] };
-    expect(roleResult.messages).toBe(roleMessages);
+    expect(roleResult.messages.filter(message => !(typeof message === "object" && message !== null && "runtimeSupervisor" in message))).toEqual(roleMessages);
     await handlers.get("turn_end")!({ toolResults: [] }, ctx);
     expect(sent.findLast(message => message.customType === "todo-dispatch-time-note")?.content).toContain("TODO status:");
     expect(JSON.stringify(sent.findLast(message => message.customType === "todo-dispatch-time-note")).length).toBeLessThan(8192);
@@ -2138,7 +2138,7 @@ test("the main session is chief of staff: worker tools are refused while worker 
     const notesBeforeChild = sent.filter(message => message.customType === "todo-dispatch-time-note").length;
     const childMessages: unknown[] = [];
     const childResult = await handlers.get("context")!({ type: "context", messages: childMessages }, ctx) as { messages: unknown[] };
-    expect(childResult.messages).toBe(childMessages);
+    expect(childResult.messages.filter(message => !(typeof message === "object" && message !== null && "runtimeSupervisor" in message))).toEqual(childMessages);
     await handlers.get("turn_end")!({ toolResults: [] }, ctx);
     const childNotes = sent.filter(message => message.customType === "todo-dispatch-time-note").slice(notesBeforeChild);
     expect(childNotes.every(message => !message.content.includes("ROLE: You are the chief of staff"))).toBe(true);
@@ -2386,7 +2386,7 @@ test("a resolved merge left open is committed first, and a merge gets one worker
     const context = async () => {
       const messages: unknown[] = [];
       const result = (await handlers.get("context")!({ type: "context", messages }, ctx)) as { messages: unknown[] };
-      expect(result.messages).toBe(messages);
+      expect(result.messages.filter(message => !(typeof message === "object" && message !== null && "runtimeSupervisor" in message))).toEqual(messages);
       await handlers.get("turn_end")!({ toolResults: [] }, ctx);
       return (sent.at(-1)?.[0] as { content?: string } | undefined)?.content ?? "";
     };

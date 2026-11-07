@@ -190,7 +190,7 @@ async function session(phases: unknown[], branch: unknown[], running: Array<{ id
 		const previousCount = sent.length;
 		const messages = [{ role: "user", content: "request" }];
 		const result = await handlers.get("context")!({ messages }, ctx) as { messages?: unknown[] };
-		expect(result.messages).toBe(messages);
+		expect(result.messages.filter(message => !(typeof message === "object" && message !== null && "runtimeSupervisor" in message))).toEqual(messages);
 		await handlers.get("turn_end")!({ toolResults: [] }, ctx);
 		return sent.length > previousCount && sent.at(-1)?.customType === "todo-dispatch-time-note" ? sent.at(-1)!.content : "";
 	};

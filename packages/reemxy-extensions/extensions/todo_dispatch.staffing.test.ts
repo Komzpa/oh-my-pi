@@ -167,7 +167,8 @@ test("context withdraws a startup staffing warning after its owners are restored
 	});
 	const user = { role: "user", content: "continue", timestamp: 1 };
 	const result = await h.hooks.get("context")({ messages: [user, { ...stale, role: "custom" }] }, h.ctx);
-	expect(result.messages).toEqual([user]);
+	expect(result.messages.filter(message => !message.runtimeSupervisor)).toEqual([user]);
+	expect(result.messages.filter(message => message.runtimeSupervisor).map(message => message.content[0].text).join("\n")).not.toContain("Staff");
 });
 
 test("task also refuses a row owned by an ordinary running job", async () => {
