@@ -1,3 +1,4 @@
+import { finishLaunchTrace, launchMetric, launchStep, runLaunchTrace } from "@oh-my-pi/pi-utils/launch-trace";
 /**
  * Subagent execution.
  *
@@ -3726,7 +3727,7 @@ export async function finalizeSubagentLifecycle(args: {
 			args.session.prepareForHeadlessAdvisorDrain();
 			await args.session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now()));
 		}
-		const disposal = args.session.dispose(options);
+		const disposal = launchStep("resource-release.dispose", () => args.session.dispose(options));
 		const remainingMs = Math.max(0, cleanupDeadlineAt - Date.now());
 		try {
 			await untilAborted(AbortSignal.timeout(remainingMs), () => disposal);
@@ -3743,7 +3744,7 @@ export async function finalizeSubagentLifecycle(args: {
 	};
 	const releaseOwnedResources = async (): Promise<void> => {
 		try {
-			await args.onRelease?.();
+			await launchStep("resource-release.owned", () => args.onRelease?.());
 		} catch (error) {
 			logger.warn("Subagent lifecycle resource cleanup failed", { id: args.id, error: String(error) });
 		}
@@ -4770,7 +4771,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			checkAbort();
 
 			if (options.perCallModelGrants) {
-				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
+				await awaitAbortable(
+					launchStep("modelRegistry.refresh.wait", () => modelRegistry.awaitBackgroundRefresh()),
+				);
 			}
 			const configuredModelPatterns = resolveConfiguredModelPatterns(modelPatterns, settings);
 			const inheritedRetryFallbackChain =
@@ -4893,21 +4896,23 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			if (fork && !subtaskSessionFile) {
 				throw new Error("The prepared session fork requires a persisted child session file.");
 			}
-			const sessionManagerPromise = fork
-				? SessionManager.forkFrom(fork.sourceFile, effectiveCwd, undefined, undefined, {
-						seance: true,
-						suppressBreadcrumb: true,
-						sessionFile: subtaskSessionFile,
-						resetInheritedCost: true,
-						repairInterruptedTail: true,
-					})
-				: sessionFile
-					? SessionManager.open(sessionFile, undefined, undefined, {
-							initialCwd: effectiveCwd,
-							parentSession: options.sessionFile ?? undefined,
+			const sessionManagerPromise = launchStep("journal.open", () =>
+				fork
+					? SessionManager.forkFrom(fork.sourceFile, effectiveCwd, undefined, undefined, {
+							seance: true,
 							suppressBreadcrumb: true,
+							sessionFile: subtaskSessionFile,
+							resetInheritedCost: true,
+							repairInterruptedTail: true,
 						})
-					: Promise.resolve(SessionManager.inMemory(effectiveCwd));
+					: sessionFile
+						? SessionManager.open(sessionFile, undefined, undefined, {
+								initialCwd: effectiveCwd,
+								parentSession: options.sessionFile ?? undefined,
+								suppressBreadcrumb: true,
+							})
+						: Promise.resolve(SessionManager.inMemory(effectiveCwd)),
+			);
 			if (preparedSession) pendingSessionManager = sessionManagerPromise;
 			// Setup below can fail before this promise's consumption boundary.
 			// Observe rejection immediately while preserving it for the later await.
@@ -4929,7 +4934,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 							agentPrewalk: resolveAgentPrewalkDefault(agent, cfgTaskPrewalk.get(settings)),
 						});
 			if (prewalkPattern) {
-				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
+				await awaitAbortable(
+					launchStep("modelRegistry.refresh.wait", () => modelRegistry.awaitBackgroundRefresh()),
+				);
 				const resolvedPrewalk = resolveModelOverride([prewalkPattern], modelRegistry, settings);
 				const target = resolvedPrewalk.model;
 				if (!target || !modelRegistry.hasConfiguredAuth(target)) {
@@ -5096,7 +5103,9 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				sessionManager.adoptArtifactManager(options.parentArtifactManager);
 			}
 			sessionOpenedAt = performance.now();
-			await refreshSubagentIrcRoot(sessionSpec.prompt, sessionManager, sessionFile);
+			await launchStep("roster.wait-and-work", () =>
+				refreshSubagentIrcRoot(sessionSpec.prompt, sessionManager, sessionFile),
+			);
 			rosterReadyAt = performance.now();
 
 			// A seance fork inherits the source's model roles; they describe the
@@ -5114,17 +5123,19 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			let session: AgentSession;
 			let sessionPromise: Promise<CreateAgentSessionResult> | undefined;
 			try {
-				sessionPromise = createAgentSession(
-					buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, null, mcpFollower, {
-						workPoolYieldItems: options.workPoolYieldItems ?? [],
-						// A revived session restores the tier history it persisted (including
-						// tiers a provider rejected or an extension changed since spawn); only
-						// the fresh spawn resolves the per-agent override.
-						resolveServiceTierByFamily,
-						onFirstChatDispatch: () => {
-							firstChatDispatchAt ??= performance.now();
-						},
-					}),
+				sessionPromise = launchStep("sdkCreate", () =>
+					createAgentSession(
+						buildSubagentSessionOptions(sessionSpec, subagentSettings, sessionManager, null, mcpFollower, {
+							workPoolYieldItems: options.workPoolYieldItems ?? [],
+							// A revived session restores the tier history it persisted (including
+							// tiers a provider rejected or an extension changed since spawn); only
+							// the fresh spawn resolves the per-agent override.
+							resolveServiceTierByFamily,
+							onFirstChatDispatch: () => {
+								firstChatDispatchAt ??= performance.now();
+							},
+						}),
+					),
 				);
 				({ session } = await awaitAbortable(sessionPromise));
 				if (preparedSession) untrackedSession = session;
@@ -5298,15 +5309,18 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			// then pin the parked, disposed session for the life of the process.
 			const pendingExtensionMessages: Array<Promise<unknown>> = [];
 			await awaitAbortable(
-				initializeExtensions(session, {
-					reportSendError: (action, err) => logger.error("Extension send failed", { action, error: err.message }),
-					reportRuntimeError: err =>
-						logger.error("Extension error", { path: err.extensionPath, error: err.error }),
-					trackExtensionSend: task => {
-						pendingExtensionMessages.push(task.catch(() => {}));
-					},
-					filterActiveTools: toolNames => toolNames.filter(name => !isParentOwnedTool(name)),
-				}),
+				launchStep("extensions.session-start", () =>
+					initializeExtensions(session, {
+						reportSendError: (action, err) =>
+							logger.error("Extension send failed", { action, error: err.message }),
+						reportRuntimeError: err =>
+							logger.error("Extension error", { path: err.extensionPath, error: err.error }),
+						trackExtensionSend: task => {
+							pendingExtensionMessages.push(task.catch(() => {}));
+						},
+						filterActiveTools: toolNames => toolNames.filter(name => !isParentOwnedTool(name)),
+					}),
+				),
 			);
 			while (pendingExtensionMessages.length > 0) {
 				await awaitAbortable(Promise.all(pendingExtensionMessages.splice(0)));
@@ -5332,6 +5346,13 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			}
 
 			readyAt = performance.now();
+			if (!preparedSession?.fork) {
+				launchMetric("parent.historyCopiedEntries", 0);
+				launchMetric("parent.historyCopiedBytes", 0);
+			}
+			launchMetric("parent.contextBytes", Buffer.byteLength(options.context ?? ""));
+			launchMetric("parent.contextEntries", options.context ? 1 : 0);
+			finishLaunchTrace();
 			// The run's monitor would take a wake turn's answer (a message result's
 			// last report turn, or a `yield`) as the run's result. Only a kept-alive
 			// agent has wake turns left to answer held messages in.
@@ -5351,6 +5372,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			aborted = outcome.aborted;
 			abortReasonText = outcome.abortReasonText;
 		} catch (err) {
+			finishLaunchTrace(true);
 			exitCode = 1;
 			if (!abortSignal.aborted) {
 				error = err instanceof Error ? err.stack || err.message : String(err);
@@ -5571,7 +5593,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 	};
 
 	try {
-		const done = await runSubagent();
+		const done = await runLaunchTrace({ id, agent: agent.name }, runSubagent);
 		monitor.finish();
 
 		const result = await finalizeRunResult({

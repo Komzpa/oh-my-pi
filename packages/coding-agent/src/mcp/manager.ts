@@ -1,3 +1,4 @@
+import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 /**
  * MCP Server Manager.
  *
@@ -800,7 +801,7 @@ export class MCPManager implements MCPManagerApi {
 	}
 
 	async #applyProjectConfig(enabled: boolean): Promise<void> {
-		await this.#discoveryInFlight;
+		await launchStep("mcp.discovery.wait", () => this.#discoveryInFlight);
 		const options = this.#discoverOptions;
 		if (!options || (options.enableProjectConfig ?? true) === enabled) return;
 		this.#discoverOptions = { ...options, enableProjectConfig: enabled };
@@ -1019,7 +1020,7 @@ export class MCPManager implements MCPManagerApi {
 
 			const toolsPromise = connectionPromise.then(async connection => {
 				try {
-					const serverTools = await listTools(connection);
+					const serverTools = await launchStep(`mcp.listTools.wait:${name}`, () => listTools(connection));
 					return { connection, serverTools };
 				} catch (error) {
 					// Detach and delete synchronously, then close in the background:
@@ -1933,7 +1934,7 @@ export class MCPManager implements MCPManagerApi {
 			void this.reconnectServer(name);
 		};
 		try {
-			const serverTools = await listTools(connection);
+			const serverTools = await launchStep(`mcp.listTools.wait:${name}`, () => listTools(connection));
 			const reconnect = (options?: { authChallenge?: MCPAuthChallenge }) => this.reconnectServer(name, options);
 			const customTools = MCPTool.fromTools(connection, serverTools, reconnect, this.#observeToolCall(name));
 			void this.toolCache?.set(name, config, serverTools);
@@ -2026,7 +2027,7 @@ export class MCPManager implements MCPManagerApi {
 		const callProvoked = this.#callProvokedToolRefreshes.delete(name);
 		let serverTools: MCPToolDefinition[];
 		try {
-			serverTools = await listTools(connection);
+			serverTools = await launchStep(`mcp.listTools.wait:${name}`, () => listTools(connection));
 		} catch (error) {
 			if (callProvoked) this.#callProvokedToolRefreshes.add(name);
 			throw error;
