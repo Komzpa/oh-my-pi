@@ -91,6 +91,10 @@ function makeTestSession(
 		get isStreaming() {
 			return streaming;
 		},
+		deliverRestartContinuation: async (requestId: string, content: string) => {
+			manager.appendCustomMessageEntry("restart-root-continuation", content, true, { requestId });
+			await manager.flush();
+		},
 		deliverIrcMessage: async (message: IrcMessage) => {
 			options?.onDelivery?.(message);
 			return "woken" as const;
@@ -1049,12 +1053,11 @@ it("reserves three restoring owners before revival and names their rows in the r
 	const during = asyncJobSnapshot(jobs, MAIN_AGENT_ID).nonJobAgents;
 	release.resolve();
 	const report = await restoring;
-	let body = "";
-	vi.spyOn(IrcBus.global(), "send").mockImplementation(async message => {
-		body = message.body;
-		return { to: message.to, outcome: "woken" };
-	});
 	await sendRootContinuationOnce(successor, "restaff", report);
+	const wake = successor.sessionManager
+		.getEntries()
+		.find(entry => entry.type === "custom_message" && entry.customType === "restart-root-continuation");
+	const body = wake?.type === "custom_message" ? String(wake.content) : "";
 	for (let i = 0; i < 3; i++) expect(body).toContain(`${children[i]!.id} → row ${i}`);
 	expect(body).toContain("3 workers restored and running");
 	expect(body).toContain("do not re-dispatch them");
