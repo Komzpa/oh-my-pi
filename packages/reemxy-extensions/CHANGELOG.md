@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep workers parked on questions and require a lead answer before ending the turn ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Dispatcher wakes keep unchanged status silent and demand concrete action on stalled plans ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Anchor automatic deadlines and surface slips, repeated rework and unanswered worker questions to the lead. ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

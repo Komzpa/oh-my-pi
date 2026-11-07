@@ -1,3 +1,4 @@
+import { pendingWorkerAsks, workerAskDefaultWaitMs } from "./worker-questions";
 /**
  * Subagent execution.
  *
@@ -1639,7 +1640,11 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	// `task.maxRuntimeMs > 0` to cap each subagent's lifetime.
 	let runtimeTimeoutId: NodeJS.Timeout | undefined;
 	if (maxRuntimeMs > 0) {
-		runtimeTimeoutId = setTimeout(() => {
+		const checkRuntime = () => {
+			if (activeSession && pendingWorkerAsks(activeSession.messages).length) {
+				runtimeTimeoutId = setTimeout(checkRuntime, maxRuntimeMs);
+				return;
+			}
 			if (!resolved) {
 				logger.warn("Subagent runtime limit exceeded; aborting", {
 					id,
@@ -1648,7 +1653,8 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 				});
 				requestAbort("timeout");
 			}
-		}, maxRuntimeMs);
+		};
+		runtimeTimeoutId = setTimeout(checkRuntime, maxRuntimeMs);
 	}
 
 	const resolveSignalAbortReason = (): string => {
@@ -1977,6 +1983,10 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			}
 
 			case "tool_execution_end": {
+				if (event.toolName === "ask" && !event.isError && isRecord(event.result?.details) && isRecord(event.result.details.pending) && !event.result.details.workingDefaults) {
+					// Stop only the free-running turn; retain the assignment and its journal for the answer.
+					requestYieldTurnStop();
+				}
 				const finished = activeTools.get(event.toolCallId);
 				activeTools.delete(event.toolCallId);
 				if (finished) {
@@ -2071,7 +2081,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 					const forcedFinalYield = event.toolName === "yield" && finalYieldForced && yieldCalled;
 					endsRun = wantsTerminate || forcedFinalYield;
 					if (endsRun) {
-						if (event.toolName === "yield" && sessionHasPendingAsyncWork()) {
+						if (event.toolName === "yield" && (sessionHasPendingAsyncWork() || (activeSession && pendingWorkerAsks(activeSession.messages).length))) {
 							// Terminal yield with owner jobs still pending: park the
 							// run behind the quiescence barrier instead of completing
 							// it (see requestYieldTurnStop).
@@ -2753,6 +2763,21 @@ async function driveSessionToResult(
 		// model error, skip the barrier; teardown reaps their jobs.
 		let asyncPendingNoticeSent = false;
 		while (!abortSignal.aborted) {
+			// An unanswered ask parks this assignment, without spending yield retries or destroying its state.
+			await awaitAbortable(monitor.waitForYieldTurnStop());
+			const questions = pendingWorkerAsks(session.messages);
+			if (questions.length) {
+				const defaultsAuthorized = task.includes("[worker-ask-defaults]");
+				const due = questions.filter(q => defaultsAuthorized && !q.critical && q.proposedDefault && Date.now() - q.at >= workerAskDefaultWaitMs());
+				if (due.length) {
+					session.sessionManager.appendCustomEntry("worker-ask-default-applied", { questions: due, at: Date.now() });
+					await dispatchPrompt(due.map(q => `Answer to ${q.id} [${q.questionId}]: ${q.proposedDefault}`).join("\n"), { attribution: "agent" }, "authorized worker defaults");
+				} else {
+					await awaitAbortable(Bun.sleep(250));
+					await awaitAbortable(session.waitForIdle());
+				}
+				continue;
+			}
 			if (!monitor.yieldCalled()) {
 				await runYieldLadder();
 				if (

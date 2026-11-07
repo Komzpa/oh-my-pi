@@ -851,6 +851,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 
 		const gated =
 			!this.#interactiveAnswer &&
+			!(this.session.taskDepth && this.session.taskDepth > 0) &&
 			cfgAskGateEnabled.get(this.session.settings) &&
 			params.questions.some(question => question.options.length > 0);
 		if (gated && !params.critical) {
