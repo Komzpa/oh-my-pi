@@ -483,7 +483,7 @@ function isRequirementArtifactTodoMetadata(metadata: RequirementEntryMetadata): 
 }
 
 /** Latest full snapshot and subsequent edits, never obsolete artifact snapshots. */
-function currentRequirementTodoEntries(
+export function currentRequirementTodoEntries(
 	manager: Pick<NonNullable<RequirementRowArtifactContext["sessionManager"]>, "getBranch">,
 ): SessionEntry[] {
 	const entries: SessionEntry[] = [];
