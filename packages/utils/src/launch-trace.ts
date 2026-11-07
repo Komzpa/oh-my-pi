@@ -53,7 +53,8 @@ export async function withAsyncLoopPhase<T>(label: string, fn: () => Promise<T>)
 
 /** Records one bounded launch summary, also on failure. Nested callers share it. */
 export async function runLaunchTrace<T>(identity: Record<string, string | number>, fn: () => Promise<T>): Promise<T> {
-	if (storage.getStore()?.trace) return fn();
+	const parent = storage.getStore()?.trace;
+	if (parent && !parent.closed) return fn();
 	const trace: Trace = {
 		spans: new Map(),
 		identity: Object.fromEntries(
