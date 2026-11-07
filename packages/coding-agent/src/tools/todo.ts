@@ -1326,8 +1326,7 @@ function isSameAcceptedEstimate(
 		left !== undefined &&
 		left.optimisticSeconds === right.optimisticSeconds &&
 		left.likelySeconds === right.likelySeconds &&
-		left.pessimisticSeconds === right.pessimisticSeconds &&
-		left.confidence === right.confidence
+		left.pessimisticSeconds === right.pessimisticSeconds
 	);
 }
 
