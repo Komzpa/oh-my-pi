@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Long sessions no longer pause between turns while checking saved usage reserve choices ([#168](https://github.com/Komzpa/oh-my-pi/pull/168) by [@Komzpa](https://github.com/Komzpa)).
 - Reserve confirmation now switches automatically after a configurable timeout and remembers the choice across resume ([#168](https://github.com/Komzpa/oh-my-pi/pull/168) by [@Komzpa](https://github.com/Komzpa)).
 
 ### Breaking Changes

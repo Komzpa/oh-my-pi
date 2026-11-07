@@ -1980,9 +1980,18 @@ export class TurnRecovery {
 	}
 
 	#reserveEpisode(): { primary: string; decision: "stay" | "switch" } | undefined {
-		const entry = this.#host.sessionManager
-			.getBranch()
-			.findLast(entry => entry.type === "custom" && entry.customType === "usage-reserve-decision");
+		// Disk-backed managers can select by metadata without hydrating historical
+		// messages. Keep the topic compatible with managers predating that API.
+		const manager = this.#host.sessionManager as SessionManager & {
+			getLatestBranchMatching?: (
+				predicate: (metadata: { type: string; customType?: string }) => boolean,
+			) => SessionEntry | undefined;
+		};
+		const matches = (entry: { type: string; customType?: string }) =>
+			entry.type === "custom" && entry.customType === "usage-reserve-decision";
+		const entry = manager.getLatestBranchMatching
+			? manager.getLatestBranchMatching(matches)
+			: manager.getBranchView().findLast(matches);
 		if (entry?.type !== "custom" || !entry.data || typeof entry.data !== "object") return undefined;
 		const data = entry.data as Record<string, unknown>;
 		if (typeof data.primary !== "string" || (data.decision !== "stay" && data.decision !== "switch"))
