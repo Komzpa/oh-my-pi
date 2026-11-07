@@ -128,6 +128,8 @@
 ### Fixed
 
 - Fixed terminal Device Attributes replies (such as `^[[?64;1;2;4;6;17;18;21;22c`) leaking into the shell prompt on exit ([#18662](https://github.com/can1357/oh-my-pi/pull/18662) by [@asuffield](https://github.com/asuffield))
+- Keep fresh TODO steps on a row-local calibrated forecast so splitting work does not postpone the deadline ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Bound automatic TODO deadlines by measured completion pace and expose estimate-honesty defects ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Calibrate TODO forecasts from completed session rows while retaining elapsed work. ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

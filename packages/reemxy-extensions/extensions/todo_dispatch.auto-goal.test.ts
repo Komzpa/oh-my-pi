@@ -103,6 +103,8 @@ test("dispatcher includes archived closure pace without reviving archived rows",
 						dependencies: [],
 						owner: "worker",
 						resources: [],
+						firstRequirementAt: now - 12 * 3_600_000,
+						cumulativeReestimateCount: 6,
 						estimate: {
 							optimisticSeconds: 1200,
 							likelySeconds: 1800,

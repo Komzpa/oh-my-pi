@@ -188,5 +188,5 @@ test("redo simulation uses this session's calibration rather than the cached dis
 	options.pools.coder = [{ model: "a/m", weight: 1 }];
 	const calibrated = forecastTodoPlan(plan, { now, risk: options });
 	expect(calibrated.calibration).toEqual({ ratio: 3, samples: 1 });
-	expect(calibrated.risk!.p50Finish).toBe(now + 300_000);
+	expect(calibrated.risk!.p50Finish).toBe(now + 200_000);
 });
