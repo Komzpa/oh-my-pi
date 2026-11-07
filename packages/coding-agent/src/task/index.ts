@@ -46,7 +46,7 @@ import { type Effort } from "@oh-my-pi/pi-catalog/effort";
 import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
-import { isReadOnlyAgent } from "./read-only-policy";
+import { isReadOnlyAgent, isReadOnlyDispatch } from "./read-only-policy";
 import { resolveAgentModelSelection } from "../config/model-resolver";
 import { formatTaskResultSummary } from "./result-summary";
 import { isScoutSpawnable, type ResolvedSpawnPolicy, resolveSpawnPolicy } from "./spawn-policy";
@@ -1729,7 +1729,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					phase: "admission",
 					row: params.row,
 					resources: params.resources,
-					readOnly: isReadOnlyAgent(policy.effectiveAgent),
+					readOnly: isReadOnlyDispatch(policy.effectiveAgent),
 					agent: policy.agentName,
 					invocationKind: "task",
 					modelRole: policy.modelRole,

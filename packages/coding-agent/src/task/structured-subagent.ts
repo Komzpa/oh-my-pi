@@ -1,4 +1,4 @@
-import { isReadOnlyAgent, isReadOnlyWorkerRole, readOnlyWorkerTools } from "./read-only-policy";
+import { isReadOnlyAgent, isReadOnlyDispatch, isReadOnlyWorkerRole, readOnlyWorkerTools } from "./read-only-policy";
 import { BUILTIN_TOOLS } from "../tools";
 /**
  * Shared policy resolution and execution for task and eval subagents.
@@ -740,7 +740,7 @@ async function applySpawnHook(
 			isolated: request.isolation?.requested === true,
 			assignment: request.assignment,
 			row: request.row,
-			readOnly: isReadOnlyAgent(policy.effectiveAgent),
+			readOnly: isReadOnlyDispatch(policy.effectiveAgent),
 			context: request.context,
 		},
 		request.signal,
@@ -830,10 +830,10 @@ function buildExecutorOptions(
 	const restrictToolNames =
 		preparedSession !== undefined ||
 		policy.planMode ||
-		isReadOnlyAgent(policy.effectiveAgent) ||
+		isReadOnlyDispatch(policy.effectiveAgent) ||
 		session.restrictToolNames === true;
 	const customTools = [...(request.customTools ?? [])];
-	if (isReadOnlyAgent(policy.effectiveAgent)) {
+	if (isReadOnlyDispatch(policy.effectiveAgent)) {
 		for (const name of policy.effectiveAgent.tools ?? []) {
 			if (!["browser", "puppeteer"].includes(name) || customTools.some(tool => tool.name === name)) continue;
 			const tool = session.getToolByName?.(name);

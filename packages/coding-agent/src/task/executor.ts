@@ -134,10 +134,11 @@ import { appendToolResult, createTaskWidgetInputs, TOOLS_SOURCE_LABEL } from "./
 import { TextTap } from "../job-widgets/text-tap";
 import { TOOLS_SOURCE_ID } from "../job-widgets/types";
 import { attributeSubagentError } from "./error-attribution";
+import { createReadOnlyGuard } from "./read-only-guard";
+import { isReadOnlyDispatch } from "./read-only-policy";
 import { generateTaskLabel } from "./label";
 import { resolveAgentPrewalkDefault } from "./prewalk";
 import { isReadOnlyAgent } from "./read-only-policy";
-import { createReadOnlyGuard } from "./read-only-guard";
 import { formatTaskResultSummary } from "./result-summary";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import type { WorkPoolYieldItem } from "./workpool-yield";
@@ -3524,7 +3525,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 				.filter(Boolean)
 				.join("\n\n") || "IRC follow-up";
 		const turnStartTime = Date.now();
-		const readOnlyGuard = isReadOnlyAgent(agent) ? createReadOnlyGuard(session.sessionManager.getCwd()) : undefined;
+		const readOnlyGuard = isReadOnlyDispatch(agent) ? createReadOnlyGuard(session.sessionManager.getCwd()) : undefined;
 		const checkReadOnly = async () => (await readOnlyGuard)?.();
 		const previousAssistant = session.getLastAssistantMessage();
 		const relay = Promise.withResolvers<void>();
@@ -4079,7 +4080,7 @@ async function driveFollowUpTurn(
 		}
 	};
 	await acquireOwnership();
-	const checkReadOnly = isReadOnlyAgent(agent)
+	const checkReadOnly = isReadOnlyDispatch(agent)
 		? await createReadOnlyGuard(session.sessionManager.getCwd())
 		: undefined;
 	// Revalidate until the worker survives an install round-trip unchanged: the
@@ -5225,7 +5226,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					mcpManager,
 					// MCP proxies are minted per build as `mcpTools` in buildSubagentSessionOptions.
 					customTools: options.customTools,
-					allowRestrictedCustomTools: isReadOnlyAgent(agent),
+					allowRestrictedCustomTools: isReadOnlyDispatch(agent),
 					localProtocolOptions: options.localProtocolOptions,
 					telemetry: subagentTelemetry,
 					// Seance isolation overrides every inherited field above in one place.
@@ -5732,7 +5733,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 		};
 	};
 
-	const checkReadOnly = isReadOnlyAgent(agent) ? await createReadOnlyGuard(cwd) : undefined;
+	const checkReadOnly = isReadOnlyDispatch(agent) ? await createReadOnlyGuard(cwd) : undefined;
 	try {
 		const done = await runSubagent();
 		monitor.finish();
