@@ -12,7 +12,7 @@ async function harness(rows) {
 		on: (name, hook) => hooks.set(name, hook),
 		getActiveTools: () => ["todo", "task", "read", "wait"],
 		appendEntry: (customType, data) => journal.push({ type: "custom", customType, data }),
-		sendMessage: message => notices.push(message),
+		sendMessage: (message, options) => notices.push({ ...message, delivery: options }),
 		pi: {
 			...schedule,
 			getLatestTodoPhasesFromEntries,
@@ -188,4 +188,21 @@ test("task also refuses a row owned by an ordinary running job", async () => {
 	);
 	expect(result?.block).toBe(true);
 	expect(result.reason).toContain(failed.schedule.owner);
+});
+
+// The runtime queue consumes supersedes; content digests must not become subject keys.
+test("busy lead staffing bursts use one replacement key and changed staffing replaces that subject", async () => {
+	const h = await harness([structuredClone(failed)]);
+	for (let i = 0; i < 20; i++) await h.hooks.get("turn_start")({}, h.ctx);
+	const notices = h.notices.filter(notice => notice.customType === "todo-gate-staffing");
+	expect(notices).toHaveLength(20);
+	const key = notices[0].delivery.supersedes;
+	expect(typeof key).toBe("string");
+	expect(notices.every(notice => notice.delivery.supersedes === key)).toBe(true);
+	h.phases[0].tasks.push(structuredClone(fresh));
+	await h.hooks.get("turn_start")({}, h.ctx);
+	const changed = h.notices.findLast(notice => notice.customType === "todo-gate-staffing");
+	expect(changed.content).toContain(fresh.content);
+	expect(changed.content).not.toBe(notices[0].content);
+	expect(changed.delivery.supersedes).toBe(key);
 });
