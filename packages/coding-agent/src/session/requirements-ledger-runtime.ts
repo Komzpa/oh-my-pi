@@ -1088,6 +1088,12 @@ export class RequirementsLedgerRuntime {
 			message.content.some(block => block.type === "toolCall")
 		)
 			return;
+		// Without a ledger there is no publication decision to derive from TODO history.
+		if (latestRequirementsFromSession(this.#host.sessionManager).length === 0) {
+			this.#noticeState = "";
+			this.#host.setAuditStatus?.(undefined);
+			return;
+		}
 		let generation = this.#getPublicationGeneration();
 		let freshness = await this.#refreshRequirementFreshness(signal);
 		if (this.#getPublicationGeneration() !== generation) {

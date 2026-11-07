@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep final replies responsive in long sessions without a requirements ledger ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
+
 - Kept TODO execution and requirement artifact lookups responsive in long sessions.
 
 - Tools start without loading archived conversation history ([#41](https://github.com/Komzpa/oh-my-pi/pull/41) by [@Komzpa](https://github.com/Komzpa)).
