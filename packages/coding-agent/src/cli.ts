@@ -14,6 +14,8 @@ try {
  * CLI entry point — registers all commands explicitly and delegates to the
  * lightweight CLI runner from pi-utils.
  */
+import "./restart-terminal";
+import "./restart-children";
 import type * as WorkerThreads from "node:worker_threads";
 import type { MessagePort } from "node:worker_threads";
 import type { CliConfig, CommandMetadata } from "@oh-my-pi/pi-utils/cli";

@@ -74,7 +74,7 @@ import {
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { pickTableChart } from "../auto-graph/planner";
-import { beginRestartTerminalHandoff } from "../restart-terminal";
+import { type RestartTerminalHandoff, beginRestartTerminalHandoff } from "../restart-terminal";
 import { getLiveSubagentsForRestart } from "../task/restart-recovery";
 import { restartArgv } from "../cli/flag-tables";
 import type { CollabGuestLink } from "../collab/guest";
@@ -8753,7 +8753,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		cmd: string[],
 		sessionId: string,
 		sessionFile: string,
-		terminal: { reclaim(): void; restore(): void },
+		terminal: RestartTerminalHandoff,
 	): Promise<void> {
 		if (this.#isShuttingDown) throw new Error("Cannot restart while the session is already shutting down");
 		this.#beginClose();
@@ -8773,8 +8773,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			await this.session.finishRestartHandoff();
 			terminal.reclaim();
-			terminal.restore();
-			execRestartSuccessor(cmd, sessionId, this.#restartInstanceId);
+			execRestartSuccessor(cmd, sessionId, this.#restartInstanceId, terminal);
 		} catch (error) {
 			process.stderr.write(
 				`Restart failed; resume with omp --resume ${JSON.stringify(sessionFile)}: ${String(error)}\n`,
