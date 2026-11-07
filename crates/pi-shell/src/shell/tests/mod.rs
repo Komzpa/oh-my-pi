@@ -111,6 +111,7 @@ const fn exit_code(outcome: &RunOutcome) -> i32 {
 /// A fresh session as [`Shell`] creates one, with no session env.
 async fn default_session() -> ShellSessionCore {
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   None,
 		snapshot_path: None,
 		minimizer:     None,

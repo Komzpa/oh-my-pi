@@ -13,6 +13,7 @@ export function createSessionDefaults() {
 		hasPendingAsyncWork: () => false,
 		abort: async () => {},
 		dispose: async () => {},
+		releaseTaskResources: async () => {},
 		setIrcWakeTurnObserver: () => {},
 		holdIrcWakes: () => () => {},
 		isParentIrcSteer: () => false,

@@ -19,7 +19,7 @@ fn session_with(vars: HashMap<String, String>, cwd: &std::path::Path) -> ShellSe
 		output_decoding: None,
 	})
 	.expect("start session");
-	ShellSessionCore { session, slot, filesystem: Fs::native(), cwd }
+	ShellSessionCore { initial_process_limit: None, session, slot, filesystem: Fs::native(), cwd }
 }
 
 /// The shell starts in, and a run's requested working directory moves it
@@ -101,6 +101,7 @@ async fn session_env_short_temp_matches_pwd_after_cd() {
 		.map(|key| (key.to_string(), short_str.clone()))
 		.collect();
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   Some(env),
 		snapshot_path: None,
 		minimizer:     None,
@@ -269,6 +270,7 @@ async fn session_env_does_not_export_git_repo_location_overrides() {
 	env.insert("GIT_DIR".to_string(), "/primary/.git".to_string());
 	env.insert("OMP_GIT_ENV_PROBE".to_string(), "kept".to_string());
 	let config = ShellConfig {
+		unset_env:     None,
 		session_env:   Some(env),
 		snapshot_path: None,
 		minimizer:     None,
@@ -389,4 +391,90 @@ async fn run_cwd_moves_the_shell_and_rejects_missing_directories() {
 		.await
 		.expect_err("a missing cwd fails the run");
 	assert!(err.to_string().contains("Failed to set cwd"), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unset_env_removes_import_and_snapshot_reintroduced_bindings() {
+	let dir = tempfile::tempdir().unwrap();
+	let probe = dir.path().join("probe");
+	let snapshot = dir.path().join("snapshot.sh");
+	fs::write(
+		&snapshot,
+		format!(
+			"printf '%s' \"${{OMP_MASK_PROBE-unset}}\" > {}; export OMP_MASK_PROBE=restored",
+			quote_arg(probe.to_str().unwrap())
+		),
+	)
+	.unwrap();
+	let (tx, rx) = flume::unbounded();
+	let result = execute_shell(
+		ShellExecuteOptions {
+			command: "printf '%s|%s' \"${OMP_MASK_PROBE-unset}\" \"$OMP_KEEP_PROBE\"".into(),
+			session_env: Some(HashMap::from([
+				("OMP_MASK_PROBE".into(), "imported".into()),
+				("OMP_KEEP_PROBE".into(), "kept".into()),
+			])),
+			unset_env: Some(vec!["OMP_MASK_PROBE".into()]),
+			snapshot_path: Some(snapshot.to_str().unwrap().into()),
+			..Default::default()
+		},
+		Some(tx),
+		CancelToken::default(),
+	)
+	.await
+	.unwrap();
+	assert_eq!(result.exit_code, Some(0));
+	assert_eq!(fs::read_to_string(probe).unwrap(), "unset");
+	assert_eq!(rx.drain().collect::<String>(), "unset|kept");
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn git_guard_rejects_invalid_utf8_and_guard_off_preserves_bytes() {
+	use std::os::unix::fs::PermissionsExt as _;
+	let dir = tempfile::tempdir().unwrap();
+	let payload = dir.path().join("payload");
+	let scope = dir.path().join("scope");
+	let git = dir.path().join("git");
+	fs::write(
+		&git,
+		format!(
+			"#!/bin/sh\nprintf '%s' \"$1\" > {}\n/bin/cat /proc/self/cgroup > {}\n",
+			quote_arg(payload.to_str().unwrap()),
+			quote_arg(scope.to_str().unwrap())
+		),
+	)
+	.unwrap();
+	fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+	for (guard, expected) in [("1", 1), ("0", 0)] {
+		let (tx, rx) = flume::unbounded();
+		let result = execute_shell(
+			ShellExecuteOptions {
+				command: "git $'\\xff'".into(),
+				session_env: Some(HashMap::from([
+					("PATH".into(), format!("{}:/usr/bin:/bin", dir.path().display())),
+					("PI_GIT_GUARD".into(), guard.into()),
+					("PI_SMART_GIT".into(), "1".into()),
+				])),
+				..Default::default()
+			},
+			Some(tx),
+			CancelToken::default(),
+		)
+		.await
+		.unwrap();
+		assert_eq!(result.exit_code, Some(expected));
+		if guard == "1" {
+			assert!(!payload.exists(), "guard executed rejected bytes");
+			assert!(rx.drain().collect::<String>().contains("not valid UTF-8"));
+		} else {
+			assert_eq!(fs::read(&payload).unwrap(), [0xff]);
+			#[cfg(target_os = "linux")]
+			assert!(
+				fs::read_to_string(&scope)
+					.unwrap()
+					.contains("omp-tool-call-")
+			);
+		}
+	}
 }

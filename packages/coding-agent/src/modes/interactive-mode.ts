@@ -1730,6 +1730,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * escape hatch: exit without writing the session log.
 	 */
 	#teardownFailed = false;
+	#preserveServicesOnRestart = false;
 	/** True once a graceful `shutdown()` teardown failed at the memoized
 	 *  dispose stage. Surfaced to the input controller so the next single
 	 *  Ctrl+C skips the double-tap gate and runs `shutdown()` — which
@@ -2477,6 +2478,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.#btwController.dispose();
 				await this.session.dispose({
 					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
+					preserveServices: this.#preserveServicesOnRestart,
 					reason,
 				});
 			},
@@ -4753,7 +4755,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				autoThinking: thinking === AUTO_THINKING,
 				// A fresh session derives tiers from settings, not this session's `/fast` toggles.
 				fastMode: this.session.isFastModeConfiguredFor(model),
-				usingSubscription: this.session.modelRegistry.isUsingOAuth(model),
+				usingSubscription: this.session.modelRegistry.isUsingSubscription(model),
 				autoCompactEnabled: this.session.autoCompactionEnabled,
 				compactionBoundaries: model.contextWindow
 					? statusLineHost.computeCompactionBoundaries(this.session, model.contextWindow, model)
@@ -8313,7 +8315,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	/**
 	 * Tear down like {@link shutdown}, then relaunch the CLI with the original
 	 * launch argv (session-source flags and positional prompts stripped, see
-	 * {@link restartArgv}), resuming this session when it exists on disk.
+	 * {@link restartArgv}), restoring this session (`--restore`) when it exists on
+	 * disk: subagents the teardown cut off mid-turn go on in the new process.
 	 *
 	 * On POSIX the relaunch is a true `execvp(3)` image replacement: same PID,
 	 * same terminal, no lingering parent. Postmortem cleanups and stdout are
@@ -8427,6 +8430,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			} else {
 				await this.session.dispose({
 					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
+					preserveServices: this.#preserveServicesOnRestart,
 				});
 			}
 		} finally {

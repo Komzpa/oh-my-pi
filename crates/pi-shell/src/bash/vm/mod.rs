@@ -414,7 +414,10 @@ pub struct Kernel {
 	pub trace_unit_origins: HashMap<Vpid, Arc<HashMap<UnitId, crate::bash::event::SourceOrigin>>>,
 	/// Unit blobs known to be in the store ([`Kernel::persist_unit`],
 	/// `externalize`).
-	pub written:            HashSet<UnitId>,
+	pub written:            HashSet<UnitId, crate::bash::ids::UnitIdState>,
+	/// Reused buffer for encoding unit blobs ([`Kernel::persist_unit`]); not
+	/// imaged.
+	blob_buf:               Vec<u8>,
 	/// The `next_vpid` value last written as `MiscKey::NextVpid`
 	/// ([`Kernel::vpid`], [`Kernel::sync_root`]).
 	pub written_vpid:       u32,
@@ -534,7 +537,8 @@ impl Kernel {
 			announced: HashSet::new(),
 			trace_sources: HashMap::new(),
 			trace_unit_origins: HashMap::new(),
-			written: HashSet::new(),
+			written: HashSet::default(),
+			blob_buf: Vec::new(),
 			written_vpid: engine.config().vpid_base,
 			paused: false,
 			argv0,
@@ -626,17 +630,21 @@ impl Kernel {
 	/// once per id: a function body is in the store from its definition on,
 	/// so a shell restored from the store alone keeps its line numbers.
 	pub fn persist_unit(&mut self, store: &mut dyn StateStore, unit: &Unit) {
-		if self.written.contains(&unit.id) {
+		if !self.written.insert(unit.id) {
 			return;
 		}
-		let written = postcard::to_stdvec(unit)
+		let mut buf = core::mem::take(&mut self.blob_buf);
+		buf.clear();
+		let written = postcard::to_extend(unit, buf)
 			.map_err(StoreError::Encode)
-			.and_then(|bytes| store.put_blob(crate::bash::store::BlobSlot::Unit(unit.id), &bytes));
-		match written {
-			Ok(()) => {
-				self.written.insert(unit.id);
-			},
-			Err(err) => self.fail(err),
+			.and_then(|buf| {
+				let put = store.put_blob(crate::bash::store::BlobSlot::Unit(unit.id), &buf);
+				self.blob_buf = buf;
+				put
+			});
+		if let Err(err) = written {
+			self.written.remove(&unit.id);
+			self.fail(err);
 		}
 	}
 
@@ -1578,6 +1586,22 @@ impl Shell {
 	/// starts from the shell's global state: it does not see the locals of
 	/// a function the shell is in the middle of (a host submits between
 	/// steps, at no particular point of the root's execution).
+	/// Assign the embedding boundary for the next root run. Existing jobs
+	/// retain the boundary they inherited when they were created.
+	pub fn set_resource_scope(&mut self, scope: u16) {
+		self.procs[0].lineage.resource_scope = scope;
+	}
+
+	/// Whether a background virtual process may still launch in this boundary.
+	pub fn resource_scope_live(&self, scope: u16) -> bool {
+		self
+			.procs
+			.iter()
+			.skip(1)
+			.chain(&self.k.spawned)
+			.any(|p| p.lineage.resource_scope == scope)
+	}
+
 	pub fn submit(&mut self, script: Script) -> RunId {
 		self.submit_from(0, script, None, None)
 	}

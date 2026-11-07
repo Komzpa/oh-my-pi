@@ -595,7 +595,7 @@ export declare class RunTrace {
    * instead of an invented primary producer. Decoding ends at capture EOF.
    * Segmented minimizer submissions share one epoch and final status;
    * their history carries `segment`, with `logicalEnd`/`logicalStatus`
-   * finalizing the last actual root RunEnd after output draining.
+   * finalizing the last actual root `RunEnd` after output draining.
    * Serialization borrows the locked model rather than cloning its history.
    */
   snapshot(): string
@@ -702,12 +702,38 @@ export declare class TextPredictor {
   persist(): Promise<void>
 }
 
+export declare class ToolResourceScope {
+  constructor()
+  /**
+   * `env`, when supplied, is the complete spawn environment, not an overlay.
+   * Omission uses inherited bindings; missing keys in a supplied map stay
+   * unset.
+   */
+  wrapCommand(command: Array<string>, env?: Record<string, string> | undefined | null): Array<string>
+  /**
+   * Off-thread variant of [`ToolResourceScope::wrap_command`]: the systemd
+   * subprocesses behind first-use enforcement run on libuv's thread pool,
+   * so the JS event loop is never blocked. Resolves to the same argv.
+   */
+  wrapCommandAsync(command: Array<string>, env?: Record<string, string> | undefined | null): Promise<Array<string>>
+  /**
+   * Dropping the owner only hands teardown to a detached thread
+   * ([`ToolProcessLimit`] never blocks the dropping thread), so this
+   * returns immediately; no async variant is needed.
+   */
+  close(): void
+}
+
 /**
  * Dedicated writer thread for one terminal fd.
  *
- * `dup(2)`'d at construction and closed on drop. The duplicate keeps the
- * pump's fd alive if the original is closed or replaced; file-status flags
- * such as `O_NONBLOCK` are shared and handled by polling for `POLLOUT`.
+ * Duplicated (close-on-exec) at construction and closed on drop. The
+ * duplicate keeps the pump's fd alive if the original is closed or replaced;
+ * file-status flags such as `O_NONBLOCK` are shared and handled by polling for
+ * `POLLOUT`. Close-on-exec keeps the terminal out of every child the process
+ * spawns without explicit fd handling (`std::process::Command`, gitoxide
+ * filter drivers), which could otherwise read the user's keystrokes and
+ * terminal replies through it.
  */
 export declare class TtyWriter {
   /**
@@ -3412,7 +3438,9 @@ export declare function renderSnapcompactPng(text: string, options: SnapcompactR
 
 /**
  * Run the pi-shell engine as a process shell in this process (`omp zsh`,
- * `omp bash`, `omp sh`): `argv` is the shell's whole command line,
+ * `omp bash`, `omp sh`).
+ *
+ * `argv` is the shell's whole command line,
  * `argv[0]` naming it (`zsh`, `bash` or `sh` pick the dialect), as a real
  * shell gets it. Synchronous: blocks the calling thread until the shell
  * exits and returns the status the process should exit with (0–255; 101
@@ -3472,6 +3500,9 @@ export interface SearchResult {
   error?: string
 }
 
+/** Stable systemd parent slice for a session's tool processes. */
+export declare function sessionSliceName(sessionId: string): string
+
 export declare function setHangulCompatJamoWidthOverride(value: number): void
 
 /**
@@ -3487,6 +3518,8 @@ export interface ShellExecuteOptions {
   env?: Record<string, string>
   /** Environment variables to apply once per session. */
   sessionEnv?: Record<string, string>
+  /** Environment names removed after session import and snapshot sourcing. */
+  unsetEnv?: Array<string>
   /** Timeout in milliseconds before cancelling the command. */
   timeoutMs?: number
   /** Optional snapshot file to source on session creation. */
@@ -3820,6 +3853,8 @@ export interface ShellFsStatFs {
 export interface ShellOptions {
   /** Environment variables to apply once per session. */
   sessionEnv?: Record<string, string>
+  /** Environment names removed after session import and snapshot sourcing. */
+  unsetEnv?: Array<string>
   /** Optional snapshot file to source on session creation. */
   snapshotPath?: string
   /** Optional per-command output minimizer configuration. */

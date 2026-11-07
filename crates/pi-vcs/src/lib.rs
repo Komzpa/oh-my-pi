@@ -18,6 +18,7 @@
 pub mod error;
 pub mod git;
 pub mod jj;
+pub mod process_limit;
 pub mod types;
 
 use std::{

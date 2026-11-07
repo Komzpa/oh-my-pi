@@ -65,6 +65,10 @@ use crate::{
 /// changes a disposition while spawners may run calls it (the shell's trap
 /// table, an embedding runtime's reset); a change it misses leaves a newly
 /// ignored signal ignored in later children.
+#[cfg_attr(
+	not(unix),
+	expect(clippy::missing_const_for_fn, reason = "the unix body re-reads signal dispositions")
+)]
 pub fn dispositions_changed() {
 	#[cfg(unix)]
 	imp::dispositions_changed();
@@ -291,6 +295,21 @@ impl NativeSpawner {
 	/// on.
 	pub fn poll_orphans(cx: &Context<'_>) {
 		crate::sys::pump::orphan::poll(cx);
+	}
+
+	/// A text executable needs the engine's script fallback. A wrapper
+	/// must probe its payload before its launcher hides the exec error.
+	pub(crate) fn script_fallback_error(path: &[u8], cwd: &[u8]) -> Option<io::Error> {
+		#[cfg(unix)]
+		{
+			unix::may_need_script_fallback(path, cwd)
+				.then(|| io::Error::from_raw_os_error(libc::ENOEXEC))
+		}
+		#[cfg(not(unix))]
+		{
+			let _ = (path, cwd);
+			None
+		}
 	}
 
 	/// Spawn `spec`; see the module docs for the process lifecycle.

@@ -4,8 +4,28 @@
 
 ### Fixed
 
+- Contain Linux tool children and descendants in per-call scopes with a verified task cap, and keep background jobs in their original scope. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Preserve non-UTF-8 bytes when slicing shell parameter values. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Avoid duplicate termination signals so TERM traps can flush output and finish cleanup. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Return structured cancelled or timed-out results when PTY startup is interrupted before launch. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Let scoped tools launch with coreutils before 9.5 and preserve dollar bytes on systemd before 254. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Let desktop-masked workers reach the systemd user manager while keeping its runtime directory and bus address out of tool payloads. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Parent Linux tool-call scopes under a stable session slice and export sessionSliceName for lifecycle cleanup. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Run scoped shell commands, PTYs, Git hooks and eval kernels at niceness 19 and best-effort IO priority 7 while preserving the parent priority. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Materialize cyclic Git object-store chains locally while retaining borrowing for healthy chains. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Add unsetEnv to remove inherited variables before imports and after snapshot setup. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+
+- The embedded shell's `comm` merges in the same locale order as its `sort`, so `comm` on `sort` output under a UTF-8 locale no longer reports unsorted input and drops common lines
+- An edit whose path is missing on disk no longer stalls the embedded shell and other native calls while it searches for the file, and a cancelled edit stops that search at once ([#18386](https://github.com/can1357/oh-my-pi/pull/18386) by [@sjawhar](https://github.com/sjawhar))
+- macOS spellchecking (typo underlines, autocorrect, `apple` word completion) no longer leaks native memory for the life of the process ([#18285](https://github.com/can1357/oh-my-pi/pull/18285) by [@aleister1102](https://github.com/aleister1102))
+
+## [18.18.0] - 2026-11-07
+
+### Fixed
+
 - Fixed `find()` missing elements more than 24 levels down, such as VS Code's editor; it now searches 64 levels deep ([#18221](https://github.com/can1357/oh-my-pi/pull/18221) by [@will-bogusz](https://github.com/will-bogusz))
 - `glob`, `grep`, `fuzzyFind`, `ast_grep` and `ast_edit` now run their directory traversal on a filesystem runtime of their own, so a search over a large or cold tree can no longer take the worker threads that the embedded shell and every other native call are scheduled on. Those threads are named `pi-fs-worker`, so a stall in a search is tellable apart from a stall elsewhere.
+- Fixed a workspace tree whose native addon does not match its checkout failing with `undefined is not a constructor` at the callsite: a class the addon lacks now throws a message naming the addon file, both releases and `bun run build:native` — from its constructor and from any static entrypoint — and the loader reports that mismatch once as it loads ([#18230](https://github.com/can1357/oh-my-pi/pull/18230) by [@sjawhar](https://github.com/sjawhar))
 
 ## [18.17.0] - 2026-11-06
 

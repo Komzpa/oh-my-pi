@@ -110,6 +110,59 @@ describe("executeBash", () => {
 			removeSyncWithRetries(tempDir);
 		}
 	});
+	it.skipIf(process.platform === "win32")("masks desktop session variables only for subagent shells", async () => {
+		const desktopEnv = {
+			PATH: Bun.env.PATH ?? "",
+			HOME: tempDir,
+			SHELL: "/bin/bash",
+			WAYLAND_DISPLAY: "wayland-user",
+			DISPLAY: ":99",
+			DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+			XDG_RUNTIME_DIR: "/run/user/1000",
+			XAUTHORITY: "/run/user/1000/Xauthority",
+			DBUS_STARTER_ADDRESS: "unix:path=/run/user/1000/bus",
+			SWAYSOCK: "/run/user/1000/sway-ipc.sock",
+		};
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: "/bin/bash",
+			args: ["-c"],
+			env: desktopEnv,
+			prefix: undefined,
+		});
+		const snapshotPath = path.join(tempDir, "desktop-snapshot.sh");
+		fs.writeFileSync(
+			snapshotPath,
+			Object.entries(desktopEnv)
+				.map(([key, value]) => `export ${key}=${shellQuote(value)}`)
+				.join("\n"),
+		);
+		vi.spyOn(shellSnapshot, "getOrCreateSnapshot").mockResolvedValue(snapshotPath);
+		const command =
+			"/usr/bin/env; printf '%s\\n' \"$WAYLAND_DISPLAY|$DISPLAY|$DBUS_SESSION_BUS_ADDRESS|$XDG_RUNTIME_DIR\"";
+		const main = await executeBash(command, { cwd: tempDir });
+		const subagent = await executeBash(command, {
+			cwd: tempDir,
+			sessionKey: "desktop-mask-test",
+			maskDesktopSession: true,
+		});
+		expect(main.output).toContain("wayland-user|:99|unix:path=/run/user/1000/bus|/run/user/1000");
+		expect(subagent.output).not.toContain("wayland-user");
+		expect(subagent.output).not.toContain(":99");
+		expect(subagent.output).not.toContain("XDG_RUNTIME_DIR=/run/user/1000");
+		expect(subagent.output).not.toContain("|/run/user/1000");
+		for (const key of ["XAUTHORITY", "DBUS_STARTER_ADDRESS", "SWAYSOCK"]) {
+			expect(subagent.output).not.toContain(`${key}=`);
+		}
+		expect(subagent.output).toContain("omp-worker-runtime-desktop-mask-test-");
+		const fixtureBus = "unix:path=/tmp/omp-fixture-owned-bus";
+		const fixture = await executeBash(command, {
+			cwd: tempDir,
+			sessionKey: "desktop-mask-fixture-test",
+			maskDesktopSession: true,
+			env: { DBUS_SESSION_BUS_ADDRESS: fixtureBus },
+		});
+		expect(fixture.output).toContain(fixtureBus);
+	});
 
 	it("publishes the same live native owner before each trace callback", async () => {
 		const snapshots: piNatives.RunTrace[] = [];
@@ -118,8 +171,8 @@ describe("executeBash", () => {
 			timeout: 5000,
 			onTrace: trace => {
 				const source = shellVisualization(trace);
-				expect(source).toBeInstanceOf(piNatives.RunTrace);
-				if (source instanceof piNatives.RunTrace) snapshots.push(source);
+				if (!(source instanceof piNatives.RunTrace)) throw new Error("Expected the live native owner");
+				snapshots.push(source);
 				readShellPresentation(source, defaultShellVizPreferences(), trace);
 			},
 		});
@@ -149,7 +202,9 @@ describe("executeBash", () => {
 		// A persisted copy restores through the native owner and shows the variable.
 		const restored: unknown = JSON.parse(JSON.stringify(result.trace));
 		if (!isShellTrace(restored)) throw new Error("Expected the persisted trace to validate");
-		const presentation = readShellPresentation(shellVisualization(restored), defaultShellVizPreferences(), restored);
+		const source = shellVisualization(restored);
+		if (!source) throw new Error("Expected the persisted trace to restore");
+		const presentation = readShellPresentation(source, defaultShellVizPreferences(), restored);
 		expect(presentation.watches?.some(watch => watch.name === "v")).toBe(true);
 	});
 
