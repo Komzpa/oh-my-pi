@@ -1536,6 +1536,9 @@ function applyScheduleUpdates(
 			row.schedule!.finishedAt = now;
 		} else {
 			row.status = "in_progress";
+			delete row.schedule!.auditEscalation;
+			row.schedule!.auditRounds = 0;
+			row.schedule!.handoffPending = false;
 			delete row.schedule!.finishedAt;
 			delete row.schedule!.executor;
 			row.schedule!.startedAt ??= now;
@@ -2328,8 +2331,6 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		target.schedule.handoffPending = false;
 		target.schedule.reviewSummary = evidence;
 		if (answer.answer === "redo") {
-			target.schedule.auditEscalation = undefined;
-			target.schedule.auditRounds = 0;
 			target.status = "pending";
 			target.schedule.reviewSummary = answer.note;
 		}
