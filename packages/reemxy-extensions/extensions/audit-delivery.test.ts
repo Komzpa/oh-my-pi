@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { classifyTodoDisplayRow } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { patchTodoSchedule } from "../../coding-agent/src/session/todo-schedule-patch";
 import { queueDeliveryCritic } from "./delivery_critic";
 
@@ -63,7 +64,22 @@ test("delivery runtime caps blocker repairs and preserves the blocker list for t
 	const h = harness();
 	for (let round = 1; round <= 3; round++) { if (round > 1) h.repair(round); await h.audit([blocker, later]); }
 	expect(h.row().schedule!.auditEscalation).toContain(blocker.evidence);
+	expect(classifyTodoDisplayRow(h.row(), h.phases(), { workers: [], owners: new Map() }).state).toBe("handoff pending");
 	h.repair(4);
 	await h.audit([blocker]);
 	expect(h.launches()).toBe(3);
+});
+
+
+test("follow-ups from separate delivery rows share a single addressable Later phase", () => {
+	let phases: TodoPhase[] = [{ name: "Delivery", tasks: [
+		{ content: "Commit candidate", status: "completed" },
+		{ content: "Push candidate", status: "completed" },
+	] }];
+	for (const task of ["Commit candidate", "Push candidate"]) {
+		phases = patchTodoSchedule(phases, task, { auditFollowUps: [`Add coverage for ${task}`] })!;
+	}
+	expect(phases.filter(phase => phase.name === "Later").map(phase => phase.tasks.map(row => row.content)))
+		.toEqual([["Audit follow-up: Commit candidate", "Audit follow-up: Push candidate"]]);
+	expect(phases[1]!.tasks.every(row => row.schedule?.dependencies?.length === 0)).toBe(true);
 });

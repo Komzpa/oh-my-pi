@@ -13,9 +13,10 @@ export function isTodoAwaitingReview(task: { status: string; schedule?: TodoSche
 	return (
 		task.status !== "abandoned" &&
 		!!task.schedule &&
-		!task.schedule.reviewAnswers?.length &&
+		(!task.schedule.reviewAnswers?.length || !!task.schedule.auditEscalation) &&
 		(task.schedule?.review === "user" || (todoNeedsOwnerDecision(task.schedule) && todoRowHasDeliverable(task))) &&
-		(task.schedule.reviewPagePending === true ||
+		(!!task.schedule.auditEscalation ||
+			task.schedule.reviewPagePending === true ||
 			task.status === "completed" ||
 			task.schedule.visibleAt !== undefined ||
 			task.schedule.firstDeliveredAt !== undefined ||
@@ -2335,7 +2336,7 @@ export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWor
 	if (schedule.review === "accepted") return undefined;
 	const worker = executor.workerId;
 	const delivery = todoRowDeliveryKey(schedule);
-	if (schedule.auditEscalation) return { kind: "verify", via: "audit", worker, audit: schedule.audit };
+	if (schedule.auditEscalation) return undefined;
 	const critic = schedule.deliveryCritic;
 	if (critic?.key === delivery) {
 		if (critic.verdict === "defects")

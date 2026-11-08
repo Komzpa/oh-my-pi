@@ -17,6 +17,8 @@ export function patchTodoSchedule(
 		row.blocker = patch.auditEscalation;
 		row.schedule.review = "user";
 		row.schedule.handoffPending = true;
+		row.schedule.reviewSummary = patch.auditEscalation;
+		row.schedule.firstDeliveredAt ??= at;
 	}
 	if (!patch.auditEscalation && patch.deliveryCritic?.verdict === "defects" && patch.review === "redo") {
 		row.status = "pending";
@@ -48,19 +50,17 @@ export function patchTodoSchedule(
 			? { ...phase, tasks: phase.tasks.map(candidate => (candidate === previous ? row : candidate)) }
 			: phase,
 	);
-	if (actions.length && !existing)
-		result.push({
-			name: "Later",
-			tasks: [
-				{
-					content: followUp,
-					notes: actions,
-					status: "pending",
-					schedule: { dependencies: [], progress: { at, evidence: actions.join("\n") } },
-				},
-			],
-		});
-	else if (actions.length) {
+	if (actions.length && !existing) {
+		const followUpRow = {
+			content: followUp,
+			notes: actions,
+			status: "pending" as const,
+			schedule: { dependencies: [], progress: { at, evidence: actions.join("\n") } },
+		};
+		const index = result.findIndex(phase => phase.name === "Later");
+		if (index < 0) result.push({ name: "Later", tasks: [followUpRow] });
+		else result[index] = { ...result[index]!, tasks: [...result[index]!.tasks, followUpRow] };
+	} else if (actions.length) {
 		for (let index = 0; index < result.length; index++) {
 			const phase = result[index]!;
 			result[index] = {
