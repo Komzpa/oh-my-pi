@@ -19,13 +19,13 @@ test("HUD refreshes avoid historical payloads and refresh ledger and auditor sta
 			expect(view.requirements?.[0]?.rowVerdicts?.Ship?.status).toBe("pass");
 			expect(view.auditors.get("Ship")).toBe("audit");
 		}
-		expect(fullBranch).toHaveBeenCalledTimes(2);
+		expect(fullBranch).toHaveBeenCalledTimes(0);
 		expect(readTodoDisplayLedgerFromManager(manager, new Set()).auditors.size).toBe(0);
 		manager.appendCustomEntry("requirements_ledger", {
 			requirements: [{ classification: "required", rows: ["Ship"], rowVerdicts: { Ship: { status: "fail" } } }],
 		});
 		expect(readTodoDisplayLedgerFromManager(manager).requirements?.[0]?.rowVerdicts?.Ship?.status).toBe("fail");
-		expect(fullBranch).toHaveBeenCalledTimes(4);
+		expect(fullBranch).toHaveBeenCalledTimes(0);
 	} finally {
 		fullBranch.mockRestore();
 	}

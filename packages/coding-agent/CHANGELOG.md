@@ -459,6 +459,7 @@
 ### Fixed
 
 - Queue resource conflicts without failed attempts and resume restart interruptions without charging the row.
+- Reduced turn-end pauses when extensions read TODO snapshots and recent receipts from large sessions.
 
 - Read-only workers retain command and browser tools for QA, while tracked checkout changes fail the worker ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Seance consultations keep compacted context without duplicating the parent journal or recording unrelated worker activity; journal observers read appended records asynchronously.
