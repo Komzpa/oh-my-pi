@@ -1009,6 +1009,100 @@ describe("AgentSession restart queue round trip", () => {
 		},
 	);
 
+	it("releases restored input after a restored question settles on a completed restart", async () => {
+		appendPriorAssistant(currentManager());
+		session = createSession(currentManager());
+		const lease = session.beginRestartDrain();
+		session.agent.steer({ role: "user", content: "owner after restart", timestamp: Date.now() });
+		await lease.waitForQuiescence();
+		const toolCallId = "restored-ask-with-input";
+		const manager = currentManager();
+		const sessionId = manager.getSessionId();
+		manager.appendMessage({
+			role: "toolResult",
+			toolName: "ask",
+			toolCallId,
+			content: [{ type: "text", text: "Pending question" }],
+			details: {
+				pending: {
+					id: toolCallId,
+					questions: [
+						{ id: "target", question: "Which target?", options: [{ label: "Here" }, { label: "There" }] },
+					],
+				},
+			},
+			timestamp: Date.now(),
+			isError: false,
+		});
+		for (const state of ["queued", "draining", "checkpointed", "restarting"] as const)
+			manager.appendCustomEntry("restart_request_transition", {
+				version: 1,
+				identity: { instanceId: "old", sessionId, generation: 0 },
+				record: {
+					version: 1,
+					requestId: "ask-input-restart",
+					sessionId,
+					state,
+					requestedAt: Date.now(),
+					updatedAt: Date.now(),
+					rootWasRunning: true,
+				},
+			});
+		await manager.ensureOnDisk();
+		const file = manager.getSessionFile()!;
+		await session.dispose();
+		session = undefined;
+		sessionManager = await SessionManager.open(file, tempDir.path());
+		const dialog = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+		let shown = 0;
+		const ui = {
+			askDialog: () => {
+				shown++;
+				return dialog.promise;
+			},
+		} as unknown as ExtensionUIContext;
+		const inputs: string[] = [];
+		session = createSession(currentManager(), [{ content: ["received"], stopReason: "stop" }], inputs);
+		const restored = session;
+		let askRestore: Promise<boolean> | undefined;
+		let pending = false;
+		AgentRegistry.resetGlobalForTests();
+		AgentRegistry.global().register({
+			id: MAIN_AGENT_ID,
+			displayName: "Root",
+			kind: "main",
+			session: restored,
+			sessionFile: file,
+			status: "idle",
+		});
+		const controller = createRestartQueueController({
+			session: restored,
+			identity: () => ({ instanceId: "new", sessionId, generation: 1 }),
+			restart: async () => {},
+			restorePendingAsk: settled => {
+				askRestore = restored.restorePendingAsk(ui, settled, () => {
+					pending = true;
+				});
+				return pending;
+			},
+		});
+		await controller.restore();
+		expect(shown).toBe(1);
+		const continuations = () =>
+			restored.sessionManager
+				.getBranchView()
+				.filter(entry => entry.type === "custom_message" && entry.customType === "restart-root-continuation");
+		expect(continuations()).toHaveLength(0);
+		expect(inputs).toHaveLength(0);
+		dialog.resolve(undefined);
+		await askRestore;
+		const start = Date.now();
+		while (!inputs.join("\n").includes("owner after restart") && Date.now() - start < 1500) await Bun.sleep(10);
+		expect(inputs.join("\n")).toContain("owner after restart");
+		expect(continuations()).toHaveLength(1);
+		await restored.waitForIdle();
+	});
+
 	it("delivers the newest state note at the next tool boundary of a running turn", async () => {
 		const entered = Promise.withResolvers<void>();
 		const release = Promise.withResolvers<void>();
