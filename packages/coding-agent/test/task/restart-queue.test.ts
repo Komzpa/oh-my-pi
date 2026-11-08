@@ -424,10 +424,14 @@ describe("restart queue controller", () => {
 				},
 			});
 			try {
+				if (outcome === "boundary") vi.useFakeTimers();
 				await controller.handle({ identity, op: "request", requestId: "busy-root" });
 				await waiting.promise;
-				if (outcome === "boundary") await Bun.sleep(60_000);
-				else await expired.promise;
+				if (outcome === "boundary") {
+					vi.advanceTimersByTime(60_000);
+					vi.useRealTimers();
+					await Bun.sleep(50);
+				} else await expired.promise;
 				expect(restarts).toBe(0);
 				expect(aborts).toBe(0);
 				expect(controller.snapshot().request?.state).toBe(outcome === "boundary" ? "draining" : "queued");
@@ -442,6 +446,7 @@ describe("restart queue controller", () => {
 				await Bun.sleep(10);
 				expect(restarts).toBe(outcome === "cancel" ? 0 : 1);
 			} finally {
+				vi.useRealTimers();
 				controller.dispose();
 				boundary.resolve();
 			}
