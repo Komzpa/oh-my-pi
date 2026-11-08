@@ -4381,7 +4381,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const input = (rawInput ?? {}) as { command?: unknown; path?: unknown; file_path?: unknown };
     const path = typeof input.path === "string" ? input.path : typeof input.file_path === "string" ? input.file_path : undefined;
     return (toolName === "bash" && !(typeof input.command === "string" && isChiefBash(input.command))) ||
-      ((toolName === "edit" || toolName === "write") && !(path !== undefined && WRITE_EXEMPT_PATH.test(path))) ||
+      ((toolName === "edit" || toolName === "write") && !(path !== undefined && (WRITE_EXEMPT_PATH.test(path) || (toolName === "write" && path.startsWith("out://"))))) ||
       toolName === "eval";
   };
   const rerouteSettledWorkerWrite = (event: { toolName: string; input?: unknown }, ctx: ExtensionContext) => {

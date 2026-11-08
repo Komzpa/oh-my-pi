@@ -852,6 +852,41 @@ test("task calls allow re-staffing a legacy row whose owner already has the bloc
   }
 }, 60_000);
 
+test("user output is admitted while real file writes remain gated", async () => {
+  const cwd = repo("clean");
+  const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+  const sent: Array<{ customType?: string; content: string }> = [];
+  const now = Date.now();
+  const api = {
+    on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+    getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "goal-1", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: () => undefined,
+    sendMessage: (message: { customType?: string; content: string }) => { sent.push(message); },
+  } as unknown as ExtensionAPI;
+  await todoDispatch(api);
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "gates-chief-refusal" }), ...branchMock(() => plan("ready", now)), getSessionFile: () => undefined },
+    getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false,
+    hasPendingMessages: () => false,
+    setTimeout: () => ({}),
+    clearTimer: () => undefined,
+  } as unknown as ExtensionContext;
+  try {
+    const answer = await handlers.get("tool_call")!({ toolName: "write", toolCallId: "user-answer", input: { path: "out://answer.md", content: "Here is the status" } }, ctx);
+    expect(answer?.block).not.toBe(true);
+    const fileEdit = await handlers.get("tool_call")!({ toolName: "write", toolCallId: "file-edit", input: { path: "src/feature.ts", content: "change" } }, ctx);
+    expect(fileEdit?.block).toBe(true);
+  } finally {
+    handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 60_000);
+
 test("a refused task dispatch opens bounded chief work without weakening the staffing gate", async () => {
   const cwd = repo("clean");
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
