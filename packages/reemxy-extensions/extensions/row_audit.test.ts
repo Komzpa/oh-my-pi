@@ -663,3 +663,25 @@ test("audits the repository bound by an exact git resource instead of lead cwd",
 	expect(batches[0]!.repoPath).toBe("/work/delivery");
 	expect(batches[0]!.head).toBe(sha);
 });
+
+test("a changed checkout cannot stand in for the pinned delivery revision", () => {
+	const row = { content: "Verify pinned delivery", status: "in_progress", schedule: {
+		resources: [`git:/work/delivery@${"a".repeat(40)}`],
+		executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const batches = planRowAudits([row], new Map([["/work/delivery", "b".repeat(40)]]), "/work/lead", () => false, () => false);
+	expect(batches).toHaveLength(0);
+});
+
+test("mismatched pinned delivery is visible and never launches an audit", async () => {
+	const row = { content: "Verify pinned revision", status: "in_progress", schedule: {
+		resources: [`git:/work/delivery@${"a".repeat(40)}`],
+		executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const h = harness([{ name: "Delivery", tasks: [row] }], { "/work/delivery": "b".repeat(40) });
+	expect(await h.check()).toBe(0);
+	expect(row.schedule.audit?.verdict).toBe("inconclusive");
+	expect(row.schedule.audit?.findings).toContain("does not match checkout");
+	expect(await h.check()).toBe(0);
+	expect(h.launches).toHaveLength(0);
+});

@@ -11,6 +11,7 @@ import {
 	TODO_ROW_AUDITOR,
 	type TodoRowAudit,
 	type TodoScheduleInputTask,
+	todoArtifactGitBinding,
 	todoArtifactRepository,
 	todoRowAfterWorker,
 	todoRowDeliveryKey,
@@ -156,6 +157,8 @@ export function planRowAudits(
 			continue;
 		const repoPath = rowRepo(row, cwd);
 		const head = heads.get(repoPath) ?? "unknown";
+		const binding = todoArtifactGitBinding(row);
+		if (binding && (binding.repoPath !== repoPath || binding.head !== head)) continue;
 		const previous = after.kind === "verify" ? after.audit : row.schedule?.audit;
 		const audit = previous?.head === head ? previous : undefined;
 		if (audit?.verdict === "pass" || audit?.cancelled) continue;
@@ -290,6 +293,16 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	const heads = new Map<string, string>();
 	for (const repoPath of new Set(candidates.map(row => rowRepo(row, ctx.cwd))))
 		heads.set(repoPath, (await readHead(repoPath)) ?? "unknown");
+	for (const row of candidates) {
+		const binding = todoArtifactGitBinding(row);
+		const repoPath = rowRepo(row, ctx.cwd);
+		const head = heads.get(repoPath) ?? "unknown";
+		if (!binding || (binding.repoPath === repoPath && binding.head === head)) continue;
+		const delivery = todoRowDeliveryKey(row.schedule);
+		const findings = `Pinned delivery ${binding.repoPath}@${binding.head} does not match checkout ${repoPath}@${head}; restore or rebind the artifact before audit`;
+		if (row.schedule?.audit?.delivery === delivery && row.schedule.audit.head === head && row.schedule.audit.findings === findings) continue;
+		ctx.updateTodoSchedule(row.content, { audit: { delivery, repoPath, head, startedAt: now(), verdict: "inconclusive", agent: TODO_ROW_AUDITOR, attempts: 2, evidence: row.schedule?.progress?.evidence ?? "", findings, at: now() } });
+	}
 	const busy = (_repoPath: string, _head: string, row: RowAuditRow) => {
 		const key = rowKey(row);
 		return (

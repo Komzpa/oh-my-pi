@@ -2303,17 +2303,26 @@ export function todoRowDeliveryKey(schedule: TodoSchedule | undefined): string {
 // hex-looking words are not commits.
 const COMMIT_ID = /(?<![0-9A-Za-z])(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![0-9A-Za-z])/;
 
+/** Return a unique exact git binding, if the row declares one. */
+export function todoArtifactGitBinding(task: {
+	schedule?: TodoSchedule;
+}): { repoPath: string; head: string } | undefined {
+	const bindings = new Map<string, { repoPath: string; head: string }>();
+	for (const resource of task.schedule?.resources ?? []) {
+		const match = /^git:(.+)@([0-9a-f]{40})$/.exec(resource);
+		if (match) bindings.set(resource, { repoPath: match[1]!, head: match[2]! });
+	}
+	return bindings.size === 1 ? [...bindings.values()][0] : undefined;
+}
+
 /** Use the explicitly bound delivery repository before the session's checkout. */
 export function todoArtifactRepository(task: { artifactCwd?: string; schedule?: TodoSchedule }, cwd: string): string {
-	if (task.artifactCwd) return task.artifactCwd;
-	const repositories = new Set(
-		(task.schedule?.resources ?? []).flatMap(resource => {
-			const match = /^git:(.+)@[0-9a-f]{40}$/.exec(resource);
-			return match ? [match[1]!] : [];
-		}),
+	return (
+		task.artifactCwd ??
+		todoArtifactGitBinding(task)?.repoPath ??
+		task.schedule?.executor?.gitCommits?.[0]?.repoPath ??
+		cwd
 	);
-	if (repositories.size === 1) return [...repositories][0]!;
-	return task.schedule?.executor?.gitCommits?.[0]?.repoPath ?? cwd;
 }
 
 /** The row carries a deliverable: commit receipts, a pinned git resource, a review page, or a
