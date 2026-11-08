@@ -112,6 +112,7 @@ function harness(
 		task: string;
 		agent: string;
 		resolve: (output: unknown) => void;
+		abort: () => void;
 		reject: (error: Error) => void;
 	}> = [];
 	const rows = () => phases.flatMap(phase => phase.tasks);
@@ -139,6 +140,7 @@ function harness(
 					agent,
 					onResult,
 					resolve: output => resolve({ details: { results: [{ output: JSON.stringify(output) }] } }),
+					abort: () => resolve({ details: { results: [{ aborted: true, exitCode: 1 }] } }),
 					reject,
 				});
 			});
@@ -157,8 +159,32 @@ function harness(
 		launches[index].resolve(output);
 		for (let i = 0; i < 5; i++) await Bun.sleep(0);
 	};
-	return { phases, rows, ctx, launches, check, settle, heads };
+	const abort = async (index: number) => {
+		launches[index].abort();
+		for (let i = 0; i < 5; i++) await Bun.sleep(0);
+	};
+	return { phases, rows, ctx, launches, check, settle, abort, heads };
 }
+
+test("a stopped audit is not relaunched for the same delivery and head", async () => {
+	const delivered = clone()
+		.flatMap(phase => phase.tasks)
+		.find(row => row.content === AUDITED[1]);
+	const h = harness([{ name: "Stopped audit", tasks: [delivered] }]);
+	expect(await h.check()).toBe(1);
+	await h.abort(0);
+	expect(delivered.schedule.audit).toMatchObject({
+		verdict: "unavailable",
+		cancelled: true,
+		findings: "audit worker stopped before a verdict",
+	});
+	expect(await h.check()).toBe(0);
+	expect(h.launches).toHaveLength(1);
+
+	h.heads[REPO] = "new-head";
+	expect(await h.check()).toBe(1);
+	expect(h.launches).toHaveLength(2);
+});
 
 beforeEach(() => resetRowAuditsForTest());
 

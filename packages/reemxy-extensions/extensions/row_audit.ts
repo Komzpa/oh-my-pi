@@ -157,7 +157,7 @@ export function planRowAudits(
 		const head = heads.get(repoPath) ?? "unknown";
 		const previous = after.kind === "verify" ? after.audit : row.schedule?.audit;
 		const audit = previous?.head === head ? previous : undefined;
-		if (audit?.verdict === "pass") continue;
+		if (audit?.verdict === "pass" || audit?.cancelled) continue;
 		const omitted = audit?.verdict === "omitted" || audit?.findings === "auditor returned no verdict for this row";
 		let attempt = audit?.attempts ?? 1;
 		let retry: string | undefined;
@@ -436,7 +436,35 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 				}, batch.rows.map(row => row.content).join(" "), batch.rows.map(row => row.content), output => {
 					void submit(output).catch(error => logger.warn("Row audit update failed", { error: String(error) }));
 				});
-				const details = result?.details as { results?: Array<{ output?: unknown }> } | undefined;
+				const details = result?.details as {
+					results?: Array<{ output?: unknown; aborted?: boolean; error?: string; exitCode?: number }>;
+				} | undefined;
+				const aborted = details?.results?.find(item => item.aborted);
+				if (aborted) {
+					const at = now();
+					for (const [content, audit] of records) {
+						const current = ctx
+							.getTodoPhases?.()
+							?.flatMap(phase => phase.tasks)
+							.find(row => row.content === content)?.schedule?.audit;
+						if (
+							current?.delivery === audit.delivery &&
+							current.head === audit.head &&
+							current.startedAt === audit.startedAt &&
+							(current.verdict === "pending" || current.verdict === "omitted")
+						)
+							ctx.updateTodoSchedule!(content, {
+								audit: {
+									...audit,
+									verdict: "unavailable",
+									cancelled: true,
+									findings: aborted.error || "audit worker stopped before a verdict",
+									at,
+								},
+							});
+					}
+					return;
+				}
 				await submit(details?.results?.[0]?.output);
 			} catch (error) {
 				for (const row of batch.rows) {

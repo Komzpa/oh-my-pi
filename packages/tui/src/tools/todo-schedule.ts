@@ -170,6 +170,8 @@ export interface TodoAuditFinding {
 export interface TodoRowAudit {
 	issues?: TodoAuditFinding[];
 	workerId?: string;
+	/** The worker was explicitly stopped; do not relaunch this audit for the same delivery and head. */
+	cancelled?: boolean;
 	/** `todoRowDeliveryKey` of the executor run being audited; a newer run invalidates this record. */
 	delivery: string;
 	repoPath: string;
