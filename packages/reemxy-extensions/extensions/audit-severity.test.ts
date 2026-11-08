@@ -8,7 +8,7 @@ const blocker = { kind: "product_regression", severity: "blocker" as const, evid
 test("row auditor defaults legacy nits to later but failing checks and regression kinds block", () => {
 	const verdict = { row: "Commit candidate", verdict: "fail" as const, findings: "More assertion coverage", checks: [{ command: "bun test", exitCode: 0 }], screenshots: [] };
 	expect(settleRowAuditVerdict(verdict).verdict).toBe("pass");
-	expect(settleRowAuditVerdict({ ...verdict, issues: [blocker] }).verdict).toBe("fail");
+	expect(settleRowAuditVerdict({ ...verdict, issues: [blocker] })).toMatchObject({ verdict: "fail", findings: expect.stringContaining(blocker.evidence) });
 	expect(settleRowAuditVerdict({ ...verdict, checks: [{ command: "bun test", exitCode: 1 }] }).verdict).toBe("fail");
 	expect(settleRowAuditVerdict({ ...verdict, verdict: "pass", checks: [{ command: "bun test", exitCode: 1, gate: true }] }).verdict).toBe("fail");
 	expect(parseDeliveryVerdict({ verdict: "defects", findings: [{ kind: "broken_gate", evidence: "build exits 1" }] })?.verdict).toBe("defects");

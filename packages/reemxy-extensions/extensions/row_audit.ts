@@ -115,7 +115,8 @@ export function settleRowAuditVerdict(
 		if (widened.length) return { verdict: "fail", findings: widened.map(diff => diff.reason).join("; ") };
 	}
 	const issues = rowAuditIssues(verdict);
-	return { verdict: issues.some(issue => findingSeverity(issue) === "blocker") ? "fail" : "pass", findings: verdict.findings };
+	const blockers = issues.filter(issue => findingSeverity(issue) === "blocker");
+	return { verdict: blockers.length ? "fail" : "pass", findings: blockers.length ? blockers.map(issue => `${issue.evidence}${issue.action ? `; next: ${issue.action}` : ""}`).join("\n") : verdict.findings };
 }
 
 export function rowAuditIssues(verdict: RowAuditVerdict): AuditFinding[] {
