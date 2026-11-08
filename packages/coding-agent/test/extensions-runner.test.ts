@@ -5279,6 +5279,27 @@ describe("ExtensionRunner", () => {
 				);
 			}
 			await expect(tool.execute("missing", { data: { rows: [] } })).rejects.toThrow("does not match schema");
+			// A completed-looking result without structured evidence must return to the same auditor.
+			const bare = { row, verdict: "fail", findings: "A check failed" };
+			await expect(tool.execute("no-evidence", { data: { rows: [bare] } })).rejects.toThrow("does not match schema");
+			await expect(
+				tool.execute("empty-evidence", { data: { rows: [{ ...bare, checks: [], screenshots: [] }] } }),
+			).rejects.toThrow("does not match schema");
+			await expect(
+				tool.execute("bad-check", { data: { rows: [{ ...bare, checks: [{ command: "npm test" }] }] } }),
+			).rejects.toThrow("does not match schema");
+			const checkOnly = await tool.execute("check-only", {
+				data: { rows: [{ ...bare, checks: [{ command: "npm test", exitCode: 1 }] }] },
+			});
+			expect(checkOnly.details?.status).toBe("success");
+			const shotOnly = await tool.execute("screenshot-only", {
+				data: { rows: [{ ...bare, screenshots: [{ path: "/tmp/capture.png" }] }] },
+			});
+			expect(shotOnly.details?.status).toBe("success");
+			const inconclusive = await tool.execute("inconclusive", {
+				data: { rows: [{ ...bare, verdict: "inconclusive" }] },
+			});
+			expect(inconclusive.details?.status).toBe("success");
 			const result = await tool.execute("corrected", { data: valid });
 			expect(result.details?.status).toBe("success");
 			const update = seen.onUpdate as (value: unknown) => void;
