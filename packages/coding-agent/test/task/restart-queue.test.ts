@@ -184,6 +184,102 @@ afterEach(async () => {
 });
 
 describe("restart queue controller", () => {
+	it("freezes terminal stage elapsed while active stage elapsed keeps growing", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const identity = identityFor(manager, "elapsed-instance", 1);
+		const base = {
+			...coldRecord(identity, "restarting"),
+			requestId: "active-elapsed",
+			updatedAt: 2_000,
+			drainStatus: {
+				runningWorkers: [],
+				queuedInputCount: 0,
+				stage: "replace_runtime",
+				stageStartedAt: 1_000,
+			},
+		};
+		await appendQueueRecord(manager, identity, base);
+		await appendQueueRecord(manager, identity, {
+			...base,
+			requestId: "terminal-elapsed",
+			state: "completed",
+		});
+		const controller = createRestartQueueController({
+			session: makeSession(manager).session,
+			identity: () => identity,
+			restart: async () => {},
+		});
+		const now = vi.spyOn(Date, "now");
+		try {
+			now.mockReturnValue(5_000);
+			const firstTerminal = await controller.handle({ identity, op: "status", requestId: "terminal-elapsed" });
+			const firstActive = await controller.handle({ identity, op: "status", requestId: "active-elapsed" });
+			now.mockReturnValue(9_000);
+			const secondTerminal = await controller.handle({ identity, op: "status", requestId: "terminal-elapsed" });
+			const secondActive = await controller.handle({ identity, op: "status", requestId: "active-elapsed" });
+
+			expect(firstTerminal.request?.drainStatus?.stageElapsedMs).toBe(1_000);
+			expect(secondTerminal.request?.drainStatus?.stageElapsedMs).toBe(1_000);
+			expect(firstActive.request?.drainStatus?.stageElapsedMs).toBe(4_000);
+			expect(secondActive.request?.drainStatus?.stageElapsedMs).toBe(8_000);
+			expect(formatRestartRequestStatus(firstTerminal.request, 5_000)).toBe(
+				formatRestartRequestStatus(secondTerminal.request, 9_000),
+			);
+			expect(formatRestartRequestStatus(firstActive.request, 5_000)).not.toBe(
+				formatRestartRequestStatus(secondActive.request, 9_000),
+			);
+		} finally {
+			now.mockRestore();
+			controller.dispose();
+		}
+	});
+
+	it("reports restore_children as nonterminal until deferred child recovery settles", async () => {
+		const cwd = makeTempDir();
+		const { manager } = await createRoot(cwd);
+		const oldIdentity = identityFor(manager, "old-instance", 1);
+		await appendQueueRecord(manager, oldIdentity, coldRecord(oldIdentity, "checkpointed"));
+		const finished = Promise.withResolvers<restartRecovery.RestartRecoveryReport>();
+		const recovery = vi
+			.spyOn(restartRecovery, "restoreSubagentsAfterRestart")
+			.mockImplementation(() => finished.promise);
+		const harness = makeSession(manager, { queuedInputCount: 2 });
+		const identity = identityFor(manager, "successor", 2);
+		const states: RestartRequestRecord[] = [];
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {},
+			deferChildren: true,
+			onStateChange: record => states.push(record),
+		});
+		try {
+			await controller.restore();
+			const admitted = await controller.handle({ identity, op: "status" });
+			expect(admitted.request).toMatchObject({
+				state: "restarting",
+				drainStatus: { stage: "restore_children", queuedInputCount: 2 },
+			});
+			expect(states.some(record => record.state === "completed")).toBe(false);
+			expect(harness.customMessages.some(message => message.details?.state === "completed")).toBe(false);
+			expect(harness.customMessages.at(-1)?.details?.state).toBe("restarting");
+
+			const running = controller.resumeChildren();
+			expect(recovery).toHaveBeenCalledTimes(1);
+			expect((await controller.handle({ identity, op: "status" })).request?.state).toBe("restarting");
+			finished.resolve({ resumed: [], restoredIdle: [], parked: [], pendingToolCalls: [], failures: [] });
+			await running;
+
+			expect((await controller.handle({ identity, op: "status" })).request?.state).toBe("completed");
+			expect(states.at(-1)?.state).toBe("completed");
+			expect(harness.customMessages.some(message => message.details?.state === "completed")).toBe(true);
+		} finally {
+			recovery.mockRestore();
+			controller.dispose();
+		}
+	});
+
 	it("finishes startup admission before deferred child recovery and starts recovery once", async () => {
 		const cwd = makeTempDir();
 		const { manager } = await createRoot(cwd);
@@ -1031,11 +1127,12 @@ describe("restart queue controller", () => {
 		await controller.restore();
 
 		const texts = customMessageTexts(harness, requestId);
-		expect(texts).toHaveLength(1);
-		expect(texts[0]).toContain(requestId);
-		expect(texts[0]).toMatch(/complet/i);
-		expect(texts[0]).toMatch(/no longer applies|resume normal work/i);
-		expect(texts[0]).not.toMatch(/do not start another model turn/i);
+		expect(harness.customMessages.map(message => message.details?.state)).toEqual(["restarting", "completed"]);
+		expect(texts).toHaveLength(2);
+		expect(texts[1]).toContain(requestId);
+		expect(texts[1]).toMatch(/complet/i);
+		expect(texts[1]).toMatch(/no longer applies|resume normal work/i);
+		expect(texts[1]).not.toMatch(/do not start another model turn/i);
 		controller.dispose();
 	});
 	it.each(["checkpointed", "restarting"] as const)(
@@ -1101,8 +1198,8 @@ describe("restart queue controller", () => {
 		await manager.flush();
 		const order: string[] = [];
 		const harness = makeSession(manager, {
-			onCustomMessage: () => {
-				order.push("notice");
+			onCustomMessage: message => {
+				order.push(`notice:${message.details?.state}`);
 			},
 			onDelivery: () => {
 				order.push("continuation");
@@ -1115,7 +1212,7 @@ describe("restart queue controller", () => {
 			restart: async () => {},
 		});
 		await controller.restore();
-		expect(order).toEqual(["notice", "continuation"]);
+		expect(order).toEqual(["notice:restarting", "notice:completed", "continuation"]);
 		controller.dispose();
 	});
 
@@ -1152,11 +1249,12 @@ describe("restart queue controller", () => {
 		await controller.restore();
 		await controller.restore();
 		const texts = customMessageTexts(harness, requestId);
-		expect(texts).toHaveLength(1);
-		expect(texts[0]).toContain(requestId);
-		expect(texts[0]).toMatch(/complet/i);
-		expect(texts[0]).toMatch(/no longer applies|resume normal work/i);
-		expect(texts[0]).not.toMatch(/do not start another model turn/i);
+		expect(harness.customMessages.map(message => message.details?.state)).toEqual(["restarting", "completed"]);
+		expect(texts).toHaveLength(2);
+		expect(texts[1]).toContain(requestId);
+		expect(texts[1]).toMatch(/complet/i);
+		expect(texts[1]).toMatch(/no longer applies|resume normal work/i);
+		expect(texts[1]).not.toMatch(/do not start another model turn/i);
 		expect(controller.snapshot().request).toMatchObject({ requestId, state: "completed" });
 		controller.dispose();
 	});
