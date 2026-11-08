@@ -1234,7 +1234,7 @@ describe("AgentSession restart queue round trip", () => {
 			if (!file) throw new Error("Expected durable journal");
 			const before = (await Bun.file(file).stat()).size;
 			const beforeEntries = restartQueueCheckpoints(currentManager()).length;
-			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] } as Parameters<typeof vi.useFakeTimers>[0]);
 			for (let index = 0; index < 100; index++) await session.sendCustomMessage(notice, options);
 			vi.advanceTimersByTime(5_100);
 			vi.useRealTimers();
@@ -1265,7 +1265,7 @@ describe("AgentSession restart queue round trip", () => {
 		const before = (await Bun.file(file).stat()).size;
 		const count = restartQueueCheckpoints(currentManager()).length;
 		session.agent.state.isStreaming = true;
-		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] } as Parameters<typeof vi.useFakeTimers>[0]);
 		for (let index = 0; index < 100; index++) {
 			await session.sendCustomMessage(
 				{ customType: `busy-${index % 32}`, content: `${index}:${"x".repeat(2_000)}`, display: false },
