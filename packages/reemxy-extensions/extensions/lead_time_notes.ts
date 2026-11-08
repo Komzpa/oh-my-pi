@@ -56,7 +56,7 @@ export async function appendTimedNote(
 	if (!content.trim()) return false;
 	const identity = Bun.hash(semanticKey).toString(16);
 	if (!shouldAppendTimedNote(latestIdentity(ctx, customType), identity, now, workOpen)) return false;
-	const delivery = { deliverAs: "steer" as const, triggerTurn: false, interruptWait: false, supersedes: customType };
+	const delivery = { deliverAs: "aside" as const, triggerTurn: false, interruptWait: false, supersedes: customType };
 	await pi.sendMessage(
 		{
 			customType,

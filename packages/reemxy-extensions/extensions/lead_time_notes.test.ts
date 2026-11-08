@@ -29,7 +29,7 @@ test("lead reminders append once, stay quiet between turns, then repeat after fi
 		display: false,
 		attribution: "agent",
 	});
-	expect(sent[0]?.options).toEqual({ deliverAs: "steer", triggerTurn: false, interruptWait: false, supersedes: "lead-note" });
+	expect(sent[0]?.options).toEqual({ deliverAs: "aside", triggerTurn: false, interruptWait: false, supersedes: "lead-note" });
 	expect(await append(start + LEAD_NOTE_INTERVAL_MS)).toBe(true);
 	expect(sent).toHaveLength(2);
 });
