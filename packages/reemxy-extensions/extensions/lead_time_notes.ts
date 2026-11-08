@@ -85,6 +85,25 @@ export function planChurnRows(phases: TodoScheduleInput): Array<{ row: string; f
 	});
 }
 
+/** Open prerequisite paths, including dangling links and cycles that need plan repair. */
+export function unfinishedDependencyChains(phases: TodoScheduleInput, title: string): string[][] {
+	const rows = new Map(phases.flatMap(phase => phase.tasks).map(row => [row.content, row]));
+	const walk = (name: string, path: string[]): string[][] => {
+		const pending = (rows.get(name)?.schedule?.dependencies ?? []).filter(dep => {
+			const row = rows.get(dep);
+			return !row || (row.status !== "completed" && row.status !== "abandoned");
+		});
+		if (!pending.length) return path.length > 1 ? [path] : [];
+		return pending.flatMap(dep => path.includes(dep) ? [[...path, dep]] : walk(dep, [...path, dep]));
+	};
+	return walk(title, [title]);
+}
+
+/** Retry pressure only applies when the row's prerequisites permit a changed attempt. */
+export function actionableChurnRows(phases: TodoScheduleInput): Array<{ row: string; failures: number; reestimates: number }> {
+	return planChurnRows(phases).filter(item => unfinishedDependencyChains(phases, item.row).length === 0);
+}
+
 export function renderPlanFactNote(
 	phases: TodoScheduleInput,
 	now: number,
@@ -93,7 +112,7 @@ export function renderPlanFactNote(
 	_forecastFinish?: number,
 ): string {
 	const open = phases.flatMap(phase => phase.tasks).filter(row => row.status !== "completed" && row.status !== "abandoned");
-	const churn = planChurnRows(phases).slice(0, 8).map(item => ({ ...item, row: item.row.slice(0, 180) }));
+	const churn = actionableChurnRows(phases).slice(0, 8).map(item => ({ ...item, row: item.row.slice(0, 180) }));
 	const slipMinutes = planSlipMinutes(deadlineAt, now, open.length > 0);
 	return prompt.render(planfactNote, {
 		churn, slipped: slipMinutes > 0, slipMinutes,
@@ -106,8 +125,9 @@ export type WaitChainDemand = { key: string; action: string; churn: true; row: s
 /** Review logical edges, not resource ordering. Traverse through every open descendant. */
 export function waitChainDemands(phases: TodoScheduleInput): WaitChainDemand[] {
 	const rows = phases.flatMap(phase => phase.tasks).filter(row => row.status !== "completed" && row.status !== "abandoned");
-	const churnRows = new Set(planChurnRows(phases).map(row => row.row));
+	const churnRows = new Set(actionableChurnRows(phases).map(row => row.row));
 	return rows.flatMap(head => {
+		if (unfinishedDependencyChains(phases, head.content).length) return [];
 		const churn = churnRows.has(head.content);
 		const afterWorker = todoRowAfterWorker(head);
 		if (!churn && !(afterWorker?.kind === "needs-worker" && afterWorker.reason === "audit-failed")) return [];
