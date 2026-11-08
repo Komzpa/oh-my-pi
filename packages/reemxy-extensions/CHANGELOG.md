@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Reduced recurring recovery snapshot size while preserving staffing and dependency change detection.
+
 - Only blocking audit findings hold delivery; smaller findings become executable follow-ups, repeated blockers escalate after two repair rounds, and plan reviews run at most twice per hour.
 
 - Honor later parent no-commit instructions when workers hand off uncommitted edits ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
