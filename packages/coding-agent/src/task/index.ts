@@ -60,7 +60,8 @@ import {
 	type TaskToolSchemaInstance,
 } from "./types";
 import type { AgentProgress, SingleResult, TaskItem, TaskParams, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
-import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobError, type AsyncJobManagerApi } from "../async";
+import { AsyncJobError, type AsyncJobManagerApi } from "../async";
+import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON } from "../async/job-manager";
 import { hasResolvableTranscript } from "../internal-urls/registry-helpers";
 import { sessionResolveContext } from "../internal-urls/context";
 import { InternalUrlRouter } from "../internal-urls/router";

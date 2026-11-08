@@ -2168,8 +2168,8 @@ export class SessionManager {
 		if (entry.type === "message" && entry.message.role === "assistant" && normalizeAssistantUsage(entry.message)) {
 			logger.warn("Assistant message recorded with incomplete usage", { id: entry.id });
 		}
-		this.#internStrings(entry);
 		this.#entries.push(entry);
+		this.#internStrings(entry);
 		this.#index.insert(entry);
 		const batch = this.#atomicEntryBatch;
 		if (batch?.collecting) batch.entryIds.add(entry.id);
