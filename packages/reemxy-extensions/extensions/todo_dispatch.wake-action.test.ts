@@ -4,6 +4,8 @@ import { Type } from "@sinclair/typebox";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch from "./todo_dispatch";
+import syntheticPlan from "./fixtures/churndep-plan.json";
+import { wakeDemand } from "./dispatch_wake";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -327,4 +329,100 @@ test("a busy lead keeps demand queued without spending its idle wake allowance",
   const wakes = h.sent.filter(message => message.options?.triggerTurn && message.details?.actionDemand);
   expect(wakes).toHaveLength(2);
   expect(wakes[0].details.actionDemandKey).not.toBe(wakes[1].details.actionDemandKey);
+});
+
+function powerChain(h) {
+  const estimate = h.phases[0].tasks[0].schedule.estimate;
+  h.phases[0].tasks = [
+    { content: "Power", status: "pending", schedule: { dependencies: ["Cooling"], cumulativeReestimateCount: 6, estimate } },
+    { content: "Cooling", status: "pending", schedule: { dependencies: ["Commit"], estimate } },
+    { content: "Commit", status: "in_progress", schedule: { dependencies: [], owner: "Writer", executor: { workerId: "Writer", startedAt: Date.now() }, estimate } },
+  ];
+  h.jobs.running.push({ id: "Writer", type: "task", status: "running", startTime: Date.now() });
+}
+
+test("dependency-held Power CHURN stays silent, then rearms and escalates after Cooling finishes", async () => {
+  const h = await harness([], false, false, false);
+  await h.wake();
+  h.sent.length = 0; h.journal.length = 0;
+  powerChain(h);
+  for (let i = 0; i < 3; i++) { await h.wake(); await h.hooks.get("turn_end")({}, h.ctx); }
+  expect(h.sent.filter(m => m.details?.actionDemand || m.customType === "todo-dispatch-action-required")).toEqual([]);
+  expect(h.journal.filter(e => e.customType === "todo-dispatch-action-demand" && e.data.misses > 0)).toEqual([]);
+  expect(h.sent.some(m => m.content.includes("CHURN:"))).toBe(false);
+  h.jobs.running = [];
+  h.phases[0].tasks[2].status = "completed";
+  await h.hooks.get("turn_end")({}, h.ctx);
+  await h.wake();
+  const notices = h.sent.filter(m => m.customType === "todo-dependency-wait");
+  expect(notices).toHaveLength(1);
+  expect(notices[0].content).toContain("Power <- Cooling");
+  expect(h.sent.findLast(m => m.customType === "todo-dispatch-action-required")?.content).toContain("Dispatch a worker for Cooling");
+  await h.wake();
+  expect(h.sent.filter(m => m.customType === "todo-dependency-wait")).toHaveLength(1);
+  h.phases[0].tasks[1].status = "completed";
+  await h.wake();
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.misses).toBe(1);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.sent.findLast(m => m.customType === "todo-dispatch-action-required").content).toContain("ESCALATED");
+  expect(h.sent.findLast(m => m.customType === "todo-dispatch-action-required").content).toContain("Split or cut scope on Power");
+});
+
+test("new dependency suspends an escalated CHURN counter, including after reload", async () => {
+  const h = await harness([], false, false, false);
+  await h.wake();
+  await h.hooks.get("turn_end")({}, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  h.phases[0].tasks[0].schedule.dependencies = ["Commit"];
+  h.phases[0].tasks.push({ content: "Commit", status: "in_progress", schedule: { owner: "Writer", dependencies: [] } });
+  h.jobs.running.push({ id: "Writer", type: "task", status: "running" });
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.misses).toBe(0);
+  const resumed = await harness(h.journal, false, false, false);
+  await resumed.wake();
+  await resumed.hooks.get("turn_end")({}, resumed.ctx);
+  expect(resumed.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.misses).toBe(1);
+});
+
+test("synthetic chain: an hour of blocked CHURN cannot accrue demands; releasing prerequisites reactivates recovery", async () => {
+  let now = Date.parse(syntheticPlan.asOf);
+  spyOn(Date, "now").mockImplementation(() => now);
+  const h = await harness([], true, false, false);
+  await h.hooks.get("turn_start")({}, h.ctx);
+  h.phases.splice(0, h.phases.length, ...structuredClone(syntheticPlan.phases));
+  const rows = h.phases.flatMap(p => p.tasks);
+  const power = rows.find(r => r.content === "Row A");
+  const cooling = rows.find(r => r.content === power.schedule.dependencies[0]);
+  const commit = rows.find(r => r.content === cooling.schedule.dependencies[0]);
+  h.jobs.running.push({ id: commit.schedule.executor.workerId, type: "task", status: "running", startTime: commit.schedule.executor.startedAt });
+  h.sent.length = 0; h.journal.length = 0;
+  for (let minute = 0; minute < 60; minute++) {
+    now += 60000;
+    await h.hooks.get("turn_end")({}, h.ctx);
+  }
+  const demands = h.journal.filter(e => e.customType === "todo-dispatch-action-demand" && e.data.misses > 0);
+  const powerDemands = demands.filter(e => e.data.action.startsWith(`Split or cut scope on ${power.content}`) || e.data.action.startsWith(`WAIT-CHAIN REVIEW: ${power.content} `));
+  expect(powerDemands).toHaveLength(0);
+  // Retain recovery on the root; completing it must expose Cooling, then Power.
+  expect(h.jobs.running[0].id).toBe(commit.schedule.executor.workerId);
+  commit.status = "completed"; h.jobs.running = [];
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.action).toContain(cooling.content);
+  cooling.status = "completed";
+  // Other blocked CHURN rows remain waiting; the original Power acceptance becomes actionable.
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.action).toStartWith(`Split or cut scope on ${power.content}`);
+});
+
+
+test("slipped row cannot demand dispatch through unfinished dependencies while the root is staffed", async () => {
+  const h = await harness([], false, true, false);
+  powerChain(h);
+  h.phases[0].tasks[0].schedule.cumulativeReestimateCount = 0;
+  expect(wakeDemand(h.phases, new Set(["Writer"]), Date.now(), Date.now() - 60000)).toBeUndefined();
+  h.phases[0].tasks[2].status = "completed";
+  h.phases[0].tasks[1].status = "completed";
+  const demand = wakeDemand(h.phases, new Set(), Date.now(), Date.now() - 60000);
+  expect(demand.action).toContain("Dispatch a worker for Power");
 });

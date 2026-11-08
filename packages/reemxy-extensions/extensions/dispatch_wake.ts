@@ -3,6 +3,8 @@ import recoveryInstructions from "./dispatch-recovery.md" with { type: "text" };
 import actionTemplate from "./dispatch-action.md" with { type: "text" };
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 
+import { actionableChurnRows, unfinishedDependencyChains } from "./lead_time_notes";
+
 export type WakeDemand = { key: string; action: string; churn: boolean; row?: string };
 export type WakeReceipt = {
 	key: string;
@@ -10,6 +12,7 @@ export type WakeReceipt = {
 	action: string;
 	toolCalls: number;
 	mutations: number;
+	row?: string;
 	recovery?: RecoveryState;
 };
 
@@ -24,15 +27,8 @@ export function wakeDemand(
 	const rows = phases
 		.flatMap(phase => phase.tasks)
 		.filter(row => row.status !== "completed" && row.status !== "abandoned");
-	const churn = questions.length
-		? undefined
-		: rows.find(
-				row =>
-					(row.schedule?.attemptHistory?.filter(
-						attempt => attempt.terminalStatus !== "completed" || attempt.rejectionReason,
-					).length ?? 0) >= 3 ||
-					(row.schedule?.cumulativeReestimateCount ?? row.schedule?.reestimateCount ?? 0) >= 3,
-			);
+	const churnTitles = new Set(actionableChurnRows(phases).map(item => item.row));
+	const churn = questions.length ? undefined : rows.find(row => churnTitles.has(row.content));
 	const workerQuestion = questions[0];
 	const question = rows.find(row => row.status === "blocked" && row.schedule?.owner && row.blocker);
 	const closed = new Set(
@@ -48,7 +44,7 @@ export function wakeDemand(
 			(row.schedule?.dependencies ?? []).every(dep => closed.has(dep)),
 	);
 	const slipped = rows.length > 0 && deadline !== undefined && Math.max(now, finish ?? 0) > deadline;
-	const row = churn ?? question ?? ready ?? (slipped ? rows[0] : undefined);
+	const row = churn ?? question ?? ready ?? (slipped ? rows.find(row => !unfinishedDependencyChains(phases, row.content).length && !running.has(row.schedule?.owner ?? "")) : undefined);
 	if (!row && !workerQuestion) return;
 	const kind = churn ? "churn" : workerQuestion || question ? "question" : ready ? "dispatch" : "slip";
 	const action = prompt
