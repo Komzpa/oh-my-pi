@@ -1589,6 +1589,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	async #resumeAfterRestoredAsk(record: RestartRequestRecord | undefined, answered: boolean): Promise<void> {
 		const resumeWork = answered || record?.rootWasRunning === true || this.#session.getRestartPendingInputCount() > 0;
 		if (record) await this.#restoreGoalModeFor(record, resumeWork);
+		// restore() skips the continuation while a question owns the root; restored
+		// input stays held until one exists, so publish it once the question settles.
+		if (!this.#disposed && resumeWork && record?.state === "completed")
+			await sendRootContinuationOnce(this.#session, record.requestId);
 		if (!this.#disposed && resumeWork) this.#session.resumeAfterAskReanswer();
 	}
 
