@@ -83,3 +83,13 @@ test("follow-ups from separate delivery rows share a single addressable Later ph
 		.toEqual([["Audit follow-up: Commit candidate", "Audit follow-up: Push candidate"]]);
 	expect(phases[1]!.tasks.every(row => row.schedule?.dependencies?.length === 0)).toBe(true);
 });
+
+test("new findings on a follow-up stay actionable without nested audit rows", () => {
+	let phases: TodoPhase[] = [{ name: "Delivery", tasks: [{ content: "Ship candidate", status: "completed" }] }];
+	phases = patchTodoSchedule(phases, "Ship candidate", { auditFollowUps: ["first finding"] }, 1)!;
+	phases = patchTodoSchedule(phases, "Audit follow-up: Ship candidate", { auditFollowUps: ["second finding"] }, 2)!;
+	const followUps = phases.flatMap(phase => phase.tasks).filter(row => row.content.startsWith("Audit follow-up: "));
+	expect(followUps).toHaveLength(1);
+	expect(followUps[0]!.notes).toEqual(["first finding", "second finding"]);
+	expect(followUps[0]!.status).toBe("pending");
+});

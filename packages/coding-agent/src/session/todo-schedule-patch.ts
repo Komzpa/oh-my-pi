@@ -44,6 +44,21 @@ export function patchTodoSchedule(
 		patch.auditFollowUps &&
 		JSON.stringify(patch.auditFollowUps) !== JSON.stringify(previous.schedule?.auditFollowUps);
 	const actions = changedFollowUps ? row.schedule.auditFollowUps! : [];
+	// Existing sessions contain generated follow-ups without a lineage field. Keep
+	// their new findings on that actionable row instead of nesting follow-ups.
+	if (actions.length && task.startsWith("Audit follow-up: ")) {
+		row.notes = [...new Set([...(previous.notes ?? []), ...actions])];
+		row.schedule.progress = { at, evidence: row.notes.join("\n") };
+		if (!row.schedule.auditEscalation) {
+			row.status = "pending";
+			row.blocker = undefined;
+		}
+		return phases.map(phase =>
+			phase.tasks.includes(previous)
+				? { ...phase, tasks: phase.tasks.map(candidate => (candidate === previous ? row : candidate)) }
+				: phase,
+		);
+	}
 	const existing = phases.flatMap(phase => phase.tasks).some(candidate => candidate.content === followUp);
 	const result = phases.map(phase =>
 		phase.tasks.includes(previous)
