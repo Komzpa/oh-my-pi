@@ -2163,8 +2163,26 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					ircEnabled,
 					buildDetails: buildAsyncDetails,
 					onUpdate,
-					onSettled: failed => {
+					onSettled: (failed, runSignal) => {
 						const prior = this.#todoExecutors.get(spawn.agentId);
+						if (
+							prior &&
+							runSignal?.reason === ASYNC_JOB_MANAGER_SHUTDOWN_REASON &&
+							!this.#restartWorkers.has(spawn.agentId)
+						)
+							this.#recordFailedAttempt(
+								{
+									id: spawn.agentId,
+									exitCode: 1,
+									aborted: true,
+									abortReason: "Restart interrupted queued resource wait.",
+									error: "Restart interrupted queued resource wait.",
+									stderr: "",
+									output: "",
+									durationMs: Date.now() - prior.startedAt,
+								},
+								runSignal,
+							);
 						const interrupted = this.#restartWorkers.delete(spawn.agentId);
 						if (prior && !interrupted) {
 							this.#persistTodoExecutor({
@@ -2366,7 +2384,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		ircEnabled: boolean;
 		buildDetails: () => TaskToolDetails;
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>;
-		onSettled?: (failed: boolean) => void;
+		onSettled?: (failed: boolean, signal: AbortSignal) => void;
 	}): string {
 		const {
 			manager,
@@ -2487,7 +2505,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				);
 				if (!permitHeld || runSignal.aborted) {
 					progress.status = "aborted";
-					onSettled?.(true);
+					onSettled?.(true, runSignal);
 					throw new Error("Aborted before execution");
 				}
 				try {
@@ -2537,7 +2555,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						delete progress.resolvedThinkingLevel;
 						delete progress.resolvedModelIsFallback;
 					}
-					onSettled?.(resultFailed);
+					onSettled?.(resultFailed, runSignal);
 					const statusText = resultFailed
 						? `Background task ${agentId} failed.`
 						: `Background task ${agentId} complete.`;
@@ -2555,7 +2573,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					}
 					progress.status = "failed";
 					progress.durationMs = Math.max(0, Date.now() - startedAt);
-					onSettled?.(true);
+					onSettled?.(true, runSignal);
 					const statusText = `Background task ${agentId} failed.`;
 					await reportProgress(statusText, buildDetails() as unknown as Record<string, unknown>);
 					const message = error instanceof Error ? error.message : String(error);
