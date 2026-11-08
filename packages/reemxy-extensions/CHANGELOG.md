@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Only blocking audit findings hold delivery; smaller findings become executable follow-ups, repeated blockers escalate after two repair rounds, and plan reviews run at most twice per hour.
+
 - Honor later parent no-commit instructions when workers hand off uncommitted edits ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Suspend CHURN retry pressure while prerequisites are unfinished; keep dependency-ready recovery actionable ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

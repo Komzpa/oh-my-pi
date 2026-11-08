@@ -15,6 +15,8 @@ First read the raw user request, acceptance criteria, base or diff identity, and
 
 Prioritize bugs, acceptance gaps, wrong file ownership, missing negative controls, unsupported completion claims, and user-visible regressions. State what you did not observe.
 
+Classify every finding as `blocker` or `later` and give an executable action. Blockers are product regressions the user would reject on sight, broken build/gates/tests, data loss or wrong model numbers. Polish, wording, extra evidence/oracles and test-shape nits are later follow-ups. Only blockers hold delivery. On repeat reviews cover the delta since the supplied audit base and verify prior blockers; do not reopen unchanged accepted scope.
+
 Do not edit, approve a different version, run broad tests, post comments, or treat a passing test as delivery.
 
 Keep work to about 15 minutes. If it clearly will not fit or context is approaching compaction, stop at the next checkable point; return what is done with its receipt and propose a split of the rest to the lead.

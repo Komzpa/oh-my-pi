@@ -19,6 +19,7 @@ import planCritic, {
 type Handler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknown;
 const action: PlanAction = {
 	id: "cut-wait",
+	severity: "blocker",
 	kind: "cut_dependency",
 	row: "Collateral",
 	dependency: "Labels",
@@ -231,7 +232,9 @@ describe("plan critic runtime binding", () => {
 		h.event("agent_end");
 		expect(h.notices).toHaveLength(1);
 	});
-	test("new churn triggers a review immediately inside the periodic interval", async () => {
+	test("new churn triggers a review after the minimum cadence", async () => {
+		const now = Date.now();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(now);
 		const h = harness([], {
 			...verdict,
 			converging: true,
@@ -245,6 +248,10 @@ describe("plan critic runtime binding", () => {
 		next[0]!.tasks[0]!.schedule = { cumulativeReestimateCount: 2 };
 		h.set(next);
 		h.event("tool_result", { toolName: "todo", toolCallId: "new", isError: false });
+		await settle();
+		expect(h.run).toHaveBeenCalledTimes(1);
+		clock.mockReturnValue(now + 30 * 60_000);
+		h.wake();
 		await settle();
 		expect(h.run).toHaveBeenCalledTimes(2);
 		h.event("before_agent_start");
@@ -479,11 +486,29 @@ test("changed row regenerates a verdict from current ownership instead of replay
 	await h.event("session_start"); await settle();
 	const originalId = (h.entries.filter(entry => entry.customType === PLAN_CRITIC_ENTRY).at(-1)!.data as Binding).id;
 	const next = makePlan(); next[0]!.tasks[1]!.schedule!.owner = "NewOwner-3"; h.set(next);
-	clock.mockReturnValue(now + 60_000);
+	clock.mockReturnValue(now + 30 * 60_000);
 	h.wake(); await settle();
 	expect(h.run).toHaveBeenCalledTimes(2);
 	expect(h.run.mock.calls[1]![0]).toContain("NewOwner-3");
 	const latest = h.entries.filter(entry => entry.customType === PLAN_CRITIC_ENTRY).at(-1)!.data as Binding;
 	expect(latest.id).not.toBe(originalId);
 	expect(h.notices).toHaveLength(2);
+});
+
+test("a persisted failed critic attempt cannot be retried on resume before the cadence", async () => {
+	const now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+	const h = harness([{ type: "custom", customType: `${PLAN_CRITIC_ENTRY}-attempt`, data: { at: now - 60_000 } }]);
+	await h.event("session_start"); await settle();
+	expect(h.run).not.toHaveBeenCalled();
+	clock.mockReturnValue(now + 29 * 60_000);
+	h.wake(); await settle();
+	expect(h.run).toHaveBeenCalledTimes(1);
+});
+
+test("later plan actions never create a binding wait refusal", async () => {
+	const h = harness([], { ...verdict, actions: [{ ...action, severity: "later" }] });
+	await h.event("session_start"); await settle();
+	expect(h.event("tool_call", { toolName: "wait", toolCallId: "later" })).toBeUndefined();
+	expect(chiefCriticFixes(h.ctx)).toEqual([]);
 });

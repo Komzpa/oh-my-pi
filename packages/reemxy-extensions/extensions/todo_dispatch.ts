@@ -4038,6 +4038,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // Delivered rows the runtime audit could not verify go to the lead with the missing piece.
     const unverified = phases.flatMap((phase) => phase.tasks).flatMap((task) => {
       const after = todoRowAfterWorker(task);
+      if (task.schedule?.auditEscalation) return [`${JSON.stringify(task.content)} (ask the user to decide unresolved blockers after two repair rounds: ${shorten(task.schedule.auditEscalation)})`];
       const audit = after?.kind === "verify" ? after.audit : undefined;
       if (audit?.verdict === "unavailable") return [`${JSON.stringify(task.content)} (auditor unavailable: ${shorten(audit.findings ?? "")})`];
       if (audit?.verdict === "inconclusive" && (audit.attempts ?? 1) >= 2) return [`${JSON.stringify(task.content)} (inconclusive: ${shorten(audit.findings ?? "")})`];

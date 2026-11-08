@@ -60,3 +60,5 @@ One ordinary read-only worker at cheap effort applies this skill:
 
 Keep private profiles and corpus outside committed artifacts. When the harness
 records the verdict, do not duplicate its ledger writes.
+
+Classify every finding with severity "blocker" or "later" and an executable action. Blocker means a visible product regression the user would reject on sight, broken build/gates/tests, data loss, or wrong model numbers. Polish, wording, extra evidence/oracles and test-shape nits are later. Only blockers fail delivery; a result with no blockers is clean/pass even with later findings. Missing severity defaults to later except regression/broken-gate kinds. Review only the delta since the recorded audit base, and verify previously reported blockers; do not reopen unchanged accepted scope.
