@@ -1233,18 +1233,21 @@ describe("AgentSession restart queue round trip", () => {
 			if (!file) throw new Error("Expected durable journal");
 			const before = (await Bun.file(file).stat()).size;
 			const beforeEntries = restartQueueCheckpoints(currentManager()).length;
-			const started = performance.now();
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 			for (let index = 0; index < 100; index++) await session.sendCustomMessage(notice, options);
-			await Bun.sleep(5_100);
+			vi.advanceTimersByTime(5_100);
+			vi.useRealTimers();
+			await Bun.sleep(50);
 			await session.flushRestartJournal();
-			const seconds = (performance.now() - started) / 1000;
+			const seconds = 5.1;
 			const bytes = (await Bun.file(file).stat()).size - before;
 			const entries = restartQueueCheckpoints(currentManager()).length - beforeEntries;
 			process.stdout.write(
-				`unchanged plan fixture: emissions=100 seconds=${seconds.toFixed(3)} entries=${entries} entries/min=${((entries * 60) / seconds).toFixed(3)} bytes=${bytes} bytes/min=${((bytes * 60) / seconds).toFixed(3)}\n`,
+				`unchanged plan fixture: emissions=100 simulated_seconds=${seconds.toFixed(3)} entries=${entries} entries/min=${((entries * 60) / seconds).toFixed(3)} bytes=${bytes} bytes/min=${((bytes * 60) / seconds).toFixed(3)}\n`,
 			);
 			expect((await Bun.file(file).stat()).size - before).toBe(0);
 		} finally {
+			vi.useRealTimers();
 			session.agent.state.isStreaming = false;
 		}
 	}, 10_000);
