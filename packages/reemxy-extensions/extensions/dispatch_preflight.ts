@@ -81,6 +81,11 @@ function shellTokens(command: string): string[] {
 		}
 		if ([";", "&", "|", "\n", ">", "<"].includes(char)) {
 			flush();
+			if (char === ">" && command[i + 1] === "&") {
+				tokens.push(">&");
+				i++;
+				continue;
+			}
 			if (command[i + 1] === char && char !== "\n") {
 				tokens.push(char + char);
 				i++;
@@ -107,7 +112,7 @@ function decode(token: string): string | undefined {
 }
 export function commandArgv(command: string): string[] {
 	const tokens = shellTokens(command);
-	if (tokens.some(token => [";", "&&", "||", "|", "\n", ">", ">>"].includes(token))) return [];
+	if (tokens.some(token => [";", "&&", "||", "|", "\n", ">", ">>", ">&"].includes(token))) return [];
 	return tokens.flatMap(token => {
 		const value = decode(token);
 		return value === undefined ? [] : [value];
@@ -154,8 +159,9 @@ function shellActions(command: string, cwd: string, depth = 0): ShellAction[] {
 			flush();
 			continue;
 		}
-		if (token === ">" || token === ">>") {
+		if (token === ">" || token === ">>" || token === ">&") {
 			const target = decode(tokens[++i] ?? "");
+			if (token === ">&" && target && /^(?:\d+|-)$/.test(target)) continue;
 			if (target && target !== "&1" && target !== "&2") targets.push(target);
 			continue;
 		}

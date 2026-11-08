@@ -134,12 +134,32 @@ test("low VRAM refuses hardware perf while functional e2e still runs", async () 
 
 test("shell redirections and changed cwd resolve targets, quoted mentions remain inert", async () => {
 	expect(await call("bash", { command: "echo data >/elsewhere/a" })).toMatchObject({ block: true });
+	expect(await call("bash", { command: "echo data 2>&1" })).toBeUndefined();
+	expect(await call("bash", { command: "echo data 2>&-" })).toBeUndefined();
+	expect(await call("bash", { command: "echo data >&/elsewhere/a" })).toMatchObject({ block: true });
 	expect(await call("bash", { command: "cd /elsewhere && touch a" })).toMatchObject({ block: true });
 	expect(await call("bash", { command: "echo '> /elsewhere/a'" })).toBeUndefined();
 	expect(await call("bash", { command: "cd /project && echo data >local" })).toBeUndefined();
 	expect(await call("bash", { command: "env CI=1 timeout 30 bash -lc 'npm run test'" })).toMatchObject({
 		block: true,
 	});
+});
+
+test("descriptor duplication is not a file outside an explicitly scoped worktree", async () => {
+	const registry = new AgentRegistry();
+	const spy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+	registry.register({ id: "Lead", displayName: "Lead", kind: "main", session: {
+		activeToolExecutionUpdates() {}, getTodoPhases: () => [{ name: "Work", tasks: [{
+			content: "Run checks", status: "in_progress", schedule: { owner: "Gate", resources: ["/isolated"] },
+		}] }],
+	} as unknown as AgentSessionHandle });
+	const context = { cwd: "/project", agent: { kind: "sub", id: "Gate", parentId: "Lead" } } as ExtensionContext;
+	try {
+		expect(await call("bash", { command: "echo ok 2>&1" }, context)).toBeUndefined();
+		expect(await call("bash", { command: "echo ok >&/elsewhere/file" }, context)).toMatchObject({ block: true });
+	} finally {
+		spy.mockRestore();
+	}
 });
 
 test("registered tool hook checks launch state and file target before execution", async () => {
