@@ -6937,7 +6937,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         awayWorkList.length
           ? `The user is away. Continue this work list: ${awayWorkList.join("\n")} ${ORDER}`
           : `Overdue TODO follow-through: the plan is past its time and the session went idle. ${ORDER}`,
-        { planRevision: fresh.key, alarms: fresh.alarms },
+        { planRevision: noticeDigest(fresh.key), alarms: fresh.alarms },
         undefined,
         { triggerTurn: true, interruptWait: true },
       );

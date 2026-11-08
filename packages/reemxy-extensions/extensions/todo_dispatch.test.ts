@@ -1599,6 +1599,7 @@ test("idle lifecycle wakes once per active plan/alarm and suppresses paused or c
     expect(sent[0]?.[0]).toMatchObject({
       customType: "agent-focus-gym-eval-sandbox-wake",
       display: false,
+      details: { planRevision: expect.stringMatching(/^[0-9a-f]{16}$/) },
     });
     expect(sent[0]?.[1]).toMatchObject({ deliverAs: "nextTurn", triggerTurn: true, interruptWait: true });
     handlers.get("agent_start")!({}, ctx);
