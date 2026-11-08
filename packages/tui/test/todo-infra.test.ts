@@ -88,3 +88,27 @@ test("HUD resets infra at success, names top cause and excludes restart interrup
 	expect(text).not.toContain("shutdown");
 	expect(todoWorkAttempts([restart])).toEqual([]);
 });
+
+test("HUD resource wait stays within terminal cells with long Unicode holder identities", () => {
+	const display = renderTodoPlanDisplay(
+		[
+			{
+				name: "Work",
+				tasks: [
+					{
+						content: "Queued row",
+						status: "pending",
+						schedule: {
+							resourceWait: { row: "共享资源".repeat(30), workerId: "Holder-".repeat(30) },
+						},
+					},
+				],
+			},
+		],
+		{ workers: [], owners: new Map() },
+		{ width: 40, now: 1000, paint: (_tone, text) => text },
+	);
+	const row = display.lines.find(line => line.includes("☐"))!;
+	expect(row).toContain("waiting for");
+	expect(Bun.stringWidth(row)).toBeLessThanOrEqual(40);
+});

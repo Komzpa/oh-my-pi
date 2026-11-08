@@ -2586,8 +2586,13 @@ export function renderTodoPlanDisplay(
 				for (const child of group) push(paint("dim", `    ☐ ${safeText(child.content)}`), state.worker);
 				continue;
 			}
-			const label = state.state === "waiting" ? `waiting on ${safeText(state.dependency!)}` : state.state;
-			const why = state.reason ?? (state.state === "stuck" ? task.blocker : undefined);
+			const resourceWait = task.schedule?.resourceWait;
+			const label = resourceWait
+				? `waiting for ${safeText(resourceWait.row)} (worker ${safeText(resourceWait.workerId ?? "unassigned")})`
+				: state.state === "waiting"
+					? `waiting on ${safeText(state.dependency!)}`
+					: state.state;
+			const why = resourceWait ? undefined : (state.reason ?? (state.state === "stuck" ? task.blocker : undefined));
 			const blocker = why ? `: ${truncateToWidth(safeText(why), TRUNCATE_LENGTHS.TITLE)}` : "";
 			const rowWorkers = state.worker
 				? [
@@ -2617,11 +2622,7 @@ export function renderTodoPlanDisplay(
 			}
 			const topCause = [...causes].sort((a, b) => b[1] - a[1])[0]?.[0];
 			const infra = failures.length;
-			const resourceWait = task.schedule?.resourceWait;
-			const wait = resourceWait
-				? ` · waiting for ${safeText(resourceWait.row)} (worker ${safeText(resourceWait.workerId ?? "unassigned")})`
-				: "";
-			const suffix = ` — ${label}${blocker}${worker}${wait}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}${infra ? ` · infra failures ${infra} since last success: ${truncateToWidth(safeText(topCause ?? "unknown"), TRUNCATE_LENGTHS.TITLE)}` : ""}`;
+			const suffix = ` — ${label}${blocker}${worker}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}${infra ? ` · infra failures ${infra} since last success: ${truncateToWidth(safeText(topCause ?? "unknown"), TRUNCATE_LENGTHS.TITLE)}` : ""}`;
 			const title = truncateToWidth(
 				safeText(task.content),
 				Math.max(0, (options.width ?? Infinity) - Bun.stringWidth(suffix) - 4),
@@ -2631,7 +2632,9 @@ export function renderTodoPlanDisplay(
 				// rows needing the owner or stuck are warnings, everything idle stays dim.
 				paint(
 					state.state === "stuck" || state.state === "needs you" ? "warning" : state.worker ? "accent" : "dim",
-					`  ☐ ${title}${suffix}`,
+					options.width === undefined
+						? `  ☐ ${title}${suffix}`
+						: truncateToWidth(`  ☐ ${title}${suffix}`, options.width),
 				),
 				state.worker,
 			);

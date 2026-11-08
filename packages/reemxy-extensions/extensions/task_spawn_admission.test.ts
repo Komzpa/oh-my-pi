@@ -1,4 +1,5 @@
 import { todoWorkAttempts } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 import type { AgentToolCall, SpeculativeOperationSink } from "@oh-my-pi/pi-agent-core";
 import type { TaskLaunchSession } from "@oh-my-pi/pi-coding-agent/task/speculative-launch";
 import { afterEach, expect, test, vi } from "bun:test";
@@ -86,7 +87,9 @@ async function fixture() {
 		settings: Settings.isolated({ "async.enabled": true, "task.batch": true, "task.maxConcurrency": 1 }),
 		getSessionFile: () => null,
 		getTodoPhases: () => phases,
-		setTodoPhases: next => { phases.splice(0, phases.length, ...next); },
+		setTodoPhases: next => {
+			phases.splice(0, phases.length, ...next);
+		},
 		persistTodoPhases: () => {},
 		getSessionSpawns: () => "*",
 		asyncJobManager: jobs,
@@ -95,7 +98,12 @@ async function fixture() {
 	const tool = await TaskTool.create(session);
 	const items = [
 		{ name: "PrCaptures", agent: "task", row: "Captures", task: `Captures\nWrite ${target}` },
-		{ name: "Independent", agent: "task", row: "Independent", task: `Independent\nWrite ${path.join(dir, "independent.ts")}` },
+		{
+			name: "Independent",
+			agent: "task",
+			row: "Independent",
+			task: `Independent\nWrite ${path.join(dir, "independent.ts")}`,
+		},
 	];
 	return { dir, target, phases, state, jobs, run, session, tool, items };
 }
@@ -108,20 +116,85 @@ function textOf(result: { content: { type: string; text?: string }[] }) {
 }
 
 test("conflict queues without an attempt or capacity slot, then runs after release", async () => {
- const f = await fixture();
- const result = await f.tool.execute("mixed", { context: "paths", tasks: f.items });
- expect(result.isError).not.toBe(true);
- expect(result.details?.progress?.find(item => item.id === "PrCaptures")?.stage).toContain("Holder-1");
- expect(f.phases[0].tasks[1].schedule?.resourceWait).toEqual({ row: "Holder", workerId: "Holder-1" });
- await f.jobs.getJob("Independent")!.promise;
- expect(f.run).toHaveBeenCalledTimes(1);
- expect(f.phases[0].tasks[1].schedule?.attemptHistory ?? []).toHaveLength(0);
- f.phases[0].tasks[0].status = "completed";
- await f.jobs.getJob("PrCaptures")!.promise;
- expect(f.run).toHaveBeenCalledTimes(2);
- expect(f.phases[0].tasks[1].schedule?.resourceWait).toBeUndefined();
- expect(f.phases[0].tasks[1].schedule?.attemptHistory ?? []).toHaveLength(0);
+	const f = await fixture();
+	const result = await f.tool.execute("mixed", { context: "paths", tasks: f.items });
+	expect(result.isError).not.toBe(true);
+	expect(result.details?.progress?.find(item => item.id === "PrCaptures")?.stage).toContain("Holder-1");
+	expect(f.phases[0].tasks[1].schedule?.resourceWait).toEqual({ row: "Holder", workerId: "Holder-1" });
+	await f.jobs.getJob("Independent")!.promise;
+	expect(f.run).toHaveBeenCalledTimes(1);
+	expect(f.phases[0].tasks[1].schedule?.attemptHistory ?? []).toHaveLength(0);
+	f.phases[0].tasks[0].status = "completed";
+	await f.jobs.getJob("PrCaptures")!.promise;
+	expect(f.run).toHaveBeenCalledTimes(2);
+	expect(f.phases[0].tasks[1].schedule?.resourceWait).toBeUndefined();
+	expect(f.phases[0].tasks[1].schedule?.attemptHistory ?? []).toHaveLength(0);
 });
+
+test("cancelling a resource waiter clears its persisted wait without recording an attempt", async () => {
+	const f = await fixture();
+	await f.tool.execute("cancel-waiter", { context: "shared path", tasks: [f.items[0]] });
+	expect(f.phases[0].tasks[1].schedule?.resourceWait?.workerId).toBe("Holder-1");
+	expect(f.jobs.cancel("PrCaptures")).toBe(true);
+	await f.jobs.getJob("PrCaptures")!.promise;
+	expect(f.phases[0].tasks[1].schedule?.resourceWait).toBeUndefined();
+	expect(f.phases[0].tasks[1].schedule?.attemptHistory ?? []).toHaveLength(0);
+	expect(f.run).not.toHaveBeenCalled();
+});
+
+for (const streamed of [false, true])
+	test(`${streamed ? "adopted streamed" : "fresh"} queued progress follows the holder and clears before running`, async () => {
+		const f = await fixture();
+		const entered = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		const holderChanged = Promise.withResolvers<void>();
+		const originalRun = f.run.getMockImplementation()!;
+		f.run.mockImplementation(async options => {
+			entered.resolve();
+			await finish.promise;
+			return originalRun(options);
+		});
+		cleanups.push(async () => {
+			finish.resolve();
+		});
+		const args = { context: "shared path", tasks: [f.items[0]] };
+		if (streamed) {
+			const admitted = Promise.withResolvers<void>();
+			const emit = f.session.emitBeforeSubagentSpawn!;
+			f.session.emitBeforeSubagentSpawn = async (event, signal) => {
+				const result = await emit(event, signal);
+				if (event.phase === "admission") admitted.resolve();
+				return result;
+			};
+			const sink: SpeculativeOperationSink = {
+				maxInFlight: 2,
+				admit: async () => undefined,
+				authorizeLaunch: async () => ({ allowed: true }),
+				close: () => {},
+			};
+			const call: AgentToolCall = { type: "toolCall", id: "wait-progress", name: "task", arguments: {} };
+			const stream = await f.tool.speculation.stream!.open({ coordinator: sink, parentToolCallId: call.id });
+			if (!stream) throw new Error("Speculation unavailable");
+			stream.update(call, JSON.stringify(args));
+			stream.finalize({ toolCall: call, args });
+			await admitted.promise;
+		}
+		await f.tool.execute("wait-progress", args, undefined, update => {
+			if (update.details?.progress?.[0]?.stage?.includes("Holder-2")) holderChanged.resolve();
+		});
+		f.phases[0].tasks[0].schedule!.owner = "Holder-2";
+		await holderChanged.promise;
+		const job = f.jobs.getJob("PrCaptures")!;
+		expect((job.latestDetails as TaskToolDetails | undefined)?.progress?.[0]?.stage).toContain("Holder-2");
+		f.phases[0].tasks[0].status = "completed";
+		await entered.promise;
+		// Let the started continuation publish the running snapshot.
+		await Bun.sleep(0);
+		expect((job.latestDetails as TaskToolDetails | undefined)?.progress?.[0]?.stage).toBeUndefined();
+		expect((job.latestDetails as TaskToolDetails | undefined)?.progress?.[0]?.status).toBe("running");
+		finish.resolve();
+		await job.promise;
+	});
 
 for (const release of ["released", "narrowed"] as const)
 	test(`${release} claim uses current resources; both items spawn`, async () => {
@@ -299,35 +372,67 @@ for (const agent of ["qa-auditor", "observer"])
 	});
 
 test("several ROOT waiters drain without deadlock or failed attempts", async () => {
- const f = await fixture();
- f.phases[0].tasks = [f.phases[0].tasks[0], ...["Alpha", "Beta", "Gamma"].map(content => ({ content, status: "pending" as const, schedule: { resources: [f.dir] } }))];
- f.phases[0].tasks[0].schedule!.resources = [f.dir];
- const result = await f.tool.execute("replay", { context: "shared ROOT", tasks: ["Alpha", "Beta", "Gamma"].map(name => ({ name, row: name, task: name, resources: [f.dir] })) });
- expect(result.details?.progress).toHaveLength(3);
- expect(f.run).not.toHaveBeenCalled();
- expect(f.phases[0].tasks.slice(1).every(row => row.schedule?.resourceWait?.row === "Holder")).toBe(true);
- f.phases[0].tasks[0].status = "completed";
- await Promise.all(f.jobs.getRunningJobs().map(job => job.promise));
- expect(f.run).toHaveBeenCalledTimes(3);
- expect(f.phases[0].tasks.slice(1).every(row => !row.schedule?.attemptHistory?.length && !row.schedule?.resourceWait)).toBe(true);
+	const f = await fixture();
+	f.phases[0].tasks = [
+		f.phases[0].tasks[0],
+		...["Alpha", "Beta", "Gamma"].map(content => ({
+			content,
+			status: "pending" as const,
+			schedule: { resources: [f.dir] },
+		})),
+	];
+	f.phases[0].tasks[0].schedule!.resources = [f.dir];
+	const result = await f.tool.execute("replay", {
+		context: "shared ROOT",
+		tasks: ["Alpha", "Beta", "Gamma"].map(name => ({ name, row: name, task: name, resources: [f.dir] })),
+	});
+	expect(result.details?.progress).toHaveLength(3);
+	expect(f.run).not.toHaveBeenCalled();
+	expect(f.phases[0].tasks.slice(1).every(row => row.schedule?.resourceWait?.row === "Holder")).toBe(true);
+	f.phases[0].tasks[0].status = "completed";
+	await Promise.all(f.jobs.getRunningJobs().map(job => job.promise));
+	expect(f.run).toHaveBeenCalledTimes(3);
+	expect(
+		f.phases[0].tasks.slice(1).every(row => !row.schedule?.attemptHistory?.length && !row.schedule?.resourceWait),
+	).toBe(true);
 });
 
 for (const shutdown of [true, false])
-test(shutdown ? "shutdown records a restart interruption instead of a failed work attempt" : "explicit cancellation remains a work attempt", async () => {
- const f = await fixture();
- const entered = Promise.withResolvers<void>();
- f.run.mockImplementation(async options => {
-  entered.resolve();
-  while (!options.signal?.aborted) await Bun.sleep(5);
-  return { index: 0, id: options.id, agent: "task", agentSource: "bundled", task: "Independent", exitCode: 1, aborted: true, error: "The operation was aborted.", output: "", stderr: "", truncated: false, durationMs: 1000, tokens: 0, requests: 0 };
- });
- await f.tool.execute("shutdown", { context: "restart probe", tasks: [{ ...f.items[1], row: "Independent" }] });
- await entered.promise;
- f.jobs.cancelAll(undefined, shutdown ? ASYNC_JOB_MANAGER_SHUTDOWN_REASON : undefined);
- await f.jobs.waitForAll();
- const row = f.phases[0].tasks[2];
- expect(row.schedule?.attemptHistory).toHaveLength(1);
- expect(row.schedule?.attemptHistory?.[0].interruption).toBe(shutdown ? "restart" : undefined);
- expect(todoWorkAttempts(row.schedule?.attemptHistory)).toHaveLength(shutdown ? 0 : 1);
- if (shutdown) expect(row.schedule?.executor?.outcome).toBe("aborted");
-});
+	test(
+		shutdown
+			? "shutdown records a restart interruption instead of a failed work attempt"
+			: "explicit cancellation remains a work attempt",
+		async () => {
+			const f = await fixture();
+			const entered = Promise.withResolvers<void>();
+			f.run.mockImplementation(async options => {
+				entered.resolve();
+				while (!options.signal?.aborted) await Bun.sleep(5);
+				return {
+					index: 0,
+					id: options.id,
+					agent: "task",
+					agentSource: "bundled",
+					task: "Independent",
+					exitCode: 1,
+					aborted: true,
+					error: "The operation was aborted.",
+					output: "",
+					stderr: "",
+					truncated: false,
+					durationMs: 1000,
+					tokens: 0,
+					requests: 0,
+				};
+			});
+			await f.tool.execute("shutdown", { context: "restart probe", tasks: [{ ...f.items[1], row: "Independent" }] });
+			await entered.promise;
+			f.jobs.cancelAll(undefined, shutdown ? ASYNC_JOB_MANAGER_SHUTDOWN_REASON : undefined);
+			await f.jobs.waitForAll();
+			const row = f.phases[0].tasks[2];
+			expect(row.schedule?.attemptHistory).toHaveLength(1);
+			expect(row.schedule?.attemptHistory?.[0].interruption).toBe(shutdown ? "restart" : undefined);
+			expect(todoWorkAttempts(row.schedule?.attemptHistory)).toHaveLength(shutdown ? 0 : 1);
+			if (shutdown) expect(row.schedule?.executor?.outcome).toBe("aborted");
+		},
+	);
