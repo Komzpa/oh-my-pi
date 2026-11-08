@@ -144,6 +144,12 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 			now += DELIVERY_CHECKPOINT_MS / 2;
 			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 			expect(JSON.stringify(provider?.(ctx) ?? {})).not.toMatch(/DELIVERY CHECKPOINT|ARTIFACT-FREE CHECKPOINT/);
+
+			// A read-only audit may inspect this checkout, but it is not delivery work and cannot start the artifact clock.
+			phases[0].tasks[0].schedule.readOnly = true;
+			now += DELIVERY_CHECKPOINT_MS * 2;
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			expect(JSON.stringify(provider?.(ctx) ?? {})).not.toMatch(/DELIVERY CHECKPOINT|ARTIFACT-FREE CHECKPOINT/);
 		} finally {
 			handlers.get("session_shutdown")?.({}, ctx);
 			AgentRegistry.global().unregister("checkpoint-fixture");

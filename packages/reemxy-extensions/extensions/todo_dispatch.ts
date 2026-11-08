@@ -4780,11 +4780,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
   };
   const rowOwnsCheckout = (ctx: ExtensionContext, row: TaskRow) =>
-    row.content.startsWith("Push: run project gates and push ") ||
-    row.schedule?.resources?.some(resource => {
-      const target = resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "");
-      return isAbsolute(target) && (resolve(target) === resolve(ctx.cwd) || resolve(target).startsWith(`${resolve(ctx.cwd)}/`));
-    }) === true;
+    row.schedule?.readOnly !== true &&
+    (row.content.startsWith("Push: run project gates and push ") ||
+      row.schedule?.resources?.some(resource => {
+        const target = resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "");
+        return isAbsolute(target) && (resolve(target) === resolve(ctx.cwd) || resolve(target).startsWith(`${resolve(ctx.cwd)}/`));
+      }) === true);
   const ownsBranchWork = (ctx: ExtensionContext) => todoPhases(ctx).some(phase => phase.tasks.some(row => rowOwnsCheckout(ctx, row)));
   const ownsActiveBranchWork = (ctx: ExtensionContext) => todoPhases(ctx).some(phase =>
     phase.tasks.some(row => isOpenRowStatus(row.status) && rowOwnsCheckout(ctx, row))
