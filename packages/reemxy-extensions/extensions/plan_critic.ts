@@ -352,7 +352,7 @@ export default function planCritic(pi: ExtensionAPI, ownerRunStates: (ctx: Exten
 			if (verdict.actions.some(action => !titles.has(action.row)))
 				throw new Error("Plan critic named an unknown row");
 			for (const action of verdict.actions.filter(action => action.severity !== "blocker")) {
-				const row = current.flatMap(phase => phase.tasks).find(row => row.content === action.row);
+				const row = phases(ctx).flatMap(phase => phase.tasks).find(row => row.content === action.row);
 				ctx.updateTodoSchedule?.(action.row, { auditFollowUps: [...new Set([...(row?.schedule?.auditFollowUps ?? []), action.next])] });
 			}
 			const trajectories = rowTrajectories(current, owners);

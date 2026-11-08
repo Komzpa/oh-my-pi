@@ -2,7 +2,7 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { TodoSchedule, TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import planCritic, {
 	actionObserved,
 	chiefCriticFixes,
@@ -69,6 +69,11 @@ function harness(saved: Array<Record<string, unknown>> = [], response: PlanVerdi
 	});
 	const ctx = {
 		getTodoPhases: () => plan,
+		updateTodoSchedule: (task: string, patch: Partial<TodoSchedule>) => {
+			plan = plan.map(phase => ({ ...phase, tasks: phase.tasks.map(row =>
+				row.content === task ? { ...row, schedule: { ...row.schedule, ...patch } } : row) }));
+			return true;
+		},
 		agent: { kind: "main", id: "Main", name: "main", depth: 0 },
 		sessionManager: { getHeader: () => ({ id: "test" }), getBranch: () => entries },
 		runDeliveryCritic: run,
@@ -91,6 +96,7 @@ function harness(saved: Array<Record<string, unknown>> = [], response: PlanVerdi
 	} as unknown as ExtensionAPI, () => owners);
 	return {
 		ctx,
+		plan: () => plan,
 		entries,
 		notices,
 		run,
@@ -511,4 +517,15 @@ test("later plan actions never create a binding wait refusal", async () => {
 	await h.event("session_start"); await settle();
 	expect(h.event("tool_call", { toolName: "wait", toolCallId: "later" })).toBeUndefined();
 	expect(chiefCriticFixes(h.ctx)).toEqual([]);
+});
+
+
+test("multiple later plan actions on one row retain every executable follow-up", async () => {
+	const next = ["Add empty-result coverage", "Clarify the export label"];
+	const h = harness([], { ...verdict, actions: next.map((value, index) => ({
+		...action, id: `later-${index}`, severity: "later", next: value,
+	})) });
+	await h.event("session_start"); await settle();
+	expect(h.plan()[0]!.tasks[1]!.schedule!.auditFollowUps).toEqual(next);
+	expect(h.event("tool_call", { toolName: "wait", toolCallId: "later-actions" })).toBeUndefined();
 });
