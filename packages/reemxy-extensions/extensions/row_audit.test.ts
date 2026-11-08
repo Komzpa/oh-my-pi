@@ -100,6 +100,7 @@ const verdict = (row: string, value: string, findings = "checked at HEAD") => ({
 	verdict: value,
 	findings,
 	checks: ran,
+	issues: value === "fail" ? [{ kind: "product_regression", severity: "blocker", evidence: findings }] : [],
 });
 
 function harness(

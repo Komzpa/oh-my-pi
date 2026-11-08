@@ -78,6 +78,7 @@ export async function leadGateScenarios(): Promise<LeadInstructionScenario[]> {
 							actions: [
 								{
 									id: "staff-preview",
+									severity: "blocker",
 									kind: "dispatch",
 									row: row.content,
 									reason: "Preview has no worker",

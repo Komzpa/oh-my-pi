@@ -133,6 +133,24 @@ test("real extension context persists customer review annotations through sessio
 		expect(redo[0].tasks[0].schedule?.review).toBe("redo");
 		expect(redo[0].tasks[0].schedule?.progress?.evidence).toBe("Rack controls clip at 1568");
 		expect(redo[0].tasks[1]).toEqual(phases[0].tasks[1]);
+		ctx.updateTodoSchedule!("Delivered UI", { auditRounds: 3, auditEscalation: "Save loses records" });
+		expect(session.getTodoPhases()[0].tasks[0].status).toBe("blocked");
+		expect(
+			await ctx.applyReviewPageAnswer!({
+				...answer,
+				contentSha: "published-v2",
+				answer: "redo",
+				note: "Repair Save, then verify persistence",
+			}),
+		).toBe(true);
+		await manager.ensureOnDisk();
+		manager.flushSync();
+		const retrySession = await SessionManager.open(manager.getSessionFile()!);
+		const retry = getLatestTodoPhasesFromEntries(retrySession.getBranch())[0].tasks[0];
+		expect(retry.status).toBe("pending");
+		expect(retry.schedule?.auditEscalation).toBeUndefined();
+		expect(retry.schedule?.auditRounds).toBe(0);
+		await retrySession.close();
 	} finally {
 		await session.dispose();
 		authStorage.close();

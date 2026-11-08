@@ -12,7 +12,13 @@ export function patchTodoSchedule(
 	if (matches.length !== 1) return undefined;
 	const previous = matches[0]!;
 	const row = { ...previous, schedule: { ...previous.schedule, ...structuredClone(patch) } };
-	if (patch.deliveryCritic?.verdict === "defects" && patch.review === "redo") {
+	if (patch.auditEscalation) {
+		row.status = "blocked";
+		row.blocker = patch.auditEscalation;
+		row.schedule.review = "user";
+		row.schedule.handoffPending = true;
+	}
+	if (!patch.auditEscalation && patch.deliveryCritic?.verdict === "defects" && patch.review === "redo") {
 		row.status = "pending";
 		row.blocker = undefined;
 	}
@@ -22,7 +28,8 @@ export function patchTodoSchedule(
 		row.schedule.reviewPagePending = !row.schedule.reviewPage;
 	}
 	if (
-		patch.audit?.verdict === "pass" &&
+		(patch.audit?.verdict === "pass" || patch.deliveryCritic?.verdict === "clean") &&
+		!row.schedule.auditEscalation &&
 		!todoNeedsOwnerDecision(row.schedule) &&
 		(row.status === "pending" || row.status === "in_progress")
 	) {
@@ -30,11 +37,52 @@ export function patchTodoSchedule(
 		row.blocker = undefined;
 		row.schedule.finishedAt ??= at;
 	}
-	return phases.map(phase =>
+	const followUp = `Audit follow-up: ${task}`;
+	const changedFollowUps =
+		patch.auditFollowUps &&
+		JSON.stringify(patch.auditFollowUps) !== JSON.stringify(previous.schedule?.auditFollowUps);
+	const actions = changedFollowUps ? row.schedule.auditFollowUps! : [];
+	const existing = phases.flatMap(phase => phase.tasks).some(candidate => candidate.content === followUp);
+	const result = phases.map(phase =>
 		phase.tasks.includes(previous)
 			? { ...phase, tasks: phase.tasks.map(candidate => (candidate === previous ? row : candidate)) }
 			: phase,
 	);
+	if (actions.length && !existing)
+		result.push({
+			name: "Later",
+			tasks: [
+				{
+					content: followUp,
+					notes: actions,
+					status: "pending",
+					schedule: { dependencies: [], progress: { at, evidence: actions.join("\n") } },
+				},
+			],
+		});
+	else if (actions.length) {
+		for (let index = 0; index < result.length; index++) {
+			const phase = result[index]!;
+			result[index] = {
+				...phase,
+				tasks: phase.tasks.map(candidate =>
+					candidate.content === followUp
+						? {
+								...candidate,
+								notes: actions,
+								status: "pending",
+								schedule: {
+									...candidate.schedule,
+									dependencies: [],
+									progress: { at, evidence: actions.join("\n") },
+								},
+							}
+						: candidate,
+				),
+			};
+		}
+	}
+	return result;
 }
 
 /** Preserve field clearing when JSON drops undefined object properties. */

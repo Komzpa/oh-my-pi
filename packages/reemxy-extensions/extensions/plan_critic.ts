@@ -12,9 +12,15 @@ import {
 	trajectoryTriggers,
 } from "./plan-trajectory";
 
+export const PLAN_CRITIC_MIN_MS = 30 * 60_000;
+export function planCriticDue(now: number, lastAttempt: number, lastSuccess: number, interval: number, urgent: boolean): boolean {
+	return now - lastAttempt >= PLAN_CRITIC_MIN_MS && (urgent || now - lastSuccess >= interval);
+}
+
 export const PLAN_CRITIC_ENTRY = "lead-plan-critic";
 export interface PlanAction {
 	id: string;
+	severity?: "blocker" | "later";
 	kind: "dispatch" | "cut_dependency" | "split" | "cut" | "escalate";
 	row: string;
 	dependency?: string;
@@ -80,6 +86,7 @@ export function parsePlanVerdict(value: unknown): PlanVerdict | undefined {
 			!text(action.row) ||
 			!text(action.reason) ||
 			!text(action.next) ||
+			(action.severity !== undefined && action.severity !== "blocker" && action.severity !== "later") ||
 			!["dispatch", "cut_dependency", "split", "cut", "escalate"].includes(String(action.kind)) ||
 			(action.kind === "cut_dependency" && !text(action.dependency)) ||
 			actions.some(item => item.id === action.id)
@@ -96,7 +103,7 @@ export function parsePlanVerdict(value: unknown): PlanVerdict | undefined {
 	return { ...value, actions } as unknown as PlanVerdict;
 }
 export function pendingActions(binding: Binding): PlanAction[] {
-	return binding.verdict.actions.filter(action => action.kind !== "escalate" && !binding.addressed[action.id]);
+	return binding.verdict.actions.filter(action => action.severity === "blocker" && action.kind !== "escalate" && !binding.addressed[action.id]);
 }
 export interface CriticOwnerRunState {
 	content: string;
@@ -314,8 +321,9 @@ export default function planCritic(pi: ExtensionAPI, ownerRunStates: (ctx: Exten
 			]);
 			const urgent = trajectoryTriggers(digest).length > 0 && trigger !== lastTrigger;
 			if (token !== generation) return skip("tick:session-changed");
-			if (!urgent && (now - lastAttempt < 60_000 || now - lastSuccess < interval)) return skip("tick:not-due");
+			if (!planCriticDue(now, lastAttempt, lastSuccess, interval, urgent)) return skip("tick:not-due");
 			lastAttempt = now;
+			pi.appendEntry(`${PLAN_CRITIC_ENTRY}-attempt`, { at: now });
 			lastTrigger = trigger;
 			const requirementAudits = entries.filter(entry => entry.type === "custom" && entry.customType === "requirement-diff-audit")
 				.flatMap(entry => "data" in entry && object(entry.data) ? [entry.data] : []);
@@ -343,6 +351,10 @@ export default function planCritic(pi: ExtensionAPI, ownerRunStates: (ctx: Exten
 			const titles = new Set(current.flatMap(phase => phase.tasks.map(row => row.content)));
 			if (verdict.actions.some(action => !titles.has(action.row)))
 				throw new Error("Plan critic named an unknown row");
+			for (const action of verdict.actions.filter(action => action.severity !== "blocker")) {
+				const row = current.flatMap(phase => phase.tasks).find(row => row.content === action.row);
+				ctx.updateTodoSchedule?.(action.row, { auditFollowUps: [...new Set([...(row?.schedule?.auditFollowUps ?? []), action.next])] });
+			}
 			const trajectories = rowTrajectories(current, owners);
 			const addressed: Binding["addressed"] = {};
 			for (const action of verdict.actions) {
@@ -390,11 +402,13 @@ export default function planCritic(pi: ExtensionAPI, ownerRunStates: (ctx: Exten
 		const token = generation;
 		const saved = await selectBranchEntriesCooperatively(
 			ctx.sessionManager,
-			metadata => metadata.type === "custom" && metadata.customType === PLAN_CRITIC_ENTRY,
+			metadata => metadata.type === "custom" && [PLAN_CRITIC_ENTRY, `${PLAN_CRITIC_ENTRY}-attempt`].includes(metadata.customType ?? ""),
 		);
 		if (token !== generation) return skip("start:session-changed");
 		for (const entry of saved) {
-			if (entry.type === "custom") {
+			if (entry.type === "custom" && entry.customType === `${PLAN_CRITIC_ENTRY}-attempt`) {
+				lastAttempt = Math.max(lastAttempt, (entry.data as { at: number }).at);
+			} else if (entry.type === "custom") {
 				binding = entry.data as Binding;
 				history = [...history.filter(item => item.id !== binding!.id), binding].slice(-3);
 			}
@@ -402,6 +416,7 @@ export default function planCritic(pi: ExtensionAPI, ownerRunStates: (ctx: Exten
 		if (binding) chiefBindings.set(ctx.sessionManager, binding);
 		lastSaved = binding ? JSON.stringify(binding) : "";
 		lastSuccess = binding?.at ?? 0;
+		lastAttempt = Math.max(lastAttempt, lastSuccess);
 		lastTrigger = binding?.trigger ?? "";
 		lastWake = Date.now();
 		timer = ctx.setInterval(() => {

@@ -1,3 +1,4 @@
+import { auditFindingPatch, findingSeverity, type AuditFinding } from "./audit-findings";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
@@ -11,7 +12,7 @@ import {
 import brief from "./delivery-critic.md" with { type: "text" };
 
 export const CRITIC_TIMEOUT_MS = 15 * 60_000;
-type Finding = { kind: "collateral_defect" | "requirement_violation" | "contradicts_decision"; evidence: string };
+type Finding = AuditFinding;
 export type DeliveryVerdict = { verdict: "clean" | "defects"; findings: Finding[] };
 export type DeliveryRow = { content: string; artifactCwd?: string; schedule?: TodoSchedule };
 
@@ -43,17 +44,20 @@ export function parseDeliveryVerdict(output: unknown): DeliveryVerdict | undefin
 		if (
 			!finding ||
 			typeof finding !== "object" ||
-			!["collateral_defect", "requirement_violation", "contradicts_decision"].includes(finding.kind) ||
+			typeof finding.kind !== "string" ||
 			typeof finding.evidence !== "string" ||
 			!finding.evidence.trim()
 		)
 			return;
-		findings.push(finding);
+		if (finding.action !== undefined && typeof finding.action !== "string") return;
+		if (finding.severity !== undefined && finding.severity !== "blocker" && finding.severity !== "later") return;
+		findings.push({ ...finding, severity: findingSeverity(finding) });
 	}
 	if (value.verdict === "defects" && findings.length === 0 && ignoredThinInput)
 		return { verdict: "clean", findings: [] };
-	if ((value.verdict === "clean") !== (findings.length === 0)) return;
-	return { verdict: value.verdict, findings };
+	if (value.verdict === "defects" && findings.length === 0) return;
+
+	return { verdict: findings.some(finding => findingSeverity(finding) === "blocker") ? "defects" : "clean", findings };
 }
 
 /** Pre-batch compatibility ledger: predict --kind delivery currently requires a published card. */
@@ -109,6 +113,7 @@ export function queueDeliveryCritic(
 	previewPath?: string,
 ): boolean {
 	const schedule = row.schedule ?? {};
+	if (schedule.auditEscalation) return false;
 	if (schedule.review === "accepted" || schedule.review === "drop") return false;
 	const attempt = schedule.executor;
 	// Reviews and gate receipts are evidence for the existing delivery, never fresh products.
@@ -162,6 +167,8 @@ export function queueDeliveryCritic(
 		commits: JSON.stringify(commits),
 		preview,
 		receipt,
+		previousFindings: schedule.deliveryCritic?.evidence ?? schedule.audit?.findings ?? "none",
+		base: schedule.auditBase ?? "first audit: inspect the delivered range",
 	});
 	// Await the ordinary worker inside the native task call; the delivery hook never awaits it.
 	void (async () => {
@@ -182,7 +189,8 @@ export function queueDeliveryCritic(
 				return;
 			const evidence = verdict.findings.map(finding => `${finding.kind}: ${finding.evidence}`).join("\n");
 			ctx.updateTodoSchedule?.(row.content, {
-				deliveryCritic: { ...state, verdict: verdict.verdict, evidence },
+				...auditFindingPatch(latest.schedule, verdict.findings, JSON.stringify(commits)),
+				deliveryCritic: { ...state, verdict: verdict.verdict, classified: true, findings: verdict.findings, evidence },
 				handoffPending: verdict.verdict === "clean" && todoNeedsOwnerDecision(latest.schedule),
 				review:
 					verdict.verdict === "clean"

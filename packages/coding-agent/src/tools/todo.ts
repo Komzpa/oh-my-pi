@@ -2333,6 +2333,8 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		target.schedule.handoffPending = false;
 		target.schedule.reviewSummary = evidence;
 		if (answer.answer === "redo") {
+			target.schedule.auditEscalation = undefined;
+			target.schedule.auditRounds = 0;
 			target.status = "pending";
 			target.schedule.reviewSummary = answer.note;
 		}

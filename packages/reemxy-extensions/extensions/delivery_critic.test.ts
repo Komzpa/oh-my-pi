@@ -88,6 +88,7 @@ test("evidenced defect becomes redo with the critic evidence as the next brief a
 		findings: [
 			{
 				kind: "collateral_defect",
+				severity: "blocker",
 				evidence: "Rack panel at 1568 clips the accepted scrollbar-free controls, image 33",
 			},
 		],
@@ -128,7 +129,7 @@ test("failed attempt and completed report without commit or preview never spawn 
 	expect(report.queue()).toBe(false);
 	expect(report.calls()).toBe(0);
 });
-test("thin input, unevidenced defects and contradictory clean verdicts cannot send a row to redo", () => {
+test("thin input and unevidenced defects cannot send a row to redo; legacy findings default to later", () => {
 	expect(parseDeliveryVerdict({ verdict: "defects", findings: [{ kind: "thin_input", evidence: "crop" }] })).toEqual({
 		verdict: "clean",
 		findings: [],
@@ -137,8 +138,8 @@ test("thin input, unevidenced defects and contradictory clean verdicts cannot se
 		parseDeliveryVerdict({ verdict: "defects", findings: [{ kind: "requirement_violation", evidence: "" }] }),
 	).toBeUndefined();
 	expect(
-		parseDeliveryVerdict({ verdict: "clean", findings: [{ kind: "contradicts_decision", evidence: "source" }] }),
-	).toBeUndefined();
+		parseDeliveryVerdict({ verdict: "clean", findings: [{ kind: "contradicts_decision", evidence: "source" }] })?.verdict,
+	).toBe("clean");
 });
 
 test("delivery ledger appends kind and evidence in the tasks-loop prediction shape", async () => {

@@ -32,3 +32,5 @@ Do not re-issue an action the lead rejected or already escalated unless the dige
 contradicting the stated addressed reason. If re-issuing it, cite that new evidence in the action reason.
 Owner verbatim quotes in rejection reasons are requirement authority, not a new reason to escalate.
 An already-owned or completed row must not be dispatched again without new evidence that its ownership failed.
+
+Classify every action with severity "blocker" or "later". Only blockers create binding demands. Blockers are product regressions, broken build/gates/tests, data loss or wrong model numbers; polish, wording, extra evidence/oracles and test-shape nits are later follow-ups. Missing severity defaults to later. Each next field must be an executable action. Do not dispatch a row with an audit escalation; it needs the user to decide the listed blockers.

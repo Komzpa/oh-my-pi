@@ -102,10 +102,18 @@ export interface TodoSchedule {
 	/** Short final worker report retained for the user's review handoff. */
 	reviewSummary?: string;
 	handoffPending?: boolean;
+	/** Durable audit convergence and advisory backlog, retained across executor runs. */
+	auditRounds?: number;
+	auditBase?: string;
+	auditEscalation?: string;
+	auditFollowUps?: string[];
 	deliveryCritic?: {
 		key: string;
 		startedAt: number;
 		verdict: "pending" | "clean" | "defects";
+		/** Severity-aware clean verdicts also satisfy the runtime row audit. */
+		classified?: boolean;
+		findings?: TodoAuditFinding[];
 		timedOut?: boolean;
 		evidence?: string;
 	};
@@ -149,7 +157,15 @@ export interface TodoSchedule {
  * or two genuinely inconclusive audits return it to a worker.
  * Missing verdicts retry once, then return a concrete evidence task to the lead.
  */
+export interface TodoAuditFinding {
+	kind: string;
+	evidence: string;
+	severity?: "blocker" | "later";
+	action?: string;
+}
+
 export interface TodoRowAudit {
+	issues?: TodoAuditFinding[];
 	workerId?: string;
 	/** `todoRowDeliveryKey` of the executor run being audited; a newer run invalidates this record. */
 	delivery: string;
@@ -2319,10 +2335,12 @@ export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWor
 	if (schedule.review === "accepted") return undefined;
 	const worker = executor.workerId;
 	const delivery = todoRowDeliveryKey(schedule);
+	if (schedule.auditEscalation) return { kind: "verify", via: "audit", worker, audit: schedule.audit };
 	const critic = schedule.deliveryCritic;
 	if (critic?.key === delivery) {
 		if (critic.verdict === "defects")
 			return { kind: "needs-worker", reason: "audit-failed", worker, findings: critic.evidence };
+		if (critic.verdict === "clean" && critic.classified) return undefined;
 		if (critic.verdict === "pending" && !critic.timedOut) return { kind: "verify", via: "critic", worker };
 	}
 	// A verdict from another runner (the old gate-runner fallback) verified nothing: re-audit.
