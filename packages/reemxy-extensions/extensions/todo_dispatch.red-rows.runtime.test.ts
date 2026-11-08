@@ -43,7 +43,10 @@ async function harness({ worker = false, lane = false, autoOpen, preview = false
 			})),
 		},
 	];
-	const journal = [];
+	// A real goal without a due time keeps this fixture outside automatic plan deadlines.
+	const journal = [{ type: "mode_change", mode: "goal", data: {
+		goal: { id: "red-row-goal", status: "active", createdAt: Date.now() },
+	} }];
 	const hooks = new Map();
 	const opened = [];
 	let jobs = [];
