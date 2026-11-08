@@ -1608,8 +1608,10 @@ describe("AgentSession restart queue round trip", () => {
 			expect(inputs[0]).toContain(`Restart ${requestId} completed`);
 			expect(inputs[0]).toContain("restored startup context");
 			expect(inputs[0]).not.toContain("Do not start another model turn");
+			const noticeCount = countCustomMessageEntries(restored.sessionManager, "restart-queued");
+			expect(noticeCount).toBe(3);
 			await controller.restore();
-			expect(countCustomMessageEntries(restored.sessionManager, "restart-queued")).toBe(2);
+			expect(countCustomMessageEntries(restored.sessionManager, "restart-queued")).toBe(noticeCount);
 		} finally {
 			controller.dispose();
 		}

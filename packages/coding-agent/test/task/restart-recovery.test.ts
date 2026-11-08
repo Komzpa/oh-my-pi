@@ -88,6 +88,7 @@ function makeTestSession(
 	const session = {
 		sessionManager: manager,
 		getRestartBranchEntries: async () => manager.getBranch(),
+		getRestartPendingInputCount: () => 0,
 		get isStreaming() {
 			return streaming;
 		},
