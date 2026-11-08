@@ -426,3 +426,26 @@ test("slipped row cannot demand dispatch through unfinished dependencies while t
   const demand = wakeDemand(h.phases, new Set(), Date.now(), Date.now() - 60000);
   expect(demand.action).toContain("Dispatch a worker for Power");
 });
+
+for (const broken of ["missing", "cyclic"]) {
+  test(`staffed prerequisite stays silent while its ${broken} sibling gets an executable repair notice`, async () => {
+    const h = await harness([], false, false, false);
+    await h.wake();
+    h.sent.length = 0; h.journal.length = 0;
+    powerChain(h);
+    h.phases[0].tasks[0].schedule.dependencies.push("Broken prerequisite");
+    if (broken === "cyclic") h.phases[0].tasks.push({
+      content: "Broken prerequisite", status: "pending", schedule: { dependencies: ["Power"] },
+    });
+    await h.hooks.get("turn_end")({}, h.ctx);
+    const notices = h.sent.filter(m => m.customType === "todo-dependency-wait" && m.details?.row === "Power");
+    expect(notices).toHaveLength(1);
+    expect(notices[0].details.paths).toEqual([
+      broken === "missing" ? "Power <- Broken prerequisite" : "Power <- Broken prerequisite <- Power",
+    ]);
+    expect(notices[0].content).toContain("use todo");
+    expect(notices[0].content).toContain("repair a missing/cyclic dependency");
+    expect(notices[0].content).not.toContain("Cooling");
+    expect(notices[0].content).not.toContain("Commit");
+  });
+}
