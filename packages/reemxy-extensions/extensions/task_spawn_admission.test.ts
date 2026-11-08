@@ -5,7 +5,7 @@ import { afterEach, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
@@ -13,8 +13,6 @@ import * as discovery from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executor from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import { convertToLlm } from "../../coding-agent/src/session/messages";
-import { convertWithHarnessNotices } from "../../coding-agent/src/session/harness-notices";
 import { type } from "@oh-my-pi/omptype";
 import { createRouterState, routeSubagentSpawn } from "./agent_router";
 
@@ -85,17 +83,19 @@ async function fixture() {
 	const session = {
 		cwd: dir,
 		hasUI: false,
-		settings: Settings.isolated({ "async.enabled": true, "task.batch": true }),
+		settings: Settings.isolated({ "async.enabled": true, "task.batch": true, "task.maxConcurrency": 1 }),
 		getSessionFile: () => null,
 		getTodoPhases: () => phases,
+		setTodoPhases: next => { phases.splice(0, phases.length, ...next); },
+		persistTodoPhases: () => {},
 		getSessionSpawns: () => "*",
 		asyncJobManager: jobs,
 		emitBeforeSubagentSpawn: async event => routeSubagentSpawn(event, ctx, state, { stateFile }),
 	} as ToolSession;
 	const tool = await TaskTool.create(session);
 	const items = [
-		{ name: "PrCaptures", agent: "task", task: `Captures\nWrite ${target}` },
-		{ name: "Independent", agent: "task", task: `Independent\nWrite ${path.join(dir, "independent.ts")}` },
+		{ name: "PrCaptures", agent: "task", row: "Captures", task: `Captures\nWrite ${target}` },
+		{ name: "Independent", agent: "task", row: "Independent", task: `Independent\nWrite ${path.join(dir, "independent.ts")}` },
 	];
 	return { dir, target, phases, state, jobs, run, session, tool, items };
 }
@@ -107,44 +107,20 @@ function textOf(result: { content: { type: string; text?: string }[] }) {
 		.join("\n");
 }
 
-test("conflicting batch item is refused before job or executor ownership, while its sibling spawns", async () => {
-	const f = await fixture();
-	const result = await f.tool.execute("mixed", { context: "Independent assigned paths", tasks: f.items });
-	const text = textOf(result);
-	expect(text).toStartWith(
-		`REFUSED: no worker was spawned for PrCaptures: resources ["${f.target}"] held by row "Holder" (owner Holder-1)`,
-	);
-	expect(text).toContain("Spawned agent `Independent`");
-	expect(text).not.toContain("2 siblings");
-	expect(text).not.toContain("spawned 2 generic");
-	expect(f.jobs.getJob("PrCaptures")).toBeUndefined();
-	expect(f.jobs.getJob("Independent")).toBeDefined();
-	expect(result.details?.progress?.map(item => item.id)).toEqual(["Independent"]);
-	expect(f.phases[0].tasks[1].schedule?.owner).toBeUndefined();
-	await f.jobs.getJob("Independent")?.promise;
-	expect(f.run).toHaveBeenCalledTimes(1);
-	const messages = convertWithHarnessNotices(
-		[
-			{
-				role: "toolResult",
-				toolCallId: "mixed",
-				toolName: "task",
-				content: result.content,
-				isError: false,
-				timestamp: 1,
-			},
-		],
-		"user",
-		convertToLlm,
-	);
-	expect(
-		messages.some(
-			message => message.role === "user" && JSON.stringify(message).includes("no worker was spawned for PrCaptures"),
-		),
-	).toBe(true);
-	expect(JSON.stringify(messages.find(message => message.role === "toolResult"))).toContain(
-		"Spawned agent `Independent`",
-	);
+test("conflict queues without an attempt or capacity slot, then runs after release", async () => {
+ const f = await fixture();
+ const result = await f.tool.execute("mixed", { context: "paths", tasks: f.items });
+ expect(result.isError).not.toBe(true);
+ expect(result.details?.progress?.find(item => item.id === "PrCaptures")?.stage).toContain("Holder-1");
+ expect(f.phases[0].tasks[1].schedule?.resourceWait).toEqual({ row: "Holder", workerId: "Holder-1" });
+ await f.jobs.getJob("Independent")!.promise;
+ expect(f.run).toHaveBeenCalledTimes(1);
+ expect(f.phases[0].tasks[1].schedule?.attemptHistory ?? []).toHaveLength(0);
+ f.phases[0].tasks[0].status = "completed";
+ await f.jobs.getJob("PrCaptures")!.promise;
+ expect(f.run).toHaveBeenCalledTimes(2);
+ expect(f.phases[0].tasks[1].schedule?.resourceWait).toBeUndefined();
+ expect(f.phases[0].tasks[1].schedule?.attemptHistory ?? []).toHaveLength(0);
 });
 
 for (const release of ["released", "narrowed"] as const)
@@ -160,34 +136,6 @@ for (const release of ["released", "narrowed"] as const)
 		expect(textOf(result)).not.toContain("REFUSED");
 		expect(result.details?.progress?.map(item => item.id)).toEqual(["PrCaptures", "Independent"]);
 	});
-
-test("all-conflicting call has no job and is a harness refusal", async () => {
-	const f = await fixture();
-	const result = await f.tool.execute("blocked", { context: "Independent assigned paths", tasks: [f.items[0]] });
-	expect(textOf(result)).toStartWith("REFUSED: no worker was spawned for PrCaptures:");
-	expect(result.isError).toBe(true);
-	expect(result.content[0]).toMatchObject({ harnessNotice: true });
-	const converted = convertWithHarnessNotices(
-		[
-			{
-				role: "toolResult",
-				toolCallId: "blocked",
-				toolName: "task",
-				content: result.content,
-				harnessNotice: result.harnessNotice,
-				isError: true,
-				timestamp: 1,
-			},
-		],
-		"user",
-		convertToLlm,
-	);
-	expect(converted.find(message => message.role === "toolResult")?.content).toEqual([
-		{ type: "text", text: "REFUSED: tool did not run — see harness note" },
-	]);
-	expect(f.jobs.getJob("PrCaptures")).toBeUndefined();
-	expect(f.run).not.toHaveBeenCalled();
-});
 
 test("claim acquired after admission still fails through runtime gate", async () => {
 	const f = await fixture();
@@ -232,8 +180,10 @@ test("streamed conflicting item cannot launch speculatively before dispatch", as
 	expect(f.run).not.toHaveBeenCalled();
 	expect(f.state.spawns.size).toBe(0);
 	const result = await f.tool.execute(call.id, args);
-	expect(textOf(result)).toStartWith("REFUSED: no worker was spawned for PrCaptures");
-	expect(f.jobs.getRunningJobs()).toHaveLength(0);
+	expect(result.isError).not.toBe(true);
+	expect(f.jobs.getRunningJobs()).toHaveLength(1);
+	f.phases[0].tasks[0].status = "completed";
+	await f.jobs.waitForAll();
 });
 
 test("non-resource deterministic gate also refuses before job registration", async () => {
@@ -245,13 +195,15 @@ test("non-resource deterministic gate also refuses before job registration", asy
 	expect(f.run).not.toHaveBeenCalled();
 });
 
-test("synchronous fallback refuses a conflicting item and runs its free sibling", async () => {
+test("synchronous fallback waits for release and runs both items", async () => {
 	const f = await fixture();
 	f.session.settings = Settings.isolated({ "async.enabled": false, "task.batch": true });
-	const result = await f.tool.execute("sync", { context: "Independent paths", tasks: f.items });
-	expect(textOf(result)).toStartWith("REFUSED: no worker was spawned for PrCaptures:");
-	expect(result.details?.results.map(item => item.id)).toEqual(["Independent"]);
-	expect(f.run).toHaveBeenCalledTimes(1);
+	const pending = f.tool.execute("sync", { context: "Independent paths", tasks: f.items });
+	await Bun.sleep(20);
+	f.phases[0].tasks[0].status = "completed";
+	const result = await pending;
+	expect(result.details?.results.map(item => item.id)).toEqual(["PrCaptures", "Independent"]);
+	expect(f.run).toHaveBeenCalledTimes(2);
 	expect(f.jobs.getRunningJobs()).toHaveLength(0);
 });
 
@@ -290,7 +242,7 @@ test("ROOT reader and four disjoint or unscoped writers all start; reader keeps 
 	expect(f.phases[0].tasks[0].schedule?.readOnly).toBe(true);
 });
 
-test("explicit item scope narrows a broad row; second same-file writer is refused before spawn", async () => {
+test("explicit item scope narrows a broad row; second same-file writer queues until the first finishes", async () => {
 	const f = await fixture();
 	f.phases[0].tasks = ["Alpha", "Beta"].map(content => ({
 		content,
@@ -304,12 +256,11 @@ test("explicit item scope narrows a broad row; second same-file writer is refuse
 			{ name: "Beta", row: "Beta", task: "Beta", resources: [f.target] },
 		],
 	});
-	expect(textOf(result)).toStartWith("REFUSED: no worker was spawned for Beta:");
-	expect(textOf(result)).toContain("tasks[].resources");
-	expect(f.jobs.getJob("Beta")).toBeUndefined();
+	expect(result.isError).not.toBe(true);
+	expect(f.jobs.getJob("Beta")).toBeDefined();
 	expect(f.phases[0].tasks[0].schedule?.resources).toEqual([f.target]);
-	await f.jobs.getJob("Alpha")?.promise;
-	expect(f.run).toHaveBeenCalledTimes(1);
+	await f.jobs.waitForAll();
+	expect(f.run).toHaveBeenCalledTimes(2);
 });
 
 test("item scope outside the canonical row is refused without changing ownership", async () => {
@@ -347,28 +298,36 @@ for (const agent of ["qa-auditor", "observer"])
 		expect(f.phases[0].tasks[1].schedule?.readOnly).toBe(true);
 	});
 
-test("three identical admission conflicts block only that row, persist across tool recreation, and notify once", async () => {
-	const f = await fixture();
-	const notices: string[] = [];
-	f.session.setTodoPhases = next => { f.phases.splice(0, f.phases.length, ...next); };
-	f.session.persistTodoPhases = () => {};
-	f.session.steer = message => { notices.push(message.content); };
-	const item = { ...f.items[0], row: "Captures" };
-	for (let i = 0; i < 3; i++) await f.tool.execute(`infra-${i}`, { context: "Capture", tasks: [item] });
-	const row = f.phases[0].tasks[1];
-	expect(row.status).toBe("blocked");
-	expect(row.blocker).toContain("Holder-1");
-	expect(row.schedule?.attemptHistory).toHaveLength(3);
-	expect(todoWorkAttempts(row.schedule?.attemptHistory)).toHaveLength(0);
-	expect(notices).toHaveLength(1);
-	expect(notices[0]).toContain("proc://");
-	const elevated = convertWithHarnessNotices([{ role: "custom", customType: "todo-infra-breaker", content: notices[0], display: false, timestamp: 1 }], "user", convertToLlm);
-	expect(elevated.some(message => message.role === "user" && JSON.stringify(message).includes("Holder-1"))).toBe(true);
-	const resumed = await TaskTool.create(f.session);
-	const fourth = await resumed.execute("again", { context: "Capture", tasks: [{ ...item, name: "DifferentName" }] });
-	expect(textOf(fourth)).toContain("Infra breaker");
-	expect(row.schedule?.attemptHistory).toHaveLength(3);
-	expect(notices).toHaveLength(1);
-	expect(f.run).not.toHaveBeenCalled();
-	expect(f.jobs.getJob("PrCaptures")).toBeUndefined();
+test("several ROOT waiters drain without deadlock or failed attempts", async () => {
+ const f = await fixture();
+ f.phases[0].tasks = [f.phases[0].tasks[0], ...["Alpha", "Beta", "Gamma"].map(content => ({ content, status: "pending" as const, schedule: { resources: [f.dir] } }))];
+ f.phases[0].tasks[0].schedule!.resources = [f.dir];
+ const result = await f.tool.execute("replay", { context: "shared ROOT", tasks: ["Alpha", "Beta", "Gamma"].map(name => ({ name, row: name, task: name, resources: [f.dir] })) });
+ expect(result.details?.progress).toHaveLength(3);
+ expect(f.run).not.toHaveBeenCalled();
+ expect(f.phases[0].tasks.slice(1).every(row => row.schedule?.resourceWait?.row === "Holder")).toBe(true);
+ f.phases[0].tasks[0].status = "completed";
+ await Promise.all(f.jobs.getRunningJobs().map(job => job.promise));
+ expect(f.run).toHaveBeenCalledTimes(3);
+ expect(f.phases[0].tasks.slice(1).every(row => !row.schedule?.attemptHistory?.length && !row.schedule?.resourceWait)).toBe(true);
+});
+
+for (const shutdown of [true, false])
+test(shutdown ? "shutdown records a restart interruption instead of a failed work attempt" : "explicit cancellation remains a work attempt", async () => {
+ const f = await fixture();
+ const entered = Promise.withResolvers<void>();
+ f.run.mockImplementation(async options => {
+  entered.resolve();
+  while (!options.signal?.aborted) await Bun.sleep(5);
+  return { index: 0, id: options.id, agent: "task", agentSource: "bundled", task: "Independent", exitCode: 1, aborted: true, error: "The operation was aborted.", output: "", stderr: "", truncated: false, durationMs: 1000, tokens: 0, requests: 0 };
+ });
+ await f.tool.execute("shutdown", { context: "restart probe", tasks: [{ ...f.items[1], row: "Independent" }] });
+ await entered.promise;
+ f.jobs.cancelAll(undefined, shutdown ? ASYNC_JOB_MANAGER_SHUTDOWN_REASON : undefined);
+ await f.jobs.waitForAll();
+ const row = f.phases[0].tasks[2];
+ expect(row.schedule?.attemptHistory).toHaveLength(1);
+ expect(row.schedule?.attemptHistory?.[0].interruption).toBe(shutdown ? "restart" : undefined);
+ expect(todoWorkAttempts(row.schedule?.attemptHistory)).toHaveLength(shutdown ? 0 : 1);
+ if (shutdown) expect(row.schedule?.executor?.outcome).toBe("aborted");
 });

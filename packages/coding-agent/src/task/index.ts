@@ -60,7 +60,7 @@ import {
 	type TaskToolSchemaInstance,
 } from "./types";
 import type { AgentProgress, SingleResult, TaskItem, TaskParams, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
-import { AsyncJobError, type AsyncJobManagerApi } from "../async";
+import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobError, type AsyncJobManagerApi } from "../async";
 import { hasResolvableTranscript } from "../internal-urls/registry-helpers";
 import { sessionResolveContext } from "../internal-urls/context";
 import { InternalUrlRouter } from "../internal-urls/router";
@@ -973,6 +973,24 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			},
 		},
 	};
+
+	readonly #restartWorkers = new Set<string>();
+	readonly #resourceWaits = new Map<string, string>();
+
+	#setResourceWait(params: SpawnParams, holder?: { row: string; workerId?: string }): void {
+		const target = this.#spawnRow(params);
+		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.();
+		if (!target || !phases || JSON.stringify(target.task.schedule?.resourceWait) === JSON.stringify(holder)) return;
+		const updated = phases.map(phase => ({
+			...phase,
+			tasks: phase.tasks.map(task =>
+				task === target.task ? { ...task, schedule: { ...task.schedule, resourceWait: holder } } : task,
+			),
+		}));
+		this.session.setTodoPhases?.(updated);
+		this.session.persistTodoPhases?.(updated);
+	}
+
 	readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 	readonly #reworkRoutes = new Map<string, ReworkRoute>();
 	readonly #workerSessions = new Map<string, StructuredSubagentResult>();
@@ -1057,7 +1075,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			.filter(
 				attempt =>
 					attempt.terminalStatus === "completed" ||
-					(!todoAttemptIsInfra(attempt) && !isInfraFailure(attempt.infraFailureError)),
+					(!attempt.interruption && !todoAttemptIsInfra(attempt) && !isInfraFailure(attempt.infraFailureError)),
 			)
 			.map(attempt => attempt.resolvedModel);
 		/** Next-vendor model; undefined = no chain (ordinary routing); null = every vendor tried. */
@@ -1080,7 +1098,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		};
 		if (previous.outcome !== "completed") {
 			const failed = history.findLast(attempt => attempt.attemptId === `${previous.workerId}:${previous.startedAt}`);
-			const infra = (failed && todoAttemptIsInfra(failed)) || isInfraFailure(failed?.infraFailureError);
+			const infra =
+				failed?.interruption === "restart" ||
+				(failed && todoAttemptIsInfra(failed)) ||
+				isInfraFailure(failed?.infraFailureError);
 			const sameProfile = spawn.agent === undefined || spawn.agent === previous.agentProfile;
 			let model: string | null | undefined;
 			// No resolved model means the worker failed before any model ran (a missing key, a bad
@@ -1172,6 +1193,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			| "resolvedModelIdentity"
 			| "resolvedThinkingLevel"
 		>,
+		signal?: AbortSignal,
 	): void {
 		if (!result.aborted && result.exitCode === 0 && !result.error) return;
 		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.();
@@ -1184,6 +1206,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (rows.length !== 1) return;
 		const { phase, task } = rows[0]!;
 		const previous = task.schedule!.executor!;
+		if (signal?.reason === ASYNC_JOB_MANAGER_SHUTDOWN_REASON) this.#restartWorkers.add(result.id);
 		this.#persistTodoExecutor({
 			...previous,
 			resolvedModel: result.resolvedModelIdentity ?? previous.resolvedModel,
@@ -1205,10 +1228,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			durationMs: result.durationMs,
 			terminalStatus: result.aborted ? "aborted" : "failed",
 			deliverablePaths: result.outputPath ? [result.outputPath] : [],
+			interruption: signal?.reason === ASYNC_JOB_MANAGER_SHUTDOWN_REASON ? "restart" : undefined,
 			infraFailureError: error,
 			infraFailureLine: `attempt ${todoWorkAttempts(task.schedule?.attemptHistory).length + 1} failed: ${error}`,
 		};
-		if (todoAttemptIsInfra(attempt)) attempt.infraFailureLine = `infra failure: ${error}`;
+		if (attempt.interruption) attempt.infraFailureLine = "Restart interruption: resume pending";
+		else if (todoAttemptIsInfra(attempt)) attempt.infraFailureLine = `infra failure: ${error}`;
 		this.#appendAttempt({ phase, content: task.content }, attempt);
 	}
 
@@ -1619,7 +1644,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		detached: boolean;
 	}): SpawnRun {
 		return new SpawnRun(
-			this.#permit,
+			{
+				acquire: async signal => {
+					const id = spawn.agentId;
+					while (id && this.#resourceWaits.has(id)) {
+						signal.throwIfAborted();
+						await Bun.sleep(100);
+						signal.throwIfAborted();
+						const refusal = await this.#admitSpawn(spawn.params, id, signal);
+						if (refusal) throw new Error(refusal);
+					}
+					await this.#permit.acquire(signal);
+				},
+				release: () => this.#permit.release(),
+			},
 			run =>
 				this.#runSpawn(
 					spawn.toolCallId,
@@ -1741,6 +1779,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				},
 				signal,
 			);
+			if (result?.resourceWait) {
+				this.#resourceWaits.set(
+					id,
+					`Waiting for row ${result.resourceWait.row} (worker ${result.resourceWait.workerId ?? "unassigned"})`,
+				);
+				this.#setResourceWait(params, result.resourceWait);
+				return;
+			}
+			this.#resourceWaits.delete(id);
+			this.#setResourceWait(params);
 			if (result?.block) {
 				const cause = result.reason ?? "Subagent spawn blocked by extension.";
 				this.#recordRefusal(params, id, cause);
@@ -2032,6 +2080,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					agentSource,
 					modelRole: policy.modelRole,
 					status: "pending",
+					stage: this.#resourceWaits.get(agentId),
 					task: assignment,
 					assignment,
 					...(item.taskFile !== undefined ? { taskFile: item.taskFile, taskFileSha256: item.taskFileSha256 } : {}),
@@ -2107,14 +2156,15 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					onUpdate,
 					onSettled: failed => {
 						const prior = this.#todoExecutors.get(spawn.agentId);
-						if (prior) {
+						const interrupted = this.#restartWorkers.delete(spawn.agentId);
+						if (prior && !interrupted) {
 							this.#persistTodoExecutor({
 								...prior,
 								finishedAt: Date.now(),
 								outcome: failed ? "failed" : "completed",
 							});
-							this.#todoExecutors.delete(spawn.agentId);
 						}
+						this.#todoExecutors.delete(spawn.agentId);
 						settledCount += 1;
 						if (failed) failedCount += 1;
 					},
@@ -2746,7 +2796,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			};
 			const execution: StructuredSubagentResult = await runStructuredSubagent(request);
 			this.#workerSessions.set(execution.result.id, execution);
-			this.#recordFailedAttempt(execution.result);
+			this.#recordFailedAttempt(execution.result, signal);
 			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
 			return this.#buildResultPayload(
 				{ ...execution.result, ...taskFileMetadata },
@@ -2783,15 +2833,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				: undefined;
 			const workerId = latestProgress?.id ?? preAllocatedId;
 			if (workerId)
-				this.#recordFailedAttempt({
-					id: workerId,
-					exitCode: 1,
-					error: message,
-					output: "",
-					stderr: message,
-					durationMs: Date.now() - startTime,
-					aborted: signal?.aborted,
-				});
+				this.#recordFailedAttempt(
+					{
+						id: workerId,
+						exitCode: 1,
+						error: message,
+						output: "",
+						stderr: message,
+						durationMs: Date.now() - startTime,
+						aborted: signal?.aborted,
+					},
+					signal,
+				);
 			this.#reworkRoutes.delete(`${toolCallId}:${spawnIndex}`);
 			return {
 				content: [{ type: "text", text: `Task execution failed: ${message}` }],

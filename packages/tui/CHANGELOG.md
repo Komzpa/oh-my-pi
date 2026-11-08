@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Show TODO infrastructure failures since last success with their top cause and resource wait holder.
+
 - Keep TODO point forecasts on residual PERT work, with experimental whole-plan uncertainty and throughput shown only as a diagnostic ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Reuse unchanged worker HUD rows and status inputs during terminal paints ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Give an exact dependency update when one worker owns collateral rows ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

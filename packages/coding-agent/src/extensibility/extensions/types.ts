@@ -1826,6 +1826,8 @@ export interface BeforeAgentStartEventResult {
 }
 
 export interface BeforeSubagentSpawnEventResult {
+	/** Retry admission after the current resource holder releases, without starting an attempt. */
+	resourceWait?: { row: string; workerId?: string };
 	/** Replacement model patterns in attempt order (selectors or role aliases). Role identity is preserved. */
 	model?: string | string[];
 	/** Refuse the spawn. */

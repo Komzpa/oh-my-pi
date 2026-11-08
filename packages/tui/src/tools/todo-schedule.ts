@@ -1,5 +1,5 @@
 export * from "./todo-infra";
-import { todoWorkAttempts } from "./todo-infra";
+import { todoAttemptIsInfra, todoWorkAttempts } from "./todo-infra";
 import { drawAttemptChain, riskCells, riskRandom, type RowRiskOptions, type RowRiskForecast } from "./todo-row-risk";
 export * from "./todo-row-risk";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
@@ -63,6 +63,8 @@ export interface TodoEstimate {
 
 /** Forecast metadata belongs to the exact task content; there are deliberately no generated IDs. */
 export interface TodoSchedule {
+	/** Queued dispatch owns no resources until admission succeeds. */
+	resourceWait?: { row: string; workerId?: string };
 	/** Agent-authored product choices beyond the ledger request require an owner decision. */
 	decision?: "owner";
 	agentProfile?: string;
@@ -199,6 +201,7 @@ export interface TodoReworkAttempt {
 	reflectionAnswer?: string;
 	noAnswerReason?: string;
 	finalReportParagraph?: string;
+	interruption?: "restart";
 	infraFailureLine?: string;
 	infraFailureError?: string;
 }
@@ -2603,8 +2606,22 @@ export function renderTodoPlanDisplay(
 			const rowEta = formatTodoDisplayEta(row?.resourceFinish, now);
 			const history = task.schedule?.attemptHistory ?? [];
 			const attempts = todoWorkAttempts(history).length;
-			const infra = history.length - attempts;
-			const suffix = ` — ${label}${blocker}${worker}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}${infra ? ` · infra failures ${infra}` : ""}`;
+			const sinceSuccess = history.slice(
+				history.findLastIndex(attempt => attempt.terminalStatus === "completed" && !attempt.rejectionReason) + 1,
+			);
+			const failures = sinceSuccess.filter(todoAttemptIsInfra);
+			const causes = new Map<string, number>();
+			for (const failure of failures) {
+				const cause = failure.infraFailureError ?? "unknown";
+				causes.set(cause, (causes.get(cause) ?? 0) + 1);
+			}
+			const topCause = [...causes].sort((a, b) => b[1] - a[1])[0]?.[0];
+			const infra = failures.length;
+			const resourceWait = task.schedule?.resourceWait;
+			const wait = resourceWait
+				? ` · waiting for ${safeText(resourceWait.row)} (worker ${safeText(resourceWait.workerId ?? "unassigned")})`
+				: "";
+			const suffix = ` — ${label}${blocker}${worker}${wait}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}${infra ? ` · infra failures ${infra} since last success: ${truncateToWidth(safeText(topCause ?? "unknown"), TRUNCATE_LENGTHS.TITLE)}` : ""}`;
 			const title = truncateToWidth(
 				safeText(task.content),
 				Math.max(0, (options.width ?? Infinity) - Bun.stringWidth(suffix) - 4),
