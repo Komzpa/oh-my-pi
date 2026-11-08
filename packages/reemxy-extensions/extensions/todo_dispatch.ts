@@ -2590,11 +2590,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const slipped = deadline !== undefined && Math.max(now, finish ?? 0) > deadline;
       const waiting = slipped ? rows.filter(row => isNonClosedRowStatus(row.status)).map(row => ({ row: row.content })) : planChurnRows(phases);
       for (const item of waiting) {
-        const chains = unfinishedDependencyChains(phases, item.row);
-        if (!chains.length || chains.some(chain => chain.slice(1).some(title => {
+        const chains = unfinishedDependencyChains(phases, item.row).filter(chain => !chain.slice(1).some(title => {
           const row = rows.find(row => row.content === title);
           return running.has(row?.schedule?.owner ?? "") || running.has(row?.schedule?.executor?.workerId ?? "");
-        }))) continue;
+        }));
+        if (!chains.length) continue;
         const paths = chains.map(chain => chain.join(" <- "));
         sendHarnessNotice("todo-dependency-wait", item.row, prompt.render(dependencyWaitInstructions, { paths }).trim(), { row: item.row, paths });
       }
