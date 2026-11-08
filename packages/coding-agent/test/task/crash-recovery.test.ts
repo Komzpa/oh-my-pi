@@ -10,6 +10,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import { recoverCrashedRows } from "@oh-my-pi/pi-coding-agent/task/crash-recovery";
+import { INTERRUPTED_TURN_ERROR } from "../../src/session/exit-diagnostics";
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import { applyToolProxy } from "../../src/extensibility/tool-proxy";
 import { Semaphore } from "@oh-my-pi/pi-coding-agent/task/parallel";
@@ -90,7 +91,10 @@ describe("kill/replay through ordinary resume", () => {
 		const mainFile = main.getSessionFile();
 		if (!mainFile) throw new Error("Expected a persisted session file");
 		await main.close();
-		await writeSubagent(mainFile, cwd, "Cut", cutOff);
+		await writeSubagent(mainFile, cwd, "Cut", [
+			...cutOff,
+			assistant({ stopReason: "aborted", errorMessage: INTERRUPTED_TURN_ERROR }),
+		]);
 		await writeSubagent(mainFile, cwd, "Done", finished);
 		const killed = await writeSubagent(mainFile, cwd, "Killed", cutOff);
 		await fs.writeFile(getAgentTombstonePath(killed), "");
@@ -121,7 +125,10 @@ describe("kill/replay through ordinary resume", () => {
 				tasks: ["Cut", "Done", "Killed", "Failed", "Yielded"].map(id => ({
 					content: `${id} row`,
 					status: "in_progress",
-					schedule: { owner: id, executor: { workerId: id, startedAt: 1 } },
+					schedule: {
+						owner: id,
+						executor: { workerId: id, startedAt: 1, ...(id === "Cut" ? { outcome: "aborted" as const } : {}) },
+					},
 				})),
 			},
 		];

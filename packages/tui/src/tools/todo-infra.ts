@@ -2,6 +2,7 @@ import type { TodoReworkAttempt } from "./todo-schedule";
 
 /** Admission records never ran; short harness failures did not perform row work. */
 export function todoAttemptIsInfra(attempt: TodoReworkAttempt): boolean {
+	if (attempt.interruption === "restart") return false;
 	return (
 		attempt.infraFailureLine?.startsWith("infra failure:") === true ||
 		(attempt.terminalStatus !== "completed" &&
@@ -13,7 +14,7 @@ export function todoAttemptIsInfra(attempt: TodoReworkAttempt): boolean {
 }
 
 export function todoWorkAttempts(history: readonly TodoReworkAttempt[] = []): TodoReworkAttempt[] {
-	return history.filter(attempt => !todoAttemptIsInfra(attempt));
+	return history.filter(attempt => !attempt.interruption && !todoAttemptIsInfra(attempt));
 }
 
 export function todoInfraBreaker(history: readonly TodoReworkAttempt[] = []): string | undefined {

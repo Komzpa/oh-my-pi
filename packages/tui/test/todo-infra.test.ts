@@ -53,3 +53,38 @@ test("HUD separates legacy infrastructure deaths from work attempts without rewr
 	expect(display.lines.join("\n")).toContain("attempt 3");
 	expect(display.lines.join("\n")).not.toContain("attempt 63");
 });
+
+test("HUD resets infra at success, names top cause and excludes restart interruptions", () => {
+	const old = failure("spawn error: old");
+	const success = { ...failure("ok"), terminalStatus: "completed" as const };
+	const current = failure("spawn error: unavailable");
+	const restart = {
+		...failure("shutdown"),
+		interruption: "restart" as const,
+		infraFailureLine: "infra failure: shutdown",
+	};
+	const display = renderTodoPlanDisplay(
+		[
+			{
+				name: "Work",
+				tasks: [
+					{
+						content: "Row",
+						status: "pending",
+						schedule: {
+							attemptHistory: [old, success, current, restart],
+							resourceWait: { row: "Holder", workerId: "Holder-1" },
+						},
+					},
+				],
+			},
+		],
+		{ workers: [], owners: new Map() },
+		{ now: 1000, paint: (_tone, text) => text },
+	);
+	const text = display.lines.join("\n");
+	expect(text).toContain("infra failures 1 since last success: spawn error: unavailable");
+	expect(text).toContain("waiting for Holder (worker Holder-1)");
+	expect(text).not.toContain("shutdown");
+	expect(todoWorkAttempts([restart])).toEqual([]);
+});

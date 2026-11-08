@@ -2830,7 +2830,7 @@ export class ExtensionRunner {
 				);
 				if (!handlerResult) continue;
 				const result = handlerResult as BeforeSubagentSpawnEventResult;
-				if (result.block) return result;
+				if (result.block || result.resourceWait) return result;
 				if (result.model !== undefined) chosen = result;
 			}
 		}
