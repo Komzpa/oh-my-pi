@@ -162,6 +162,31 @@ test("descriptor duplication is not a file outside an explicitly scoped worktree
 	}
 });
 
+test("bash writes resolve against the tool cwd and still enforce the assigned scope", async () => {
+	const registry = new AgentRegistry();
+	const spy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+	registry.register({ id: "Lead", displayName: "Lead", kind: "main", session: {
+		activeToolExecutionUpdates() {}, getTodoPhases: () => [{ name: "Work", tasks: [{
+			content: "Run gates", status: "in_progress", schedule: { owner: "Gate", resources: ["/isolated"] },
+		}] }],
+	} as unknown as AgentSessionHandle });
+	const context = { cwd: "/project", agent: { kind: "sub", id: "Gate", parentId: "Lead" } } as ExtensionContext;
+	try {
+		expect(await call("bash", { command: "mkdir -p tmp", cwd: "/isolated" }, context)).toBeUndefined();
+		expect(await call("bash", { command: "mkdir -p tmp", cwd: "../isolated" }, context)).toBeUndefined();
+		expect((await call("bash", { command: "mkdir -p tmp", cwd: "/elsewhere" }, context))?.reason)
+			.toContain("add /elsewhere/tmp to row");
+		expect((await call("bash", { command: "mkdir -p tmp", cwd: "/" }, context))?.reason)
+			.toContain("add /project/tmp to row");
+		expect((await call("bash", { command: "mkdir -p tmp", cwd: "~" }, context))?.reason)
+			.toContain(`add ${os.homedir()}/tmp to row`);
+		expect((await call("bash", { command: "mkdir -p tmp" }, context))?.reason)
+			.toContain("add /project/tmp to row");
+	} finally {
+		spy.mockRestore();
+	}
+});
+
 test("registered tool hook checks launch state and file target before execution", async () => {
 	const handlers = new Map<string, (event: unknown, context: ExtensionContext) => unknown>();
 	agentRouter(

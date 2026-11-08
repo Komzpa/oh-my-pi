@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { parseCommandArgs } from "@oh-my-pi/pi-coding-agent/utils/command-args";
 
@@ -382,8 +383,9 @@ export async function workerToolPreflight(
 ): Promise<{ block: true; reason: string } | undefined> {
 	if (ctx.agent?.kind !== "sub" || !ctx.cwd) return;
 	const input = (event.input ?? {}) as Record<string, unknown>;
+	const bashCwd = typeof input.cwd === "string" && input.cwd ? resolveToCwd(input.cwd, ctx.cwd) : ctx.cwd;
 	const actions =
-		event.toolName === "bash" && typeof input.command === "string" ? shellActions(input.command, ctx.cwd) : [];
+		event.toolName === "bash" && typeof input.command === "string" ? shellActions(input.command, bashCwd) : [];
 	const targets = ["edit", "write", "ast_edit"].includes(event.toolName) ? fileToolTargets(input) : [];
 	for (const action of actions)
 		targets.push(
