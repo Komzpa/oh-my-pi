@@ -13,7 +13,7 @@ import {
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { formatPlanForecast, formatTaskForecast, forecastTodoPlan } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import todoDispatch, { readGitIntegrationState } from "./todo_dispatch";
+import todoDispatch, { DELIVERY_CHECKPOINT_MS, readGitIntegrationState, SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import * as childProcess from "node:child_process";
 
@@ -28,6 +28,131 @@ const sdk = {
 function git(cwd: string, env: Record<string, string>, ...args: string[]) {
 	execFileSync("git", args, { cwd, env: { ...process.env, ...env }, stdio: "ignore" });
 }
+
+test("fixed wall-clock checkpoints interrupt zero-commit work and reset on observed artifacts", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "delivery-checkpoint-"));
+	const realNow = Date.now();
+	let now = realNow;
+	const clock = spyOn(Date, "now").mockImplementation(() => now);
+	try {
+		const remote = join(dir, "remote.git");
+		const work = join(dir, "work");
+		const id = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+		execFileSync("git", ["init", "-q", "--bare", remote]);
+		execFileSync("git", ["clone", "-q", remote, work], { stdio: "ignore" });
+		writeFileSync(join(work, "base"), "base");
+		git(work, id, "add", "base");
+		git(work, id, "commit", "-q", "-m", "base");
+		git(work, id, "push", "-q", "-u", "origin", "HEAD");
+		expect((await readGitIntegrationState(work, now))?.unpushed).toBe(0);
+
+		let phases = [{ name: "Delivery", tasks: [{
+			content: "Build the smallest shippable slice",
+			status: "in_progress",
+			schedule: { owner: "BuildSlice", resources: [`checkout:${work}`] },
+		}] }];
+		const branch: unknown[] = [{
+			type: "custom",
+			customType: SPRINT_STATE_ENTRY_TYPE,
+			data: { version: 1, goalWorkStartedAt: realNow - 3 * 24 * 60 * 60_000 },
+		}];
+		const notices: unknown[] = [];
+		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
+		let provider: ((ctx: ExtensionContext) => unknown) | undefined;
+		await todoDispatch({
+			on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
+			getActiveTools: () => ["task", "todo", "bash", "read", "wait"],
+			pi: { ...sdk, readGoalDeadline: () => undefined },
+			registerSoftToolRequirementProvider: (
+				p: ((ctx: ExtensionContext) => unknown) & { demand?: (ctx: ExtensionContext) => unknown },
+			) => { provider = p.demand ?? p; },
+			appendEntry: (customType, data) => branch.push({ type: "custom", customType, data }),
+			sendMessage: (message) => notices.push(message),
+		} as unknown as ExtensionAPI);
+		const ctx = {
+			cwd: work,
+			ui: { setStatus: () => undefined },
+			getTodoSnapshot: () => phases,
+			sessionManager: {
+				getHeader: () => ({ id: "checkpoint-root" }),
+				getBranch: () => branch,
+				getBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) =>
+					branch.filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))),
+				getLatestBranchMatching: (predicate: (entry: SessionContextEntryMetadata) => boolean) =>
+					branch.filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))).at(-1),
+				getSessionFile: () => undefined,
+			},
+			getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+			getTaskMaxConcurrency: () => 4,
+			isIdle: () => false,
+			hasPendingMessages: () => false,
+			setInterval: () => ({}),
+			setTimeout: () => ({}),
+			clearTimer: () => undefined,
+		} as unknown as ExtensionContext;
+		AgentRegistry.global().register({ id: "checkpoint-fixture", kind: "main", session: {
+			sessionManager: ctx.sessionManager,
+			commitTodoPhases: (next) => { phases = next; },
+		} });
+		try {
+			await handlers.get("session_start")!({}, ctx);
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			expect(JSON.stringify(provider?.(ctx) ?? {})).not.toContain("DELIVERY CHECKPOINT");
+
+			// Forecast edits cannot move the persisted wall-clock observation.
+			phases[0].tasks[0].schedule.estimate = {
+				optimisticSeconds: 60,
+				likelySeconds: 60 * 60,
+				pessimisticSeconds: 3 * 24 * 60 * 60,
+				confidence: "low",
+				basis: "model changed its promise",
+				updatedAt: now + DELIVERY_CHECKPOINT_MS,
+			};
+			now += DELIVERY_CHECKPOINT_MS;
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			const first = JSON.stringify(provider?.(ctx) ?? {});
+			expect(first).toContain("DELIVERY CHECKPOINT");
+			expect(first).toContain("fixed 15-minute wall-clock interval");
+			expect(first).toContain("ETA/PERT");
+			expect(first).toContain("narrow the method immediately");
+			expect(phases.flatMap(phase => phase.tasks)).toHaveLength(1);
+			expect(JSON.stringify(phases)).not.toMatch(/retro|audit|quality assurance/i);
+			await Promise.resolve();
+			const persisted = branch.filter(entry =>
+				typeof entry === "object" && entry !== null && "customType" in entry && entry.customType === SPRINT_STATE_ENTRY_TYPE
+			).at(-1) as { data?: { deliveryCheckpointHead?: string; deliveryCheckpointAt?: number; deliveryCheckpointActive?: boolean } } | undefined;
+			expect(persisted?.data).toMatchObject({ deliveryCheckpointActive: true, deliveryCheckpointAt: realNow });
+			expect(persisted?.data?.deliveryCheckpointHead).toBeTruthy();
+
+			now += DELIVERY_CHECKPOINT_MS;
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			const second = JSON.stringify(provider?.(ctx) ?? {});
+			expect(second).toContain("SECOND CONSECUTIVE ARTIFACT-FREE CHECKPOINT");
+			expect(second).toContain("stop/release");
+			expect(second).toContain("split/reassign");
+			expect(second).toContain("smallest shippable slice");
+
+			writeFileSync(join(work, "slice"), "checkpoint");
+			git(work, id, "add", "slice");
+			git(work, id, "commit", "-q", "-m", "checkpoint slice");
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			expect(JSON.stringify(provider?.(ctx) ?? {})).not.toMatch(/DELIVERY CHECKPOINT|ARTIFACT-FREE CHECKPOINT/);
+
+			now += DELIVERY_CHECKPOINT_MS / 2;
+			git(work, id, "push", "-q", "origin", "HEAD");
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			now += DELIVERY_CHECKPOINT_MS / 2;
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			expect(JSON.stringify(provider?.(ctx) ?? {})).not.toMatch(/DELIVERY CHECKPOINT|ARTIFACT-FREE CHECKPOINT/);
+		} finally {
+			handlers.get("session_shutdown")?.({}, ctx);
+			AgentRegistry.global().unregister("checkpoint-fixture");
+		}
+	} finally {
+		clock.mockRestore();
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
 
 // A lead must see a publication obligation without a goal or a fresh fetch.
 test("live heads create one notice and priority push row, then a worker push clears both without fetch", async () => {

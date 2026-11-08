@@ -145,6 +145,10 @@ export type SprintState = {
   idleContinuationDemands: number;
   idleContinuationKey?: string;
   recoveryWaits?: RecoveryWait[];
+  deliveryCheckpointHead?: string;
+  deliveryCheckpointAt?: number;
+  deliveryCheckpointPublished?: boolean;
+  deliveryCheckpointActive?: boolean;
 };
 type TaskRow = TodoScheduleInput[number]["tasks"][number];
 type SnapshotRow = { number: number; phase: string; task: TaskRow };
@@ -264,6 +268,8 @@ export const STALE_MERGE_MS = 30 * 60_000;
 // Publication alarm; projects may lower it with omp.unpushedThresholdMinutes.
 export const STALE_PUSH_MS = 60 * 60_000;
 export const PUSH_POLL_MS = 3 * 60_000;
+/** Hard artifact cadence. Unlike Todo estimates, this clock cannot be revised by the model. */
+export const DELIVERY_CHECKPOINT_MS = 15 * 60_000;
 // No word boundary: worker names are CamelCase ("E2EMergeOwner").
 const MERGE_WORK = /merg|conflict|rebas|cherry-pick/i;
 const GIT_COMMIT = /\bgit\b[^;&|\n]*\b(commit|merge\s+--continue)\b/;
@@ -1117,6 +1123,10 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
         ? Math.max(0, Math.min(3, Math.floor((data as Partial<SprintState>).idleContinuationDemands!)))
         : 0,
       ...(typeof data.idleContinuationKey === "string" ? { idleContinuationKey: data.idleContinuationKey } : {}),
+      ...(typeof data.deliveryCheckpointHead === "string" ? { deliveryCheckpointHead: data.deliveryCheckpointHead } : {}),
+      ...(typeof data.deliveryCheckpointAt === "number" ? { deliveryCheckpointAt: data.deliveryCheckpointAt } : {}),
+      ...(typeof data.deliveryCheckpointPublished === "boolean" ? { deliveryCheckpointPublished: data.deliveryCheckpointPublished } : {}),
+      ...(typeof data.deliveryCheckpointActive === "boolean" ? { deliveryCheckpointActive: data.deliveryCheckpointActive } : {}),
     };
   }
   return blankSprintState();
@@ -4769,21 +4779,100 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (gitStatePending === pending) gitStatePending = null;
     }
   };
-  const ownsBranchWork = (ctx: ExtensionContext) => todoPhases(ctx).some(phase => phase.tasks.some(row =>
+  const rowOwnsCheckout = (ctx: ExtensionContext, row: TaskRow) =>
     row.content.startsWith("Push: run project gates and push ") ||
     row.schedule?.resources?.some(resource => {
       const target = resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "");
       return isAbsolute(target) && (resolve(target) === resolve(ctx.cwd) || resolve(target).startsWith(`${resolve(ctx.cwd)}/`));
-    })
-  ));
+    }) === true;
+  const ownsBranchWork = (ctx: ExtensionContext) => todoPhases(ctx).some(phase => phase.tasks.some(row => rowOwnsCheckout(ctx, row)));
+  const ownsActiveBranchWork = (ctx: ExtensionContext) => todoPhases(ctx).some(phase =>
+    phase.tasks.some(row => isOpenRowStatus(row.status) && rowOwnsCheckout(ctx, row))
+  );
+  const deliveryCheckpointIntervals = (state: GitIntegrationState | null, now: number): number => {
+    if (
+      !state?.head ||
+      sprintState.deliveryCheckpointActive !== true ||
+      sprintState.deliveryCheckpointHead !== state.head ||
+      typeof sprintState.deliveryCheckpointAt !== "number"
+    ) return 0;
+    return Math.max(0, Math.floor((now - sprintState.deliveryCheckpointAt) / DELIVERY_CHECKPOINT_MS));
+  };
+  const observeDeliveryCheckpoint = (ctx: ExtensionContext, state: GitIntegrationState, now: number) => {
+    const active = ownsActiveBranchWork(ctx);
+    const published = state.unpushed === undefined ? undefined : state.unpushed === 0;
+    if (!active) {
+      if (sprintState.deliveryCheckpointActive !== false) {
+        sprintState = {
+          ...sprintState,
+          deliveryCheckpointActive: false,
+          deliveryCheckpointHead: state.head,
+          deliveryCheckpointAt: now,
+          ...(published === undefined ? {} : { deliveryCheckpointPublished: published }),
+        };
+        persistSprintState();
+      }
+      return;
+    }
+    const headChanged = sprintState.deliveryCheckpointHead !== state.head;
+    const remotePublished = published === true && sprintState.deliveryCheckpointPublished === false;
+    if (
+      sprintState.deliveryCheckpointActive !== true ||
+      headChanged ||
+      remotePublished ||
+      typeof sprintState.deliveryCheckpointAt !== "number"
+    ) {
+      sprintState = {
+        ...sprintState,
+        deliveryCheckpointActive: true,
+        deliveryCheckpointHead: state.head,
+        deliveryCheckpointAt: now,
+        ...(published === undefined ? {} : { deliveryCheckpointPublished: published }),
+      };
+      persistSprintState();
+      return;
+    }
+    if (published !== undefined && sprintState.deliveryCheckpointPublished !== published) {
+      sprintState = { ...sprintState, deliveryCheckpointPublished: published };
+      persistSprintState();
+    }
+  };
+  const deliveryCheckpointText = (intervals: number, state: GitIntegrationState) => intervals >= 2
+    ? `SECOND CONSECUTIVE ARTIFACT-FREE CHECKPOINT: checkout HEAD ${state.head} has not changed for ${intervals} fixed 15-minute wall-clock intervals. Push and read back any existing commit, then stop/release the current method or worker and split/reassign the smallest shippable slice. A changed ETA/PERT, status message or retrospective does not reset this clock. ${ORDER}`
+    : `DELIVERY CHECKPOINT: checkout HEAD ${state.head} did not change during one fixed 15-minute wall-clock interval. Commit the smallest coherent slice now, or push and read back an existing commit; if neither is possible, narrow the method immediately. A changed ETA/PERT or status message does not reset this clock. ${ORDER}`;
   const refreshPush = async (ctx: ExtensionContext, force = false) => {
-    if (singleWriterLane || !isMain(ctx) || !ownsBranchWork(ctx)) return;
+    if (singleWriterLane || !isMain(ctx)) return;
+    if (!ownsBranchWork(ctx)) {
+      if (sprintState.deliveryCheckpointActive !== false) {
+        sprintState = { ...sprintState, deliveryCheckpointActive: false, deliveryCheckpointAt: Date.now() };
+        persistSprintState();
+      }
+      ctx.ui?.setStatus?.("todo-delivery-checkpoint", undefined);
+      return;
+    }
     const session = AgentRegistry.global().list().find(ref => ref.kind === "main"
       && ref.session?.sessionManager === ctx.sessionManager)?.session;
     if (!session) return;
-    const state = await gitState(ctx, Date.now(), force);
+    const now = Date.now();
+    const state = await gitState(ctx, now, force);
+    if (state) observeDeliveryCheckpoint(ctx, state, now);
+    const checkpointIntervals = deliveryCheckpointIntervals(state, now);
+    ctx.ui?.setStatus?.("todo-delivery-checkpoint", checkpointIntervals > 0
+      ? `${checkpointIntervals >= 2 ? "stop/split" : "checkpoint"} · ${checkpointIntervals * 15}m without new HEAD`
+      : undefined);
     ctx.ui?.setStatus?.("todo-unpushed", state?.unpushed === undefined ? undefined
       : state.unpushed ? `${state.unpushed} unpushed · oldest ${Math.floor((state.oldestUnpushedAgeMs ?? 0) / 60_000)}m` : undefined);
+    if (state && checkpointIntervals > 0) {
+      const level = checkpointIntervals >= 2 ? 2 : 1;
+      sendHarnessNotice(
+        "todo-delivery-checkpoint",
+        `${ctx.cwd}:${state.head}:${level}`,
+        deliveryCheckpointText(checkpointIntervals, state),
+        { head: state.head, cwd: ctx.cwd, intervals: checkpointIntervals },
+        `delivery-checkpoint:${state.head}:${level}`,
+        { triggerTurn: ctx.isIdle?.() === true },
+      );
+    }
     if (state?.unpushed === undefined || !state.pushBranch) return;
     if (state.unpushed === 0) {
       const key = noticeKey("todo-unpushed", `${ctx.cwd}:${pushRowTitle(state)}`);
@@ -4847,6 +4936,24 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         reminder: [{
           role: "developer" as const,
           content: `UNPUSHED WORK: ${state.unpushed} commit(s) on this branch, the oldest ${minutes} minutes old, exist only in this checkout. ${ORDER}`,
+          timestamp: now,
+        }],
+      };
+    }
+    const checkpointIntervals = deliveryCheckpointIntervals(state, now);
+    if (state && !state.mergeHead && ownsActiveBranchWork(ctx) && checkpointIntervals > 0) {
+      gateTrace(ctx, "delivery-checkpoint-demand", { head: state.head, intervals: checkpointIntervals });
+      return {
+        soft: true as const,
+        id: `todo-delivery-checkpoint:${state.head}:${Math.min(checkpointIntervals, 2)}`,
+        toolName: "task" as const,
+        satisfies: (toolCall: { name: string; arguments?: Record<string, unknown> }) =>
+          (toolCall.name === "bash" && typeof toolCall.arguments?.command === "string" &&
+            (GIT_COMMIT.test(toolCall.arguments.command) || GIT_PUSH.test(toolCall.arguments.command))) ||
+          (toolCall.name === "task" && /\b(commit|checkpoint|shippable|stop|release|split)\b/i.test(JSON.stringify(toolCall.arguments ?? {}))),
+        reminder: [{
+          role: "developer" as const,
+          content: deliveryCheckpointText(checkpointIntervals, state),
           timestamp: now,
         }],
       };
