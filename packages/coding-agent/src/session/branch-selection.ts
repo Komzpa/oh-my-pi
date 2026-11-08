@@ -24,6 +24,7 @@ export type BranchSource = {
 	getEntry?: (id: string) => SessionEntry | undefined;
 	getBranchTailMatching?: (limit: number, predicate: Predicate) => SessionEntry[];
 	getBranchMatching?: (predicate: Predicate) => SessionEntry[];
+	getBranchMatchingCooperatively?: (predicate: Predicate) => Promise<SessionEntry[]>;
 	getCachedBranchMatching?: (predicate: Predicate) => SessionEntry[];
 	getLatestBranchMatching?: (predicate: Predicate) => SessionEntry | undefined;
 	iterateBranchMatchingNewestFirst?: (predicate: Predicate) => Iterable<SessionEntry>;
@@ -65,7 +66,8 @@ export async function selectBranchEntriesCooperatively(
 	source: BranchSource,
 	predicate: Predicate,
 ): Promise<SessionEntry[]> {
-	if ((!source.getLeafId || !source.getEntry) && source.iterateBranchMatchingNewestFirst) {
+	if (source.getBranchMatchingCooperatively) return source.getBranchMatchingCooperatively(predicate);
+	if (source.iterateBranchMatchingNewestFirst) {
 		const selected: SessionEntry[] = [];
 		for (const entry of source.iterateBranchMatchingNewestFirst(predicate)) {
 			selected.push(entry);

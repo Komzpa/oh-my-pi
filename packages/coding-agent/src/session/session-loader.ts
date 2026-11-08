@@ -464,17 +464,52 @@ export async function visitEntriesFromFileStream(
 
 	return titleSlot;
 }
+/** Share immutable text across repeated snapshots without aliasing their mutable containers. */
+export function createSessionStringPool(): (entry: FileEntry) => void {
+	const strings = new Map<string, string>();
+	const budget = 32 * 1024 * 1024;
+	let bytes = 0;
+	return entry => {
+		const pending: object[] = [entry];
+		const seen = new WeakSet<object>();
+		while (pending.length > 0) {
+			const object = pending.pop()! as Record<string, unknown>;
+			if (seen.has(object) || ArrayBuffer.isView(object) || Object.isFrozen(object)) continue;
+			seen.add(object);
+			for (const key of Object.keys(object)) {
+				const value = object[key];
+				if (typeof value === "object" && value !== null) pending.push(value);
+				if (typeof value !== "string" || value.length < 64 || value.length * 2 > budget) continue;
+				const existing = strings.get(value);
+				if (existing !== undefined) {
+					object[key] = existing;
+					continue;
+				}
+				while (bytes + value.length * 2 > budget || strings.size >= 16_384) {
+					const oldest = strings.keys().next().value!;
+					bytes -= oldest.length * 2;
+					strings.delete(oldest);
+				}
+				strings.set(value, value);
+				bytes += value.length * 2;
+			}
+		}
+	};
+}
+
 /** Exported for testing — the ≥8MiB streaming path (works on any file size). */
 export async function loadEntriesFromFileStream(
 	filePath: string,
 	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing">,
 ): Promise<SessionLoadResult> {
 	const entries: FileEntry[] = [];
+	const internStrings = createSessionStringPool();
 	let malformedRecords = 0;
 	let bytesConsumed = 0;
 	const titleSlot = await visitEntriesFromFileStream(
 		filePath,
 		entry => {
+			internStrings(entry);
 			entries.push(entry);
 		},
 		{

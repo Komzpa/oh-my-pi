@@ -108,3 +108,18 @@ test("splitting an open row requires new linked children; adding unrelated rows 
 	phases[0]!.tasks[0]!.schedule = { dependencies: ["Piece A", "Piece B"] };
 	expect(recoveryActionObserved(demand, phases, running)).toBe(true);
 });
+
+test("restored recovery sheds row history while preserving staffing and split detection", () => {
+	const phases = plan();
+	phases[0]!.tasks[0]!.blocker = "large historical note ".repeat(10000);
+	const state = recoveryDemand(phases, running, 3000, 2, 2000, undefined);
+	// Simulate a journal written before compact recovery baselines.
+	state.pending!.baseline = structuredClone(phases);
+	const restored = recoveryDemand(phases, running, 4000, 2, 2000, undefined, state);
+	expect(JSON.stringify(restored).length).toBeLessThan(10000);
+	expect(state.pending!.baseline[0]!.tasks[0]!.blocker).toEqual(phases[0]!.tasks[0]!.blocker);
+	expect(recoveryActionObserved(restored.pending!, phases, running)).toBe(false);
+	phases[0]!.tasks.push({ content: "First piece", status: "pending" }, { content: "Second piece", status: "pending" });
+	phases[0]!.tasks[0]!.schedule = { dependencies: ["First piece", "Second piece"] };
+	expect(recoveryActionObserved(restored.pending!, phases, running)).toBe(true);
+});

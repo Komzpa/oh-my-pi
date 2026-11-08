@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import * as path from "node:path";
+import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -47,4 +48,35 @@ describe("SessionManager.open with throwIfMissing", () => {
 		);
 		expect(await Bun.file(empty).text()).toBe("");
 	});
+});
+
+it("freshness reopen adopts a replacement after probing and rejects a truncated replacement", async () => {
+	const root = makeTempDir("@pi-open-freshness-");
+	const file = path.join(root, "saved.jsonl");
+	const header = JSON.stringify({ type: "session", version: 3, id: "saved", timestamp: "2026-01-01", cwd: root });
+	const transcript = (value: string) =>
+		`${header}\n${JSON.stringify({ type: "custom", id: value, parentId: null, timestamp: "2026-01-01", customType: "snapshot", data: { value } })}\n`;
+	for (const replacement of [transcript("fresh"), ""]) {
+		const storage = new MemorySessionStorage();
+		storage.writeTextSync(file, transcript("stale"));
+		const read = storage.readText.bind(storage);
+		const probe = spyOn(storage, "readText").mockImplementationOnce(async path => {
+			const body = await read(path);
+			storage.writeTextSync(path, replacement);
+			return body;
+		});
+		try {
+			const opening = SessionManager.open(file, root, storage, { throwIfMissing: true, suppressBreadcrumb: true });
+			if (replacement) {
+				const manager = await opening;
+				expect(manager.getEntries().map(entry => entry.id)).toEqual(["fresh"]);
+				await manager.close();
+			} else {
+				await expect(opening).rejects.toThrow(/holds no entries/);
+				expect(await read(file)).toBe("");
+			}
+		} finally {
+			probe.mockRestore();
+		}
+	}
 });

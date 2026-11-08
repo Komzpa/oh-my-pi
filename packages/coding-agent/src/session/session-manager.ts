@@ -99,6 +99,7 @@ import {
 	type SessionInfo,
 } from "./session-listing";
 import {
+	createSessionStringPool,
 	loadEntriesFromFile,
 	loadSessionFile,
 	normalizeAssistantUsage,
@@ -964,6 +965,7 @@ export class SessionManager {
 	#titleUpdatedAt = "";
 	#hasTitleSlot = true;
 	#entries: SessionEntry[] = [];
+	#internStrings = createSessionStringPool();
 	#index = new SessionEntryIndex();
 
 	/** File reflects all current entries; appends can go incrementally. */
@@ -2098,6 +2100,7 @@ export class SessionManager {
 		this.#titleUpdatedAt = timestamp;
 
 		this.#entries = [];
+		this.#internStrings = createSessionStringPool();
 		this.#index.clear();
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
@@ -2129,6 +2132,7 @@ export class SessionManager {
 	#applyEntries(header: SessionHeader, entries: SessionEntry[]): void {
 		this.#header = header;
 		this.#entries = entries;
+		this.#internStrings = createSessionStringPool();
 		this.#sessionId = header.id;
 		this.#sessionName = header.title;
 		this.#titleSource = header.titleSource;
@@ -2164,6 +2168,7 @@ export class SessionManager {
 		if (entry.type === "message" && entry.message.role === "assistant" && normalizeAssistantUsage(entry.message)) {
 			logger.warn("Assistant message recorded with incomplete usage", { id: entry.id });
 		}
+		this.#internStrings(entry);
 		this.#entries.push(entry);
 		this.#index.insert(entry);
 		const batch = this.#atomicEntryBatch;
@@ -3084,6 +3089,7 @@ export class SessionManager {
 	releaseRetainedEntries(): void {
 		this.seal();
 		this.#entries = [];
+		this.#internStrings = createSessionStringPool();
 		this.#index.clear();
 		this.#inMemoryArtifacts = null;
 		this.#closeWriterEventually();
@@ -3484,6 +3490,7 @@ export class SessionManager {
 		};
 		if (previousTitle) entry.previousTitle = previousTitle;
 		if (trigger) entry.trigger = trigger;
+		this.#internStrings(entry);
 		this.#entries.push(entry);
 		this.#index.insert(entry);
 		this.#notifyEntryAppended(entry);
@@ -3941,6 +3948,24 @@ export class SessionManager {
 	 */
 	getBranch(fromId?: string): SessionEntry[] {
 		return this.#index.pathTo(fromId ?? this.#index.leafId());
+	}
+
+	/** Select cooperatively, yielding even when every visited entry is excluded. */
+	async getBranchMatchingCooperatively(
+		predicate: (metadata: SessionContextEntryMetadata) => boolean,
+	): Promise<SessionEntry[]> {
+		const selected: SessionEntry[] = [];
+		const seen = new Set<string>();
+		let id = this.#index.leafId();
+		while (id && !seen.has(id)) {
+			seen.add(id);
+			const entry = this.#index.get(id);
+			if (!entry) break;
+			if (predicate(sessionContextEntryMetadata(entry))) selected.push(entry);
+			id = entry.parentId;
+			if (seen.size % 256 === 0) await Bun.sleep(0);
+		}
+		return selected.reverse();
 	}
 
 	/** Select entries without copying or decoding unrelated branch bodies. */
@@ -4471,6 +4496,8 @@ export class SessionManager {
 	): Promise<SessionManager> {
 		const probed = await loadSessionFile(filePath, storage, { throwIfMissing: options?.throwIfMissing });
 		const header = probed.entries.find(entry => entry.type === "session") as SessionHeader | undefined;
+		// The freshness read below replaces this private parse; retain only its header.
+		if (options?.throwIfMissing) probed.entries = [];
 		// Resume into the session's recorded cwd only when it is verifiably
 		// accessible. A deleted or permission-blocked (macOS TCC denial) project
 		// dir would make the constructor's #cwd — and the `setProjectDir` chdir

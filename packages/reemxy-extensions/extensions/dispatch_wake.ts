@@ -126,6 +126,24 @@ const staffed = (row: TodoScheduleInput[number]["tasks"][number], running: Set<s
 	!row.schedule.executor.outcome &&
 	(running.has(row.schedule.executor.workerId) || running.has(row.schedule.owner ?? ""));
 
+/** Recovery compares staffing and graph changes, not row prose or attempt history. */
+function recoveryBaseline(phases: TodoScheduleInput): TodoScheduleInput {
+	return phases.map(phase => ({
+		name: phase.name,
+		tasks: phase.tasks.map(row => ({
+			content: row.content,
+			status: row.status,
+			...(row.schedule ? { schedule: {
+				dependencies: row.schedule.dependencies ? [...row.schedule.dependencies] : undefined,
+				executor: row.schedule.executor ? {
+					workerId: row.schedule.executor.workerId,
+					startedAt: row.schedule.executor.startedAt,
+				} : undefined,
+			} } : {}),
+		})),
+	}));
+}
+
 /** Same durable action-demand journal as CHURN; no prose is interpreted here. */
 export function recoveryDemand(
 	phases: TodoScheduleInput,
@@ -138,7 +156,7 @@ export function recoveryDemand(
 	activeCount = running.size,
 	readyContents?: ReadonlySet<string>,
 ): RecoveryState {
-	const state: RecoveryState = structuredClone(previous ?? { idleSince: {}, samples: [] });
+	const state: RecoveryState = structuredClone(previous ? { ...previous, pending: previous.pending ? { ...previous.pending, baseline: recoveryBaseline(previous.pending.baseline) } : undefined } : { idleSince: {}, samples: [] });
 	const rows = phases.flatMap(phase => phase.tasks);
 	const open = rows.filter(openRow);
 	if (!state.samples.length || now - state.samples.at(-1)!.at >= 60_000)
@@ -182,7 +200,7 @@ export function recoveryDemand(
 		action: prompt.render(recoveryInstructions, { idle: !missed, row: idle?.content }).trim(),
 		churn: false,
 		row: missed ? undefined : idle!.content,
-		baseline: structuredClone(phases),
+		baseline: recoveryBaseline(phases),
 		ready: ready.map(row => row.content),
 	};
 	return state;
