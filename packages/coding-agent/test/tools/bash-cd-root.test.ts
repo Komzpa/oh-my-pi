@@ -103,6 +103,8 @@ describe("bash leading cd filesystem root", () => {
 		};
 		const client = spyOn(brokerClients, "daemonClientForProject").mockResolvedValue({
 			projectDir: workspace,
+			runtimeDir: workspace,
+			closed: false,
 			onCompletion: () => () => {},
 			close: () => {},
 			request: async operation => {
