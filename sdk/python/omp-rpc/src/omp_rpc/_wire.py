@@ -625,8 +625,15 @@ class TodoReworkAttempt:
     reflection_answer: str | None = None
     no_answer_reason: str | None = None
     final_report_paragraph: str | None = None
+    interruption: Literal["restart"] | None = None
     infra_failure_line: str | None = None
     infra_failure_error: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoResourceWait:
+    row: str
+    worker_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -638,6 +645,7 @@ class TodoSchedule:
     """Exclusive forecast owner while this task is running."""
     resources: tuple[str, ...] | None = None
     """Exclusive resource identifiers while running; absent means undeclared."""
+    resource_wait: TodoResourceWait | None = None
     estimate: TodoEstimate | None = None
     estimate_revision: float | None = None
     """Server-owned revision: the first estimate is revision 1."""
@@ -2096,8 +2104,17 @@ def parse_todo_rework_attempt(value: object, path: str = "TodoReworkAttempt") ->
         reflection_answer=optional(payload, "reflectionAnswer", decode_str, path),
         no_answer_reason=optional(payload, "noAnswerReason", decode_str, path),
         final_report_paragraph=optional(payload, "finalReportParagraph", decode_str, path),
+        interruption=optional(payload, "interruption", cast('Decoder[Literal["restart"]]', literal(frozenset({"restart"}))), path),
         infra_failure_line=optional(payload, "infraFailureLine", decode_str, path),
         infra_failure_error=optional(payload, "infraFailureError", decode_str, path),
+    )
+
+
+def parse_todo_resource_wait(value: object, path: str = "TodoResourceWait") -> TodoResourceWait:
+    payload = expect_object(value, path)
+    return TodoResourceWait(
+        row=required(payload, "row", decode_str, path),
+        worker_id=optional(payload, "workerId", decode_str, path),
     )
 
 
@@ -2107,6 +2124,7 @@ def parse_todo_schedule(value: object, path: str = "TodoSchedule") -> TodoSchedu
         dependencies=optional(payload, "dependencies", array(decode_str), path),
         owner=optional(payload, "owner", decode_str, path),
         resources=optional(payload, "resources", array(decode_str), path),
+        resource_wait=optional(payload, "resourceWait", parse_todo_resource_wait, path),
         estimate=optional(payload, "estimate", parse_todo_estimate, path),
         estimate_revision=optional(payload, "estimateRevision", decode_float, path),
         reestimate_count=optional(payload, "reestimateCount", decode_float, path),
@@ -4359,6 +4377,7 @@ __all__ = [
     "TodoItem",
     "TodoPhase",
     "TodoReminderEvent",
+    "TodoResourceWait",
     "TodoScheduleReview",
     "TodoStatus",
     "TokenUsage",
@@ -4531,6 +4550,7 @@ __all__ = [
     "parse_todo_item",
     "parse_todo_phase",
     "parse_todo_reminder_event",
+    "parse_todo_resource_wait",
     "parse_token_usage",
     "parse_tool_call",
     "parse_tool_descriptor",

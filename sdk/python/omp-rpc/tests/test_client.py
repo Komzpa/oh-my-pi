@@ -34,6 +34,7 @@ from omp_rpc import (
     RpcTimeoutError,
     SubagentLifecycleEvent,
     host_tool,
+    parse_session_state,
 )
 
 from omp_rpc.client import (
@@ -1760,6 +1761,23 @@ class RpcClientTests(unittest.TestCase):
         self.assertIn("ready", notification_types)
         self.assertIn("turn_start", notification_types)
         self.assertIn("agent_end", notification_types)
+
+    def test_set_todos_preserves_resource_wait_and_restart_receipts(self) -> None:
+        state = parse_session_state({"sessionId": "s", "todoPhases": [{
+            "name": "Work", "tasks": [{"content": "Row", "status": "pending", "schedule": {
+                "resourceWait": {"row": "Holder", "workerId": "Holder-1"},
+                "attemptHistory": [{"attemptId": "w:1", "workerName": "w", "resolvedModel": "mock/model",
+                    "effort": "low", "startedAt": 1, "finishedAt": 2, "durationMs": 1,
+                    "terminalStatus": "aborted", "deliverablePaths": [], "interruption": "restart"}]
+            }}]
+        }]})
+        with self.make_client() as client:
+            phases = client.set_todos(state.todo_phases)
+        schedule = phases[0].tasks[0].schedule
+        assert schedule is not None and schedule.resource_wait is not None
+        self.assertEqual(schedule.resource_wait.row, "Holder")
+        self.assertEqual(schedule.resource_wait.worker_id, "Holder-1")
+        self.assertEqual(schedule.attempt_history[0].interruption, "restart")
 
     def test_set_todos_supports_flat_items(self) -> None:
         with self.make_client() as client:

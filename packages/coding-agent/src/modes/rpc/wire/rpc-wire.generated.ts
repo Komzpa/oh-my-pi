@@ -458,8 +458,14 @@ export interface TodoReworkAttempt {
 	reflectionAnswer?: string;
 	noAnswerReason?: string;
 	finalReportParagraph?: string;
+	interruption?: "restart";
 	infraFailureLine?: string;
 	infraFailureError?: string;
+}
+
+export interface TodoResourceWait {
+	row: string;
+	workerId?: string;
 }
 
 /** Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds. */
@@ -470,6 +476,7 @@ export interface TodoSchedule {
 	owner?: string;
 	/** Exclusive resource identifiers while running; absent means undeclared. */
 	resources?: string[];
+	resourceWait?: TodoResourceWait;
 	estimate?: TodoEstimate;
 	/** Server-owned revision: the first estimate is revision 1. */
 	estimateRevision?: number;
