@@ -1,5 +1,6 @@
-⁂ Role
+§ Role
 {{agent}}
+
 {{#if context}}
 ⁂ Context
 {{context}}
