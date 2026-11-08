@@ -93,3 +93,13 @@ test("new findings on a follow-up stay actionable without nested audit rows", ()
 	expect(followUps[0]!.notes).toEqual(["first finding", "second finding"]);
 	expect(followUps[0]!.status).toBe("pending");
 });
+
+test("follow-up escalation remains blocked and keeps the new finding", () => {
+	let phases: TodoPhase[] = [{ name: "Later", tasks: [{ content: "Audit follow-up: Existing delivery", status: "in_progress", notes: ["earlier"] }] }];
+	phases = patchTodoSchedule(phases, "Audit follow-up: Existing delivery", { auditEscalation: "needs decision", auditFollowUps: ["later finding"] }, 3)!;
+	const row = phases[0]!.tasks[0]!;
+	expect(phases[0]!.tasks).toHaveLength(1);
+	expect(row.status).toBe("blocked");
+	expect(row.blocker).toBe("needs decision");
+	expect(row.notes).toEqual(["earlier", "later finding"]);
+});
