@@ -2299,3 +2299,26 @@ test("zero-active staffing does not replay an unchanged wake after reload or com
 		expect(restored.notices.filter(n => n.customType === "todo-idle-plan-demand")).toHaveLength(0);
 	} finally { first.shutdown(); restored?.shutdown(); }
 });
+
+test("zero-active demand rearms after an observed worker finishes without changing the plan", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	phases[0].tasks[0].status = "pending";
+	phases[0].tasks[0].schedule.owner = undefined;
+	const h = await noticeHarness(phases, now + 86400000);
+	try {
+		const stop = async () => {
+			await h.handlers.get("turn_start")({}, h.ctx);
+			await h.handlers.get("session_stop")({}, h.ctx);
+		};
+		await stop();
+		expect(h.notices.filter(n => n.customType === "todo-idle-plan-demand")).toHaveLength(1);
+		h.setRunning([{ id: "worker-a", agentId: "worker-a", label: "Row 1", type: "task", status: "running" }]);
+		await h.handlers.get("tool_call")({ toolName: "read", input: { path: "proc://list" } }, h.ctx);
+		h.setRunning([]);
+		await stop();
+		expect(h.notices.filter(n => n.customType === "todo-idle-plan-demand")).toHaveLength(2);
+		await stop();
+		expect(h.notices.filter(n => n.customType === "todo-idle-plan-demand")).toHaveLength(2);
+	} finally { h.shutdown(); }
+});

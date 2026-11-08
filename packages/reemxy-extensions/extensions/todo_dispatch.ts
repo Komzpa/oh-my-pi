@@ -4100,6 +4100,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const jobs = ctx.getAsyncJobSnapshot();
     if (!jobs || jobs.nonJobAgents?.some(agent => agent.live) || jobs.running.some(job => job.status === "running" && !job.queued && job.type === "task")) {
       zeroActiveCalls = 0;
+      // A real worker transition rearms a later idle warning even if the plan
+      // did not change. Do not rearm on an unavailable snapshot.
+      if (jobs && sprintState.idleContinuationKey?.startsWith('["zero-active",')) resetIdleContinuationDemand();
       return;
     }
     const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
