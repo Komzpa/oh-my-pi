@@ -87,20 +87,25 @@ function ownedDirt(porcelain: string, root: string, ctx: ExtensionContext): stri
 		.filter(target => target !== root && within(root, target));
 	return statusPaths(porcelain).filter(rel => owned.some(target => within(target, path.resolve(root, rel))));
 }
-/** The brief or row says the lead commits: uncommitted owned edits are handed off, not refused. */
+/** The brief, row, or later parent IRC says to hand off uncommitted owned edits. */
 function editOnlyHandoff(ctx: ExtensionContext): boolean {
 	const texts = liveWorkerRows(ctx).map(row => row.content);
+	let briefSeen = false;
 	for (const entry of ctx.sessionManager.getBranch()) {
 		if (entry.type !== "message" || entry.message.role !== "user") continue;
 		const content = entry.message.content as unknown;
-		texts.push(
+		const text =
 			typeof content === "string"
 				? content
 				: Array.isArray(content)
 					? content.map(part => (part as { text?: string }).text ?? "").join("\n")
-					: "",
-		);
-		break;
+					: "";
+		if (!briefSeen) {
+			texts.push(text);
+			briefSeen = true;
+		} else if (entry.message.attribution === "agent") {
+			for (const match of text.matchAll(/<irc from="parent"[^>]*>([\s\S]*?)<\/irc>/g)) texts.push(match[1]!);
+		}
 	}
 	return texts.some(text => HANDOFF.test(text));
 }

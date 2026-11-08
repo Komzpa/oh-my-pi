@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Honor later parent no-commit instructions when workers hand off uncommitted edits ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Suspend CHURN retry pressure while prerequisites are unfinished; keep dependency-ready recovery actionable ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 - Grant explicitly assigned worktrees even beside per-task file resources; scope requests give Main a ready schedule call and workers can yield pending scope ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
