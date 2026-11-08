@@ -37,7 +37,6 @@ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { moveFileAcrossDevices } from "../utils/atomic-file";
 import { hasAnnotationDraftsSync } from "../extensibility/custom-commands/bundled/annotate/draft-store";
-import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "./branch-selection";
 import { ArtifactManager, type ArtifactManagerApi } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore, lazyImageDataSync } from "./blob-store";
 import type { CompactionMethod } from "./compaction-methods";
@@ -5271,48 +5270,129 @@ export class SessionManager {
 		return this.#index.pathTo(fromId ?? this.#index.leafId());
 	}
 
-	/** Select cooperatively, yielding even when every visited entry is excluded. */
+	/** Materialize only the current model/collapsed-display dependency closure. */
+	getContextBranch(): SessionEntry[] {
+		return projectToolResultPrunes(
+			this.#index.contextLeafPath({ transcript: true, collapseCompactedHistory: true }).reverse(),
+		);
+	}
+
+	/** Count the complete journal without materializing historical payloads. */
+	getEntryCount(type?: SessionEntry["type"]): number {
+		return this.#index.count(type);
+	}
+
+	hasEntryType(type: SessionEntry["type"]): boolean {
+		return this.#index.hasType(type);
+	}
+
+	*iterateEntries(type?: SessionEntry["type"], customType?: string): IterableIterator<SessionEntry> {
+		yield* this.#index.entriesOfType(type, customType);
+	}
+
+	*iterateBranch(type?: SessionEntry["type"]): IterableIterator<SessionEntry> {
+		for (const metadata of this.#index.metadataPath()) {
+			if (!type || metadata.type === type) yield this.#index.get(metadata.id, false)!;
+		}
+	}
+
+	#branchSelections = new WeakMap<
+		(metadata: SessionContextEntryMetadata) => boolean,
+		{ path: readonly SessionContextEntryMetadata[]; length: number; revision: number; entries: SessionEntry[] }
+	>();
+
+	/** Frozen read-only snapshot for stable, pure metadata predicates; unrelated appends retain identity. */
+	getCachedBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+		const path = this.#index.metadataPath();
+		const cached = this.#branchSelections.get(predicate);
+		if (cached?.path === path && cached.revision === this.#bodyRevision && cached.length === path.length)
+			return cached.entries;
+		const incremental =
+			cached &&
+			cached.revision === this.#bodyRevision &&
+			cached.length <= path.length &&
+			path[cached.length - 1]?.id === cached.path[cached.length - 1]?.id &&
+			!path.slice(cached.length).some(metadata => metadata.type === "tool_result_prune");
+		let entries = incremental ? cached.entries : [];
+		if (incremental) {
+			for (let i = cached.length; i < path.length; i++) {
+				const metadata = path[i]!;
+				if (predicate(metadata)) {
+					if (entries === cached.entries) entries = entries.slice();
+					entries.push(this.#index.get(metadata.id, true)!);
+				}
+			}
+		} else {
+			entries.push(...[...this.#iterateSelectedBranch(path, predicate, true)].reverse());
+		}
+		Object.freeze(entries);
+		this.#branchSelections.set(predicate, { path, length: path.length, revision: this.#bodyRevision, entries });
+		return entries;
+	}
+
+	/** Arbitrary predicates are evaluated afresh, including caller-owned closure state. */
+	getBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+		const path = this.#index.metadataPath();
+		const selected = new Set(path.filter(predicate).map(metadata => metadata.id));
+		return [...this.#iterateSelectedBranch(path, metadata => selected.has(metadata.id), true)].reverse();
+	}
+
+	/** Select cooperatively without decoding excluded branch payloads. */
 	async getBranchMatchingCooperatively(
 		predicate: (metadata: SessionContextEntryMetadata) => boolean,
 	): Promise<SessionEntry[]> {
+		const path = this.#index.metadataPath();
+		const project = this.createBranchSelectionProjector(path, id => this.#index.get(id, false));
 		const selected: SessionEntry[] = [];
-		const seen = new Set<string>();
-		let id = this.#index.leafId();
-		while (id && !seen.has(id)) {
-			seen.add(id);
-			const entry = this.#index.get(id);
-			if (!entry) break;
-			if (predicate(sessionContextEntryMetadata(entry))) selected.push(entry);
-			id = entry.parentId;
-			if (seen.size % 256 === 0) await Bun.sleep(0);
+		let visited = 0;
+		for (let index = path.length - 1; index >= 0; index--) {
+			const metadata = path[index]!;
+			if (predicate(metadata)) {
+				const entry = this.#index.get(metadata.id, true)!;
+				selected.push(project(entry, index));
+			}
+			if (++visited % 256 === 0) await Bun.sleep(0);
 		}
 		return selected.reverse();
 	}
 
-	/** Select entries without copying or decoding unrelated branch bodies. */
+	/** Match within the last `limit` branch entries, without decoding excluded payloads. */
+	getBranchTailMatching(limit: number, predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+		const path = this.#index.metadataPath();
+		return [...this.#iterateSelectedBranch(path, predicate, false, Math.max(0, path.length - limit))].reverse();
+	}
+
+	/** Matching entries newest first; excluded payloads are never read. */
 	*iterateBranchMatchingNewestFirst(
 		predicate: (metadata: SessionContextEntryMetadata) => boolean,
 	): IterableIterator<SessionEntry> {
-		const branch = this.#index.branchView();
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index]!;
-			if (predicate(sessionContextEntryMetadata(entry))) yield entry;
+		yield* this.#iterateSelectedBranch(this.#index.metadataPath(), predicate, false);
+	}
+
+	*#iterateSelectedBranch(
+		path: readonly SessionContextEntryMetadata[],
+		predicate: (metadata: SessionContextEntryMetadata) => boolean,
+		retainIdentity: boolean,
+		firstIndex = 0,
+	): IterableIterator<SessionEntry> {
+		const extension = this as SessionManager & {
+			createBranchSelectionProjector?: (
+				path: readonly SessionContextEntryMetadata[],
+				readEntry: (id: string) => SessionEntry | undefined,
+			) => (entry: SessionEntry, index: number) => SessionEntry;
+		};
+		const project = extension.createBranchSelectionProjector?.(path, id => this.#index.get(id, false));
+		for (let i = path.length - 1; i >= firstIndex; i--) {
+			const metadata = path[i]!;
+			if (!predicate(metadata)) continue;
+			const entry = this.#index.get(metadata.id, retainIdentity)!;
+			yield project ? project(entry, i) : entry;
 		}
 	}
 
+	/** Latest matching entry, without reading older payloads. */
 	getLatestBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry | undefined {
 		return this.iterateBranchMatchingNewestFirst(predicate).next().value;
-	}
-
-	/** Limit the branch window before filtering, rather than counting matching entries. */
-	getBranchTailMatching(limit: number, predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
-		const branch = this.#index.branchView();
-		const selected: SessionEntry[] = [];
-		for (let index = Math.max(0, branch.length - Math.max(0, Math.floor(limit))); index < branch.length; index++) {
-			const entry = branch[index]!;
-			if (predicate(sessionContextEntryMetadata(entry))) selected.push(entry);
-		}
-		return selected;
 	}
 
 	/**
@@ -5884,35 +5964,11 @@ export class SessionManager {
 		storage: SessionStorage = new FileSessionStorage(),
 		options?: { initialCwd?: string; parentSession?: string; suppressBreadcrumb?: boolean; throwIfMissing?: boolean },
 	): Promise<SessionManager> {
-		const probed = await loadSessionFile(filePath, storage, { throwIfMissing: options?.throwIfMissing });
-		const header = probed.entries.find(entry => entry.type === "session") as SessionHeader | undefined;
-		// The freshness read below replaces this private parse; retain only its header.
-		if (options?.throwIfMissing) probed.entries = [];
-		// Resume into the session's recorded cwd only when it is verifiably
-		// accessible. A deleted or permission-blocked (macOS TCC denial) project
-		// dir would make the constructor's #cwd — and the `setProjectDir` chdir
-		// interactive mode runs next — fail, so fall back to the launch cwd and
-		// anchor /new and /branch there too, keeping the resumed session where
-		// the user already is.
-		const recordedCwd = header?.cwd;
-		const recordedCwdUsable = !!recordedCwd && (await directoryIsEnterable(recordedCwd));
-		const cwd = recordedCwdUsable ? recordedCwd : (options?.initialCwd ?? getProjectDir());
-		const dir =
-			sessionDir ??
-			(recordedCwd && !recordedCwdUsable
-				? SessionManager.getDefaultSessionDir(cwd, undefined, storage)
-				: path.dirname(path.resolve(filePath)));
-		const manager = new SessionManager(cwd, dir, true, storage);
-		manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
-		// Freshness gate for fail-closed callers (revive): the cwd probe above
-		// yields, so re-read after it and adopt only the fresh snapshot. A
-		// transcript deleted, truncated, or replaced mid-probe then fails
-		// closed here (ENOENT / holds-no-entries, without minting) instead of
-		// reviving stale history. Other callers keep the single probe read.
-		const loaded = options?.throwIfMissing
-			? await loadSessionFile(filePath, storage, { throwIfMissing: true })
-			: probed;
-		await manager.#setSessionFile(filePath, loaded, {
+		const before =
+			options?.throwIfMissing && storage instanceof FileSessionStorage
+				? fs.statSync(filePath, { bigint: true })
+				: undefined;
+		const probed = await SessionManager.#loadForResume(filePath, storage, {
 			throwIfMissing: options?.throwIfMissing,
 		});
 		let loaded = probed;

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { MemorySessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -48,6 +49,62 @@ describe("SessionManager.open with throwIfMissing", () => {
 		);
 		expect(await Bun.file(empty).text()).toBe("");
 	});
+});
+
+describe("strict resume source freshness", () => {
+	for (const change of ["unchanged", "delete", "truncate", "replace", "append"] as const) {
+		it(`handles ${change} during the cwd probe`, async () => {
+			const root = makeTempDir("@pi-open-freshness-");
+			const file = path.join(root, "session.jsonl");
+			const header = (id: string) =>
+				JSON.stringify({ type: "session", version: 3, id, timestamp: new Date().toISOString(), cwd: root }) + "\n";
+			await Bun.write(file, header("original"));
+			const originalAccess = fs.promises.access;
+			let changed = false;
+			const access = spyOn(fs.promises, "access").mockImplementation(async (target, mode) => {
+				if (target === root && !changed) {
+					changed = true;
+					if (change === "delete") fs.unlinkSync(file);
+					if (change === "truncate") fs.truncateSync(file);
+					if (change === "replace") {
+						fs.writeFileSync(file + ".new", header("replaced"));
+						fs.renameSync(file + ".new", file);
+					}
+					if (change === "append")
+						fs.appendFileSync(
+							file,
+							JSON.stringify({
+								type: "custom",
+								id: "added",
+								parentId: null,
+								timestamp: new Date().toISOString(),
+								customType: "freshness-test",
+								data: {},
+							}) + "\n",
+						);
+				}
+				return originalAccess(target, mode);
+			});
+			try {
+				if (change === "delete" || change === "truncate") {
+					await expect(SessionManager.open(file, undefined, undefined, { throwIfMissing: true })).rejects.toThrow(
+						change === "delete" ? /ENOENT/ : /holds no entries/,
+					);
+				} else {
+					const session = await SessionManager.open(file, undefined, undefined, { throwIfMissing: true });
+					try {
+						expect(session.getSessionId()).toBe(change === "replace" ? "replaced" : "original");
+						if (change === "append") expect(session.getEntries().some(entry => entry.id === "added")).toBe(true);
+					} finally {
+						await session.close();
+					}
+				}
+				expect(changed).toBe(true);
+			} finally {
+				access.mockRestore();
+			}
+		});
+	}
 });
 
 it("freshness reopen adopts a replacement after probing and rejects a truncated replacement", async () => {

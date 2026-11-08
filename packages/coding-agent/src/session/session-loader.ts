@@ -532,6 +532,20 @@ export async function loadEntriesFromFileStream(
 	filePath: string,
 	options?: Pick<VisitEntriesFromFileStreamOptions, "throwIfMissing"> & { compactExecutorObservations?: boolean },
 ): Promise<SessionLoadResult> {
+	const references = new ExecutorObservationReferences();
+	let snapshotBytes: number | undefined;
+	if (options?.compactExecutorObservations) {
+		snapshotBytes = 0;
+		await visitEntriesFromFileStream(filePath, entry => references.visit(entryRevision(entry) ?? entry), {
+			throwIfMissing: options.throwIfMissing,
+			onBytesConsumed: bytes => {
+				snapshotBytes! += bytes;
+			},
+		});
+	}
+	const compactor = options?.compactExecutorObservations
+		? new ExecutorObservationCompactor(references.ids)
+		: undefined;
 	const entries: FileEntry[] = [];
 	const internStrings = createSessionStringPool();
 	let malformedRecords = 0;
