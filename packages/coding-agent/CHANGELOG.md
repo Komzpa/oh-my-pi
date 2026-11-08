@@ -458,6 +458,8 @@
 
 ### Fixed
 
+- Keep scheduled worker write access when another executor reports progress; runtime reviewers no longer take writer rows through historical IDs ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Queue resource conflicts without failed attempts and resume restart interruptions without charging the row.
 - Reduced memory retained by repeated text in long session histories and kept sparse history scans responsive.
 

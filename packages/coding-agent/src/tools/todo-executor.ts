@@ -108,12 +108,19 @@ export function findTodoExecutorTarget(
 		return matches.length === 1 ? matches[0] : undefined;
 	}
 	const open = allTasks.filter(task => isOpenStatus(task.status));
-	const existing = open.filter(task => todoMatchesObservedWorker(task, observation));
+	// A runtime review can share a writer's collision base or appear in its history.
+	// Only a current exact assignment (or the explicit row above) staffs a reviewer.
+	const review = ["reviewer", "qa-auditor"].includes(observation.agentProfile ?? "");
+	const existing = open.filter(task =>
+		review
+			? task.schedule?.owner === observation.workerId || task.schedule?.executor?.workerId === observation.workerId
+			: todoMatchesObservedWorker(task, observation),
+	);
 	if (existing.length > 0) return existing.length === 1 ? existing[0] : undefined;
 
 	// Runtime reviews mention the row as their subject, not as an execution assignment.
 	// An explicit row/owner binding above still permits a deliberately staffed review row.
-	if (["reviewer", "qa-auditor"].includes(observation.agentProfile ?? "")) return undefined;
+	if (review) return undefined;
 	const openTasks = open.filter(task => !isOwnedByAnotherRunningWorker(task, observation));
 	const description = observation.description?.trim();
 	if (description) {
@@ -168,8 +175,10 @@ export function applyTodoExecutorObservation(
 		previous.workerId !== observation.workerId &&
 		(observation.finishedAt !== undefined || previous.startedAt > observation.startedAt);
 	const owner = target.schedule?.owner;
+	// A fresh assignment can staff the row; progress from an already recorded run
+	// must not undo a later lead schedule assigning another live owner.
 	const shouldSetOwner =
-		observation.finishedAt === undefined ||
+		(observation.finishedAt === undefined && !carriedPrevious) ||
 		owner === undefined ||
 		owner === observation.workerId ||
 		!(observation.runningWorkerIds?.has(owner) ?? false);

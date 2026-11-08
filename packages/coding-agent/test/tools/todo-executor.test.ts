@@ -456,3 +456,40 @@ it("a successor launch resets reestimates without erasing prior attempt evidence
 	});
 	expect(same?.[0]?.tasks[0]?.schedule?.reestimateCount).toBe(0);
 });
+
+it("implicit reviewers cannot acquire a writer row through historical ids or collision suffixes", () => {
+	const phases: TodoPhase[] = [
+		{
+			name: "Work",
+			tasks: [
+				{
+					content: "Repair stakeholder scenario",
+					status: "in_progress",
+					schedule: {
+						owner: "Scenario-4",
+						workerIds: ["Scenario", "Scenario-3"],
+						executor: { workerId: "Scenario-4", startedAt: 10 },
+					},
+				},
+			],
+		},
+	];
+	for (const workerId of ["Scenario-3", "Scenario-5"]) {
+		expect(
+			applyTodoExecutorObservation(phases, {
+				workerId,
+				agentProfile: "reviewer",
+				startedAt: 20,
+				runningWorkerIds: new Set([workerId]),
+			}),
+		).toBeUndefined();
+	}
+	const assigned = applyTodoExecutorObservation(phases, {
+		workerId: "Review",
+		row: "Repair stakeholder scenario",
+		agentProfile: "reviewer",
+		startedAt: 20,
+		runningWorkerIds: new Set(["Review"]),
+	});
+	expect(assigned?.[0]?.tasks[0]?.schedule?.owner).toBe("Review");
+});

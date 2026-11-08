@@ -10,7 +10,8 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import agentRouter from "./agent_router";
+import { applyTodoExecutorObservation } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
+import agentRouter, { requestResourceScope } from "./agent_router";
 import { workerToolPreflight, type HostResourceProbes, type TestProcess } from "./dispatch_preflight";
 const ctx = { cwd: "/project", agent: { kind: "sub" } } as ExtensionContext;
 const low = {
@@ -264,6 +265,53 @@ test("ROOT reader does not block writes; unscoped concurrent writes acquire one 
 		phases[0]!.tasks[1]!.status = "completed";
 		expect(await call("write", { path: "shared.ts" }, context("Beta"))).toBeUndefined();
 	} finally {
+		spy.mockRestore();
+	}
+});
+test("lead scheduling a suffixed owner survives another executor's progress and grants only its absolute files", async () => {
+	const registry = new AgentRegistry();
+	const spy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+	let phases: TodoPhase[] = [{ name: "Work", tasks: [{
+		content: "Repair stakeholder scenario", status: "in_progress", schedule: {
+			owner: "Scenario-5", workerIds: ["Scenario", "Scenario-4", "Scenario-5"],
+			executor: { workerId: "Scenario-5", agentProfile: "reviewer", startedAt: 50 },
+			resources: ["/isolated/scenario/doc/requirements.md", "/isolated/scenario/test-results"],
+		},
+	}] }];
+	registry.register({ id: "Lead", displayName: "Lead", kind: "main", session: {
+		activeToolExecutionUpdates() {}, getTodoPhases: () => phases,
+	} as unknown as AgentSessionHandle });
+	const context = { cwd: "/shared/project", agent: { kind: "sub", id: "Scenario-4", parentId: "Lead" } } as ExtensionContext;
+	const target = "/isolated/scenario/doc/requirements.md";
+	const manager = SessionManager.inMemory();
+	const todo = new TodoTool({ cwd: context.cwd, settings: Settings.isolated(), sessionManager: manager,
+		getSessionFile: () => null, getTodoPhases: () => phases,
+		setTodoPhases: (updated: TodoPhase[]) => { phases = updated; },
+	} as unknown as ToolSession);
+	try {
+		expect(await call("edit", { path: target }, context)).toMatchObject({ block: true });
+		expect(await requestResourceScope(context, [target])).toMatchObject({ status: "unavailable" });
+		await todo.execute("schedule-owner", { op: "schedule", updates: [{ task: "Repair stakeholder scenario", owner: "Scenario-4" }] });
+		phases = applyTodoExecutorObservation(phases, {
+			row: "Repair stakeholder scenario", workerId: "Scenario-5", agentProfile: "reviewer",
+			startedAt: 50, resolvedModel: "test/model", runningWorkerIds: new Set(["Scenario-4", "Scenario-5"]),
+		}) ?? phases;
+		expect(await call("edit", { path: target }, context)).toBeUndefined();
+		expect(await requestResourceScope(context, [target])).toMatchObject({ status: "granted" });
+		expect(await call("write", { path: "/isolated/scenario/test-results/report.json" }, context)).toBeUndefined();
+		for (const denied of ["/isolated/scenario/doc/other.md", "/shared/project/file.ts"])
+			expect(await call("edit", { path: denied }, context)).toMatchObject({ block: true });
+		const unmatched = { ...context, agent: { ...context.agent, id: "Scenario-6" } } as ExtensionContext;
+		expect(await call("edit", { path: target }, unmatched)).toMatchObject({ block: true });
+		expect(await requestResourceScope(unmatched, [target])).toMatchObject({ status: "unavailable" });
+		await todo.execute("revoke-owner", { op: "schedule", updates: [{ task: "Repair stakeholder scenario", owner: "Replacement" }] });
+		expect(await call("edit", { path: target }, context)).toMatchObject({ block: true });
+		expect(await requestResourceScope(context, [target])).toMatchObject({ status: "unavailable" });
+		const executor = { ...context, agent: { ...context.agent, id: "Scenario-5" } } as ExtensionContext;
+		expect(await call("edit", { path: target }, executor)).toBeUndefined();
+		expect(await requestResourceScope(executor, [target])).toMatchObject({ status: "granted" });
+	} finally {
+		await manager.close();
 		spy.mockRestore();
 	}
 });
