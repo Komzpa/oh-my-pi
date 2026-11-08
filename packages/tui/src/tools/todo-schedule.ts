@@ -2303,6 +2303,19 @@ export function todoRowDeliveryKey(schedule: TodoSchedule | undefined): string {
 // hex-looking words are not commits.
 const COMMIT_ID = /(?<![0-9A-Za-z])(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}(?![0-9A-Za-z])/;
 
+/** Use the explicitly bound delivery repository before the session's checkout. */
+export function todoArtifactRepository(task: { artifactCwd?: string; schedule?: TodoSchedule }, cwd: string): string {
+	if (task.artifactCwd) return task.artifactCwd;
+	const repositories = new Set(
+		(task.schedule?.resources ?? []).flatMap(resource => {
+			const match = /^git:(.+)@[0-9a-f]{40}$/.exec(resource);
+			return match ? [match[1]!] : [];
+		}),
+	);
+	if (repositories.size === 1) return [...repositories][0]!;
+	return task.schedule?.executor?.gitCommits?.[0]?.repoPath ?? cwd;
+}
+
 /** The row carries a deliverable: commit receipts, a pinned git resource, a review page, or a
  * commit id in the evidence the lead recorded on the row. Worker output prose is never read. */
 export function todoRowHasDeliverable(task: { schedule?: TodoSchedule }): boolean {

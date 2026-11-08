@@ -5,6 +5,7 @@ import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import {
 	TODO_AUDIT_PROFILES,
+	todoArtifactRepository,
 	todoNeedsOwnerDecision,
 	todoRowAfterWorker,
 	type TodoSchedule,
@@ -163,7 +164,7 @@ export function queueDeliveryCritic(
 	if (existing) return true;
 	const task = prompt.render(brief, {
 		request: row.content,
-		root: row.artifactCwd ?? commits[0]?.repoPath ?? ctx.cwd,
+		root: todoArtifactRepository(row, ctx.cwd),
 		commits: JSON.stringify(commits),
 		preview,
 		receipt,

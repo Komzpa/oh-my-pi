@@ -11,6 +11,7 @@ import {
 	TODO_ROW_AUDITOR,
 	type TodoRowAudit,
 	type TodoScheduleInputTask,
+	todoArtifactRepository,
 	todoRowAfterWorker,
 	todoRowDeliveryKey,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -128,7 +129,7 @@ export function rowAuditIssues(verdict: RowAuditVerdict): AuditFinding[] {
 }
 
 function rowRepo(row: RowAuditRow, cwd: string): string {
-	return row.artifactCwd ?? row.schedule?.executor?.gitCommits?.[0]?.repoPath ?? cwd;
+	return todoArtifactRepository(row, cwd);
 }
 
 /**

@@ -651,3 +651,15 @@ test("Cooling late corrected yield supersedes omitted only within its unchanged 
 	for (let i = 0; i < 5; i++) await Bun.sleep(0);
 	expect(current.schedule.audit.verdict).toBe("pending");
 });
+
+test("audits the repository bound by an exact git resource instead of lead cwd", () => {
+	const sha = "a".repeat(40);
+	const row = { content: "Inspect delivery", status: "in_progress", schedule: {
+		resources: [`git:/work/delivery@${sha}`],
+		executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const batches = planRowAudits([row], new Map([["/work/delivery", sha], ["/work/lead", "b".repeat(40)]]), "/work/lead", () => false, () => false);
+	expect(batches).toHaveLength(1);
+	expect(batches[0]!.repoPath).toBe("/work/delivery");
+	expect(batches[0]!.head).toBe(sha);
+});
