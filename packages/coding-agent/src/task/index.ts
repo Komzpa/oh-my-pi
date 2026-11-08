@@ -2198,6 +2198,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const message = error instanceof Error ? error.message : String(error);
 				// An adopted run already executes; without its job nothing would own it.
 				spawn.run?.discard(`background job registration failed: ${message}`);
+				this.#resourceWaits.delete(spawn.agentId);
+				this.#setResourceWait(spawnParamsFor(params, spawn.item, defaultAgent));
 				failedSchedules.push(`${spawn.agentId}: ${message}`);
 				spawn.progress.status = "failed";
 				settledCount += 1;

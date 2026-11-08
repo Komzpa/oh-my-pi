@@ -436,3 +436,14 @@ for (const shutdown of [true, false])
 			if (shutdown) expect(row.schedule?.executor?.outcome).toBe("aborted");
 		},
 	);
+
+test("failed job registration clears the row's resource wait without recording a worker attempt", async () => {
+	const f = await fixture();
+	await f.jobs.dispose({ timeoutMs: 100 });
+	const result = await f.tool.execute("registration-failure", { context: "shared path", tasks: [f.items[0]] });
+	expect(textOf(result)).toContain("Failed to start background task job");
+	expect(f.jobs.getJob("PrCaptures")).toBeUndefined();
+	expect(f.phases[0].tasks[1].schedule?.resourceWait).toBeUndefined();
+	expect(f.phases[0].tasks[1].schedule?.attemptHistory ?? []).toEqual([]);
+	expect(f.run).not.toHaveBeenCalled();
+});
