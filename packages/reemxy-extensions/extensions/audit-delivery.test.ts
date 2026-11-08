@@ -103,3 +103,14 @@ test("follow-up escalation remains blocked and keeps the new finding", () => {
 	expect(row.blocker).toBe("needs decision");
 	expect(row.notes).toEqual(["earlier", "later finding"]);
 });
+
+test("a later audit on the original row retains previous follow-up evidence", () => {
+	let phases: TodoPhase[] = [{ name: "Delivery", tasks: [{ content: "Ship", status: "completed" }] }];
+	phases = patchTodoSchedule(phases, "Ship", { auditFollowUps: ["first finding"] }, 1)!;
+	phases = patchTodoSchedule(phases, "Audit follow-up: Ship", { auditFollowUps: ["second finding"] }, 2)!;
+	phases = patchTodoSchedule(phases, "Ship", { auditFollowUps: ["first finding", "third finding"] }, 3)!;
+	const followUps = phases.flatMap(phase => phase.tasks).filter(row => row.content === "Audit follow-up: Ship");
+	expect(followUps).toHaveLength(1);
+	expect(followUps[0]!.notes).toEqual(["first finding", "second finding", "third finding"]);
+	expect(followUps[0]!.schedule?.progress?.evidence).toBe("first finding\nsecond finding\nthird finding");
+});

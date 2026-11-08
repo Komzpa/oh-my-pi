@@ -80,20 +80,20 @@ export function patchTodoSchedule(
 			const phase = result[index]!;
 			result[index] = {
 				...phase,
-				tasks: phase.tasks.map(candidate =>
-					candidate.content === followUp
-						? {
-								...candidate,
-								notes: actions,
-								status: "pending",
-								schedule: {
-									...candidate.schedule,
-									dependencies: [],
-									progress: { at, evidence: actions.join("\n") },
-								},
-							}
-						: candidate,
-				),
+				tasks: phase.tasks.map(candidate => {
+					if (candidate.content !== followUp) return candidate;
+					const notes = [...new Set([...(candidate.notes ?? []), ...actions])];
+					return {
+						...candidate,
+						notes,
+						status: "pending",
+						schedule: {
+							...candidate.schedule,
+							dependencies: [],
+							progress: { at, evidence: notes.join("\n") },
+						},
+					};
+				}),
 			};
 		}
 	}
