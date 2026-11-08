@@ -4151,7 +4151,7 @@ function buildSubagentSessionOptions(
 					: (heldIrcRoster(inputs, defaultPrompt) ??
 						collectIrcPeerRoster(AgentRegistry.global(), inputs.id, inputs.ircRoot.sessionFile));
 			const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
-				agent: inputs.agentSystemPrompt,
+				agent: "",
 				context: inputs.context,
 				planReference: inputs.planReference,
 				planReferencePath: inputs.planReferencePath,

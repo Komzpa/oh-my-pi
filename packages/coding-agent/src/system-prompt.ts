@@ -672,6 +672,21 @@ export function composeAppendPrompt(appendParts: readonly string[], appendSystem
 	return renderUserAppend({ generatedAppend: generated, userAppend: appendSystemPrompt });
 }
 
+/** Split the canonical bundled prompt without making its wording own cache-layer policy. */
+function splitBundledPrompt(rendered: string): string[] {
+	const boundary = /\n(?=[§⁂] Runtime(?:\n|$))/.exec(rendered)?.index;
+	if (boundary === undefined || boundary <= 0) return [rendered.trim()];
+	return [rendered.slice(0, boundary).trim(), rendered.slice(boundary).trim()].filter(Boolean);
+}
+
+/** Project-scoped skills and rules remain sourced from the canonical bundled template. */
+function extractSkillsAndRules(rendered: string): string {
+	const start = rendered.indexOf("# Skills & Rules");
+	if (start < 0) return "";
+	const end = rendered.indexOf("\n# Internal URLs", start);
+	return rendered.slice(start, end < 0 ? undefined : end).trim();
+}
+
 /** Build the system prompt with tools, guidelines, and context */
 export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}): Promise<BuildSystemPromptResult> {
 	if ($env.NULL_PROMPT === "true") {
@@ -1075,7 +1090,7 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 			selectedTemplate,
 			resolvedCustomPrompt || resolvedSystemPromptTemplate
 				? data
-				: { ...data, agentOnly: true, skills: [], rules: [], alwaysApplyRules: [] },
+				: { ...data, appendPrompt: "", skills: [], rules: [], alwaysApplyRules: [] },
 		);
 	} catch (error) {
 		if (resolvedSystemPromptTemplate === undefined) throw error;
@@ -1088,16 +1103,14 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 		resolvedSystemPromptTemplate = undefined;
 		rendered = prompt.render(systemPromptTemplate, {
 			...data,
-			agentOnly: true,
+			appendPrompt: "",
 			skills: [],
 			rules: [],
 			alwaysApplyRules: [],
 		});
 	}
 	const bundled = !resolvedCustomPrompt && !resolvedSystemPromptTemplate;
-	const systemPrompt = bundled
-		? [prompt.render(systemPromptTemplate, { globalOnly: true }).trim(), rendered.trim()]
-		: [rendered];
+	const systemPrompt = bundled ? splitBundledPrompt(rendered) : [rendered];
 	const globalEnd = bundled ? systemPrompt[0].length : 0;
 	for (const prelude of evalPreludes) {
 		const guidance = prelude.guidance?.trim();
@@ -1115,7 +1128,9 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 			...(bundled
 				? {
 						appendPrompt: "",
-						skillsAndRules: prompt.render(systemPromptTemplate, { ...data, agentOnly: true, catalogOnly: true }),
+						skillsAndRules: extractSkillsAndRules(
+							prompt.render(systemPromptTemplate, { ...data, appendPrompt: "" }),
+						),
 					}
 				: { skills: [], rules: [], alwaysApplyRules: [] }),
 			activeRepoContext: activeRepoContextPrompt,
