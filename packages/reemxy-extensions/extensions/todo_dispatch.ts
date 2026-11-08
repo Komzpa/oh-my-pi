@@ -5692,32 +5692,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (singleWriterLane) return contractInput ? { input: contractInput } : undefined;
     const badWorkerName = refusePlanningFailureWorkerName(event as { toolName: string; input?: unknown }, ctx);
     if (badWorkerName) return badWorkerName;
-    if (event.toolName === "task" && isMain(ctx) && !pauseGate?.paused) {
-      const decision = currentDecision(ctx);
-      const phases = todoPhases(ctx);
-      const display = leadDisplayContext(ctx, phases, decision);
-      const needy = phases.flatMap(phase => phase.tasks).filter(row => isOpenRowStatus(row.status) && classifyTodoDisplayRow(row, phases, display).state === "needs worker");
-      const previous = needy.filter(row => classifyTodoDisplayRow(row, phases, display).previous);
-      const claimRefusals = assignedResourceRefusals(phases, ctx);
-      const priority = (previous.length ? previous : needy).filter(row => !claimRefusals.has(row.content));
-      const jobs = ctx.getAsyncJobSnapshot();
-      const capacity = ctx.getTaskMaxConcurrency?.();
-      const active = jobs?.running.filter(job => job.type === "task" && job.status === "running" && !job.queued).length ?? 0;
-      // Priority rows must not be skipped, but a batch that staffs all of them may also staff other rows.
-      // Refusing the whole batch for one extra row made the lead resend the same batch for minutes (2026-11-06).
-      const items = taskItems(event.input);
-      const targeted = new Set(items.flatMap(item => speculativeTaskRows(item, phases).map(row => row.content)));
-      const missing = priority.filter(row => !targeted.has(row.content));
-      const onlyPriority = items.every(item => speculativeTaskRows(item, phases).some(row => priority.some(candidate => candidate.content === row.content)));
-      if (jobs && missing.length && !onlyPriority && capacity !== undefined && (capacity === 0 || active < capacity)) {
-        announceGates(ctx);
-        return { block: true, reason: prompt.render(gateNoticeInstructions, { staffing: true,
-          rows: missing.map(row => JSON.stringify(row.content)).join(", ").slice(0, 140),
-          previous: missing.map(row => classifyTodoDisplayRow(row, phases, display).previous).filter(Boolean).join(", ").slice(0, 60),
-          continuations: missing.map(row => { const previous = classifyTodoDisplayRow(row, phases, display).previous; return previous ? `${JSON.stringify(row.content)} from agent://${previous}` : JSON.stringify(row.content); }).join("; "),
-        }).trim() };
-      }
-    }
     if (event.toolName === "task") lastTaskDispatchRefused = false;
     const gitOwnerConflict = refuseConcurrentGitPrOwner(event as { toolName: string; input?: unknown }, ctx);
     if (gitOwnerConflict) return gitOwnerConflict;
