@@ -464,8 +464,14 @@ export function formatRestartRequestStatus(record: RestartRequestRecord | null, 
 	const summary = formatRestartRequestSummary(record, now);
 	const status = record?.drainStatus;
 	const lead = status?.stage === "root_quiescence" ? " Waiting for the lead's turn to finish." : "";
+	const stageElapsedMs =
+		record && status?.stageStartedAt !== undefined
+			? isActiveState(record.state)
+				? Math.max(0, now - status.stageStartedAt)
+				: Math.max(0, status.stageElapsedMs ?? record.updatedAt - status.stageStartedAt)
+			: undefined;
 	return status?.stage && status.stageStartedAt !== undefined
-		? `${summary}${lead} Stage: ${status.stage} (${formatDuration(Math.max(0, now - status.stageStartedAt))}); deadline: ${status.stageDeadlineAt === undefined ? "unknown" : new Date(status.stageDeadlineAt).toISOString()}; reserved remaining work: ${formatDuration(status.remainingEstimateMs ?? 0)}; abandoned: ${status.abandoned?.length ?? 0}.`
+		? `${summary}${lead} Stage: ${status.stage} (${formatDuration(stageElapsedMs ?? 0)}); deadline: ${status.stageDeadlineAt === undefined ? "unknown" : new Date(status.stageDeadlineAt).toISOString()}; reserved remaining work: ${formatDuration(status.remainingEstimateMs ?? 0)}; abandoned: ${status.abandoned?.length ?? 0}.`
 		: summary;
 }
 
@@ -674,14 +680,28 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				);
 			} else if (stored && record?.state === "checkpointed") {
 				if (stored.identity.instanceId !== identity.instanceId) {
-					record = await this.#persistStateUnserialized(identity, record, "completed");
+					record = await this.#persistStateUnserialized(
+						identity,
+						record,
+						"completed",
+						undefined,
+						undefined,
+						false,
+					);
 					restartCompleted = true;
 				} else {
 					record = await this.#persistStateUnserialized(identity, record, "restarting");
 					try {
 						this.#assertCurrentIdentity(identity);
 						await this.#restart();
-						record = await this.#persistStateUnserialized(identity, record, "completed");
+						record = await this.#persistStateUnserialized(
+							identity,
+							record,
+							"completed",
+							undefined,
+							undefined,
+							false,
+						);
 						restartCompleted = true;
 					} catch (error) {
 						record = await this.#persistStateUnserialized(
@@ -695,7 +715,14 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				}
 			} else if (stored && record?.state === "restarting") {
 				if (stored.identity.instanceId !== identity.instanceId) {
-					record = await this.#persistStateUnserialized(identity, record, "completed");
+					record = await this.#persistStateUnserialized(
+						identity,
+						record,
+						"completed",
+						undefined,
+						undefined,
+						false,
+					);
 					restartCompleted = true;
 				} else {
 					record = await this.#persistStateUnserialized(
@@ -720,17 +747,34 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			// drain restrictions before any child or root continuation can run.
 			await this.#session.reconcileRestartNotices();
 
-			// Child revival and goal restoration can wake the root. Publish the terminal
-			// notice before either can consume the restored next-turn queues.
-			if (record && (record.state === "completed" || record.state === "cancelled" || record.state === "failed")) {
-				const notices = this.#restartNoticesFor(record.requestId);
+			const publishTerminalNotice = async (terminalRecord: RestartRequestRecord): Promise<void> => {
+				const notices = this.#restartNoticesFor(terminalRecord.requestId);
 				if (notices.some(notice => notice.terminal) === false) {
 					await this.#session.sendRestartNotice({
 						customType: RESTART_QUEUED_NOTICE_TYPE,
-						content: restartNoticeContent(record),
+						content: restartNoticeContent(terminalRecord),
 						display: true,
 						attribution: "agent",
-						details: { requestId: record.requestId, state: record.state },
+						details: { requestId: terminalRecord.requestId, state: terminalRecord.state },
+					});
+					await this.#session.sessionManager.flush();
+				}
+			};
+			if (record && (record.state === "cancelled" || record.state === "failed")) {
+				await publishTerminalNotice(record);
+			}
+			let readinessRecord = record;
+			if (record?.state === "completed") {
+				readinessRecord = this.#restoringStageRecord(record, "restore_children");
+				this.#restoringRecord = readinessRecord;
+				this.#onStateChange?.(readinessRecord);
+				if (this.#restartNoticesFor(record.requestId).some(notice => notice.terminal) === false) {
+					await this.#session.sendRestartNotice({
+						customType: RESTART_QUEUED_NOTICE_TYPE,
+						content: restartNoticeContent(readinessRecord),
+						display: true,
+						attribution: "agent",
+						details: { requestId: readinessRecord.requestId, state: readinessRecord.state },
 					});
 					await this.#session.sessionManager.flush();
 				}
@@ -738,12 +782,16 @@ class RestartQueueControllerImpl implements RestartQueueController {
 			this.#childrenRecovery = async () => {
 				let recoveryReport: RestartRecoveryReport | undefined;
 				if (!stored || record?.state === "completed" || manualHandoff) {
-					recoveryReport = await this.#measureStage(record, "restore_children", () =>
+					recoveryReport = await this.#measureStage(readinessRecord, "restore_children", () =>
 						restoreSubagentsAfterRestart(this.#session, {
 							requestId: record?.requestId,
 							onProgress: this.#onChildProgress,
 						}),
 					);
+				}
+				if (record?.state === "completed") {
+					this.#onStateChange?.(record);
+					await publishTerminalNotice(record);
 				}
 				// Publish the short completion before goal restoration can start work.
 				if (!pendingAsk && restartCompleted && record)
@@ -1181,29 +1229,20 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		const deadline = budget?.stageDeadline(stage) ?? Number.POSITIVE_INFINITY;
 		// Successors retain the original request deadline across runtime replacement.
 		let restoreWatchdog: Timer | undefined;
-		if (!run && budget) {
-			const statusRecord: RestartRequestRecord = {
-				...record!,
-				drainStatus: {
-					runningWorkers: [],
-					queuedInputCount: 0,
-					stage,
-					stageStartedAt: Date.now(),
-					stageDeadlineAt: deadline,
-					remainingEstimateMs: budget.remainingEstimate(stage),
-					deadlineAt: budget.deadlineAt,
-				},
-			};
+		if (!run && record) {
+			const statusRecord = this.#restoringStageRecord(record, stage);
 			this.#restoringRecord = statusRecord;
 			this.#onStateChange?.(statusRecord);
-			restoreWatchdog = setTimeout(
-				() =>
-					this.#notice(
-						"error",
-						`Restart watchdog: stage ${stage} overran request deadline ${new Date(budget.deadlineAt).toISOString()}`,
-					),
-				Math.max(0, budget.deadlineAt + this.#restartWatchdogSlackMs - Date.now()),
-			);
+			if (budget) {
+				restoreWatchdog = setTimeout(
+					() =>
+						this.#notice(
+							"error",
+							`Restart watchdog: stage ${stage} overran request deadline ${new Date(budget.deadlineAt).toISOString()}`,
+						),
+					Math.max(0, budget.deadlineAt + this.#restartWatchdogSlackMs - Date.now()),
+				);
+			}
 		}
 		if (run && record?.requestId === run.record.requestId) {
 			run.record = this.#withDrainStatus(
@@ -1254,6 +1293,29 @@ class RestartQueueControllerImpl implements RestartQueueController {
 				requestElapsedMs: record ? Math.max(0, Date.now() - record.requestedAt) : undefined,
 			});
 		}
+	}
+
+	#restoringStageRecord(record: RestartRequestRecord, stage: string): RestartRequestRecord {
+		const budget = record.budget ? new RestartBudget(record.budget.deadlineAt, record.budget.plan) : undefined;
+		const stageStartedAt =
+			record.drainStatus?.stage === stage ? (record.drainStatus.stageStartedAt ?? Date.now()) : Date.now();
+		return {
+			...record,
+			state: record.state === "completed" ? "restarting" : record.state,
+			drainStatus: {
+				runningWorkers: [],
+				queuedInputCount: this.#session.getRestartPendingInputCount(),
+				stage,
+				stageStartedAt,
+				...(budget
+					? {
+							stageDeadlineAt: budget.stageDeadline(stage),
+							remainingEstimateMs: budget.remainingEstimate(stage),
+							deadlineAt: budget.deadlineAt,
+						}
+					: {}),
+			},
+		};
 	}
 
 	#rootLease(run: ActiveRestartDrain): RestartDrainLease {
@@ -1414,6 +1476,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		state: RestartRequestState,
 		error?: string,
 		run?: ActiveRestartDrain,
+		notify = true,
 	): Promise<RestartRequestRecord> {
 		if (run?.cancelled && state !== "cancelled") throw new Error("Restart request was cancelled before checkpoint");
 		const latest = this.#readJournal(identity.sessionId).byId.get(current.requestId)?.record;
@@ -1434,7 +1497,7 @@ class RestartQueueControllerImpl implements RestartQueueController {
 		if (state !== "failed") delete next.error;
 		await this.#persistRecord(identity, next);
 		if (run) run.record = next;
-		this.#onStateChange?.(next);
+		if (notify) this.#onStateChange?.(next);
 		return next;
 	}
 
@@ -1633,9 +1696,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	#makeSnapshot(identity: RestartControlIdentity, request: RestartRequestRecord | null): RestartControlSnapshot {
 		const stageStartedAt = request?.drainStatus?.stageStartedAt;
 		if (request?.drainStatus && stageStartedAt !== undefined) {
+			const observedAt = isActiveState(request.state) ? Date.now() : request.updatedAt;
 			request = {
 				...request,
-				drainStatus: { ...request.drainStatus, stageElapsedMs: Math.max(0, Date.now() - stageStartedAt) },
+				drainStatus: { ...request.drainStatus, stageElapsedMs: Math.max(0, observedAt - stageStartedAt) },
 			};
 		}
 		return { identity: { ...identity }, pid: process.pid, cwd: this.#session.sessionManager.getCwd(), request };
