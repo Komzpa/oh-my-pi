@@ -39,6 +39,7 @@ describe("AgentSession restart queue round trip", () => {
 	});
 
 	afterEach(async () => {
+		vi.useRealTimers();
 		try {
 			await session?.dispose();
 		} finally {
@@ -1260,22 +1261,26 @@ describe("AgentSession restart queue round trip", () => {
 		lease.release();
 		const file = currentManager().getSessionFile();
 		if (!file) throw new Error("Expected durable journal");
+		await session.flushRestartJournal();
 		const before = (await Bun.file(file).stat()).size;
 		const count = restartQueueCheckpoints(currentManager()).length;
 		session.agent.state.isStreaming = true;
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 		for (let index = 0; index < 100; index++) {
 			await session.sendCustomMessage(
 				{ customType: `busy-${index % 32}`, content: `${index}:${"x".repeat(2_000)}`, display: false },
 				{ deliverAs: "nextTurn", triggerTurn: false, supersedes: `busy-${index % 32}` },
 			);
-			await Bun.sleep(100);
+			vi.advanceTimersByTime(100);
+			await new Promise<void>(resolve => setImmediate(resolve));
 		}
 		session.agent.state.isStreaming = false;
 		await session.flushRestartJournal();
+		vi.useRealTimers();
 		const writes = restartQueueCheckpoints(currentManager()).length - count;
 		const bytes = (await Bun.file(file).stat()).size - before;
-		process.stderr.write(`busy lead: changes=100 seconds=10 writes=${writes} bytes/min=${bytes * 6}\n`);
-		expect(writes).toBeLessThanOrEqual(3);
+		process.stderr.write(`busy lead: changes=100 simulated_seconds=10 writes=${writes} bytes/min=${bytes * 6}\n`);
+		expect(writes).toBe(2);
 		const checkpoint = restartQueueCheckpoints(currentManager()).at(-1);
 		expect(checkpoint).toMatchObject({
 			data: {
