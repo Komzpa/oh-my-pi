@@ -114,19 +114,14 @@ test("live heads create one notice and priority push row, then a worker push cle
 		// Live chief shape: three unstaffed own rows, overdue publication, refused spawn.
 		const readyRows = ["Cooling trunks", "Power source", "Render frame"].map(content => ({ content, status: "pending", schedule: { dependencies: [] } }));
 		phases[0].tasks.push(...readyRows);
-		const tailOf = result => result?.content?.at(-1)?.text ?? "receipt";
 		const refused = await handlers.get("tool_result")!({ toolName: "task", input: {}, isError: true, content: [{ type: "text", text: "refused: staff existing rows first" }] }, ctx);
-		const refusedTail = tailOf(refused);
-		expect(refusedTail).toStartWith("FIX NOW:");
-		expect(refusedTail).toContain("Push");
-		expect(refusedTail).toContain("Repair refused staffing for");
-		expect(refusedTail.indexOf("Cooling trunks")).toBeLessThan(refusedTail.indexOf("Power source"));
-		expect(refusedTail.indexOf("Power source")).toBeLessThan(refusedTail.indexOf("Render frame"));
+		// Publication remains in todo state; tool results no longer carry chief prose.
+		expect(refused).toBeUndefined();
 		for (const row of readyRows) {
 			row.status = "completed";
 			const result = await handlers.get("tool_result")!({ toolName: "read", input: {}, content: [{ type: "text", text: "receipt" }] }, ctx);
-			expect(tailOf(result)).not.toContain(row.content);
-			expect(tailOf(result)).toContain("Push");
+			expect(result?.content?.at(-1)?.text ?? "receipt").toBe("receipt");
+			expect(phases[0].tasks[0].status).toBe("pending");
 		}
 		await handlers.get("tool_result")!({ toolName: "task", input: {}, isError: false, content: [{ type: "text", text: "staffed" }] }, ctx);
 		const worker = join(dir, "worker");

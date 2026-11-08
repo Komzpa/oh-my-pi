@@ -3,7 +3,6 @@ import { Type } from "@sinclair/typebox";
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
-import { chiefFixNow } from "./fix_now";
 import planCritic, {
 	actionObserved,
 	chiefCriticFixes,
@@ -448,18 +447,14 @@ for (const shape of ["released worker", "abandoned reassigned row", "changed own
 	});
 }
 
-test("fresh action delivered once becomes first FIX NOW after two lead turns", async () => {
+test("fresh action gains chief priority after two lead turns without repeating its notification", async () => {
 	const h = harness();
 	await h.event("session_start"); await settle();
 	h.event("agent_end");
 	expect(chiefCriticFixes(h.ctx)[0]?.severity).toBeUndefined();
 	h.event("agent_end");
 	const fixes = chiefCriticFixes(h.ctx);
-	const block = chiefFixNow({ main: true, defects: [
-		{ row: "", action: "Plan late 35m", severity: 0 },
-		...fixes.map(fix => ({ severity: 2, ...fix })),
-	] });
-	expect(block).toContain("1. Unblock «Collateral»");
+	expect(fixes).toEqual([{ row: "Collateral", action: "Unblock", severity: -1 }]);
 	for (let i = 0; i < 35; i++) h.event("agent_end");
 	expect(h.notices).toHaveLength(1);
 });
