@@ -1645,16 +1645,25 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	}): SpawnRun {
 		return new SpawnRun(
 			{
-				acquire: async signal => {
+				acquire: async (signal, onResourceWait) => {
 					const id = spawn.agentId;
-					while (id && this.#resourceWaits.has(id)) {
-						signal.throwIfAborted();
-						await Bun.sleep(100);
-						signal.throwIfAborted();
-						const refusal = await this.#admitSpawn(spawn.params, id, signal);
-						if (refusal) throw new Error(refusal);
+					try {
+						if (id) await onResourceWait?.(this.#resourceWaits.get(id));
+						while (id && this.#resourceWaits.has(id)) {
+							signal.throwIfAborted();
+							await Bun.sleep(100);
+							signal.throwIfAborted();
+							const refusal = await this.#admitSpawn(spawn.params, id, signal);
+							await onResourceWait?.(this.#resourceWaits.get(id));
+							if (refusal) throw new Error(refusal);
+						}
+						await this.#permit.acquire(signal);
+					} finally {
+						if (id && this.#resourceWaits.delete(id)) {
+							this.#setResourceWait(spawn.params);
+							await onResourceWait?.(undefined);
+						}
 					}
-					await this.#permit.acquire(signal);
 				},
 				release: () => this.#permit.release(),
 			},
@@ -2445,6 +2454,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				activeRun.attach({
 					signal: runSignal,
 					onUpdate: forwardSyncProgress,
+					onResourceWait: async stage => {
+						if (progress.stage === stage) return;
+						progress.stage = stage;
+						await reportProgress(
+							stage ?? `Queued background task ${agentId}...`,
+							buildDetails() as unknown as Record<string, unknown>,
+						);
+					},
 					onArtifactsRetained: cleanup => {
 						// Tie the retained temp directory's lifetime to this job
 						// row: the manager runs `cleanup` exactly once, on

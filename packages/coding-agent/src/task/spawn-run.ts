@@ -22,9 +22,11 @@ export interface SpawnLaunchTiming {
 
 /** Permit source bounding concurrent subagents; the task tool's session semaphore. */
 export interface SpawnPermit {
-	acquire(signal: AbortSignal): Promise<void>;
+	acquire(signal: AbortSignal, onResourceWait?: SpawnResourceWaitUpdate): Promise<void>;
 	release(): void;
 }
+
+export type SpawnResourceWaitUpdate = (stage: string | undefined) => Promise<void>;
 
 /** Everything the run body needs from its `SpawnRun`. */
 export interface SpawnRunBody {
@@ -45,12 +47,15 @@ export interface SpawnIdentity {
 /** Owner bindings applied when a run is adopted. */
 export interface SpawnRunOwner {
 	signal?: AbortSignal;
+	onResourceWait?: SpawnResourceWaitUpdate;
 	onUpdate?: AgentToolUpdateCallback<TaskToolDetails>;
 	onArtifactsRetained?: (cleanup: () => Promise<void>) => void;
 }
 
 export class SpawnRun {
 	readonly #controller = new AbortController();
+	#onResourceWait: SpawnResourceWaitUpdate | undefined;
+	#lastResourceWait: string | undefined;
 	#onUpdate: AgentToolUpdateCallback<TaskToolDetails> | undefined;
 	#lastUpdate: AgentToolResult<TaskToolDetails> | undefined;
 	#onArtifactsRetained: ((cleanup: () => Promise<void>) => void) | undefined;
@@ -73,7 +78,12 @@ export class SpawnRun {
 		readonly identity: SpawnIdentity,
 	) {
 		const invokedAt = Date.now();
-		this.started = permit.acquire(this.#controller.signal).then(() => ({ invokedAt, acquiredAt: Date.now() }));
+		this.started = permit
+			.acquire(this.#controller.signal, async stage => {
+				this.#lastResourceWait = stage;
+				await this.#onResourceWait?.(stage);
+			})
+			.then(() => ({ invokedAt, acquiredAt: Date.now() }));
 		this.result = this.started.then(async timing => {
 			try {
 				return await body({
@@ -113,6 +123,8 @@ export class SpawnRun {
 			const detach = () => signal.removeEventListener("abort", onAbort);
 			void this.result.then(detach, detach);
 		}
+		this.#onResourceWait = owner.onResourceWait;
+		void owner.onResourceWait?.(this.#lastResourceWait);
 		this.#onUpdate = owner.onUpdate;
 		if (this.#lastUpdate) void owner.onUpdate?.(this.#lastUpdate);
 		this.#onArtifactsRetained = owner.onArtifactsRetained;
