@@ -4098,7 +4098,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const zeroActiveNag = (ctx: ExtensionContext): string | undefined => {
     if (singleWriterLane || !isMain(ctx) || gateSwitchedOff(ctx) || pauseGate?.paused || !pi.getActiveTools().includes("task")) return;
     const jobs = ctx.getAsyncJobSnapshot();
-    if (!jobs || jobs.running.some(job => job.status === "running" && !job.queued && (job.type === "task" || jobs.nonJobAgents?.some(agent => agent.live && agent.id === job.agentId)))) {
+    if (!jobs || jobs.nonJobAgents?.some(agent => agent.live) || jobs.running.some(job => job.status === "running" && !job.queued && job.type === "task")) {
       zeroActiveCalls = 0;
       return;
     }
@@ -4125,8 +4125,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const nag = zeroActiveNag(ctx);
     if (nag) {
       if (!advance) return nag;
+      // Match the ordinary idle continuation's state-based rearming. A warning
+      // is not new work: waking again on it creates an endless staffing loop.
+      const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
+      const idleKey = JSON.stringify(["zero-active", phases.map(phase => phase.tasks.map(task => [task.content, task.status, task.blocker, task.schedule]))]);
+      if (sprintState.idleContinuationKey === idleKey && sprintState.idleContinuationDemands > 0) return;
       if (!idlePlanDemandedThisTurn) {
         idlePlanDemandedThisTurn = true;
+        sprintState = { ...sprintState, idleContinuationKey: idleKey, idleContinuationDemands: 1 };
+        persistSprintState();
         pi.sendMessage({ customType: "todo-idle-plan-demand", content: nag, display: false,
           attribution: "agent", details: { silentAssistant: false } },
           { deliverAs: "nextTurn", triggerTurn: true, interruptWait: false });
@@ -5573,12 +5580,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   pi.on("tool_call", async (event, ctx) => {
     const nag = zeroActiveNag(ctx);
+    const ownedWait = event.toolName === "wait" && (ctx.getAsyncJobSnapshot()?.running ?? []).some(job => job.status === "running" && !job.queued);
     if (nag && !isStaffingCall(event.toolName, event.input)) {
       zeroActiveCalls += 1;
       const gate = zeroActiveGate(nag);
       const verdict = decideGateCall({ name: event.toolName, arguments: event.input ?? {} }, [gate]);
-      // Inspection and every named remedy stay open; repeated warnings never become a read ban.
-      if (zeroActiveCalls >= 3 && zeroActiveCalls <= 5 && !verdict.allowed) return { block: true, reason: nag };
+      // Reuse the shell policy already applied by escalation below. A staffing
+      // requirement must not block inspection or waiting on our own running job.
+      const look = event.toolName === "bash" && typeof event.input?.command === "string" && isChiefBash(event.input.command);
+      if (zeroActiveCalls >= 3 && zeroActiveCalls <= 5 && !verdict.allowed && !look && !ownedWait) return { block: true, reason: nag };
     }
     const originalTaskItems = event.toolName === "task" ? taskItems(event.input) : [];
     let contractInput;
@@ -5625,7 +5635,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       }
       const choiceReason = await chatChoiceReason(ctx);
       if (choiceReason) return { block: true, reason: choiceReason };
-      const idleReason = demandIdlePlanContinuation(ctx, false);
+      const idleReason = ownedWait ? undefined : demandIdlePlanContinuation(ctx, false);
       if (idleReason) return { block: true, reason: idleReason };
     }
     // A safety control, not a staffing gate: it holds even when the staffing gates are switched off.

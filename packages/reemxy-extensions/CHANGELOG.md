@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep shell inspection and owned waits available during zero-active staffing, count standalone live workers, and wake only when unstaffed work changes rather than replaying unchanged dispatch demands.
+
 - Reduced recurring recovery snapshot size while preserving staffing and dependency change detection.
 
 - Only blocking audit findings hold delivery; smaller findings become executable follow-ups, repeated blockers escalate after two repair rounds, and plan reviews run at most twice per hour.

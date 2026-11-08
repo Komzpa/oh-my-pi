@@ -264,7 +264,7 @@ test("wait calls do not reset an unchanged idle continuation demand", async () =
 			await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
 			await h.handlers.get("session_stop")!({}, h.ctx);
 		}
-		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(4);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(1);
 		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation")).toHaveLength(0);
 	} finally { h.shutdown(); }
 });
@@ -322,7 +322,7 @@ test("unchanged actionable TODO state blocks status-only stops after reads, hist
 			const stop = await h.handlers.get("session_stop")!({}, h.ctx);
 			expect(stop?.reason ?? "").not.toContain("REQUIRED STATE CHANGE");
 		}
-		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(6);
+		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-demand")).toHaveLength(1);
 		expect(h.notices.filter(notice => notice.customType === "todo-idle-plan-escalation")).toHaveLength(0);
 		// A genuine mutation resets enforcement; completed work needs no more wakes.
 		row.status = "completed";
@@ -2182,8 +2182,12 @@ test("zero-active staffing never blocks inspection or named remedies after repea
 			await h.handlers.get("session_stop")({}, h.ctx);
 		}
 		const nags = h.notices.filter(n => n.customType === "todo-idle-plan-demand");
-		expect(nags).toHaveLength(6);
+		expect(nags).toHaveLength(1);
 		expect(nags.every(n => n.delivery.triggerTurn && n.content.length <= 2000)).toBe(true);
+		phases[0].tasks[0].content = "Newly actionable work";
+		await h.handlers.get("turn_start")({}, h.ctx);
+		await h.handlers.get("session_stop")({}, h.ctx);
+		expect(h.notices.filter(n => n.customType === "todo-idle-plan-demand")).toHaveLength(2);
 		h.setRunning([{ id: "worker-a", agentId: "worker-a", label: "Row 1", type: "task", status: "running" }]);
 		expect((await call("read", { path: "proc://list" }))?.block).not.toBe(true);
 		expect(await result("read")).toBeUndefined();
@@ -2207,4 +2211,91 @@ test("zero-active neighbours keep user-blocked and live dependency plans quiet",
 			expect(h.notices.filter(n => n.customType === "todo-idle-plan-demand")).toHaveLength(0);
 		} finally { h.shutdown(); }
 	}
+});
+
+test("zero-active staffing admits fresh user shell inspection but retains mutation guard", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(15, now - 86400000);
+	for (const row of phases[0].tasks) { row.status = "pending"; row.schedule.owner = undefined; row.schedule.dependencies = []; }
+	const h = await noticeHarness(phases, now + 86400000);
+	const call = (toolName, input = {}) => h.handlers.get("tool_call")({ toolName, input }, h.ctx);
+	try {
+		const user = humanQuestion();
+		h.entries.push(user);
+		await h.handlers.get("message_start")({ message: user.message }, h.ctx);
+		for (let i = 0; i < 6; i++) {
+			expect((await call("bash", { command: "git ls-remote fork refs/heads/topic/example" }))?.block).not.toBe(true);
+			expect((await call("bash", { command: "gh pr view 114 --json headRefOid" }))?.block).not.toBe(true);
+		}
+		const refused = await call("edit", { path: "/tmp/todo-notice-test/file.ts", input: "change" });
+		expect(refused?.block).toBe(true);
+	} finally { h.shutdown(); }
+});
+
+test("zero-active staffing accounts for standalone live workers", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(2, now);
+	phases[0].tasks[1].schedule.dependencies = [];
+	const h = await noticeHarness(phases, now + 86400000);
+	h.ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [], nonJobAgents: [{ id: "worker-a", live: true }] });
+	try {
+		for (let i = 0; i < 6; i++) {
+			await h.handlers.get("turn_start")({}, h.ctx);
+			await h.handlers.get("session_stop")({}, h.ctx);
+		}
+		expect(h.notices.filter(n => n.customType === "todo-idle-plan-demand")).toHaveLength(0);
+	} finally { h.shutdown(); }
+});
+
+test("zero-active staffing still refuses work when dispatch is required", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	phases[0].tasks[0].schedule.owner = undefined;
+	const h = await noticeHarness(phases, now + 86400000);
+	try {
+		const call = (toolName, input) => h.handlers.get("tool_call")({ toolName, input }, h.ctx);
+		await call("read", { path: "proc://list" });
+		await call("read", { path: "proc://list" });
+		const refusal = await call("bash", { command: "echo changed > tracked.txt" });
+		expect(refusal?.block).toBe(true);
+		expect(refusal?.reason).toContain("0 workers running");
+	} finally { h.shutdown(); }
+});
+
+test("zero-active staffing does not block waiting for an owned shell job", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(1, now);
+	phases[0].tasks[0].status = "pending";
+	phases[0].tasks[0].schedule.owner = undefined;
+	const h = await noticeHarness(phases, now + 86400000);
+	h.setRunning([{ id: "shell-job", type: "bash", status: "running", startTime: now }]);
+	try {
+		const call = (toolName, input = {}) => h.handlers.get("tool_call")({ toolName, input }, h.ctx);
+		await call("read", { path: "proc://list" });
+		await call("read", { path: "proc://list" });
+		const refusal = await call("wait");
+		expect(refusal?.reason).toBeUndefined();
+		expect(refusal?.block).not.toBe(true);
+	} finally { h.shutdown(); }
+});
+
+test("zero-active staffing does not replay an unchanged wake after reload or completed receipts", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(2, now);
+	for (const row of phases[0].tasks) { row.status = "pending"; row.schedule.owner = undefined; row.schedule.dependencies = []; }
+	phases[0].tasks[0].status = "completed";
+	const first = await noticeHarness(phases, now + 86400000);
+	let restored;
+	try {
+		await first.handlers.get("session_stop")({}, first.ctx);
+		const wake = first.notices.find(n => n.customType === "todo-idle-plan-demand");
+		expect(wake?.content).toContain("Row 2");
+		expect(wake?.content).not.toContain("Row 1");
+		restored = await noticeHarness(phases, now + 86400000, [], 0, undefined, structuredClone(first.entries));
+		for (let i = 0; i < 4; i++) {
+			await restored.handlers.get("turn_start")({}, restored.ctx);
+			await restored.handlers.get("session_stop")({}, restored.ctx);
+		}
+		expect(restored.notices.filter(n => n.customType === "todo-idle-plan-demand")).toHaveLength(0);
+	} finally { first.shutdown(); restored?.shutdown(); }
 });
