@@ -474,7 +474,12 @@ export async function requestResourceScope(ctx: ExtensionContext, paths: string[
 }
 
 /** Persist only caller-assigned paths, after canonical overlap checks, before any worker starts. */
-export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: ExtensionContext, persist = true, onWait?: (holder: { row: string; workerId?: string }) => void): string | undefined {
+export function admitAssignedResources(
+	event: BeforeSubagentSpawnEvent,
+	ctx: ExtensionContext,
+	persist = true,
+	onWait?: (holder: { row: string; workerId?: string }) => void,
+): string | undefined {
 	const explicit = Array.isArray(event.resources);
 	if (explicit && event.resources.some(value => typeof value !== "string" || !value.startsWith("/")))
 		return "resources must contain absolute paths; use tasks[].resources to narrow the row.";
@@ -531,7 +536,7 @@ export function admitAssignedResources(event: BeforeSubagentSpawnEvent, ctx: Ext
 					const scope = checkoutScopesFromResources([resource]);
 					return scope && checkoutScopesOverlap(scope, held);
 				}),
-			)} held by row ${JSON.stringify(other.content)} (owner ${other.schedule?.owner ?? other.schedule?.executor?.workerId ?? "unassigned"}); narrow tasks[].resources to disjoint absolute paths within the row, or wait for its writer. ${prompt.render(resourceClaimInstructions, {row: other.content, owner: other.schedule?.owner ?? other.schedule?.executor?.workerId}).trim()}`;
+			)} held by row ${JSON.stringify(other.content)} (owner ${other.schedule?.owner ?? other.schedule?.executor?.workerId ?? "unassigned"}); narrow tasks[].resources to disjoint absolute paths within the row, or wait for its writer. ${prompt.render(resourceClaimInstructions, { row: other.content, owner: other.schedule?.owner ?? other.schedule?.executor?.workerId }).trim()}`;
 		}
 	}
 	const owner = stringValue(event.spawnKey) ?? row.schedule?.owner;
@@ -568,10 +573,13 @@ export function routeSubagentSpawn(
 	const agent = stringValue(event.agent);
 	if (!agent) return undefined;
 	let resourceWait: { row: string; workerId?: string } | undefined;
-	const admission = admitAssignedResources(event, ctx, true, holder => { resourceWait = holder; });
-	if (admission) return resourceWait && event.phase === "admission"
-		? { resourceWait, reason: admission }
-		: { block: true, reason: admission };
+	const admission = admitAssignedResources(event, ctx, true, holder => {
+		resourceWait = holder;
+	});
+	if (admission)
+		return resourceWait && event.phase === "admission"
+			? { resourceWait, reason: admission }
+			: { block: true, reason: admission };
 	const latestTodo = memoLatestTodo(options.latestTodo, ctx);
 	const checkoutScopes =
 		event.readOnly !== true && event.isolated !== true ? ownedCheckoutScopes(event, ctx, latestTodo) : undefined;

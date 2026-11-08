@@ -142,6 +142,21 @@ test("cancelling a resource waiter clears its persisted wait without recording a
 	expect(f.run).not.toHaveBeenCalled();
 });
 
+test("restart while waiting for a resource records an interruption, not a failed work attempt", async () => {
+	const f = await fixture();
+	await f.tool.execute("restart-waiter", { context: "shared path", tasks: [f.items[0]] });
+	expect(f.phases[0].tasks[1].schedule?.resourceWait?.workerId).toBe("Holder-1");
+	f.jobs.cancelAll(undefined, ASYNC_JOB_MANAGER_SHUTDOWN_REASON);
+	await f.jobs.waitForAll();
+	const row = f.phases[0].tasks[1];
+	expect(row.schedule?.resourceWait).toBeUndefined();
+	expect(row.schedule?.executor?.outcome).toBe("aborted");
+	expect(row.schedule?.attemptHistory).toHaveLength(1);
+	expect(row.schedule?.attemptHistory?.[0].interruption).toBe("restart");
+	expect(todoWorkAttempts(row.schedule?.attemptHistory)).toHaveLength(0);
+	expect(f.run).not.toHaveBeenCalled();
+});
+
 for (const streamed of [false, true])
 	test(`${streamed ? "adopted streamed" : "fresh"} queued progress follows the holder and clears before running`, async () => {
 		const f = await fixture();
