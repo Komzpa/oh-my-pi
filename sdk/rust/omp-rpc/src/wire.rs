@@ -3087,10 +3087,19 @@ pub struct TodoReworkAttempt {
 	pub no_answer_reason: Option<String>,
 	#[serde(rename = "finalReportParagraph", default, skip_serializing_if = "Option::is_none")]
 	pub final_report_paragraph: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub interruption: Option<LitRestart>,
 	#[serde(rename = "infraFailureLine", default, skip_serializing_if = "Option::is_none")]
 	pub infra_failure_line: Option<String>,
 	#[serde(rename = "infraFailureError", default, skip_serializing_if = "Option::is_none")]
 	pub infra_failure_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoResourceWait {
+	pub row: String,
+	#[serde(rename = "workerId", default, skip_serializing_if = "Option::is_none")]
+	pub worker_id: Option<String>,
 }
 
 /// Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds.
@@ -3105,6 +3114,8 @@ pub struct TodoSchedule {
 	/// Exclusive resource identifiers while running; absent means undeclared.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub resources: Option<Vec<String>>,
+	#[serde(rename = "resourceWait", default, skip_serializing_if = "Option::is_none")]
+	pub resource_wait: Option<TodoResourceWait>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub estimate: Option<TodoEstimate>,
 	/// Server-owned revision: the first estimate is revision 1.
@@ -6121,6 +6132,27 @@ impl AssistantErrorEventReason {
 		match self {
 			Self::Aborted => "aborted",
 			Self::Error => "error",
+		}
+	}
+}
+
+/// The constant `"restart"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LitRestart;
+
+impl Serialize for LitRestart {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str("restart")
+	}
+}
+
+impl<'de> Deserialize<'de> for LitRestart {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = Value::deserialize(deserializer)?;
+		if value.as_str() == Some("restart") {
+			Ok(Self)
+		} else {
+			Err(D::Error::custom(format!("expected \"restart\", got {value}")))
 		}
 	}
 }

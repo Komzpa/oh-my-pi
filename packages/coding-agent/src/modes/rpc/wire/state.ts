@@ -81,11 +81,13 @@ export const stateDefs = {
 			"reflectionAnswer?": "string",
 			"noAnswerReason?": "string",
 			"finalReportParagraph?": "string",
+			"interruption?": "'restart'",
 			"infraFailureLine?": "string",
 			"infraFailureError?": "string",
 		},
 		"Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds.",
 	),
+	TodoResourceWait: { row: "string", "workerId?": "string" },
 	TodoSchedule: doc(
 		{
 			"dependencies?": doc(
@@ -94,6 +96,7 @@ export const stateDefs = {
 			),
 			"owner?": doc("string", "Exclusive forecast owner while this task is running."),
 			"resources?": doc("string[]", "Exclusive resource identifiers while running; absent means undeclared."),
+			"resourceWait?": "TodoResourceWait",
 			"estimate?": "TodoEstimate",
 			"estimateRevision?": doc("number", "Server-owned revision: the first estimate is revision 1."),
 			"reestimateCount?": "number",

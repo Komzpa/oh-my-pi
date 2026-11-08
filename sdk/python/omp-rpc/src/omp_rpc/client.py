@@ -1773,6 +1773,12 @@ class RpcClient(WireClient):
                 out["owner"] = schedule.owner
             if schedule.resources is not None:
                 out["resources"] = list(schedule.resources)
+            if schedule.resource_wait is not None:
+                wait = schedule.resource_wait
+                wire_wait: JsonObject = {"row": wait.row}
+                if wait.worker_id is not None:
+                    wire_wait["workerId"] = wait.worker_id
+                out["resourceWait"] = wire_wait
             if schedule.estimate is not None:
                 estimate = schedule.estimate
                 if isinstance(estimate, Mapping):
@@ -1828,6 +1834,8 @@ class RpcClient(WireClient):
                         wire_attempt["noAnswerReason"] = attempt.no_answer_reason
                     if attempt.final_report_paragraph is not None:
                         wire_attempt["finalReportParagraph"] = attempt.final_report_paragraph
+                    if attempt.interruption is not None:
+                        wire_attempt["interruption"] = attempt.interruption
                     if attempt.infra_failure_line is not None:
                         wire_attempt["infraFailureLine"] = attempt.infra_failure_line
                     if attempt.infra_failure_error is not None:

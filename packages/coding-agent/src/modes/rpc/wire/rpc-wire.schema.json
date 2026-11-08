@@ -2556,6 +2556,9 @@
 				"finalReportParagraph": {
 					"type": "string"
 				},
+				"interruption": {
+					"const": "restart"
+				},
 				"infraFailureLine": {
 					"type": "string"
 				},
@@ -2575,6 +2578,20 @@
 				"deliverablePaths"
 			],
 			"description": "Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds."
+		},
+		"TodoResourceWait": {
+			"type": "object",
+			"properties": {
+				"row": {
+					"type": "string"
+				},
+				"workerId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"row"
+			]
 		},
 		"TodoSchedule": {
 			"type": "object",
@@ -2596,6 +2613,9 @@
 						"type": "string"
 					},
 					"description": "Exclusive resource identifiers while running; absent means undeclared."
+				},
+				"resourceWait": {
+					"$ref": "#/$defs/TodoResourceWait"
 				},
 				"estimate": {
 					"$ref": "#/$defs/TodoEstimate"

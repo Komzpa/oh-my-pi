@@ -2367,21 +2367,22 @@ func (v *TodoScheduleExecutor) decodeFrom(raw map[string]json.RawMessage) error 
 
 // Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds.
 type TodoReworkAttempt struct {
-	AttemptID            string            `json:"attemptId"`
-	WorkerName           string            `json:"workerName"`
-	ResolvedModel        string            `json:"resolvedModel"`
-	Effort               string            `json:"effort"`
-	StartedAt            float64           `json:"startedAt"`
-	FinishedAt           float64           `json:"finishedAt"`
-	DurationMs           float64           `json:"durationMs"`
-	TerminalStatus       TodoWorkerOutcome `json:"terminalStatus"`
-	DeliverablePaths     []string          `json:"deliverablePaths"`
-	RejectionReason      *string           `json:"rejectionReason,omitempty"`
-	ReflectionAnswer     *string           `json:"reflectionAnswer,omitempty"`
-	NoAnswerReason       *string           `json:"noAnswerReason,omitempty"`
-	FinalReportParagraph *string           `json:"finalReportParagraph,omitempty"`
-	InfraFailureLine     *string           `json:"infraFailureLine,omitempty"`
-	InfraFailureError    *string           `json:"infraFailureError,omitempty"`
+	AttemptID            string                         `json:"attemptId"`
+	WorkerName           string                         `json:"workerName"`
+	ResolvedModel        string                         `json:"resolvedModel"`
+	Effort               string                         `json:"effort"`
+	StartedAt            float64                        `json:"startedAt"`
+	FinishedAt           float64                        `json:"finishedAt"`
+	DurationMs           float64                        `json:"durationMs"`
+	TerminalStatus       TodoWorkerOutcome              `json:"terminalStatus"`
+	DeliverablePaths     []string                       `json:"deliverablePaths"`
+	RejectionReason      *string                        `json:"rejectionReason,omitempty"`
+	ReflectionAnswer     *string                        `json:"reflectionAnswer,omitempty"`
+	NoAnswerReason       *string                        `json:"noAnswerReason,omitempty"`
+	FinalReportParagraph *string                        `json:"finalReportParagraph,omitempty"`
+	Interruption         *TodoReworkAttemptInterruption `json:"interruption,omitempty"`
+	InfraFailureLine     *string                        `json:"infraFailureLine,omitempty"`
+	InfraFailureError    *string                        `json:"infraFailureError,omitempty"`
 }
 
 func (v *TodoReworkAttempt) UnmarshalJSON(data []byte) error {
@@ -2404,8 +2405,49 @@ func (v *TodoReworkAttempt) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("reflectionAnswer", &out.ReflectionAnswer)
 	d.optional("noAnswerReason", &out.NoAnswerReason)
 	d.optional("finalReportParagraph", &out.FinalReportParagraph)
+	d.optional("interruption", &out.Interruption)
 	d.optional("infraFailureLine", &out.InfraFailureLine)
 	d.optional("infraFailureError", &out.InfraFailureError)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type TodoReworkAttemptInterruption string
+
+const (
+	TodoReworkAttemptInterruptionRestart TodoReworkAttemptInterruption = "restart"
+)
+
+func (v *TodoReworkAttemptInterruption) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoReworkAttemptInterruption")
+	if err != nil {
+		return err
+	}
+	switch value := TodoReworkAttemptInterruption(s); value {
+	case TodoReworkAttemptInterruptionRestart:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoReworkAttemptInterruption", s)
+}
+
+type TodoResourceWait struct {
+	Row      string  `json:"row"`
+	WorkerID *string `json:"workerId,omitempty"`
+}
+
+func (v *TodoResourceWait) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoResourceWait", v.decodeFrom)
+}
+
+func (v *TodoResourceWait) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoResourceWait
+	d := fieldDecoder{raw: raw, owner: "TodoResourceWait"}
+	d.required("row", &out.Row)
+	d.optional("workerId", &out.WorkerID)
 	if d.err != nil {
 		return d.err
 	}
@@ -2420,8 +2462,9 @@ type TodoSchedule struct {
 	// Exclusive forecast owner while this task is running.
 	Owner *string `json:"owner,omitempty"`
 	// Exclusive resource identifiers while running; absent means undeclared.
-	Resources []string      `json:"resources,omitempty"`
-	Estimate  *TodoEstimate `json:"estimate,omitempty"`
+	Resources    []string          `json:"resources,omitempty"`
+	ResourceWait *TodoResourceWait `json:"resourceWait,omitempty"`
+	Estimate     *TodoEstimate     `json:"estimate,omitempty"`
 	// Server-owned revision: the first estimate is revision 1.
 	EstimateRevision *float64              `json:"estimateRevision,omitempty"`
 	ReestimateCount  *float64              `json:"reestimateCount,omitempty"`
@@ -2453,6 +2496,7 @@ func (v *TodoSchedule) decodeFrom(raw map[string]json.RawMessage) error {
 	d.optional("dependencies", &out.Dependencies)
 	d.optional("owner", &out.Owner)
 	d.optional("resources", &out.Resources)
+	d.optional("resourceWait", &out.ResourceWait)
 	d.optional("estimate", &out.Estimate)
 	d.optional("estimateRevision", &out.EstimateRevision)
 	d.optional("reestimateCount", &out.ReestimateCount)
