@@ -65,7 +65,7 @@ export async function selectBranchEntriesCooperatively(
 	source: BranchSource,
 	predicate: Predicate,
 ): Promise<SessionEntry[]> {
-	if (source.iterateBranchMatchingNewestFirst) {
+	if ((!source.getLeafId || !source.getEntry) && source.iterateBranchMatchingNewestFirst) {
 		const selected: SessionEntry[] = [];
 		for (const entry of source.iterateBranchMatchingNewestFirst(predicate)) {
 			selected.push(entry);
@@ -77,7 +77,9 @@ export async function selectBranchEntriesCooperatively(
 	const selected: SessionEntry[] = [];
 	let id = source.getLeafId();
 	let count = 0;
-	while (id) {
+	const seen = new Set<string>();
+	while (id && !seen.has(id)) {
+		seen.add(id);
 		const entry = source.getEntry(id);
 		if (!entry) break;
 		if (predicate(sessionContextEntryMetadata(entry))) selected.push(entry);

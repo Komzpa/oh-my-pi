@@ -29,6 +29,7 @@ import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { moveFileAcrossDevices } from "../utils/atomic-file";
 import { hasAnnotationDraftsSync } from "../extensibility/custom-commands/bundled/annotate/draft-store";
+import { sessionContextEntryMetadata, type SessionContextEntryMetadata } from "./branch-selection";
 import { ArtifactManager, type ArtifactManagerApi } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore, lazyImageDataSync } from "./blob-store";
 import type { CompactionMethod } from "./compaction-methods";
@@ -3940,6 +3941,32 @@ export class SessionManager {
 	 */
 	getBranch(fromId?: string): SessionEntry[] {
 		return this.#index.pathTo(fromId ?? this.#index.leafId());
+	}
+
+	/** Select entries without copying or decoding unrelated branch bodies. */
+	*iterateBranchMatchingNewestFirst(
+		predicate: (metadata: SessionContextEntryMetadata) => boolean,
+	): IterableIterator<SessionEntry> {
+		const branch = this.#index.branchView();
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index]!;
+			if (predicate(sessionContextEntryMetadata(entry))) yield entry;
+		}
+	}
+
+	getLatestBranchMatching(predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry | undefined {
+		return this.iterateBranchMatchingNewestFirst(predicate).next().value;
+	}
+
+	/** Limit the branch window before filtering, rather than counting matching entries. */
+	getBranchTailMatching(limit: number, predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+		const branch = this.#index.branchView();
+		const selected: SessionEntry[] = [];
+		for (let index = Math.max(0, branch.length - Math.max(0, Math.floor(limit))); index < branch.length; index++) {
+			const entry = branch[index]!;
+			if (predicate(sessionContextEntryMetadata(entry))) selected.push(entry);
+		}
+		return selected;
 	}
 
 	/**
