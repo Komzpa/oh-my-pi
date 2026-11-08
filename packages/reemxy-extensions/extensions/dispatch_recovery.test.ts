@@ -123,3 +123,14 @@ test("restored recovery sheds row history while preserving staffing and split de
 	phases[0]!.tasks[0]!.schedule = { dependencies: ["First piece", "Second piece"] };
 	expect(recoveryActionObserved(restored.pending!, phases, running)).toBe(true);
 });
+
+
+test("removed idle row does not preserve an impossible dispatch demand", () => {
+	const phases = plan();
+	let state = recoveryDemand(phases, running, 1000, 2, undefined, undefined);
+	state = recoveryDemand(phases, running, 1000 + RECOVERY_STEP_MS, 2, undefined, undefined, state);
+	expect(state.pending?.row).toBe("Delivery");
+	phases[0]!.tasks.shift();
+	const next = recoveryDemand(phases, running, 1001 + RECOVERY_STEP_MS, 2, undefined, undefined, state);
+	expect(next.pending?.row).not.toBe("Delivery");
+});

@@ -182,6 +182,10 @@ export function recoveryDemand(
 		state.pending = undefined;
 		return state;
 	}
+	// A removed or closed row cannot be staffed; discard only that obsolete idle demand.
+	if (state.pending?.kind === "idle" && !open.some(row => row.content === state.pending!.row)) {
+		state.pending = undefined;
+	}
 	if (state.pending) return state; // A receding forecast cannot erase an ignored demand.
 	const slip = deadline === undefined ? 0 : Math.max(now, finish ?? 0) - deadline;
 	const step = Math.ceil(slip / RECOVERY_STEP_MS);

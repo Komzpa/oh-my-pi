@@ -449,3 +449,23 @@ for (const broken of ["missing", "cyclic"]) {
     expect(notices[0].content).not.toContain("Commit");
   });
 }
+
+
+test("deleted idle demand no longer blocks wait after reload", async () => {
+  let now = Date.now(); const clock = spyOn(Date, "now").mockImplementation(() => now);
+  try {
+    const h = await harness([], false, true, false);
+    await h.hooks.get("turn_start")({}, h.ctx);
+    now += 600000;
+    await h.hooks.get("turn_start")({}, h.ctx);
+    expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.recovery.pending.kind).toBe("idle");
+    h.phases[0].tasks[0].status = "completed";
+    h.phases[0].tasks.push({ content: "Another task", status: "pending", schedule: { dependencies: [] } });
+    await h.hooks.get("turn_start")({}, h.ctx);
+    const receipt = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
+    expect(receipt.recovery.pending?.row).not.toBe("PR 114 acceptance");
+    h.jobs.running.push({ id: "LiveWorker", label: "Another task", type: "task", status: "running", startTime: now });
+    const result = await h.hooks.get("tool_call")({ toolName: "wait", input: {} }, h.ctx);
+    expect(result?.block).not.toBe(true);
+  } finally { clock.mockRestore(); }
+});
