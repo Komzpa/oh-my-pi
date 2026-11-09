@@ -1130,6 +1130,33 @@ function todoRetryMatches(failed: Record<string, unknown>, retry: Record<string,
 
 type RestorableAsyncAsk = { toolCallId: string; html: string; unansweredNames: string[] };
 
+/** Convert persisted question-list calls only at resume; new Ask calls still require HTML. */
+function recoverRestoredAskHtml(input: unknown): string | undefined {
+	const html = recoverAskHtml(input);
+	if (html !== undefined) return html;
+	if (!isRecord(input) || !Array.isArray(input.questions) || input.questions.length === 0) return undefined;
+	const fields: string[] = [];
+	for (const question of input.questions) {
+		if (!isRecord(question) || typeof question.id !== "string" || typeof question.question !== "string" || (question.options !== undefined && !Array.isArray(question.options))) return undefined;
+		const options = question.options ?? [];
+		const name = Bun.escapeHTML(question.id);
+		const choices: string[] = [];
+		for (const [index, option] of options.entries()) {
+			if (!isRecord(option) || typeof option.label !== "string") return undefined;
+			const label = Bun.escapeHTML(option.label);
+			const description = typeof option.description === "string" ? `<p>${Bun.escapeHTML(option.description)}</p>` : "";
+			const preview = typeof option.preview === "string" ? `<pre>${Bun.escapeHTML(option.preview)}</pre>` : "";
+			choices.push(`<label><input type="${question.multi === true ? "checkbox" : "radio"}" name="${name}" value="${label}"${question.recommended === index ? " checked" : ""}>${label}</label>${description}${preview}`);
+		}
+		const header = typeof question.header === "string" ? `<legend>${Bun.escapeHTML(question.header)}</legend>` : "";
+		const controls = choices.length === 1
+			? `<label>${Bun.escapeHTML(question.question)}<input name="${name}" value="${Bun.escapeHTML(options[0].label)}"></label>`
+			: choices.length > 1 ? choices.join("") : `<textarea name="${name}"></textarea>`;
+		fields.push(`<fieldset>${header}<p>${Bun.escapeHTML(question.question)}</p>${controls}</fieldset>`);
+	}
+	return `<form>${fields.join("")}</form>`;
+}
+
 function findUnansweredAsyncAsks(
 	branch: readonly SessionEntry[],
 ): { requestId: string; calls: RestorableAsyncAsk[] } | undefined {
@@ -1204,7 +1231,7 @@ function findUnansweredAsyncAsks(
 			continue;
 		const stored = result.details.pending;
 		if (stored.id !== result.toolCallId) continue;
-		const html = recoverAskHtml(stored);
+		const html = recoverRestoredAskHtml(stored);
 		if (html === undefined) continue;
 		const laterEntries = branch.slice(resultIndex + 1);
 		const hasTerminalResult = laterEntries.some(
@@ -14853,7 +14880,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			const args = this.#obfuscator?.hasSecrets()
 				? deobfuscateToolArguments(this.#obfuscator, block.arguments)
 				: block.arguments;
-			const html = recoverAskHtml(args);
+			const html = recoverRestoredAskHtml(args);
 			return html === undefined ? [] : [{ toolCallId: block.id, html }];
 		});
 		if (pending.length === 0) return false;

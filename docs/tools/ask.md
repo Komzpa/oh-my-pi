@@ -6,7 +6,7 @@
 
 Ordinary calls return `details.pending` with the tool-call ID, session ID, original `html`, and field-derived questions. A host with `formDialog` opens that same HTML form without blocking the agent; explicit submission sends normal user-chat replies as `Answer to <tool-call-id> [<field-name>]: <answer>`. Hosts without a form surface retain the pending transcript and accept normal chat replies. Cancellation and timeouts never imply approval or submit a default as a user answer. Independent work continues; answer-dependent actions retain their permission gates.
 
-After a graceful restart, pending Ask calls reopen their original HTML form before the continuation. Only unanswered named fields become normal chat replies; cancellation and timeouts leave the pending transcript unanswered.
+After a graceful restart, pending Ask calls reopen their original HTML form before the continuation; saved question-list calls are converted to a form at the restore boundary. Only unanswered named fields become normal chat replies, existing message attachments stay intact, and cancellation or timeouts leave the pending transcript unanswered.
 
 The modal flow, field-by-field fallback, and timeout behavior below apply only to explicit interactive re-answer.
 

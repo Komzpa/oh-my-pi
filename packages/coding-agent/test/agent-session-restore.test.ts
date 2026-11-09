@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Message, Model } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Message, Model } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockHandler, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -22,6 +22,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { parseHtmlForm } from "@oh-my-pi/pi-tui/html-form/parse";
 import { isRecord, postmortem, TempDir } from "@oh-my-pi/pi-utils";
 
 const zeroUsage = {
@@ -391,17 +392,22 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		}
 		session = undefined;
 	});
-	for (const recovery of ["resume", "restore", "rolling"] as const) {
+	for (const recovery of ["legacy", "legacy-text", "resume", "restore", "rolling"] as const) {
 		it(`reopens an unanswered ask on ${recovery}, preserving completed siblings and one answer across restart`, async () => {
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 			const html = '<form><label>Deploy where?<select name="deploy"><option>Here</option><option>There</option></select></label></form>';
+			const input = recovery === "legacy-text"
+				? { questions: [{ id: "deploy", question: "Deploy where?" }] }
+				: recovery === "legacy"
+					? { questions: [{ id: "deploy", question: "Deploy where?", options: [{ label: "Here" }, { label: "There" }] }] }
+					: { html };
 			const persisted: Message[] = [
 				{ role: "user", content: "choose", timestamp: Date.now() },
 				assistant(model, {
 					stopReason: "toolUse",
 					content: [
 						{ type: "toolCall", id: "completed", name: "probe", arguments: {} },
-						{ type: "toolCall", id: "original_ask", name: "ask", arguments: { html } },
+						{ type: "toolCall", id: "original_ask", name: "ask", arguments: input },
 					],
 				}),
 				{
@@ -444,8 +450,10 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 			).toBe(true);
 			expect(shown).toHaveLength(1);
 			expect(JSON.stringify(shown)).toContain("Deploy where?");
-			expect(JSON.stringify(shown)).toContain("Here");
-			expect(JSON.stringify(shown)).toContain("There");
+			if (recovery !== "legacy-text") {
+				expect(JSON.stringify(shown)).toContain("Here");
+				expect(JSON.stringify(shown)).toContain("There");
+			}
 			const messages = reopened.session.sessionManager.buildSessionContext({ transcript: true }).messages;
 			const answers = messages.filter(
 				message => message.role === "toolResult" && message.toolCallId === "original_ask",
@@ -484,9 +492,15 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		});
 	}
 
-	it("re-presents the original HTML form before restart continuation and sends only unanswered fields as chat", async () => {
+	it.each(["html", "legacy"] as const)("restores a %s form before restart continuation, preserving saved images and sending unanswered fields as chat", async format => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const html = '<form><label>Which region?<select name="region"><option>east</option><option>west</option></select></label><label>Which version?<input name="version"></label></form>';
+		const input = format === "html" ? { html } : { questions: [
+			{ id: "region", question: "Which region?", options: [{ label: "east" }, { label: "west" }] },
+			{ id: "version", question: "Which version?", options: [{ label: "stable" }, { label: "canary" }] },
+		] };
+		const image: ImageContent = { type: "image", data: "AQID", mimeType: "image/png" };
+		const submittedAnswer = format === "html" ? "3.14" : "Other: 3.14";
 		const askCallId = "async-ask-call";
 		const dialog = Promise.withResolvers<ExtensionFormDialogResult | undefined>();
 		const shown: string[] = [];
@@ -506,19 +520,19 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 				{ role: "user", content: "choose deployment", timestamp: Date.now() },
 				assistant(model, {
 					stopReason: "toolUse",
-					content: [{ type: "toolCall", id: askCallId, name: "ask", arguments: { html } }],
+					content: [{ type: "toolCall", id: askCallId, name: "ask", arguments: input }],
 				}),
 				{
 					role: "toolResult",
 					toolCallId: askCallId,
 					toolName: "ask",
 					content: [{ type: "text", text: "Pending question; reply in this session's chat" }],
-					details: { pending: { id: askCallId, sessionId: "old-instance", html } },
+					details: { pending: { id: askCallId, sessionId: "old-instance", ...input } },
 					isError: false,
 					timestamp: Date.now(),
 				},
 				assistant(model, { stopReason: "stop" }),
-				{ role: "user", content: `Answer to ${askCallId} [region]: east`, timestamp: Date.now() },
+				{ role: "user", content: [{ type: "text", text: `Answer to ${askCallId} [region]: east` }, image], timestamp: Date.now() },
 				assistant(model, {
 					stopReason: "toolUse",
 					content: [{ type: "toolCall", id: "later-probe", name: "probe", arguments: {} }],
@@ -558,7 +572,13 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 			await controller.restore();
 			expect(pending).toBe(true);
 			expect(shown).toHaveLength(1);
-			expect(shown).toEqual([html]);
+			if (format === "html") expect(shown).toEqual([html]);
+			else {
+				expect(shown[0]).toContain("Which region?");
+				expect(shown[0]).toContain('name="version"');
+				const version = parseHtmlForm(shown[0]!).fields.find(field => field.name === "version");
+				expect(version?.kind === "choice" && version.other).toBe(true);
+			}
 			expect(dialogOptions).toEqual([{}]);
 			expect(modelInputs).toHaveLength(0);
 			const completed = restored.sessionManager
@@ -606,16 +626,20 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 					),
 			).toHaveLength(1);
 			expect(context).toContain(`Answer to ${askCallId} [region]: east`);
-			expect(context).toContain(`Answer to ${askCallId} [version]: 3.14`);
+			expect(context).toContain(`Answer to ${askCallId} [version]: ${submittedAnswer}`);
 			expect(context).not.toContain(`Answer to ${askCallId} [region]: west`);
 			expect(context.indexOf("Restart restart-ask-1 completed")).toBeLessThan(
 				context.indexOf(`Answer to ${askCallId} [version]`),
 			);
 			expect(context).not.toContain("Do not start another model turn until it completes");
 			const answer = restored.sessionManager.buildSessionContext({ transcript: true }).messages.find(
-				message => message.role === "user" && typeof message.content === "string" && message.content.includes("[version]: 3.14"),
+				message => message.role === "user" && typeof message.content === "string" && message.content.includes(`[version]: ${submittedAnswer}`),
 			);
-			expect(answer).toMatchObject({ role: "user", content: `Answer to ${askCallId} [version]: 3.14` });
+			expect(answer).toMatchObject({ role: "user", content: `Answer to ${askCallId} [version]: ${submittedAnswer}` });
+			const savedImages = restored.sessionManager.buildSessionContext({ transcript: true }).messages.flatMap(
+				message => message.role === "user" && Array.isArray(message.content) ? message.content.filter(part => part.type === "image") : [],
+			);
+			expect(savedImages).toEqual([image]);
 		} finally {
 			controller.dispose();
 		}

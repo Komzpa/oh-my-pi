@@ -84,7 +84,7 @@
 - Fixed `ask` notes added with `n` right after picking an answer landing on the previous question instead of the one shown; a Tern click then Note still notes the answer just clicked, and the Note button names it ([#18317](https://github.com/can1357/oh-my-pi/pull/18317) by [@DonMikone](https://github.com/DonMikone))
 ### Fixed
 
-- Keep HTML Ask forms asynchronous across restart and resume, preserving pending identities, normal chat replies, shadow-backed defaults, worker questions, and interactive re-answer ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Keep HTML Ask forms asynchronous across restart and resume, including saved question-list calls and image-bearing chat history, while preserving pending identities, normal chat replies, shadow-backed defaults, worker questions, and interactive re-answer ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Restart completion reaches the next model request before restored input; text-only steering loops also receive cancellation and failure notices ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 - Restart completion now resumes the lead with a short Harness notice, retires drain instructions, avoids unchanged queue checkpoints, and returns CLI success after acceptance ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 - Restart completion wakes are saved before delivery is acknowledged, and completed checkpoint notices no longer reach the next model turn ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
