@@ -4534,7 +4534,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         if (!isLikelyGitPrOwnerJob(candidate)) return [];
         const owner = job.agentId ?? job.id;
         const row = taskByOwner.get(owner) ?? taskByOwner.get(job.id);
-        const key = row ? checkoutKeyFromResources(row.schedule?.resources?.map(resource => resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "")), ctx.cwd) : checkoutKeyFromTaskItem({ name: owner, task: job.label ?? "" }, ctx.cwd);
+        const key = row ? checkoutKeyFromResources(row.schedule?.resources, ctx.cwd) : checkoutKeyFromTaskItem({ name: owner, task: job.label ?? "" }, ctx.cwd);
         return [{ owner, key }];
       });
     const claimed = new Map<string, string>();

@@ -13,11 +13,15 @@ export function displayCheckoutKey(key: string) {
 	return key.replace(/^(path|name):/, "");
 }
 
+function checkoutResourceValue(resource: string) {
+	return resource.trim().replace(/^(?:path|repo|repository|checkout|worktree):/, "");
+}
+
 export function checkoutKeyFromResources(resources: unknown, fallbackCwd: string) {
 	if (Array.isArray(resources))
 		for (const resource of resources)
 			if (typeof resource === "string") {
-				const key = normalizeCheckoutKey(resource);
+				const key = normalizeCheckoutKey(checkoutResourceValue(resource));
 				if (key) return key;
 			}
 	return normalizeCheckoutKey(fallbackCwd)!;
@@ -28,7 +32,7 @@ export function checkoutScopesFromResources(resources: unknown): string[] | unde
 	const keys: string[] = [];
 	for (const resource of resources) {
 		if (typeof resource !== "string") return undefined;
-		const value = resource.trim().replace(/^(?:path|repo|repository|checkout|worktree):/, "");
+		const value = checkoutResourceValue(resource);
 		const key = normalizeCheckoutKey(value.replace(/:[^/]+$/, ""));
 		if (!key) return undefined;
 		keys.push(key);

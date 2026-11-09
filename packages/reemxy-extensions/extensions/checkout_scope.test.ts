@@ -3,7 +3,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
+import { checkoutKeyFromResources, checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
+
+test("checkout resource prefixes resolve to the same owner key as an unprefixed path", () => {
+	for (const prefix of ["path", "repo", "repository", "checkout", "worktree"]) {
+		expect(checkoutKeyFromResources([`${prefix}:/tmp/worktree`], "/tmp/fallback")).toBe("path:/tmp/worktree");
+	}
+	expect(checkoutKeyFromResources(["/tmp/other"], "/tmp/fallback")).toBe("path:/tmp/other");
+});
 
 describe("checkoutScopesFromResources", () => {
 	test("a relative file next to an absolute worktree keeps the worktree scope", () => {
