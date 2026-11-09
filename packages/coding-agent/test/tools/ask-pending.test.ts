@@ -4,10 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
-import type {
-	ExtensionAskDialogQuestion,
-	ExtensionAskDialogResult,
-} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import type { HtmlFormData } from "@oh-my-pi/pi-tui/html-form/data";
 import { Settings } from "../../src/config/settings";
 import { SessionManager } from "../../src/session/session-manager";
 import type { ToolSession } from "../../src/tools";
@@ -27,9 +24,7 @@ function session(overrides: Partial<ToolSession> = {}): ToolSession {
 	};
 }
 
-const questions = [
-	{ id: "choice", question: "Which database?", options: [{ label: "SQLite" }, { label: "Postgres" }], recommended: 0 },
-];
+const html = '<form><fieldset><legend>Which database?</legend><label><input type="radio" name="choice" value="sqlite" checked>SQLite</label><label><input type="radio" name="choice" value="pg">Postgres</label></fieldset></form>';
 
 describe("pending Ask", () => {
 	beforeAll(async () => {
@@ -44,9 +39,9 @@ describe("pending Ask", () => {
 		const abort = vi.fn();
 		const context = { hasUI: true, ui: { select, askDialog, confirm }, abort } as unknown as AgentToolContext;
 		const tool = new AskTool(session());
-		const result = await tool.execute("ask-1", { questions }, undefined, undefined, context);
-		expect(result.details?.pending).toEqual({ id: "ask-1", sessionId: "asking-session", questions });
-		expect(result.details?.selectedOptions).toBeUndefined();
+		const result = await tool.execute("ask-1", { html }, undefined, undefined, context);
+		expect(result.details?.pending).toMatchObject({ id: "ask-1", sessionId: "asking-session", html });
+		expect(result.details?.answers).toBeUndefined();
 		expect(result.details?.timedOut).toBeUndefined();
 		expect(select).not.toHaveBeenCalled();
 		expect(askDialog).not.toHaveBeenCalled();
@@ -57,72 +52,26 @@ describe("pending Ask", () => {
 			text: expect.stringContaining("No answer or approval has been received"),
 		});
 	});
-	it("returns pending immediately and submits a noted rich-dialog answer as a user reply", async () => {
-		const dialog = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+	it("returns pending before the form submits and routes its answer through user chat", async () => {
+		const dialog = Promise.withResolvers<{ data: HtmlFormData; timedOut?: boolean } | undefined>();
 		const submitUserReply = vi.fn();
-		const askDialog = vi.fn(() => dialog.promise);
+		const formDialog = vi.fn(() => dialog.promise);
 		const tool = new AskTool(session({ submitUserReply }));
-		const context = { hasUI: true, ui: { askDialog }, abort: vi.fn() } as unknown as AgentToolContext;
-		const result = await tool.execute("ask-1", { questions }, undefined, undefined, context);
+		const context = { hasUI: true, ui: { formDialog }, abort: vi.fn() } as unknown as AgentToolContext;
+		const result = await tool.execute("ask-1", { html }, undefined, undefined, context);
 		expect(result.details?.pending?.id).toBe("ask-1");
-		expect(askDialog).toHaveBeenCalledTimes(1);
 		expect(submitUserReply).not.toHaveBeenCalled();
-		dialog.resolve({
-			kind: "submit",
-			results: [
-				{
-					id: "choice",
-					question: "Which database?",
-					options: ["SQLite", "Postgres"],
-					multi: false,
-					selectedOptions: ["Postgres"],
-					note: "use pgvector",
-				},
-			],
-		});
-		await Promise.resolve();
-		await Promise.resolve();
-		expect(submitUserReply).toHaveBeenCalledWith("Answer to ask-1 [choice]: Postgres — note: use pgvector");
+		dialog.resolve({ data: { choice: "pg" } });
+		await dialog.promise;
+		expect(submitUserReply).toHaveBeenCalledWith("Answer to ask-1 [choice]: Postgres");
 	});
 
-	it("opens the same rich dialog questions as the interactive re-answer path", async () => {
-		const asyncCaptured: ExtensionAskDialogQuestion[][] = [];
-		const asyncNever = Promise.withResolvers<never>();
-		const asyncAskDialog = vi.fn((questions: ExtensionAskDialogQuestion[]) => {
-			asyncCaptured.push(questions);
-			return asyncNever.promise;
-		});
-		const tool = new AskTool(session({ submitUserReply: vi.fn() }));
-		const result = await tool.execute("ask-1", { questions }, undefined, undefined, {
-			hasUI: true,
-			ui: { askDialog: asyncAskDialog },
-			abort: vi.fn(),
+	it("never turns a timed-out form into a user answer", async () => {
+		const submitUserReply = vi.fn();
+		await new AskTool(session({ submitUserReply })).execute("ask-1", { html }, undefined, undefined, {
+			hasUI: true, ui: { formDialog: async () => ({ data: { choice: "sqlite" }, timedOut: true }) }, abort: vi.fn(),
 		} as unknown as AgentToolContext);
-		expect(result.details?.pending?.id).toBe("ask-1");
-		expect(asyncAskDialog).toHaveBeenCalledTimes(1);
-
-		const interactiveCaptured: ExtensionAskDialogQuestion[][] = [];
-		const interactiveAskDialog = vi.fn((qs: ExtensionAskDialogQuestion[]) => {
-			interactiveCaptured.push(qs);
-			return Promise.resolve({
-				kind: "submit" as const,
-				results: qs.map(q => ({
-					id: q.id,
-					question: q.question,
-					options: q.options.map(o => o.label),
-					multi: q.multi ?? false,
-					selectedOptions: [q.options[0]?.label ?? ""],
-				})),
-			});
-		});
-		const interactiveTool = new AskTool(session(), { interactiveAnswer: true });
-		await interactiveTool.execute("ask-1", { questions }, undefined, undefined, {
-			hasUI: true,
-			ui: { askDialog: interactiveAskDialog },
-			abort: vi.fn(),
-		} as unknown as AgentToolContext);
-
-		expect(interactiveCaptured[0]).toEqual(asyncCaptured[0]);
+		expect(submitUserReply).not.toHaveBeenCalled();
 	});
 
 	it("keeps multiple asks and independent work runnable while all questions are unanswered", async () => {
@@ -130,8 +79,8 @@ describe("pending Ask", () => {
 		const context = { hasUI: true, ui: {}, abort: vi.fn() } as unknown as AgentToolContext;
 		let workDone = false;
 		const results = await Promise.all([
-			tool.execute("ask-1", { questions }, undefined, undefined, context),
-			tool.execute("ask-2", { questions }, undefined, undefined, context),
+			tool.execute("ask-1", { html }, undefined, undefined, context),
+			tool.execute("ask-2", { html }, undefined, undefined, context),
 			Promise.resolve().then(() => {
 				workDone = true;
 			}),
@@ -142,7 +91,7 @@ describe("pending Ask", () => {
 	});
 
 	it("renders restored pending questions as unanswered rather than cancelled", async () => {
-		const result = await new AskTool(session()).execute("ask-1", { questions }, undefined, undefined, {
+		const result = await new AskTool(session()).execute("ask-1", { html }, undefined, undefined, {
 			hasUI: true,
 			ui: {},
 			abort: vi.fn(),
@@ -152,7 +101,7 @@ describe("pending Ask", () => {
 		const text = stripVTControlCharacters(rendered.render(100).join("\n"));
 		expect(text).toContain("Which database?");
 		expect(text).toContain("SQLite");
-		expect(text).toContain("Pending ask-1");
+		expect(text).not.toContain("User answers");
 		expect(text).not.toContain("Cancelled");
 	});
 
@@ -163,7 +112,7 @@ describe("pending Ask", () => {
 		try {
 			const result = await new AskTool(session({ getSessionId: () => manager.getSessionId() })).execute(
 				"ask-1",
-				{ questions },
+				{ html },
 				undefined,
 				undefined,
 				{ hasUI: true, ui: {}, abort: vi.fn() } as unknown as AgentToolContext,

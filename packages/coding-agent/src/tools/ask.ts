@@ -36,7 +36,7 @@ import { disambiguateDisplayLabels } from "@oh-my-pi/pi-tui/render/render-utils"
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import type { AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import type { ExtensionUIContext, ExtensionUIDialogOptions, ExtensionUISelectItem } from "../extensibility/extensions";
 import { askTimeoutMs, cfgAskNotify } from "../modes/settings";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
@@ -64,6 +64,10 @@ const TIMEOUT_DETECTION_TOLERANCE_MS = 1_000;
 
 const askSchema = arkType({
 	html: arkType("string").describe("one HTML <form>"),
+	"critical?": arkType({
+		kind: "'irreversible' | 'public' | 'hands' | 'credential'",
+		reason: arkType("string").narrow((reason, ctx) => reason.trim().length > 0 || ctx.mustBe("non-blank")),
+	}),
 });
 
 export type AskParams = typeof askSchema.infer;
@@ -361,16 +365,14 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	readonly examples: readonly ToolExample<typeof askSchema.infer>[] = [
 		{ caption: "Choice with context and a number", call: { html: EXAMPLE_FORM } },
 	];
-	// Run alone in its tool batch. The interactive dialog is a single shared UI
-	// surface (`ExtensionUiController` has no queue and overwrites the active
-	// dialog on each call), so two concurrent `ask` calls would clobber each
-	// other: the second steals focus and orphans the first, whose promise then
-	// hangs until the user aborts the whole turn.
-	readonly concurrency = "exclusive";
+	readonly concurrency: "shared" | "exclusive";
+	readonly #interactiveAnswer: boolean;
 	readonly loadMode = "discoverable";
 
-	constructor(private readonly session: ToolSession) {
+	constructor(private readonly session: ToolSession, options: { interactiveAnswer?: boolean } = {}) {
 		this.description = prompt.render(askDescription);
+		this.#interactiveAnswer = options.interactiveAnswer === true;
+		this.concurrency = this.#interactiveAnswer ? "exclusive" : "shared";
 	}
 
 	static createIf(session: ToolSession): AskTool | null {
@@ -439,7 +441,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	}
 
 	async execute(
-		_toolCallId: string,
+		toolCallId: string,
 		params: AskParams,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
@@ -451,8 +453,10 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			// prompt-cache prefix. Aborting would end its run with no final answer, and the
 			// parent would receive an empty result; let the model put the question there.
 			if (this.session.advertiseHeadlessAsk) throw new ToolError(HEADLESS_FORK_ASK_ERROR);
-			context?.abort();
-			throw new ToolAbortError("Ask tool requires interactive mode");
+			if (this.#interactiveAnswer) {
+				context?.abort();
+				throw new ToolAbortError("Ask tool requires interactive mode");
+			}
 		}
 
 		const form = parseHtmlForm(params.html);
@@ -461,6 +465,43 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		if (named.length === 0) {
 			return { content: [{ type: "text", text: NO_NAMED_CONTROLS_ERROR }], details: { answers: [] } };
 		}
+
+		const pendingQuestions = named.map(field => ({
+			id: field.name,
+			question: questions.get(field) ?? field.name,
+			options: field.kind === "choice" ? field.options.filter(option => !option.disabled).map(option => ({
+				label: spansText(option.label) || option.value,
+			})) : [],
+			multi: field.kind === "choice" && field.multi,
+			recommended: field.kind === "choice" ? field.options.filter(option => !option.disabled).findIndex(option => option.checked) : undefined,
+		}));
+		const gated = !this.#interactiveAnswer && !(this.session.taskDepth && this.session.taskDepth > 0) &&
+			cfgAskGateEnabled.get(this.session.settings) && pendingQuestions.some(question => question.options.length > 0);
+		if (gated && !params.critical && (pendingQuestions.some(question =>
+			question.recommended === undefined || question.recommended < 0 || question.recommended >= question.options.length,
+		) || !this.#hasRecentAgentResult())) {
+			throw new ToolError(prompt.render(askGateRefused, { agent: cfgAskGateAgent.get(this.session.settings) }));
+		}
+		if (!this.#interactiveAnswer) {
+			if (signal?.aborted) throw new ToolAbortError("Ask input was cancelled");
+			const pending = { id: toolCallId, sessionId: this.session.getSessionId?.() ?? undefined, html: params.html, questions: pendingQuestions };
+			if (gated && !params.critical) {
+				const workingDefaults = pendingQuestions.map(question => ({ id: question.id, option: question.options[question.recommended!]!.label }));
+				return { content: [{ type: "text", text: prompt.render(askGateDefaults, { ...pending, workingDefaults }) }], details: { pending, workingDefaults } };
+			}
+			this.#sendAskNotification();
+			const formDialog = context?.ui?.formDialog?.bind(context.ui);
+			if (formDialog && this.session.submitUserReply) {
+				void formDialog(params.html, {}).then(result => {
+					if (!result || result.timedOut) return;
+					this.session.submitUserReply?.(formAnswers(form, result.data).map(answer =>
+						`Answer to ${toolCallId} [${answer.name}]: ${answer.answer}`,
+					).join("\n"));
+				}).catch(error => logger.warn("Ask pending form failed", { error: String(error), toolCallId }));
+			}
+			return { content: [{ type: "text", text: prompt.render(askPending, pending) }], details: { pending, ...(params.critical ? { critical: params.critical } : {}) } };
+		}
+		if (!context?.hasUI || !context.ui) throw new ToolAbortError("Ask tool requires interactive mode");
 
 		const extensionUi = context.ui;
 

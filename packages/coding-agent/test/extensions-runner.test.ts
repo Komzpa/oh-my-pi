@@ -290,7 +290,7 @@ describe("ExtensionRunner", () => {
 		runner.initialize(
 			{
 				sendMessage: () => {},
-				sendUserMessage: () => {},
+				sendUserMessage: async () => {},
 				appendEntry: () => {},
 				setLabel: () => {},
 				getActiveTools: () => [],
