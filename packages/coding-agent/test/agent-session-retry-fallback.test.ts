@@ -51,7 +51,13 @@ import {
 	providerExhaustionRecord,
 	probeUnavailableProviders,
 } from "@oh-my-pi/pi-coding-agent/session/provider-exhaustion";
-import { __resetDirsFromEnvForTests, setAgentDir, getProviderCooldownsPath, TempDir, withTimeout } from "@oh-my-pi/pi-utils";
+import {
+	__resetDirsFromEnvForTests,
+	getProviderCooldownsPath,
+	setAgentDir,
+	TempDir,
+	withTimeout,
+} from "@oh-my-pi/pi-utils";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 import { restoreEnvValue } from "./helpers/settings-test-state";
