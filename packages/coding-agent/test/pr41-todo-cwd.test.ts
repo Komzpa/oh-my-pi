@@ -15,6 +15,10 @@ import { getLatestTodoPhasesFromEntries, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-
 
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 
+import { useFastGitStatusCoordinator } from "./helpers/fast-status-coordinator";
+
+useFastGitStatusCoordinator();
+
 describe("PR #41 todo artifact cwd", () => {
 	it("keeps sequential execution cwd local and does not leak it into standalone todo ops", async () => {
 		const makeSession = (cwd: string) => {

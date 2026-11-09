@@ -775,7 +775,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 			expect(collabAppendHook).toHaveBeenCalledWith(
 				expect.objectContaining({ type: "custom", customType: REQUIREMENTS_LEDGER_CUSTOM_TYPE }),
 			);
-			expect(renderTodos(mode)).toContain("req 1 · 0 ✓ · 1 open · 0 ✗");
+			expect(renderTodos(mode)).toContain("requirements 1: 0 passed · 1 open · 0 failed");
 		} finally {
 			manager.onEntryAppended = previousAppendHook;
 			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
@@ -799,7 +799,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 				version: 1,
 				requirements: createRequirementCandidates([], ["first ask", "new ask"], "2026-09-28T12:01:00.000Z"),
 			});
-			expect(renderTodos(mode)).toContain("req 2 · 0 ✓ · 2 open · 0 ✗");
+			expect(renderTodos(mode)).toContain("requirements 2: 0 passed · 2 open · 0 failed");
 		} finally {
 			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements: [] });
 		}
@@ -844,14 +844,14 @@ describe("InteractiveMode todo HUD anchor", () => {
 		session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements });
 		try {
 			mode.setTodos([{ name: "Work", tasks: [{ content: "Build artifact", status: "in_progress" }] }]);
-			expect(renderTodos(mode)).toContain("TODO · req 4 · 1 ✓ · 2 open · 1 ✗");
+			expect(renderTodos(mode)).toContain("TODO · requirements 4: 1 passed · 2 open · 1 failed");
 			const terminal = mode.ui.terminal;
 			const originalRows = Object.getOwnPropertyDescriptor(terminal, "rows");
 			Object.defineProperty(terminal, "rows", { get: () => 10, configurable: true });
 			try {
 				renderTodos(mode);
 				const compact = Bun.stripANSI(mode.statusContainer.render(180).join("\n"));
-				expect(compact).toContain("req 4 · 1 ✓ · 2 open · 1 ✗");
+				expect(compact).toContain("requirements 4: 1 passed · 2 open · 1 failed");
 			} finally {
 				if (originalRows) Object.defineProperty(terminal, "rows", originalRows);
 				else Reflect.deleteProperty(terminal, "rows");
@@ -862,7 +862,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 				requirements: requirements.map(item => (item.id === "R2" ? { ...item, verdict: undefined } : item)),
 			});
 			mode.setTodos(session.getTodoPhases());
-			expect(renderTodos(mode)).toContain("req 4 · 0 ✓ · 3 open · 1 ✗");
+			expect(renderTodos(mode)).toContain("requirements 4: 0 passed · 3 open · 1 failed");
 		} finally {
 			session.sessionManager.appendCustomEntry("requirements_ledger", { version: 1, requirements: [] });
 		}

@@ -210,7 +210,8 @@ describe("PR 41 requirements-ledger runtime", () => {
 				}),
 			);
 			await publication;
-			expect(notices.join("\n")).toContain(changedCwd);
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("unverifiable");
+			expect(notices.join("\n")).toContain("Re-audit changed row artifacts");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 			rmSync(changedCwd, { recursive: true, force: true });
