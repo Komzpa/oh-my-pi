@@ -680,6 +680,21 @@ test("audits a plain checkout resource instead of the stale artifact cwd", () =>
 	expect(batches[0]!.head).toBe(sha);
 });
 
+test("auto-auditor brief uses the checkout resource and its head", async () => {
+	const delivery = mkdtempSync(join(tmpdir(), "audit-brief-checkout-"));
+	expect(Bun.spawnSync(["git", "init", "-q", delivery]).exitCode).toBe(0);
+	const sha = "e2".repeat(20);
+	const row = { content: "Published delivery", status: "in_progress", artifactCwd: "/work/old", schedule: {
+		resources: [delivery], progress: { evidence: `Published ${sha}` },
+		executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const h = harness([{ name: "Delivery", tasks: [row] }], { [delivery]: sha, "/work/old": "b2".repeat(20) });
+	expect(await h.check()).toBe(1);
+	expect(h.launches[0]!.task).toContain(`ROOT=${delivery}`);
+	expect(h.launches[0]!.task).toContain(`HEAD=${sha}`);
+	await h.abort(0);
+});
+
 test("a changed checkout cannot stand in for the pinned delivery revision", () => {
 	const row = { content: "Verify pinned delivery", status: "in_progress", schedule: {
 		resources: [`git:/work/delivery@${"a".repeat(40)}`],
