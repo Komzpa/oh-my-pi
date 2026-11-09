@@ -2295,6 +2295,53 @@ test("zero-active staffing admits fresh user shell inspection but retains mutati
 	} finally { h.shutdown(); }
 });
 
+test("zero-active staffing admits only the trusted helper's literal numeric readback without executing it", async () => {
+	const now = Date.now();
+	const phases = chainedPlan(15, now - 86400000);
+	for (const row of phases[0].tasks) { row.status = "pending"; row.schedule.owner = undefined; row.schedule.dependencies = []; }
+	const h = await noticeHarness(phases, now + 86400000);
+	try {
+		const call = (toolName, input) => h.handlers.get("tool_call")({ toolName, input }, h.ctx);
+		await call("read", { path: "proc://list" });
+		await call("read", { path: "proc://list" });
+		// Tool-call hooks classify data; no bash tool or Bitbucket helper is run.
+		expect(h.ctx.getAsyncJobSnapshot()).toEqual({ running: [], recent: [], nonJobAgents: [] });
+		expect((await call("bash", { command: "bash .agents/skills/bitbucket-prs/scripts/bb-pr.sh readback 114" }))?.block).not.toBe(true);
+	} finally { h.shutdown(); }
+});
+
+test("zero-active staffing denies helper mutations, arbitrary scripts and shell syntax around readback", async () => {
+	const helper = "bash .agents/skills/bitbucket-prs/scripts/bb-pr.sh";
+	const readback = `${helper} readback 114`;
+	const denied = [
+		`${helper} create`, `${helper} update-description 114 body.md`,
+		`${helper} decline 114`, `${helper} delete-branch topic`,
+		`${helper} description 114`, // Other reads are outside this narrow contract.
+		"bash arbitrary.sh readback 114", "bash /tmp/bb-pr.sh readback 114",
+		"bash .agents/skills/bitbucket-prs/scripts/../scripts/bb-pr.sh readback 114",
+		`${helper} readback`, `${helper} readback 0`, `${helper} readback -1`,
+		`${helper} readback 114 extra`, `${helper} readback '$PR'`,
+		`${helper} readback $(echo 114)`, `${helper} readback \`echo 114\``,
+		`${readback}; git status`, `${readback} && git status`,
+		`${readback} || git status`, `${readback} | cat`, `${readback} &`,
+		`${readback}\n`, `${readback}\ngit status`, `${readback} >/dev/null`,
+		`${readback} <input`, `BB_TOKEN=x ${readback}`, `env ${readback}`,
+		`bash -c '${readback}'`, `bash -x ${readback.slice(5)}`,
+	];
+	for (const command of denied) {
+		const now = Date.now();
+		const phases = chainedPlan(15, now - 86400000);
+		for (const row of phases[0].tasks) { row.status = "pending"; row.schedule.owner = undefined; row.schedule.dependencies = []; }
+		const h = await noticeHarness(phases, now + 86400000);
+		try {
+			const call = (toolName, input) => h.handlers.get("tool_call")({ toolName, input }, h.ctx);
+			await call("read", { path: "proc://list" });
+			await call("read", { path: "proc://list" });
+			expect((await call("bash", { command }))?.block, command).toBe(true);
+		} finally { h.shutdown(); }
+	}
+});
+
 test("zero-active staffing accounts for standalone live workers", async () => {
 	const now = Date.now();
 	const phases = chainedPlan(2, now);

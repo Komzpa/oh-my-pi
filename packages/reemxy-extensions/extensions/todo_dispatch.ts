@@ -3703,6 +3703,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   // Inspect shell structure without executing it. Unknown syntax fails closed; substitutions
   // use the same command checks, including inside double quotes and loop headers.
   const isChiefBash = (command: string) => {
+    // Trusted repository helper contract only: readback performs a GET. It also
+    // sources bitbucket.local.env, so this staffing exemption is not a sandbox
+    // for untrusted repositories or env files. Do not admit general bash scripts.
+    // Match the entire raw command before parsing: no wrappers, expansions,
+    // redirects, separators, extra arguments, or interpreter options are allowed.
+    if (!command.includes("\n") && /^bash[ \t]+\.agents\/skills\/bitbucket-prs\/scripts\/bb-pr\.sh[ \t]+readback[ \t]+[1-9][0-9]*$/.test(command)) return true;
     type Token = { value: string; plain: boolean; dynamic: boolean; newline?: boolean; assignment?: boolean };
     const separators: Record<string, true> = { ";": true, "&&": true, "||": true, "|": true };
     const reserved: Record<string, true> = { for: true, while: true, until: true, if: true, do: true, done: true, then: true, else: true, elif: true, fi: true };

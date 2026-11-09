@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep the trusted Bitbucket helper's exact numeric readback command available during dispatch staffing gates without exempting other scripts or helper mutations.
+
 - Keep shell inspection and owned waits available during zero-active staffing, count standalone live workers, and wake only when unstaffed work changes rather than replaying unchanged dispatch demands.
 
 - Reduced recurring recovery snapshot size while preserving staffing and dependency change detection.
