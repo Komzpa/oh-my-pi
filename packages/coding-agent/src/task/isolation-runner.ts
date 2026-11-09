@@ -570,7 +570,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 						opts.agentId,
 						opts.description,
 						undefined,
-					capture.delta,
+						capture.delta,
 					);
 				} catch (mergeErr) {
 					// Same contract as the run-end merge failure: the workspace

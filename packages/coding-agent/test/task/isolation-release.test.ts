@@ -51,7 +51,12 @@ async function commitsAcrossRelease(
 	id: string,
 	runEndPatch: string,
 	releasePatch: string,
-	options: { cleanup?: () => Promise<void>; afterRun?: () => Promise<void>; failInitialCapture?: boolean; restartMarker?: "matching" | "other-workspace" } = {},
+	options: {
+		cleanup?: () => Promise<void>;
+		afterRun?: () => Promise<void>;
+		failInitialCapture?: boolean;
+		restartMarker?: "matching" | "other-workspace";
+	} = {},
 ): Promise<number> {
 	const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-isolation-release-"));
 	tempRoots.push(artifactsDir);
@@ -70,7 +75,12 @@ async function commitsAcrossRelease(
 		fallbackReason: null,
 	});
 	vi.spyOn(worktreeModule, "captureIsolationBaseline").mockResolvedValue(baseline);
-	vi.spyOn(worktreeModule, "cleanupIsolation").mockImplementation(options.cleanup ?? (async handle => { await fs.rm(handle.mergedDir, { recursive: true, force: true }); }));
+	vi.spyOn(worktreeModule, "cleanupIsolation").mockImplementation(
+		options.cleanup ??
+			(async handle => {
+				await fs.rm(handle.mergedDir, { recursive: true, force: true });
+			}),
+	);
 	vi.spyOn(worktreeModule, "captureDeltaPatch").mockResolvedValue({ rootPatch: releasePatch, nestedPatches: [] });
 	const commitSpy = vi.spyOn(worktreeModule, "commitToBranch").mockImplementation(async () => {
 		events.push("commit");
@@ -209,7 +219,9 @@ describe("isolated agent release", () => {
 	});
 
 	it("keeps restart-checkpointed work at its original path without release capture", async () => {
-		expect(await commitsAcrossRelease("RestartPreserved", patch, `${patch}+follow-up\n`, { restartMarker: "matching" })).toBe(1);
+		expect(
+			await commitsAcrossRelease("RestartPreserved", patch, `${patch}+follow-up\n`, { restartMarker: "matching" }),
+		).toBe(1);
 	});
 
 	it("cleans ordinary releases when a stale restart marker names another workspace", async () => {
@@ -217,7 +229,11 @@ describe("isolated agent release", () => {
 	});
 
 	it("keeps a failed branch-capture workspace usable until release and captures follow-up work", async () => {
-		expect(await commitsAcrossRelease("ReleaseCaptureFailure", patch, `${patch}+follow-up\n`, { failInitialCapture: true })).toBe(2);
+		expect(
+			await commitsAcrossRelease("ReleaseCaptureFailure", patch, `${patch}+follow-up\n`, {
+				failInitialCapture: true,
+			}),
+		).toBe(2);
 	});
 
 	it("does not re-commit a workspace that is unchanged since the run-end branch", async () => {
