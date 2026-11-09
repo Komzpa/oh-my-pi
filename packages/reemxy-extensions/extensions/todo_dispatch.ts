@@ -4843,7 +4843,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return;
     }
     if (headChanged) {
-      sprintState = { ...sprintState, deliveryCheckpointHead: state.head, deliveryCheckpointPublished: published };
+      // A new HEAD seen during a remote outage has not been confirmed. Keep it
+      // pending so a later successful readback can reset the delivery clock.
+      sprintState = { ...sprintState, deliveryCheckpointHead: state.head, deliveryCheckpointPublished: published ?? false };
       persistSprintState();
       return;
     }

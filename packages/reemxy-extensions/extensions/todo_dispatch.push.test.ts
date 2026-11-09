@@ -184,6 +184,20 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 			expect(JSON.stringify(provider?.(ctx) ?? {})).not.toMatch(/DELIVERY CHECKPOINT|ARTIFACT-FREE CHECKPOINT/);
 
+			// A slice committed while origin is unavailable can still be published by
+			// another worker; once the target is readable again, delivery resets the clock.
+			now += DELIVERY_CHECKPOINT_MS / 2;
+			git(work, id, "remote", "set-url", "origin", join(dir, "missing.git"));
+			writeFileSync(join(work, "second-slice"), "second checkpoint");
+			git(work, id, "add", "second-slice");
+			git(work, id, "commit", "-q", "-m", "second checkpoint");
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			expect(JSON.stringify(provider?.(ctx) ?? {})).toContain("cannot verify");
+			git(work, id, "push", "-q", remote, `HEAD:refs/heads/${target}`);
+			git(work, id, "remote", "set-url", "origin", remote);
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			expect(JSON.stringify(provider?.(ctx) ?? {})).not.toMatch(/DELIVERY CHECKPOINT|ARTIFACT-FREE CHECKPOINT/);
+
 			// A read-only audit may inspect this checkout, but it is not delivery work and cannot start the artifact clock.
 			phases.flatMap(phase => phase.tasks).find(row => row.content === "Build the smallest shippable slice").schedule.readOnly = true;
 			now += DELIVERY_CHECKPOINT_MS * 2;
