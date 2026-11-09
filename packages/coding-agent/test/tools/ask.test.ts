@@ -166,7 +166,10 @@ describe("AskTool form dialog", () => {
 			undefined,
 			createContext({ formDialog }),
 		);
-		await new AskTool(createSession({ settings, getPlanModeState: () => ({ enabled: true, planFilePath: "/tmp/plan.md" }) }), { interactiveAnswer: true }).execute("c", { html: DB_FORM }, undefined, undefined, createContext({ formDialog }));
+		await new AskTool(
+			createSession({ settings, getPlanModeState: () => ({ enabled: true, planFilePath: "/tmp/plan.md" }) }),
+			{ interactiveAnswer: true },
+		).execute("c", { html: DB_FORM }, undefined, undefined, createContext({ formDialog }));
 
 		expect(timeouts).toEqual([undefined, 30_000, undefined]);
 	});
@@ -290,7 +293,11 @@ describe("AskTool form dialog", () => {
 			const events = [];
 			for await (const event of agentLoop(
 				[{ role: "user", content: "Choose a store", timestamp: Date.now() }],
-				{ systemPrompt: ["Test"], messages: [], tools: [new AskTool(createSession(), { interactiveAnswer: true })] },
+				{
+					systemPrompt: ["Test"],
+					messages: [],
+					tools: [new AskTool(createSession(), { interactiveAnswer: true })],
+				},
 				config,
 				controller.signal,
 				mock.stream,
@@ -312,7 +319,10 @@ describe("AskTool form dialog", () => {
 
 	it("does not emit terminal notifications for non-terminal prompt surfaces", async () => {
 		const sendNotification = spyOn(TERMINAL, "sendNotification").mockImplementation(() => {});
-		await new AskTool(createSession({ hasUI: false, canPromptUser: true, settings: Settings.isolated({ "ask.notify": "on" }) }), { interactiveAnswer: true }).execute(
+		await new AskTool(
+			createSession({ hasUI: false, canPromptUser: true, settings: Settings.isolated({ "ask.notify": "on" }) }),
+			{ interactiveAnswer: true },
+		).execute(
 			"call-acp",
 			{ html: DB_FORM },
 			undefined,
@@ -468,10 +478,16 @@ describe("AskTool without a form surface", () => {
 describe("AskTool without an interactive UI", () => {
 	it("aborts the turn in an ordinary session", async () => {
 		const abort = vi.fn();
-		const outcome = new AskTool(createSession(), { interactiveAnswer: true }).execute("call-headless", { html: DB_FORM }, undefined, undefined, {
-			hasUI: false,
-			abort,
-		} as unknown as AgentToolContext);
+		const outcome = new AskTool(createSession(), { interactiveAnswer: true }).execute(
+			"call-headless",
+			{ html: DB_FORM },
+			undefined,
+			undefined,
+			{
+				hasUI: false,
+				abort,
+			} as unknown as AgentToolContext,
+		);
 
 		await expect(outcome).rejects.toThrow(new ToolAbortError("Ask tool requires interactive mode"));
 		expect(abort).toHaveBeenCalledTimes(1);
@@ -479,13 +495,12 @@ describe("AskTool without an interactive UI", () => {
 
 	it("tells a headless fork's model to answer in its final message instead of aborting", async () => {
 		const abort = vi.fn();
-		const outcome = new AskTool(createSession({ hasUI: false, advertiseHeadlessAsk: true }), { interactiveAnswer: true }).execute(
-			"call-fork",
-			{ html: DB_FORM },
-			undefined,
-			undefined,
-			{ hasUI: false, abort } as unknown as AgentToolContext,
-		);
+		const outcome = new AskTool(createSession({ hasUI: false, advertiseHeadlessAsk: true }), {
+			interactiveAnswer: true,
+		}).execute("call-fork", { html: DB_FORM }, undefined, undefined, {
+			hasUI: false,
+			abort,
+		} as unknown as AgentToolContext);
 
 		await expect(outcome).rejects.toBeInstanceOf(ToolError);
 		expect(abort).not.toHaveBeenCalled();

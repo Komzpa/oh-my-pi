@@ -16,10 +16,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/session/exit-diagnostics";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createRestartQueueController } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
-import type {
-	ExtensionFormDialogResult,
-	ExtensionUIContext,
-} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import type { ExtensionFormDialogResult, ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { parseHtmlForm } from "@oh-my-pi/pi-tui/html-form/parse";
@@ -395,12 +392,22 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 	for (const recovery of ["legacy", "legacy-text", "resume", "restore", "rolling"] as const) {
 		it(`reopens an unanswered ask on ${recovery}, preserving completed siblings and one answer across restart`, async () => {
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-			const html = '<form><label>Deploy where?<select name="deploy"><option>Here</option><option>There</option></select></label></form>';
-			const input = recovery === "legacy-text"
-				? { questions: [{ id: "deploy", question: "Deploy where?" }] }
-				: recovery === "legacy"
-					? { questions: [{ id: "deploy", question: "Deploy where?", options: [{ label: "Here" }, { label: "There" }] }] }
-					: { html };
+			const html =
+				'<form><label>Deploy where?<select name="deploy"><option>Here</option><option>There</option></select></label></form>';
+			const input =
+				recovery === "legacy-text"
+					? { questions: [{ id: "deploy", question: "Deploy where?" }] }
+					: recovery === "legacy"
+						? {
+								questions: [
+									{
+										id: "deploy",
+										question: "Deploy where?",
+										options: [{ label: "Here" }, { label: "There" }],
+									},
+								],
+							}
+						: { html };
 			const persisted: Message[] = [
 				{ role: "user", content: "choose", timestamp: Date.now() },
 				assistant(model, {
@@ -492,158 +499,189 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		});
 	}
 
-	it.each(["html", "legacy"] as const)("restores a %s form before restart continuation, preserving saved images and sending unanswered fields as chat", async format => {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-		const html = '<form><label>Which region?<select name="region"><option>east</option><option>west</option></select></label><label>Which version?<input name="version"></label></form>';
-		const input = format === "html" ? { html } : { questions: [
-			{ id: "region", question: "Which region?", options: [{ label: "east" }, { label: "west" }] },
-			{ id: "version", question: "Which version?", options: [{ label: "stable" }, { label: "canary" }] },
-		] };
-		const image: ImageContent = { type: "image", data: "AQID", mimeType: "image/png" };
-		const submittedAnswer = format === "html" ? "3.14" : "Other: 3.14";
-		const askCallId = "async-ask-call";
-		const dialog = Promise.withResolvers<ExtensionFormDialogResult | undefined>();
-		const shown: string[] = [];
-		const dialogOptions: unknown[] = [];
-		const ui = {
-			askDialog: () => { throw new Error("Legacy question API must not open"); },
-			formDialog: (requested: string, options: unknown) => {
-				shown.push(requested);
-				dialogOptions.push(options);
-				return dialog.promise;
-			},
-		} as unknown as ExtensionUIContext;
-		const modelInputs: string[] = [];
-		const { session: restored } = reopen(
-			model,
-			[
-				{ role: "user", content: "choose deployment", timestamp: Date.now() },
-				assistant(model, {
-					stopReason: "toolUse",
-					content: [{ type: "toolCall", id: askCallId, name: "ask", arguments: input }],
-				}),
-				{
-					role: "toolResult",
-					toolCallId: askCallId,
-					toolName: "ask",
-					content: [{ type: "text", text: "Pending question; reply in this session's chat" }],
-					details: { pending: { id: askCallId, sessionId: "old-instance", ...input } },
-					isError: false,
-					timestamp: Date.now(),
+	it.each(["html", "legacy"] as const)(
+		"restores a %s form before restart continuation, preserving saved images and sending unanswered fields as chat",
+		async format => {
+			const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+			const html =
+				'<form><label>Which region?<select name="region"><option>east</option><option>west</option></select></label><label>Which version?<input name="version"></label></form>';
+			const input =
+				format === "html"
+					? { html }
+					: {
+							questions: [
+								{ id: "region", question: "Which region?", options: [{ label: "east" }, { label: "west" }] },
+								{
+									id: "version",
+									question: "Which version?",
+									options: [{ label: "stable" }, { label: "canary" }],
+								},
+							],
+						};
+			const image: ImageContent = { type: "image", data: "AQID", mimeType: "image/png" };
+			const submittedAnswer = format === "html" ? "3.14" : "Other: 3.14";
+			const askCallId = "async-ask-call";
+			const dialog = Promise.withResolvers<ExtensionFormDialogResult | undefined>();
+			const shown: string[] = [];
+			const dialogOptions: unknown[] = [];
+			const ui = {
+				askDialog: () => {
+					throw new Error("Legacy question API must not open");
 				},
-				assistant(model, { stopReason: "stop" }),
-				{ role: "user", content: [{ type: "text", text: `Answer to ${askCallId} [region]: east` }, image], timestamp: Date.now() },
-				assistant(model, {
-					stopReason: "toolUse",
-					content: [{ type: "toolCall", id: "later-probe", name: "probe", arguments: {} }],
-				}),
-				{
-					role: "toolResult",
-					toolCallId: "later-probe",
-					toolName: "probe",
-					content: [{ type: "text", text: "probe complete" }],
-					isError: false,
-					timestamp: Date.now(),
+				formDialog: (requested: string, options: unknown) => {
+					shown.push(requested);
+					dialogOptions.push(options);
+					return dialog.promise;
 				},
-				assistant(model, { content: [{ type: "text", text: "later work complete" }] }),
-			],
-			[],
-			[{ content: ["resumed with the answer"], stopReason: "stop" }],
-			undefined,
-			modelInputs,
-		);
-		const sessionId = restored.sessionManager.getSessionId();
-		appendRestartTransitions(restored.sessionManager, "restart-ask-1");
-		let pending = false;
-		let pendingAskRestore: Promise<boolean> | undefined;
-		const controller = createRestartQueueController({
-			session: restored,
-			identity: () => ({ instanceId: "new-instance", sessionId, generation: 2 }),
-			restart: async () => {},
-			restorePendingAsk: onAnswered => {
-				pendingAskRestore = restored.restorePendingAsk(ui, onAnswered, () => {
-					pending = true;
-				});
-				return pending;
-			},
-		});
+			} as unknown as ExtensionUIContext;
+			const modelInputs: string[] = [];
+			const { session: restored } = reopen(
+				model,
+				[
+					{ role: "user", content: "choose deployment", timestamp: Date.now() },
+					assistant(model, {
+						stopReason: "toolUse",
+						content: [{ type: "toolCall", id: askCallId, name: "ask", arguments: input }],
+					}),
+					{
+						role: "toolResult",
+						toolCallId: askCallId,
+						toolName: "ask",
+						content: [{ type: "text", text: "Pending question; reply in this session's chat" }],
+						details: { pending: { id: askCallId, sessionId: "old-instance", ...input } },
+						isError: false,
+						timestamp: Date.now(),
+					},
+					assistant(model, { stopReason: "stop" }),
+					{
+						role: "user",
+						content: [{ type: "text", text: `Answer to ${askCallId} [region]: east` }, image],
+						timestamp: Date.now(),
+					},
+					assistant(model, {
+						stopReason: "toolUse",
+						content: [{ type: "toolCall", id: "later-probe", name: "probe", arguments: {} }],
+					}),
+					{
+						role: "toolResult",
+						toolCallId: "later-probe",
+						toolName: "probe",
+						content: [{ type: "text", text: "probe complete" }],
+						isError: false,
+						timestamp: Date.now(),
+					},
+					assistant(model, { content: [{ type: "text", text: "later work complete" }] }),
+				],
+				[],
+				[{ content: ["resumed with the answer"], stopReason: "stop" }],
+				undefined,
+				modelInputs,
+			);
+			const sessionId = restored.sessionManager.getSessionId();
+			appendRestartTransitions(restored.sessionManager, "restart-ask-1");
+			let pending = false;
+			let pendingAskRestore: Promise<boolean> | undefined;
+			const controller = createRestartQueueController({
+				session: restored,
+				identity: () => ({ instanceId: "new-instance", sessionId, generation: 2 }),
+				restart: async () => {},
+				restorePendingAsk: onAnswered => {
+					pendingAskRestore = restored.restorePendingAsk(ui, onAnswered, () => {
+						pending = true;
+					});
+					return pending;
+				},
+			});
 
-		try {
-			await controller.restore();
-			expect(pending).toBe(true);
-			expect(shown).toHaveLength(1);
-			if (format === "html") expect(shown).toEqual([html]);
-			else {
-				expect(shown[0]).toContain("Which region?");
-				expect(shown[0]).toContain('name="version"');
-				const version = parseHtmlForm(shown[0]!).fields.find(field => field.name === "version");
-				expect(version?.kind === "choice" && version.other).toBe(true);
-			}
-			expect(dialogOptions).toEqual([{}]);
-			expect(modelInputs).toHaveLength(0);
-			const completed = restored.sessionManager
-				.getEntries()
-				.find(
-					entry =>
-						entry.type === "custom_message" &&
-						isRecord(entry.details) &&
-						entry.details.requestId === "restart-ask-1" &&
-						entry.details.state === "completed",
-				);
-			expect(completed?.type === "custom_message" ? completed.content : undefined).toContain(" completed;");
-			expect(
-				restored.sessionManager
+			try {
+				await controller.restore();
+				expect(pending).toBe(true);
+				expect(shown).toHaveLength(1);
+				if (format === "html") expect(shown).toEqual([html]);
+				else {
+					expect(shown[0]).toContain("Which region?");
+					expect(shown[0]).toContain('name="version"');
+					const version = parseHtmlForm(shown[0]!).fields.find(field => field.name === "version");
+					expect(version?.kind === "choice" && version.other).toBe(true);
+				}
+				expect(dialogOptions).toEqual([{}]);
+				expect(modelInputs).toHaveLength(0);
+				const completed = restored.sessionManager
 					.getEntries()
-					.filter(
+					.find(
 						entry =>
 							entry.type === "custom_message" &&
 							isRecord(entry.details) &&
 							entry.details.requestId === "restart-ask-1" &&
 							entry.details.state === "completed",
-					),
-			).toHaveLength(1);
-			expect(
-				restored.sessionManager
-					.getEntries()
-					.filter(entry => entry.type === "custom" && entry.customType === "restart_request_transition")
-					.at(-1),
-			).toMatchObject({ data: { record: { state: "completed" } } });
+					);
+				expect(completed?.type === "custom_message" ? completed.content : undefined).toContain(" completed;");
+				expect(
+					restored.sessionManager
+						.getEntries()
+						.filter(
+							entry =>
+								entry.type === "custom_message" &&
+								isRecord(entry.details) &&
+								entry.details.requestId === "restart-ask-1" &&
+								entry.details.state === "completed",
+						),
+				).toHaveLength(1);
+				expect(
+					restored.sessionManager
+						.getEntries()
+						.filter(entry => entry.type === "custom" && entry.customType === "restart_request_transition")
+						.at(-1),
+				).toMatchObject({ data: { record: { state: "completed" } } });
 
-			dialog.resolve({ data: { region: "west", version: "3.14" } });
-			await pendingAskRestore;
-			await restored.waitForIdle();
-			await restored.settleInFlightMessagePersistence();
-			const context = modelInputs.join("\n");
-			expect(modelInputs).toHaveLength(1);
-			expect(
-				restored.sessionManager
-					.getBranchView()
-					.filter(
-						entry =>
-							entry.type === "message" &&
-							entry.message.role === "toolResult" &&
-							entry.message.toolCallId === askCallId,
-					),
-			).toHaveLength(1);
-			expect(context).toContain(`Answer to ${askCallId} [region]: east`);
-			expect(context).toContain(`Answer to ${askCallId} [version]: ${submittedAnswer}`);
-			expect(context).not.toContain(`Answer to ${askCallId} [region]: west`);
-			expect(context.indexOf("Restart restart-ask-1 completed")).toBeLessThan(
-				context.indexOf(`Answer to ${askCallId} [version]`),
-			);
-			expect(context).not.toContain("Do not start another model turn until it completes");
-			const answer = restored.sessionManager.buildSessionContext({ transcript: true }).messages.find(
-				message => message.role === "user" && typeof message.content === "string" && message.content.includes(`[version]: ${submittedAnswer}`),
-			);
-			expect(answer).toMatchObject({ role: "user", content: `Answer to ${askCallId} [version]: ${submittedAnswer}` });
-			const savedImages = restored.sessionManager.buildSessionContext({ transcript: true }).messages.flatMap(
-				message => message.role === "user" && Array.isArray(message.content) ? message.content.filter(part => part.type === "image") : [],
-			);
-			expect(savedImages).toEqual([image]);
-		} finally {
-			controller.dispose();
-		}
-	});
+				dialog.resolve({ data: { region: "west", version: "3.14" } });
+				await pendingAskRestore;
+				await restored.waitForIdle();
+				await restored.settleInFlightMessagePersistence();
+				const context = modelInputs.join("\n");
+				expect(modelInputs).toHaveLength(1);
+				expect(
+					restored.sessionManager
+						.getBranchView()
+						.filter(
+							entry =>
+								entry.type === "message" &&
+								entry.message.role === "toolResult" &&
+								entry.message.toolCallId === askCallId,
+						),
+				).toHaveLength(1);
+				expect(context).toContain(`Answer to ${askCallId} [region]: east`);
+				expect(context).toContain(`Answer to ${askCallId} [version]: ${submittedAnswer}`);
+				expect(context).not.toContain(`Answer to ${askCallId} [region]: west`);
+				expect(context.indexOf("Restart restart-ask-1 completed")).toBeLessThan(
+					context.indexOf(`Answer to ${askCallId} [version]`),
+				);
+				expect(context).not.toContain("Do not start another model turn until it completes");
+				const answer = restored.sessionManager
+					.buildSessionContext({ transcript: true })
+					.messages.find(
+						message =>
+							message.role === "user" &&
+							typeof message.content === "string" &&
+							message.content.includes(`[version]: ${submittedAnswer}`),
+					);
+				expect(answer).toMatchObject({
+					role: "user",
+					content: `Answer to ${askCallId} [version]: ${submittedAnswer}`,
+				});
+				const savedImages = restored.sessionManager
+					.buildSessionContext({ transcript: true })
+					.messages.flatMap(message =>
+						message.role === "user" && Array.isArray(message.content)
+							? message.content.filter(part => part.type === "image")
+							: [],
+					);
+				expect(savedImages).toEqual([image]);
+			} finally {
+				controller.dispose();
+			}
+		},
+	);
 
 	it("replays the restart window with exactly the current pending ask and restores goal work without waking an idle root", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;

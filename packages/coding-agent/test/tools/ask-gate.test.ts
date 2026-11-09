@@ -8,7 +8,8 @@ import type { AsyncJob } from "../../src/async";
 import { AskTool } from "../../src/tools/ask";
 import type { ToolSession } from "../../src/tools";
 
-const html = '<form><fieldset><legend>Layout?</legend><label><input type="radio" name="layout" value="compact" checked>Compact</label><label><input type="radio" name="layout" value="wide">Wide</label></fieldset></form>';
+const html =
+	'<form><fieldset><legend>Layout?</legend><label><input type="radio" name="layout" value="compact" checked>Compact</label><label><input type="radio" name="layout" value="wide">Wide</label></fieldset></form>';
 const withoutDefault = html.replace(" checked", "");
 
 function setup(enabled = true, recentSeconds = 0) {

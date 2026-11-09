@@ -369,7 +369,10 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	readonly #interactiveAnswer: boolean;
 	readonly loadMode = "discoverable";
 
-	constructor(private readonly session: ToolSession, options: { interactiveAnswer?: boolean } = {}) {
+	constructor(
+		private readonly session: ToolSession,
+		options: { interactiveAnswer?: boolean } = {},
+	) {
 		this.description = prompt.render(askDescription);
 		this.#interactiveAnswer = options.interactiveAnswer === true;
 		this.concurrency = this.#interactiveAnswer ? "exclusive" : "shared";
@@ -469,37 +472,74 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		const pendingQuestions = named.map(field => ({
 			id: field.name,
 			question: questions.get(field) ?? field.name,
-			options: field.kind === "choice" ? field.options.filter(option => !option.disabled).map(option => ({
-				label: spansText(option.label) || option.value,
-			})) : [],
+			options:
+				field.kind === "choice"
+					? field.options
+							.filter(option => !option.disabled)
+							.map(option => ({
+								label: spansText(option.label) || option.value,
+							}))
+					: [],
 			multi: field.kind === "choice" && field.multi,
-			recommended: field.kind === "choice" ? field.options.filter(option => !option.disabled).findIndex(option => option.checked) : undefined,
+			recommended:
+				field.kind === "choice"
+					? field.options.filter(option => !option.disabled).findIndex(option => option.checked)
+					: undefined,
 		}));
-		const gated = !this.#interactiveAnswer && !(this.session.taskDepth && this.session.taskDepth > 0) &&
-			cfgAskGateEnabled.get(this.session.settings) && pendingQuestions.some(question => question.options.length > 0);
-		if (gated && !params.critical && (pendingQuestions.some(question =>
-			question.recommended === undefined || question.recommended < 0 || question.recommended >= question.options.length,
-		) || !this.#hasRecentAgentResult())) {
+		const gated =
+			!this.#interactiveAnswer &&
+			!(this.session.taskDepth && this.session.taskDepth > 0) &&
+			cfgAskGateEnabled.get(this.session.settings) &&
+			pendingQuestions.some(question => question.options.length > 0);
+		if (
+			gated &&
+			!params.critical &&
+			(pendingQuestions.some(
+				question =>
+					question.recommended === undefined ||
+					question.recommended < 0 ||
+					question.recommended >= question.options.length,
+			) ||
+				!this.#hasRecentAgentResult())
+		) {
 			throw new ToolError(prompt.render(askGateRefused, { agent: cfgAskGateAgent.get(this.session.settings) }));
 		}
 		if (!this.#interactiveAnswer) {
 			if (signal?.aborted) throw new ToolAbortError("Ask input was cancelled");
-			const pending = { id: toolCallId, sessionId: this.session.getSessionId?.() ?? undefined, html: params.html, questions: pendingQuestions };
+			const pending = {
+				id: toolCallId,
+				sessionId: this.session.getSessionId?.() ?? undefined,
+				html: params.html,
+				questions: pendingQuestions,
+			};
 			if (gated && !params.critical) {
-				const workingDefaults = pendingQuestions.map(question => ({ id: question.id, option: question.options[question.recommended!]!.label }));
-				return { content: [{ type: "text", text: prompt.render(askGateDefaults, { ...pending, workingDefaults }) }], details: { pending, workingDefaults } };
+				const workingDefaults = pendingQuestions.map(question => ({
+					id: question.id,
+					option: question.options[question.recommended!]!.label,
+				}));
+				return {
+					content: [{ type: "text", text: prompt.render(askGateDefaults, { ...pending, workingDefaults }) }],
+					details: { pending, workingDefaults },
+				};
 			}
 			this.#sendAskNotification();
 			const formDialog = context?.ui?.formDialog?.bind(context.ui);
 			if (formDialog && this.session.submitUserReply) {
-				void formDialog(params.html, {}).then(result => {
-					if (!result || result.timedOut) return;
-					this.session.submitUserReply?.(formAnswers(form, result.data).map(answer =>
-						`Answer to ${toolCallId} [${answer.name}]: ${answer.answer}`,
-					).join("\n"));
-				}).catch(error => logger.warn("Ask pending form failed", { error: String(error), toolCallId }));
+				void formDialog(params.html, {})
+					.then(result => {
+						if (!result || result.timedOut) return;
+						this.session.submitUserReply?.(
+							formAnswers(form, result.data)
+								.map(answer => `Answer to ${toolCallId} [${answer.name}]: ${answer.answer}`)
+								.join("\n"),
+						);
+					})
+					.catch(error => logger.warn("Ask pending form failed", { error: String(error), toolCallId }));
 			}
-			return { content: [{ type: "text", text: prompt.render(askPending, pending) }], details: { pending, ...(params.critical ? { critical: params.critical } : {}) } };
+			return {
+				content: [{ type: "text", text: prompt.render(askPending, pending) }],
+				details: { pending, ...(params.critical ? { critical: params.critical } : {}) },
+			};
 		}
 		if (!context?.hasUI || !context.ui) throw new ToolAbortError("Ask tool requires interactive mode");
 

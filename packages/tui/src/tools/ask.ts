@@ -35,7 +35,18 @@ export interface AskToolDetails {
 	notes?: OptionNote[];
 	/** The deadline submitted the form's current values instead of the user. */
 	timedOut?: boolean;
-	pending?: { id: string; sessionId?: string; html: string; questions: { id: string; question: string; options: { label: string }[]; multi?: boolean; recommended?: number }[] };
+	pending?: {
+		id: string;
+		sessionId?: string;
+		html: string;
+		questions: {
+			id: string;
+			question: string;
+			options: { label: string }[];
+			multi?: boolean;
+			recommended?: number;
+		}[];
+	};
 	workingDefaults?: { id: string; option: string }[];
 	critical?: { kind: "irreversible" | "public" | "hands" | "credential"; reason: string };
 }
@@ -319,7 +330,8 @@ export const askToolRenderer = {
 		uiTheme: Theme,
 		args?: AskRenderArgs,
 	): Component {
-		if (result.details?.pending) return askToolRenderer.renderCall({ html: result.details.pending.html }, options, uiTheme);
+		if (result.details?.pending)
+			return askToolRenderer.renderCall({ html: result.details.pending.html }, options, uiTheme);
 		const answers = detailsAnswers(result.details);
 		if (!answers) {
 			const txt = result.content[0];

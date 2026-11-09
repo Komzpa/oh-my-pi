@@ -24,7 +24,8 @@ function session(overrides: Partial<ToolSession> = {}): ToolSession {
 	};
 }
 
-const html = '<form><fieldset><legend>Which database?</legend><label><input type="radio" name="choice" value="sqlite" checked>SQLite</label><label><input type="radio" name="choice" value="pg">Postgres</label></fieldset></form>';
+const html =
+	'<form><fieldset><legend>Which database?</legend><label><input type="radio" name="choice" value="sqlite" checked>SQLite</label><label><input type="radio" name="choice" value="pg">Postgres</label></fieldset></form>';
 
 describe("pending Ask", () => {
 	beforeAll(async () => {
@@ -69,7 +70,9 @@ describe("pending Ask", () => {
 	it("never turns a timed-out form into a user answer", async () => {
 		const submitUserReply = vi.fn();
 		await new AskTool(session({ submitUserReply })).execute("ask-1", { html }, undefined, undefined, {
-			hasUI: true, ui: { formDialog: async () => ({ data: { choice: "sqlite" }, timedOut: true }) }, abort: vi.fn(),
+			hasUI: true,
+			ui: { formDialog: async () => ({ data: { choice: "sqlite" }, timedOut: true }) },
+			abort: vi.fn(),
 		} as unknown as AgentToolContext);
 		expect(submitUserReply).not.toHaveBeenCalled();
 	});

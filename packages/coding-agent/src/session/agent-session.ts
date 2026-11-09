@@ -1137,21 +1137,33 @@ function recoverRestoredAskHtml(input: unknown): string | undefined {
 	if (!isRecord(input) || !Array.isArray(input.questions) || input.questions.length === 0) return undefined;
 	const fields: string[] = [];
 	for (const question of input.questions) {
-		if (!isRecord(question) || typeof question.id !== "string" || typeof question.question !== "string" || (question.options !== undefined && !Array.isArray(question.options))) return undefined;
+		if (
+			!isRecord(question) ||
+			typeof question.id !== "string" ||
+			typeof question.question !== "string" ||
+			(question.options !== undefined && !Array.isArray(question.options))
+		)
+			return undefined;
 		const options = question.options ?? [];
 		const name = Bun.escapeHTML(question.id);
 		const choices: string[] = [];
 		for (const [index, option] of options.entries()) {
 			if (!isRecord(option) || typeof option.label !== "string") return undefined;
 			const label = Bun.escapeHTML(option.label);
-			const description = typeof option.description === "string" ? `<p>${Bun.escapeHTML(option.description)}</p>` : "";
+			const description =
+				typeof option.description === "string" ? `<p>${Bun.escapeHTML(option.description)}</p>` : "";
 			const preview = typeof option.preview === "string" ? `<pre>${Bun.escapeHTML(option.preview)}</pre>` : "";
-			choices.push(`<label><input type="${question.multi === true ? "checkbox" : "radio"}" name="${name}" value="${label}"${question.recommended === index ? " checked" : ""}>${label}</label>${description}${preview}`);
+			choices.push(
+				`<label><input type="${question.multi === true ? "checkbox" : "radio"}" name="${name}" value="${label}"${question.recommended === index ? " checked" : ""}>${label}</label>${description}${preview}`,
+			);
 		}
 		const header = typeof question.header === "string" ? `<legend>${Bun.escapeHTML(question.header)}</legend>` : "";
-		const controls = choices.length === 1
-			? `<label>${Bun.escapeHTML(question.question)}<input name="${name}" value="${Bun.escapeHTML(options[0].label)}"></label>`
-			: choices.length > 1 ? choices.join("") : `<textarea name="${name}"></textarea>`;
+		const controls =
+			choices.length === 1
+				? `<label>${Bun.escapeHTML(question.question)}<input name="${name}" value="${Bun.escapeHTML(options[0].label)}"></label>`
+				: choices.length > 1
+					? choices.join("")
+					: `<textarea name="${name}"></textarea>`;
 		fields.push(`<fieldset>${header}<p>${Bun.escapeHTML(question.question)}</p>${controls}</fieldset>`);
 	}
 	return `<form>${fields.join("")}</form>`;
@@ -1241,28 +1253,30 @@ function findUnansweredAsyncAsks(
 				later.message.toolCallId === result.toolCallId,
 		);
 		if (hasTerminalResult) continue;
-		const unansweredNames = parseHtmlForm(html).fields.filter(field => field.name).map(field => field.name).filter(name => {
-			const answerPrefix = `Answer to ${result.toolCallId} [${name}]:`;
-			return !laterEntries.some(later => {
-				if (later.type !== "message" || later.message.role !== "user") return false;
-				const content = later.message.content;
-				const text =
-					typeof content === "string"
-						? content
-						: content
-								.filter((part): part is TextContent => part.type === "text")
-								.map(part => part.text)
-								.join("\n");
-				return text.includes(answerPrefix);
+		const unansweredNames = parseHtmlForm(html)
+			.fields.filter(field => field.name)
+			.map(field => field.name)
+			.filter(name => {
+				const answerPrefix = `Answer to ${result.toolCallId} [${name}]:`;
+				return !laterEntries.some(later => {
+					if (later.type !== "message" || later.message.role !== "user") return false;
+					const content = later.message.content;
+					const text =
+						typeof content === "string"
+							? content
+							: content
+									.filter((part): part is TextContent => part.type === "text")
+									.map(part => part.text)
+									.join("\n");
+					return text.includes(answerPrefix);
+				});
 			});
-		});
 		if (unansweredNames.length === 0) continue;
 		seenCallIds.add(result.toolCallId);
 		pendingAsks.push({ toolCallId: result.toolCallId, html, unansweredNames });
 	}
 	return { requestId, calls: pendingAsks };
 }
-
 
 export class AgentSession implements SettingsScope, AgentViewSession {
 	/**
@@ -14831,11 +14845,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				for (const call of asyncPending.calls) {
 					const answer = await uiContext.formDialog(call.html, {});
 					if (!answer || answer.timedOut) break;
-					const answers = formAnswers(parseHtmlForm(call.html), answer.data)
-						.filter(item => call.unansweredNames.includes(item.name));
+					const answers = formAnswers(parseHtmlForm(call.html), answer.data).filter(item =>
+						call.unansweredNames.includes(item.name),
+					);
 					this.sessionManager.appendMessage({
 						role: "user",
-						content: answers.map(item => `Answer to ${call.toolCallId} [${item.name}]: ${item.answer}`).join("\n"),
+						content: answers
+							.map(item => `Answer to ${call.toolCallId} [${item.name}]: ${item.answer}`)
+							.join("\n"),
 						timestamp: Date.now(),
 					});
 					answered = true;
@@ -14887,14 +14904,17 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#restoringPendingAsk = true;
 		onPending();
 		try {
-			const tool = new AskTool({
-				cwd: this.sessionManager.getCwd(),
-				hasUI: true,
-				settings: this.settings,
-				getSessionFile: () => this.sessionManager.getSessionFile() ?? null,
-				getSessionSpawns: () => null,
-				getPlanModeState: () => this.getPlanModeState(),
-			}, { interactiveAnswer: true });
+			const tool = new AskTool(
+				{
+					cwd: this.sessionManager.getCwd(),
+					hasUI: true,
+					settings: this.settings,
+					getSessionFile: () => this.sessionManager.getSessionFile() ?? null,
+					getSessionSpawns: () => null,
+					getPlanModeState: () => this.getPlanModeState(),
+				},
+				{ interactiveAnswer: true },
+			);
 			let cancelled = false;
 			for (const call of pending) {
 				let result: AgentToolResult<AskToolDetails>;
