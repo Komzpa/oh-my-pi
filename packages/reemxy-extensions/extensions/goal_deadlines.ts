@@ -729,7 +729,11 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 					throw deadlineGateError("Quote the latest real user message in user_message.", "user_message must quote the latest real user message");
 				const userTime = user && quote && quote.includes(deadlineSdk.formatLocalClock(finalDue * 1_000, timezone));
 				const replacesUserTime = state?.userConstraint && userTime && user!.id !== state.userConstraint.messageId && user!.at >= state.userConstraint.recordedAt;
-				if (state?.userConstraint && finalDue !== state.baselineDeadlineAt && !replacesUserTime && !(userTime && user && user.id === state.userConstraint.messageId && nowSeconds - state.userConstraint.recordedAt <= SAME_MESSAGE_CORRECTION_SECONDS))
+				// Repair a persisted mismatch only when the exact user-bound stage already exists.
+				const repairsStoredBinding = !!state?.userConstraint && !!userTime && user?.id === state.userConstraint.messageId &&
+					state.stages.some(stage => stage.id === "auto-plan-forecast" && stage.deadlineAt === state!.baselineDeadlineAt) &&
+					resolvedStages.every(stage => state!.stages.some(old => old.id === stage.id && old.deadlineAt === stage.deadline_at));
+				if (state?.userConstraint && finalDue !== state.baselineDeadlineAt && !replacesUserTime && !repairsStoredBinding && !(userTime && user && user.id === state.userConstraint.messageId && nowSeconds - state.userConstraint.recordedAt <= SAME_MESSAGE_CORRECTION_SECONDS))
 					throw deadlineGateError("Keep the recorded user deadline.", "The quoted user message does not authorize changing the recorded deadline");
 				// A wrong value set from the SAME user message (arithmetic slip) may be corrected shortly after; a
 				// self-extension still needs the user's own words to contain the new clock time.
@@ -740,7 +744,9 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 					if (finalDue > nowSeconds + SANITY_AHEAD_SECONDS)
 						throw deadlineGateError("Set a deadline within 7 days using local_time.", `deadline ${new Date(finalDue * 1_000).toISOString()} is more than 7 days ahead: this is an epoch arithmetic error. Pass local_time (for example "19:00") with timezone and let the tool compute the epoch.`);
 				}
-				const previous = !replacesUserTime && !correctsSameMessage && (state?.userConstraint || state?.goalId === goalId) ? state : null;
+				// A first explicit user deadline supersedes the inferred plan forecast.
+				const replacesInferredTime = !!state && !state.userConstraint && !!userTime && !!user;
+				const previous = !replacesUserTime && (!correctsSameMessage || repairsStoredBinding) && (state?.userConstraint || state?.goalId === goalId) ? state : null;
 				const previousStages = new Map(previous?.stages.map(stage => [stage.id, stage] as const));
 				const repairedStageIds = new Set<string>();
 				for (const stage of resolvedStages) {
@@ -753,7 +759,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 					throw deadlineGateError(`Keep stage ${truncateMiddleToWidth(stage.id, 28)} fixed or create a new stage id.`, `cannot change deadline for existing stage ${stage.id} on the same goal`);
 				}
 				const stages = [
-					...(previous?.stages.filter(stage => !stageIds.has(stage.id)) ?? []),
+					...(previous?.stages.filter(stage => !stageIds.has(stage.id) && !((replacesInferredTime || repairsStoredBinding) && stage.id === "auto-plan-forecast")) ?? []),
 					...resolvedStages.map(stage => {
 						const old = previousStages.get(stage.id);
 						return {
@@ -771,7 +777,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 				const repairedBaseline = previous?.stages.some(
 					stage => repairedStageIds.has(stage.id) && previous.baselineDeadlineAt === stage.deadlineAt,
 				);
-				const baselineDeadlineAt =
+				const baselineDeadlineAt = replacesInferredTime || repairsStoredBinding ? finalDue :
 					(repairedBaseline && previous?.baselineDeadlineAt !== undefined
 						? previous.baselineDeadlineAt / 1_000
 						: previous?.baselineDeadlineAt) ??

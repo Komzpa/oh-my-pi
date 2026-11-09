@@ -989,6 +989,36 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		expect(result.details.state?.baselineDeadlineAt).toBe(1_792_594_800);
 	});
 
+	test("explicit user deadline replaces an earlier automatic plan forecast", async () => {
+		setSystemTime(NOW);
+		const h = harness("New deadline 19:00");
+		h.branch.push({ type: "custom", customType: STATE_ENTRY, data: {
+			version: 1, goalId: "session-deadline", goalStartedAt: Math.floor(NOW / 1000) - 10000,
+			timezone: DUBAI, active: true, baselineDeadlineAt: Math.floor(NOW / 1000) - 3600,
+			stages: [{ id: "auto-plan-forecast", label: "Forecast", expectedResult: "Finish", deadlineAt: Math.floor(NOW / 1000) - 3600 }],
+		} });
+		h.handlers.get("session_start")?.({}, h.ctx);
+		const result = await h.set({ local_time: "19:00" }, "New deadline 19:00");
+		expect(result.details.state?.baselineDeadlineAt).toBe(Date.parse("2026-10-21T15:00:00Z") / 1000);
+		expect(result.details.state?.userConstraint?.messageId).toBe("u1");
+	});
+
+	test("repairs a stored user deadline bound to the old inferred forecast after restart", async () => {
+		setSystemTime(NOW);
+		const h = harness("New deadline 19:00", NOW - 3600000);
+		const due = Date.parse("2026-10-21T15:00:00Z") / 1000;
+		h.branch.push({ type: "custom", customType: STATE_ENTRY, data: {
+			version: 1, goalId: "session-deadline", goalStartedAt: Math.floor(NOW / 1000) - 10000,
+			timezone: DUBAI, active: true, baselineDeadlineAt: Math.floor(NOW / 1000) - 3600,
+			userConstraint: { messageId: "u1", quote: "New deadline 19:00", recordedAt: Math.floor(NOW / 1000) - 3600 },
+			stages: [{ id: "auto-plan-forecast", label: "Forecast", expectedResult: "Finish", deadlineAt: Math.floor(NOW / 1000) - 3600 },
+				{ id: "final", label: "Final", expectedResult: "Delivered", deadlineAt: due }],
+		} });
+		h.handlers.get("session_start")?.({}, h.ctx);
+		const result = await h.set({ local_time: "19:00" }, "New deadline 19:00");
+		expect(result.details.state?.baselineDeadlineAt).toBe(due);
+	});
+
 	test("deadline normalization accepts frozen params and leaves the caller's stages unchanged", async () => {
 		setSystemTime(NOW);
 		const h = harness();
