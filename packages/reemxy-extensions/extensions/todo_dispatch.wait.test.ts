@@ -14,6 +14,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { execFileSync } from "node:child_process";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch, { noticeDigest, userAbsentText, USER_ABSENT_WRAPUP } from "./todo_dispatch";
+import { waitChainDemands } from "./lead_time_notes";
 
 const todoDispatchStateDir = process.env.OMP_TODO_DISPATCH_STATE_DIR ?? path.join(os.homedir(), ".local", "state", "omp-todo-dispatch");
 
@@ -476,6 +477,40 @@ test("healthy worker telemetry does not wake the chief on a plan tick", async ()
 		expect(h.notices.some(notice => notice.content.includes("problem(s)"))).toBe(true);
 	} finally {
 		h.shutdown();
+		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
+		else process.env.OMP_LANE_UNIT = previousLane;
+	}
+});
+
+test("an unchanged urgent dependency chain wakes the idle chief only once", async () => {
+	const previousLane = process.env.OMP_LANE_UNIT;
+	delete process.env.OMP_LANE_UNIT;
+	let now = Date.now();
+	const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const phases = chainedPlan(3, now);
+	const head = phases[0]!.tasks[0]!;
+	head.status = "pending";
+	head.schedule.owner = undefined;
+	head.schedule.cumulativeReestimateCount = 3;
+	expect(waitChainDemands(phases)).toHaveLength(1);
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	h.ctx.getTodoPhases = () => phases;
+	try {
+		expect(waitChainDemands(getLatestTodoPhasesFromEntries(h.ctx.sessionManager.getBranch()))).toHaveLength(1);
+		await h.tick();
+		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(1);
+		now += 60_000;
+		await h.tick();
+		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(1);
+		phases[0]!.tasks[2]!.schedule.dependencies = ["Row 1"];
+		await h.tick();
+		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(2);
+		h.setRecent([{ id: "worker-b", agentId: "worker-b", type: "task", status: "completed", label: "New result", startTime: now - 1_000 }]);
+		await h.tick();
+		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(3);
+	} finally {
+		h.shutdown();
+		nowSpy.mockRestore();
 		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
 		else process.env.OMP_LANE_UNIT = previousLane;
 	}

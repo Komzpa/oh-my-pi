@@ -6471,9 +6471,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         userMessageEpoch,
         (ctx.getAsyncJobSnapshot()?.recent ?? []).filter((job) => job.type === "task").map((job) => `${job.id}:${job.status}`),
         sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never).flatMap((phase) => phase.tasks.map((task) => `${task.content}:${task.status}`)),
+        urgent?.key ?? null,
       ]);
       const unchanged = key === lastIdlePlanCheck && eventStamp === lastPlanEventStamp;
-      if (pendingSizingNoticeIds.length === 0 && unchanged && !urgent) return planTrace(ctx, "same-problems-already-delivered");
+      if (pendingSizingNoticeIds.length === 0 && unchanged) return planTrace(ctx, "same-problems-already-delivered");
       lastPlanEventStamp = eventStamp;
       if (!unchanged) lastIdlePlanCheckAt = now;
       lastIdlePlanCheck = key;
