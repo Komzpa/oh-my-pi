@@ -379,7 +379,7 @@ export async function readGitIntegrationState(cwd: string, now: number, env: Nod
   const configured = Number(await git("config", "--get", "omp.unpushedThresholdMinutes"));
   state.pushThresholdMs = configured > 0 && Number.isFinite(configured) ? configured * 60_000 : STALE_PUSH_MS;
   if (!state.pushBranch || !state.pushRemote) return state;
-  const heads = await git("ls-remote", "--heads", state.pushRemote);
+  const heads = await git("ls-remote", "--heads", state.pushRemote, `refs/heads/${state.pushBranch}`);
   // Unknown is not published. Preserve the row on network/authentication failures.
   if (heads === null) return state;
   const advertised = new Set<string>();
@@ -390,7 +390,7 @@ export async function readGitIntegrationState(cwd: string, now: number, env: Nod
   const checked = advertised.size ? await gitInput(["cat-file", "--batch-check=%(objectname) %(objecttype)"], [...advertised].join("\n") + "\n") : "";
   if (checked === null) return state;
   const live = checked.split("\n").flatMap(line => line.endsWith(" commit") ? [line.split(" ")[0]] : []);
-  // Only live heads: stale tracking refs can hide work after a remote force-push.
+  // Only the selected live ref proves delivery; another remote branch does not.
   const unpushed = await git("log", "--format=%ct", head, "--not", ...live);
   if (unpushed !== null) {
     const times = unpushed.split("\n").filter(Boolean).map(Number);
@@ -4534,7 +4534,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         if (!isLikelyGitPrOwnerJob(candidate)) return [];
         const owner = job.agentId ?? job.id;
         const row = taskByOwner.get(owner) ?? taskByOwner.get(job.id);
-        const key = row ? checkoutKeyFromResources(row.schedule?.resources, ctx.cwd) : checkoutKeyFromTaskItem({ name: owner, task: job.label ?? "" }, ctx.cwd);
+        const key = row ? checkoutKeyFromResources(row.schedule?.resources?.map(resource => resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "")), ctx.cwd) : checkoutKeyFromTaskItem({ name: owner, task: job.label ?? "" }, ctx.cwd);
         return [{ owner, key }];
       });
     const claimed = new Map<string, string>();
@@ -4826,7 +4826,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const remotePublished = published === true && sprintState.deliveryCheckpointPublished === false;
     if (
       sprintState.deliveryCheckpointActive !== true ||
-      headChanged ||
+      (headChanged && published === true) ||
       remotePublished ||
       typeof sprintState.deliveryCheckpointAt !== "number"
     ) {
@@ -4840,12 +4840,19 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       persistSprintState();
       return;
     }
+    if (headChanged) {
+      sprintState = { ...sprintState, deliveryCheckpointHead: state.head, deliveryCheckpointPublished: published };
+      persistSprintState();
+      return;
+    }
     if (published !== undefined && sprintState.deliveryCheckpointPublished !== published) {
       sprintState = { ...sprintState, deliveryCheckpointPublished: published };
       persistSprintState();
     }
   };
-  const deliveryCheckpointText = (intervals: number, state: GitIntegrationState) => intervals >= 2
+  const deliveryCheckpointText = (intervals: number, state: GitIntegrationState) => (state.unpushed ?? 0) > 0
+    ? `DELIVERY CHECKPOINT: ${state.unpushed} commit(s) are not confirmed on ${state.pushRemote}/${state.pushBranch} after ${intervals} fixed 15-minute interval(s). Run required gates and, only if authorized, push the prepared result and read back that exact remote ref. Preserve any overlapping writer. ${ORDER}`
+    : intervals >= 2
     ? `SECOND CONSECUTIVE ARTIFACT-FREE CHECKPOINT: checkout HEAD ${state.head} has not changed for ${intervals} fixed 15-minute wall-clock intervals. Push and read back any existing commit, then stop/release the current method or worker and split/reassign the smallest shippable slice. A changed ETA/PERT, status message or retrospective does not reset this clock. ${ORDER}`
     : `DELIVERY CHECKPOINT: checkout HEAD ${state.head} did not change during one fixed 15-minute wall-clock interval. Commit the smallest coherent slice now, or push and read back an existing commit; if neither is possible, narrow the method immediately. A changed ETA/PERT or status message does not reset this clock. ${ORDER}`;
   const refreshPush = async (ctx: ExtensionContext, force = false) => {
@@ -4891,7 +4898,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       }
     }
     const phases = todoPhases(ctx);
-    const next = reconcilePushRow(phases, state, ctx.cwd, Date.now());
+    const next = reconcilePushRow(phases, checkpointIntervals > 0 && state.unpushed > 0
+      ? { ...state, pushThresholdMs: 0 } : state, ctx.cwd, Date.now());
     if (next !== phases) {
       // Use the owning session's canonical live-cache + durable-entry writer.
       session.commitTodoPhases(next);
@@ -5355,7 +5363,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // The skipped-call text omp shows the model says only "the pending action"; the reminder
     // reaches just the forced request. Keep the live demand in every request's context instead.
     const demandProvider = (ctx: ExtensionContext) => {
-      if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return;
       if (gateSwitchedOff(ctx)) return gateTrace(ctx, "switched-off");
       dispatchGateBaseline = null;
       pendingIdleResumeOwner = null;
@@ -5374,6 +5381,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const integration = integrationRequirement(ctx, !decision.goalPaused, now);
         if (integration) return integration;
       }
+      if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return;
       const replan = replanRequirement(ctx, decision, now);
       if (replan) return replan;
       if (
@@ -6403,7 +6411,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     lastPlanTickAt = Date.now();
     planTickCount += 1;
     try {
-      if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return planTrace(ctx, "user-deadline-missed");
       // ctx.hasPendingMessages() is not a guard: the notice is an aside, which the queue delivers in
       // order, and a flag stuck true silenced the ticker for a whole session.
       if (singleWriterLane) return planTrace(ctx, "single-writer-lane");
@@ -6411,6 +6418,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (!isMain(ctx)) return planTrace(ctx, "not-main");
       if (!pi.getActiveTools().includes("task")) return planTrace(ctx, "task-tool-inactive");
       if (!gateSwitchedOff(ctx)) await refreshPush(ctx);
+      if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return planTrace(ctx, "user-deadline-missed");
       await refreshLiveWorkerModels(ctx);
       if (!gateSwitchedOff(ctx)) absenceTick(ctx, Date.now());
       let check = await planCheck(ctx, [], true);

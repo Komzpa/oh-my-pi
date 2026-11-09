@@ -56,7 +56,13 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 			customType: SPRINT_STATE_ENTRY_TYPE,
 			data: { version: 1, goalWorkStartedAt: realNow - 3 * 24 * 60 * 60_000 },
 		}];
+		branch.push({ type: "custom", customType: "reemxy-goal-deadlines", data: {
+			version: 1, goalId: "overdue", goalStartedAt: Math.floor(realNow / 1000) - 7200,
+			timezone: "UTC", active: true, stages: [], baselineDeadlineAt: Math.floor(realNow / 1000) - 60,
+			userConstraint: { messageId: "u1", quote: "deliver by then", recordedAt: Math.floor(realNow / 1000) - 7200 },
+		} });
 		const notices: unknown[] = [];
+		let tick;
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 		let provider: ((ctx: ExtensionContext) => unknown) | undefined;
 		await todoDispatch({
@@ -86,7 +92,7 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 			getTaskMaxConcurrency: () => 4,
 			isIdle: () => false,
 			hasPendingMessages: () => false,
-			setInterval: () => ({}),
+			setInterval: (handler) => { tick = handler; return {}; },
 			setTimeout: () => ({}),
 			clearTimer: () => undefined,
 		} as unknown as ExtensionContext;
@@ -109,7 +115,7 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 				updatedAt: now + DELIVERY_CHECKPOINT_MS,
 			};
 			now += DELIVERY_CHECKPOINT_MS;
-			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			await tick();
 			const first = JSON.stringify(provider?.(ctx) ?? {});
 			expect(first).toContain("DELIVERY CHECKPOINT");
 			expect(first).toContain("fixed 15-minute wall-clock interval");
@@ -136,7 +142,28 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 			git(work, id, "add", "slice");
 			git(work, id, "commit", "-q", "-m", "checkpoint slice");
 			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
-			expect(JSON.stringify(provider?.(ctx) ?? {})).not.toMatch(/DELIVERY CHECKPOINT|ARTIFACT-FREE CHECKPOINT/);
+			expect(JSON.stringify(provider?.(ctx) ?? {})).toContain("not confirmed on origin/");
+			expect(phases.flatMap(phase => phase.tasks).some(row => row.content.startsWith("Push: run project gates and push origin/"))).toBe(true);
+			// No authorization is in this session: neither a row nor a reminder may push by itself.
+			const target = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: work, encoding: "utf8" }).trim();
+			const remoteHead = () => execFileSync("git", ["--git-dir", remote, "rev-parse", `refs/heads/${target}`], { encoding: "utf8" }).trim();
+			const base = execFileSync("git", ["rev-parse", "HEAD~1"], { cwd: work, encoding: "utf8" }).trim();
+			expect(remoteHead()).toBe(base);
+			await tick();
+			expect(remoteHead()).toBe(base);
+			expect(JSON.stringify(provider?.(ctx))).toContain("only if authorized");
+
+			// A checkpoint must not dispatch a second owner into an occupied checkout.
+			const slice = phases.flatMap(phase => phase.tasks).find(row => row.content === "Build the smallest shippable slice");
+			slice.schedule.owner = "LandActiveSlice";
+			ctx.getAsyncJobSnapshot = () => ({ running: [{ id: "LandActiveSlice", agentId: "LandActiveSlice", type: "task", status: "running", agentProfile: "git-pr-owner", label: slice.content }], recent: [], nonJobAgents: [] });
+			const conflict = await handlers.get("tool_call")!({ toolName: "task", input: { tasks: [{ name: "PublishSlice", agent: "git-pr-owner", task: `Publish slice in ${work}`, cwd: work }] } }, ctx);
+			expect(conflict?.block).toBe(true);
+			expect(conflict?.reason).toContain("already has live git-pr-owner");
+			const other = join(dir, "independent");
+			const independent = await handlers.get("tool_call")!({ toolName: "task", input: { tasks: [{ name: "PublishOtherSlice", agent: "git-pr-owner", task: `Publish slice in ${other}`, cwd: other }] } }, ctx);
+			expect(independent?.block).not.toBe(true);
+			ctx.getAsyncJobSnapshot = () => ({ running: [], recent: [], nonJobAgents: [] });
 
 			now += DELIVERY_CHECKPOINT_MS / 2;
 			git(work, id, "push", "-q", "origin", "HEAD");
@@ -146,7 +173,7 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 			expect(JSON.stringify(provider?.(ctx) ?? {})).not.toMatch(/DELIVERY CHECKPOINT|ARTIFACT-FREE CHECKPOINT/);
 
 			// A read-only audit may inspect this checkout, but it is not delivery work and cannot start the artifact clock.
-			phases[0].tasks[0].schedule.readOnly = true;
+			phases.flatMap(phase => phase.tasks).find(row => row.content === "Build the smallest shippable slice").schedule.readOnly = true;
 			now += DELIVERY_CHECKPOINT_MS * 2;
 			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 			expect(JSON.stringify(provider?.(ctx) ?? {})).not.toMatch(/DELIVERY CHECKPOINT|ARTIFACT-FREE CHECKPOINT/);
@@ -258,8 +285,10 @@ test("live heads create one notice and priority push row, then a worker push cle
 		const worker = join(dir, "worker");
 		git(work, id, "worktree", "add", "--detach", worker, "HEAD");
 		git(worker, id, "-c", "remote.origin.fetch=", "push", "-q", "origin", "HEAD:refs/heads/worker-published");
-		// A new remote branch deliberately leaves origin/<lead branch> stale.
-		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBe(0);
+		// A different branch cannot prove the selected delivery branch was pushed.
+		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBe(1);
+		const branchName = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: work, encoding: "utf8" }).trim();
+		git(worker, id, "push", "-q", "origin", `HEAD:refs/heads/${branchName}`);
 		await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 		const cleared = await handlers.get("tool_result")!({ toolName: "read", input: {}, content: [{ type: "text", text: "receipt" }] }, ctx);
 		expect(cleared?.content?.at(-1)?.text ?? "").not.toContain("FIX NOW:");
@@ -268,6 +297,7 @@ test("live heads create one notice and priority push row, then a worker push cle
 		expect(notices.filter(message => message.customType === "todo-unpushed")).toHaveLength(1);
 		git(work, id, "config", "omp.unpushedThresholdMinutes", "120");
 		git(work, id, "--git-dir", remote, "update-ref", "-d", "refs/heads/worker-published");
+		git(work, id, "--git-dir", remote, "update-ref", `refs/heads/${branchName}`, "HEAD~1");
 		const below = await readGitIntegrationState(work, Date.now());
 		expect(below?.unpushed).toBe(1);
 		expect(below?.pushThresholdMs).toBe(120 * 60_000);
@@ -290,4 +320,24 @@ test("live heads create one notice and priority push row, then a worker push cle
 		AgentRegistry.global().unregister("push-fixture");
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("publication is confirmed only on the selected remote branch", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-target-"));
+	try {
+		const remote = join(dir, "remote.git"), work = join(dir, "work");
+		const id = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+		execFileSync("git", ["init", "-q", "--bare", remote]);
+		execFileSync("git", ["clone", "-q", remote, work], { stdio: "ignore" });
+		writeFileSync(join(work, "base"), "base");
+		git(work, id, "add", "base"); git(work, id, "commit", "-q", "-m", "base");
+		git(work, id, "config", "omp.pushBranch", "delivery");
+		git(work, id, "push", "-q", "origin", "HEAD:refs/heads/delivery");
+		writeFileSync(join(work, "next"), "next");
+		git(work, id, "add", "next"); git(work, id, "commit", "-q", "-m", "next");
+		git(work, id, "push", "-q", "origin", "HEAD:refs/heads/unrelated");
+		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBe(1);
+		git(work, id, "push", "-q", "origin", "HEAD:refs/heads/delivery");
+		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBe(0);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
