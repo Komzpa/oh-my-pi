@@ -1453,8 +1453,8 @@ function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
 			}
 			seenTasks.add(content);
 			const task: TodoItem = { content, status: "pending" };
-		bindArtifactCwd(task);
-		tasks.push(task);
+			bindArtifactCwd(task);
+			tasks.push(task);
 		}
 		phases.push({ name, tasks });
 	}
