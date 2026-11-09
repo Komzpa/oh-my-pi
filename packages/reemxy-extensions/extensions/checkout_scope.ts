@@ -106,3 +106,7 @@ export function checkoutScopesOverlap(left: string[], right: string[]): boolean 
 export function readOnlyRow(row: { schedule?: { readOnly?: boolean; agentProfile?: string } }): boolean {
 	return row.schedule?.readOnly === true || isReadOnlyWorkerRole(row.schedule?.agentProfile ?? "");
 }
+
+export function readOnlyClaim(row: { schedule?: { readOnly?: boolean; owner?: string; ownerReadOnly?: { owner: string; readOnly: boolean }; agentProfile?: string } }): boolean {
+	return (row.schedule?.ownerReadOnly?.owner === row.schedule?.owner && row.schedule?.ownerReadOnly?.readOnly === true) || readOnlyRow(row);
+}

@@ -23,6 +23,7 @@ import {
 } from "./dispatch_preflight";
 import { visionToolRefusal, visionResultRefusal } from "./vision_gate";
 import {
+	readOnlyClaim,
 	readOnlyRow,
 	checkoutScopesFromResources,
 	checkoutScopesOverlap,
@@ -524,7 +525,7 @@ export function admitAssignedResources(
 			(other.schedule?.executor?.outcome !== undefined &&
 				(!other.schedule.owner || other.schedule.owner === other.schedule.executor.workerId)) ||
 			readOnly ||
-			readOnlyRow(other) ||
+			readOnlyClaim(other) ||
 			(other.status === "pending" && !other.schedule?.owner && !other.schedule?.executor?.workerId)
 		)
 			continue;
@@ -540,11 +541,12 @@ export function admitAssignedResources(
 		}
 	}
 	const owner = stringValue(event.spawnKey) ?? row.schedule?.owner;
+	const ownerReadOnly = owner ? { owner, readOnly } : undefined;
 	if (
 		persist && (JSON.stringify(resources) !== JSON.stringify(row.schedule?.resources ?? []) ||
 			owner !== row.schedule?.owner ||
-			readOnly !== row.schedule?.readOnly) &&
-		ctx.updateTodoSchedule?.(row.content, { resources, owner, readOnly }) !== true
+			JSON.stringify(ownerReadOnly) !== JSON.stringify(row.schedule?.ownerReadOnly)) &&
+		ctx.updateTodoSchedule?.(row.content, { resources, owner, ownerReadOnly }) !== true
 	)
 		return "Could not persist assigned row resources; retry dispatch after updating the row.";
 }

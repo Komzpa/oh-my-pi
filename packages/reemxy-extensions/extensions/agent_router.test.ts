@@ -6,12 +6,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { readOnlyClaim } from "./checkout_scope";
 import {
 	sessionContextEntryMetadata,
 	type SessionContextEntryMetadata,
 } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import agentRouter, {
+	admitAssignedResources,
 	countLiveWorkerModels,
 	createRouterState,
 	lanePathsFromText,
@@ -91,6 +93,43 @@ function toolCallHandler(): (event: unknown, ctx: ExtensionContext) => unknown {
 }
 
 describe("agent router", () => {
+	test("a reader's claim does not make the next writer read-only", () => {
+		const row = { content: "Repair a module", status: "pending", schedule: { resources: [] } };
+		const context = ctx({
+			getTodoPhases: () => [{ name: "Work", tasks: [row] }],
+			updateTodoSchedule: (_task, patch) => {
+				row.schedule = { ...row.schedule, ...patch };
+				return true;
+			},
+		});
+		expect(admitAssignedResources({ row: row.content, spawnKey: "reader", readOnly: true }, context)).toBeUndefined();
+		expect(row.schedule.readOnly).toBeUndefined();
+		expect(row.schedule.ownerReadOnly).toEqual({ owner: "reader", readOnly: true });
+		expect(admitAssignedResources({ row: row.content, spawnKey: "writer", readOnly: false }, context)).toBeUndefined();
+		expect(row.schedule.ownerReadOnly).toEqual({ owner: "writer", readOnly: false });
+		expect(row.schedule.readOnly).toBeUndefined();
+	});
+
+	test("explicit read-only row remains restricted after a writer is assigned", () => {
+		const row = { content: "Review a module", status: "pending", schedule: { resources: [], readOnly: true } };
+		const context = ctx({
+			getTodoPhases: () => [{ name: "Work", tasks: [row] }],
+			updateTodoSchedule: (_task, patch) => {
+				row.schedule = { ...row.schedule, ...patch };
+				return true;
+			},
+		});
+		expect(admitAssignedResources({ row: row.content, spawnKey: "writer", readOnly: false }, context)).toBeUndefined();
+		expect(row.schedule.readOnly).toBe(true);
+		expect(row.schedule.ownerReadOnly).toEqual({ owner: "writer", readOnly: true });
+	});
+
+	test("a stale reader claim cannot make a replacement writer non-exclusive", () => {
+		const schedule = { owner: "reader", ownerReadOnly: { owner: "reader", readOnly: true } };
+		expect(readOnlyClaim({ schedule })).toBe(true);
+		schedule.owner = "writer";
+		expect(readOnlyClaim({ schedule })).toBe(false);
+	});
 	test("writes spawn JSONL with requested stats fields", async () => {
 		const { dir, file } = tempStateFile();
 		try {

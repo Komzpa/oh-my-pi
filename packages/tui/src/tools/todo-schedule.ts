@@ -78,6 +78,8 @@ export interface TodoSchedule {
 	resources?: string[];
 	/** Read claims do not exclude writers; reads may observe concurrent changes. */
 	readOnly?: boolean;
+	/** Mode of the current owner's resource claim, independent of the row policy. */
+	ownerReadOnly?: { owner: string; readOnly: boolean };
 	estimate?: TodoEstimate;
 	/** Immutable first accepted estimate for session calibration and original promise. */
 	firstEstimate?: TodoEstimate;
@@ -1045,7 +1047,14 @@ function canStart(node: PlanNode, active: readonly { node: PlanNode }[]): boolea
 	for (const running of active) {
 		const other = running.node;
 		if (owner !== undefined && owner === other.schedule?.owner) return false;
-		if (resources.length === 0 || node.schedule?.readOnly || other.schedule?.readOnly) continue;
+		if (
+			resources.length === 0 ||
+			node.schedule?.readOnly ||
+			(node.schedule?.ownerReadOnly?.owner === node.schedule?.owner && node.schedule?.ownerReadOnly?.readOnly) ||
+			other.schedule?.readOnly ||
+			(other.schedule?.ownerReadOnly?.owner === other.schedule?.owner && other.schedule?.ownerReadOnly?.readOnly)
+		)
+			continue;
 		const held = Array.isArray(other.schedule?.resources) ? other.schedule.resources : [];
 		if (resources.some(resource => held.includes(resource))) return false;
 	}

@@ -148,6 +148,28 @@ afterEach(() => {
 });
 
 describe("structured subagent primitive", () => {
+	it("grants a writer its edit tools after a previous reader's claim", async () => {
+		mockDiscovery({ ...AGENT, tools: ["read", "bash", "write", "edit"] });
+		const parent = session();
+		parent.getTodoPhases = () => [
+			{
+				name: "Work",
+				tasks: [
+					{
+						content: "Repair",
+						status: "pending",
+						schedule: { owner: "reader", ownerReadOnly: { owner: "reader", readOnly: true } },
+					},
+				],
+			},
+		];
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({ session: parent, assignment: "Repair: update the module" }),
+		);
+		expect(policy.effectiveAgent.tools).toContain("edit");
+		expect(policy.effectiveAgent.readOnly).not.toBe(true);
+	});
+
 	it("lets a read-only QA row execute commands without granting edits or writer claims", async () => {
 		mockDiscovery({ ...AGENT, tools: ["read", "bash", "browser", "write", "edit", "ast_edit", "task"], spawns: "*" });
 		const parent = session();

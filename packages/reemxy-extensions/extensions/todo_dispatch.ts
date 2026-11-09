@@ -51,7 +51,7 @@ import riskReplanInstructions from "./risk-replan.md" with { type: "text" };
 import deadlineMissInstructions from "./deadline-miss.md" with { type: "text" };
 import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { assignedResourceRefusals, countLiveWorkerModels } from "./agent_router";
-import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey } from "./checkout_scope";
+import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey, readOnlyClaim } from "./checkout_scope";
 import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
 import { planChurnRows, actionableChurnRows, unfinishedDependencyChains, planSlipMinutes, appendTimedNote, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
 import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
@@ -4793,7 +4793,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
   };
   const rowOwnsCheckout = (ctx: ExtensionContext, row: TaskRow) =>
-    row.schedule?.readOnly !== true &&
+    !readOnlyClaim(row) &&
     (row.content.startsWith("Push: run project gates and push ") ||
       row.schedule?.resources?.some(resource => {
         const target = resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "");

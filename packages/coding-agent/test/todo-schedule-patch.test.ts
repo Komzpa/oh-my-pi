@@ -152,6 +152,37 @@ it("resume preserves explicitly cleared annotation fields across JSON persistenc
 	expect(phases[0]!.tasks[0]!.schedule?.visibleAt).toBe(1);
 });
 
+it("resume preserves and replaces the current worker's read-only claim", () => {
+	const phases: TodoPhase[] = [{ name: "Work", tasks: [{ content: "Deliver", status: "pending", schedule: {} }] }];
+	const reader = buildTodoSchedulePatchEdit(
+		"Deliver",
+		{
+			owner: "reader",
+			ownerReadOnly: { owner: "reader", readOnly: true },
+		},
+		1,
+	);
+	const writer = buildTodoSchedulePatchEdit(
+		"Deliver",
+		{
+			owner: "writer",
+			ownerReadOnly: { owner: "writer", readOnly: false },
+		},
+		2,
+	);
+	const entries = JSON.parse(
+		JSON.stringify([
+			{ type: "custom", customType: USER_TODO_EDIT_CUSTOM_TYPE, data: { phases } },
+			{ type: "custom", customType: USER_TODO_EDIT_CUSTOM_TYPE, data: { edit: reader } },
+			{ type: "custom", customType: USER_TODO_EDIT_CUSTOM_TYPE, data: { edit: writer } },
+		]),
+	) as SessionEntry[];
+	const restored = getLatestTodoPhasesFromEntries(entries)[0]!.tasks[0]!.schedule!;
+	expect(restored.owner).toBe("writer");
+	expect(restored.ownerReadOnly).toEqual({ owner: "writer", readOnly: false });
+	expect(restored.readOnly).toBeUndefined();
+});
+
 it("resource patch reopens a previously auto-audited row while preserving its old verdict", () => {
 	const a = "a1".repeat(20),
 		b = "b2".repeat(20);
