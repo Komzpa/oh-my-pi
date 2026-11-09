@@ -2318,8 +2318,8 @@ export function todoArtifactGitBinding(task: {
 /** Use the explicitly bound delivery repository before the session's checkout. */
 export function todoArtifactRepository(task: { artifactCwd?: string; schedule?: TodoSchedule }, cwd: string): string {
 	return (
-		task.artifactCwd ??
 		todoArtifactGitBinding(task)?.repoPath ??
+		task.artifactCwd ??
 		task.schedule?.executor?.gitCommits?.[0]?.repoPath ??
 		cwd
 	);

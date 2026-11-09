@@ -654,7 +654,7 @@ test("Cooling late corrected yield supersedes omitted only within its unchanged 
 
 test("audits the repository bound by an exact git resource instead of lead cwd", () => {
 	const sha = "a".repeat(40);
-	const row = { content: "Inspect delivery", status: "in_progress", schedule: {
+	const row = { content: "Inspect delivery", status: "in_progress", artifactCwd: "/work/lead", schedule: {
 		resources: [`git:/work/delivery@${sha}`],
 		executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
 	} };
