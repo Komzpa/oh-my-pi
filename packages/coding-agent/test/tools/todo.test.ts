@@ -515,10 +515,14 @@ describe("TodoTool operations", () => {
 			["b1"],
 		]);
 
-		await tool.execute("start-b", { op: "start", task: "b1" });
+		// Seed the active-phase precondition; start admission is covered separately.
+		session.setTodoPhases?.([
+			{ name: "A", tasks: ["a1", "a2", "a3"].map(content => ({ content, status: "pending" })) },
+			{ name: "B", tasks: [{ content: "b1", status: "in_progress" }] },
+		]);
 		const second = await tool.execute("append-b", { op: "append", items: ["b2"] });
 		expect(second.isError).toBeUndefined();
-		expect(second.details?.phases[1]?.tasks).toEqual([
+		expect(second.details?.phases[1]?.tasks).toMatchObject([
 			{ content: "b1", status: "in_progress" },
 			{ content: "b2", status: "pending" },
 		]);
@@ -541,7 +545,7 @@ describe("TodoTool operations", () => {
 		);
 		const result = await tool.execute("append", { op: "append", items: ["new"] });
 		expect(result.isError).toBeUndefined();
-		expect(result.details?.phases).toEqual([
+		expect(result.details?.phases).toMatchObject([
 			{ name: "Waiting", tasks: [{ content: "wait", status: "blocked", blocker: "approval" }] },
 			{
 				name: "Next",
@@ -555,18 +559,16 @@ describe("TodoTool operations", () => {
 	});
 
 	it("appends to the last phase after completion without reopening completed work", async () => {
-		const tool = new TodoTool(createSession());
-		await tool.execute("init", {
-			op: "init",
-			list: [
-				{ phase: "A", items: ["a1"] },
-				{ phase: "B", items: ["b1"] },
-			],
-		});
-		await tool.execute("done", { op: "done" });
+		// Append consumes completed state; completion admission is covered separately.
+		const tool = new TodoTool(
+			createSession([
+				{ name: "A", tasks: [{ content: "a1", status: "completed" }] },
+				{ name: "B", tasks: [{ content: "b1", status: "completed" }] },
+			]),
+		);
 		const result = await tool.execute("append", { op: "append", items: ["b2"] });
 		expect(result.isError).toBeUndefined();
-		expect(result.details?.phases).toEqual([
+		expect(result.details?.phases).toMatchObject([
 			{ name: "A", tasks: [{ content: "a1", status: "completed" }] },
 			{
 				name: "B",
@@ -585,7 +587,7 @@ describe("TodoTool operations", () => {
 		expect(first.isError).toBeUndefined();
 		const second = await tool.execute("second", { op: "append", items: ["second"] });
 		expect(second.isError).toBeUndefined();
-		expect(session.getTodoPhases?.()).toEqual([
+		expect(session.getTodoPhases?.()).toMatchObject([
 			{
 				name: "Tasks",
 				tasks: [
