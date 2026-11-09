@@ -23,7 +23,7 @@ async function tick(label: string): Promise<void> {
 	}, 1);
 	const bytes = readBytes();
 	const start = performance.now();
-	const found = await new FileSessionStorage().hasAssistantTurn(file);
+	const found = await new FileSessionStorage().scanAssistantTurn(file);
 	const elapsedMs = performance.now() - start;
 	const read = readBytes() - bytes;
 	await Bun.sleep(2);

@@ -16,24 +16,30 @@ it.skipIf(process.platform !== "linux")(
 		const user = `${JSON.stringify({ type: "message", message: { role: "user", content: "x".repeat(8192) } })}\r\n`;
 		try {
 			await Bun.write(file, user.repeat(1024));
-			expect(await new FileSessionStorage().hasAssistantTurn(file)).toBe(false);
+			expect(await new FileSessionStorage().scanAssistantTurn(file)).toBe(false);
 			fs.appendFileSync(file, user);
 			const before = readBytes();
-			expect(await new FileSessionStorage().hasAssistantTurn(file)).toBe(false);
+			expect(await new FileSessionStorage().scanAssistantTurn(file)).toBe(false);
 			expect(readBytes() - before).toBeLessThan(256 * 1024);
 			fs.appendFileSync(file, '{"type":"message","message":{"role":"assis');
-			expect(await new FileSessionStorage().hasAssistantTurn(file)).toBe(false);
+			expect(await new FileSessionStorage().scanAssistantTurn(file)).toBe(false);
 			fs.appendFileSync(file, 'tant","content":[]}}\n');
-			expect(await new FileSessionStorage().hasAssistantTurn(file)).toBe(true);
+			expect(await new FileSessionStorage().scanAssistantTurn(file)).toBe(true);
 			fs.appendFileSync(file, user);
 			const positiveBefore = readBytes();
-			expect(await new FileSessionStorage().hasAssistantTurn(file)).toBe(true);
+			expect(await new FileSessionStorage().scanAssistantTurn(file)).toBe(true);
 			expect(readBytes() - positiveBefore).toBeLessThan(256 * 1024);
+			const seen: string[] = [];
+			await new FileSessionStorage().scanLines(file, line => {
+				seen.push(line);
+				return seen.length === 2;
+			});
+			expect(seen).toEqual([user.trimEnd(), user.trimEnd()]);
 			await Bun.write(path.join(dir, "replacement"), user);
 			fs.renameSync(path.join(dir, "replacement"), file);
-			expect(await new FileSessionStorage().hasAssistantTurn(file)).toBe(false);
+			expect(await new FileSessionStorage().scanAssistantTurn(file)).toBe(false);
 			await Bun.write(file, "{}\n");
-			expect(await new FileSessionStorage().hasAssistantTurn(file)).toBe(false);
+			expect(await new FileSessionStorage().scanAssistantTurn(file)).toBe(false);
 		} finally {
 			fs.rmSync(dir, { recursive: true, force: true });
 		}
