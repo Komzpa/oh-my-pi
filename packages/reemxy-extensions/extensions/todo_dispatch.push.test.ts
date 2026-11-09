@@ -374,3 +374,24 @@ test("target descendant confirms inclusion, not exact HEAD identity", async () =
 		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBe(0);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("a remote tip absent from the local object database leaves publication unknown until fetched", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-unknown-tip-"));
+	try {
+		const remote = join(dir, "remote.git"), work = join(dir, "work"), other = join(dir, "other");
+		const id = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+		execFileSync("git", ["init", "-q", "--bare", remote]);
+		execFileSync("git", ["clone", "-q", remote, work], { stdio: "ignore" });
+		writeFileSync(join(work, "base"), "base");
+		git(work, id, "add", "base"); git(work, id, "commit", "-q", "-m", "base");
+		git(work, id, "config", "omp.pushBranch", "delivery");
+		git(work, id, "push", "-q", "origin", "HEAD:refs/heads/delivery");
+		execFileSync("git", ["clone", "-q", "--branch", "delivery", remote, other], { stdio: "ignore" });
+		writeFileSync(join(other, "next"), "next");
+		git(other, id, "add", "next"); git(other, id, "commit", "-q", "-m", "next");
+		git(other, id, "push", "-q", "origin", "HEAD:refs/heads/delivery");
+		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBeUndefined();
+		git(work, id, "fetch", "-q", "origin", "refs/heads/delivery");
+		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBe(0);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});

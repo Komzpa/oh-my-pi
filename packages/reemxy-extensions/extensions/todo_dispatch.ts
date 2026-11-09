@@ -390,6 +390,8 @@ export async function readGitIntegrationState(cwd: string, now: number, env: Nod
   const checked = advertised.size ? await gitInput(["cat-file", "--batch-check=%(objectname) %(objecttype)"], [...advertised].join("\n") + "\n") : "";
   if (checked === null) return state;
   const live = checked.split("\n").flatMap(line => line.endsWith(" commit") ? [line.split(" ")[0]] : []);
+  // An advertised tip missing locally has unknown ancestry, not an empty remote history.
+  if (live.length !== advertised.size) return state;
   // Only the selected live ref proves delivery; another remote branch does not.
   const unpushed = await git("log", "--format=%ct", head, "--not", ...live);
   if (unpushed !== null) {
