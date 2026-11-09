@@ -340,7 +340,7 @@ export function reconcilePushRow(phases: TodoPhase[], state: GitIntegrationState
   const pending = { content: title, status: "pending", schedule: {
     agentProfile: "git-pr-owner", dependencies: [], resources: [`checkout:${cwd}`],
     estimate: { optimisticSeconds: 60, likelySeconds: 300, pessimisticSeconds: 900,
-      confidence: "low", basis: "Run required project gates, then push and read back the PR branch", updatedAt: now },
+      confidence: "low", basis: "Run required project gates; only if authorized and ready, push and read back the target ref", updatedAt: now },
   } };
   // First phase / first row makes publication visible ahead of ordinary feature work.
   const rest = phases.map(phase => ({ ...phase, tasks: phase.tasks.filter(task => task !== row) }));
@@ -4850,11 +4850,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       persistSprintState();
     }
   };
-  const deliveryCheckpointText = (intervals: number, state: GitIntegrationState) => (state.unpushed ?? 0) > 0
-    ? `DELIVERY CHECKPOINT: ${state.unpushed} commit(s) are not confirmed on ${state.pushRemote}/${state.pushBranch} after ${intervals} fixed 15-minute interval(s). Run required gates and, only if authorized, push the prepared result and read back that exact remote ref. Preserve any overlapping writer. ${ORDER}`
+  const deliveryCheckpointText = (intervals: number, state: GitIntegrationState) => state.unpushed === undefined
+    ? `DELIVERY CHECKPOINT: cannot verify publication on ${state.pushRemote ?? "the selected remote"}/${state.pushBranch ?? "branch"} after ${intervals} fixed 15-minute interval(s). Restore readback, preserve any overlapping writer, and only if authorized and ready publish the prepared result. ${ORDER}`
+    : state.unpushed > 0
+    ? `DELIVERY CHECKPOINT: ${state.unpushed} commit(s) are not confirmed on ${state.pushRemote}/${state.pushBranch} after ${intervals} fixed 15-minute interval(s). Run required gates and, only if authorized and ready, push the prepared result and read back the target ref. Preserve any overlapping writer. ${ORDER}`
     : intervals >= 2
-    ? `SECOND CONSECUTIVE ARTIFACT-FREE CHECKPOINT: checkout HEAD ${state.head} has not changed for ${intervals} fixed 15-minute wall-clock intervals. Push and read back any existing commit, then stop/release the current method or worker and split/reassign the smallest shippable slice. A changed ETA/PERT, status message or retrospective does not reset this clock. ${ORDER}`
-    : `DELIVERY CHECKPOINT: checkout HEAD ${state.head} did not change during one fixed 15-minute wall-clock interval. Commit the smallest coherent slice now, or push and read back an existing commit; if neither is possible, narrow the method immediately. A changed ETA/PERT or status message does not reset this clock. ${ORDER}`;
+    ? `SECOND CONSECUTIVE ARTIFACT-FREE CHECKPOINT: checkout HEAD ${state.head} has not changed for ${intervals} fixed 15-minute wall-clock intervals. If authorized and ready, push and read back any existing commit; otherwise stop/release the current method or worker and split/reassign the smallest shippable slice. A changed ETA/PERT, status message or retrospective does not reset this clock. ${ORDER}`
+    : `DELIVERY CHECKPOINT: checkout HEAD ${state.head} did not change during one fixed 15-minute wall-clock interval. Commit the smallest coherent slice now, or if authorized and ready push and read back an existing commit; if neither is possible, narrow the method immediately. A changed ETA/PERT or status message does not reset this clock. ${ORDER}`;
   const refreshPush = async (ctx: ExtensionContext, force = false) => {
     if (singleWriterLane || !isMain(ctx)) return;
     if (!ownsBranchWork(ctx)) {
@@ -4873,7 +4875,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (state) observeDeliveryCheckpoint(ctx, state, now);
     const checkpointIntervals = deliveryCheckpointIntervals(state, now);
     ctx.ui?.setStatus?.("todo-delivery-checkpoint", checkpointIntervals > 0
-      ? `${checkpointIntervals >= 2 ? "stop/split" : "checkpoint"} · ${checkpointIntervals * 15}m without new HEAD`
+      ? `${checkpointIntervals >= 2 ? "stop/split" : "checkpoint"} · ${checkpointIntervals * 15}m ${state?.unpushed === undefined ? "publication unknown" : state.unpushed > 0 ? "publication unconfirmed" : "without new HEAD"}`
       : undefined);
     ctx.ui?.setStatus?.("todo-unpushed", state?.unpushed === undefined ? undefined
       : state.unpushed ? `${state.unpushed} unpushed · oldest ${Math.floor((state.oldestUnpushedAgeMs ?? 0) / 60_000)}m` : undefined);
@@ -4951,7 +4953,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           (toolCall.name === "task" && /\bpush/i.test(JSON.stringify(toolCall.arguments ?? {}))),
         reminder: [{
           role: "developer" as const,
-          content: `UNPUSHED WORK: ${state.unpushed} commit(s) on this branch, the oldest ${minutes} minutes old, exist only in this checkout. ${ORDER}`,
+          content: `UNPUSHED WORK: ${state.unpushed} commit(s) on this branch, the oldest ${minutes} minutes old, are not confirmed on ${state.pushRemote}/${state.pushBranch}. Push only if authorized and ready; otherwise prepare the smallest deliverable and preserve any overlapping writer. ${ORDER}`,
           timestamp: now,
         }],
       };

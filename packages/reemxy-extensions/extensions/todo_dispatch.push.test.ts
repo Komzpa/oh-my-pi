@@ -62,6 +62,7 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 			userConstraint: { messageId: "u1", quote: "deliver by then", recordedAt: Math.floor(realNow / 1000) - 7200 },
 		} });
 		const notices: unknown[] = [];
+		const statuses = new Map<string, string | undefined>();
 		let tick;
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 		let provider: ((ctx: ExtensionContext) => unknown) | undefined;
@@ -77,7 +78,7 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 		} as unknown as ExtensionAPI);
 		const ctx = {
 			cwd: work,
-			ui: { setStatus: () => undefined },
+			ui: { setStatus: (key, value) => statuses.set(key, value) },
 			getTodoSnapshot: () => phases,
 			sessionManager: {
 				getHeader: () => ({ id: "checkpoint-root" }),
@@ -143,7 +144,18 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 			git(work, id, "commit", "-q", "-m", "checkpoint slice");
 			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 			expect(JSON.stringify(provider?.(ctx) ?? {})).toContain("not confirmed on origin/");
-			expect(phases.flatMap(phase => phase.tasks).some(row => row.content.startsWith("Push: run project gates and push origin/"))).toBe(true);
+			const pushRow = phases.flatMap(phase => phase.tasks).find(row => row.content.startsWith("Push: run project gates and push origin/"));
+			expect(pushRow).toBeDefined();
+			expect(pushRow.schedule.estimate.basis).toContain("only if authorized");
+			expect(statuses.get("todo-delivery-checkpoint")).toContain("publication unconfirmed");
+			expect(statuses.get("todo-delivery-checkpoint")).not.toContain("without new HEAD");
+			git(work, id, "remote", "set-url", "origin", join(dir, "missing.git"));
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
+			expect(JSON.stringify(provider?.(ctx) ?? {})).toContain("cannot verify");
+			expect(statuses.get("todo-delivery-checkpoint")).toContain("publication unknown");
+			expect(pushRow.status).toBe("pending");
+			git(work, id, "remote", "set-url", "origin", remote);
+			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 			// No authorization is in this session: neither a row nor a reminder may push by itself.
 			const target = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], { cwd: work, encoding: "utf8" }).trim();
 			const remoteHead = () => execFileSync("git", ["--git-dir", remote, "rev-parse", `refs/heads/${target}`], { encoding: "utf8" }).trim();
@@ -338,6 +350,27 @@ test("publication is confirmed only on the selected remote branch", async () => 
 		git(work, id, "push", "-q", "origin", "HEAD:refs/heads/unrelated");
 		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBe(1);
 		git(work, id, "push", "-q", "origin", "HEAD:refs/heads/delivery");
+		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBe(0);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("target descendant confirms inclusion, not exact HEAD identity", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-descendant-"));
+	try {
+		const remote = join(dir, "remote.git"), work = join(dir, "work"), other = join(dir, "other");
+		const id = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+		execFileSync("git", ["init", "-q", "--bare", remote]);
+		execFileSync("git", ["clone", "-q", remote, work], { stdio: "ignore" });
+		writeFileSync(join(work, "base"), "base");
+		git(work, id, "add", "base"); git(work, id, "commit", "-q", "-m", "base");
+		git(work, id, "config", "omp.pushBranch", "delivery");
+		git(work, id, "worktree", "add", "--detach", other, "HEAD");
+		writeFileSync(join(other, "next"), "next");
+		git(other, id, "add", "next"); git(other, id, "commit", "-q", "-m", "next");
+		git(other, id, "push", "-q", "origin", "HEAD:refs/heads/delivery");
+		const localHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: work, encoding: "utf8" }).trim();
+		const remoteHead = execFileSync("git", ["--git-dir", remote, "rev-parse", "refs/heads/delivery"], { encoding: "utf8" }).trim();
+		expect(remoteHead).not.toBe(localHead);
 		expect((await readGitIntegrationState(work, Date.now()))?.unpushed).toBe(0);
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
