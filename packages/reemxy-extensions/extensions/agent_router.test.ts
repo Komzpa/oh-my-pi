@@ -110,6 +110,21 @@ describe("agent router", () => {
 		expect(row.schedule.readOnly).toBeUndefined();
 	});
 
+	test("reusing a worker ID replaces its earlier read-only claim", () => {
+		const row = { content: "Repair a module", status: "pending", schedule: { resources: [] } };
+		const context = ctx({
+			getTodoPhases: () => [{ name: "Work", tasks: [row] }],
+			updateTodoSchedule: (_task, patch) => {
+				row.schedule = { ...row.schedule, ...patch };
+				return true;
+			},
+		});
+		expect(admitAssignedResources({ row: row.content, spawnKey: "worker", readOnly: true }, context)).toBeUndefined();
+		expect(readOnlyClaim(row)).toBe(true);
+		expect(admitAssignedResources({ row: row.content, spawnKey: "worker", readOnly: false }, context)).toBeUndefined();
+		expect(readOnlyClaim(row)).toBe(false);
+	});
+
 	test("explicit read-only row remains restricted after a writer is assigned", () => {
 		const row = { content: "Review a module", status: "pending", schedule: { resources: [], readOnly: true } };
 		const context = ctx({
