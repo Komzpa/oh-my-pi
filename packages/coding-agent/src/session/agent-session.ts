@@ -163,8 +163,6 @@ import type {
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeResult,
 	SessionStopEventResult,
-	ExtensionAskDialogQuestion,
-	ExtensionAskDialogResultItem,
 	ToolInfo,
 	TreePreparation,
 } from "../extensibility/extensions";
@@ -249,9 +247,9 @@ import type { ImageAttachmentEntry, ToolSession } from "../tools";
 import { resolveApproval } from "../tools/approval";
 import { type ApprovalGrantStore, getApprovalGrants } from "../tools/approval-cache";
 import { type AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
-import { recoverAskHtml } from "../tools/ask";
-import { shiftImageMarkers } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
-import { AskTool, type AskToolInput, recoverAskQuestions } from "../tools/ask";
+import { AskTool, recoverAskHtml } from "../tools/ask";
+import { formAnswers } from "@oh-my-pi/pi-tui/html-form/data";
+import { parseHtmlForm } from "@oh-my-pi/pi-tui/html-form/parse";
 import {
 	armIdleCloseForOwner,
 	cancelIdleCloseForOwner,
@@ -1130,7 +1128,7 @@ function todoRetryMatches(failed: Record<string, unknown>, retry: Record<string,
 	return true;
 }
 
-type RestorableAsyncAsk = { toolCallId: string; questions: AskToolInput["questions"] };
+type RestorableAsyncAsk = { toolCallId: string; html: string; unansweredNames: string[] };
 
 function findUnansweredAsyncAsks(
 	branch: readonly SessionEntry[],
@@ -1206,8 +1204,8 @@ function findUnansweredAsyncAsks(
 			continue;
 		const stored = result.details.pending;
 		if (stored.id !== result.toolCallId) continue;
-		const questions = recoverAskQuestions({ questions: stored.questions });
-		if (!questions) continue;
+		const html = recoverAskHtml(stored);
+		if (html === undefined) continue;
 		const laterEntries = branch.slice(resultIndex + 1);
 		const hasTerminalResult = laterEntries.some(
 			later =>
@@ -1216,8 +1214,8 @@ function findUnansweredAsyncAsks(
 				later.message.toolCallId === result.toolCallId,
 		);
 		if (hasTerminalResult) continue;
-		const unanswered = questions.filter(question => {
-			const answerPrefix = `Answer to ${result.toolCallId} [${question.id}]:`;
+		const unansweredNames = parseHtmlForm(html).fields.filter(field => field.name).map(field => field.name).filter(name => {
+			const answerPrefix = `Answer to ${result.toolCallId} [${name}]:`;
 			return !laterEntries.some(later => {
 				if (later.type !== "message" || later.message.role !== "user") return false;
 				const content = later.message.content;
@@ -1231,53 +1229,13 @@ function findUnansweredAsyncAsks(
 				return text.includes(answerPrefix);
 			});
 		});
-		if (unanswered.length === 0) continue;
+		if (unansweredNames.length === 0) continue;
 		seenCallIds.add(result.toolCallId);
-		pendingAsks.push({ toolCallId: result.toolCallId, questions: unanswered });
+		pendingAsks.push({ toolCallId: result.toolCallId, html, unansweredNames });
 	}
 	return { requestId, calls: pendingAsks };
 }
 
-function restoredAskReplyContent(
-	toolCallId: string,
-	results: ExtensionAskDialogResultItem[],
-): Array<TextContent | ImageContent> {
-	const images: ImageContent[] = [];
-	const lines = results.map(result => {
-		const customInputImages = result.customInputImages ?? [];
-		const customOffset = images.length;
-		images.push(...customInputImages);
-		const noteImages = result.noteImages ?? [];
-		const noteOffset = images.length;
-		images.push(...noteImages);
-		const answer =
-			result.customInput !== undefined
-				? shiftImageMarkers(result.customInput, customOffset, customInputImages.length)
-				: result.selectedOptions.length > 0
-					? result.multi
-						? `[${result.selectedOptions.join(", ")}]`
-						: result.selectedOptions[0]!
-					: result.multi
-						? "[]"
-						: "(cancelled)";
-		const note = result.note ? ` — note: ${shiftImageMarkers(result.note, noteOffset, noteImages.length)}` : "";
-		return `Answer to ${toolCallId} [${result.id}]: ${answer}${note}`;
-	});
-	return [{ type: "text", text: lines.join("\n") }, ...images];
-}
-
-function restoredAskChatReplyContent(toolCallId: string, questions: AskToolInput["questions"]): TextContent[] {
-	return [
-		{
-			type: "text",
-			text: questions
-				.map(
-					question => `Answer to ${toolCallId} [${question.id}]: The user chose to discuss this question instead.`,
-				)
-				.join("\n"),
-		},
-	];
-}
 
 export class AgentSession implements SettingsScope, AgentViewSession {
 	/**
@@ -14819,7 +14777,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return didRetry;
 	}
 
-	/** Reopen unanswered questions using the same dialog and call identity after resume. */
+	/** Reopen unanswered HTML forms using the original call identity after resume. */
 	async restorePendingAsk(
 		uiContext: ExtensionUIContext,
 		onAnswered: (answered?: boolean) => void = answered => {
@@ -14838,48 +14796,19 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		);
 		const asyncPending = findUnansweredAsyncAsks(branch);
 		if (asyncPending && asyncPending.calls.length > 0) {
-			if (!uiContext.askDialog) return false;
+			if (!uiContext.formDialog) return false;
 			this.#restoringPendingAsk = true;
 			onPending();
 			try {
 				let answered = false;
 				for (const call of asyncPending.calls) {
-					const dialogQuestions: ExtensionAskDialogQuestion[] = call.questions.map(question => ({
-						id: question.id,
-						question: question.question,
-						...(question.header?.trim() ? { header: question.header } : {}),
-						options: question.options.map(option => ({
-							label: option.label,
-							...(option.description?.trim() ? { description: option.description.trim() } : {}),
-							...(option.preview?.trim() ? { preview: option.preview } : {}),
-						})),
-						...(question.multi !== undefined ? { multi: question.multi } : {}),
-						...(question.recommended !== undefined ? { recommended: question.recommended } : {}),
-					}));
-					const answer = await uiContext.askDialog(dialogQuestions, { timeout: undefined, acceptImages: true });
-					if (!answer) {
-						break;
-					}
-					if (answer.kind === "chat") {
-						this.sessionManager.appendMessage({
-							role: "user",
-							content: restoredAskChatReplyContent(call.toolCallId, call.questions),
-							timestamp: Date.now(),
-						});
-						answered = true;
-						continue;
-					}
-					if (answer.results.length !== call.questions.length) {
-						throw new Error("Ask dialog returned a result count that does not match the restored questions");
-					}
-					for (const [index, question] of call.questions.entries()) {
-						if (answer.results[index]?.id !== question.id) {
-							throw new Error("Ask dialog returned results that do not match the restored question order");
-						}
-					}
+					const answer = await uiContext.formDialog(call.html, {});
+					if (!answer || answer.timedOut) break;
+					const answers = formAnswers(parseHtmlForm(call.html), answer.data)
+						.filter(item => call.unansweredNames.includes(item.name));
 					this.sessionManager.appendMessage({
 						role: "user",
-						content: restoredAskReplyContent(call.toolCallId, answer.results),
+						content: answers.map(item => `Answer to ${call.toolCallId} [${item.name}]: ${item.answer}`).join("\n"),
 						timestamp: Date.now(),
 					});
 					answered = true;
@@ -14924,8 +14853,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			const args = this.#obfuscator?.hasSecrets()
 				? deobfuscateToolArguments(this.#obfuscator, block.arguments)
 				: block.arguments;
-			const questions = recoverAskQuestions(args);
-			return questions ? [{ toolCallId: block.id, questions }] : [];
+			const html = recoverAskHtml(args);
+			return html === undefined ? [] : [{ toolCallId: block.id, html }];
 		});
 		if (pending.length === 0) return false;
 		this.#restoringPendingAsk = true;
@@ -14938,14 +14867,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				getSessionFile: () => this.sessionManager.getSessionFile() ?? null,
 				getSessionSpawns: () => null,
 				getPlanModeState: () => this.getPlanModeState(),
-			});
+			}, { interactiveAnswer: true });
 			let cancelled = false;
 			for (const call of pending) {
 				let result: AgentToolResult<AskToolDetails>;
 				try {
 					result = await tool.execute(
 						call.toolCallId,
-						{ questions: call.questions },
+						{ html: call.html },
 						undefined,
 						undefined,
 						this.buildAskReanswerContext(uiContext),

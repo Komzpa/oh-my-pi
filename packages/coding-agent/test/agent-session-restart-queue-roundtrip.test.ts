@@ -18,7 +18,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
-import type { ExtensionUIContext, ExtensionAskDialogResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import type { ExtensionUIContext, ExtensionFormDialogResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { createRestartQueueController } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
 
 describe("AgentSession restart queue round trip", () => {
@@ -916,9 +916,7 @@ describe("AgentSession restart queue round trip", () => {
 				details: {
 					pending: {
 						id: toolCallId,
-						questions: [
-							{ id: "target", question: "Which target?", options: [{ label: "Here" }, { label: "There" }] },
-						],
+						html: '<form><label>Which target?<select name="target"><option>Here</option><option>There</option></select></label></form>',
 					},
 				},
 				timestamp: Date.now(),
@@ -939,11 +937,11 @@ describe("AgentSession restart queue round trip", () => {
 						goalModeBefore: { goalId: "goal" },
 					},
 				});
-			const dialog = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+			const dialog = Promise.withResolvers<ExtensionFormDialogResult | undefined>();
 			const resumed = Promise.withResolvers<void>();
 			let shown = 0;
 			const ui = {
-				askDialog: () => {
+				formDialog: () => {
 					shown++;
 					return dialog.promise;
 				},
@@ -1027,9 +1025,7 @@ describe("AgentSession restart queue round trip", () => {
 			details: {
 				pending: {
 					id: toolCallId,
-					questions: [
-						{ id: "target", question: "Which target?", options: [{ label: "Here" }, { label: "There" }] },
-					],
+					html: '<form><label>Which target?<select name="target"><option>Here</option><option>There</option></select></label></form>',
 				},
 			},
 			timestamp: Date.now(),
@@ -1054,10 +1050,10 @@ describe("AgentSession restart queue round trip", () => {
 		await session.dispose();
 		session = undefined;
 		sessionManager = await SessionManager.open(file, tempDir.path());
-		const dialog = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+		const dialog = Promise.withResolvers<ExtensionFormDialogResult | undefined>();
 		let shown = 0;
 		const ui = {
-			askDialog: () => {
+			formDialog: () => {
 				shown++;
 				return dialog.promise;
 			},

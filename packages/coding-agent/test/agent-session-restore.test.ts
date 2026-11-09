@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Model } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Message, Model } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockHandler, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -17,8 +17,7 @@ import {
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createRestartQueueController } from "@oh-my-pi/pi-coding-agent/task/restart-queue";
 import type {
-	ExtensionAskDialogResult,
-	ExtensionAskDialogQuestion,
+	ExtensionFormDialogResult,
 	ExtensionUIContext,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -395,16 +394,14 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 	for (const recovery of ["resume", "restore", "rolling"] as const) {
 		it(`reopens an unanswered ask on ${recovery}, preserving completed siblings and one answer across restart`, async () => {
 			const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-			const questions = [
-				{ id: "deploy", question: "Deploy where?", options: [{ label: "Here" }, { label: "There" }] },
-			];
+			const html = '<form><label>Deploy where?<select name="deploy"><option>Here</option><option>There</option></select></label></form>';
 			const persisted: Message[] = [
 				{ role: "user", content: "choose", timestamp: Date.now() },
 				assistant(model, {
 					stopReason: "toolUse",
 					content: [
 						{ type: "toolCall", id: "completed", name: "probe", arguments: {} },
-						{ type: "toolCall", id: "original_ask", name: "ask", arguments: { questions } },
+						{ type: "toolCall", id: "original_ask", name: "ask", arguments: { html } },
 					],
 				}),
 				{
@@ -427,10 +424,10 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 			);
 			const shown: unknown[] = [];
 			const ui = {
-				select: async (question: string, options: unknown[]) => {
+				formDialog: async (requested: string) => {
 					expect(await reopened.session.restorePendingAsk(ui)).toBe(false);
-					shown.push({ question, options });
-					return "There";
+					shown.push(requested);
+					return { data: { deploy: "There" } };
 				},
 			} as unknown as ExtensionUIContext;
 			const restored =
@@ -487,24 +484,18 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		});
 	}
 
-	it("re-presents unanswered questions before a restart continuation and links the reply to the ask", async () => {
+	it("re-presents the original HTML form before restart continuation and sends only unanswered fields as chat", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-		const questions = [
-			{ id: "region", question: "Which region?", options: [{ label: "east" }, { label: "west" }] },
-			{ id: "version", question: "Which version?", options: [{ label: "stable" }, { label: "canary" }] },
-		];
+		const html = '<form><label>Which region?<select name="region"><option>east</option><option>west</option></select></label><label>Which version?<input name="version"></label></form>';
 		const askCallId = "async-ask-call";
-		const image: ImageContent = { type: "image", data: "AQID", mimeType: "image/png" };
-		const dialog = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
-		const shown: ExtensionAskDialogQuestion[][] = [];
-		const dialogOptions: Array<{ timeout?: number; acceptImages?: boolean }> = [];
+		const dialog = Promise.withResolvers<ExtensionFormDialogResult | undefined>();
+		const shown: string[] = [];
+		const dialogOptions: unknown[] = [];
 		const ui = {
-			askDialog: (
-				requested: ExtensionAskDialogQuestion[],
-				options?: { timeout?: number; acceptImages?: boolean },
-			) => {
+			askDialog: () => { throw new Error("Legacy question API must not open"); },
+			formDialog: (requested: string, options: unknown) => {
 				shown.push(requested);
-				dialogOptions.push(options ?? {});
+				dialogOptions.push(options);
 				return dialog.promise;
 			},
 		} as unknown as ExtensionUIContext;
@@ -515,14 +506,14 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 				{ role: "user", content: "choose deployment", timestamp: Date.now() },
 				assistant(model, {
 					stopReason: "toolUse",
-					content: [{ type: "toolCall", id: askCallId, name: "ask", arguments: { questions } }],
+					content: [{ type: "toolCall", id: askCallId, name: "ask", arguments: { html } }],
 				}),
 				{
 					role: "toolResult",
 					toolCallId: askCallId,
 					toolName: "ask",
 					content: [{ type: "text", text: "Pending question; reply in this session's chat" }],
-					details: { pending: { id: askCallId, sessionId: "old-instance", questions } },
+					details: { pending: { id: askCallId, sessionId: "old-instance", html } },
 					isError: false,
 					timestamp: Date.now(),
 				},
@@ -567,8 +558,8 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 			await controller.restore();
 			expect(pending).toBe(true);
 			expect(shown).toHaveLength(1);
-			expect(shown[0]?.map(question => question.id)).toEqual(["version"]);
-			expect(dialogOptions).toEqual([{ timeout: undefined, acceptImages: true }]);
+			expect(shown).toEqual([html]);
+			expect(dialogOptions).toEqual([{}]);
 			expect(modelInputs).toHaveLength(0);
 			const completed = restored.sessionManager
 				.getEntries()
@@ -598,20 +589,7 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 					.at(-1),
 			).toMatchObject({ data: { record: { state: "completed" } } });
 
-			dialog.resolve({
-				kind: "submit",
-				results: [
-					{
-						id: "version",
-						question: "Which version?",
-						options: ["stable", "canary"],
-						multi: false,
-						selectedOptions: [],
-						customInput: "3.14 [Image #1]",
-						customInputImages: [image],
-					},
-				],
-			});
+			dialog.resolve({ data: { region: "west", version: "3.14" } });
 			await pendingAskRestore;
 			await restored.waitForIdle();
 			await restored.settleInFlightMessagePersistence();
@@ -628,24 +606,16 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 					),
 			).toHaveLength(1);
 			expect(context).toContain(`Answer to ${askCallId} [region]: east`);
-			expect(context).toContain(`Answer to ${askCallId} [version]: 3.14 [Image #1]`);
+			expect(context).toContain(`Answer to ${askCallId} [version]: 3.14`);
+			expect(context).not.toContain(`Answer to ${askCallId} [region]: west`);
 			expect(context.indexOf("Restart restart-ask-1 completed")).toBeLessThan(
 				context.indexOf(`Answer to ${askCallId} [version]`),
 			);
 			expect(context).not.toContain("Do not start another model turn until it completes");
-			const answer = restored.sessionManager
-				.buildSessionContext({ transcript: true })
-				.messages.find(
-					message =>
-						message.role === "user" &&
-						Array.isArray(message.content) &&
-						message.content.some(part => part.type === "text" && part.text.includes(`[version]: 3.14`)),
-				);
-			expect(
-				answer?.role === "user" && Array.isArray(answer.content)
-					? answer.content.some(part => part.type === "image" && part.data === image.data)
-					: false,
-			).toBe(true);
+			const answer = restored.sessionManager.buildSessionContext({ transcript: true }).messages.find(
+				message => message.role === "user" && typeof message.content === "string" && message.content.includes("[version]: 3.14"),
+			);
+			expect(answer).toMatchObject({ role: "user", content: `Answer to ${askCallId} [version]: 3.14` });
 		} finally {
 			controller.dispose();
 		}
@@ -653,7 +623,6 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 
 	it("replays the restart window with exactly the current pending ask and restores goal work without waking an idle root", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
-		const questions = [{ id: "target", question: "Which target?", options: [{ label: "Here" }, { label: "There" }] }];
 		const { session: restored, mock } = reopen(
 			model,
 			[{ role: "user", content: "choose", timestamp: Date.now() }],
@@ -670,7 +639,7 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 				details: {
 					pending: {
 						id,
-						questions: questions.map(question => ({ ...question, question: `Which target for ${id}?` })),
+						html: `<form><label>Which target for ${id}?<select name="target"><option>Here</option><option>There</option></select></label></form>`,
 					},
 				},
 				timestamp: Date.now(),
@@ -704,10 +673,10 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		appendRestartTransitions(manager, "current-restart", () => appendAsk(currentAsk));
 		// A later ask must not be claimed by this restart's recovery either.
 		appendAsk("post-checkpoint-ask");
-		const shown: ExtensionAskDialogQuestion[][] = [];
-		const dialog = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+		const shown: string[] = [];
+		const dialog = Promise.withResolvers<ExtensionFormDialogResult | undefined>();
 		const ui = {
-			askDialog: (value: ExtensionAskDialogQuestion[]) => {
+			formDialog: (value: string) => {
 				shown.push(value);
 				return dialog.promise;
 			},
@@ -741,7 +710,7 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		try {
 			await controller.restore();
 			expect(shown).toHaveLength(1);
-			expect(shown[0]?.map(question => question.question)).toEqual([`Which target for ${currentAsk}?`]);
+			expect(shown[0]).toContain(`Which target for ${currentAsk}?`);
 			dialog.resolve(undefined);
 			await restore;
 			const presentations = manager
@@ -773,21 +742,21 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 	it("allows a failed restored ask dialog to be opened again", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const askCallId = "retryable-restored-ask";
-		const questions = [{ id: "target", question: "Which target?", options: [{ label: "Here" }] }];
+		const html = '<form><label>Which target?<input name="target"></label></form>';
 		const { session: restored } = reopen(model, [{ role: "user", content: "choose", timestamp: Date.now() }], [], []);
 		restored.sessionManager.appendMessage({
 			role: "toolResult",
 			toolCallId: askCallId,
 			toolName: "ask",
 			content: [{ type: "text", text: "Pending question; reply in this session's chat" }],
-			details: { pending: { id: askCallId, questions } },
+			details: { pending: { id: askCallId, html } },
 			timestamp: Date.now(),
 			isError: false,
 		});
 		appendRestartTransitions(restored.sessionManager, "retryable-restart");
 		let opens = 0;
 		const ui = {
-			askDialog: async () => {
+			formDialog: async () => {
 				opens++;
 				if (opens === 1) throw new Error("dialog could not open");
 				return undefined;
@@ -814,23 +783,20 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		for (const answered of [true, false]) {
 			const askCallId = "answered-async-ask";
-			const questions = [
-				{ id: "region", question: "Which region?", options: [{ label: "east" }, { label: "west" }] },
-				{ id: "version", question: "Which version?", options: [{ label: "stable" }, { label: "canary" }] },
-			];
+			const html = '<form><input name="region"><input name="version"></form>';
 			const messages: Message[] = answered
 				? [
 						{ role: "user", content: "choose deployment", timestamp: Date.now() },
 						assistant(model, {
 							stopReason: "toolUse",
-							content: [{ type: "toolCall", id: askCallId, name: "ask", arguments: { questions } }],
+							content: [{ type: "toolCall", id: askCallId, name: "ask", arguments: { html } }],
 						}),
 						{
 							role: "toolResult",
 							toolCallId: askCallId,
 							toolName: "ask",
 							content: [{ type: "text", text: "Pending question" }],
-							details: { pending: { id: askCallId, sessionId: "old", questions } },
+							details: { pending: { id: askCallId, sessionId: "old", html } },
 							isError: false,
 							timestamp: Date.now(),
 						},
@@ -847,9 +813,9 @@ describe("AgentSession.restoreInterruptedTurn (omp --restore)", () => {
 					];
 			const { session: restored } = reopen(model, messages, [], []);
 			appendRestartTransitions(restored.sessionManager, `restart-no-ask-${answered}`);
-			const shown: ExtensionAskDialogQuestion[][] = [];
+			const shown: string[] = [];
 			const ui = {
-				askDialog: async (requested: ExtensionAskDialogQuestion[]) => {
+				formDialog: async (requested: string) => {
 					shown.push(requested);
 					return undefined;
 				},

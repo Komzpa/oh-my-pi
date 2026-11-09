@@ -7,6 +7,9 @@
 ### Removed
 
 - Removed `getConfigAgentDirName()`; use `getAgentDir()`, which also honors `PI_CODING_AGENT_DIR` ([#18684](https://github.com/can1357/oh-my-pi/issues/18684))
+### Added
+
+- Launch diagnostics now show span offsets, the largest gaps between boundaries, and event-loop timer drift ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.18.2] - 2026-11-08
 
@@ -19,11 +22,6 @@
 
 - Fixed relaxed JSON parsing so `__proto__` is preserved as a regular own property rather than modifying the parsed object's prototype.
 - Fixed SIGHUP handling so stopped terminal sessions display recovery hints, including the `--resume` command.
-
-## [18.18.0] - 2026-11-07
-### Added
-
-- Launch diagnostics now show span offsets, the largest gaps between boundaries, and event-loop timer drift ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.18.0] - 2026-11-07
 
