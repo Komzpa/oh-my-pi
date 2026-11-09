@@ -4861,6 +4861,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     : intervals >= 2
     ? `SECOND CONSECUTIVE ARTIFACT-FREE CHECKPOINT: checkout HEAD ${state.head} has not changed for ${intervals} fixed 15-minute wall-clock intervals. If authorized and ready, push and read back any existing commit; otherwise stop/release the current method or worker and split/reassign the smallest shippable slice. A changed ETA/PERT, status message or retrospective does not reset this clock. ${ORDER}`
     : `DELIVERY CHECKPOINT: checkout HEAD ${state.head} did not change during one fixed 15-minute wall-clock interval. Commit the smallest coherent slice now, or if authorized and ready push and read back an existing commit; if neither is possible, narrow the method immediately. A changed ETA/PERT or status message does not reset this clock. ${ORDER}`;
+  const deliveryCheckpointSteered = new Map<string, { episode: string; delivered: boolean; pending: boolean; retryAt: number }>();
   const refreshPush = async (ctx: ExtensionContext, force = false) => {
     if (singleWriterLane || !isMain(ctx)) return;
     if (!ownsBranchWork(ctx)) {
@@ -4893,6 +4894,30 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         `delivery-checkpoint:${state.head}:${level}`,
         { triggerTurn: ctx.isIdle?.() === true },
       );
+      // A checkpoint must reach the worker holding this checkout, not just the
+      // chief. Do not ask competing writers to commit the same checkout.
+      const jobs = (ctx.getAsyncJobSnapshot()?.running ?? []).filter(job =>
+        job.type === "task" && job.status === "running" && !job.queued);
+      const owners = new Set(todoPhases(ctx).flatMap(phase => phase.tasks)
+        .filter(row => isOpenRowStatus(row.status) && rowOwnsCheckout(ctx, row))
+        .flatMap(row => [row.schedule?.owner, row.schedule?.executor?.workerId])
+        .filter((owner): owner is string => typeof owner === "string"));
+      const writers = jobs.filter(job => [...owners].some(owner => liveJobMatchesOwner(job, owner)));
+      if (writers.length === 1) {
+        const id = writers[0].agentId ?? writers[0].id;
+        const episode = `${sprintState.deliveryCheckpointAt}:${level}`;
+        const previous = deliveryCheckpointSteered.get(id);
+        if (!previous || previous.episode !== episode || (!previous.delivered && !previous.pending && Date.now() >= previous.retryAt)) {
+          const attempt = { episode, delivered: false, pending: true, retryAt: Date.now() + 30_000 };
+          deliveryCheckpointSteered.set(id, attempt);
+          void sendWorkerSteering(ctx, id, `Delivery checkpoint: report the smallest coherent, verified slice or the concrete blocker now. Preserve other workers' changes; commit or push only when authorized and safe.`)
+            .then(result => {
+              attempt.pending = false;
+              attempt.delivered = result.delivered;
+              if (!result.delivered) reportWorkerSteeringFailure(ctx, id, result, `chief must write agent://${id} manually`);
+            });
+        }
+      }
     }
     if (state?.unpushed === undefined || !state.pushBranch) return;
     if (state.unpushed === 0) {

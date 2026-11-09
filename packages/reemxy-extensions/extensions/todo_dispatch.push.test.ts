@@ -62,6 +62,9 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 			userConstraint: { messageId: "u1", quote: "deliver by then", recordedAt: Math.floor(realNow / 1000) - 7200 },
 		} });
 		const notices: unknown[] = [];
+		const steering: Array<{ id: string; content: string }> = [];
+		let deliverySucceeds = true;
+		let running: unknown[] = [];
 		const statuses = new Map<string, string | undefined>();
 		let tick;
 		const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -89,7 +92,8 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 					branch.filter(entry => predicate(sessionContextEntryMetadata(entry as SessionEntry))).at(-1),
 				getSessionFile: () => undefined,
 			},
-			getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+			getAsyncJobSnapshot: () => ({ running, recent: [], nonJobAgents: [] }),
+			sendAgentMessage: async (id, content) => { steering.push({ id, content }); return { delivered: deliverySucceeds }; },
 			getTaskMaxConcurrency: () => 4,
 			isIdle: () => false,
 			hasPendingMessages: () => false,
@@ -116,7 +120,16 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 				updatedAt: now + DELIVERY_CHECKPOINT_MS,
 			};
 			now += DELIVERY_CHECKPOINT_MS;
+			running = [{ id: "build-job", agentId: "BuildSlice", type: "task", status: "running" }];
 			await tick();
+			await Promise.resolve();
+			expect(steering).toHaveLength(1);
+			expect(steering[0].id).toBe("BuildSlice");
+			expect(steering[0].content).toContain("smallest");
+			await tick();
+			await Promise.resolve();
+			expect(steering).toHaveLength(1);
+			running = [];
 			const first = JSON.stringify(provider?.(ctx) ?? {});
 			expect(first).toContain("DELIVERY CHECKPOINT");
 			expect(first).toContain("fixed 15-minute wall-clock interval");
@@ -132,6 +145,35 @@ test("fixed wall-clock checkpoints interrupt zero-commit work and reset on obser
 			expect(persisted?.data?.deliveryCheckpointHead).toBeTruthy();
 
 			now += DELIVERY_CHECKPOINT_MS;
+			phases[0].tasks.push({ content: "Concurrent writer", status: "in_progress", schedule: { owner: "OtherWriter", resources: [`checkout:${work}`] } });
+			running = [
+				{ id: "build-job", agentId: "BuildSlice", type: "task", status: "running" },
+				{ id: "other-job", agentId: "OtherWriter", type: "task", status: "running" },
+			];
+			await tick();
+			expect(steering).toHaveLength(1);
+			phases[0].tasks.pop();
+			// Executor identity and attempt-suffixed job IDs are also valid ownership records.
+			Object.assign(phases[0].tasks[0].schedule, { owner: undefined, executor: { workerId: "BuildSlice" } });
+			running = [{ id: "BuildSlice-2", type: "task", status: "running" }];
+			deliverySucceeds = false;
+			await tick();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(steering).toHaveLength(2);
+			expect(steering[1].id).toBe("BuildSlice-2");
+			expect(JSON.stringify(notices)).toContain("todo-worker-message-undelivered");
+			deliverySucceeds = true;
+			await tick();
+			expect(steering).toHaveLength(2);
+			now += 30_000;
+			await tick();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(steering).toHaveLength(3);
+			await tick();
+			expect(steering).toHaveLength(3);
+			running = [];
 			await handlers.get("tool_result")!({ toolName: "todo", isError: false }, ctx);
 			const second = JSON.stringify(provider?.(ctx) ?? {});
 			expect(second).toContain("SECOND CONSECUTIVE ARTIFACT-FREE CHECKPOINT");
