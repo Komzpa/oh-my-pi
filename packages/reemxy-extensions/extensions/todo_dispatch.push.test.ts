@@ -410,6 +410,25 @@ test("publication is confirmed only on the selected remote branch", async () => 
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("a deleted target ref does not count the entire history as unpushed", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "checkpoint-deleted-target-"));
+	try {
+		const remote = join(dir, "remote.git"), work = join(dir, "work");
+		const id = { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+		execFileSync("git", ["init", "-q", "--bare", remote]);
+		execFileSync("git", ["clone", "-q", remote, work], { stdio: "ignore" });
+		writeFileSync(join(work, "base"), "base");
+		git(work, id, "add", "base"); git(work, id, "commit", "-q", "-m", "base");
+		git(work, id, "config", "omp.pushBranch", "delivery");
+		git(work, id, "push", "-q", "origin", "HEAD:refs/heads/delivery");
+		git(work, id, "--git-dir", remote, "update-ref", "-d", "refs/heads/delivery");
+		const state = await readGitIntegrationState(work, Date.now());
+		expect(state?.unpushed).toBeUndefined();
+		expect(state?.pushTargetMissing).toBe(true);
+		expect(state?.pushBranch).toBe("delivery");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("target descendant confirms inclusion, not exact HEAD identity", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "checkpoint-descendant-"));
 	try {

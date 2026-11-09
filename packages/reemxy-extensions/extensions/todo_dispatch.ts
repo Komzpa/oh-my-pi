@@ -321,6 +321,7 @@ export interface GitIntegrationState {
   oldestUnpushedAgeMs?: number;
   pushBranch?: string;
   pushRemote?: string;
+  pushTargetMissing?: boolean;
   pushThresholdMs?: number;
 }
 export function pushRowTitle(state: GitIntegrationState): string {
@@ -382,6 +383,9 @@ export async function readGitIntegrationState(cwd: string, now: number, env: Nod
   const heads = await git("ls-remote", "--heads", state.pushRemote, `refs/heads/${state.pushBranch}`);
   // Unknown is not published. Preserve the row on network/authentication failures.
   if (heads === null) return state;
+  // An absent target has no comparison base. Counting HEAD against an empty
+  // set counts the entire repository history, including already merged work.
+  if (!heads) { state.pushTargetMissing = true; return state; }
   const advertised = new Set<string>();
   for (const line of heads.split("\n")) {
     const sha = line.split(/\s+/)[0];
@@ -4854,7 +4858,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       persistSprintState();
     }
   };
-  const deliveryCheckpointText = (intervals: number, state: GitIntegrationState) => state.unpushed === undefined
+  const deliveryCheckpointText = (intervals: number, state: GitIntegrationState) => state.pushTargetMissing
+    ? `DELIVERY CHECKPOINT: ${state.pushRemote}/${state.pushBranch} does not exist on the remote. Check whether the work was integrated or a new target is intended before taking publication action. ${ORDER}`
+    : state.unpushed === undefined
     ? `DELIVERY CHECKPOINT: cannot verify publication on ${state.pushRemote ?? "the selected remote"}/${state.pushBranch ?? "branch"} after ${intervals} fixed 15-minute interval(s). Restore readback, preserve any overlapping writer, and only if authorized and ready publish the prepared result. ${ORDER}`
     : state.unpushed > 0
     ? `DELIVERY CHECKPOINT: ${state.unpushed} commit(s) are not confirmed on ${state.pushRemote}/${state.pushBranch} after ${intervals} fixed 15-minute interval(s). Run required gates and, only if authorized and ready, push the prepared result and read back the target ref. Preserve any overlapping writer. ${ORDER}`
@@ -4882,7 +4888,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     ctx.ui?.setStatus?.("todo-delivery-checkpoint", checkpointIntervals > 0
       ? `${checkpointIntervals >= 2 ? "stop/split" : "checkpoint"} · ${checkpointIntervals * 15}m ${state?.unpushed === undefined ? "publication unknown" : state.unpushed > 0 ? "publication unconfirmed" : "without new HEAD"}`
       : undefined);
-    ctx.ui?.setStatus?.("todo-unpushed", state?.unpushed === undefined ? undefined
+    ctx.ui?.setStatus?.("todo-unpushed", state?.pushTargetMissing ? `push target missing · ${state.pushRemote}/${state.pushBranch}` : state?.unpushed === undefined ? undefined
       : state.unpushed ? `${state.unpushed} unpushed · oldest ${Math.floor((state.oldestUnpushedAgeMs ?? 0) / 60_000)}m` : undefined);
     if (state && checkpointIntervals > 0) {
       const level = checkpointIntervals >= 2 ? 2 : 1;
