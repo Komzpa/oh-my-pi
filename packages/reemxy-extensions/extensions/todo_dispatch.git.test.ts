@@ -36,3 +36,33 @@ test("a non-repository has no Git integration state", async () => {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test("remote publication probes run concurrently and an unreachable remote remains unknown", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "omp-git-remotes-"));
+  const executable = join(cwd, "git");
+  writeFileSync(executable, `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args[0] === "ls-remote") {
+  const name = args[2];
+  await Bun.write(name, "started");
+  const other = name === "one" ? "two" : "one";
+  const deadline = Date.now() + 1500;
+  while (!(await Bun.file(other).exists()) && Date.now() < deadline) await Bun.sleep(10);
+  if (!(await Bun.file(other).exists()) || process.env.FAIL_REMOTE === name) process.exit(1);
+  console.log("a".repeat(40) + "\\trefs/heads/main");
+} else if (args[0] === "remote") console.log("one\\ntwo");
+else if (args[0] === "cat-file") console.log("a".repeat(40) + " commit");
+else if (args[0] === "log") console.log("1");
+else if (args.join(" ") === "rev-parse HEAD") console.log("head");
+`);
+  chmodSync(executable, 0o755);
+  const env = { ...process.env, PATH: `${cwd}:${process.env.PATH ?? ""}` };
+  try {
+    const state = await readGitIntegrationState(cwd, 10_000, env);
+    expect(state?.unpushed).toBe(1);
+    const unknown = await readGitIntegrationState(cwd, 10_000, { ...env, FAIL_REMOTE: "two" });
+    expect(unknown?.unpushed).toBeUndefined();
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

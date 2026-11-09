@@ -381,8 +381,8 @@ export async function readGitIntegrationState(cwd: string, now: number, env: Nod
   const remotes = await git("remote");
   if (remotes === null || !remotes) return state;
   const advertised = new Set<string>();
-  for (const remote of remotes.split("\n")) {
-    const heads = await git("ls-remote", "--heads", remote);
+  const remoteHeads = await Promise.all(remotes.split("\n").map(remote => git("ls-remote", "--heads", remote)));
+  for (const heads of remoteHeads) {
     // Unknown is not published. Preserve the row on network/authentication failures.
     if (heads === null) return state;
     for (const line of heads.split("\n")) {
