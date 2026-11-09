@@ -180,7 +180,7 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 				waits++;
 			},
 		} as never;
-		const clock = spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(30_001);
+		const clock = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(30_001);
 		try {
 			await expect(
 				new TurnRecovery(host).promptAgentWithIdleRetry([], undefined, undefined, () => {
