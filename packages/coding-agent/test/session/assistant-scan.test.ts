@@ -1,7 +1,8 @@
-import { expect, it } from "bun:test";
+import { expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { listSessions } from "../../src/session/session-listing";
 import { FileSessionStorage } from "../../src/session/session-storage";
 
 function readBytes(): number {
@@ -45,3 +46,30 @@ it.skipIf(process.platform !== "linux")(
 		}
 	},
 );
+
+it("session listing uses the append cursor and preserves fallback for missing prompts", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "assistant-listing-"));
+	const storage = new FileSessionStorage();
+	const fast = spyOn(storage, "scanAssistantTurn");
+	const generic = spyOn(storage, "scanLines");
+	const line = (value: unknown) => JSON.stringify(value) + "\n";
+	const header = line({ type: "session", id: "one", cwd: "/repo", timestamp: "2026-06-27T00:00:00.000Z" });
+	const prompt = line({ type: "message", message: { role: "user", content: "hello" } });
+	const filler = line({ type: "custom", data: "x".repeat(8192) });
+	const reply = line({ type: "message", message: { role: "assistant", content: "done" } });
+	try {
+		const file = path.join(dir, "one.jsonl");
+		await Bun.write(file, header + prompt + filler);
+		expect((await listSessions(dir, storage))[0]?.assistantTurns).toBe(0);
+		expect(fast).toHaveBeenCalledTimes(1);
+		fs.appendFileSync(file, reply + filler.repeat(5));
+		expect((await listSessions(dir, storage))[0]?.assistantTurns).toBe(1);
+		expect(fast).toHaveBeenCalledTimes(2);
+		await Bun.write(path.join(dir, "two.jsonl"), header.replace('"one"', '"two"') + filler + prompt);
+		const items = await listSessions(dir, storage);
+		expect(items.find(x => x.id === "two")?.firstMessage).toBe("hello");
+		expect(generic).toHaveBeenCalled();
+	} finally {
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
