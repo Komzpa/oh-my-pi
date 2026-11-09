@@ -3676,7 +3676,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (/^(?:-f|-F)/.test(word.value) || /^--(?:field|raw-field|input)(?:=|$)/.test(word.value)) return false;
       const method = word.value.match(/^(?:-X|--method=?)(.*)$/);
       if (!method) continue;
-      const value = method[1] || args[++i];
+      const value = method[1] ? { value: method[1], dynamic: word.dynamic } : args[++i];
       if (!value || value.dynamic || value.value.toUpperCase() !== "GET") return false;
     }
     return true;

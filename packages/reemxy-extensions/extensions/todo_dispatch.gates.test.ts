@@ -398,6 +398,21 @@ test("chief bash admits mid-chain cd and read-only git plumbing, and still refus
   }
 }, 30_000);
 
+test("chief bash classifies compact gh api methods without crashing", async () => {
+  const cwd = repo("clean");
+  const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
+  try {
+    for (const command of ["gh api -XGET repos/example/project", "gh api --method=GET repos/example/project"]) {
+      expect((await outcome(state, cwd, { name: "bash", arguments: { command } })).executed, command).toBe(true);
+    }
+    for (const command of ["gh api -XPOST repos/example/project/issues", "gh api --method=POST repos/example/project/issues", "gh api -X$METHOD repos/example/project"]) {
+      expect((await outcome(state, cwd, { name: "bash", arguments: { command } })).executed, command).toBe(false);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test("chief bash can run delivery commands but refuses unsafe chains and builds", async () => {
   const cwd = repo("clean");
   const state: State = { plan: "ready", git: "clean", admissionOpen: true, running: 1 };
