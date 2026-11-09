@@ -468,3 +468,47 @@ describe("exact todo restoration", () => {
 		expect(tracker.phases).toEqual(phases);
 	});
 });
+
+it("replays a resource rebind with the same audit invalidation as the live schedule", () => {
+	const a = "a1".repeat(20),
+		b = "b2".repeat(20);
+	const initial: TodoPhase[] = [
+		{
+			name: "Delivery",
+			tasks: [
+				{
+					content: "Publish",
+					status: "completed",
+					schedule: {
+						resources: [`git:/work/delivery@${a}`],
+						finishedAt: 3,
+						executor: { workerId: "Worker", startedAt: 1, finishedAt: 2, outcome: "completed" },
+						audit: {
+							delivery: JSON.stringify(["Worker", 1, 2]),
+							repoPath: "/work/delivery",
+							head: a,
+							startedAt: 3,
+							verdict: "pass",
+							agent: "qa-auditor",
+						},
+					},
+				},
+			],
+		},
+	];
+	const op = { op: "schedule" as const, updates: [{ task: "Publish", resources: [`git:/work/delivery@${b}`] }] };
+	const live = applyOpsToPhases(initial, [op]);
+	expect(live.errors).toEqual([]);
+	const entries = [
+		{ type: "custom", customType: USER_TODO_EDIT_CUSTOM_TYPE, data: { phases: initial } },
+		{
+			type: "custom",
+			customType: USER_TODO_EDIT_CUSTOM_TYPE,
+			data: { edit: { v: 1, kind: "op", at: 4, op: "schedule", params: op } },
+		},
+	] as SessionEntry[];
+	const restored = getLatestTodoPhasesFromEntries(entries);
+	expect(restored).toEqual(live.phases);
+	expect(restored[0]!.tasks[0]!.status).toBe("pending");
+	expect(restored[0]!.tasks[0]!.schedule!.audit!.resourcesKey).toBe(JSON.stringify([`git:/work/delivery@${a}`]));
+});
