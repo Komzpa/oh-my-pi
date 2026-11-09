@@ -1,6 +1,6 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { getTodoPlanCalibrationStore, type TodoPlanCalibrationStore } from "./todo-plan-calibration";
-import { patchTodoSchedule } from "../session/todo-schedule-patch";
+import { patchTodoSchedule, reconcileAuditResourceChange } from "../session/todo-schedule-patch";
 import {
 	selectLatestBranchEntry,
 	selectBranchNewestFirst,
@@ -1529,7 +1529,11 @@ function applyScheduleUpdates(
 	}
 	validateScheduleDependencyGraph(phases, candidates, renamedTasks, errors, archived, !options.replay);
 	if (errors.length > initialErrorCount) return phases;
-	for (const [task, schedule] of candidates) task.schedule = schedule;
+	for (const [task, schedule] of candidates) {
+		const previous = { ...task, schedule: task.schedule };
+		task.schedule = schedule;
+		reconcileAuditResourceChange(previous, task);
+	}
 	for (const [task, content] of renamedTasks) task.content = content;
 	for (const update of updates) {
 		const row = findTaskByContent(phases, update.content ?? update.task)?.task;

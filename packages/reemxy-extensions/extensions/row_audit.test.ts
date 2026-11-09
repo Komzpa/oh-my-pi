@@ -723,6 +723,7 @@ test("mismatched pinned delivery is visible and never launches an audit", async 
 	expect(await h.check()).toBe(0);
 	expect(row.schedule.audit?.verdict).toBe("inconclusive");
 	expect(row.schedule.audit?.findings).toContain("does not match checkout");
+	expect(todoRowAfterWorker(row)).toMatchObject({ kind: "needs-worker", reason: "audit-inconclusive" });
 	expect(await h.check()).toBe(0);
 	expect(h.launches).toHaveLength(0);
 });
@@ -818,4 +819,58 @@ test("late missing-profile response cannot overwrite another running audit", asy
 	expect(await first).toBe(0);
 	expect(row.schedule.audit).toEqual(pending);
 	await h.abort(0);
+});
+
+test("a changed pinned revision invalidates an earlier passing or failing audit", async () => {
+	for (const outcome of ["pass", "fail"]) {
+		resetRowAuditsForTest();
+		const a = "a1".repeat(20), b = "b2".repeat(20);
+		const row = { content: `Rebind after ${outcome}`, status: "in_progress", schedule: {
+			resources: [`git:/work/delivery@${a}`], executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+		} };
+		const h = harness([{ name: "Delivery", tasks: [row] }], { "/work/delivery": a });
+		expect(await h.check()).toBe(1);
+		await h.settle(0, { rows: [verdict(row.content, outcome)] });
+		expect(row.schedule.audit.verdict).toBe(outcome);
+		// The host reopens an automatically completed row when resources change.
+		row.status = "in_progress";
+		row.schedule.resources = [`git:/work/delivery@${b}`];
+		h.heads["/work/delivery"] = b;
+		expect(todoRowAfterWorker(row)).toMatchObject({ kind: "verify", via: "audit" });
+		expect(await h.check()).toBe(1);
+		await h.settle(1, { rows: [verdict(row.content, "pass")] });
+		expect(row.schedule.audit.head).toBe(b);
+		expect(row.status).toBe("completed");
+	}
+});
+
+test("an in-flight audit cannot overwrite a human acceptance", async () => {
+	const a = "a1".repeat(20);
+	const row = { content: "Accept during audit", status: "in_progress", schedule: {
+		resources: [`git:/work/delivery@${a}`], executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const h = harness([{ name: "Delivery", tasks: [row] }], { "/work/delivery": a });
+	expect(await h.check()).toBe(1);
+	row.schedule.review = "accepted";
+	const accepted = structuredClone(row.schedule);
+	await h.settle(0, { rows: [verdict(row.content, "fail", "old finding")] });
+	expect(row.schedule).toEqual(accepted);
+});
+
+test("a passed audit at the same SHA does not transfer to another plain checkout", async () => {
+	const a = mkdtempSync(join(tmpdir(), "audit-old-root-")), b = mkdtempSync(join(tmpdir(), "audit-new-root-"));
+	for (const repo of [a, b]) expect(Bun.spawnSync(["git", "init", "-q", repo]).exitCode).toBe(0);
+	const sha = "a1".repeat(20);
+	const row = { content: "Move checkout", status: "in_progress", schedule: {
+		resources: [a], progress: { evidence: `Delivered ${sha}` }, executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const h = harness([{ name: "Delivery", tasks: [row] }], { [a]: sha, [b]: sha });
+	expect(await h.check()).toBe(1);
+	await h.settle(0, { rows: [verdict(row.content, "pass")] });
+	row.status = "in_progress";
+	row.schedule.resources = [b];
+	expect(todoRowAfterWorker(row)).toMatchObject({ kind: "verify" });
+	expect(await h.check()).toBe(1);
+	expect(h.launches[1].task).toContain(`ROOT=${b}`);
+	await h.abort(1);
 });

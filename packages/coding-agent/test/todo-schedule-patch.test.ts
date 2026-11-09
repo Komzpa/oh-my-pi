@@ -151,3 +151,79 @@ it("resume preserves explicitly cleared annotation fields across JSON persistenc
 	expect(restored[0]!.tasks[0]!.schedule?.reviewSummary).toBeUndefined();
 	expect(phases[0]!.tasks[0]!.schedule?.visibleAt).toBe(1);
 });
+
+it("resource patch reopens a previously auto-audited row while preserving its old verdict", () => {
+	const a = "a1".repeat(20),
+		b = "b2".repeat(20);
+	const phases: TodoPhase[] = [
+		{
+			name: "Ship",
+			tasks: [
+				{
+					content: "Deliver",
+					status: "completed",
+					schedule: {
+						resources: [`git:/work/delivery@${a}`],
+						finishedAt: 3,
+						executor: { workerId: "Worker", startedAt: 1, finishedAt: 2, outcome: "completed" },
+						audit: {
+							delivery: JSON.stringify(["Worker", 1, 2]),
+							repoPath: "/work/delivery",
+							head: a,
+							startedAt: 3,
+							verdict: "pass",
+							agent: "qa-auditor",
+						},
+					},
+				},
+			],
+		},
+	];
+	const result = patchTodoSchedule(phases, "Deliver", { resources: [`git:/work/delivery@${b}`] })!;
+	expect(result[0]!.tasks[0]!.status).toBe("pending");
+	expect(result[0]!.tasks[0]!.schedule!.audit!.resourcesKey).toBe(JSON.stringify([`git:/work/delivery@${a}`]));
+	expect(phases[0]!.tasks[0]!.status).toBe("completed");
+});
+
+it("rebinding discards only the previous audit escalation and base", () => {
+	const a = "a1".repeat(20),
+		b = "b2".repeat(20);
+	const phases: TodoPhase[] = [
+		{
+			name: "Ship",
+			tasks: [
+				{
+					content: "Deliver",
+					status: "blocked",
+					blocker: "old defect",
+					schedule: {
+						resources: [`git:/work/delivery@${a}`],
+						auditBase: a,
+						auditRounds: 3,
+						auditEscalation: "old defect",
+						review: "user",
+						reviewSummary: "old defect",
+						handoffPending: true,
+						executor: { workerId: "Worker", startedAt: 1, finishedAt: 2, outcome: "completed" },
+						audit: {
+							delivery: JSON.stringify(["Worker", 1, 2]),
+							repoPath: "/work/delivery",
+							head: a,
+							startedAt: 3,
+							verdict: "fail",
+							agent: "qa-auditor",
+						},
+					},
+				},
+			],
+		},
+	];
+	const row = patchTodoSchedule(phases, "Deliver", { resources: [`git:/work/delivery@${b}`] })![0]!.tasks[0]!;
+	expect(row.status).toBe("pending");
+	expect(row.blocker).toBeUndefined();
+	expect(row.schedule!.auditEscalation).toBeUndefined();
+	expect(row.schedule!.auditBase).toBeUndefined();
+	expect(row.schedule!.auditRounds).toBe(0);
+	expect(row.schedule!.review).toBeUndefined();
+	expect(row.schedule!.audit!.verdict).toBe("fail");
+});

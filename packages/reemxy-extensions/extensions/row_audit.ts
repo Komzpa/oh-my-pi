@@ -13,6 +13,7 @@ import {
 	type TodoScheduleInputTask,
 	todoArtifactGitBinding,
 	todoArtifactRepository,
+	todoAuditResourcesKey,
 	todoRowAfterWorker,
 	todoRowDeliveryKey,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -296,6 +297,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		[row.schedule?.owner, row.schedule?.executor?.workerId].some(id => typeof id === "string" && liveIds.has(id));
 	const candidates = rows.map(row => ({ ...row, schedule: row.schedule && { ...row.schedule,
 		resources: row.schedule.resources && [...row.schedule.resources],
+		executor: row.schedule.executor && { ...row.schedule.executor },
 		audit: row.schedule.audit && { ...row.schedule.audit },
 	} })).filter(row => {
 		const after = isLive(row) ? undefined : todoRowAfterWorker(row);
@@ -320,7 +322,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		const delivery = todoRowDeliveryKey(row.schedule);
 		const findings = `Pinned delivery ${binding.repoPath}@${binding.head} does not match checkout ${repoPath}@${head}; restore or rebind the artifact before audit`;
 		if (row.schedule?.audit?.delivery === delivery && row.schedule.audit.head === head && row.schedule.audit.findings === findings) continue;
-		ctx.updateTodoSchedule(row.content, { audit: { delivery, repoPath, head, startedAt: now(), verdict: "inconclusive", agent: TODO_ROW_AUDITOR, attempts: 2, evidence: row.schedule?.progress?.evidence ?? "", findings, at: now() } });
+		ctx.updateTodoSchedule(row.content, { audit: { delivery, repoPath, head, resourcesKey: todoAuditResourcesKey(row.schedule), bindingMismatch: true, startedAt: now(), verdict: "inconclusive", agent: TODO_ROW_AUDITOR, attempts: 2, evidence: row.schedule?.progress?.evidence ?? "", findings, at: now() } });
 	}
 	const busy = (_repoPath: string, _head: string, row: RowAuditRow) => {
 		const key = rowKey(row);
@@ -334,10 +336,11 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	if (!batches.length) return 0;
 	// A row may be rebound while registry resolution or an auditor is in flight.
 	// Resource identity is separate from executor delivery identity.
-	const resourceKey = (row: RowAuditRow) => JSON.stringify([...(row.schedule?.resources ?? [])].sort());
+	const resourceKey = (row: RowAuditRow) => todoAuditResourcesKey(row.schedule);
 	const latestFor = (row: RowAuditRow, batch: RowAuditBatch) => {
 		const latest = ctx.getTodoPhases?.()?.flatMap(phase => phase.tasks).find(candidate => candidate.content === row.content);
-		if (!latest || todoRowDeliveryKey(latest.schedule) !== todoRowDeliveryKey(row.schedule) ||
+		if (!latest || latest.schedule?.review === "accepted" ||
+			todoRowDeliveryKey(latest.schedule) !== todoRowDeliveryKey(row.schedule) ||
 			resourceKey(latest) !== resourceKey(row) || rowRepo(latest, ctx.cwd) !== batch.repoPath) return undefined;
 		const binding = todoArtifactGitBinding(latest);
 		return binding && (binding.repoPath !== batch.repoPath || binding.head !== batch.head) ? undefined : latest;
@@ -358,6 +361,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 						delivery,
 						repoPath: batch.repoPath,
 						head: batch.head,
+						resourcesKey: todoAuditResourcesKey(row.schedule),
 						startedAt: now(),
 						verdict: "unavailable",
 						agent: TODO_ROW_AUDITOR,
@@ -391,6 +395,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 				delivery: todoRowDeliveryKey(row.schedule),
 				repoPath: batch.repoPath,
 				head: batch.head,
+				resourcesKey: todoAuditResourcesKey(row.schedule),
 				startedAt,
 				verdict: "pending",
 				agent,

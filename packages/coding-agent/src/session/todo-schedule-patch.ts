@@ -1,5 +1,47 @@
-import type { TodoSchedulePatchPersistedEdit, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
-import { todoNeedsOwnerDecision, type TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { TodoSchedulePatchPersistedEdit, TodoPhase, TodoItem } from "@oh-my-pi/pi-tui/tools/todo";
+import { todoNeedsOwnerDecision, todoAuditResourcesKey, type TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+
+/** A resource edit invalidates an automatic audit, but never a human acceptance. */
+export function reconcileAuditResourceChange(previous: TodoItem, row: TodoItem): void {
+	const before = previous.schedule;
+	const after = row.schedule;
+	const audit = before?.audit;
+	if (
+		!before ||
+		!after ||
+		!audit ||
+		after.review === "accepted" ||
+		todoAuditResourcesKey(before) === todoAuditResourcesKey(after)
+	)
+		return;
+	// Preserve the old verdict as evidence, bound to the resources it actually checked.
+	if (
+		after.audit &&
+		after.audit.delivery === audit.delivery &&
+		after.audit.startedAt === audit.startedAt &&
+		after.audit.resourcesKey === undefined
+	)
+		after.audit = { ...after.audit, resourcesKey: todoAuditResourcesKey(before) };
+	delete after.auditBase;
+	after.auditRounds = 0;
+	const escalation = before.auditEscalation;
+	if (escalation && after.auditEscalation === escalation) {
+		delete after.auditEscalation;
+		if (row.blocker === escalation) {
+			delete row.blocker;
+			if (row.status === "blocked") row.status = "pending";
+		}
+		if (after.review === "user" && after.reviewSummary === escalation) {
+			delete after.review;
+			delete after.reviewSummary;
+			after.handoffPending = false;
+		}
+	}
+	if (previous.status === "completed" && audit.verdict === "pass" && audit.agent === "qa-auditor") {
+		row.status = "pending";
+		delete after.finishedAt;
+	}
+}
 
 /** Copy only the edited row; archived rows and their histories stay shared. */
 export function patchTodoSchedule(
@@ -12,6 +54,7 @@ export function patchTodoSchedule(
 	if (matches.length !== 1) return undefined;
 	const previous = matches[0]!;
 	const row = { ...previous, schedule: { ...previous.schedule, ...structuredClone(patch) } };
+	reconcileAuditResourceChange(previous, row);
 	if (patch.auditEscalation) {
 		row.status = "blocked";
 		row.blocker = patch.auditEscalation;

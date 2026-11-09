@@ -126,3 +126,46 @@ test("successor launch retains cumulative churn and first clock while refreshing
 	]).phases;
 	expect(revised[0]!.tasks[0]!.schedule).toMatchObject({ reestimateCount: 1, cumulativeReestimateCount: 6 });
 });
+
+test("rescheduling an audited delivery to another revision reopens only automatic completion", () => {
+	const a = "a1".repeat(20),
+		b = "b2".repeat(20);
+	const delivery = JSON.stringify(["Worker", 1, 2]);
+	const row = {
+		content: "Deliver",
+		status: "completed" as const,
+		schedule: {
+			resources: [`git:/work/delivery@${a}`],
+			finishedAt: 3,
+			executor: { workerId: "Worker", startedAt: 1, finishedAt: 2, outcome: "completed" as const },
+			audit: {
+				delivery,
+				repoPath: "/work/delivery",
+				head: a,
+				startedAt: 3,
+				verdict: "pass" as const,
+				agent: "qa-auditor",
+			},
+		},
+	};
+	const initial: TodoPhase[] = [{ name: "Ship", tasks: [row] }];
+	const same = applyOpsToPhases(initial, [
+		{ op: "schedule", updates: [{ task: "Deliver", resources: row.schedule.resources }] },
+	]);
+	expect(same.errors).toEqual([]);
+	expect(same.phases[0]!.tasks[0]!.status).toBe("completed");
+	const changed = applyOpsToPhases(initial, [
+		{ op: "schedule", updates: [{ task: "Deliver", resources: [`git:/work/delivery@${b}`] }] },
+	]);
+	expect(changed.errors).toEqual([]);
+	const updated = changed.phases[0]!.tasks[0]!;
+	expect(updated.status).toBe("pending");
+	expect(updated.schedule!.finishedAt).toBeUndefined();
+	expect(updated.schedule!.audit!.resourcesKey).toBe(JSON.stringify(row.schedule.resources));
+	const accepted = structuredClone(initial);
+	accepted[0]!.tasks[0]!.schedule!.review = "accepted";
+	const human = applyOpsToPhases(accepted, [
+		{ op: "schedule", updates: [{ task: "Deliver", resources: [`git:/work/delivery@${b}`] }] },
+	]);
+	expect(human.phases[0]!.tasks[0]!.status).toBe("completed");
+});

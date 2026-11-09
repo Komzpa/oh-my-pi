@@ -176,6 +176,10 @@ export interface TodoRowAudit {
 	delivery: string;
 	repoPath: string;
 	head: string;
+	/** Resource set recorded when the audit started; legacy records may omit it. */
+	resourcesKey?: string;
+	/** This inconclusive result records that the pinned checkout did not match. */
+	bindingMismatch?: boolean;
 	startedAt: number;
 	verdict: "pending" | "pass" | "fail" | "inconclusive" | "omitted" | "unavailable";
 	agent?: string;
@@ -2315,6 +2319,22 @@ export function todoArtifactGitBinding(task: {
 	return bindings.size === 1 ? [...bindings.values()][0] : undefined;
 }
 
+/** Stable resource identity for binding audit verdicts across schedule edits. */
+export function todoAuditResourcesKey(schedule: TodoSchedule | undefined): string {
+	return JSON.stringify([...(schedule?.resources ?? [])].sort());
+}
+
+/** A verdict applies only to the resource set and explicit git revision it audited. */
+export function todoAuditMatchesResources(schedule: TodoSchedule | undefined, audit: TodoRowAudit): boolean {
+	if (audit.resourcesKey !== undefined && audit.resourcesKey !== todoAuditResourcesKey(schedule)) return false;
+	const binding = todoArtifactGitBinding({ schedule });
+	return (
+		!binding ||
+		(binding.repoPath === audit.repoPath && audit.head === binding.head) ||
+		(audit.bindingMismatch === true && audit.resourcesKey !== undefined && audit.verdict === "inconclusive")
+	);
+}
+
 /** Use the explicitly bound delivery repository before the session's checkout. */
 export function todoArtifactRepository(task: { artifactCwd?: string; schedule?: TodoSchedule }, cwd: string): string {
 	return (
@@ -2373,7 +2393,11 @@ export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWor
 	}
 	// A verdict from another runner (the old gate-runner fallback) verified nothing: re-audit.
 	const audit =
-		schedule.audit?.delivery === delivery && schedule.audit.agent === TODO_ROW_AUDITOR ? schedule.audit : undefined;
+		schedule.audit?.delivery === delivery &&
+		schedule.audit.agent === TODO_ROW_AUDITOR &&
+		todoAuditMatchesResources(schedule, schedule.audit)
+			? schedule.audit
+			: undefined;
 	if (audit?.verdict === "fail")
 		return { kind: "needs-worker", reason: "audit-failed", worker, findings: audit.findings };
 	if (audit?.verdict === "pass") return undefined;
