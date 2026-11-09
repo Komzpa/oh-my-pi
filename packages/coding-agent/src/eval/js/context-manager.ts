@@ -1095,17 +1095,17 @@ async function spawnJsProcess(env?: Record<string, string>): Promise<JsEvalWorke
 		},
 		async terminate() {
 			try {
-			await base.terminate();
-			// Bun hands the child's IPC messages to `ipc` until the channel closes, a SIGKILLed
-			// child's included; wait for that so its last output reaches the handlers. Bounded: a
-			// descendant that inherited the channel could keep it open.
-			const bound = Promise.withResolvers<void>();
-			const timer = setTimeout(bound.resolve, WORKER_CLOSE_TIMEOUT_MS);
-			try {
-				await Promise.race([spawned.disconnected, bound.promise]);
-			} finally {
-				clearTimeout(timer);
-			}
+				await base.terminate();
+				// Bun hands the child's IPC messages to `ipc` until the channel closes, a SIGKILLed
+				// child's included; wait for that so its last output reaches the handlers. Bounded: a
+				// descendant that inherited the channel could keep it open.
+				const bound = Promise.withResolvers<void>();
+				const timer = setTimeout(bound.resolve, WORKER_CLOSE_TIMEOUT_MS);
+				try {
+					await Promise.race([spawned.disconnected, bound.promise]);
+				} finally {
+					clearTimeout(timer);
+				}
 			} finally {
 				resourceScope.close();
 			}
