@@ -8836,7 +8836,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// Handle extension commands first (execute immediately, even during streaming)
 		if (expandPromptTemplates && text.startsWith("/")) {
 			if (options?.runCommands !== false) {
-				const command = await this.#tryExecuteExtensionCommand(text, options?.onPromptAdmitted, options?.throwOnCommandError);
+				const command = await this.#tryExecuteExtensionCommand(
+					text,
+					options?.onPromptAdmitted,
+					options?.throwOnCommandError,
+				);
 				if (command) {
 					// Queued only now, so whatever the command sent runs before them. A failed
 					// command hands them back with itself instead of letting them run without it.
@@ -9776,7 +9780,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Try to execute an extension command: undefined when no command matches, else whether its handler ran or threw.
 	 * `onRouted` fires once the command is found, before its handler runs.
 	 */
-	async #tryExecuteExtensionCommand(text: string, onRouted?: () => void, throwOnError = false): Promise<"ran" | "failed" | undefined> {
+	async #tryExecuteExtensionCommand(
+		text: string,
+		onRouted?: () => void,
+		throwOnError = false,
+	): Promise<"ran" | "failed" | undefined> {
 		if (!this.#extensionRunner) return undefined;
 
 		// Parse command name and args
