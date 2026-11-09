@@ -17,7 +17,7 @@ use std::{
 	fs::FileType,
 	io::{self, Write as _},
 	path::Path,
-	process::{Child, ChildStdin, Command, Output, Stdio},
+	process::{Child, ChildStdin, Output, Stdio},
 	sync::{
 		Arc, Mutex, PoisonError,
 		mpsc::{self, Receiver},
@@ -460,6 +460,8 @@ fn set_mtime(path: &Path, mtime: std::time::SystemTime) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+	#[cfg(unix)]
+	use std::process::Command;
 	use std::{
 		fs,
 		path::{Path, PathBuf},
