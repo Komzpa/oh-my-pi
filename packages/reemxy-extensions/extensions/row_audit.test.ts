@@ -595,7 +595,7 @@ test("18:55 HUD replay: six idle deliveries have zero phantom verifiers and laun
 	expect([...before.states.values()].filter(state => state === "verifying")).toHaveLength(0);
 	const h = harness(
 		phases,
-		Object.fromEntries(phases[0].tasks.map(row => [row.artifactCwd, row.schedule.audit.head])),
+		Object.fromEntries(phases[0].tasks.flatMap(row => [[row.artifactCwd, row.schedule.audit.head], ...(row.schedule.resources ?? []).filter(path => path.startsWith("/")).map(path => [path, row.schedule.audit.head])])),
 	);
 	expect(await h.check()).toBe(1); // exhausted missing-verdict rows now return to staffing
 	expect(await h.check()).toBe(0);
@@ -661,6 +661,22 @@ test("audits the repository bound by an exact git resource instead of lead cwd",
 	const batches = planRowAudits([row], new Map([["/work/delivery", sha], ["/work/lead", "b".repeat(40)]]), "/work/lead", () => false, () => false);
 	expect(batches).toHaveLength(1);
 	expect(batches[0]!.repoPath).toBe("/work/delivery");
+	expect(batches[0]!.head).toBe(sha);
+});
+
+test("audits a plain checkout resource instead of the stale artifact cwd", () => {
+	const delivery = mkdtempSync(join(tmpdir(), "audit-checkout-"));
+	const init = Bun.spawnSync(["git", "init", "-q", delivery]);
+	expect(init.exitCode).toBe(0);
+	const sha = "c1".repeat(20);
+	const row = { content: "Published delivery", status: "in_progress", artifactCwd: "/work/old", schedule: {
+		resources: [delivery],
+		progress: { evidence: `Published ${sha}` },
+		executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const batches = planRowAudits([row], new Map([[delivery, sha], ["/work/old", "b".repeat(40)]]), "/work/old", () => false, () => false);
+	expect(batches).toHaveLength(1);
+	expect(batches[0]!.repoPath).toBe(delivery);
 	expect(batches[0]!.head).toBe(sha);
 });
 

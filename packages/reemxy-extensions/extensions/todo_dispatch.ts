@@ -2612,7 +2612,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const usual = stalledWakeDemand(phases, running, now, deadline, finish, questions);
     const primary = questions?.length ? usual : chainDemand(phases) ?? (usual?.churn ? usual : undefined);
     return primary && strict
-      ? { ...primary, action: prompt.render(concurrentRecoveryInstructions, { primary: primary.action, recovery: strict.action }).trim() }
+      ? { ...primary, key: JSON.stringify([primary.key, strict.key]), action: prompt.render(concurrentRecoveryInstructions, { primary: primary.action, recovery: strict.action }).trim() }
       : primary ?? strict ?? usual;
   };
   const prepareWake = (ctx: ExtensionContext) => {

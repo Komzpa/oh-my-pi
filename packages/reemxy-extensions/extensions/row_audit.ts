@@ -17,6 +17,7 @@ import {
 	todoRowDeliveryKey,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import brief from "./row-audit.md" with { type: "text" };
+import { checkoutScopesFromResources } from "./checkout_scope";
 
 /** Concurrent audit batches per session, the same ceiling as the requirements auditor pool. */
 export const ROW_AUDIT_CAP = 4;
@@ -130,6 +131,17 @@ export function rowAuditIssues(verdict: RowAuditVerdict): AuditFinding[] {
 }
 
 function rowRepo(row: RowAuditRow, cwd: string): string {
+	// The same resource scope used by worker dispatch may name a checkout as a
+	// plain path. Prefer its unique git root to the stale session artifact cwd.
+	// Ambiguous or non-git scopes keep the existing repository selection.
+	if (!todoArtifactGitBinding(row)) {
+		const scopes = checkoutScopesFromResources(row.schedule?.resources);
+		const roots = new Set(scopes?.map(scope => scope.split("\0")[0]) ?? []);
+		if (roots.size === 1 && scopes?.some(scope => scope.endsWith("\0."))) {
+			const root = [...roots][0]!;
+			if (existsSync(`${root}/.git`)) return root;
+		}
+	}
 	return todoArtifactRepository(row, cwd);
 }
 

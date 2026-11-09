@@ -516,6 +516,34 @@ test("an unchanged urgent dependency chain wakes the idle chief only once", asyn
 	}
 });
 
+test("new recovery demand wakes a chief even while the urgent chain is unchanged", async () => {
+	const previousLane = process.env.OMP_LANE_UNIT;
+	delete process.env.OMP_LANE_UNIT;
+	let now = Date.now();
+	const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const phases = chainedPlan(3, now);
+	const head = phases[0]!.tasks[0]!;
+	head.status = "pending";
+	head.schedule.owner = undefined;
+	head.schedule.cumulativeReestimateCount = 3;
+	const h = await noticeHarness(phases, now + 24 * 60 * 60_000);
+	h.ctx.getTodoPhases = () => phases;
+	try {
+		await h.tick();
+		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(1);
+		now += 11 * 60_000;
+		await h.tick();
+		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(2);
+		await h.tick();
+		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(2);
+	} finally {
+		h.shutdown();
+		nowSpy.mockRestore();
+		if (previousLane === undefined) delete process.env.OMP_LANE_UNIT;
+		else process.env.OMP_LANE_UNIT = previousLane;
+	}
+});
+
 test("repeated retro and checkpoint notices do not send another chief turn, and an unchanged plan-check is delivered once", async () => {
 	const previousLane = process.env.OMP_LANE_UNIT;
 	delete process.env.OMP_LANE_UNIT;
