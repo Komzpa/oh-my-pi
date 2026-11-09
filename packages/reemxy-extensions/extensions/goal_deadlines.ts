@@ -599,7 +599,9 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 	});
 
 	pi.on("tool_call", (event, ctx) => {
-		if ((event.toolName === "wait" || event.toolName === "stop") && missedWorkDemand(ctx))
+		const waitingOnOwnedJob = event.toolName === "wait" &&
+			(ctx.getAsyncJobSnapshot?.()?.running ?? []).some(job => job.status === "running" && !job.queued);
+		if ((event.toolName === "wait" || event.toolName === "stop") && !waitingOnOwnedJob && missedWorkDemand(ctx))
 			return { block: true, reason: missedWorkDemand(ctx) };
 		if ((event.toolName === "task" || (event.toolName === "todo" && (event.input.op === "init" || event.input.op === "append"))) && deadlineSdk.isUserDeadlineMissed(state)) {
 			const due = deadlineSdk.formatLocalClock(state!.baselineDeadlineAt! * 1_000, state!.timezone);

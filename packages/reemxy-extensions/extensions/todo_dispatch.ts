@@ -1055,7 +1055,7 @@ export function decideGateCall(
   // running task: idle/parked workers and shell:/peer: routes are also valid replies.
   if (call.name === "write") {
     const path = (call.arguments as { path?: unknown } | undefined)?.path;
-    if (typeof path === "string" && path.startsWith("agent://")) return { allowed: true, remedyGateIds: [] };
+    if (typeof path === "string" && (path.startsWith("agent://") || path === "xd://goal_deadline")) return { allowed: true, remedyGateIds: [] };
   }
   if (gates.length === 0) return { allowed: true, remedyGateIds: [] };
   const passing = gates.filter((gate) => {
@@ -5640,7 +5640,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (wakeTurn) wakeTurn.toolCalls += 1;
     if (isMain(ctx) && !pauseGate?.paused && !singleWriterLane && !gateSwitchedOff(ctx)) {
       if (event.toolName === "todo_dispatch_forecast" && recovery?.pending?.kind === "deadline") return;
-      if (["wait", "yield"].includes(event.toolName) && recovery?.pending && (recoveryReceipt(ctx)?.misses ?? 0) >= 2)
+      if (["wait", "yield"].includes(event.toolName) && !ownedWait && recovery?.pending && (recoveryReceipt(ctx)?.misses ?? 0) >= 2)
         return { block: true, reason: recovery.pending.action };
     }
     // A non-read tool call (a todo change, a task dispatch, an edit, a command) is progress for the absence wake.
@@ -5870,11 +5870,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     if (event.toolName === "task" && taskItems(event.input).some((item) => item["agent"] === "retro-facilitator")) resetDemand("retro");
     if (event.toolName === "wait") {
-      if (isMain(ctx) && !pauseGate?.paused) {
+      if (!ownedWait && isMain(ctx) && !pauseGate?.paused) {
         const recovery = activeRecoveries(ctx)[0];
         if (recovery) return { block: true, reason: recoveryNotice(recovery) };
       }
-      return blockIdleWait(ctx);
+      return ownedWait && recovery?.pending?.kind === "deadline" ? undefined : blockIdleWait(ctx);
     }
     if (event.toolName === "task") chiefRefusals = 0;
     const rerouted = rerouteSettledWorkerWrite(event as { toolName: string; input?: unknown }, ctx);

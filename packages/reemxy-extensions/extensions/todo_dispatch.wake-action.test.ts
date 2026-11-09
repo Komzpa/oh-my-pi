@@ -469,3 +469,20 @@ test("deleted idle demand no longer blocks wait after reload", async () => {
     expect(result?.block).not.toBe(true);
   } finally { clock.mockRestore(); }
 });
+
+test("deadline escalation permits waiting on a live owned job without clearing recovery", async () => {
+  const h = await harness([], false, true);
+  await h.hooks.get("turn_start")({}, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  await h.hooks.get("turn_start")({}, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.misses).toBeGreaterThanOrEqual(2);
+  const waiting = { toolName: "wait", input: {} };
+  expect((await h.hooks.get("tool_call")(waiting, h.ctx))?.block).toBe(true);
+  h.jobs.running.push({ id: "ShortlistCleanup", type: "task", status: "running", queued: false });
+  const liveResult = await h.hooks.get("tool_call")(waiting, h.ctx);
+  expect(liveResult?.block).not.toBe(true);
+  expect(h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.recovery.pending.kind).toBe("deadline");
+  h.jobs.running[0].status = "completed";
+  expect((await h.hooks.get("tool_call")(waiting, h.ctx))?.block).toBe(true);
+});

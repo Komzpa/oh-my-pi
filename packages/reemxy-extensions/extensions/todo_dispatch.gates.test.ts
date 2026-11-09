@@ -2627,6 +2627,10 @@ for (const path of ["agent://RunningWorker", "agent://IdleWorker", "agent://Park
     expect(decideGateCall({ name: "write", arguments: { path, content: "check-in: status?" } }, [armedMissedEta]).allowed).toBe(true);
   });
 }
+test("deadline correction is admitted through dispatch gates", () => {
+  expect(decideGateCall({ name: "write", arguments: { path: "xd://goal_deadline", content: "{}" } }, [armedMissedEta]).allowed).toBe(true);
+  expect(decideGateCall({ name: "write", arguments: { path: "xd://goal_deadline-other", content: "{}" } }, [armedMissedEta]).allowed).toBe(false);
+});
 test("armed missed-eta admits context_notes but refuses bash", () => {
   expect(decideGateCall({ name: "context_notes", arguments: { text: "check-in" } }, [armedMissedEta]).allowed).toBe(true);
   expect(decideGateCall({ name: "bash", arguments: { command: "bun test" } }, [armedMissedEta]).allowed).toBe(false);

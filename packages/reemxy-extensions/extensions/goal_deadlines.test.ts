@@ -1056,6 +1056,19 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		expect(first.details.state?.userConstraint?.messageId).toBe("u1");
 	});
 
+	test("a missed deadline allows waiting for a running owned task", async () => {
+		setSystemTime(NOW);
+		const h = harness("Ship by 19:00");
+		await h.set({ local_time: "19:00" }, "Ship by 19:00");
+		h.todoPhases.push({ name: "Requested", tasks: [{ content: "Ship", status: "pending" }] });
+		setSystemTime(Date.parse("2026-10-21T15:01:00Z"));
+		const jobs = { running: [{ id: "Worker", status: "running", queued: false }] };
+		(h.ctx as any).getAsyncJobSnapshot = () => jobs;
+		expect(h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx)).toBeUndefined();
+		jobs.running[0].status = "completed";
+		expect((h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx) as any)?.block).toBe(true);
+	});
+
 	test("a missed deadline replans open requested rows and keeps executing", async () => {
 		setSystemTime(NOW);
 		const h = harness("Ship by 19:00");
