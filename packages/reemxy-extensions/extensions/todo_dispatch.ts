@@ -378,17 +378,14 @@ export async function readGitIntegrationState(cwd: string, now: number, env: Nod
     || (branch && await git("config", "--get", `branch.${branch}.remote`)) || "origin";
   const configured = Number(await git("config", "--get", "omp.unpushedThresholdMinutes"));
   state.pushThresholdMs = configured > 0 && Number.isFinite(configured) ? configured * 60_000 : STALE_PUSH_MS;
-  const remotes = await git("remote");
-  if (remotes === null || !remotes) return state;
+  if (!state.pushBranch || !state.pushRemote) return state;
+  const heads = await git("ls-remote", "--heads", state.pushRemote);
+  // Unknown is not published. Preserve the row on network/authentication failures.
+  if (heads === null) return state;
   const advertised = new Set<string>();
-  const remoteHeads = await Promise.all(remotes.split("\n").map(remote => git("ls-remote", "--heads", remote)));
-  for (const heads of remoteHeads) {
-    // Unknown is not published. Preserve the row on network/authentication failures.
-    if (heads === null) return state;
-    for (const line of heads.split("\n")) {
-      const sha = line.split(/\s+/)[0];
-      if (sha && /^[0-9a-f]{40,64}$/.test(sha)) advertised.add(sha);
-    }
+  for (const line of heads.split("\n")) {
+    const sha = line.split(/\s+/)[0];
+    if (sha && /^[0-9a-f]{40,64}$/.test(sha)) advertised.add(sha);
   }
   const checked = advertised.size ? await gitInput(["cat-file", "--batch-check=%(objectname) %(objecttype)"], [...advertised].join("\n") + "\n") : "";
   if (checked === null) return state;
