@@ -170,9 +170,9 @@ export function planRowAudits(
 		const repoPath = rowRepo(row, cwd);
 		const head = heads.get(repoPath) ?? "unknown";
 		const binding = todoArtifactGitBinding(row);
-		if (binding && (binding.repoPath !== repoPath || binding.head !== head)) continue;
+		if (head === "unknown" || (binding && (binding.repoPath !== repoPath || binding.head !== head))) continue;
 		const previous = after.kind === "verify" ? after.audit : row.schedule?.audit;
-		const audit = previous?.head === head ? previous : undefined;
+		const audit = previous?.head === head && previous.repoPath === repoPath ? previous : undefined;
 		if (audit?.verdict === "pass" || audit?.cancelled) continue;
 		const omitted = audit?.verdict === "omitted" || audit?.findings === "auditor returned no verdict for this row";
 		let attempt = audit?.attempts ?? 1;
@@ -189,7 +189,7 @@ export function planRowAudits(
 		if (inFlight(repoPath, head, row)) continue;
 		const key = JSON.stringify([repoPath, head, ...(omitted ? [row.content] : [])]);
 		const batch = batches.get(key) ?? { repoPath, head, rows: [] };
-		batch.rows.push({ ...row, attempt, ...(retry ? { retry } : {}) });
+		batch.rows.push({ ...row, schedule: row.schedule && { ...row.schedule, resources: row.schedule.resources && [...row.schedule.resources] }, attempt, ...(retry ? { retry } : {}) });
 		batches.set(key, batch);
 	}
 	return [...batches.values()];
@@ -294,7 +294,10 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	const liveIds = new Set(jobs.flatMap(job => [job.id, job.agentId].filter((id): id is string => !!id)));
 	const isLive = (row: RowAuditRow) =>
 		[row.schedule?.owner, row.schedule?.executor?.workerId].some(id => typeof id === "string" && liveIds.has(id));
-	const candidates = rows.filter(row => {
+	const candidates = rows.map(row => ({ ...row, schedule: row.schedule && { ...row.schedule,
+		resources: row.schedule.resources && [...row.schedule.resources],
+		audit: row.schedule.audit && { ...row.schedule.audit },
+	} })).filter(row => {
 		const after = isLive(row) ? undefined : todoRowAfterWorker(row);
 		return (
 			(after?.kind === "verify" && after.via === "audit") ||
@@ -310,6 +313,10 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		const repoPath = rowRepo(row, ctx.cwd);
 		const head = heads.get(repoPath) ?? "unknown";
 		if (!binding || (binding.repoPath === repoPath && binding.head === head)) continue;
+		const latest = ctx.getTodoPhases?.()?.flatMap(phase => phase.tasks).find(candidate => candidate.content === row.content);
+		if (!latest || todoRowDeliveryKey(latest.schedule) !== todoRowDeliveryKey(row.schedule) ||
+			JSON.stringify([...(latest.schedule?.resources ?? [])].sort()) !== JSON.stringify([...(row.schedule?.resources ?? [])].sort()) ||
+			JSON.stringify(latest.schedule?.audit) !== JSON.stringify(row.schedule?.audit)) continue;
 		const delivery = todoRowDeliveryKey(row.schedule);
 		const findings = `Pinned delivery ${binding.repoPath}@${binding.head} does not match checkout ${repoPath}@${head}; restore or rebind the artifact before audit`;
 		if (row.schedule?.audit?.delivery === delivery && row.schedule.audit.head === head && row.schedule.audit.findings === findings) continue;
@@ -325,11 +332,24 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	const running = () => [...inFlight.keys()].filter(key => key.startsWith(`[${JSON.stringify(session)},`)).length;
 	const batches = planRowAudits(candidates, heads, ctx.cwd, isLive, busy);
 	if (!batches.length) return 0;
+	// A row may be rebound while registry resolution or an auditor is in flight.
+	// Resource identity is separate from executor delivery identity.
+	const resourceKey = (row: RowAuditRow) => JSON.stringify([...(row.schedule?.resources ?? [])].sort());
+	const latestFor = (row: RowAuditRow, batch: RowAuditBatch) => {
+		const latest = ctx.getTodoPhases?.()?.flatMap(phase => phase.tasks).find(candidate => candidate.content === row.content);
+		if (!latest || todoRowDeliveryKey(latest.schedule) !== todoRowDeliveryKey(row.schedule) ||
+			resourceKey(latest) !== resourceKey(row) || rowRepo(latest, ctx.cwd) !== batch.repoPath) return undefined;
+		const binding = todoArtifactGitBinding(latest);
+		return binding && (binding.repoPath !== batch.repoPath || binding.head !== batch.head) ? undefined : latest;
+	};
 	const agent = await (options.resolveAuditor ?? (() => registryAuditor(ctx.cwd)))();
 	if (!agent) {
 		for (const batch of batches)
 			for (const row of batch.rows) {
-				const current = row.schedule?.audit;
+				const latest = latestFor(row, batch);
+				if (!latest) continue;
+				const current = latest.schedule?.audit;
+				if (JSON.stringify(current) !== JSON.stringify(row.schedule?.audit)) continue;
 				const delivery = todoRowDeliveryKey(row.schedule);
 				if (current?.verdict === "unavailable" && current.delivery === delivery && current.head === batch.head)
 					continue;
@@ -356,11 +376,12 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		if (running() >= ROW_AUDIT_CAP) break;
 		// Recheck after asynchronous registry resolution: another tick may have claimed these rows.
 		batch.rows = batch.rows.filter(row => {
-			const latest = ctx.getTodoPhases?.()?.flatMap(phase => phase.tasks).find(candidate => candidate.content === row.content);
+			const latest = latestFor(row, batch);
 			const after = latest && todoRowAfterWorker(latest);
 			return latest && !latest.schedule?.auditEscalation &&
 				((after?.kind === "verify" && after.via === "audit") || (after?.kind === "needs-worker" && after.reason === "audit-inconclusive")) &&
-				todoRowDeliveryKey(latest.schedule) === todoRowDeliveryKey(row.schedule) && !busy(batch.repoPath, batch.head, row);
+				todoRowDeliveryKey(latest.schedule) === todoRowDeliveryKey(row.schedule) &&
+				rowRepo(latest, ctx.cwd) === batch.repoPath && !busy(batch.repoPath, batch.head, row);
 		});
 		const key = batchKey(batch);
 		const startedAt = now();
@@ -389,12 +410,13 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 				const head = (await readHead(batch.repoPath)) ?? "unknown";
 				// A moved head makes these verdicts stale; the next check audits once at the new head.
 				if (head !== batch.head) return;
-				const latest = (ctx.getTodoPhases?.() ?? []).flatMap(phase => phase.tasks);
 				for (const [content, audit] of records) {
-					const row = latest.find(candidate => candidate.content === content);
+					const original = batch.rows.find(candidate => candidate.content === content)!;
+					const row = latestFor(original, batch);
 					const current = row?.schedule?.audit;
 					if (
 						!row ||
+						rowRepo(row, ctx.cwd) !== batch.repoPath ||
 						current?.delivery !== audit.delivery ||
 						current.head !== audit.head ||
 						current.startedAt !== audit.startedAt ||
@@ -452,10 +474,8 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 					for (const [content, audit] of records) {
 						if (audit.workerId === workerId) continue;
 						audit.workerId = workerId;
-						const current = ctx
-							.getTodoPhases?.()
-							?.flatMap(phase => phase.tasks)
-							.find(row => row.content === content)?.schedule?.audit;
+						const original = batch.rows.find(row => row.content === content)!;
+						const current = latestFor(original, batch)?.schedule?.audit;
 						if (current?.delivery === audit.delivery && current.startedAt === audit.startedAt && current.verdict === "pending")
 							ctx.updateTodoSchedule!(content, { audit: { ...audit } });
 					}
@@ -469,10 +489,8 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 				if (aborted) {
 					const at = now();
 					for (const [content, audit] of records) {
-						const current = ctx
-							.getTodoPhases?.()
-							?.flatMap(phase => phase.tasks)
-							.find(row => row.content === content)?.schedule?.audit;
+						const original = batch.rows.find(row => row.content === content)!;
+						const current = latestFor(original, batch)?.schedule?.audit;
 						if (
 							current?.delivery === audit.delivery &&
 							current.head === audit.head &&
@@ -494,12 +512,15 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 				await submit(details?.results?.[0]?.output);
 			} catch (error) {
 				for (const row of batch.rows) {
-					failedAt.set(rowKey(row), now());
 					const audit = records.get(row.content);
-					if (audit)
+					const current = latestFor(row, batch)?.schedule?.audit;
+					if (audit && current?.delivery === audit.delivery && current.head === audit.head &&
+						current.startedAt === audit.startedAt && (current.verdict === "pending" || current.verdict === "omitted")) {
+						failedAt.set(rowKey(row), now());
 						ctx.updateTodoSchedule!(row.content, {
 							audit: { ...audit, verdict: "unavailable", findings: String(error), at: now() },
 						});
+					}
 				}
 				logger.warn("Row audit did not run", { repo: batch.repoPath, head: batch.head, error: String(error) });
 			} finally {

@@ -163,7 +163,7 @@ function harness(
 		launches[index].abort();
 		for (let i = 0; i < 5; i++) await Bun.sleep(0);
 	};
-	return { phases, rows, ctx, launches, check, settle, abort, heads };
+	return { phases, rows, ctx, launches, check, settle, abort, heads, options };
 }
 
 test("a stopped audit is not relaunched for the same delivery and head", async () => {
@@ -591,6 +591,16 @@ test("a new worker delivery invalidates the previous pass and starts a fresh aud
 
 test("18:55 HUD replay: six idle deliveries have zero phantom verifiers and launch only within capacity", async () => {
 	const phases = structuredClone(auditStall);
+	// The recorded absolute paths may now be separate worktrees on the host.
+	// Keep this lifecycle replay independent of the host's current checkout layout.
+	const sourceRoot = phases[0].tasks[0].artifactCwd;
+	const repo = mkdtempSync(join(tmpdir(), "audit-replay-"));
+	expect(Bun.spawnSync(["git", "init", "-q", repo]).exitCode).toBe(0);
+	for (const row of phases.flatMap(phase => phase.tasks)) {
+		row.artifactCwd = row.artifactCwd?.replace(sourceRoot, repo);
+		row.schedule.audit.repoPath = row.schedule.audit.repoPath?.replace(sourceRoot, repo);
+		row.schedule.resources = row.schedule.resources?.map(resource => resource.replace(sourceRoot, repo));
+	}
 	const before = replay(phases);
 	expect([...before.states.values()].filter(state => state === "verifying")).toHaveLength(0);
 	const h = harness(
@@ -715,4 +725,97 @@ test("mismatched pinned delivery is visible and never launches an audit", async 
 	expect(row.schedule.audit?.findings).toContain("does not match checkout");
 	expect(await h.check()).toBe(0);
 	expect(h.launches).toHaveLength(0);
+});
+
+test("rebinding the pinned commit while an audit runs discards the old verdict", async () => {
+	const a = "a1".repeat(20), b = "b2".repeat(20);
+	const row = { content: "Verify rebinding", status: "in_progress", schedule: {
+		resources: [`git:/work/delivery@${a}`],
+		executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const h = harness([{ name: "Delivery", tasks: [row] }], { "/work/delivery": a });
+	expect(await h.check()).toBe(1);
+	row.schedule.resources = [`git:/work/delivery@${b}`];
+	await h.settle(0, { rows: [verdict(row.content, "pass")] });
+	expect(row.status).toBe("in_progress");
+	expect(row.schedule.audit.verdict).toBe("pending");
+	h.heads["/work/delivery"] = b;
+	expect(await h.check()).toBe(1);
+	await h.settle(1, { rows: [verdict(row.content, "pass")] });
+	expect(row.schedule.audit.head).toBe(b);
+	expect(row.status).toBe("completed");
+});
+
+test("a delayed failed audit cannot overwrite a newer audit after rebinding", async () => {
+	const a = "a1".repeat(20), b = "b2".repeat(20);
+	const row = { content: "Verify delayed error", status: "in_progress", schedule: {
+		resources: [`git:/work/delivery@${a}`],
+		executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const h = harness([{ name: "Delivery", tasks: [row] }], { "/work/delivery": a });
+	expect(await h.check()).toBe(1);
+	row.schedule.resources = [`git:/work/delivery@${b}`];
+	const newer = { ...row.schedule.audit, head: b, startedAt: row.schedule.audit.startedAt + 1 };
+	row.schedule.audit = newer;
+	h.launches[0].reject(new Error("delayed failure"));
+	for (let i = 0; i < 5; i++) await Bun.sleep(0);
+	expect(row.schedule.audit).toEqual(newer);
+});
+
+test("rebinding during auditor resolution does not launch the old audit", async () => {
+	const a = "a1".repeat(20), b = "b2".repeat(20);
+	const row = { content: "Verify deferred resolution", status: "in_progress", schedule: {
+		resources: [`git:/work/delivery@${a}`],
+		executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const h = harness([{ name: "Delivery", tasks: [row] }], { "/work/delivery": a });
+	let release: (value: string) => void;
+	const ready = new Promise<void>(resolve => {
+		h.options.resolveAuditor = () => new Promise(done => { release = done; resolve(); });
+	});
+	const checking = h.check();
+	await ready;
+	row.schedule.resources = [`git:/work/delivery@${b}`];
+	release!("qa-auditor");
+	expect(await checking).toBe(0);
+	expect(h.launches).toHaveLength(0);
+});
+
+test("checkout rebind while reading HEAD never launches an unmeasured checkout", async () => {
+	const a = "a1".repeat(20), b = "b2".repeat(20);
+	const row = { content: "Verify deferred head", status: "in_progress", schedule: {
+		resources: [`git:/work/a@${a}`], executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const h = harness([{ name: "Delivery", tasks: [row] }], { "/work/a": a, "/work/b": b });
+	let release: (value: string) => void;
+	const ready = new Promise<void>(resolve => {
+		h.options.readHead = () => new Promise(done => { release = done; resolve(); });
+	});
+	const checking = h.check();
+	await ready;
+	row.schedule.resources = [`git:/work/b@${b}`];
+	release!(a);
+	expect(await checking).toBe(0);
+	expect(h.launches).toHaveLength(0);
+});
+
+test("late missing-profile response cannot overwrite another running audit", async () => {
+	const sha = "a1".repeat(20);
+	const row = { content: "Verify late registry response", status: "in_progress", schedule: {
+		resources: [`git:/work/delivery@${sha}`], executor: { workerId: "Reader", startedAt: 1, finishedAt: 2, outcome: "completed" },
+	} };
+	const h = harness([{ name: "Delivery", tasks: [row] }], { "/work/delivery": sha });
+	let release: (value: undefined) => void;
+	const ready = new Promise<void>(resolve => {
+		h.options.resolveAuditor = () => new Promise(done => { release = done; resolve(); });
+	});
+	const first = h.check();
+	await ready;
+	h.options.resolveAuditor = async () => "qa-auditor";
+	expect(await h.check()).toBe(1);
+	const pending = structuredClone(row.schedule.audit);
+	release!(undefined);
+	expect(await first).toBe(0);
+	expect(row.schedule.audit).toEqual(pending);
+	await h.abort(0);
 });
