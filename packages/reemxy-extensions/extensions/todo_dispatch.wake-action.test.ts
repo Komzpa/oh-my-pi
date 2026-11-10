@@ -1,6 +1,8 @@
 // @ts-nocheck -- drives the registered dispatcher against disposable session state.
 import { afterEach, expect, test, spyOn, vi } from "bun:test";
 import { Type } from "@sinclair/typebox";
+import { Agent } from "@oh-my-pi/pi-agent-core";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch from "./todo_dispatch";
@@ -9,7 +11,7 @@ import { wakeDemand } from "./dispatch_wake";
 
 afterEach(() => vi.restoreAllMocks());
 
-async function harness(journal = [], chain = false, healthy = false, deadlineEnabled = true) {
+async function harness(journal = [], chain = false, healthy = false, deadlineEnabled = true, onSend = undefined) {
   const hooks = new Map();
   const sent = [];
   const timers = [];
@@ -28,7 +30,11 @@ async function harness(journal = [], chain = false, healthy = false, deadlineEna
   const jobs = { running: [], recent: [], nonJobAgents: [] };
   const api = { typebox: { Type }, registerTool: tool => tools.set(tool.name, tool), on: (name, fn) => hooks.set(name, fn), getActiveTools: () => ["todo", "task"],
     appendEntry: (customType, data) => journal.push({ type: "custom", customType, data }),
-    sendMessage: (message, options) => sent.push({ ...message, options }),
+    sendMessage: (message, options) => {
+      const emission = { ...message, options };
+      sent.push(emission);
+      onSend?.(emission);
+    },
     pi: { ...schedule, getLatestTodoPhasesFromEntries, readGoalDeadline: () => deadlineEnabled ? ({ goalId: "wake", deadlineAt: now - 6 * 3600000 }) : undefined, agentPauseGate: { paused: false } },
   };
   const ctx = { cwd: "/tmp/omp-wake-test", sessionManager: { getHeader: () => ({ id: "wake" }),
