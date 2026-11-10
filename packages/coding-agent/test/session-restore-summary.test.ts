@@ -3,7 +3,10 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { hasRestorableTurn } from "../src/session/exit-diagnostics";
+import { ENTRY_REVISION, HEADER_REVISION } from "../src/session/journal-records";
+import { loadSessionRestoreSummary } from "../src/session/session-restore-summary";
 import * as loader from "../src/session/session-loader";
+import { resolveSessionLeafId } from "../src/session/session-entries";
 import { collectSubSessions } from "../src/session/sub-sessions";
 
 let temp: TempDir | undefined;
@@ -136,4 +139,82 @@ it("replays an unterminated record, invalidates rewritten files, and retains bra
 	expect(hasRestorableTurn(rewritten.entries)).toBe(true);
 	expect(rewritten.leafId).toBe("restart");
 	expect(rewritten.aborted).toBe(true);
+});
+
+it("folds header and entry revisions into their logical slots without creating a revision leaf", async () => {
+	const { file } = await fixture();
+	const movedCwd = path.join(temp!.path(), "moved");
+	const revisedPending = message("pending", "assistant", [{ type: "text", text: "done" }], { stopReason: "stop" });
+	const before = await loadSessionRestoreSummary(file);
+	expect(before.entries[0]).toMatchObject({ type: "session", cwd: temp!.path() });
+	const headerRevision = {
+		type: "custom",
+		id: "header-revision-record",
+		parentId: null,
+		timestamp: "2026-11-06T00:01:00Z",
+		customType: HEADER_REVISION,
+		data: { type: "session", id: "session", version: 3, cwd: movedCwd },
+	};
+	const entryRevision = {
+		type: "custom",
+		id: "entry-revision-record",
+		parentId: null,
+		timestamp: "2026-11-06T00:02:00Z",
+		customType: ENTRY_REVISION,
+		data: revisedPending,
+	};
+	await fs.appendFile(file, lines([headerRevision]));
+	const partialRecord = JSON.stringify(entryRevision);
+	await fs.appendFile(file, partialRecord.slice(0, -1));
+	const incomplete = await loadSessionRestoreSummary(file);
+	expect(incomplete.entries[0]).toMatchObject({ type: "session", cwd: movedCwd });
+	expect(incomplete.restoreLeafId).toBe("pending");
+	expect(hasRestorableTurn(incomplete.entries)).toBe(true);
+	await fs.appendFile(file, "}\n");
+
+	const canonical = await loader.loadSessionFile(file);
+	const summary = await loadSessionRestoreSummary(file);
+	const logicalEntries = canonical.entries.filter(entry => entry.type !== "session");
+	expect(summary.restoreLeafId).toBe(resolveSessionLeafId(logicalEntries));
+	expect(summary.restoreLeafId).toBe("pending");
+	expect(summary.entries.some(entry => entry.id === "entry-revision-record")).toBe(false);
+	expect(summary.entries[0]).toEqual(canonical.entries[0]);
+	expect(hasRestorableTurn(summary.entries)).toBe(false);
+	// Completing a trailing revision must not mutate a result returned from the prior snapshot.
+	expect(hasRestorableTurn(incomplete.entries)).toBe(true);
+});
+
+it("folds revisions on a cold summary read", async () => {
+	const { file } = await fixture();
+	const coldFile = path.join(temp!.path(), "cold.jsonl");
+	await fs.copyFile(file, coldFile);
+	await fs.appendFile(
+		coldFile,
+		lines([
+			{
+				type: "custom",
+				id: "cold-header-revision-record",
+				parentId: null,
+				timestamp: "2026-11-06T00:01:00Z",
+				customType: HEADER_REVISION,
+				data: { type: "session", id: "session", version: 3, cwd: "/moved" },
+			},
+			{
+				type: "custom",
+				id: "cold-entry-revision-record",
+				parentId: null,
+				timestamp: "2026-11-06T00:02:00Z",
+				customType: ENTRY_REVISION,
+				data: message("pending", "assistant", [{ type: "text", text: "done" }], { stopReason: "stop" }),
+			},
+		]),
+	);
+	const canonical = await loader.loadSessionFile(coldFile);
+	const summary = await loadSessionRestoreSummary(coldFile);
+	expect(summary.entries[0]).toEqual(canonical.entries[0]);
+	expect(summary.restoreLeafId).toBe(
+		resolveSessionLeafId(canonical.entries.filter(entry => entry.type !== "session")),
+	);
+	expect(summary.restoreLeafId).toBe("pending");
+	expect(hasRestorableTurn(summary.entries)).toBe(false);
 });

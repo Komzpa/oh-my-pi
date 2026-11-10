@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import type * as fileFs from "node:fs";
 import { isEnoent } from "@oh-my-pi/pi-utils";
+import { entryRevision, headerRevision } from "./journal-records";
 import { sessionEntryLeafId, type FileEntry, type SessionEntry, type SessionHeader } from "./session-entries";
 import { sessionExitFollowsLastMessage } from "./exit-diagnostics";
 import { visitEntriesFromFileStream, type SessionLoadResult } from "./session-loader";
@@ -14,6 +15,7 @@ interface PositionedEntry {
 interface Projection {
 	ids: Set<string>;
 	leafId: string | null;
+	leafEntryId?: string;
 	selfLeafId: string | null;
 	header?: SessionHeader;
 	invalidHeader: boolean;
@@ -71,6 +73,29 @@ async function copyProjection(value: Projection): Promise<Projection> {
 }
 
 function visit(projection: Projection, entry: FileEntry): void {
+	const revisedHeader = headerRevision(entry);
+	if (revisedHeader) {
+		if (projection.header?.id === revisedHeader.id) projection.header = revisedHeader;
+		return;
+	}
+	const revisedEntry = entryRevision(entry);
+	if (revisedEntry) {
+		// Revision records replace their target's logical slot. They do not add a
+		// new leaf or advance the position counter.
+		if (!projection.ids.has(revisedEntry.id)) return;
+		const summaryEntry = summarizeEntry(revisedEntry);
+		const replace = (value: PositionedEntry | undefined) =>
+			value?.entry.id === revisedEntry.id ? { ...value, entry: summaryEntry } : value;
+		projection.init = replace(projection.init);
+		projection.assistant = replace(projection.assistant);
+		projection.message = replace(projection.message);
+		projection.exit = replace(projection.exit);
+		for (const [id, value] of projection.yields) {
+			if (value.entry.id === revisedEntry.id) projection.yields.set(id, { ...value, entry: summaryEntry });
+		}
+		if (projection.leafEntryId === revisedEntry.id) projection.leafId = sessionEntryLeafId(revisedEntry);
+		return;
+	}
 	const position = projection.seen++;
 	if (position === 0) {
 		if (entry.type === "session" && typeof entry.id === "string") projection.header = entry;
@@ -78,6 +103,7 @@ function visit(projection: Projection, entry: FileEntry): void {
 	}
 	if (entry.type === "session") return;
 	projection.ids.add(entry.id);
+	projection.leafEntryId = entry.id;
 	projection.leafId = sessionEntryLeafId(entry);
 	if (projection.leafId === entry.id) projection.selfLeafId = entry.id;
 	const positioned = { position, entry };
@@ -88,19 +114,28 @@ function visit(projection: Projection, entry: FileEntry): void {
 	// images, tool output and arguments are deliberately not retained.
 	const message = entry.message;
 	if (message.role === "assistant") {
-		positioned.entry = {
-			...entry,
-			message: {
-				...message,
-				content: message.content.flatMap(part => (part.type === "toolCall" ? [{ ...part, arguments: {} }] : [])),
-			},
-		};
+		positioned.entry = summarizeEntry(entry);
 		projection.assistant = positioned;
 	} else if (message.role === "user" || message.role === "toolResult") {
-		positioned.entry = { ...entry, message: { ...message, content: [] } };
+		positioned.entry = summarizeEntry(entry);
 	}
 	projection.message = positioned;
 	if (message.role === "toolResult" && !message.isError) projection.yields.set(message.toolCallId, positioned);
+}
+
+function summarizeEntry(entry: SessionEntry): SessionEntry {
+	if (entry.type !== "message") return entry;
+	if (entry.message.role === "assistant")
+		return {
+			...entry,
+			message: {
+				...entry.message,
+				content: entry.message.content.flatMap(part => (part.type === "toolCall" ? [{ ...part, arguments: {} }] : [])),
+			},
+		};
+	if (entry.message.role === "user" || entry.message.role === "toolResult")
+		return { ...entry, message: { ...entry.message, content: [] } };
+	return entry;
 }
 
 function resultFor(projection: Projection, size: number): SessionRestoreSummary {
