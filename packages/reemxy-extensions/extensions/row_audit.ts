@@ -264,9 +264,7 @@ export function rowAuditTask(batch: RowAuditBatch, requirementsFor: (row: string
 				`  Assigned resources: ${JSON.stringify(row.schedule?.resources ?? [])}`,
 				`  Delivery commits: ${JSON.stringify(rowDeliveryCommits(row))}`,
 				`  Recorded evidence (commits and checks to re-run at HEAD): ${row.schedule?.progress?.evidence ?? "none recorded"}`,
-				...auditEvidenceHistory(row, batch.head, batch.repoPath).map(
-					entry => `  Prior observation (recheck, not acceptance; inputs ${entry.inputsKey}): ${entry.evidence}`,
-				),
+				...auditEvidenceHistory(row, batch.head, batch.repoPath).map(entry => `  Prior observation (recheck, not acceptance; inputs ${entry.inputsKey}): ${entry.evidence}`),
 				`  Audit base: ${row.schedule?.auditBase ?? "first audit: full delivered range"}`,
 				`  Previous worker (context only, not proof): agent://${row.schedule?.executor?.workerId ?? "unknown"}`,
 				...(row.retry ? [`  Previous audit was inconclusive: ${row.retry}. Obtain exactly that piece now.`] : []),
