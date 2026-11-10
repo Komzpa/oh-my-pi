@@ -70,7 +70,7 @@ test("pool mixture has 250 second expectation and changes with live weights", ()
 	expect(Math.abs(sum / 20000 - 250)).toBeLessThan(2);
 	const first = forecastTodoPlan(phases(), { now, deadlineAt: now + 200000, risk: r });
 	expect(first.risk!.onTimeProbability).toBeCloseTo(0.25, 1);
-	expect(first.deadlineStatus).toBe("will-miss");
+	expect(first.deadlineStatus).toBe("on-track");
 	r.pools.coder = [{ model: "a/m", weight: 1 }];
 	const next = forecastTodoPlan(phases(), { now, deadlineAt: now + 200000, risk: r });
 	expect(next.risk!.onTimeProbability).toBe(1);
@@ -139,6 +139,8 @@ test("running third attempt retains first dispatch scale after reestimate", () =
 	const first = phases();
 	first[0].tasks[0].status = "in_progress";
 	first[0].tasks[0].schedule!.startedAt = now - 40000;
+	first[0].tasks[0].schedule!.executor = { workerId: "current", startedAt: now - 40000 };
+	first[0].tasks[0].schedule!.estimate!.updatedAt = now - 40000;
 	first[0].tasks[0].schedule!.riskEstimateMeanSeconds = 100;
 	first[0].tasks[0].schedule!.estimate!.likelySeconds = 500;
 	first[0].tasks[0].schedule!.estimate!.pessimisticSeconds = 500;
@@ -189,4 +191,48 @@ test("row closure ratios cannot inflate worker-attempt diagnostics", () => {
 	const calibrated = forecastTodoPlan(plan, { now, risk: options });
 	expect(calibrated.calibration).toEqual({ ratio: 1, samples: 0 });
 	expect(calibrated.risk!.p50Finish).toBe(now + 100_000);
+});
+
+test("attempt diagnostic consumes only current execution after the residual revision", () => {
+	const options = risk();
+	options.pools.coder = [{ model: "a/m", weight: 1 }];
+	const input = phases();
+	const row = input[0]!.tasks[0]!;
+	row.status = "in_progress";
+	row.schedule!.startedAt = now - 3_600_000;
+	row.schedule!.estimate!.updatedAt = now - 3_600_000;
+	const predict = () => forecastTodoPlan(input, { now, risk: options }).risk!.p50Finish;
+	// A focused row with no worker retains its effort, even after an hour idle.
+	expect(predict()).toBe(now + 100_000);
+	row.schedule!.executor = { workerId: "retry", startedAt: now - 40_000 };
+	expect(predict()).toBe(now + 60_000);
+	row.status = "pending";
+	expect(predict()).toBe(now + 60_000);
+	row.schedule!.estimate!.updatedAt = now;
+	row.schedule!.firstEstimate = { ...row.schedule!.estimate!, updatedAt: now - 3_600_000 };
+	expect(predict()).toBe(now + 100_000);
+	row.schedule!.executor.finishedAt = now;
+	row.schedule!.executor.outcome = "completed";
+	expect(predict()).toBe(now + 100_000);
+	const unavailable = forecastTodoPlan(input, {
+		now,
+		risk: options,
+		executableCapacity: 0,
+		deadlineAt: now + 200_000,
+	});
+	expect(unavailable.risk).toBeUndefined();
+	expect(unavailable.deadlineStatus).toBe("unknown");
+});
+
+test("smaller worker-attempt diagnostic cannot hide a current whole-plan miss", () => {
+	const options = risk();
+	options.pools.coder = [{ model: "a/m", weight: 1 }];
+	const input = phases();
+	const row = input[0]!.tasks[0]!;
+	row.schedule!.riskEstimateMeanSeconds = 10;
+	const forecast = forecastTodoPlan(input, { now, risk: options, deadlineAt: now + 50_000 });
+	expect(forecast.risk!.p80Finish).toBe(now + 10_000);
+	expect(forecast.risk!.onTimeProbability).toBe(1);
+	expect(forecast.rawP50Finish).toBe(now + 100_000);
+	expect(forecast.deadlineStatus).toBe("will-miss");
 });

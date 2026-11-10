@@ -28,6 +28,8 @@
 
 ### Fixed
 
+- TODO plan ETA now uses remaining execution, actual worker capacity and unfinished delivery gates; task age and worker-attempt diagnostics cannot substitute for the plan finish.
+
 - Count a full worker pool as waiting for a slot; reserve stuck warnings for blocked work.
 
 - Show TODO infrastructure failures since last success with their top cause and resource wait holder.

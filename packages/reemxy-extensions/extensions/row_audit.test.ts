@@ -207,7 +207,8 @@ test("DC 16:45 replay: delivered rows verify, finished-without-change rows need 
 	});
 	for (const content of DELIVERED) expect(notice).not.toContain(content);
 	expect(notice).toContain("Mac call: attribute 30 fps drop untraced");
-	expect(notice.length).toBeLessThanOrEqual(300);
+	expect(notice).toContain("read the row's result");
+	expect(notice).toContain("Use task only for the unmet delta");
 	expect(after.decision.verifyingRows.sort()).toEqual([...DELIVERED].sort());
 });
 
@@ -407,11 +408,11 @@ test("DivineRoadrunner replay: a yield of unverified 'fail' verdicts is inconclu
 		expect(after.states.get(content)).toBe("needs worker");
 		expect(after.decision.dispatchableReady.some(row => row.content === content)).toBe(true);
 	}
-	expect(after.display.lines.join("\n")).toContain(
-		"Power source rows: remove red selection frame and grey boxes — needs worker",
-	);
+	const powerLine = after.display.lines.find(line => line.includes("Power source rows:"));
+	expect(powerLine).toContain("needs worker: audit-inconclusive");
 	const notice = prompt.render(gateNotices, { audit: true, rows: '"row" (inconclusive: x)' });
-	expect(notice).toContain("staff a worker to produce the missing check command or screenshot");
+	expect(notice).toContain("read their findings and make one discriminating check");
+	expect(notice).toContain("Reuse unchanged valid product evidence");
 	// New evidence the lead records on the row reruns its audit.
 	const row = h.rows().find(candidate => candidate.content === AUDITED[1]);
 	row.schedule.progress = { at: live.now + 1, evidence: "f1ee6e909: run bunx playwright test e2e/power-rows.spec.ts" };
@@ -568,7 +569,7 @@ test("the lead gate names an unsent review page and the evidence worker's missin
 	const text = renderLeadRowInstructions(phases, { workers: [], owners: new Map() }, { now: live.now });
 	expect(text).toContain(`send review page ${page} for rows "Use grid"`);
 	expect(text).toContain("produce screenshot at 430px");
-	expect(text).toContain("call task");
+	expect(text).toContain("start one capable worker only for genuinely remaining implementation");
 });
 
 test("a new worker delivery invalidates the previous pass and starts a fresh audit", async () => {

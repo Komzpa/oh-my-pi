@@ -1,1 +1,1 @@
-P(on time) {{probability}}%; P80 {{p80}}. Crash independent critical work with parallel workers or triage scope; keep the delivery deadline {{deadline}}.
+Current whole-plan finish {{finish}} is after the delivery deadline {{deadline}}. Preserve the requested scope and fixed deadline. Use returned worker findings, actual executable capacity, dependencies and remaining acceptance/integration/delivery work to choose a viable route. A forecast miss alone does not authorize scope cuts, moving the deadline or pausing.

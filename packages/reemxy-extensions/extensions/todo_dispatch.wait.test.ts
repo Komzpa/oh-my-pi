@@ -1400,7 +1400,7 @@ test("an unstaffed ready row announces staffing before wait and chief-work refus
 		const notices = () => h.notices.filter(notice => notice.customType === "todo-gate-staffing");
 		expect(notices()).toHaveLength(1);
 		expect(notices()[0].content).toContain('"Row 1"');
-		expect(notices()[0].content).toContain("with task");
+		expect(notices()[0].content).toContain("Use task only for the unmet delta");
 		const wait = await h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx);
 		actionable(wait.reason, "Row 1");
 		const bash = await h.handlers.get("tool_call")!({ toolName: "bash", input: { command: "bun test" } }, h.ctx);
@@ -1719,7 +1719,7 @@ test("critical split: Litterbox wait names both rows and the misrouted worker, o
 		expect(result.reason).toMatch(/Restaff/i);
 		expect(result.reason).toMatch(/required model/i);
 		expect(result.reason).toMatch(/partial output/i);
-		expect(result.reason).toContain("append");
+		expect(result.reason).toContain("genuinely independent unmet deliverables");
 		expect(await h.call("wait")).toBeUndefined();
 		h.fix.schedule.resources = ["changed-scope"];
 		expect((await h.call("wait"))?.block).toBe(true);

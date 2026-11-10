@@ -1,7 +1,5 @@
 import { prompt } from "@oh-my-pi/pi-utils";
-import choices from "./fix-now-choices.json";
 import instructions from "./fix-now.md" with { type: "text" };
-import question from "./fix-now-question.md" with { type: "text" };
 
 export interface ChiefDefect {
 	row: string;
@@ -14,26 +12,6 @@ export interface ChiefDefect {
 export interface ChiefDefectState {
 	main: boolean;
 	defects: readonly ChiefDefect[];
-}
-export function fixNowQuestion(kind: "late" | "churn", row: string, identity: string): ChiefDefect {
-	return {
-		row,
-		action: kind,
-		severity: kind === "late" ? 0 : 1,
-		identity,
-		call: {
-			name: "ask",
-			arguments: {
-				questions: [
-					{
-						id: kind,
-						question: prompt.render(question, { late: kind === "late", row }).trim(),
-						options: choices[kind].map(label => ({ label })),
-					},
-				],
-			},
-		},
-	};
 }
 export function fixNowIdentity(defects: readonly ChiefDefect[]): string {
 	return JSON.stringify(

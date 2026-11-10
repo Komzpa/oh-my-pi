@@ -57,8 +57,10 @@ invented newer Rn or `supersededBy`.
 
 ## Run the pass
 
-1. Reconcile the latest request against every open commitment and arrived
-   result. A correction can change priority without erasing other work.
+1. Reconcile the latest request and current owners. Read the next actionable
+   row's full result and take its concrete next action. Keep other reports queued
+   while independent ready work runs; an all-history read is not a staffing gate.
+   A correction can change priority without erasing other work.
 2. Classify actual requirement candidates against the original user words.
    Link concrete deliverables to existing outcome rows, merge duplicates or
    record why process feedback is not a requirement.
@@ -69,7 +71,9 @@ invented newer Rn or `supersededBy`.
    letting useful commits sit uncombined. Keep one Git writer per checkout.
 5. Dispatch independent ready work within capacity. Keep precise blockers on
    dependent criteria. Wait on owned completion events when no useful action
-   remains; free slots do not require more rows.
+   remains; free slots do not require more rows. With ready work and spare
+   executable capacity, zero running workers requires an actual dispatch or an
+   exact readiness/custody blocker that turn. Do not fill slots with administration.
 
 A dependency means that a row consumes another row's output. Shared resources
 need measured capacity and an ownership plan, not fictitious dependencies or
@@ -127,7 +131,10 @@ route remains unavailable, record the precise harness blocker instead of
 repeating the same call, waiving a guard or launching another implementation.
 
 Integrate accepted branches one at a time, preserve commits/authorship and run
-checks appropriate to the merged surface. Refresh the user's authorized
+checks appropriate to the merged surface. Keep the checked-out HEAD immutable
+while its gate runs; queue later merges or use a separately permitted candidate.
+Direct-main repositories retain their main-only route; source-built tools retain
+independent topics and their canonical updater. Refresh the user's authorized
 preview promptly; public push, merge and installation retain their own policy
 and permission. Read back the published/deployed target and effective revision.
 Never install by hand-copying a binary when a canonical updater owns promotion.
@@ -142,7 +149,13 @@ bundles. A prompt-only request does not authorize editing historical PRs.
 An estimate is a forecast, not a cancellation timer. At a missed checkpoint,
 inspect the existing owner, command and saved output. Preserve measurably
 advancing builds/checks. Update remaining work from evidence without resetting
-elapsed time or promises. Stop only a proven non-advancing owned method,
+elapsed time or promises. Preserve first-attempt wall age, active execution,
+queue/downtime and current remaining estimate separately. The fixed user deadline
+is distinct from the forecast. Include remaining acceptance, integration and
+delivery under the global executable-worker limit; show unknown work explicitly.
+Neither a slipped forecast nor a retry count requires a scope cut, new deadline,
+pause or owner question. Ask only for an actual missing input or authority.
+Stop only a proven non-advancing owned method,
 receive its stopped-state/artifact handoff and then change the approach.
 
 After two failures of the same method, make one bounded discriminating check

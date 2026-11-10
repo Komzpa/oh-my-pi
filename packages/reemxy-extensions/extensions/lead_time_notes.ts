@@ -206,7 +206,7 @@ export function renderCurrentSetForecast(plan: TodoPlanForecast, anchor: Deadlin
 	const title = endpoint?.content.match(/^Collateral for "[^"]*"/)?.[0] ?? endpoint?.content.split(/\r?\n/, 1)[0];
 	const driver = endpoint ? `${truncateToWidth(singleLine(title ?? endpoint.content), 80).slice(0, 80)}${endpoint.owner ? ` (owner ${singleLine(endpoint.owner)})` : ""}` : "unknown";
 	return [
-		`Current set: point ${stamp(point)}; empirical upper ${empirical}.`,
+		`Current set: point ${stamp(point)}; empirical upper ${empirical}.${plan.capacityAssumptions?.executableObserved === false ? " Conditional on executable worker capacity." : ""}`,
 		`Driver: ${driver}; empirical allowance ${allowance === undefined ? "unknown" : `${allowance.toFixed(2)}h`}.`,
 		baseline === undefined ? "Original baseline unknown." : `Original ${anchor?.auto ? "initial forecast" : "baseline"} ${stamp(baseline * 1_000)}, now ${lateMinutes}m late.`,
 		`Scope since anchor: genuine additions unknown; ${anchor?.autoScopeGrowthRows?.length ?? 0} labels with unknown split/addition lineage.`,

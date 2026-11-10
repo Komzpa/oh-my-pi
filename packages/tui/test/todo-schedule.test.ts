@@ -64,7 +64,7 @@ function phases(...tasks: TodoScheduleInputTask[]): TodoScheduleInput {
 	return [{ name: "work", tasks }];
 }
 
-it("shows worked minutes and current likely estimate in the TODO tree", () => {
+it("separates row age from unknown execution and remaining estimates in the TODO tree", () => {
 	const now = NOW + 20 * 60_000;
 	const active = task("active", 600, { status: "in_progress" });
 	active.schedule!.startedAt = now - 7 * 60_000;
@@ -74,9 +74,12 @@ it("shows worked minutes and current likely estimate in the TODO tree", () => {
 	done.schedule!.finishedAt = now - 5 * 60_000;
 	const rows = forecastTodoPlan(phases(active, done, task("pending", 600)), { now }).rows;
 	const shown = Object.fromEntries(rows.map(row => [row.content, formatTaskForecastDisplay(row, now)]));
-	expect(shown.active).toContain("7m / 10m");
+	expect(shown.active).toContain("age 7m");
+	expect(shown.active).toContain("active unknown");
+	expect(shown.active).toContain("remaining estimate 10m");
 	expect(shown.active).not.toContain("reestimated");
-	expect(shown.done).toContain("4m / 10m");
+	expect(shown.done).toContain("age 4m");
+	expect(shown.done).toContain("active unknown");
 	expect(shown.pending).toContain("10m");
 	expect(shown.pending).not.toContain(" / ");
 });
@@ -99,16 +102,19 @@ it("uses summed attempts for reopened terminal rows and freezes them", () => {
 	const forecast = forecastTodoPlan(phases(row), { now });
 	const rendered = formatTaskForecastDisplay(forecast.rows[0]!, now);
 	const later = formatTaskForecastDisplay(forecast.rows[0]!, now + 8 * 60 * 60_000);
-	expect(rendered).toContain("18m / 10m");
-	expect(later).toContain("18m / 10m");
+	expect(rendered).toContain("age 1000m");
+	expect(rendered).toContain("recorded active 18m");
+	expect(later).toContain("age 1000m");
+	expect(later).toContain("recorded active 18m");
 
 	const legacy = task("legacy", 600, { status: "completed" });
 	legacy.schedule!.startedAt = now - 12 * 60_000;
 	legacy.schedule!.finishedAt = now - 3 * 60_000;
 	const [legacyRow] = forecastTodoPlan(phases(legacy), { now }).rows;
-	expect(formatTaskForecastDisplay(legacyRow!, now)).toContain("9m / 10m");
+	expect(formatTaskForecastDisplay(legacyRow!, now)).toContain("age 9m");
+	expect(formatTaskForecastDisplay(legacyRow!, now)).toContain("active unknown");
 });
-it("counts elapsed time into the badge budget when an in-progress row is reestimated", () => {
+it("keeps first-start age separate from a revised remaining estimate", () => {
 	// Live 2026-10-01 16:51: the row started at 15:31 and the chief reestimated 15m of
 	// remaining work at 16:17; the badge showed `80m / 15m`, comparing total elapsed
 	// against the remaining-only estimate.
@@ -118,7 +124,9 @@ it("counts elapsed time into the badge budget when an in-progress row is reestim
 	row.schedule!.reestimateCount = 1;
 	const [forecast] = forecastTodoPlan(phases(row), { now }).rows;
 	const rendered = formatTaskForecastDisplay(forecast!, now);
-	expect(rendered).toContain("80m / 61m");
+	expect(rendered).toContain("age 80m");
+	expect(rendered).toContain("active unknown");
+	expect(rendered).toContain("remaining estimate 15m");
 	expect(rendered).not.toContain("80m / 15m");
 });
 
@@ -131,7 +139,9 @@ it("keeps scheduling method details out of rendered TODO lines", () => {
 	const lines = [formatPlanForecastDisplay(plan, now), formatTaskForecastDisplay(plan.rows[0]!, now, true)];
 	expect(lines[0]).toStartWith("ETA ");
 	expect(lines[0]).toContain("overdue 0h9m");
-	expect(lines[1]).toContain(" · 4m / 10m · critical · reestimated 5×");
+	expect(lines[1]).toContain("age 4m");
+	expect(lines[1]).toContain("remaining estimate 10m");
+	expect(lines[1]).toContain("critical · reestimated 5×");
 	expect(lines[1]).not.toContain("owner Main");
 	for (const line of lines) expect(line).not.toMatch(/fixed-path|P95|CPM|ETA ETA|confidence|critical no/i);
 });

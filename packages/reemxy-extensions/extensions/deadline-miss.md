@@ -3,16 +3,12 @@ Overdue {{late}}m · {{rows}}
 {{else if runningStop}}
 STOP REFUSED: running work still has live executors. Wait for their results before ending the session.
 {{else if deliveryFirst}}
-DELIVERY FIRST: the fixed deadline is at risk. Name the exact missing user-visible artifact and its current version; take the shortest safe action that creates or updates it now. Do not re-read the same plan, reforecast, or rerun broad checks without a changed artifact or a specific new diagnostic question. Reconcile workers only to unblock real work; re-plan the critical path with parallel staffing, safe overlap, evidence-based estimates, or visible nice-to-have post-deadline scope triage; the due time belongs to the user. No automatic paid/model escalation.
+DELIVERY FIRST: the fixed deadline is at risk. Name the missing user-visible artifact and its current version; take the shortest safe action that creates or updates it now. Use returned findings to accept completed work, repair the concrete gap or retire a disproved method. Keep independent ready work moving within actual capacity. Preserve the requested scope and fixed deadline; report an infeasible forecast honestly. No automatic paid/model escalation.
 {{else if repeated}}
-WAIT/STOP REFUSED: deadline re-plan still required; see the critical path and remedies already reported for this forecast revision.
+WAIT/STOP REFUSED: reconcile the unfinished critical work using the findings and remedies already reported for this revision. A new estimate alone does not finish it.
 {{else}}
 WAIT/STOP REFUSED: expected deadline miss / overdue work {{late}}m. Critical path / overdue rows: {{rows}}.
-The deadline belongs to the user. Re-plan the work in todo state until expected finish is at or before the unchanged due time:
-- Crashing: split critical-path work into parallel rows with separate available workers; record dependencies, owners, resources and measured estimates.
-- Fast-tracking: overlap dependent work only where safe; record the revised dependencies and evidence with todo {op:"schedule",updates:[{task:"exact row",dependencies:[],evidence:"why overlap is safe"}]}.
-- Re-estimation: todo {op:"schedule",updates:[{task:"exact row",estimate:{...},evidence:"measured basis"}]}.
-- Scope triage against the user's goal: retain must-haves; move only nice-to-haves to the visible, reversible after-deadline set with todo {op:"schedule",updates:[{task:"exact row",postDeadline:true,evidence:"why this is optional for the stated goal"}]}. Use postDeadline:false to restore.
-Prose alone does not repair the plan. Waiting is allowed while every overdue or critical-path row has a live executor with recent activity. Complete them, triage them visibly, or record an evidence-based re-plan.
-Only if no re-plan fits, send the user one message with concrete scope trade-offs for their decision. Keep the due time unchanged until the user acts; a lead tool call cannot change it.
+Reconcile the returned worker findings before the next action. Accept valid deliveries, repair the unmet delta or retire a disproved method as failed/superseded with its evidence; carry the still-required outcome into a different viable route.
+Use parallel workers only for genuinely independent work and available capacity. Overlap dependencies only with evidence that the consuming work can proceed safely. Update stale estimates from measured remaining work, including acceptance, integration and delivery; retain elapsed history and the fixed due time. If the work cannot fit, report that fact. Do not lower estimates, cut requested scope or move the deadline to make the display look on time.
+Optional work may enter the visible, reversible after-deadline set only when it is already optional under the user's goal. Waiting is allowed while every overdue or critical-path row has a live executor with recent activity. Keep other ready work moving; record an exact external blocker for work that cannot proceed. Ask only when missing input or authority changes the next action.
 {{/if}}

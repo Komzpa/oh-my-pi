@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Removed automatic scope-cut questions on forecast slips; chiefs preserve requested work, reconcile returned findings and use actual remaining-work forecasts.
+
 - Refresh dispatch advice against current rows, retain actual worker feedback, and retire obsolete demands and automatic retrospective gates. Failed methods may yield to a different route without passing unmet acceptance.
 
 - Recognize the same live or restoring worker in staffing checks and duplicate-dispatch refusals, including replacement executor identities.

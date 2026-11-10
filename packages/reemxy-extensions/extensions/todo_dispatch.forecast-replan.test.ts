@@ -90,20 +90,28 @@ test("an undelivered user wait demands a concrete forecast repair; delivered rev
 	expect(await demandFor([delivered])).toBeUndefined();
 });
 
-test("a user delivery deadline after P95 creates a cut-to-fit replan demand", async () => {
+test("a valid late whole-plan forecast permits delivery without estimate padding or a scope-cut question", async () => {
 	const now = Date.now();
-	const demand = await demandFor([{ content: "Ship the package", status: "pending", schedule: { dependencies: [], resources: ["package"], estimate: estimate(now, 1_800) } }], now + 600_000);
-	expect(demand?.soft).toBe(true);
-	expect(demand?.reminder[0].content).toContain("after the delivery deadline");
-	expect(demand?.reminder[0].content).toContain("Cut the plan to what can ship");
-	expect(demand?.reminder[0].content).toContain("Ship the package");
+	const tasks = [{ content: "Ship the package", status: "pending", schedule: { dependencies: [], resources: ["package"], estimate: estimate(now, 1_800) } }];
+	const deadline = now + 600_000;
+	const h = await demandHarness(tasks, deadline);
+	for (let pass = 0; pass < 3; pass++) {
+		const demand = h.provider(h.ctx);
+		expect(demand?.toolName).toBe("task");
+		expect(demand?.id).not.toContain("todo-forecast-replan");
+	}
+	const state = h.branch.filter(entry => entry.customType === STATE_ENTRY).at(-1).data;
+	expect(state.baselineDeadlineAt).toBe(Math.floor(deadline / 1_000));
+	const plan = forecastTodoPlan([{ name: "Plan", tasks }], { now, deadlineAt: deadline, capacity: 2 });
+	expect(plan.deadlineStatus).toBe("will-miss");
+	expect(tasks[0].schedule.estimate.likelySeconds).toBe(1_800);
 });
 
 test("a row past its canonical ETA creates a mandatory forecast replan", async () => {
 	const now = Date.now();
 	const demand = await demandFor([{ content: "Finish the running check", status: "in_progress", startedAt: now - 3_600_000, schedule: { dependencies: [], resources: ["check"], estimate: estimate(now - 3_600_000, 60) } }]);
 	expect(demand?.soft).toBe(true);
-	expect(demand?.reminder[0].content).toContain("plan P95 passed");
+	expect(demand?.reminder[0].content).toContain("passed its own ETA");
 	expect(demand?.reminder[0].content).toContain("Finish the running check");
 });
 

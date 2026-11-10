@@ -4,7 +4,7 @@ import type { TodoAuditOrigin } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import dispatchIgnoredInstructions from "./dispatch-ignored.md" with { type: "text" };
 import { JournalCursor } from "@oh-my-pi/pi-coding-agent/session/journal-cursor";
 import planCritic from "./plan_critic";
-import { chiefFixNow, isLegacyFixNow, fixNowIdentity, fixNowQuestion, withChiefFixNow, type ChiefDefect } from "./fix_now";
+import { isLegacyFixNow, withChiefFixNow } from "./fix_now";
 import { prepareAttemptBrief } from "./attempt_receipt";
 import { prepareRequirementBrief, installRequirementResolution } from "./requirement_quotes";
 import { installWorkerAskInterrupt, pendingWorkerQuestions } from "./worker_asks";
@@ -57,7 +57,7 @@ import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { assignedResourceRefusals, countLiveWorkerModels } from "./agent_router";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey, readOnlyClaim } from "./checkout_scope";
 import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
-import { planChurnRows, actionableChurnRows, unfinishedDependencyChains, planSlipMinutes, appendTimedNote, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
+import { planChurnRows, unfinishedDependencyChains, appendTimedNote, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
 import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import oneShotInstructions from "./one-shot.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
@@ -1848,7 +1848,7 @@ function buildStaticPrompt(
     ...(restoredLines.length ? restoredLines : ["- none"]),
     goalPaused
       ? "Paused observation only: reconcile every running job and parked/restored child against TODO ownership with exact IDs; do not resume or start jobs. An empty live snapshot is not nothing-to-reconcile."
-      : "Reconcile every running job and parked/restored child against TODO ownership before another batch. Require an exact resume of idle owners; fresh-dispatch only ready rows disjoint from all roster-owned work. An empty live snapshot is not nothing-to-reconcile.",
+      : "Reconcile every running job and parked/restored child against TODO ownership before another batch. Read delivered findings and custody first; resume a recoverable idle owner for the unmet delta, accept a valid delivery, or retire a disproved method with findings. Fresh-dispatch only ready rows disjoint from live-owned work. An empty live snapshot is not nothing-to-reconcile.",
   ].join("\n");
 }
 
@@ -1989,6 +1989,7 @@ export function decideTodoDispatch(
     now,
     deadlineAt: deadline?.deadlineAt,
     ...(capacity === undefined ? {} : { capacity }),
+    ...(startableCapacity === undefined ? {} : { executableCapacity: startableCapacity }),
   });
   const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
   forecast.rows = forecast.rows.filter(row => liveContents.has(row.content));
@@ -2232,7 +2233,7 @@ export function decideTodoDispatch(
                         ? "RECONCILE: parked/restored child ownership is not linked to a TODO owner; do not dispatch unowned ready rows until the exact roster is reconciled."
                         : dispatchableReady.length === 0
                           ? "FAIL CLOSED: no unstaffed ready row has a conflict-free current resource start; inspect resource ownership before dispatching."
-                          : `First reconcile any just-settled task worker using action 2. For each exact idle or parked/restored owner${resumeOwners.length ? ` (${resumeOwners.map((owner) => JSON.stringify(owner)).join(", ")})` : ""}, re-staff with a task item whose name is the owner and whose task is the row's exact title plus what to return. A bare agent:// message is not staffing. Then immediately start distinct live workers for as many unstaffed ready rows as the actual Task cap (0 means Unlimited) and canonical resource forecast allow; queue remaining rows and dispatch as capacity/resources free. Reuse one ID only on a strict dependency chain scheduled sequentially. Main coordinates staffed work, and owns integration and delivery.`;
+                          : `First reconcile any just-settled task worker using action 2. For each idle or parked/restored owner${resumeOwners.length ? ` (${resumeOwners.map((owner) => JSON.stringify(owner)).join(", ")})` : ""}, inspect its actual result and custody first. Steer a recoverable live owner; accept a valid delivery or retire a disproved method with its findings. Start a capable continuation only for the concrete unmet delta. A historical owner name alone does not require a replacement. Then immediately start distinct live workers for as many unstaffed ready rows as the actual Task cap (0 means Unlimited) and canonical resource forecast allow; queue remaining rows and dispatch as capacity/resources free. Reuse one ID only on a strict dependency chain scheduled sequentially. Main coordinates staffed work, and owns integration and delivery.`;
   const readyFacts = readyCandidates.map((row) => [row.content, row.owner, row.ownership]);
   const failedTasks =
     jobs?.recent.filter(
@@ -3085,7 +3086,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       restoredChildren: restored,
       isMainSession: header !== null && !header.parentSession,
       capacity,
-      startableCapacity,
+      startableCapacity: liveWorkerModelCheckedAt === 0 ? undefined : startableCapacity,
       taskEnabled: pi.getActiveTools().includes("task") && startableCapacity > 0,
       now,
       deadline,
@@ -3112,7 +3113,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         openRows: phases.flatMap(phase => phase.tasks).filter(task => task.status !== "completed" && task.status !== "abandoned").map(task => task.content),
         forecastFinish:
           decision.forecast?.unresolvedCount === 0
-            ? (decision.forecast.autoDeadlineForecast?.finish ?? decision.forecast.fixedPathP95Finish ?? decision.forecast.resourceFinish)
+            ? decision.forecast.autoDeadlineForecast?.finish
             : undefined,
         now,
         hasRealGoal: Boolean(realGoal && (realGoal.status === "active" || realGoal.status === "paused")),
@@ -4503,12 +4504,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const open = (decision.forecast.rows ?? []).filter((row) => isOpenRowStatus(row.status) || undeliveredUserWait(row));
     const unresolved = unresolvedForecastRows(decision.forecast);
     const overdueRows = open.filter((row) => row.overdue || decision.alarms?.some((alarm) => alarm.startsWith(`missed-eta:${JSON.stringify(row.content)}:`)));
-    const planFinish = decision.forecast.risk?.p80Finish ?? decision.forecast.fixedPathP95Finish ?? decision.forecast.resourceFinish;
+    const planFinish = decision.forecast.autoDeadlineForecast?.finish;
     const forecastPassed = open.length > 0 && planFinish !== undefined && planFinish <= now;
     const deadline = decision.deadline ?? sdk.readGoalDeadline(dispatchStateEntries(ctx), ctx.cwd, { includePaused: true });
     const deadlineAt = deadline?.deadlineAt ?? decision.forecast.deadlineAt;
     const overDeadline = open.length > 0 && deadlineAt !== undefined && now < deadlineAt && (
-      decision.forecast.risk ? decision.forecast.deadlineStatus === "will-miss" : (planFinish !== undefined && planFinish > deadlineAt) || decision.forecast.deadlineStatus === "will-miss"
+      (planFinish !== undefined && planFinish > deadlineAt) || decision.forecast.deadlineStatus === "will-miss"
     );
     const estimateSignature = (row: TodoTaskForecast) => `${row.estimateRevision}:${row.estimateUpdatedAt ?? ""}:${JSON.stringify(row.estimateRangeSeconds ?? null)}`;
     const estimatesRevised = forecastReplanBaseline !== null && open.every((row) =>
@@ -4518,7 +4519,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       pendingAutoForecastMissAt !== null || decision.autoForecastDeadlineMissed === true ||
       (deadline?.goalId === "auto-todo-plan" && deadlineAt !== undefined && now >= deadlineAt)
     );
-    const currentForecastMiss = unresolved.length > 0 || overdueRows.length > 0 || forecastPassed || overDeadline || autoDeadlineMissed;
+    // A usable forecast may honestly miss the fixed deadline. Do not force
+    // estimate-only turns until its numbers fit; delivery remains executable.
+    const currentForecastMiss = unresolved.length > 0 || overdueRows.length > 0 || forecastPassed || autoDeadlineMissed;
     const forecastMiss = currentForecastMiss || (forecastMissActive && !estimatesRevised);
     if (forecastMiss) {
       if (!forecastMissActive) {
@@ -4544,14 +4547,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           : decision.autoForecastMissedByMinutes ?? (planFinish !== undefined && planFinish <= now
             ? Math.max(0, Math.floor((now - planFinish) / 60_000))
             : undefined);
-      const reason = overDeadline && decision.forecast.risk
-        ? prompt.render(riskReplanInstructions, { probability: Math.round(decision.forecast.risk.onTimeProbability! * 100), p80: formatLocalClock(planFinish!, tz), deadline: deadlineClock }).trim()
-        : overDeadline
-        ? `P95 ${formatLocalClock(planFinish!, tz)} is after the delivery deadline ${deadlineClock}. Cut the plan to what can ship by ${deadlineClock}; move the rest to a follow-up.`
+      const reason = overDeadline
+        ? prompt.render(riskReplanInstructions, { finish: planFinish === undefined ? "unknown" : formatLocalClock(planFinish, tz), deadline: deadlineClock }).trim()
         : autoDeadlineMissed
           ? `The automatic TODO forecast deadline ${deadlineClock} passed with requested work still open.`
           : forecastPassed
-            ? `The plan P95 passed${lateBy === undefined ? "" : ` ${lateBy}m ago`} with requested work still open.`
+            ? `The current plan forecast passed${lateBy === undefined ? "" : ` ${lateBy}m ago`} with requested work still open.`
             : overdueRows.length > 0
               ? "An open row passed its own ETA. Re-forecast the remaining requested rows."
             : unresolved.length > 0
@@ -4566,7 +4567,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         satisfies: (toolCall: { name: string }) => toolCall.name === "todo",
         reminder: [{
           role: "developer" as const,
-          content: `MANDATORY REPLAN: ${reason} ${unresolved.length ? unresolvedForecastRemedy(unresolved) : ""} Rows: ${rowList || "all remaining requested rows"}. Edit the remaining TODO rows with new usable estimates, put the most valuable shippable piece first, cut what cannot land, and keep executing. Forecast missed ${forecastMissCount} time(s)${lateBy === undefined ? "" : `, last by ${lateBy}m`}.`,
+          content: `MANDATORY REPLAN: ${reason} ${unresolved.length ? unresolvedForecastRemedy(unresolved) : ""} Rows: ${rowList || "all remaining requested rows"}. Update only stale remaining-work estimates from worker findings and actual capacity; preserve the fixed deadline and requested scope. Reconcile delivered work, retire disproved methods with findings, and keep independent ready work moving. Ask only for genuinely missing authority or input. Forecast missed ${forecastMissCount} time(s)${lateBy === undefined ? "" : `, last by ${lateBy}m`}.`,
           timestamp: now,
         }],
       };
@@ -6648,23 +6649,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       linkAnswered: false,
     };
   };
-  const chiefDefects = (ctx: ExtensionContext): ChiefDefect[] => {
-    if (singleWriterLane || !isMain(ctx) || pauseGate?.paused || gateSwitchedOff(ctx)) return [];
-    const decision = currentDecision(ctx);
-    const phases = todoPhases(ctx);
-    const open = phases.flatMap(phase => phase.tasks).filter(task => isNonClosedRowStatus(task.status));
-    const defects: ChiefDefect[] = [];
-    const anchor = rehydrateDeadlineState(dispatchStateEntries(ctx));
-    const late = planSlipMinutes(anchor?.baselineDeadlineAt === undefined ? decision.deadline?.deadlineAt : anchor.baselineDeadlineAt * 1_000, Date.now(), open.length > 0);
-    const answered = new Set([...selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-fix-now-answered")].flatMap(entry => entry.data?.identities ?? []));
-    const lateIdentity = `late:${anchor?.baselineDeadlineAt ?? decision.deadline?.deadlineAt}`;
-    if (late && !answered.has(lateIdentity)) defects.push(fixNowQuestion("late", "", lateIdentity));
-    for (const demand of actionableChurnRows(phases)) {
-      const identity = `churn:${demand.row}`;
-      if (!answered.has(identity)) defects.push(fixNowQuestion("churn", demand.row, identity));
-    }
-    return defects.filter(defect => defect.call && pi.getActiveTools().includes(defect.call.name) && decideGateCall(defect.call, []).allowed);
-  };
   pi.on("tool_result", async (event, ctx) => {
     let result = await handleToolResult(event, ctx);
     const nag = zeroActiveNag(ctx);
@@ -6672,10 +6656,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       result = { ...result, content: [{ type: "text", text: nag, harnessNotice: true as const }, ...(result?.content ?? event.content ?? [])] };
     else if (event.toolName === "task" && !event.isError)
       result = { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: staffingAdvice.trim(), harnessNotice: true as const }] };
-    if (event.toolName === "ask" && !event.isError) {
-      const identities = chiefDefects(ctx).filter(defect => defect.call?.name === "ask" && defect.call.arguments.questions.every(question => event.input?.questions?.some(input => input.id === question.id && input.question === question.question))).map(defect => defect.identity);
-      if (identities.length) pi.appendEntry("todo-fix-now-answered", { identities });
-    }
     return result;
   });
 
@@ -6865,10 +6845,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       messages = messages.flatMap(message => !isStaffing(message) ? [message]
         : message === last && rows.length ? [{ ...message, content: prompt.render(gateNoticeInstructions, staffingData(rows)).trim() }] : []);
     }
-    const defects = chiefDefects(ctx);
-    const key = fixNowIdentity(defects);
-    const previous = selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-fix-now-delivery").next().value;
-    const block = key === previous?.data?.key ? "" : chiefFixNow({ main: isMain(ctx), defects }, true);
+    // Retire generated scope/deadline questions from older sessions. A slipped
+    // forecast or retry count is not an owner decision and cannot change authority.
     if (messages.some(message => message.runtimeSupervisor)) messages = messages.filter(message => !message.runtimeSupervisor);
     const hasLegacy = messages.some(message => message.role === "toolResult"
       ? message.content.some(part => part.type === "text" && ((part.harnessNotice === true && part.text.startsWith("FIX NOW:")) || isLegacyFixNow(part.text)))
@@ -6878,8 +6856,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return message.role === "custom" && typeof message.content === "string" && /^(todo-|requirements[_-]|lead-plan-critic)/.test(message.customType)
         ? { ...message, content: withChiefFixNow(message.content, "") } : message;
     });
-    if (key !== previous?.data?.key) pi.appendEntry("todo-fix-now-delivery", { key });
-    if (block) messages = [...messages, { role: "user", content: [{ type: "text", text: block }], timestamp: Date.now(), attribution: "agent", runtimeSupervisor: true }];
     return { messages };
   });
 

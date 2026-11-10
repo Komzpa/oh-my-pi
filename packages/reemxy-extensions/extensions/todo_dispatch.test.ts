@@ -82,6 +82,26 @@ const decide = (overrides: Partial<DispatchInput> = {}) =>
   decideTodoDispatch({ ...base, ...overrides }, forecastApi);
 
 describe("todo dispatch supervisor", () => {
+  test("forecast respects executable slots separately from configured Unlimited", () => {
+    const plan = scheduledPlan("First independent repair");
+    plan[0].tasks.push({ ...structuredClone(plan[0].tasks[0]), content: "Second independent repair" });
+    for (const row of plan[0].tasks) row.schedule.estimate = {
+      optimisticSeconds: 600, likelySeconds: 600, pessimisticSeconds: 600,
+      confidence: "high", basis: "fixed duration capacity control", updatedAt: now,
+    };
+    const deadline = { goalId: "fixed-user-deadline", deadlineAt: now + 15 * 60_000 };
+    const one = decide({ phases: plan, capacity: 32, startableCapacity: 1, deadline }).forecast;
+    expect(one.capacityAssumptions.effective).toBe(1);
+    expect(one.rawP50Finish).toBe(now + 20 * 60_000);
+    expect(one.deadlineStatus).toBe("will-miss");
+    const two = decide({ phases: plan, capacity: 0, startableCapacity: 2, deadline }).forecast;
+    expect(two.rawP50Finish).toBe(now + 10 * 60_000);
+    const none = decide({ phases: plan, capacity: 0, startableCapacity: 0, deadline }).forecast;
+    expect(none.rawP50Finish).toBeUndefined();
+    expect(none.deadlineStatus).toBe("unknown");
+    expect(deadline.deadlineAt).toBe(now + 15 * 60_000);
+  });
+
   test("supervisor keeps all work visible without replaying the full attempt history every turn", () => {
     const plan = scheduledPlan("Repair the delivery");
     const row = plan[0].tasks[0];
@@ -932,15 +952,16 @@ describe("todo dispatch supervisor", () => {
       dispatchGateAvailable: true,
     });
     expect(decision.readyCandidates.find((row) => row.content === "Parked row")?.ownership).toBe("restored-owner");
-    // A restored owner is not running after startup: its row is staffed again under that owner's name.
+    // A restored owner is not running after startup; reconcile its custody/result before any continuation.
     expect(decision.dispatchableReady?.map((row) => row.content)).toEqual([
       "Parked row",
       "Fresh disjoint row",
       "Predecessor",
     ]);
     expect(decision.forecast?.rows.find((row) => row.content === "Dependency waiting")?.ready).toBe(false);
-    expect(decision.prompt).toContain("task item whose name is the owner");
-    expect(decision.prompt).toContain("fresh-dispatch only ready rows disjoint");
+    expect(decision.prompt).toContain("inspect its actual result and custody first");
+    expect(decision.prompt).toContain("only for the concrete unmet delta");
+    expect(decision.prompt).toContain("Fresh-dispatch only ready rows disjoint from live-owned work");
   });
 
 });
@@ -1774,7 +1795,7 @@ test("overdue follow-through re-arms by minute and dispatches only actionable, r
     expect(refused?.reason).toContain("Repair export");
     expect(refused?.reason).toContain("overdue");
     // Overdue work requires a recorded re-plan even while dispatch remains actionable.
-    expect(refused?.reason).toContain("Crashing");
+    expect(refused?.reason).toContain("Reconcile the returned worker findings");
     expect(refused?.reason).not.toContain("todo tool");
 
     // A real Task result must reconcile to an exact live owner before another batch is offered.
@@ -1788,7 +1809,7 @@ test("overdue follow-through re-arms by minute and dispatches only actionable, r
       | { block?: boolean; reason?: string }
       | undefined;
     expect(late?.block).toBe(true);
-    expect(late?.reason).toContain("still required");
+    expect(late?.reason).toContain("ready work lacks a distinct running worker");
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
     (await handlers.get("agent_end")!({}, ctx));
     expect(requirement()?.toolName).toBe("task");

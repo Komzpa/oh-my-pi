@@ -354,10 +354,10 @@ export interface TodoPlanPrediction {
 	upperFinish?: number;
 }
 
-export const TODO_PREDICTION_VERSION = "residual-beta-pert-v1/session-hour-all-prior-q80-v1";
+export const TODO_PREDICTION_VERSION = "residual-beta-pert-execution-capacity-v3/session-hour-all-prior-q80-v1";
 
 export interface TodoPlanForecast {
-	capacityAssumptions?: { requested: number; effective: number };
+	capacityAssumptions?: { requested: number; effective: number; executableObserved?: boolean };
 	unknownGates?: string[];
 	provenance?: string;
 	rawP50Finish?: number;
@@ -431,6 +431,8 @@ export interface TodoForecastOptions {
 	deadlineAt?: number;
 	/** Positive integer concurrency; 0 means Unlimited. Omitted/invalid input uses default 32; effective capacity is bounded by forecastable open tasks. */
 	capacity?: number;
+	/** Observed total executable worker slots, before subtracting active workers; 0 means none. */
+	executableCapacity?: number;
 }
 
 export type TodoDependencyIssueCode =
@@ -1290,6 +1292,21 @@ function estimateAnchor(node: PlanNode): number {
 	return Math.max(node.estimate!.updatedAt, finiteTimestamp(node.schedule?.startedAt) ? node.schedule!.startedAt! : 0);
 }
 
+/** Row focus/age is not execution. Only the current unsettled worker consumes a residual. */
+function consumedExecutionMs(node: PlanNode, now: number): number {
+	const executor = node.schedule?.executor;
+	if (
+		isClosed(node.status) ||
+		node.status === "blocked" ||
+		!executor?.workerId ||
+		!finiteTimestamp(executor.startedAt) ||
+		executor.finishedAt !== undefined ||
+		executor.outcome !== undefined
+	)
+		return 0;
+	return Math.max(0, now - Math.max(executor.startedAt, node.estimate!.updatedAt));
+}
+
 function latestTimestamp(values: Iterable<number | undefined>): number | undefined {
 	let latest: number | undefined;
 	for (const value of values)
@@ -1411,6 +1428,8 @@ function simulateRawPert(
 			n.schedule?.resources,
 			n.schedule?.startedAt,
 			n.schedule?.finishedAt,
+			n.schedule?.estimateRevision,
+			n.schedule?.executor,
 		]),
 		capacity,
 		now,
@@ -1443,7 +1462,7 @@ function simulateRawPert(
 				seconds = e.optimisticSeconds + (width * a) / (a + b);
 			}
 			// A revised estimate already describes the residual at updatedAt.
-			const elapsed = n.status === "in_progress" ? Math.max(0, now - estimateAnchor(n)) : 0;
+			const elapsed = consumedExecutionMs(n, now);
 			durations.set(n, Math.max(0, seconds * 1000 - elapsed));
 		}
 		const scheduled = scheduleResources(nodes, capacity, "pessimistic", priority, { durations, now });
@@ -1507,8 +1526,28 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 	}
 
 	const validNodes = analysis.uniqueNodes.filter(node => !node.invalid);
+	const exhaustedResidualNodes = validNodes.filter(
+		node =>
+			!isClosed(node.status) &&
+			consumedExecutionMs(node, now) > 0 &&
+			consumedExecutionMs(node, now) >= node.estimate!.pessimisticSeconds * 1000,
+	);
+	for (const node of exhaustedResidualNodes)
+		issues.push(`Residual estimate exhausted for task: ${node.content}; revise remaining work`);
 	const forecastableCount = validNodes.filter(node => !isClosed(node.status)).length;
-	const capacity = Math.min(requestedCapacity === 0 ? forecastableCount : requestedCapacity, forecastableCount);
+	const executableInput = options.executableCapacity;
+	const executableCapacity =
+		typeof executableInput === "number" && Number.isSafeInteger(executableInput) && executableInput >= 0
+			? executableInput
+			: undefined;
+	if (executableInput !== undefined && executableCapacity === undefined)
+		issues.push("Invalid executable worker capacity; live capacity is unknown");
+	const noExecutableCapacity = executableCapacity === 0 && analysis.nodes.some(node => !isClosed(node.status));
+	const capacity = Math.min(
+		requestedCapacity === 0 ? forecastableCount : requestedCapacity,
+		executableCapacity ?? forecastableCount,
+		forecastableCount,
+	);
 	const schedulerCapacity = Math.max(1, capacity);
 	const validSet = new Set(validNodes);
 	const hasUnresolvedOpen = analysis.nodes.some(node => !isClosed(node.status) && node.invalid);
@@ -1635,17 +1674,29 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		analysis.nodes.filter(node => isClosed(node.status)).map(node => node.schedule?.finishedAt),
 	);
 	const knownResourceFinish = latestTimestamp([...fixedPathP95ByNode.values(), knownTerminalFinish]);
-	const globalForecastKnown = unresolvedCount === 0 && allResourceScenariosComplete;
-	const earliestFinish = !hasUnresolvedOpen ? knownProjectFinish : undefined;
+	const globalForecastKnown = !noExecutableCapacity && unresolvedCount === 0 && allResourceScenariosComplete;
+	const earliestFinish = !noExecutableCapacity && !hasUnresolvedOpen ? knownProjectFinish : undefined;
 	const resourceFinish = globalForecastKnown ? knownResourceFinish : undefined;
 	const fixedPathP95Finish = globalForecastKnown ? knownFixedPathFinish : undefined;
-	const expectedResourceFinish = !hasUnresolvedOpen && allResourceScenariosComplete ? knownExpectedFinish : undefined;
-	const knownWorkFinish = unresolvedCount > 0 ? knownResourceFinish : undefined;
+	const expectedResourceFinish =
+		!noExecutableCapacity && !hasUnresolvedOpen && allResourceScenariosComplete ? knownExpectedFinish : undefined;
+	const knownWorkFinish = !noExecutableCapacity && unresolvedCount > 0 ? knownResourceFinish : undefined;
 	const range = globalForecastKnown
 		? timestampRange([knownOptimisticFinish, knownExpectedFinish, knownPessimisticFinish])
 		: undefined;
 
 	const resourceAssumptions: string[] = [];
+	if (openNodes.length > 0) {
+		if (noExecutableCapacity)
+			resourceAssumptions.push(
+				"Executable worker capacity is zero; completion ETA is unknown until capacity is available",
+			);
+		else if (executableCapacity === undefined)
+			resourceAssumptions.push(
+				"Executable worker capacity is unobserved; forecast is conditional on configured Task capacity being available",
+			);
+		else resourceAssumptions.push(`Observed executable worker capacity ${executableCapacity}`);
+	}
 	if (openNodes.some(node => node.schedule?.owner === undefined))
 		resourceAssumptions.push("Undeclared owners are assumed not to conflict");
 	if (openNodes.some(node => node.schedule?.resources === undefined))
@@ -1666,7 +1717,13 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		(openNodes.length > 0 && capacityWasFallback);
 
 	let confidence: TodoForecastConfidence;
-	if (unresolvedCount > 0 || !allResourceScenariosComplete) confidence = "unknown";
+	if (
+		noExecutableCapacity ||
+		exhaustedResidualNodes.length > 0 ||
+		unresolvedCount > 0 ||
+		!allResourceScenariosComplete
+	)
+		confidence = "unknown";
 	else {
 		confidence = "high";
 		for (const node of validNodes)
@@ -1681,29 +1738,7 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 	let deadlineStatus: TodoDeadlineStatus | undefined;
 	let deadlineMissed: boolean | undefined;
 	let deadlineSlackSeconds: number | undefined;
-	if (deadlineAt !== undefined) {
-		deadlineMissed = deadlineAt < now;
-		if (deadlineMissed) deadlineStatus = "overdue";
-		else if (unresolvedCount > 0 || !allResourceScenariosComplete) {
-			deadlineStatus =
-				knownExpectedFinish !== undefined && knownExpectedFinish > deadlineAt
-					? "will-miss"
-					: knownWorkFinish !== undefined && knownWorkFinish > deadlineAt
-						? "at-risk"
-						: "unknown";
-		} else if (globalForecastKnown && resourceFinish !== undefined) {
-			deadlineSlackSeconds = (deadlineAt - resourceFinish) / 1000;
-			deadlineStatus =
-				expectedResourceFinish !== undefined && expectedResourceFinish > deadlineAt
-					? "will-miss"
-					: resourceFinish > deadlineAt || (range?.latest ?? 0) > deadlineAt
-						? "at-risk"
-						: "on-track";
-		} else deadlineStatus = "unknown";
-		if (deadlineStatus === "overdue") issues.push("Deadline is overdue as of forecast time");
-		else if (deadlineStatus === "will-miss") issues.push("Expected work misses the deadline");
-		else if (deadlineStatus === "at-risk") issues.push("Forecast risks missing the deadline");
-	}
+
 	const planningIssuesByTask = new Map<string, TodoPlanningIssue[]>();
 	for (const issue of planningIssues) {
 		const taskIssues = planningIssuesByTask.get(issue.task);
@@ -1822,10 +1857,7 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 			progressAt: node.schedule?.progress?.at,
 			startedAt: node.schedule?.startedAt,
 			finishedAt: node.schedule?.finishedAt,
-			attemptDurationMs:
-				node.schedule?.attemptHistory && node.schedule.attemptHistory.length > 0
-					? node.schedule.attemptHistory.reduce((total, attempt) => total + attempt.durationMs, 0)
-					: undefined,
+			attemptDurationMs: recordedTodoExecution(node, now).attemptMs,
 		};
 	});
 
@@ -1859,11 +1891,31 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 	const measuredThroughputFinish =
 		rowsPerHour && openNodes.length ? now + (openNodes.length / rowsPerHour) * 3_600_000 : undefined;
 	const raw =
-		options.rawSimulation !== false && globalForecastKnown
+		options.rawSimulation !== false && globalForecastKnown && exhaustedResidualNodes.length === 0
 			? simulateRawPert(validNodes, schedulerCapacity, taskPriority(validTopological), now)
 			: undefined;
 	const empirical = calibrateTodoPlan(options.history ?? [], now, raw?.p50);
 	const finish = empirical.calibratedUpperFinish ?? raw?.p80;
+	if (deadlineAt !== undefined) {
+		deadlineMissed = deadlineAt < now;
+		if (deadlineMissed) deadlineStatus = "overdue";
+		else if (noExecutableCapacity || exhaustedResidualNodes.length > 0) deadlineStatus = "unknown";
+		else if (raw && finish !== undefined) {
+			deadlineSlackSeconds = (deadlineAt - finish) / 1000;
+			deadlineStatus = raw.p50 > deadlineAt ? "will-miss" : finish > deadlineAt ? "at-risk" : "on-track";
+		} else if (unresolvedCount > 0 || !allResourceScenariosComplete) {
+			// A known partial bound may prove lateness, never whole-plan completion.
+			deadlineStatus =
+				knownExpectedFinish !== undefined && knownExpectedFinish > deadlineAt
+					? "will-miss"
+					: knownWorkFinish !== undefined && knownWorkFinish > deadlineAt
+						? "at-risk"
+						: "unknown";
+		} else deadlineStatus = "unknown";
+		if (deadlineStatus === "overdue") issues.push("Deadline is overdue as of forecast time");
+		else if (deadlineStatus === "will-miss") issues.push("Expected work misses the deadline");
+		else if (deadlineStatus === "at-risk") issues.push("Forecast risks missing the deadline");
+	}
 	const autoDeadlineForecast: NonNullable<TodoPlanForecast["autoDeadlineForecast"]> = {
 		finish,
 		calibratedPertFinish: raw?.p80,
@@ -1883,10 +1935,20 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 	const plan: TodoPlanForecast = {
 		autoDeadlineForecast,
 		...empirical,
-		capacityAssumptions: { requested: requestedCapacity, effective: schedulerCapacity },
-		unknownGates: analysis.nodes
-			.filter(node => node.invalid || node.status === "blocked")
-			.map(node => node.blocker ?? node.content),
+		capacityAssumptions: {
+			requested: requestedCapacity,
+			effective: capacity,
+			executableObserved: executableCapacity !== undefined,
+		},
+		unknownGates: [
+			...(noExecutableCapacity ? ["Executable worker capacity is zero"] : []),
+			...exhaustedResidualNodes.map(
+				node => `Residual estimate exhausted for task: ${node.content}; revise remaining work`,
+			),
+			...analysis.nodes
+				.filter(node => node.invalid || node.status === "blocked")
+				.map(node => node.blocker ?? node.content),
+		],
 		provenance:
 			"declared residuals; 256 beta-PERT draws; recorded TODO closure target; all-prior session-balanced residuals",
 		predictionVersion: TODO_PREDICTION_VERSION,
@@ -1917,22 +1979,9 @@ export function forecastTodoPlan(phases: TodoScheduleInput, options: TodoForecas
 		deadlineSlackSeconds,
 		issues: [...new Set(issues)],
 	};
-	if (options.risk && !hasUnresolvedOpen) {
+	if (options.risk && !hasUnresolvedOpen && !noExecutableCapacity && exhaustedResidualNodes.length === 0)
 		plan.risk = simulateRowRisk(validNodes, schedulerCapacity, taskPriority(validTopological), options, 1);
-		if (deadlineAt !== undefined && !deadlineMissed && plan.risk.onTimeProbability !== undefined) {
-			plan.deadlineStatus =
-				plan.risk.onTimeProbability < 0.5
-					? "will-miss"
-					: plan.risk.onTimeProbability < 0.8
-						? "at-risk"
-						: "on-track";
-			plan.issues = plan.issues.filter(
-				issue => issue !== "Expected work misses the deadline" && issue !== "Forecast risks missing the deadline",
-			);
-			if (plan.deadlineStatus === "will-miss") plan.issues.push("Redo risk forecast misses the deadline");
-			else if (plan.deadlineStatus === "at-risk") plan.issues.push("Redo risk forecast risks missing the deadline");
-		}
-	} else if (!options.risk) plan.riskModelUnavailable = true;
+	else if (!options.risk) plan.riskModelUnavailable = true;
 	return plan;
 }
 
@@ -1966,11 +2015,7 @@ function simulateRowRisk(
 	for (let sample = 0; sample < samples; sample++) {
 		const durations = new Map<PlanNode, number>();
 		for (const node of open) {
-			const start = node.schedule?.firstEstimate
-				? Math.max(node.estimate!.updatedAt, node.schedule.startedAt ?? 0)
-				: (node.schedule?.executor?.startedAt ?? node.schedule?.startedAt);
-			const elapsed =
-				node.status === "in_progress" && start !== undefined ? Math.max(0, (options.now - start) / 1000) : 0;
+			const elapsed = consumedExecutionMs(node, options.now) / 1000;
 			durations.set(
 				node,
 				drawAttemptChain(
@@ -2077,6 +2122,74 @@ function formatUserWait(wait: TodoUserWait, text: (value: string) => string): st
 	return `waits for you: ${text(wait.question)} · ${wait.proposal ? `proposal: ${text(wait.proposal)}` : "no proposal yet"}`;
 }
 
+/** Recorded execution is shared by forecast metadata and each row renderer. */
+function recordedTodoExecution(
+	task: { status: TodoScheduleStatus; schedule?: TodoSchedule },
+	now: number,
+): { attemptMs?: number; activeMs?: number } {
+	const schedule = task.schedule;
+	const end = isClosed(task.status) ? schedule?.finishedAt : now;
+	const history = [
+		...new Map((schedule?.attemptHistory ?? []).map(attempt => [attempt.attemptId, attempt])).values(),
+	].filter(
+		attempt =>
+			Number.isFinite(attempt.durationMs) &&
+			attempt.durationMs >= 0 &&
+			finiteTimestamp(attempt.startedAt) &&
+			finiteTimestamp(attempt.finishedAt) &&
+			attempt.finishedAt >= attempt.startedAt &&
+			attempt.finishedAt <= (end ?? now),
+	);
+	const attemptMs = history.length ? history.reduce((total, attempt) => total + attempt.durationMs, 0) : undefined;
+	let activeMs = attemptMs;
+	const executor = schedule?.executor;
+	if (
+		executor &&
+		finiteTimestamp(executor.startedAt) &&
+		!history.some(attempt => attempt.workerName === executor.workerId && attempt.startedAt === executor.startedAt)
+	) {
+		const executionEnd = finiteTimestamp(executor.finishedAt)
+			? executor.finishedAt
+			: !executor.outcome
+				? end
+				: undefined;
+		if (finiteTimestamp(executionEnd) && executionEnd >= executor.startedAt && executionEnd <= (end ?? now))
+			activeMs = (activeMs ?? 0) + executionEnd - executor.startedAt;
+	}
+	return { attemptMs, activeMs };
+}
+
+/** First-start age includes unknown gaps; it cannot stand in for recorded worker execution. */
+function formatTodoRowClocks(task: { status: TodoScheduleStatus; schedule?: TodoSchedule }, now: number): string[] {
+	const schedule = task.schedule;
+	const terminal = isClosed(task.status);
+	const end = terminal ? schedule?.finishedAt : now;
+	const starts = [
+		schedule?.startedAt,
+		schedule?.executor?.startedAt,
+		...(schedule?.attemptHistory ?? []).map(attempt => attempt.startedAt),
+	].filter((value): value is number => finiteTimestamp(value));
+	const firstStart = starts.length ? Math.min(...starts) : undefined;
+	const ageMs =
+		finiteTimestamp(firstStart) && finiteTimestamp(end) && end >= firstStart ? end - firstStart : undefined;
+	const queueAgeMs =
+		ageMs === undefined && !terminal && finiteTimestamp(schedule?.firstRequirementAt)
+			? Math.max(0, now - schedule.firstRequirementAt)
+			: undefined;
+	const parts: string[] = [];
+	if (ageMs !== undefined) parts.push(`age ${Math.round(ageMs / 60_000)}m`);
+	else if (queueAgeMs !== undefined) parts.push(`queued age ${Math.round(queueAgeMs / 60_000)}m`);
+	const { activeMs } = recordedTodoExecution(task, now);
+	parts.push(activeMs === undefined ? "active unknown" : `recorded active ${Math.round(activeMs / 60_000)}m`);
+	// The journal has no completeness marker: age minus recorded work is not proven downtime.
+	if (ageMs !== undefined || queueAgeMs !== undefined) parts.push("queue/downtime unknown");
+	if (!terminal && isValidEstimate(schedule?.estimate))
+		parts.push(
+			`remaining estimate ${Math.ceil(schedule.estimate.likelySeconds / 60)}m at ${displayTimestamp(schedule.estimate.updatedAt, now)}`,
+		);
+	return parts;
+}
+
 /** Compact item summary; task identity and detailed issues remain in structured data. */
 export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded = false): string {
 	const terminal = row.status === "completed" || row.status === "abandoned";
@@ -2097,7 +2210,7 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 					: planActions
 						? `plan required: ${planActions}`
 						: `forecast unavailable${row.issues[0] ? `: ${safeText(row.issues[0])}` : ""}`;
-	const parts = [label];
+	const parts = [label, ...formatTodoRowClocks(row, now)];
 	if (row.schedule?.previewTracked && finiteTimestamp(row.schedule.firstRequirementAt)) {
 		const end = row.schedule.visibleAt ?? now;
 		parts.push(
@@ -2176,6 +2289,9 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 export function formatPlanForecast(plan: TodoPlanForecast, _now: number): string {
 	const parts: string[] = [];
 	const measured = plan.autoDeadlineForecast;
+	if (plan.rawP50Finish === undefined) parts.push("Current ETA unknown");
+	if (plan.unknownGates?.length) parts.push(plan.unknownGates.map(safeText).join("; "));
+	if (plan.capacityAssumptions?.executableObserved === false) parts.push("Conditional on worker capacity");
 	if (plan.rawP50Finish !== undefined)
 		parts.push(`Current set: point ${displayTimestamp(plan.rawP50Finish, plan.now)}`);
 	if (plan.calibratedUpperFinish !== undefined)
@@ -2194,20 +2310,15 @@ export function formatPlanForecast(plan: TodoPlanForecast, _now: number): string
 	if (awaiting) parts.push(`${awaiting} awaiting your review`);
 	if (plan.risk) parts.push(`Worker-attempt diagnostic ${displayTimestamp(plan.risk.p80Finish, plan.now)}`);
 
-	if (plan.risk) {
-		if (plan.deadlineAt !== undefined) parts.push(`due ${displayTimestamp(plan.deadlineAt, plan.now)}`);
-		if (plan.deadlineStatus) parts.push(plan.deadlineStatus);
-		return parts.join(" · ");
-	}
 	if (plan.unresolvedCount > 0) {
 		if (plan.knownWorkFinish !== undefined)
 			parts.push(`Known work fixed-path P95 (partial): ${formatTimestamp(plan.knownWorkFinish)}`);
 		parts.push(`unresolved: ${plan.unresolvedCount}`);
 	} else if (plan.resourceFinish !== undefined)
-		parts.push(`ETA fixed-path P95 (normal approximation): ${formatTimestamp(plan.resourceFinish)}`);
+		parts.push(`Historical fixed-path P95 (normal approximation): ${formatTimestamp(plan.resourceFinish)}`);
 	else parts.push("resource ETA unavailable");
 	if (plan.expectedResourceFinish !== undefined)
-		parts.push(`expected resource finish: ${formatTimestamp(plan.expectedResourceFinish)}`);
+		parts.push(`historical expected resource finish: ${formatTimestamp(plan.expectedResourceFinish)}`);
 	if (plan.deadlineAt !== undefined) parts.push(`due: ${formatTimestamp(plan.deadlineAt)}`);
 	if (plan.range)
 		parts.push(`scenario envelope: ${formatTimestamp(plan.range.earliest)}..${formatTimestamp(plan.range.latest)}`);
@@ -2279,31 +2390,8 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 	if (row.schedule?.review === "user") parts.push("review: user");
 	if (row.schedule?.speculativeOn)
 		parts.push(`speculative on ${truncateToWidth(safeText(row.schedule.speculativeOn), 32)}`);
-	const workEnd = terminal ? row.finishedAt : row.status === "in_progress" ? now : undefined;
-	const workedMs =
-		terminal && row.attemptDurationMs !== undefined
-			? row.attemptDurationMs
-			: finiteTimestamp(row.startedAt) && finiteTimestamp(workEnd) && workEnd >= row.startedAt
-				? workEnd - row.startedAt
-				: undefined;
-	const worked = workedMs === undefined ? undefined : `${Math.round(workedMs / 60_000)}m`;
+	parts.push(...formatTodoRowClocks(row, now));
 	const cumulativeReestimates = row.schedule?.cumulativeReestimateCount ?? row.reestimateCount;
-	if (row.estimateRangeSeconds) {
-		// A reestimate that lands while the row runs is remaining work from its update time; the
-		// badge budget adds the elapsed it absorbed so `worked / budget` never compares elapsed
-		// against remaining-only. First estimates keep total-work semantics.
-		const absorbedMs =
-			row.status === "in_progress" &&
-			cumulativeReestimates >= 1 &&
-			finiteTimestamp(row.startedAt) &&
-			finiteTimestamp(row.estimateUpdatedAt) &&
-			row.estimateUpdatedAt > row.startedAt
-				? row.estimateUpdatedAt - row.startedAt
-				: 0;
-		parts.push(
-			`${worked ? `${worked} / ` : ""}${Math.ceil((row.estimateRangeSeconds.likely * 1000 + absorbedMs) / 60_000)}m`,
-		);
-	} else if (worked) parts.push(worked);
 	if (row.onProposal?.length) parts.push("on proposal");
 	if (row.criticalityKnown === true && row.critical) parts.push("critical");
 	if (cumulativeReestimates >= 3) {
@@ -2321,25 +2409,30 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 
 export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): string {
 	const parts: string[] = [];
+	const finish = plan.autoDeadlineForecast?.finish;
+	parts.push(finish === undefined ? "Current ETA unknown" : `ETA ${displayTimestamp(finish, now)}`);
+	if (plan.capacityAssumptions?.executableObserved === false) parts.push("conditional on worker capacity");
 	const awaiting = plan.rows.filter(isTodoAwaitingReview).length;
 	if (awaiting) parts.push(`${awaiting} awaiting your review`);
 	if (plan.risk) parts.push(`Worker-attempt diagnostic ${displayTimestamp(plan.risk.p80Finish, plan.now)}`);
-
-	if (plan.risk) {
-		if (plan.deadlineAt !== undefined) parts.push(`due ${displayTimestamp(plan.deadlineAt, plan.now)}`);
-		if (plan.deadlineStatus) parts.push(plan.deadlineStatus);
-		return parts.join(" · ");
-	}
 	if (plan.unresolvedCount > 0) {
 		if (plan.knownWorkFinish !== undefined)
 			parts.push(`Known work by ${displayTimestamp(plan.knownWorkFinish, now)} (partial)`);
 		parts.push(`${plan.unresolvedCount} unresolved`);
-	} else if (plan.resourceFinish !== undefined) parts.push(`ETA ${displayTimestamp(plan.resourceFinish, now)}`);
-	else parts.push("Resource ETA unavailable");
-	if (plan.deadlineAt !== undefined)
-		parts.push(
-			`due ${displayTimestamp(plan.deadlineAt, now)}${plan.deadlineAt < now ? ` (overdue ${Math.floor((now - plan.deadlineAt) / 3_600_000)}h${Math.floor(((now - plan.deadlineAt) % 3_600_000) / 60_000)}m)` : plan.deadlineStatus === "will-miss" ? ` · MISSES ${displayTimestamp(plan.deadlineAt, now)} by ${Math.ceil(((plan.expectedResourceFinish ?? Math.max(...plan.rows.map(row => row.expectedResourceFinish ?? 0))) - plan.deadlineAt) / 60_000)}m` : plan.deadlineStatus === "at-risk" ? " (at risk)" : ""}`,
-		);
+	}
+	if (plan.unknownGates?.length) parts.push(plan.unknownGates.map(safeText).join("; "));
+	if (plan.deadlineAt !== undefined) {
+		parts.push(`due ${displayTimestamp(plan.deadlineAt, now)}`);
+		if (plan.deadlineAt < now)
+			parts.push(
+				`overdue ${Math.floor((now - plan.deadlineAt) / 3_600_000)}h${Math.floor(((now - plan.deadlineAt) % 3_600_000) / 60_000)}m`,
+			);
+		else if (plan.deadlineStatus === "will-miss" && plan.rawP50Finish !== undefined)
+			parts.push(
+				`MISSES ${displayTimestamp(plan.deadlineAt, now)} by ${Math.ceil((plan.rawP50Finish - plan.deadlineAt) / 60_000)}m`,
+			);
+		else if (plan.deadlineStatus) parts.push(plan.deadlineStatus);
+	}
 	if (plan.planningIssues.length) parts.push(`plan required: ${plan.planningIssues.length} repairs`);
 	const overdue = plan.rows.filter(row => row.overdue).length;
 	if (overdue) parts.push(`${overdue} overdue`);
@@ -2632,20 +2725,9 @@ export function renderTodoPlanDisplay(
 	const states = new Map(open.map(task => [task, classifyTodoDisplayRow(task, phases, context)]));
 	const count = (state: TodoDisplayState): number => [...states.values()].filter(row => row.state === state).length;
 	const archived = options.archived ?? 0;
-	// Plan-wide forecast first (2026-11-06 "where is global ETA?"): the risk model's P80 finish for ALL open rows,
-	// on-time probability and the deadline; the last running row's ETA alone hid unstarted work.
+	// Current residual forecast covers the whole open set; worker-attempt risk is diagnostic.
 	const forecast = options.forecast;
-	const eta = forecast?.risk
-		? [
-				`P80 ${displayTimestamp(forecast.risk.p80Finish, now)}`,
-				forecast.risk.onTimeProbability === undefined
-					? ""
-					: `P(on time) ${Math.round(forecast.risk.onTimeProbability * 100)}%`,
-				forecast.deadlineAt === undefined ? "" : `due ${displayTimestamp(forecast.deadlineAt, now)}`,
-			]
-				.filter(Boolean)
-				.join(" · ")
-		: formatTodoDisplayEta(forecast?.resourceFinish ?? forecast?.knownWorkFinish, now);
+	const eta = forecast ? formatPlanForecastDisplay(forecast, now) : "";
 	const header = `${open.length} open — ${count("working")} working · ${count("waiting")} waiting · ${count("auditing")} auditing · ${count("verifying")} verifying · ${count("audit queued")} audit queued · ${count("ready to close")} ready to close · ${count("handoff pending")} handoff pending · ${count("needs you")} need you · ${count("needs worker")} need worker · ${count("stuck")} stuck · ${tasks.length - open.length + archived} closed (${archived} archived)${eta ? ` · ${eta}` : ""}`;
 	const lines = [header];
 	const owners: (string | undefined)[] = [undefined];
@@ -2743,7 +2825,8 @@ export function renderTodoPlanDisplay(
 			}
 			const topCause = [...causes].sort((a, b) => b[1] - a[1])[0]?.[0];
 			const infra = failures.length;
-			const suffix = ` — ${label}${blocker}${worker}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}${infra ? ` · infra failures ${infra} since last success: ${truncateToWidth(safeText(topCause ?? "unknown"), TRUNCATE_LENGTHS.TITLE)}` : ""}`;
+			const clocks = formatTodoRowClocks(task, now).join(" · ");
+			const suffix = ` — ${label}${blocker}${worker}${clocks ? ` · ${clocks}` : ""}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}${infra ? ` · infra failures ${infra} since last success: ${truncateToWidth(safeText(topCause ?? "unknown"), TRUNCATE_LENGTHS.TITLE)}` : ""}`;
 			const title = truncateToWidth(
 				safeText(task.content),
 				Math.max(0, (options.width ?? Infinity) - Bun.stringWidth(suffix) - 4),
