@@ -486,3 +486,27 @@ test("deadline escalation permits waiting on a live owned job without clearing r
   h.jobs.running[0].status = "completed";
   expect((await h.hooks.get("tool_call")(waiting, h.ctx))?.block).toBe(true);
 });
+
+test("delivered CHURN chain permits waiting for its active audit, then rearms on audit failure", async () => {
+  const h = await harness([], true, false, false);
+  const head = h.phases[0].tasks[0];
+  head.status = "in_progress";
+  head.schedule.executor = { workerId: "DeliveryWriter", startedAt: 100, finishedAt: 200, outcome: "completed" };
+  head.schedule.resources = [`git:/tmp/acceptance@${"a".repeat(40)}`];
+  head.schedule.audit = { delivery: schedule.todoRowDeliveryKey(head.schedule), agent: "qa-auditor", verdict: "pending", repoPath: "/tmp/acceptance", head: "a".repeat(40), workerId: "ActiveVerifier" };
+  h.jobs.running.push({ id: "ActiveVerifier", type: "task", status: "running", startTime: Date.now() });
+  for (let i = 0; i < 3; i++) {
+    await h.hooks.get("turn_start")({}, h.ctx);
+    await h.hooks.get("turn_end")({}, h.ctx);
+  }
+  const waitResult = await h.hooks.get("tool_call")({ toolName: "wait", input: {} }, h.ctx);
+  expect(waitResult?.reason).toBeUndefined();
+  expect(h.sent.filter(m => m.customType === "todo-dispatch-action-required")).toEqual([]);
+  expect(wakeDemand(h.phases, new Set(["ActiveVerifier"]), Date.now())).toBeUndefined();
+  head.schedule.audit.verdict = "fail";
+  head.schedule.audit.findings = "Delivered output fails acceptance";
+  h.jobs.running = [];
+  await h.hooks.get("turn_start")({}, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.action).toContain("WAIT-CHAIN REVIEW");
+});

@@ -101,7 +101,11 @@ export function unfinishedDependencyChains(phases: TodoScheduleInput, title: str
 
 /** Retry pressure only applies when the row's prerequisites permit a changed attempt. */
 export function actionableChurnRows(phases: TodoScheduleInput): Array<{ row: string; failures: number; reestimates: number }> {
-	return planChurnRows(phases).filter(item => unfinishedDependencyChains(phases, item.row).length === 0);
+	const rows = phases.flatMap(phase => phase.tasks);
+	return planChurnRows(phases).filter(item => {
+		const row = rows.find(row => row.content === item.row);
+		return row !== undefined && todoRowAfterWorker(row)?.kind !== "verify" && unfinishedDependencyChains(phases, item.row).length === 0;
+	});
 }
 
 export function renderPlanFactNote(

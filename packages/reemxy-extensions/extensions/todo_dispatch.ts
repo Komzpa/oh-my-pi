@@ -4337,6 +4337,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       action,
       content => pi.sendMessage({ customType: "todo-overdue-status", content, display: true, attribution: "agent" },
         { deliverAs: "nextTurn", triggerTurn: false, interruptWait: false }),
+      new Set((decision.verifyingRows ?? []).filter(content => {
+        const auditor = tasks.get(content)?.schedule?.audit?.workerId;
+        return auditor && jobs.some(job => job.status === "running" && liveJobMatchesOwner(job, auditor));
+      })),
     );
   };
   pi.on("session_stop", async (_event, ctx) => {
@@ -7016,11 +7020,13 @@ export function idleRedRowsRefusal(
   previewNotified: Set<string> = new Set(),
   action: "wait" | "stop" = "wait",
   reportStatus?: (content: string) => void,
+  activeVerifying: Set<string> = new Set(),
 ): string | undefined {
   if (decision.goalPaused) return;
   const running = new Set((decision.ownerRunStates ?? []).filter(row => row.running).map(row => row.content));
   const forecast = decision.forecast;
-  const scoped = (forecast?.rows ?? []).filter(row => !row.schedule?.postDeadline && isNonClosedRowStatus(row.status));
+  const verifying = activeVerifying;
+  const scoped = (forecast?.rows ?? []).filter(row => !row.schedule?.postDeadline && isNonClosedRowStatus(row.status) && !verifying.has(row.content));
   const outcomes = new Map((decision.ownerRunStates ?? []).map(row => [row.content, row.outcome]));
   const progressing = new Set((decision.ownerRunStates ?? []).filter(row => row.running && row.progressing === true).map(row => row.content));
   const red = scoped.filter(row => !(row.status === "blocked" && row.waitsForUser) &&

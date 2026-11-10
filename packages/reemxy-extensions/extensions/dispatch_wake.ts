@@ -1,7 +1,7 @@
 import { prompt } from "@oh-my-pi/pi-utils";
 import recoveryInstructions from "./dispatch-recovery.md" with { type: "text" };
 import actionTemplate from "./dispatch-action.md" with { type: "text" };
-import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { todoRowAfterWorker, type TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 
 import { actionableChurnRows, unfinishedDependencyChains } from "./lead_time_notes";
 
@@ -26,7 +26,7 @@ export function wakeDemand(
 ): WakeDemand | undefined {
 	const rows = phases
 		.flatMap(phase => phase.tasks)
-		.filter(row => row.status !== "completed" && row.status !== "abandoned");
+		.filter(row => row.status !== "completed" && row.status !== "abandoned" && todoRowAfterWorker(row)?.kind !== "verify");
 	const churnTitles = new Set(actionableChurnRows(phases).map(item => item.row));
 	const churn = questions.length ? undefined : rows.find(row => churnTitles.has(row.content));
 	const workerQuestion = questions[0];
