@@ -169,7 +169,7 @@ it("folds header and entry revisions into their logical slots without creating a
 	const incomplete = await loadSessionRestoreSummary(file);
 	expect(incomplete.entries[0]).toMatchObject({ type: "session", cwd: movedCwd });
 	expect(incomplete.restoreLeafId).toBe("pending");
-	expect(hasRestorableTurn(incomplete.entries)).toBe(true);
+	expect(hasRestorableTurn(incomplete.entries.filter(entry => entry.type !== "session"))).toBe(true);
 	await fs.appendFile(file, "}\n");
 
 	const canonical = await loader.loadSessionFile(file);
@@ -179,9 +179,9 @@ it("folds header and entry revisions into their logical slots without creating a
 	expect(summary.restoreLeafId).toBe("pending");
 	expect(summary.entries.some(entry => entry.id === "entry-revision-record")).toBe(false);
 	expect(summary.entries[0]).toEqual(canonical.entries[0]);
-	expect(hasRestorableTurn(summary.entries)).toBe(false);
+	expect(hasRestorableTurn(summary.entries.filter(entry => entry.type !== "session"))).toBe(false);
 	// Completing a trailing revision must not mutate a result returned from the prior snapshot.
-	expect(hasRestorableTurn(incomplete.entries)).toBe(true);
+	expect(hasRestorableTurn(incomplete.entries.filter(entry => entry.type !== "session"))).toBe(true);
 });
 
 it("folds revisions on a cold summary read", async () => {
@@ -216,5 +216,5 @@ it("folds revisions on a cold summary read", async () => {
 		resolveSessionLeafId(canonical.entries.filter(entry => entry.type !== "session")),
 	);
 	expect(summary.restoreLeafId).toBe("pending");
-	expect(hasRestorableTurn(summary.entries)).toBe(false);
+	expect(hasRestorableTurn(summary.entries.filter(entry => entry.type !== "session"))).toBe(false);
 });
