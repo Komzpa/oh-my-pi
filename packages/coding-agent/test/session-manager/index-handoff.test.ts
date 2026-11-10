@@ -47,6 +47,87 @@ async function journal(): Promise<string> {
 	return file;
 }
 
+async function rolloverJournal(): Promise<string> {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-rollover-index-handoff-"));
+	temporary.push(directory);
+	const file = path.join(directory, "session.jsonl");
+	const timestamp = "2026-11-10T00:00:00.000Z";
+	const usage = {
+		input: 0,
+		output: 0,
+		cacheRead: 0,
+		cacheWrite: 0,
+		totalTokens: 0,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+	};
+	const assistant = (text: string) => ({
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "claude-sonnet-4-5",
+		usage,
+		stopReason: "stop",
+		timestamp: 1,
+	});
+	const rows = [
+		{ type: "session", version: CURRENT_SESSION_VERSION, id: "session", cwd: directory, timestamp },
+		{
+			type: "message",
+			id: "human-request",
+			parentId: null,
+			timestamp,
+			message: { role: "user", content: "HUMAN_REQUEST_BEFORE_INTERNAL_STEER", timestamp: 1 },
+		},
+		{
+			type: "message",
+			id: "earlier-work",
+			parentId: "human-request",
+			timestamp,
+			message: assistant("Earlier work."),
+		},
+		{
+			type: "message",
+			id: "internal-steer",
+			parentId: "earlier-work",
+			timestamp,
+			message: {
+				role: "user",
+				content: "INTERNAL_AGENT_WRITE_SCOPE_STEER",
+				attribution: "agent",
+				steering: true,
+				timestamp: 2,
+			},
+		},
+		{
+			type: "message",
+			id: "retained-tail",
+			parentId: "internal-steer",
+			timestamp,
+			message: assistant("Retained rollover tail."),
+		},
+		{
+			type: "compaction",
+			id: "rollover",
+			parentId: "retained-tail",
+			timestamp,
+			summary: "Context rollover",
+			firstKeptEntryId: "retained-tail",
+			tokensBefore: 100,
+			details: { kind: "experimental-context-rollover", version: 1 },
+		},
+		{
+			type: "message",
+			id: "after-rollover",
+			parentId: "rollover",
+			timestamp,
+			message: { role: "user", content: "REQUEST_AFTER_ROLLOVER", timestamp: 3 },
+		},
+	];
+	await Bun.write(file, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
+	return file;
+}
+
 async function open(file: string): Promise<SessionManager> {
 	const manager = await SessionManager.open(file, undefined, undefined, { suppressBreadcrumb: true });
 	managers.push(manager);
@@ -284,4 +365,26 @@ test("a pre-selection-metadata handoff falls back to the journal and restores it
 		checkpointMessageCount: 2,
 		startedAt,
 	});
+});
+
+test("a v3 handoff with a stale agent-steer request boundary reloads canonical journal metadata", async () => {
+	const file = await rolloverJournal();
+	const original = await open(file);
+	expect(await original.writeIndexHandoff()).toBe(true);
+	const handoff = Bun.file(`${file}.index-handoff`);
+	const snapshot = await handoff.json();
+	const agentSteer = snapshot.ordered.find((entry: { id: string }) => entry.id === "internal-steer");
+	expect(snapshot.version).toBe(4);
+	expect(agentSteer).toMatchObject({ userRequest: false });
+	snapshot.version = 3;
+	agentSteer.userRequest = true;
+	await Bun.write(handoff, JSON.stringify(snapshot));
+
+	const parse = spyOn(loader, "visitSessionFileForResume");
+	const restored = await open(file);
+	const rebuilt = JSON.stringify(restored.buildSessionContext().messages);
+	expect(rebuilt).toContain("HUMAN_REQUEST_BEFORE_INTERNAL_STEER");
+	expect(rebuilt).not.toContain("INTERNAL_AGENT_WRITE_SCOPE_STEER");
+	expect(rebuilt).toContain("REQUEST_AFTER_ROLLOVER");
+	expect(parse).toHaveBeenCalledTimes(1);
 });

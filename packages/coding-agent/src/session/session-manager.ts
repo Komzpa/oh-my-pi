@@ -607,7 +607,7 @@ interface IndexedSessionEntry extends Omit<PositionedSessionEntry, "offset" | "l
 
 /** Only metadata and byte ranges cross exec; transcript payloads stay in the journal. */
 interface SessionIndexHandoff {
-	version: 3;
+	version: 4;
 	stamp: string;
 	header: SessionHeader;
 	titleSlot?: SessionTitleUpdate;
@@ -856,7 +856,7 @@ export class SessionEntryIndex {
 			ordered.push(metadata);
 		}
 		return {
-			version: 3,
+			version: 4,
 			stamp,
 			header,
 			titleSlot,
@@ -5891,7 +5891,7 @@ export class SessionManager {
 					snapshot: SessionIndexHandoff;
 				}>;
 				for (const tail of tails) {
-					if (tail.baseStamp !== baseStamp || tail.snapshot.version !== 3)
+					if (tail.baseStamp !== baseStamp || tail.snapshot.version !== 4)
 						throw new Error("Invalid incremental index base");
 					for (const row of tail.snapshot.ordered) snapshot.ordered.push(row);
 					snapshot.stamp = tail.snapshot.stamp;
@@ -5902,7 +5902,7 @@ export class SessionManager {
 				}
 			}
 			if (
-				snapshot.version === 3 &&
+				snapshot.version === 4 &&
 				snapshot.stamp === journalStamp(before) &&
 				snapshot.header?.type === "session" &&
 				typeof snapshot.header.id === "string" &&
