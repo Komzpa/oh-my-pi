@@ -67,6 +67,28 @@ describe("pending Ask", () => {
 		expect(submitUserReply).toHaveBeenCalledWith("Answer to ask-1 [choice]: Postgres");
 	});
 
+	it("drops a form reply after its session changes or the request is cancelled", async () => {
+		for (const endRequest of ["session switch", "cancellation"] as const) {
+			const dialog = Promise.withResolvers<{ data: HtmlFormData; timedOut?: boolean } | undefined>();
+			const submitUserReply = vi.fn();
+			let sessionId = "session-a";
+			const abortController = new AbortController();
+			const tool = new AskTool(session({ getSessionId: () => sessionId, submitUserReply }));
+			await tool.execute("ask-1", { html }, abortController.signal, undefined, {
+				hasUI: true,
+				ui: { formDialog: () => dialog.promise },
+				abort: vi.fn(),
+			} as unknown as AgentToolContext);
+
+			if (endRequest === "session switch") sessionId = "session-b";
+			else abortController.abort();
+			dialog.resolve({ data: { choice: "pg" } });
+			await dialog.promise;
+			await Promise.resolve();
+			expect(submitUserReply, endRequest).not.toHaveBeenCalled();
+		}
+	});
+
 	it("never turns a timed-out form into a user answer", async () => {
 		const submitUserReply = vi.fn();
 		await new AskTool(session({ submitUserReply })).execute("ask-1", { html }, undefined, undefined, {

@@ -543,6 +543,8 @@ export interface FollowUpOptions {
 
 /** Options for AgentSession.steer(). */
 export interface SteerOptions {
+	/** Administrative context only: never start a new turn or revive an idle worker. */
+	passive?: boolean;
 	/** Explicit billing/initiator attribution. */
 	attribution?: MessageAttribution;
 	/** Called synchronously with the messages pushed onto the steering queue. See {@link PromptOptions.onPromptQueued}. */

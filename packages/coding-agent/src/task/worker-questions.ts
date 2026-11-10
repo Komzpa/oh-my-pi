@@ -23,6 +23,10 @@ export function pendingWorkerAsks(messages: readonly AgentMessage[] = []): Worke
 	const answer = (text: string) => {
 		for (const [key, q] of pending) if (answersWorkerQuestion(text, q)) pending.delete(key);
 	};
+	const parentReply = (text: string) => {
+		answer(text);
+		for (const [key, q] of pending) if (q.questionId === "reply") pending.delete(key);
+	};
 	for (const message of messages) {
 		if (message.role === "assistant")
 			for (const part of message.content) {
@@ -56,8 +60,7 @@ export function pendingWorkerAsks(messages: readonly AgentMessage[] = []): Worke
 			typeof message.details.message === "string" &&
 			message.details.message.trim()
 		) {
-			answer(message.details.message);
-			for (const [key, q] of pending) if (q.questionId === "reply") pending.delete(key);
+			parentReply(message.details.message);
 		}
 		if (message.role === "toolResult" && message.toolName === "ask" && !message.isError) {
 			const details = message.details;
@@ -87,6 +90,8 @@ export function pendingWorkerAsks(messages: readonly AgentMessage[] = []): Worke
 							.map(p => p.text)
 							.join("\n");
 			answer(text);
+			// Parent IRC delivered mid-turn is persisted as a user steer when consumed.
+			if (message.parentIrc?.body.trim()) parentReply(message.parentIrc.body);
 		}
 	}
 	return [...pending.values()];

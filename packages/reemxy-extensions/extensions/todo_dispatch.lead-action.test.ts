@@ -150,12 +150,13 @@ test("scope changes notify the current live continuation instead of the historic
 	const registry = new AgentRegistry();
 	const spy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
 	const messages = [];
-	for (const id of ["OldGate", "NewCoder"]) registry.register({ id, displayName: id, kind: "sub", session: { isStreaming: true, steer: async text => { messages.push({ id, text }); } } });
+	for (const id of ["OldGate", "NewCoder"]) registry.register({ id, displayName: id, kind: "sub", session: { isStreaming: true, steer: async (text, _images, options) => { messages.push({ id, text, options }); } } });
 	try {
 		const row = { content: "Repair component", status: "in_progress", schedule: { owner: "NewCoder", resources: [], executor: { workerId: "OldGate", outcome: "completed", finishedAt: NOW } } };
 		const h = await harness([row]);
 		await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule", updates: [{ task: row.content, resources: [] }] }, details: { op: "schedule" }, content: [] }, h.ctx);
 		expect(messages.map(message => message.id)).toEqual(["NewCoder"]);
+	expect(messages[0].options).toEqual({ passive: true });
 		expect(messages[0].text).toContain("[]");
 		// IRC can legitimately resume the same owner after a historical terminal attempt.
 		h.phases[0].tasks[0].schedule.owner = "OldGate";

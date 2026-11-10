@@ -2643,7 +2643,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				return sessionManager.getCwd();
 			},
 			submitUserReply:
-				options.hasUI === true
+				(options.interactivePrompts ?? options.hasUI ?? false)
 					? text => {
 							void session?.sendUserMessage(text).catch(error => {
 								logger.warn("Ask reply delivery failed", { error: String(error) });

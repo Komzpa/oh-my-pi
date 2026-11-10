@@ -6589,7 +6589,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const worker = registry.get(owner);
         // A scope update changes the live grant; it never starts another attempt.
         if (!worker || !registry.isRunning(worker) || (worker.todoRow && worker.todoRow !== row.content)) continue;
-        await worker.session?.steer(prompt.render(gateNoticeInstructions, { scopeChanged: true, row: JSON.stringify(row.content), resources: JSON.stringify(patch.resources) }).trim());
+        await worker.session?.steer(prompt.render(gateNoticeInstructions, { scopeChanged: true, row: JSON.stringify(row.content), resources: JSON.stringify(patch.resources) }).trim(), undefined, { passive: true });
       }
       for (const update of updates) if (typeof update.task === "string" && (update.estimate !== undefined || typeof update.evidence === "string")) rescheduledRowsThisTurn.add(update.task);
       for (const update of updates) {

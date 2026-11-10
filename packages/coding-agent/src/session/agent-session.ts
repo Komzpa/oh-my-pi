@@ -11207,6 +11207,18 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 
 		const expandedText = expandPromptTemplate(text, [...this.#promptTemplates]);
+		if (options?.passive) {
+			await this.sendCustomMessage(
+				{
+					customType: "session-notice",
+					content: images?.length ? [{ type: "text", text: expandedText }, ...images] : expandedText,
+					display: false,
+					attribution: options.attribution ?? "agent",
+				},
+				{ deliverAs: "aside", triggerTurn: false },
+			);
+			return;
+		}
 		// Stamp before image preprocessing so a queued image steer measures from
 		// the operator's submission, not after the vision-model description.
 		const submittedAt = Date.now();

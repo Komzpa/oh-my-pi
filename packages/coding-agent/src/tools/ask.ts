@@ -528,6 +528,8 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 				void formDialog(params.html, {})
 					.then(result => {
 						if (!result || result.timedOut) return;
+						if (signal?.aborted) return;
+						if (pending.sessionId !== undefined && this.session.getSessionId?.() !== pending.sessionId) return;
 						this.session.submitUserReply?.(
 							formAnswers(form, result.data)
 								.map(answer => `Answer to ${toolCallId} [${answer.name}]: ${answer.answer}`)

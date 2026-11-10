@@ -293,7 +293,7 @@ export class IrcBridge {
 			}),
 			// The parent steer becomes the transcript card when consumed; keep this
 			// observation available to listeners without also painting a live card.
-			display: !(streaming && fromParent && !peerMessage),
+			display: !(streaming && fromParent && !peerMessage && !quiet),
 			details: {
 				id: msg.id,
 				from: msg.from,
@@ -315,7 +315,7 @@ export class IrcBridge {
 		if (peerMessage) this.#peerMessages.add(record);
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
 		if (streaming) {
-			if (fromParent && !peerMessage) {
+			if (fromParent && !peerMessage && !quiet) {
 				const steer: AgentMessage = {
 					role: "user",
 					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: envelopeBody }),
