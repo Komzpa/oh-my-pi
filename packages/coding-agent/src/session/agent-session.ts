@@ -2802,6 +2802,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				this.#syncAssistantPublicationGate();
 			},
 		});
+		if (this.#evalToolSession) {
+			this.#evalToolSession.onTaskWorkerLaunched = (toolCallId, index, workerId, agent) =>
+				this.#requirementsLedger.registerAuditorWorker(toolCallId, index, workerId, agent);
+		}
 		this.#syncAssistantPublicationGate();
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is

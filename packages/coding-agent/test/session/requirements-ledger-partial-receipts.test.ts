@@ -418,3 +418,61 @@ describe("gate refusals on QA dispatch are not audit failures", () => {
 		}
 	});
 });
+
+describe("auditor launch receipt durability", () => {
+	for (const mode of ["pass", "tampered", "unassigned"] as const) {
+		it(`keeps launch-error intake authenticated after reload: ${mode}`, async () => {
+			const { cwd, manager, rows, runtime, tool } = await multiRowFixture();
+			try {
+				const row = rows[0]!;
+				await runtime.prepareAuditorTaskCall("task", "launch-error", {
+					name: "main",
+					agent: "qa-auditor",
+					task: `Audit R24 for ${row.content}`,
+				});
+				// The task tool has an allocated worker, then fails before returning progress.
+				runtime.registerAuditorWorker(
+					mode === "unassigned" ? "other-call" : "launch-error",
+					0,
+					"bound-auditor",
+					"qa-auditor",
+				);
+				await runtime.afterToolCall({
+					toolCall: { id: "launch-error", name: "task" },
+					result: { content: [{ type: "text", text: "Attempted to assign to readonly property." }], details: {} },
+					isError: true,
+				} as never);
+				const reloaded = new RequirementsLedgerRuntime({
+					agent: {} as never,
+					agentKind: () => "main",
+					cwd: () => cwd,
+					sessionManager: manager,
+					onSettledAssistantMessage: () => {},
+				});
+				const hash = mode === "tampered" ? "0".repeat(64) : row.sha256;
+				const output = JSON.stringify({
+					result: `| id | verdict | evidence | artifact identity |\n| --- | --- | --- | --- |\n| R24 | pass | inspected file | row ${JSON.stringify(row.content)} @ file:${row.artifactPath}@sha256=${hash} |`,
+				});
+				await reloaded.consumeAsyncResult({
+					role: "custom",
+					customType: "async-result",
+					attribution: "agent",
+					content: `<task-result id="bound-auditor" agent="qa-auditor" status="completed"><output>${output}</output></task-result>`,
+					details: { jobs: [{ type: "task", jobId: "bound-auditor", agentId: "bound-auditor" }] },
+				});
+				const verdict = getLatestRequirements(manager.getBranch())[0]!.rowVerdicts?.[row.content];
+				if (mode === "pass") expect(verdict).toMatchObject({ status: "pass", workerId: "bound-auditor" });
+				else expect(verdict).toBeUndefined();
+				if (mode === "tampered")
+					expect(
+						getPersistedRequirementAuditRejections(manager.getBranch(), manager.getSessionId()).get("R24"),
+					).toContain("stale file");
+				expect((await tool.execute("finish-launch-row", { op: "done", task: row.content })).isError === true).toBe(
+					mode !== "pass",
+				);
+			} finally {
+				await fs.rm(cwd, { recursive: true, force: true });
+			}
+		});
+	}
+});

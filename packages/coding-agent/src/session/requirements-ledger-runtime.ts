@@ -826,6 +826,15 @@ export class RequirementsLedgerRuntime {
 		return multiple ? { ...input, tasks: revised } : { ...input, ...(revised[0] as Record<string, unknown>) };
 	}
 
+	/** TaskTool supplies the allocated identity before result rendering can fail. */
+	registerAuditorWorker(toolCallId: string, index: number, workerId: string, agent: string): void {
+		const assignment = this.#auditCalls.get(toolCallId)?.find(candidate => candidate.index === index);
+		if (!assignment || agent !== "qa-auditor" || !workerId || assignment.sessionId !== this.#sessionId()) return;
+		if (this.#pendingAuditors.has(workerId)) return;
+		this.#pendingAuditors.set(workerId, { ...assignment, workerId });
+		this.#persistPendingAuditors();
+	}
+
 	/** Resolves once every announcement queued by {@link afterToolCall} has been delivered or dropped. */
 	async settleBackgroundNotices(): Promise<void> {
 		await this.#linkedRowNotices;

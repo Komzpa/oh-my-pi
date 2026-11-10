@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A completed requirement audit can still close its row when its launch call fails after starting the auditor
+
 ## [18.18.6] - 2026-11-09
 
 ### Added

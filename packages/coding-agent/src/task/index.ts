@@ -1464,6 +1464,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				});
 				if (started.length === 0) primaryJobId = jobId;
 				started.push({ agentId: spawn.agentId, jobId });
+				this.session.onTaskWorkerLaunched?.(toolCallId, spawn.index, spawn.agentId, spawn.progress.agent);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				// An adopted run already executes; without its job nothing would own it.
@@ -2038,6 +2039,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				signal,
 				...(tools ? { onToolResult: (result: SubagentToolResult) => appendToolResult(tools, result) } : {}),
 				onProgress: progress => {
+					this.session.onTaskWorkerLaunched?.(toolCallId, spawnIndex, progress.id, progress.agent);
 					latestProgress = { ...progress, ...taskFileMetadata, recentTools: progress.recentTools.slice() };
 					onUpdate?.({
 						content: [{ type: "text", text: `Running agent ${progress.id}...` }],
