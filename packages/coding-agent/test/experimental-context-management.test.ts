@@ -68,6 +68,7 @@ const IDLE_IRC_ASSIGNMENT = "ASSIGNMENT_B_IDLE_IRC";
 function appendIdleIrcRolloverScenario(manager: SessionManager, fromParent: boolean): void {
 	manager.appendMessage({
 		...user(STREAMING_PARENT_ASSIGNMENT),
+		parentIrc: { from: "Parent", body: STREAMING_PARENT_ASSIGNMENT },
 		attribution: "agent",
 		steering: true,
 	});
@@ -88,6 +89,34 @@ function appendIdleIrcRolloverScenario(manager: SessionManager, fromParent: bool
 	manager.appendCompaction("Context rollover", undefined, firstKeptEntryId, 100, {
 		details: { kind: "experimental-context-rollover", version: 1 },
 	});
+}
+
+function appendAgentSteerRolloverScenario(
+	manager: SessionManager,
+	options: { latestHuman?: boolean; parentIrc?: boolean; reset?: boolean } = {},
+): void {
+	manager.appendMessage(user("HUMAN_REQUEST_BEFORE_INTERNAL_STEER"));
+	manager.appendMessage(assistant("Earlier work."));
+	if (options.reset) manager.appendResetBoundary();
+	manager.appendMessage({
+		...user("INTERNAL_AGENT_WRITE_SCOPE_STEER"),
+		attribution: "agent",
+		steering: true,
+	});
+	if (options.parentIrc) {
+		manager.appendMessage({
+			...user("PARENT_MID_TURN_ASSIGNMENT"),
+			parentIrc: { from: "Parent", body: "PARENT_MID_TURN_ASSIGNMENT" },
+			attribution: "agent",
+			steering: true,
+		});
+	}
+	if (options.latestHuman) manager.appendMessage(user("LATEST_HUMAN_REQUEST"));
+	const firstKeptEntryId = manager.appendMessage(assistant("Retained rollover tail."));
+	manager.appendCompaction("Context rollover", undefined, firstKeptEntryId, 100, {
+		details: { kind: "experimental-context-rollover", version: 1 },
+	});
+	manager.appendMessage(user("REQUEST_AFTER_ROLLOVER"));
 }
 
 describe("experimental context management", () => {
@@ -245,6 +274,61 @@ describe("experimental context management", () => {
 			await resumed.close();
 			await manager.close();
 		}
+	});
+
+	it("retains the human request instead of an agent-attributed steer through rollover and journal reopen", async () => {
+		using tempDir = TempDir.createSync("@pi-agent-steer-rollover-");
+		const sessionDir = path.join(tempDir.path(), "sessions");
+		const manager = SessionManager.create(tempDir.path(), sessionDir);
+		appendAgentSteerRolloverScenario(manager);
+		await manager.ensureOnDisk();
+		const sessionFile = manager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persisted rollover session");
+
+		const assertRetainedRequest = (serialized: string) => {
+			expect(serialized).toContain("HUMAN_REQUEST_BEFORE_INTERNAL_STEER");
+			expect(serialized).not.toContain("INTERNAL_AGENT_WRITE_SCOPE_STEER");
+			expect(serialized).toContain("REQUEST_AFTER_ROLLOVER");
+		};
+		assertRetainedRequest(JSON.stringify(manager.buildSessionContext().messages));
+
+		const resumed = await SessionManager.open(sessionFile, sessionDir);
+		try {
+			assertRetainedRequest(JSON.stringify(resumed.buildSessionContext().messages));
+		} finally {
+			await resumed.close();
+			await manager.close();
+		}
+	});
+
+	it("keeps the latest human request when it follows an internal agent steer", () => {
+		const manager = SessionManager.inMemory();
+		appendAgentSteerRolloverScenario(manager, { latestHuman: true });
+
+		const rebuilt = JSON.stringify(manager.buildSessionContext().messages);
+		expect(rebuilt).toContain("LATEST_HUMAN_REQUEST");
+		expect(rebuilt).not.toContain("HUMAN_REQUEST_BEFORE_INTERNAL_STEER");
+		expect(rebuilt).not.toContain("INTERNAL_AGENT_WRITE_SCOPE_STEER");
+	});
+
+	it("retains a typed parent IRC assignment even when attribution is agent", () => {
+		const manager = SessionManager.inMemory();
+		appendAgentSteerRolloverScenario(manager, { parentIrc: true });
+
+		const rebuilt = JSON.stringify(manager.buildSessionContext().messages);
+		expect(rebuilt).toContain("PARENT_MID_TURN_ASSIGNMENT");
+		expect(rebuilt).not.toContain("HUMAN_REQUEST_BEFORE_INTERNAL_STEER");
+		expect(rebuilt).not.toContain("INTERNAL_AGENT_WRITE_SCOPE_STEER");
+	});
+
+	it("does not retain a pre-reset human request when the post-reset steer is agent-attributed", () => {
+		const manager = SessionManager.inMemory();
+		appendAgentSteerRolloverScenario(manager, { reset: true });
+
+		const rebuilt = JSON.stringify(manager.buildSessionContext().messages);
+		expect(rebuilt).not.toContain("HUMAN_REQUEST_BEFORE_INTERNAL_STEER");
+		expect(rebuilt).not.toContain("INTERNAL_AGENT_WRITE_SCOPE_STEER");
+		expect(rebuilt).toContain("REQUEST_AFTER_ROLLOVER");
 	});
 
 	it("closes the lifecycle when cancellation occurs during awaited start dispatch", async () => {
