@@ -2306,22 +2306,22 @@ test("zero-active staffing admits only the trusted helper's literal numeric read
 		await call("read", { path: "proc://list" });
 		// Tool-call hooks classify data; no bash tool or Bitbucket helper is run.
 		expect(h.ctx.getAsyncJobSnapshot()).toEqual({ running: [], recent: [], nonJobAgents: [] });
-		expect((await call("bash", { command: "bash .agents/skills/bitbucket-prs/scripts/bb-pr.sh readback 114" }))?.block).not.toBe(true);
+		expect((await call("bash", { command: "bash .agents/skills/bitbucket-prs/scripts/bb-pr.sh readback 7777" }))?.block).not.toBe(true);
 	} finally { h.shutdown(); }
 });
 
 test("zero-active staffing denies helper mutations, arbitrary scripts and shell syntax around readback", async () => {
 	const helper = "bash .agents/skills/bitbucket-prs/scripts/bb-pr.sh";
-	const readback = `${helper} readback 114`;
+	const readback = `${helper} readback 7777`;
 	const denied = [
-		`${helper} create`, `${helper} update-description 114 body.md`,
-		`${helper} decline 114`, `${helper} delete-branch topic`,
-		`${helper} description 114`, // Other reads are outside this narrow contract.
-		"bash arbitrary.sh readback 114", "bash /tmp/bb-pr.sh readback 114",
-		"bash .agents/skills/bitbucket-prs/scripts/../scripts/bb-pr.sh readback 114",
+		`${helper} create`, `${helper} update-description 7777 body.md`,
+		`${helper} decline 7777`, `${helper} delete-branch topic`,
+		`${helper} description 7777`, // Other reads are outside this narrow contract.
+		"bash arbitrary.sh readback 7777", "bash /tmp/bb-pr.sh readback 7777",
+		"bash .agents/skills/bitbucket-prs/scripts/../scripts/bb-pr.sh readback 7777",
 		`${helper} readback`, `${helper} readback 0`, `${helper} readback -1`,
-		`${helper} readback 114 extra`, `${helper} readback '$PR'`,
-		`${helper} readback $(echo 114)`, `${helper} readback \`echo 114\``,
+		`${helper} readback 7777 extra`, `${helper} readback '$PR'`,
+		`${helper} readback $(echo 7777)`, `${helper} readback \`echo 7777\``,
 		`${readback}; git status`, `${readback} && git status`,
 		`${readback} || git status`, `${readback} | cat`, `${readback} &`,
 		`${readback}\n`, `${readback}\ngit status`, `${readback} >/dev/null`,
