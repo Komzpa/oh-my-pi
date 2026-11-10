@@ -70,6 +70,10 @@ for (const id of Object.keys(contracts)) {
 		);
 		expect(notice, `${id}: next action missing from actual turn_end notices`).toBeDefined();
 		if (!notice) return;
+		if (id === "capacity-full") {
+			expect(notice).toContain("all worker slots are busy");
+			expect(notice).not.toContain("undefined");
+		}
 		if (contract.tool) {
 			expect(notice).toContain(contract.tool);
 			expect(notice).toContain(JSON.stringify(scenario.row));

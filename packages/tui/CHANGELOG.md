@@ -28,6 +28,8 @@
 
 ### Fixed
 
+- Count a full worker pool as waiting for a slot; reserve stuck warnings for blocked work.
+
 - Show TODO infrastructure failures since last success with their top cause and resource wait holder.
 - Keep TODO point forecasts on residual PERT work, with experimental whole-plan uncertainty and throughput shown only as a diagnostic ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 - Reuse unchanged worker HUD rows and status inputs during terminal paints ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

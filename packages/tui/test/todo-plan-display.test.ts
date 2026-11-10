@@ -112,8 +112,9 @@ test("settled rows queue audits or need a worker; stuck names why nothing can ac
 		previous: "Probe",
 	});
 	expect(classifyTodoDisplayRow(findings, input, { ...idle, capacityFull: true })).toMatchObject({
-		state: "stuck",
+		state: "waiting",
 		reason: "cap full",
+		previous: "Probe",
 	});
 	expect(classifyTodoDisplayRow(dependent, input, idle)).toEqual({
 		state: "stuck",
@@ -124,6 +125,14 @@ test("settled rows queue audits or need a worker; stuck names why nothing can ac
 	expect(display.lines[0]).toContain("1 need worker · 2 stuck");
 	expect(display.lines.join("\n")).toContain("findings — needs worker: findings · after Probe");
 	expect(display.lines.join("\n")).toContain("blocked — stuck: awaiting vendor reply");
+	const full = renderTodoPlanDisplay(input, { ...idle, capacityFull: true }, { now: 0, width: 120, paint });
+	expect(full.lines[0]).toContain("1 waiting");
+	expect(full.lines[0]).toContain("0 need worker · 2 stuck");
+	const capacityRow = full.lines.find(line => line.includes("findings —"))!;
+	expect(capacityRow).toContain("waiting for a worker slot · after Probe");
+	expect(capacityRow).not.toContain("<warning>");
+	expect(capacityRow).not.toContain("undefined");
+	expect(full.lines.join("\n")).toContain("blocked — stuck: awaiting vendor reply");
 });
 
 test("a crash continuation is visibly working under its new worker id", () => {

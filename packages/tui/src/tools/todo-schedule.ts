@@ -2595,7 +2595,7 @@ export function classifyTodoDisplayRow(
 	if (task.status === "blocked") return { state: "stuck", reason: task.blocker ?? "blocked" };
 	const needsWorker = (reason: string, previous?: string): TodoDisplayRowState =>
 		context.capacityFull
-			? { state: "stuck", reason: "cap full", previous }
+			? { state: "waiting", reason: "cap full", previous }
 			: { state: "needs worker", reason, previous };
 	for (const dependency of task.schedule?.dependencies ?? []) {
 		const prerequisite = tasks.find(row => row.content === dependency);
@@ -2702,12 +2702,18 @@ export function renderTodoPlanDisplay(
 				continue;
 			}
 			const resourceWait = task.schedule?.resourceWait;
+			const capacityWait = state.state === "waiting" && state.reason === "cap full";
 			const label = resourceWait
 				? `waiting for ${safeText(resourceWait.row)} (worker ${safeText(resourceWait.workerId ?? "unassigned")})`
-				: state.state === "waiting"
-					? `waiting on ${safeText(state.dependency!)}`
-					: state.state;
-			const why = resourceWait ? undefined : (state.reason ?? (state.state === "stuck" ? task.blocker : undefined));
+				: capacityWait
+					? "waiting for a worker slot"
+					: state.state === "waiting"
+						? `waiting on ${safeText(state.dependency!)}`
+						: state.state;
+			const why =
+				resourceWait || capacityWait
+					? undefined
+					: (state.reason ?? (state.state === "stuck" ? task.blocker : undefined));
 			const blocker = why ? `: ${truncateToWidth(safeText(why), TRUNCATE_LENGTHS.TITLE)}` : "";
 			const rowWorkers = state.worker
 				? [

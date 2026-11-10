@@ -329,7 +329,7 @@ function cases(now: number): Case[] {
 		id: "capacity-full",
 		workers: [{ id: "UnrelatedWorker" }],
 		row: full,
-		state: "stuck",
+		state: "waiting",
 		expected: null,
 		context: { capacityFull: true },
 	});

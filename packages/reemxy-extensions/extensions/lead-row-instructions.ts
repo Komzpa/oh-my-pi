@@ -50,8 +50,11 @@ export function renderLeadRowInstructions(
 					} else data.waitWorker = true;
 					break;
 				case "waiting":
-					data.waitDependency = true;
-					data.dependency = display.dependency;
+					if (display.reason === "cap full") data.waitCapacity = true;
+					else {
+						data.waitDependency = true;
+						data.dependency = display.dependency;
+					}
 					break;
 				case "handoff pending":
 					data.handoffAction = true;
@@ -88,8 +91,6 @@ export function renderLeadRowInstructions(
 						data.askUser = !options.userBlockAsked?.has(row.content);
 						data.waitUser = !data.askUser;
 						data.question = userWait.question;
-					} else if (display.reason === "cap full") {
-						data.waitCapacity = true;
 					} else if (display.reason?.startsWith("blocked dependency")) {
 						data.waitDependency = true;
 						data.dependency = display.reason;

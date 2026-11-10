@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep capacity waits neutral while preserving the previous worker output and wake-on-capacity instructions.
+
 - Show measured forecasts with local dates, the observed window and concise pace units; retain numeric data in the receipt.
 
 - Record measured plan forecasts without requiring a missed deadline, accept evidenced final remainders, and retire an automatic deadline miss when the user sets the delivery constraint.
