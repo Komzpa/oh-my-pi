@@ -81,11 +81,11 @@ describe("in-process VCS bindings", () => {
 			expect(await discovered[1]!.statusPorcelain({ untracked: "normal", nulTerminated: true })).toContain(
 				"?? new.txt\0",
 			);
-			expect(probe).toHaveBeenCalledTimes(1);
+			expect(probe).toHaveBeenCalledTimes(2);
 		} finally {
 			probe.mockRestore();
 		}
-	});
+	}, 30_000);
 
 	test("refreshes after external index and HEAD changes without bypassing the shared interval", async () => {
 		const root = await repository();

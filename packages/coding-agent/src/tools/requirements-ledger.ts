@@ -1142,7 +1142,7 @@ export async function evaluateRequirementDoneGate(
 			continue;
 		}
 		if (requirement.classification !== "linked" || !requirement.rows.some(row => targets.has(row))) continue;
-		if (isLegacyUnverifiedRequirement(requirement, closedRows, acceptedRows)) continue;
+		if (isLegacyUnverifiedRequirement(requirement, settledRows, acceptedRows)) continue;
 		const issues: string[] = [];
 		const awaitingUserIssues: string[] = [];
 		const stalePassRows: string[] = [];
@@ -1172,8 +1172,9 @@ export async function evaluateRequirementDoneGate(
 		for (const row of getLinkedRequirementRows(requirement, rows)) {
 			if (acceptedRows.has(row)) continue;
 			const recorded = getRequirementRowVerdict(requirement, row);
-			if (!recorded && closedRows.has(row)) continue;
-			// A completed row still owns a versioned artifact; recheck its receipt.
+			if (!recorded && settledRows.has(row)) continue;
+			// Archived completion is history; active completed rows still own live artifacts.
+			if (!followUpRows.has(row) && hasFinalCompletedPass(requirement, row, settledRows)) continue;
 			const unhandled =
 				recorded?.collateral?.defects.filter(
 					defect => !followUpRows.has(collateralFollowUpRow(row, defect.defect)),

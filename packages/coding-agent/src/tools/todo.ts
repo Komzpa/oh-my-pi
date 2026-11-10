@@ -600,7 +600,8 @@ function requirementArtifactPlan(
 	if (
 		cacheable &&
 		cached?.revision === revision &&
-		cached.entries === entries &&
+		cached.entries.length === entries.length &&
+		cached.entries.every((entry, index) => entry === entries[index]) &&
 		(!includeHistorical || cached.plan.historicalLoaded)
 	) {
 		requirementArtifactPlans.set(manager, { leaf, revision, count, entries, plan: cached.plan });

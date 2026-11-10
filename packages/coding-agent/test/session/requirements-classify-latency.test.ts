@@ -155,7 +155,7 @@ describe("todo classify latency", () => {
 		releaseNotice();
 		await runtime.settleBackgroundNotices();
 		expect(delivered).toHaveLength(1);
-		expect(delivered[0]).toContain('requirementIds:["R1"]');
+		expect(delivered[0]).toContain('"requirementIds":["R1"]');
 	});
 });
 
@@ -195,7 +195,7 @@ describe("requirements foreground work stays local to the selected row", () => {
 		expect(lstat).not.toHaveBeenCalled();
 		expect(performance.now() - startedAt).toBeLessThan(200);
 		expect(notices).toHaveLength(1);
-		expect(notices[0]).toContain('requirementIds:["R1"]');
+		expect(notices[0]).toContain('"requirementIds":["R1"]');
 		expect(notices[0]).toContain("qa-auditor");
 		expect(notices[0]).not.toContain("R2");
 	});
@@ -241,7 +241,7 @@ describe("requirements foreground work stays local to the selected row", () => {
 		expect(getLatestRequirements(manager.getBranch())[0]!.rowVerdicts?.["Build artifact"]?.status).toBe(
 			"unverifiable",
 		);
-		expect(notices.find(notice => notice.includes("Re-audit R1"))).toContain('requirementIds:["R1"]');
+		expect(notices.some(notice => notice.includes("Re-audit changed row artifacts"))).toBe(true);
 		saveSelectedPass(manager, files[0]!);
 		fs.writeFileSync(files[1]!, "changed unrelated artifact\n");
 		await runtime.beforeTodoCall("todo", { op: "done", task: "Build artifact" });

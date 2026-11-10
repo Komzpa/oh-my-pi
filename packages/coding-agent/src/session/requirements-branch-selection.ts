@@ -55,7 +55,7 @@ export function* matchingRequirementBranchNewestFirst(
 		yield* selective.iterateBranchMatchingNewestFirst(predicate);
 		return;
 	}
-	const entries = matchingRequirementBranch(manager, predicate);
+	const entries = cachedRequirementBranch(manager, predicate);
 	for (let index = entries.length - 1; index >= 0; index--) yield entries[index]!;
 }
 

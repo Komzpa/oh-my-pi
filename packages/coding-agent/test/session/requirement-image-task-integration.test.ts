@@ -230,6 +230,7 @@ async function dispatch(
 				"todo.enabled": true,
 				"todo.reminders": false,
 				"task.batch": batch,
+				"task.requirementAuditors": auditorCount,
 				"task.isolation.enabled": false,
 				"task.agentIdleTtlMs": 0,
 				"task.agentModelOverrides": { "qa-auditor": "mock/pixel-auditor", "pixel-worker": "mock/pixel-auditor" },

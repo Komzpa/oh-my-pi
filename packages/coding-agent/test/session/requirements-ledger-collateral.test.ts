@@ -24,7 +24,10 @@ import {
 	requirementAuditReadImage,
 	requirementTouchesRenderedFiles,
 } from "../../src/utils/requirement-artifact";
+import { useFastGitStatusCoordinator } from "../helpers/fast-status-coordinator";
 import qaAuditorPrompt from "../../src/prompts/agents/qa-auditor.md" with { type: "text" };
+
+useFastGitStatusCoordinator();
 
 const ROW = "Merge overlapping UPS decisions into one UPS decision";
 const DEFECT = "Group headers are indistinguishable from data rows";
