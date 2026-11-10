@@ -25,6 +25,7 @@ import {
 } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	todoNeedsOwnerDecision,
+	retainTodoDependencyReviews,
 	forecastTodoPlan,
 	formatPlanForecast,
 	formatPlanForecastDisplay,
@@ -1490,7 +1491,9 @@ function applyScheduleUpdates(
 				schedule.estimate = { ...estimate, updatedAt: now };
 			}
 		}
+		retainTodoDependencyReviews(schedule);
 		if (update.evidence?.trim()) schedule.progress = { at: now, evidence: update.evidence.trim() };
+		retainTodoDependencyReviews(schedule);
 		if (update.decision !== undefined) schedule.decision = update.decision;
 		if (update.reviewCard === null) delete schedule.reviewCard;
 		else if (update.reviewCard !== undefined) schedule.reviewCard = update.reviewCard.trim();

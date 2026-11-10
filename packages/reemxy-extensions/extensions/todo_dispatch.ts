@@ -419,6 +419,20 @@ export async function readGitIntegrationState(cwd: string, now: number, env: Nod
   return await git("rev-parse", "HEAD") === head ? state : null;
 }
 
+/** A model-supplied reason is not proof that the audited target disappeared. */
+export async function supersededAuditDropRefusal(input: { op?: string; reason?: string; task?: string; phase?: string; items?: string[] }, phases: readonly TodoPhase[], cwd: string, archive: readonly TodoPhase[] = []): Promise<string | undefined> {
+  if (input?.op !== "drop" || !String(input.reason ?? "").startsWith("superseded:")) return;
+  const rows = [...phases, ...archive].flatMap(phase => phase.tasks);
+  const targets = [...phases, ...archive].flatMap(phase => phase.tasks.filter(row =>
+    input.task ? row.content === input.task : input.phase ? phase.name === input.phase : (input.items ?? []).includes(row.content)));
+  for (const row of targets) {
+    const origin = auditLineage(row, rows);
+    const state = origin && await readGitIntegrationState(origin.repoPath ?? cwd, Date.now(), process.env, true, origin);
+    if (!origin || !state || (!(origin.branch && state.pushTargetMissing) && !state.targetMerged))
+      return `Cannot drop ${JSON.stringify(row.content)} as superseded: its target is unmerged or git evidence is unavailable.`;
+  }
+}
+
 const execFileAsync = promisify(execFile);
 async function readGitLogSince(cwd: string, previousHead: string): Promise<string[]> {
   try {
@@ -5704,6 +5718,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   pi.on("tool_call", async (event, ctx) => {
     if (event.toolName === "todo" && event.input?.op === "drop" && String(event.input.reason ?? "").startsWith("superseded:")) {
+      const refusal = await supersededAuditDropRefusal(event.input, todoPhases(ctx), ctx.cwd, dispatchTodoArchive(ctx));
+      if (refusal) return { block: true, reason: refusal };
       await refreshPush(ctx, true);
     }
 

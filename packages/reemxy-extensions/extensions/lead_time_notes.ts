@@ -184,7 +184,7 @@ export function waitChainAction(
 export function waitChainRejection(demand: WaitChainDemand, phases: TodoScheduleInput): string | undefined {
 	const head = phases.flatMap(phase => phase.tasks).find(row => row.content === demand.row);
 	// Audit handoff retains schedule evidence after progress moves on to the audit result.
-	return [head?.schedule?.progress?.evidence, head?.schedule?.audit?.evidence].find(reason =>
+	return [...(head?.schedule?.dependencyReviews?.[demand.key] ?? []), head?.schedule?.progress?.evidence, head?.schedule?.audit?.evidence].find(reason =>
 		reason?.startsWith(`Dependency review ${demand.key}:`) &&
 		demand.edges.every(edge => reason.split("\n").some(line => line.startsWith(`${edge.task} <- ${edge.dependency}: `) && line.slice(`${edge.task} <- ${edge.dependency}: `.length).trim().length > 0)));
 }

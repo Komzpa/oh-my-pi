@@ -1,6 +1,7 @@
 import type { TodoSchedulePatchPersistedEdit, TodoPhase, TodoItem } from "@oh-my-pi/pi-tui/tools/todo";
 import {
 	todoAuditOrigin,
+	retainTodoDependencyReviews,
 	todoSupersededReason,
 	todoNeedsOwnerDecision,
 	todoAuditResourcesKey,
@@ -59,7 +60,10 @@ export function patchTodoSchedule(
 	const matches = phases.flatMap(phase => phase.tasks).filter(row => row.content === task);
 	if (matches.length !== 1) return undefined;
 	const previous = matches[0]!;
-	const row = { ...previous, schedule: { ...previous.schedule, ...structuredClone(patch) } };
+	const retained = { ...previous.schedule };
+	retainTodoDependencyReviews(retained);
+	const row = { ...previous, schedule: { ...retained, ...structuredClone(patch) } };
+	retainTodoDependencyReviews(row.schedule);
 	reconcileAuditResourceChange(previous, row);
 	if (patch.auditEscalation) {
 		row.status = "blocked";
@@ -152,14 +156,22 @@ export function patchTodoSchedule(
 			result[index] = {
 				...phase,
 				tasks: phase.tasks.map(candidate => {
-					if (candidate.content !== followUp || candidate.schedule?.auditOrigin?.supersededAt) return candidate;
+					if (candidate.content !== followUp) return candidate;
+					const origin = todoAuditOrigin(row);
+					const old = candidate.schedule?.auditOrigin;
+					const newDelivery =
+						old &&
+						(["commit", "branch", "repoPath", "remote"] as const).some(
+							key => origin[key] !== undefined && old[key] !== undefined && origin[key] !== old[key],
+						);
+					if (old?.supersededAt && !newDelivery) return candidate;
 					const notes = [...new Set([...(candidate.notes ?? []), ...actions])];
 					return {
 						...candidate,
 						notes,
 						status: "pending",
 						schedule: {
-							...candidate.schedule,
+							...(old?.supersededAt ? { auditOrigin: origin } : candidate.schedule),
 							dependencies: [],
 							progress: { at, evidence: notes.join("\n") },
 						},

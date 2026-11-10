@@ -8,10 +8,16 @@ import * as path from "node:path";
 import { $ } from "bun";
 import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { todoRowAfterWorker, forecastTodoPlan, getTodoPlanningIssues } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { getLatestTodoPhasesFromEntries } from "../../coding-agent/src/tools/todo";
 import { patchTodoSchedule } from "../../coding-agent/src/session/todo-schedule-patch";
 import { auditLineage, checkableAuditFinding, reconcileSupersededAudit } from "./audit-supersession";
-import { readGitIntegrationState, decideTodoDispatch, leadActionPending } from "./todo_dispatch";
-import { planChurnRows, waitChainDemands } from "./lead_time_notes";
+import {
+	readGitIntegrationState,
+	decideTodoDispatch,
+	leadActionPending,
+	supersededAuditDropRefusal,
+} from "./todo_dispatch";
+import { planChurnRows, waitChainDemands, waitChainRejection } from "./lead_time_notes";
 
 const sha = "a1".repeat(20);
 const parent: TodoItem = {
@@ -25,7 +31,7 @@ const follow: TodoItem = {
 	content: "Audit follow-up: Deliver",
 	status: "pending",
 	notes: ["Check doc/product.md"],
-	schedule: { dependencies: [] },
+	schedule: { dependencies: [], resources: ["doc/product.md"] },
 };
 
 test("created follow-up retains the delivery target; legacy rows recover it from their parent", () => {
@@ -120,7 +126,16 @@ test("git proof distinguishes removed, merged, unmerged and unknown targets; unm
 		await git("commit", "-am", "topic");
 		const commit = await git("rev-parse", "HEAD");
 		await git("push", "origin", "topic");
-		const target = { parent: "Deliver", remote: "origin", branch: "topic", commit };
+		const target = { parent: "Deliver", remote: "origin", branch: "topic", commit, repoPath: root };
+		const phasesForDrop = [
+			{ name: "Later", tasks: [{ ...follow, schedule: { auditOrigin: { ...target, supersededAt: 1 } } }] },
+		];
+		const drop = { op: "drop", task: follow.content, reason: "superseded: forged claim" };
+		expect(await supersededAuditDropRefusal(drop, phasesForDrop, root)).toContain("unmerged");
+		expect(await supersededAuditDropRefusal(drop, [], root, phasesForDrop)).toContain("unmerged");
+		expect(
+			await supersededAuditDropRefusal({ ...drop, reason: "ordinary cancellation" }, phasesForDrop, root),
+		).toBeUndefined();
 		const live = await readGitIntegrationState(root, Date.now(), process.env, true, target);
 		expect(live?.targetMerged).not.toBe(true);
 		expect(live?.pushTargetMissing).not.toBe(true);
@@ -134,6 +149,7 @@ test("git proof distinguishes removed, merged, unmerged and unknown targets; unm
 				?.targetMerged,
 		).toBe(true);
 		await git("push", "origin", "--delete", "topic");
+		expect(await supersededAuditDropRefusal(drop, phasesForDrop, root)).toBeUndefined();
 		expect((await readGitIntegrationState(root, Date.now(), process.env, true, target))?.pushTargetMissing).toBe(
 			true,
 		);
@@ -141,6 +157,8 @@ test("git proof distinguishes removed, merged, unmerged and unknown targets; unm
 		const unknown = await readGitIntegrationState(root, Date.now(), process.env, true, target);
 		expect(unknown?.pushTargetMissing).toBeUndefined();
 		expect(unknown?.targetMerged).toBeUndefined();
+		expect(await supersededAuditDropRefusal(drop, phasesForDrop, root)).toContain("unavailable");
+		expect(await checkableAuditFinding({ ...follow, schedule: {} }, root)).toBe(false);
 		expect(await checkableAuditFinding(follow, root)).toBe(true);
 	} finally {
 		await fs.rm(root, { recursive: true, force: true });
@@ -191,4 +209,105 @@ test("the runtime auditor consumes a retarget once and never retries an inconclu
 	expect(await checkRowAudits(ctx, options)).toBe(0);
 	expect(calls).toBe(1);
 	expect(phases[0]!.tasks[0]!.status).toBe("abandoned");
+});
+
+test("a new runtime audit cannot erase an accepted refusal for the same dependency graph", async () => {
+	let phases: TodoPhase[] = [
+		{
+			name: "Ship",
+			tasks: [
+				{
+					content: "Head",
+					status: "pending",
+					schedule: {
+						readOnly: true,
+						cumulativeReestimateCount: 4,
+						progress: { at: 3, evidence: "later progress" },
+					},
+				},
+				...Array.from({ length: 4 }, (_, i) => ({
+					content: `Dependent ${i}`,
+					status: "pending" as const,
+					schedule: { dependencies: [i ? `Dependent ${i - 1}` : "Head"] },
+				})),
+			],
+		},
+	];
+	const demand = waitChainDemands(phases)[0]!;
+	const evidence = `Dependency review ${demand.key}:\n${demand.edges.map(edge => `${edge.task} <- ${edge.dependency}: required output`).join("\n")}`;
+	phases = getLatestTodoPhasesFromEntries([
+		{
+			type: "custom",
+			id: "initial",
+			parentId: null,
+			timestamp: new Date(3).toISOString(),
+			customType: "user_todo_edit",
+			data: { phases },
+		},
+		{
+			type: "message",
+			id: "refusal",
+			parentId: "initial",
+			timestamp: new Date(3).toISOString(),
+			message: {
+				role: "toolResult",
+				toolCallId: "schedule",
+				content: [],
+				isError: false,
+				timestamp: 3,
+				toolName: "todo",
+				details: {
+					edit: {
+						v: 1,
+						kind: "op",
+						op: "schedule",
+						at: 3,
+						params: { op: "schedule", updates: [{ task: "Head", evidence }] },
+					},
+				},
+			},
+		},
+	]);
+	phases = patchTodoSchedule(phases, "Head", {
+		executor: {
+			workerId: "done",
+			startedAt: 1,
+			finishedAt: 2,
+			outcome: "completed",
+			gitCommits: [{ commit: sha, repoPath: "/repo" }],
+		},
+		audit: { delivery: "old", head: "old", repoPath: "/repo", startedAt: 1, verdict: "inconclusive", evidence },
+		progress: { at: 3, evidence: "later audit result" },
+	})!;
+	const output = Promise.withResolvers<unknown>();
+	const ctx = {
+		cwd: "/repo",
+		sessionManager: { getHeader: () => ({ id: "refusal-relaunch" }) },
+		getTodoPhases: () => phases,
+		getAsyncJobSnapshot: () => ({ running: [], recent: [] }),
+		updateTodoSchedule: (task: string, patch: Partial<TodoSchedule>) => {
+			phases = patchTodoSchedule(phases, task, patch)!;
+			return true;
+		},
+		runRowAudit: () => output.promise,
+	} as unknown as ExtensionContext;
+	expect(waitChainRejection(demand, phases)).toBe(evidence);
+	expect(
+		await checkRowAudits(ctx, {
+			readHead: async () => sha,
+			resolveAuditor: async () => "qa-auditor",
+			requirementsFor: () => [],
+		}),
+	).toBe(1);
+	phases = patchTodoSchedule(phases, "Head", {
+		progress: { at: 4, evidence: `Dependency review ${demand.key}: incomplete later update` },
+	})!;
+	const resumed = JSON.parse(JSON.stringify(phases)) as TodoPhase[];
+	expect(waitChainRejection(demand, resumed)).toBe(evidence);
+	delete resumed[0]!.tasks[0]!.schedule!.executor;
+	resumed[0]!.tasks[4]!.schedule!.dependencies!.push("Head");
+	const changed = waitChainDemands(resumed)[0]!;
+	expect(changed.key).not.toBe(demand.key);
+	expect(waitChainRejection(changed, resumed)).toBeUndefined();
+	output.resolve({});
 });

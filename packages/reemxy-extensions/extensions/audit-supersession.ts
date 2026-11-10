@@ -16,10 +16,10 @@ export function auditLineage(row: TodoItem, rows: readonly TodoItem[]): TodoAudi
 	return todoAuditOrigin(parent ?? { content: title });
 }
 
-/** Conservative feasibility: a finding must name a file that exists inside this checkout. */
+/** Conservative feasibility: a finding must carry a structured file resource that exists inside this checkout. */
 export async function checkableAuditFinding(row: TodoItem, cwd: string): Promise<boolean> {
-	for (const match of (row.notes ?? []).join("\n").matchAll(/(?:[\w.-]+\/)+[\w.-]+\.[a-zA-Z0-9]+/g)) {
-		const file = path.resolve(cwd, match[0]);
+	for (const resource of row.schedule?.resources ?? []) {
+		const file = path.resolve(cwd, resource);
 		if (file.startsWith(`${path.resolve(cwd)}${path.sep}`) && (await Bun.file(file).exists())) return true;
 	}
 	return false;

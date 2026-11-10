@@ -98,8 +98,22 @@ export function todoSupersededReason(origin: TodoAuditOrigin): string {
 	return `superseded: ${todoAuditTarget(origin)} merged/removed; finding not carried forward`;
 }
 
+/** Retain the keyed review protocol without deriving a dependency graph here.
+ * Its consumer still validates every edge against the current graph. */
+export function retainTodoDependencyReviews(schedule: TodoSchedule): void {
+	for (const evidence of [schedule.progress?.evidence, schedule.audit?.evidence]) {
+		const key = /^Dependency review (chain:[0-9a-f]+):/.exec(evidence ?? "")?.[1];
+		if (key && evidence)
+			schedule.dependencyReviews = {
+				...schedule.dependencyReviews,
+				[key]: [...new Set([...(schedule.dependencyReviews?.[key] ?? []), evidence])],
+			};
+	}
+}
+
 /** Forecast metadata belongs to the exact task content; there are deliberately no generated IDs. */
 export interface TodoSchedule {
+	dependencyReviews?: Record<string, string[]>;
 	/** Queued dispatch owns no resources until admission succeeds. */
 	resourceWait?: { row: string; workerId?: string };
 	/** Agent-authored product choices beyond the ledger request require an owner decision. */

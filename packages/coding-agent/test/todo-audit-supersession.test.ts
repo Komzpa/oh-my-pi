@@ -105,3 +105,39 @@ test("model superseded drop accepts delivered rows and archives the finding and 
 		.find(task => task.content === row.content)!;
 	expect(archived.notes).toEqual(["Original finding", reason]);
 });
+
+test("a new delivery reopens its superseded follow-up while the old delivery stays closed", () => {
+	const oldCommit = "a1".repeat(20);
+	let phases: TodoPhase[] = [
+		{
+			name: "Ship",
+			tasks: [
+				{
+					content: "Deliver",
+					status: "completed",
+					schedule: {
+						executor: { workerId: "old", startedAt: 1, gitCommits: [{ commit: oldCommit, repoPath: "/repo" }] },
+					},
+				},
+			],
+		},
+	];
+	phases = patchTodoSchedule(phases, "Deliver", { auditFollowUps: ["old finding"] })!;
+	const follow = phases.flatMap(phase => phase.tasks).find(row => row.content === "Audit follow-up: Deliver")!;
+	follow.status = "abandoned";
+	follow.schedule!.auditOrigin = { ...follow.schedule!.auditOrigin!, supersededAt: 2, resolution: "accept" };
+	phases = patchTodoSchedule(phases, "Deliver", { auditFollowUps: ["old finding", "late old finding"] })!;
+	expect(phases.flatMap(phase => phase.tasks).find(row => row.content === follow.content)!.status).toBe("abandoned");
+	phases = patchTodoSchedule(phases, "Deliver", {
+		executor: { workerId: "new", startedAt: 3, gitCommits: [{ commit: "b2".repeat(20), repoPath: "/repo" }] },
+	})!;
+	phases = patchTodoSchedule(phases, "Deliver", { auditFollowUps: ["new unresolved finding"] })!;
+	const next = phases.flatMap(phase => phase.tasks).find(row => row.content === follow.content)!;
+	expect(next.status).toBe("pending");
+	expect(next.notes).toContain("new unresolved finding");
+	expect(next.notes).toContain("old finding");
+	expect(next.schedule?.auditOrigin?.commit).toBe("b2".repeat(20));
+	expect(next.schedule?.auditOrigin?.supersededAt).toBeUndefined();
+	const recursive = patchTodoSchedule(phases, next.content, { auditFollowUps: ["check again"] })!;
+	expect(recursive.flatMap(phase => phase.tasks)).toHaveLength(2);
+});
