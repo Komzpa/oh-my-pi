@@ -20,7 +20,7 @@ import { getTab, releaseAllTabs } from "@oh-my-pi/pi-coding-agent/tools/browser/
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { CLAUDE_TRACE_DEBUG_CERT, CLAUDE_TRACE_DEBUG_KEY } from "@oh-my-pi/pi-coding-agent/cli/claude-trace-cli";
-import type { Browser, Page } from "puppeteer-core";
+import type { Browser, CDPSession, Page } from "puppeteer-core";
 import { rejectionOf } from "../helpers/rejection";
 import { chromiumAvailable } from "./chromium-probe";
 
@@ -674,6 +674,7 @@ await Promise.withResolvers().promise;`;
 		const first = await fs.mkdtemp(path.join(os.tmpdir(), "omp-browser-download-test-"));
 		const second = await fs.mkdtemp(path.join(os.tmpdir(), "omp-browser-download-test-"));
 		tempDirs.push(first, second);
+		let competing: CDPSession | undefined;
 		try {
 			const invoke = browserHost();
 			const download = async (name: string, beforeClick = "") =>
@@ -692,13 +693,22 @@ await Promise.withResolvers().promise;`;
 			const firstTab = `download-${crypto.randomUUID()}`;
 			const secondTab = `download-${crypto.randomUUID()}`;
 			await invoke({ action: "open", name: firstTab, url: `${server.url.href}?tab=first`, downloads: first });
+			await invoke({ action: "open", name: secondTab, url: `${server.url.href}?tab=second`, downloads: second });
+			const secondSession = getTab(secondTab);
+			if (secondSession?.backend !== "worker" || !("browser" in secondSession.browser))
+				throw new Error("Expected a worker browser tab");
+			competing = await secondSession.browser.browser.target().createCDPSession();
 
-			// `tab.title()` waits until the first tab's wait has pointed the browser's download folder at its own; the
-			// second tab then opens and points it at its own before the first tab's download starts.
+			// Start both workers before the timed download wait. Once `tab.title()` confirms tracking is armed,
+			// another CDP client redirects the browser-wide folder before the first tab clicks its download.
 			const gate = JSON.stringify(`${server.url.href}gate`);
 			const firstDownload = download(firstTab, `await tab.title(); await fetch(${gate});`);
 			await gateReached.promise;
-			await invoke({ action: "open", name: secondTab, url: `${server.url.href}?tab=second`, downloads: second });
+			await competing.send("Browser.setDownloadBehavior", {
+				behavior: "allowAndName",
+				downloadPath: second,
+				eventsEnabled: true,
+			});
 			gateOpened.resolve();
 			expect((await firstDownload).path).toBe(path.join(first, "fixture.bin"));
 			expect(await Bun.file(path.join(first, "fixture.bin")).text()).toBe("tab first, download 1\n");
@@ -712,6 +722,7 @@ await Promise.withResolvers().promise;`;
 			expect(await Bun.file(path.join(first, "fixture.bin")).text()).toBe("tab first, download 3\n");
 		} finally {
 			gateOpened.resolve();
+			await competing?.detach();
 			server.stop(true);
 		}
 	}, 20_000);

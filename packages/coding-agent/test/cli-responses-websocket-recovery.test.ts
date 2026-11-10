@@ -31,6 +31,8 @@ async function withCli(
 	}) => Promise<void>,
 	options: { first?: number; idle?: number; websockets?: boolean | "default"; modelPreference?: boolean } = {},
 ): Promise<void> {
+	// Ordinary requests allow startup time; explicit deadline probes retain their budgets.
+	options = { first: 5, idle: 5, ...options };
 	using tempDir = TempDir.createSync("@omp-responses-rpc-");
 	const home = tempDir.join("home");
 	const project = tempDir.join("project");
@@ -70,8 +72,8 @@ async function withCli(
 			retry: { enabled: true, maxRetries: 1, baseDelayMs: 1, maxDelayMs: 1000, modelFallback: false },
 			providers: {
 				openaiResponsesWebsockets: options.websockets === "default" ? undefined : (options.websockets ?? true),
-				streamFirstEventTimeoutSeconds: options.first ?? 5,
-				streamIdleTimeoutSeconds: options.idle ?? 5,
+				streamFirstEventTimeoutSeconds: options.first ?? 1,
+				streamIdleTimeoutSeconds: options.idle ?? 1,
 				cacheWarming: "off",
 			},
 			compaction: { enabled: false },
@@ -590,9 +592,9 @@ describe("real CLI Responses WebSocket recovery", () => {
 							expect(fixture.requests).toHaveLength(1);
 							expect(fixture.httpRequests).toHaveLength(2);
 						},
-						// Leave time for the child-process handshake under parallel CI load.
-						// The idle case still deliberately stalls after its first visible event.
-						{ first: 5, idle: phase === "idle" ? 1 : 5 },
+						// A first-event deadline shorter than ~1 s can expire during the WebSocket
+						// handshake on a loaded machine, before the request reaches the socket.
+						{ first: 1, idle: phase === "idle" ? 0.2 : 1 },
 					);
 				} finally {
 					await fixture.server.stop(true);

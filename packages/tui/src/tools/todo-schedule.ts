@@ -2517,9 +2517,15 @@ export function todoMaterialInputsKey(inputs: TodoMaterialInputs | undefined): s
 }
 
 export function todoAuditHasNewMaterialInputs(schedule: TodoSchedule | undefined, audit: TodoRowAudit): boolean {
+	const current = schedule?.materialInputs;
+	if (!current) return false;
+	const previous = audit.materialInputs;
+	if (!previous || current.criterion !== previous.criterion) return true;
+	// Removing evidence does not supply a missing prerequisite or justify
+	// repeating an exhausted audit. A replacement does introduce a new input.
 	return (
-		!!schedule?.materialInputs &&
-		todoMaterialInputsKey(schedule.materialInputs) !== todoMaterialInputsKey(audit.materialInputs)
+		current.receipts.some(receipt => !previous.receipts.includes(receipt)) ||
+		current.prerequisites.some(prerequisite => !previous.prerequisites.includes(prerequisite))
 	);
 }
 

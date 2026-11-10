@@ -7,7 +7,7 @@
  * and final newlines are preserved.
  */
 import { type ShellFsDirEntry, ShellFsFileType } from "@oh-my-pi/pi-natives";
-import { ConcatSink, ptree } from "@oh-my-pi/pi-utils";
+import { ptree } from "@oh-my-pi/pi-utils";
 import { buildRemoteCommand, ensureConnection, ensureHostInfo, type SSHConnectionTarget } from "./connection-manager";
 import { quotePosixArgument } from "../utils/shell-quote";
 import { wrapInPosixShell } from "./utils";
@@ -247,17 +247,15 @@ export async function listRemoteDir(
 	using child = ptree.spawn(["ssh", ...args], {
 		signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 	});
-	const buffer = new ConcatSink();
-	let size = 0;
-	for await (const chunk of child.proc.stdout) {
-		size += chunk.length;
-		if (size > DIRECTORY_MAX_BYTES) {
+	// Use the tracked reader so abort also closes inherited descendant pipes.
+	// The bound is enforced while streaming, before allocating the full listing.
+	const bytes = await child.bytes({ maxBytes: DIRECTORY_MAX_BYTES }).catch(error => {
+		if (error instanceof Error && error.message === `Subprocess output exceeds the ${DIRECTORY_MAX_BYTES} byte limit`)
 			throw new Error("ssh://: directory listing exceeds the 1 MiB limit; use a narrower directory scope");
-		}
-		buffer.append(chunk);
-	}
+		throw error;
+	});
 	await child.exitedCleanly;
-	const fields = new TextDecoder("utf-8", { fatal: true }).decode(buffer.flush()).split("\0");
+	const fields = new TextDecoder("utf-8", { fatal: true }).decode(bytes).split("\0");
 	if (fields.pop() !== "" || fields.length % 2 !== 0) {
 		throw new Error("ssh://: malformed directory listing (expected NUL-delimited type/name pairs)");
 	}

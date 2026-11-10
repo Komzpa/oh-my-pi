@@ -110,6 +110,18 @@ test("legacy prose receipt is fail closed until explicitly migrated", () => {
 	expect(plan(row)).toHaveLength(0);
 });
 
+for (const field of ["receipts", "prerequisites"] as const) {
+	test(`removing ${field} alone does not reopen the exhausted audit budget`, () => {
+		const row = fixture();
+		row.schedule!.audit!.materialInputs![field] = ["receipt:previously-available"];
+		// The same criterion has less evidence, not a newly available input.
+		expect(todoRowAfterWorker(row)).toMatchObject({ kind: "needs-worker", reason: "audit-inconclusive" });
+		expect(plan(row)).toHaveLength(0);
+		row.schedule!.materialInputs![field] = ["receipt:replacement"];
+		expect(plan(row)[0]!.rows[0]!.attempt).toBe(1);
+	});
+}
+
 test("schedule writer retains material identity across administrative updates and persisted reload", async () => {
 	const row = fixture();
 	row.schedule!.dependencies = [];

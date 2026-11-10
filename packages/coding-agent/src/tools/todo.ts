@@ -2472,11 +2472,14 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		}
 		// An unsuccessful batch must neither commit an operation nor age out existing rows.
 		const failed = errors.length > 0;
+		const previousStatuses = new Map(
+			previousPhases.flatMap(phase => phase.tasks.map(task => [task.content, task.status] as const)),
+		);
 		const closesRow = updated.some(phase =>
 			phase.tasks.some(
 				task =>
 					(task.status === "completed" || task.status === "abandoned") &&
-					findTaskByContent(previousPhases, task.content)?.task.status !== task.status,
+					previousStatuses.get(task.content) !== task.status,
 			),
 		);
 		const archived = !readOnly && !failed && closesRow ? archiveTodoPhases(updated, now) : undefined;
