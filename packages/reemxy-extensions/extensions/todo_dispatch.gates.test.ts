@@ -2912,7 +2912,7 @@ test("R1 (case A): a same-owner reestimate on a slipping running row is refused 
   // Allowed: the row is split into new rows.
   expect(await slipCall(tasks(), jobs, { name: "todo", arguments: { op: "schedule", updates: [{ task: "Force-layout callouts (markup)" }, { task: "Force-layout callouts (positions)" }] } })).toBeUndefined();
 });
-test("an overdue row's evidence-backed reestimate still meets the measured previous attempt floor", async () => {
+test("finished-attempt remainder passes the runtime gate with evidence; an unsupported retry stays refused", async () => {
   const stale = Date.now() - 65 * 60_000;
   const jobs = slipJobs("EvidenceOwner", "coder", stale);
   const row = slipRow("Record scene inputs", "EvidenceOwner", 1, stale);
@@ -2923,14 +2923,17 @@ test("an overdue row's evidence-backed reestimate still meets the measured previ
   }));
   expect(accepted).toBeUndefined();
 
-  // A new attempt (the previous executor finished) is still floored by the measured attempt.
+  // Completed implementation leaves a smaller verification remainder for its successor.
   const retry = structuredClone(row);
   retry.schedule.executor = { workerId: "EvidenceOwner", startedAt: stale, finishedAt: stale + 60_000, outcome: "failed" };
-  const bare = await slipCall([retry], jobs, reestimateCall("Record scene inputs", {
-    evidence: "Only evidence, estimate remains below the floor.",
+  const remaining = await slipCall([retry], jobs, reestimateCall("Record scene inputs", {
+    evidence: "Scene inputs are recorded; only checking the saved fixture remains.",
+    estimate: { optimisticSeconds: 120, likelySeconds: 300, pessimisticSeconds: 600, confidence: "medium", basis: "Inspect saved fixture 120s, compare rendered values 180s" },
   }));
+  expect(remaining).toBeUndefined();
+  const bare = await slipCall([retry], jobs, reestimateCall("Record scene inputs"));
   expect(bare?.block).toBe(true);
-  expect(bare?.reason).toContain("previous attempt took 30m");
+  expect(bare?.reason).toContain("with evidence (the failure reason) plus a new estimate");
 });
 
 test("R2 (case B): an established capped owner gets a split action, never a kill", async () => {
