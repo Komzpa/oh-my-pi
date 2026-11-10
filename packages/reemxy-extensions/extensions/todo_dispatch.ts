@@ -55,6 +55,7 @@ import riskReplanInstructions from "./risk-replan.md" with { type: "text" };
 import deadlineMissInstructions from "./deadline-miss.md" with { type: "text" };
 import idleRedRowsInstructions from "./idle-red-rows.md" with { type: "text" };
 import { assignedResourceRefusals, countLiveWorkerModels } from "./agent_router";
+import { currentRowOwner } from "./dispatch_preflight";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey, readOnlyClaim } from "./checkout_scope";
 import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
 import { planChurnRows, unfinishedDependencyChains, appendTimedNote, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
@@ -6582,9 +6583,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const patch = update.schedule ?? update;
         if (!Array.isArray(patch.resources)) continue;
         const row = todoPhases(ctx).flatMap(phase => phase.tasks).find(row => row.content === (update.task ?? update.content));
-        const owner = row?.schedule?.executor?.workerId ?? row?.schedule?.owner;
-        if (typeof owner !== "string") continue;
-        await AgentRegistry.global().get(owner)?.session?.steer(prompt.render(gateNoticeInstructions, { scopeChanged: true, row: JSON.stringify(row.content), resources: JSON.stringify(patch.resources) }).trim());
+        const owner = row?.schedule?.owner ?? row?.schedule?.executor?.workerId;
+        if (typeof owner !== "string" || !currentRowOwner(row, owner)) continue;
+        const registry = AgentRegistry.global();
+        const worker = registry.get(owner);
+        // A scope update changes the live grant; it never starts another attempt.
+        if (!worker || !registry.isRunning(worker) || (worker.todoRow && worker.todoRow !== row.content)) continue;
+        await worker.session?.steer(prompt.render(gateNoticeInstructions, { scopeChanged: true, row: JSON.stringify(row.content), resources: JSON.stringify(patch.resources) }).trim());
       }
       for (const update of updates) if (typeof update.task === "string" && (update.estimate !== undefined || typeof update.evidence === "string")) rescheduledRowsThisTurn.add(update.task);
       for (const update of updates) {

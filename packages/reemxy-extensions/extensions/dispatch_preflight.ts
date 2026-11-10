@@ -369,7 +369,7 @@ function bashWriteTargets(argv: string[]): string[] {
 	return [];
 }
 
-function currentRowOwner(row: TodoScheduleInputTask, owner: string): boolean {
+export function currentRowOwner(row: TodoScheduleInputTask, owner: string): boolean {
 	if (row.status === "completed" || row.status === "abandoned") return false;
 	const executor = row.schedule?.executor;
 	const settled = executor?.finishedAt !== undefined || executor?.outcome !== undefined;

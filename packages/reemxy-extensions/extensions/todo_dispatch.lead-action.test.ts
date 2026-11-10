@@ -7,6 +7,7 @@ import { convertToLlm } from "../../coding-agent/src/session/messages";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch, { leadActionPending } from "./todo_dispatch";
+import { holdsWriteCustody } from "./dispatch_preflight";
 
 const NOW = 1793896333299;
 // Live DC rows 2026-11-05 21:45 +04, schedule fields copied from the session journal.
@@ -113,7 +114,7 @@ test("negative control: block on a row without a delivered result still passes",
 	const registry = new AgentRegistry();
 	const spy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
 	const messages = [];
-	registry.register({ id: "Pipes", displayName: "Pipes", kind: "sub", session: { steer: async text => { messages.push(text); } } });
+	registry.register({ id: "Pipes", displayName: "Pipes", kind: "sub", session: { isStreaming: true, steer: async text => { messages.push(text); } } });
 	try {
 		const h = await harness([{ content: "Fix pipes", status: "in_progress", schedule: { owner: "Pipes", resources: ["/new-worktree"] } }]);
 		await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule", updates: [{ task: "Fix pipes", resources: ["/new-worktree"] }] }, details: { op: "schedule" }, content: [] }, h.ctx);
@@ -121,6 +122,50 @@ test("negative control: block on a row without a delivered result still passes",
 		expect(messages[0]).toContain('/new-worktree');
 		expect(messages[0]).toContain('running worker immediately');
 		expect(messages[0]).not.toMatch(/kill|redispatch/);
+	} finally { spy.mockRestore(); }
+});
+
+
+test("scope changes preserve yielded ownership without waking the old worker", async () => {
+	const registry = new AgentRegistry();
+	const spy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+	const messages = [];
+	registry.register({ id: "OldGate", displayName: "OldGate", kind: "sub", status: "idle", session: { isStreaming: false, steer: async text => { messages.push(text); registry.setStatus("OldGate", "running"); } } });
+	try {
+		const row = { content: "Repair component", status: "in_progress", schedule: { owner: "OldGate", resources: ["/project/new.ts"], executor: { workerId: "OldGate", outcome: "completed", finishedAt: NOW } } };
+		const h = await harness([row]);
+		await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule", updates: [{ task: row.content, resources: row.schedule.resources }] }, details: { op: "schedule" }, content: [] }, h.ctx);
+		expect(messages).toEqual([]);
+		expect(registry.get("OldGate").status).toBe("idle");
+		expect(holdsWriteCustody(row)).toBe(false);
+		// A stale registry status alone cannot turn an administrative edit into a new turn.
+		registry.setStatus("OldGate", "running");
+		await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule", updates: [{ task: row.content, resources: [] }] }, details: { op: "schedule" }, content: [] }, h.ctx);
+		expect(messages).toEqual([]);
+		expect(holdsWriteCustody(row)).toBe(false);
+	} finally { spy.mockRestore(); }
+});
+
+test("scope changes notify the current live continuation instead of the historical executor", async () => {
+	const registry = new AgentRegistry();
+	const spy = vi.spyOn(AgentRegistry, "global").mockReturnValue(registry);
+	const messages = [];
+	for (const id of ["OldGate", "NewCoder"]) registry.register({ id, displayName: id, kind: "sub", session: { isStreaming: true, steer: async text => { messages.push({ id, text }); } } });
+	try {
+		const row = { content: "Repair component", status: "in_progress", schedule: { owner: "NewCoder", resources: [], executor: { workerId: "OldGate", outcome: "completed", finishedAt: NOW } } };
+		const h = await harness([row]);
+		await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule", updates: [{ task: row.content, resources: [] }] }, details: { op: "schedule" }, content: [] }, h.ctx);
+		expect(messages.map(message => message.id)).toEqual(["NewCoder"]);
+		expect(messages[0].text).toContain("[]");
+		// IRC can legitimately resume the same owner after a historical terminal attempt.
+		h.phases[0].tasks[0].schedule.owner = "OldGate";
+		await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule", updates: [{ task: row.content, resources: [] }] }, details: { op: "schedule" }, content: [] }, h.ctx);
+		expect(messages.map(message => message.id)).toEqual(["NewCoder", "OldGate"]);
+		expect(holdsWriteCustody(h.phases[0].tasks[0])).toBe(true);
+		// Finishing the row revokes even an otherwise live owner's grant.
+		h.phases[0].tasks[0].status = "completed";
+		await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule", updates: [{ task: row.content, resources: [] }] }, details: { op: "schedule" }, content: [] }, h.ctx);
+		expect(messages.map(message => message.id)).toEqual(["NewCoder", "OldGate"]);
 	} finally { spy.mockRestore(); }
 });
 
