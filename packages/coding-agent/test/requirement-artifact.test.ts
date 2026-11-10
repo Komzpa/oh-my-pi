@@ -1,4 +1,5 @@
 import type { PathLike } from "node:fs";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,6 +8,7 @@ import {
 	checkRequirementIdentity,
 	currentRequirementIdentity,
 	formatRequirementIdentity,
+	freezeRequirementIdentityScope,
 	parseRequirementIdentity,
 	resolveResourceArtifact,
 	type RequirementIdentity,
@@ -28,6 +30,66 @@ async function capture(file: string): Promise<RequirementIdentity> {
 	if ("error" in result) throw new Error(result.error);
 	return result.identity;
 }
+
+function git(cwd: string, ...args: string[]): string {
+	return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+}
+
+describe("frozen Git requirement artifact scope", () => {
+	it("retains the captured base and paths when default branch advances onto the audited merge", async () => {
+		const root = await fixture();
+		git(root, "init", "--initial-branch=main");
+		git(root, "config", "user.name", "Requirement Artifact Test");
+		git(root, "config", "user.email", "requirements@example.invalid");
+		await Bun.write(path.join(root, "a.txt"), "base a\n");
+		await Bun.write(path.join(root, "b.txt"), "base b\n");
+		git(root, "add", ".");
+		git(root, "commit", "-m", "base");
+		const baseCommit = git(root, "rev-parse", "HEAD");
+
+		git(root, "switch", "-c", "first-parent");
+		await Bun.write(path.join(root, "a.txt"), "first parent a\n");
+		git(root, "add", "a.txt");
+		git(root, "commit", "-m", "first parent");
+		const firstParent = git(root, "rev-parse", "HEAD");
+
+		git(root, "switch", "--detach", baseCommit);
+		await Bun.write(path.join(root, "b.txt"), "second parent b\n");
+		git(root, "add", "b.txt");
+		git(root, "commit", "-m", "second parent");
+		const secondParent = git(root, "rev-parse", "HEAD");
+		const mergeTree = git(root, "rev-parse", `${firstParent}^{tree}`);
+		const auditedMerge = git(
+			root,
+			"-c",
+			"user.name=Requirement Artifact Test",
+			"-c",
+			"user.email=requirements@example.invalid",
+			"commit-tree",
+			mergeTree,
+			"-p",
+			firstParent,
+			"-p",
+			secondParent,
+			"-m",
+			"audited merge",
+		);
+		git(root, "update-ref", "refs/heads/main", secondParent);
+		const accepted = await freezeRequirementIdentityScope({
+			kind: "git",
+			repo: root,
+			commit: auditedMerge,
+			base: secondParent,
+			paths: ["a.txt"],
+		});
+		expect(accepted).toMatchObject({ base: secondParent, paths: ["a.txt"] });
+
+		git(root, "update-ref", "refs/heads/main", auditedMerge);
+		const afterDefaultBranchMove = await freezeRequirementIdentityScope(accepted);
+		expect(afterDefaultBranchMove).toEqual(accepted);
+		expect(afterDefaultBranchMove).toMatchObject({ base: secondParent, paths: ["a.txt"] });
+	});
+});
 
 describe("symlink requirement artifacts", () => {
 	it("captures the given and canonical file paths and persists both in receipts", async () => {

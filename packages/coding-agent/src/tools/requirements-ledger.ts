@@ -93,6 +93,8 @@ export interface RequirementVerdict {
 	rawWords?: string;
 	/** Row receipt time and the saved todo change it reviewed (ties within one millisecond stay ordered). */
 	receivedAt?: string;
+	/** Monotonic dispatch identity prevents an older completed audit from superseding a newer attempt. */
+	auditAttemptStartedAt?: number;
 	rowChangeId?: string;
 	/** Immutable sources covered by the authenticated receipt, including merged asks. */
 	sourceSnapshot?: string;
@@ -189,7 +191,11 @@ function parseVerdict(value: unknown): RequirementVerdict | undefined {
 			(typeof value.receivedAt !== "string" ||
 				!ISO_TIMESTAMP.test(value.receivedAt) ||
 				!Number.isFinite(Date.parse(value.receivedAt)))) ||
-		(value.rowChangeId !== undefined && typeof value.rowChangeId !== "string")
+		(value.rowChangeId !== undefined && typeof value.rowChangeId !== "string") ||
+		(value.auditAttemptStartedAt !== undefined &&
+			(typeof value.auditAttemptStartedAt !== "number" ||
+				!Number.isSafeInteger(value.auditAttemptStartedAt) ||
+				value.auditAttemptStartedAt < 0))
 	)
 		return undefined;
 	if (value.collateral !== undefined && !validRequirementCollateral(value.collateral)) return undefined;
@@ -202,6 +208,9 @@ function parseVerdict(value: unknown): RequirementVerdict | undefined {
 		...(value.auditor === "qa-auditor" ? { auditor: "qa-auditor" as const } : {}),
 		...(typeof value.rawWords === "string" && value.rawWords.trim() ? { rawWords: value.rawWords } : {}),
 		...(typeof value.receivedAt === "string" ? { receivedAt: value.receivedAt } : {}),
+		...(typeof value.auditAttemptStartedAt === "number"
+			? { auditAttemptStartedAt: value.auditAttemptStartedAt }
+			: {}),
 		...(typeof value.rowChangeId === "string" ? { rowChangeId: value.rowChangeId } : {}),
 		...(typeof value.sourceSnapshot === "string" ? { sourceSnapshot: value.sourceSnapshot } : {}),
 	};
@@ -1825,6 +1834,7 @@ export function getPersistedRequirementAuditorAssignments(
 	entries: readonly SessionEntry[],
 	sessionId: string | null,
 	requirements: readonly RequirementLedgerItem[],
+	consumedWorkerIds?: Set<string>,
 ): Map<string, RequirementAuditAssignment> {
 	const restored = new Map<string, RequirementAuditAssignment>();
 	if (!sessionId) return restored;
@@ -1834,12 +1844,23 @@ export function getPersistedRequirementAuditorAssignments(
 		if (!isRecord(entry.data) || entry.data.sessionId !== sessionId || entry.data.kind === "model_selection")
 			continue;
 		if (entry.data.version !== 1 || !Array.isArray(entry.data.jobs)) return restored;
+		if (consumedWorkerIds) {
+			consumedWorkerIds.clear();
+			if (Array.isArray(entry.data.consumed))
+				for (const attemptKey of entry.data.consumed)
+					if (typeof attemptKey === "string" && attemptKey.length > 0) consumedWorkerIds.add(attemptKey);
+		}
 		for (const value of entry.data.jobs) {
 			if (!isRecord(value)) continue;
-			const { workerId, agent, ids, snapshot } = value;
+			const { workerId, agent, ids, snapshot, startedAt } = value;
+			const attemptKey =
+				typeof workerId === "string" && Array.isArray(ids)
+					? JSON.stringify([workerId, typeof startedAt === "number" ? startedAt : null, ids])
+					: "";
 			if (
 				typeof workerId !== "string" ||
 				!workerId ||
+				consumedWorkerIds?.has(attemptKey) ||
 				agent !== "qa-auditor" ||
 				!Array.isArray(ids) ||
 				ids.length === 0 ||

@@ -9,7 +9,7 @@ import { probeRequirementDeployment, type RequirementDeploymentIdentity } from "
 
 /** Declarative identities carried by requirement receipts, independent of worker ownership. */
 export type RequirementIdentity =
-	| { kind: "git"; repo: string; commit: string; paths?: string[] }
+	| { kind: "git"; repo: string; commit: string; base?: string; paths?: string[] }
 	| { kind: "file"; path: string; canonicalPath?: string; sha256: string }
 	| RequirementDeploymentIdentity;
 
@@ -96,8 +96,9 @@ export function formatRequirementIdentity(identity: RequirementIdentity): string
 		return `file:${wireString(identity.path)}@sha256=${identity.sha256.toLowerCase()}${canonical}`;
 	}
 	if (identity.kind === "git") {
+		const base = identity.base === undefined ? "" : ` base=${identity.base.toLowerCase()}`;
 		const paths = identity.paths === undefined ? "" : ` paths=${JSON.stringify(identity.paths)}`;
-		return `git:${wireString(identity.repo)}@${identity.commit.toLowerCase()}${paths}`;
+		return `git:${wireString(identity.repo)}@${identity.commit.toLowerCase()}${base}${paths}`;
 	}
 	const field = identity.field === undefined ? "" : ` field=${identity.field}`;
 	const scope = identity.scope === undefined ? "" : ` scope=${identity.scope}`;
@@ -197,12 +198,21 @@ export function parseRequirementIdentity(text: string): { identity: RequirementI
 		if (prefix[1] === "git") {
 			if (!absoluteIdentityPath(target.value)) fail("git identity requires an exact absolute repository root");
 			if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i.test(value.value)) fail("git identity requires a full commit OID");
+			let base: string | undefined;
 			let paths: string[] | undefined;
-			if (suffix) {
-				if (!suffix.startsWith("paths=")) fail("git identity accepts only paths=<JSON file array>");
+			let attributes = suffix;
+			if (attributes.startsWith("base=")) {
+				const match = /^base=([a-f0-9]{40}|[a-f0-9]{64})(?:\s+|$)/i.exec(attributes);
+				if (!match) fail("git base requires a full commit OID");
+				base = match[1]!.toLowerCase();
+				attributes = attributes.slice(match[0].length).trim();
+			}
+			if (attributes) {
+				if (!attributes.startsWith("paths="))
+					fail("git identity accepts only base=<full commit> and paths=<JSON file array>");
 				let decoded: unknown;
 				try {
-					decoded = JSON.parse(suffix.slice(6));
+					decoded = JSON.parse(attributes.slice(6));
 				} catch {
 					fail(
 						'git paths requires a JSON array of quoted relative paths, for example paths=["src/file.ts","test/file.test.ts"]',
@@ -210,7 +220,6 @@ export function parseRequirementIdentity(text: string): { identity: RequirementI
 				}
 				if (
 					!Array.isArray(decoded) ||
-					decoded.length === 0 ||
 					decoded.length > REQUIREMENT_ARTIFACT_LIMITS.maxFiles ||
 					!decoded.every(
 						(entry: unknown): entry is string =>
@@ -231,6 +240,7 @@ export function parseRequirementIdentity(text: string): { identity: RequirementI
 					kind: "git",
 					repo: path.resolve(target.value),
 					commit: value.value.toLowerCase(),
+					...(base ? { base } : {}),
 					...(paths ? { paths } : {}),
 				},
 			};
@@ -875,7 +885,7 @@ export async function currentRequirementIdentity(
 					kind: "file",
 					path: target.path,
 					sha256: artifact.sha256,
-					...(canonicalPath === target.path ? {} : { canonicalPath }),
+					canonicalPath,
 				},
 			};
 		}
@@ -898,9 +908,9 @@ export async function currentRequirementIdentity(
 					? check.reason
 					: `${check.location}: expected ${check.expected}, observed ${check.observed}; current bytes are not represented by HEAD`,
 			);
-		// Named scopes remain named if HEAD moved during the probe. The captured
-		// immutable commit still names precisely the verified current blobs.
-		return { identity };
+		// Capture the default-branch base and complete path scope with the receipt;
+		// later gates must not derive either from a moved default branch.
+		return { identity: await freezeRequirementIdentityScope(identity) };
 	} catch (err) {
 		if (signal?.aborted) throw err;
 		return { error: err instanceof Error ? err.message : String(err) };
@@ -925,10 +935,31 @@ export async function requirementArtifactBase(
 	let revision = identity.commit;
 	const head = await repo.headSha();
 	if (head && (await repo.resolveRef(`${head}^{tree}`)) === revision) revision = head;
-	const defaultBranch = await repo.defaultBranch();
-	let base = defaultBranch ? await repo.mergeBase(defaultBranch, revision) : null;
-	if (!base || base === revision) base = await repo.resolveRef(`${revision}^`);
+	let base = identity.base ?? null;
+	if (!identity.base) {
+		const defaultBranch = await repo.defaultBranch();
+		base = defaultBranch ? ((await repo.mergeBase(defaultBranch, revision)) ?? null) : null;
+		if (!base || base === revision) base = (await repo.resolveRef(`${revision}^`)) ?? null;
+	}
 	return { revision, base: base ?? null };
+}
+
+/** Freeze the exact artifact target, base, and complete file scope accepted for a receipt. */
+export async function freezeRequirementIdentityScope(identity: RequirementIdentity): Promise<RequirementIdentity> {
+	if (identity.kind === "file") {
+		const canonicalPath = identity.canonicalPath ?? (await canonicalArtifactPath(identity.path));
+		return { ...identity, canonicalPath };
+	}
+	if (identity.kind !== "git") return identity;
+	const { revision, base } = await requirementArtifactBase(identity);
+	const repo = await identityGitRepo(identity.repo);
+	const paths =
+		identity.paths ?? (base ? await repo.changedFiles({ base, head: revision }) : await repo.lsTree(revision, []));
+	const roundTrip = parseRequirementIdentity(
+		formatRequirementIdentity({ ...identity, commit: revision, ...(base ? { base } : {}), paths }),
+	);
+	if ("error" in roundTrip) throw new Error(roundTrip.error);
+	return roundTrip.identity;
 }
 
 /** Recheck the delivered diff, rather than unrelated later commits in the checkout. */
@@ -946,7 +977,7 @@ export async function checkRequirementDeliveredIdentity(
 					const { revision, base } = await requirementArtifactBase(identity);
 					if (base) paths = await repo.changedFiles({ base, head: revision }, signal);
 				}
-				if (paths?.length) {
+				if (paths !== undefined) {
 					const head = await repo.headSha(signal);
 					if (!head) throw new Error("missing HEAD");
 					const changes = await repo.changedFiles({ base: identity.commit, head, files: paths }, signal);

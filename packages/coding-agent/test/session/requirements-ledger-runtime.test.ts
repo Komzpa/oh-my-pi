@@ -22,10 +22,12 @@ import {
 	classifyRequirement,
 	createRequirementCandidates,
 	getLatestRequirements,
+	REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE,
 	REQUIREMENTS_LEDGER_CUSTOM_TYPE,
 	evaluateRequirementDoneGate,
 	getPersistedRequirementAuditRejections,
 	getPersistedRequirementAuditorAssignments,
+	parseRequirementReceiptIdentities,
 	requirementSourceDigest,
 } from "@oh-my-pi/pi-coding-agent/tools/requirements-ledger";
 import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
@@ -48,6 +50,7 @@ function gitIdentity(cwd: string, commit: string): string {
 
 function fixture(
 	auditorProfile = readFileSync(new URL("../../src/prompts/agents/qa-auditor.md", import.meta.url), "utf8"),
+	persist = false,
 ) {
 	const cwd = mkdtempSync(join(tmpdir(), "omp-ledger-runtime-"));
 	const auditorDir = join(cwd, ".omp", "agents");
@@ -59,7 +62,7 @@ function fixture(
 	writeFileSync(join(cwd, "artifact.txt"), "audited\n");
 	git(cwd, "add", ".");
 	git(cwd, "commit", "-m", "audited artifact");
-	const manager = SessionManager.inMemory();
+	const manager = persist ? SessionManager.create(cwd, join(cwd, "sessions")) : SessionManager.inMemory(cwd);
 	manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, {
 		version: 1,
 		requirements: createRequirementCandidates([], ["audit the artifact"], AT),
@@ -242,6 +245,10 @@ function receiptTable(head: string, evidence = "exercised the build"): string {
 		"| --- | --- | --- | --- | --- |",
 		`| R1 | audit the artifact | pass | ${evidence} | ${head} |`,
 	].join("\n");
+}
+
+function receiptTableWithVerdict(head: string, verdict: "pass" | "fail", evidence: string): string {
+	return receiptTable(head, evidence).replace("| pass |", `| ${verdict} |`);
 }
 
 async function auditFixtureArtifact(
@@ -900,7 +907,13 @@ describe("requirements ledger auditor binding", () => {
 			// Publication clears the stale pass while retaining its durable artifact evidence.
 			const saved = getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"];
 			expect(saved?.status).toBe("unverifiable");
-			expect(saved?.artifact).toBe(gitIdentity(cwd, head));
+			const parsedArtifact = parseRequirementReceiptIdentities(saved?.artifact ?? "");
+			expect("identities" in parsedArtifact ? parsedArtifact.identities[0] : undefined).toMatchObject({
+				kind: "git",
+				repo: cwd,
+				commit: head,
+				paths: [".omp/agents/qa-auditor.md", "artifact.txt"],
+			});
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
 		}
@@ -1793,7 +1806,9 @@ describe("real row-scoped auditor receipts", () => {
 			expect(await getRequirementRowArtifact({ cwd, sessionManager: manager }, rows[0]!, phases)).toEqual({
 				cwd: resource,
 				head: null,
-				identities: [{ kind: "git", repo: resource, commit: head }],
+				identities: [
+					{ kind: "git", repo: resource, commit: head, paths: [".omp/agents/qa-auditor.md", "artifact.txt"] },
+				],
 				dirty: false,
 			});
 			const savedOnly: TodoPhase[] = [
@@ -1828,7 +1843,12 @@ describe("real row-scoped auditor receipts", () => {
 			expect(outcome).toBeUndefined();
 			for (const row of rows) {
 				expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.[row]?.artifact).toBe(
-					`row ${JSON.stringify(row)} @ ${gitIdentity(resource, head)}`,
+					`row ${JSON.stringify(row)} @ ${formatRequirementIdentity({
+						kind: "git",
+						repo: resource,
+						commit: head,
+						paths: [".omp/agents/qa-auditor.md", "artifact.txt"],
+					})}`,
 				);
 			}
 			const tool = new TodoTool({
@@ -1859,7 +1879,7 @@ describe("real row-scoped auditor receipts", () => {
 				cwd: resource,
 				head: null,
 				dirty: false,
-				identities: [{ kind: "git", repo: resource, commit: movedHead }],
+				identities: [{ kind: "git", repo: resource, commit: movedHead, base: head, paths: ["artifact.txt"] }],
 			});
 			// The labels, not cell order or another row's SHA, select each row's fresh artifact.
 			const otherResource = join(cwd, "scene-worktree");
@@ -2693,6 +2713,199 @@ describe("replay: R1 audit for row A while R2 is linked to row B", () => {
 			expect(requirements.find(requirement => requirement.id === "R2")?.rowVerdicts).toBeUndefined();
 		} finally {
 			rmSync(fx.cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("requirement auditor receipt consumption order", () => {
+	async function prepareAndRegister(
+		runtime: RequirementsLedgerRuntime,
+		callId: string,
+		workerId: string,
+	): Promise<void> {
+		await runtime.prepareAuditorTaskCall("task", callId, {
+			name: "main",
+			agent: "qa-auditor",
+			task: "Audit R1",
+			requirementIds: ["R1"],
+		});
+		runtime.registerAuditorWorker(callId, 0, workerId, "qa-auditor");
+	}
+
+	async function finishSync(
+		runtime: RequirementsLedgerRuntime,
+		callId: string,
+		workerId: string,
+		output: string,
+	): Promise<Awaited<ReturnType<RequirementsLedgerRuntime["afterToolCall"]>>> {
+		return runtime.afterToolCall({
+			toolCall: { id: callId, name: "task" },
+			result: {
+				content: [],
+				details: {
+					results: [{ index: 0, agent: "qa-auditor", id: workerId, exitCode: 0, output }],
+				},
+			},
+			isError: false,
+		} as never);
+	}
+
+	it("persists sync consumption across restart and repeated wait snapshots", async () => {
+		const { cwd, manager, runtime } = fixture(undefined, true);
+		let reloadedManager: SessionManager | undefined;
+		try {
+			await manager.ensureOnDisk();
+			const head = git(cwd, "rev-parse", "HEAD");
+			const rowArtifact = `row ${JSON.stringify("Build artifact")} @ ${gitIdentity(cwd, head)}`;
+			await prepareAndRegister(runtime, "sync-old-call", "sync-old-worker");
+			expect(
+				await finishSync(runtime, "sync-old-call", "sync-old-worker", receiptTable(rowArtifact)),
+			).toBeUndefined();
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("pass");
+
+			await prepareAndRegister(runtime, "sync-new-call", "sync-new-worker");
+			expect(
+				await finishSync(
+					runtime,
+					"sync-new-call",
+					"sync-new-worker",
+					receiptTableWithVerdict(rowArtifact, "fail", "new audit reproduced a defect"),
+				),
+			).toBeUndefined();
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("fail");
+
+			const sessionFile = manager.getSessionFile();
+			if (!sessionFile) throw new Error("expected persisted requirements session");
+			await manager.flush();
+			await manager.close();
+			reloadedManager = await SessionManager.open(sessionFile, join(cwd, "sessions"));
+			const reloadedBranch = reloadedManager.getBranch();
+			const assignmentEntry = [...reloadedBranch]
+				.reverse()
+				.find(entry => entry.type === "custom" && entry.customType === REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE);
+			expect(JSON.stringify(assignmentEntry)).toContain("sync-old-worker");
+			expect(JSON.stringify(assignmentEntry)).toContain('"consumed":[');
+			expect(JSON.stringify(assignmentEntry)).toContain('"jobs":[]');
+			expect(getLatestRequirements(reloadedBranch)[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("fail");
+
+			const restored = new RequirementsLedgerRuntime({
+				agent: {} as never,
+				agentKind: () => "main",
+				cwd: () => cwd,
+				sessionManager: reloadedManager,
+				onSettledAssistantMessage: () => {},
+				setPublicationGate: () => {},
+			});
+			const snapshot = `<task-result id="sync-old-worker" agent="qa-auditor" status="completed"><output>${receiptTable(rowArtifact)}</output></task-result>`;
+			for (const id of ["wait-after-restart-1", "wait-after-restart-2"])
+				await restored.afterToolCall({
+					toolCall: { id, name: "wait" },
+					result: { content: [{ type: "text", text: snapshot }] },
+					isError: false,
+				} as never);
+
+			expect(getLatestRequirements(reloadedManager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe(
+				"fail",
+			);
+			expect(
+				getPersistedRequirementAuditorAssignments(
+					reloadedManager.getBranch(),
+					reloadedManager.getSessionId(),
+					getLatestRequirements(reloadedManager.getBranch()),
+				).has("sync-old-worker"),
+			).toBe(false);
+			const gateIssues = await evaluateRequirementDoneGate(
+				getLatestRequirements(reloadedManager.getBranch()),
+				["Build artifact"],
+				(row, receipt) =>
+					getRequirementRowArtifact(
+						{ cwd, sessionManager: reloadedManager, receipt },
+						row,
+						getLatestTodoPhasesFromEntries(reloadedManager!.getBranch()),
+					),
+			);
+			expect(gateIssues.length).toBeGreaterThan(0);
+		} finally {
+			await reloadedManager?.close();
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a late older result when a newer attempt completed first", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const head = git(cwd, "rev-parse", "HEAD");
+			const rowArtifact = `row ${JSON.stringify("Build artifact")} @ ${gitIdentity(cwd, head)}`;
+			await prepareAndRegister(runtime, "reverse-old-call", "reverse-old-worker");
+			await prepareAndRegister(runtime, "reverse-new-call", "reverse-new-worker");
+			expect(
+				await finishSync(
+					runtime,
+					"reverse-new-call",
+					"reverse-new-worker",
+					receiptTableWithVerdict(rowArtifact, "fail", "new attempt found a defect"),
+				),
+			).toBeUndefined();
+			const late = await finishSync(runtime, "reverse-old-call", "reverse-old-worker", receiptTable(rowArtifact));
+			expect(late?.isError).toBe(true);
+			const rejection = late?.content?.find(block => block.type === "text");
+			expect(rejection?.text).toContain("older than the current accepted attempt");
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("fail");
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("retires an accepted async result before a newer verdict and ignores its replay", async () => {
+		const { cwd, manager, runtime } = fixture();
+		try {
+			const head = git(cwd, "rev-parse", "HEAD");
+			const rowArtifact = `row ${JSON.stringify("Build artifact")} @ ${gitIdentity(cwd, head)}`;
+			await prepareAndRegister(runtime, "async-old-call", "async-old-worker");
+			const oldEnvelope = `<task-result id="async-old-worker" agent="qa-auditor" status="completed"><output>${receiptTable(rowArtifact)}</output></task-result>`;
+			await runtime.consumeAsyncResult({
+				role: "custom",
+				customType: ASYNC_RESULT_MESSAGE_TYPE,
+				attribution: "agent",
+				content: oldEnvelope,
+				details: { jobs: [{ type: "task", jobId: "async-old-worker", agentId: "async-old-worker" }] },
+			});
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("pass");
+
+			await prepareAndRegister(runtime, "async-new-call", "async-new-worker");
+			expect(
+				await finishSync(
+					runtime,
+					"async-new-call",
+					"async-new-worker",
+					receiptTableWithVerdict(rowArtifact, "fail", "new audit reproduced a defect"),
+				),
+			).toBeUndefined();
+			const restored = new RequirementsLedgerRuntime({
+				agent: {} as never,
+				agentKind: () => "main",
+				cwd: () => cwd,
+				sessionManager: manager,
+				onSettledAssistantMessage: () => {},
+				setPublicationGate: () => {},
+			});
+			await restored.consumeAsyncResult({
+				role: "custom",
+				customType: ASYNC_RESULT_MESSAGE_TYPE,
+				attribution: "agent",
+				content: oldEnvelope,
+				details: { jobs: [{ type: "task", jobId: "async-old-worker", agentId: "async-old-worker" }] },
+			});
+			expect(getLatestRequirements(manager.getBranch())[0]?.rowVerdicts?.["Build artifact"]?.status).toBe("fail");
+			expect(
+				getPersistedRequirementAuditorAssignments(
+					manager.getBranch(),
+					manager.getSessionId(),
+					getLatestRequirements(manager.getBranch()),
+				).has("async-old-worker"),
+			).toBe(false);
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
 		}
 	});
 });

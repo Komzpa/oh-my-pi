@@ -26,6 +26,7 @@ import {
 	getPersistedRequirementAuditRejections,
 	getRequirementAuditSources,
 	getRequirementReceiptArtifactRowLabels,
+	getRequirementReceiptArtifactRowLabel,
 	getRequirementRowArtifactIdentity,
 	getRequirementRowVerdict,
 	getRequirementVerdictSourceIssue,
@@ -107,7 +108,9 @@ import {
 	requirementTouchesRenderedFiles,
 	requirementArtifactBase,
 	formatRequirementIdentity,
+	splitRequirementIdentitySegments,
 	requirementIdentityKey,
+	freezeRequirementIdentityScope,
 	type RequirementIdentity,
 	type RequirementGitStatusSnapshots,
 } from "../utils/requirement-artifact";
@@ -153,7 +156,7 @@ function openTodoRowContents(entries: Parameters<typeof getLatestTodoPhasesFromE
 	);
 }
 
-function requirementArtifactState(artifact: RequirementGateArtifact): unknown {
+function requirementArtifactState(artifact: RequirementGateArtifact): Record<string, unknown> {
 	return {
 		cwd: artifact.cwd,
 		head: artifact.head,
@@ -165,9 +168,81 @@ function requirementArtifactState(artifact: RequirementGateArtifact): unknown {
 	};
 }
 
+function requirementIdentityMatches(received: RequirementIdentity, dispatched: RequirementIdentity): boolean {
+	if (received.kind !== dispatched.kind) return false;
+	if (received.kind === "git" && dispatched.kind === "git")
+		return received.repo === dispatched.repo && received.commit === dispatched.commit;
+	if (received.kind === "file" && dispatched.kind === "file")
+		return received.path === dispatched.path && received.sha256 === dispatched.sha256;
+	return (
+		received.kind === "deploy" &&
+		dispatched.kind === "deploy" &&
+		received.target === dispatched.target &&
+		received.value === dispatched.value
+	);
+}
+
+function dispatchedRequirementIdentities(assignments: RequirementAuditAssignment): RequirementIdentity[] {
+	const identities: RequirementIdentity[] = [];
+	for (const state of Object.values(assignments.rowArtifacts ?? {})) {
+		try {
+			const parsed: unknown = JSON.parse(state);
+			if (!isRecord(parsed) || !Array.isArray(parsed.identities)) continue;
+			for (const identity of parsed.identities) {
+				if (
+					isRecord(identity) &&
+					(identity.kind === "git" || identity.kind === "file" || identity.kind === "deploy")
+				)
+					identities.push(identity as unknown as RequirementIdentity);
+			}
+		} catch {}
+	}
+	return identities;
+}
+
+async function freezeReceiptArtifactScope(
+	artifact: string,
+	dispatched: readonly RequirementIdentity[],
+	knownRows: ReadonlySet<string>,
+): Promise<string> {
+	const segments: string[] = [];
+	for (const original of splitRequirementIdentitySegments(artifact)) {
+		const label = getRequirementReceiptArtifactRowLabel(original, knownRows);
+		const segment =
+			label && original.includes(" @ ")
+				? `row ${JSON.stringify(label)} @ ${original.slice(original.indexOf(" @ ") + 3).trim()}`
+				: original;
+		const parsed = parseRequirementReceiptIdentities(segment);
+		if (!("identities" in parsed)) {
+			segments.push(segment);
+			continue;
+		}
+		let frozenSegment = segment;
+		for (const identity of parsed.identities) {
+			const target = dispatched.find(candidate => requirementIdentityMatches(identity, candidate));
+			let frozen: RequirementIdentity;
+			if (target?.kind === "git" && identity.kind === "git")
+				frozen = {
+					...identity,
+					...(target.base ? { base: target.base } : {}),
+					...(target.paths ? { paths: target.paths } : {}),
+				};
+			else if (target?.kind === "file" && identity.kind === "file")
+				frozen = { ...identity, canonicalPath: target.canonicalPath ?? target.path };
+			else frozen = await freezeRequirementIdentityScope(identity);
+			frozenSegment = frozenSegment.replaceAll(
+				formatRequirementIdentity(identity),
+				formatRequirementIdentity(frozen),
+			);
+		}
+		segments.push(frozenSegment);
+	}
+	return segments.join("; ");
+}
+
 /**
  * A checkout-resolved artifact carries its commit in `head`; a receipt-typed one carries the same
- * commit in a path-less Git identity for that checkout. Compare both shapes at one commit location.
+ * commit in a scoped Git identity for that checkout. Compare both shapes at one commit location.
  */
 async function comparableArtifactState(state: unknown, dispatch?: unknown): Promise<string> {
 	const value = { ...(state as { cwd?: string; head?: string | null; identities?: RequirementIdentity[] }) };
@@ -176,25 +251,24 @@ async function comparableArtifactState(state: unknown, dispatch?: unknown): Prom
 		value.identities = await Promise.all(
 			value.identities.map(async identity => {
 				if (identity.kind !== "git") return identity;
-				const whole = prior.identities?.find(
-					target => target.kind === "git" && target.repo === identity.repo && target.paths === undefined,
-				);
+				const whole = prior.identities?.find(target => target.kind === "git" && target.repo === identity.repo);
 				if (!whole || whole.kind !== "git") return identity;
 				const same =
 					whole.commit === identity.commit ||
 					(await vcs.git(identity.repo)?.resolveRef(`${whole.commit}^{tree}`)) === identity.commit;
 				if (!same) return identity;
-				const { paths: _paths, ...pinned } = identity;
-				return { ...pinned, commit: whole.commit };
+				return {
+					...identity,
+					commit: whole.commit,
+					...(whole.base ? { base: whole.base } : {}),
+					...(whole.paths ? { paths: whole.paths } : {}),
+				};
 			}),
 		);
 	}
-	const git = value.identities?.filter(
-		identity => identity.kind === "git" && identity.paths === undefined && identity.repo === value.cwd,
-	);
+	const git = value.identities?.filter(identity => identity.kind === "git" && identity.repo === value.cwd);
 	if (!value.head && value.identities?.length === 1 && git?.length === 1 && git[0]!.kind === "git") {
 		value.head = git[0]!.commit;
-		delete value.identities;
 	}
 	return JSON.stringify({
 		...value,
@@ -245,6 +319,12 @@ export interface RequirementCandidateCommit {
 	candidateIds?: string[];
 }
 
+interface RequirementReceiptIntake {
+	acceptedIds: string[];
+	rejectedIds: string[];
+	issue: string | null;
+}
+
 export interface RequirementsLedgerRuntimeHost {
 	agent: Agent;
 	agentKind(): "main" | "sub";
@@ -260,11 +340,16 @@ export interface RequirementsLedgerRuntimeHost {
 	setPublicationGate?(gate: RequirementPublicationGate | undefined): void;
 }
 
+const auditorAttemptKey = (workerId: string, assignment: RequirementAuditAssignment): string =>
+	JSON.stringify([workerId, assignment.startedAt ?? null, assignment.ids]);
+
 /** Owns main-session requirement capture, QA receipts, and completion gates. */
 export class RequirementsLedgerRuntime {
 	readonly #host: RequirementsLedgerRuntimeHost;
 	readonly #auditCalls = new Map<string, RequirementAuditAssignment[]>();
 	readonly #pendingAuditors = new Map<string, RequirementAuditAssignment>();
+	readonly #consumedAuditorWorkers = new Set<string>();
+	readonly #consumingAuditorReceipts = new Map<string, Promise<RequirementReceiptIntake>>();
 	#publicationGeneration = 0;
 	#publicationState = "";
 	#noticeState = "";
@@ -545,6 +630,13 @@ export class RequirementsLedgerRuntime {
 			);
 		const revised = [...items];
 		const assignments: RequirementAuditAssignment[] = [];
+		let lastAttemptStartedAt = Math.max(
+			0,
+			...requirements.flatMap(requirement =>
+				Object.values(requirement.rowVerdicts ?? {}).map(verdict => verdict.auditAttemptStartedAt ?? 0),
+			),
+			...[...this.#pendingAuditors.values()].map(assignment => assignment.startedAt ?? 0),
+		);
 		const checkoutCache = new Map<string, Promise<RequirementRowArtifact>>();
 		let imagesChanged = false;
 		const missingImages = new Set<string>();
@@ -728,18 +820,27 @@ export class RequirementsLedgerRuntime {
 					// An unresolved owner lookup is not a freshness baseline. The auditor's
 					// typed receipt will probe the real target at completion; only a target
 					// resolved now can prove that the artifact did not move during the audit.
-					if (!artifact.reason && (artifact.head || artifact.sha256 || artifact.identities?.length))
+					let frozenIdentities: RequirementIdentity[] | undefined;
+					if (!artifact.reason && (artifact.head || artifact.sha256 || artifact.identities?.length)) {
+						const identities =
+							artifact.identities ??
+							(artifact.cwd && artifact.head
+								? [{ kind: "git" as const, repo: artifact.cwd, commit: artifact.head }]
+								: []);
+						frozenIdentities = await Promise.all(identities.map(freezeRequirementIdentityScope));
 						Object.defineProperty(rowArtifacts, row, {
-							value: JSON.stringify(requirementArtifactState(artifact)),
+							value: JSON.stringify({ ...requirementArtifactState(artifact), identities: frozenIdentities }),
 							enumerable: true,
 							configurable: true,
 						});
+					}
 					const identities =
 						artifact.identities ??
 						(artifact.cwd && artifact.head
 							? [{ kind: "git" as const, repo: artifact.cwd, commit: artifact.head }]
 							: []);
-					for (const identity of identities) {
+					const capturedIdentities = frozenIdentities ?? identities;
+					for (const identity of capturedIdentities) {
 						if (identity.kind !== "git") continue;
 						try {
 							const { revision, base } = await requirementArtifactBase(identity);
@@ -777,8 +878,9 @@ export class RequirementsLedgerRuntime {
 				task: `${item.task}\n\n${protocol}`,
 				...(imagePayloads.length ? { images: imagePayloads } : {}),
 			};
+			lastAttemptStartedAt = Math.max(Date.now(), lastAttemptStartedAt + 1);
 			assignments.push({
-				startedAt: Date.now(),
+				startedAt: lastAttemptStartedAt,
 				ids,
 				snapshot: requirementAuditSnapshot(requirements, ids),
 				sessionId,
@@ -830,6 +932,7 @@ export class RequirementsLedgerRuntime {
 	registerAuditorWorker(toolCallId: string, index: number, workerId: string, agent: string): void {
 		const assignment = this.#auditCalls.get(toolCallId)?.find(candidate => candidate.index === index);
 		if (!assignment || agent !== "qa-auditor" || !workerId || assignment.sessionId !== this.#sessionId()) return;
+		if (this.#consumedAuditorWorkers.has(auditorAttemptKey(workerId, assignment))) return;
 		if (this.#pendingAuditors.has(workerId)) return;
 		this.#pendingAuditors.set(workerId, { ...assignment, workerId });
 		this.#persistPendingAuditors();
@@ -952,7 +1055,11 @@ export class RequirementsLedgerRuntime {
 					);
 					continue;
 				}
-				const intake = await this.#acceptReceipt(result.id, { ...assignment, workerId: result.id }, result.output);
+				const intake = await this.#consumeReceiptOnce(
+					result.id,
+					{ ...assignment, workerId: result.id },
+					result.output,
+				);
 				if (assignment.sessionId !== this.#sessionId()) continue;
 				if (intake.issue) {
 					firstRejectedId ??= intake.rejectedIds[0];
@@ -1311,6 +1418,38 @@ export class RequirementsLedgerRuntime {
 		return { acceptedIds, rejectedIds, issue: issues.length ? issues.join("; ") : null };
 	}
 
+	/** One worker identity can be accepted once across synchronous, async, and wait-result delivery. */
+	async #consumeReceiptOnce(
+		workerId: string,
+		assignment: RequirementAuditAssignment,
+		output: string,
+	): Promise<RequirementReceiptIntake> {
+		if (this.#consumedAuditorWorkers.has(auditorAttemptKey(workerId, assignment)))
+			return {
+				acceptedIds: [],
+				rejectedIds: assignment.ids,
+				issue: `${assignment.ids.join(", ")}: auditor worker ${workerId} receipt was already consumed`,
+			};
+		const existing = this.#consumingAuditorReceipts.get(workerId);
+		if (existing) return existing;
+		const intakePromise = (async () => {
+			const intake = await this.#acceptReceipt(workerId, assignment, output);
+			if (!intake.issue) {
+				this.#consumedAuditorWorkers.add(auditorAttemptKey(workerId, assignment));
+				const key = this.#resolvePendingAuditorKey(workerId);
+				if (key) this.#pendingAuditors.delete(key);
+			}
+			return intake;
+		})();
+		this.#consumingAuditorReceipts.set(workerId, intakePromise);
+		try {
+			return await intakePromise;
+		} finally {
+			if (this.#consumingAuditorReceipts.get(workerId) === intakePromise)
+				this.#consumingAuditorReceipts.delete(workerId);
+		}
+	}
+
 	async #acceptRequirementReceipts(
 		workerId: string,
 		assignment: RequirementAuditAssignment,
@@ -1365,6 +1504,21 @@ export class RequirementsLedgerRuntime {
 		const readImage = artifactDirectory
 			? await requirementAuditReadImage(path.join(artifactDirectory, `${workerId}.jsonl`))
 			: false;
+		const dispatchedIdentities = dispatchedRequirementIdentities(assignment);
+		const knownReceiptRows = new Set([
+			...requirements.flatMap(requirement => requirement.rows),
+			...(assignment.rows ?? []),
+		]);
+		try {
+			for (const receipt of sourceReceipts)
+				receipt.artifact = await freezeReceiptArtifactScope(
+					receipt.artifact,
+					dispatchedIdentities,
+					knownReceiptRows,
+				);
+		} catch (error) {
+			return `${expectedIds.join(", ")}: could not freeze accepted artifact identity: ${error instanceof Error ? error.message : String(error)}`;
+		}
 		const parsedIdentities = sourceReceipts.flatMap(receipt => {
 			const parsed = parseRequirementReceiptIdentities(receipt.artifact);
 			return "identities" in parsed ? parsed.identities : [];
@@ -1498,6 +1652,13 @@ export class RequirementsLedgerRuntime {
 			if (!rows.length) return `${receipt.id}: receipt did not identify an assigned TODO row`;
 			const rowVerdicts: Record<string, RequirementVerdict> = {};
 			for (const row of rows) {
+				const priorVerdict = getRequirementRowVerdict(requirement, row);
+				if (
+					assignment.startedAt !== undefined &&
+					priorVerdict?.auditAttemptStartedAt !== undefined &&
+					priorVerdict.auditAttemptStartedAt > assignment.startedAt
+				)
+					return `${receipt.id}: auditor attempt ${workerId} is older than the current accepted attempt for ${JSON.stringify(row)}`;
 				const identity = getRequirementRowArtifactIdentity(receipt.artifact, row, rows, knownRows);
 				if (
 					receipt.mergedArtifacts.some(artifact => {
@@ -1559,6 +1720,7 @@ export class RequirementsLedgerRuntime {
 					workerId,
 					auditor: "qa-auditor",
 					receivedAt,
+					...(assignment.startedAt === undefined ? {} : { auditAttemptStartedAt: assignment.startedAt }),
 					sourceSnapshot: requirementSourceSnapshot(requirements, requirement.id),
 					...((!artifact.head || artifact.dirty) && !artifact.identityCheck && lastChange
 						? { rowChangeId: lastChange.id }
@@ -1674,7 +1836,7 @@ export class RequirementsLedgerRuntime {
 				status: "rejected",
 				reason: "result did not contain complete auditor output in its assigned session",
 			};
-		const intake = await this.#acceptReceipt(header[1]!, assignment, receiptOutput);
+		const intake = await this.#consumeReceiptOnce(header[1]!, assignment, receiptOutput);
 		return intake.issue
 			? {
 					status: "rejected",
@@ -1763,10 +1925,12 @@ export class RequirementsLedgerRuntime {
 					getRequirementArtifactTodoPhases(this.#host.sessionManager),
 				);
 		}
+		this.#consumedAuditorWorkers.clear();
 		const restored = getPersistedRequirementAuditorAssignments(
 			assignmentEntry ? [assignmentEntry] : [],
 			sessionId,
 			requirements,
+			this.#consumedAuditorWorkers,
 		);
 		this.#pendingAuditors.clear();
 		for (const [workerId, assignment] of restored) this.#pendingAuditors.set(workerId, assignment);
@@ -1796,6 +1960,7 @@ export class RequirementsLedgerRuntime {
 		this.#host.sessionManager.appendCustomEntry(REQUIREMENT_AUDITOR_ASSIGNMENTS_CUSTOM_TYPE, {
 			version: 1,
 			sessionId,
+			consumed: [...this.#consumedAuditorWorkers],
 			jobs: [...this.#pendingAuditors.values()]
 				.filter(
 					assignment =>
