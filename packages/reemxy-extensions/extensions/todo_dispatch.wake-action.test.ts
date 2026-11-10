@@ -7,6 +7,7 @@ import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch from "./todo_dispatch";
 import syntheticPlan from "./fixtures/churndep-plan.json";
+import { waitChainDemands } from "./lead_time_notes";
 import { wakeDemand } from "./dispatch_wake";
 
 afterEach(() => vi.restoreAllMocks());
@@ -559,4 +560,39 @@ test("delivered CHURN chain permits waiting for its active audit, then rearms on
   await h.hooks.get("turn_start")({}, h.ctx);
   await h.hooks.get("turn_end")({}, h.ctx);
   expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.action).toContain("WAIT-CHAIN REVIEW");
+});
+
+
+test("schedule refusal survives audit progress replacement and reload, then exposes idle staffing", async () => {
+  let now = Date.now();
+  spyOn(Date, "now").mockImplementation(() => now);
+  const h = await harness([], true, false, false);
+  await h.hooks.get("turn_start")({}, h.ctx);
+  now += 600000;
+  await h.hooks.get("turn_start")({}, h.ctx);
+  const chain = waitChainDemands(h.phases)[0];
+  const evidence = `Dependency review ${chain.key}:\n${chain.edges.map(edge => `${edge.task} <- ${edge.dependency}: consumes required output`).join("\n")}`;
+  // Replay successful todo schedule, then the audit receipt that owns its evidence.
+  const entries = [{ type: "custom", customType: "user_todo_edit", data: { phases: structuredClone(h.phases) } },
+    { type: "message", message: { role: "toolResult", toolName: "todo", details: { edit: { v: 1, kind: "op", op: "schedule", at: now, params: { op: "schedule", updates: [{ task: chain.row, evidence }] } } } } }];
+  let phases = getLatestTodoPhasesFromEntries(entries);
+  expect(phases[0].tasks[0].schedule.progress.evidence).toBe(evidence);
+  entries.push({ type: "custom", customType: "user_todo_edit", data: { edit: { v: 1, kind: "schedule_patch", at: now + 1, task: chain.row, patch: {
+    audit: { delivery: "delivery", verdict: "inconclusive", agent: "qa-auditor", evidence },
+    progress: { at: now + 1, evidence: "Audit assignment needs repository reconciliation" },
+  } } } });
+  phases = getLatestTodoPhasesFromEntries(entries);
+  h.phases.splice(0, h.phases.length, ...phases);
+  await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule" }, content: [], isError: false }, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  const resumed = await harness(h.journal, true, false, false);
+  resumed.phases.splice(0, resumed.phases.length, ...getLatestTodoPhasesFromEntries(entries));
+  await resumed.hooks.get("turn_start")({}, resumed.ctx);
+  const next = resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
+  expect(next.key).not.toContain(chain.key);
+  expect(next.recovery.pending.kind).toBe("idle");
+  expect(next.action).toContain("Staff it");
+  resumed.phases[0].tasks[4].schedule.dependencies.push("Labels");
+  await resumed.hooks.get("turn_start")({}, resumed.ctx);
+  expect(resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.action).toContain("WAIT-CHAIN REVIEW");
 });

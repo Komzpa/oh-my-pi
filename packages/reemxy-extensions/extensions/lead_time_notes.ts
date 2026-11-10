@@ -183,10 +183,10 @@ export function waitChainAction(
 /** Explicit refusal is persisted on the head, and must explain every reviewed link. */
 export function waitChainRejection(demand: WaitChainDemand, phases: TodoScheduleInput): string | undefined {
 	const head = phases.flatMap(phase => phase.tasks).find(row => row.content === demand.row);
-	const reason = head?.schedule?.progress?.evidence;
-	if (!reason?.startsWith(`Dependency review ${demand.key}:`)) return;
-	if (!demand.edges.every(edge => reason.split("\n").some(line => line.startsWith(`${edge.task} <- ${edge.dependency}: `) && line.slice(`${edge.task} <- ${edge.dependency}: `.length).trim().length > 0))) return;
-	return reason;
+	// Audit handoff retains schedule evidence after progress moves on to the audit result.
+	return [head?.schedule?.progress?.evidence, head?.schedule?.audit?.evidence].find(reason =>
+		reason?.startsWith(`Dependency review ${demand.key}:`) &&
+		demand.edges.every(edge => reason.split("\n").some(line => line.startsWith(`${edge.task} <- ${edge.dependency}: `) && line.slice(`${edge.task} <- ${edge.dependency}: `.length).trim().length > 0)));
 }
 
 /** Dates are always included so a finish after midnight cannot look earlier than the baseline. */
