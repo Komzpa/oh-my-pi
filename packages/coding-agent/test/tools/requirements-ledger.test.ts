@@ -118,7 +118,7 @@ describe("canonical todo row metadata", () => {
 					cwd,
 					dirty: false,
 					head: null,
-					identities: [{ kind: "git", repo: cwd, commit }],
+					identities: [{ kind: "git", repo: cwd, commit, paths: ["artifact.txt"] }],
 				});
 			}
 		} finally {
@@ -161,7 +161,7 @@ describe("canonical todo row metadata", () => {
 				cwd,
 				head: null,
 				dirty: false,
-				identities: [{ kind: "git", repo: cwd, commit: head }],
+				identities: [{ kind: "git", repo: cwd, commit: head, paths: ["artifact.txt"] }],
 			});
 			const persisted = getLatestTodoPhasesFromEntries(manager.getBranch());
 			expect(persisted[0]?.tasks[0]?.artifactCwd).toBeUndefined();
@@ -212,7 +212,7 @@ describe("canonical todo row metadata", () => {
 				cwd: resource,
 				head: null,
 				dirty: false,
-				identities: [{ kind: "git", repo: resource, commit: head }],
+				identities: [{ kind: "git", repo: resource, commit: head, paths: ["artifact.txt"] }],
 			});
 		} finally {
 			registry.unregister(owner);
@@ -374,7 +374,7 @@ describe("canonical todo row metadata", () => {
 					cwd: resource,
 					head: null,
 					dirty: false,
-					identities: [{ kind: "git", repo: resource, commit }],
+					identities: [{ kind: "git", repo: resource, commit, paths: ["artifact.txt"] }],
 				});
 				const receipt = formatRequirementIdentity(artifact.identities![0]!);
 				expect(await getRequirementRowArtifact({ ...ctx, receipt }, row, phases)).toMatchObject({
@@ -391,7 +391,7 @@ describe("canonical todo row metadata", () => {
 				expect(getRequirementVerdictStaleness(requirement, [{ row, ...artifact }])).not.toBeNull();
 				writeFileSync(join(resource, "artifact.txt"), "dirty classify gate artifact\n");
 				const dirty = await getRequirementRowArtifact({ ...ctx, receipt }, row, phases);
-				expect(dirty.identityCheck?.reason).toContain("unverifiable git");
+				expect(dirty.identityCheck?.reason).toContain("stale git");
 				expect(execFileSync("git", ["status", "--porcelain"], { cwd: resource, encoding: "utf8" })).toContain(
 					"artifact.txt",
 				);
@@ -561,7 +561,7 @@ describe("canonical todo row metadata", () => {
 				rows.map(row => getRequirementRowArtifact({ cwd: repo }, row, phases)),
 			);
 			expect(commitArtifact).toMatchObject({ cwd: repo, head: null, dirty: false });
-			expect(commitArtifact.identities).toEqual([{ kind: "git", repo, commit }]);
+			expect(commitArtifact.identities).toEqual([{ kind: "git", repo, commit, paths: ["artifact.txt"] }]);
 			expect(binaryArtifact).toMatchObject({ cwd: binary, head: null, dirty: false });
 			expect(binaryArtifact.identities).toEqual([
 				{ kind: "file", path: binary, canonicalPath: binary, sha256: binaryHash },

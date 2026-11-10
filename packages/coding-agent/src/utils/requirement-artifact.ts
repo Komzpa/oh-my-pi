@@ -92,10 +92,7 @@ function wireString(value: string): string {
 
 export function formatRequirementIdentity(identity: RequirementIdentity): string {
 	if (identity.kind === "file") {
-		const canonical =
-			identity.canonicalPath === undefined || identity.canonicalPath === identity.path
-				? ""
-				: ` canonical=${wireString(identity.canonicalPath)}`;
+		const canonical = identity.canonicalPath === undefined ? "" : ` canonical=${wireString(identity.canonicalPath)}`;
 		return `file:${wireString(identity.path)}@sha256=${identity.sha256.toLowerCase()}${canonical}`;
 	}
 	if (identity.kind === "git") {
@@ -911,7 +908,7 @@ export async function currentRequirementIdentity(
 					? check.reason
 					: `${check.location}: expected ${check.expected}, observed ${check.observed}; current bytes are not represented by HEAD`,
 			);
-		return { identity };
+		return { identity: await freezeRequirementIdentityScope(identity) };
 	} catch (err) {
 		if (signal?.aborted) throw err;
 		return { error: err instanceof Error ? err.message : String(err) };

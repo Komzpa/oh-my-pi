@@ -79,7 +79,12 @@ async function initRepo(files: Record<string, string>): Promise<{ root: string; 
 
 /** Typed `file:` identity for one absolute file: the SHA-256 of its bytes, the formula the wire carries. */
 function fileId(file: string): string {
-	return `file:${file}@sha256=${new Bun.CryptoHasher("sha256").update(fs.readFileSync(file)).digest("hex")}`;
+	return formatRequirementIdentity({
+		kind: "file",
+		path: file,
+		canonicalPath: file,
+		sha256: new Bun.CryptoHasher("sha256").update(fs.readFileSync(file)).digest("hex"),
+	});
 }
 
 /** Row-scoped typed artifact cell: `row "<exact TODO row>" @ <identity>`. */
@@ -471,7 +476,7 @@ describe("typed identity: accepted receipts", () => {
 				expect(done.isError).toBe(true);
 				const text = textOf(done);
 				expect(text).toContain("stale file");
-				expect(text).toContain(identity.split("@sha256=")[1]!);
+				expect(text).toContain(identity.split("@sha256=")[1]!.split(" ")[0]!);
 				expect(text).toContain(fileId(receipt).split("@sha256=")[1]!);
 				expect(statusOf(fx, row)).toBe("pending");
 			} else {

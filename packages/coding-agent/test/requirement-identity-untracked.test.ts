@@ -42,7 +42,7 @@ describe("git requirement identity vs working-tree dirt", () => {
 			fs.writeFileSync(path.join(root, "Checking"), "x");
 			expect(await checkRequirementIdentity({ kind: "git", repo: root, commit: head })).toEqual({ state: "fresh" });
 			const cur = await currentRequirementIdentity({ kind: "git", repo: root });
-			expect(cur).toEqual({ identity: { kind: "git", repo: root, commit: head } });
+			expect(cur).toEqual({ identity: { kind: "git", repo: root, commit: head, paths: ["a.txt"] } });
 		},
 		{ timeout: 40000 },
 	);

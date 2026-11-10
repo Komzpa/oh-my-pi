@@ -185,7 +185,12 @@ describe("TodoCommandController linked-requirement gate", () => {
 		const bound = await bindRequirementRowArtifact({ cwd: repo, sessionManager: manager }, "Gate artifact", phases, {
 			appendEntry: (type, data) => manager.appendCustomEntry(type, data),
 		});
-		expect(bound).toEqual({ cwd: repo, head: null, dirty: false, identities: [{ kind: "git", repo, commit: head }] });
+		expect(bound).toEqual({
+			cwd: repo,
+			head: null,
+			dirty: false,
+			identities: [{ kind: "git", repo, commit: head, paths: ["artifact.txt"] }],
+		});
 		appendLedger(manager, [
 			linkedRequirement("gate the artifact", ["Gate artifact"], {
 				status: "pass",

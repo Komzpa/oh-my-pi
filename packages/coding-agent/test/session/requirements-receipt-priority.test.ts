@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { afterEach, describe, expect, it } from "bun:test";
+import { formatRequirementIdentity } from "@oh-my-pi/pi-coding-agent/utils/requirement-artifact";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { RequirementsLedgerRuntime } from "@oh-my-pi/pi-coding-agent/session/requirements-ledger-runtime";
@@ -38,7 +39,13 @@ function setup(extra: "unlinked" | "different row" | "same row" | "shared publis
 	roots.push(root);
 	const file = join(root, "artifact.txt");
 	writeFileSync(file, "current artifact\n");
-	const identity = () => `file:${file}@sha256=${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
+	const identity = () =>
+		formatRequirementIdentity({
+			kind: "file",
+			path: file,
+			canonicalPath: file,
+			sha256: createHash("sha256").update(readFileSync(file)).digest("hex"),
+		});
 	mkdirSync(join(root, ".omp", "agents"), { recursive: true });
 	writeFileSync(
 		join(root, ".omp", "agents", "qa-auditor.md"),
@@ -280,8 +287,12 @@ describe("receipt priority #924: real runtime intake", () => {
 			const prior = fx.verdict();
 			let malformed = identity;
 			if (defect === "unlabeled digest") malformed = identity.replace("@sha256=", "@");
-			if (defect === "short digest") malformed = identity.slice(0, -1);
-			if (defect === "nonhex digest") malformed = `${identity.slice(0, -1)}z`;
+			if (defect === "short digest" || defect === "nonhex digest") {
+				const canonical = identity.indexOf(" canonical=");
+				const wire = canonical < 0 ? identity : identity.slice(0, canonical);
+				const suffix = canonical < 0 ? "" : identity.slice(canonical);
+				malformed = `${wire.slice(0, -1)}${defect === "nonhex digest" ? "z" : ""}${suffix}`;
+			}
 			if (defect === "wrong label") malformed = identity.replace("@sha256=", "@SHA256=");
 			if (defect === "file attribute") malformed = `${identity} paths=["artifact.txt"]`;
 			expect(refusalText(await fx.receive(receipt(malformed)))).toContain("requirements receipt rejected");

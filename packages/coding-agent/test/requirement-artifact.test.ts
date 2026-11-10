@@ -6,10 +6,12 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import {
 	checkRequirementIdentity,
+	checkRequirementDeliveredIdentity,
 	currentRequirementIdentity,
 	formatRequirementIdentity,
 	freezeRequirementIdentityScope,
 	parseRequirementIdentity,
+	requirementArtifactBase,
 	resolveResourceArtifact,
 	type RequirementIdentity,
 } from "../src/utils/requirement-artifact";
@@ -36,6 +38,40 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 describe("frozen Git requirement artifact scope", () => {
+	it("captures complete unscoped coverage before a default-branch move", async () => {
+		const root = await fixture();
+		git(root, "init", "-q", "-b", "main");
+		git(root, "config", "user.name", "Requirement Artifact Test");
+		git(root, "config", "user.email", "requirements@example.invalid");
+		await Bun.write(path.join(root, "base.txt"), "base\n");
+		git(root, "add", ".");
+		git(root, "commit", "-qm", "base");
+		const base = git(root, "rev-parse", "HEAD");
+		git(root, "update-ref", "refs/remotes/origin/main", base);
+		git(root, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+		git(root, "switch", "-qc", "feature");
+		for (const file of ["first.txt", "second.txt"]) {
+			await Bun.write(path.join(root, file), `${file}\n`);
+			git(root, "add", file);
+			git(root, "commit", "-qm", file);
+		}
+
+		const result = await currentRequirementIdentity({ kind: "git", repo: root });
+		if ("error" in result) throw new Error(result.error);
+		const identity = result.identity;
+		if (identity.kind !== "git") throw new Error("Git target resolved to another identity kind");
+		expect(identity).toMatchObject({ kind: "git", base, paths: ["first.txt", "second.txt"] });
+		expect((await requirementArtifactBase(identity)).base).toBe(base);
+		expect(await checkRequirementDeliveredIdentity(identity)).toEqual({ state: "fresh" });
+		git(root, "update-ref", "refs/remotes/origin/main", identity.commit);
+		git(root, "update-ref", "refs/heads/main", identity.commit);
+		expect((await requirementArtifactBase(identity)).base).toBe(base);
+		await Bun.write(path.join(root, "first.txt"), "regressed\n");
+		git(root, "add", "first.txt");
+		git(root, "commit", "-qm", "regress audited file");
+		expect(await checkRequirementDeliveredIdentity(identity)).toMatchObject({ state: "stale" });
+	});
+
 	it("retains the captured base and paths when default branch advances onto the audited merge", async () => {
 		const root = await fixture();
 		git(root, "init", "--initial-branch=main");
@@ -92,6 +128,25 @@ describe("frozen Git requirement artifact scope", () => {
 });
 
 describe("symlink requirement artifacts", () => {
+	it("round-trips canonical location for a regular file and rejects same-byte symlink replacement", async () => {
+		const root = await fixture();
+		const file = path.join(root, "audited.txt");
+		const other = path.join(root, "other.txt");
+		await Bun.write(file, "same audited bytes\n");
+		await Bun.write(other, "same audited bytes\n");
+		const captured = await capture(file);
+		const reparsed = parseRequirementIdentity(formatRequirementIdentity(captured));
+		expect(reparsed).toEqual({ identity: captured });
+		if ("error" in reparsed) throw new Error(reparsed.error);
+		await fs.unlink(file);
+		await fs.symlink(other, file);
+		expect(await checkRequirementIdentity(reparsed.identity)).toMatchObject({
+			state: "stale",
+			expected: file,
+			observed: other,
+		});
+	});
+
 	it("captures the given and canonical file paths and persists both in receipts", async () => {
 		const root = await fixture();
 		const target = path.join(root, "target @;.txt");
