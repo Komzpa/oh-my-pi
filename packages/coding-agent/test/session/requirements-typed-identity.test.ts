@@ -450,6 +450,7 @@ describe("typed identity: accepted receipts", () => {
 		const stale = await fx.done("retargeted-skill", ROW);
 		expect(stale.isError).toBe(true);
 		expect(textOf(stale)).toContain("stale file");
+		expect(statusOf(fx, ROW)).toBe("pending");
 	});
 
 	for (const changed of [false, true]) {

@@ -1323,6 +1323,22 @@ export function observeLatestTodoPhases(
 	}
 }
 
+/** Reopen only active completed rows whose saved artifact pass failed freshness. */
+export function reopenStaleRequirementRows(
+	phases: readonly TodoPhase[],
+	issues: readonly RequirementDoneGateIssue[],
+): TodoPhase[] | undefined {
+	const stale = new Set(issues.flatMap(issue => issue.stalePassRows ?? []));
+	if (!phases.some(phase => phase.tasks.some(task => task.status === "completed" && stale.has(task.content))))
+		return undefined;
+	return phases.map(phase => ({
+		...phase,
+		tasks: phase.tasks.map(task =>
+			task.status === "completed" && stale.has(task.content) ? { ...task, status: "pending" as const } : task,
+		),
+	}));
+}
+
 /** Last recorded completion survives removal; later open or abandoned states clear it. */
 export function getCompletedTodoRows(entries: SessionEntry[]): Set<string> {
 	const completed = new Set<string>();
@@ -2122,6 +2138,14 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				};
 			}
 			if (open.length > 0) {
+				const livePhases = this.session.getTodoPhases?.() ?? [];
+				const reopened = reopenStaleRequirementRows(livePhases, open);
+				let effectivePhases = previousPhases;
+				if (reopened && JSON.stringify(livePhases) === JSON.stringify(previousPhases)) {
+					this.session.setTodoPhases?.(reopened);
+					effectivePhases = reopened;
+					sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: reopened });
+				}
 				const invalidated = invalidateStaleRequirementVerdicts(requirements, open);
 				if (JSON.stringify(invalidated) !== requirementSnapshot) {
 					appendRequirementsSnapshot(
@@ -2132,7 +2156,7 @@ export class TodoTool implements AgentTool<TodoToolSchema<TodoSchema>, TodoToolD
 				}
 				const gateDetails: RequirementTodoToolDetails = {
 					op: "done",
-					phases: previousPhases,
+					phases: effectivePhases,
 					storage,
 					requirementGateIssues: open.filter(issue => (issue.stalePassRows?.length ?? 0) > 0),
 				};

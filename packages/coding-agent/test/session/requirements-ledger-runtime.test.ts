@@ -1451,6 +1451,7 @@ describe("overdue-classify gate read-only exemption and open-row remedies", () =
 
 describe("completed row history publication replay", () => {
 	it.each([
+		["completed", false, 1],
 		["removed", false, 0],
 		["removed", true, 0],
 		["archive", true, 0],
@@ -1482,7 +1483,7 @@ describe("completed row history publication replay", () => {
 			}
 			// Real snapshots keep a ledger entry and full phases separately; dropping a
 			// completed row from the next plan must not erase its last recorded status.
-			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [] });
+			if (state !== "completed") manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [] });
 			if (state === "archive") {
 				task.status = "completed";
 				manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
@@ -1510,6 +1511,8 @@ describe("completed row history publication replay", () => {
 			const message = { content: [{ type: "text", text: "Status" }], stopReason: "stop" } as never;
 			await gate()?.(message, new AbortController().signal);
 			expect(auditStatuses.at(-1)).toBe(`requirement audits: ${open} of 1 need verification`);
+			if (state === "completed")
+				expect(getLatestTodoPhasesFromEntries(manager.getBranch())[0]!.tasks[0]!.status).toBe("pending");
 			await gate()?.(message, new AbortController().signal);
 			expect(auditStatuses.at(-1)).toBe(`requirement audits: ${open} of 1 need verification`);
 			if (open)

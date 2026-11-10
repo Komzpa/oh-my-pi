@@ -102,9 +102,15 @@ describe("requirement-linked TODO removal guard", () => {
 			await Bun.write(file, "changed bytes");
 			expect((await tool.execute("stale-rm", { op: "rm", task: LINKED_ROW })).isError).toBe(true);
 			expect(phases().flatMap(phase => phase.tasks.map(task => task.content))).toContain(LINKED_ROW);
+			expect(
+				phases()
+					.flatMap(phase => phase.tasks)
+					.find(task => task.content === LINKED_ROW)?.status,
+			).toBe("pending");
 			await Bun.write(file, "audited bytes");
 			// A rejected pass stays invalid until a new authenticated receipt is saved.
 			manager.appendCustomEntry(REQUIREMENTS_LEDGER_CUSTOM_TYPE, { version: 1, requirements });
+			expect((await tool.execute("fresh-done", { op: "done", task: LINKED_ROW })).isError).toBeUndefined();
 			expect((await tool.execute("fresh-rm", { op: "rm", task: LINKED_ROW })).isError).toBeUndefined();
 			expect(phases().flatMap(phase => phase.tasks.map(task => task.content))).toEqual(["Unlinked neighbor"]);
 			manager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: phases() });

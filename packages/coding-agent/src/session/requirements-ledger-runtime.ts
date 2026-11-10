@@ -92,6 +92,7 @@ import {
 	getAcceptedTodoRows,
 	getRequirementRowArtifact,
 	getTodoActionRows,
+	reopenStaleRequirementRows,
 	USER_TODO_EDIT_CUSTOM_TYPE,
 	type RequirementRowArtifact,
 } from "../tools/todo";
@@ -1183,6 +1184,14 @@ export class RequirementsLedgerRuntime {
 			await this.#announceStaleRows(staleRows);
 			if (unchanged()) {
 				appendRequirementsSnapshot(this.#appender(), invalidated);
+				const reopened = reopenStaleRequirementRows(
+					getLatestTodoPhasesFromEntries(currentRequirementTodoEntries(this.#host.sessionManager)),
+					open,
+				);
+				if (reopened) {
+					this.#host.setTodoPhases?.(reopened);
+					this.#host.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: reopened });
+				}
 				currentRequirements = invalidated;
 			}
 		}
