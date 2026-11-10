@@ -47,6 +47,14 @@ function makeTempDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "omp-bash-exec-"));
 }
 
+/** Load the fixture's user rc without the host distro's interactive setup. */
+function writeIsolatedZshRc(directory: string, content: string): void {
+	// ZDOTDIR alone still loads /etc/zshrc (Ubuntu compinit may prompt on CI).
+	// GLOBAL_RCS leaves the user's .zshrc enabled, so alias/PTY tests retain it.
+	fs.writeFileSync(path.join(directory, ".zshenv"), "unsetopt GLOBAL_RCS\n");
+	fs.writeFileSync(path.join(directory, ".zshrc"), content);
+}
+
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -577,7 +585,7 @@ exit 64
 		}
 
 		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-zsh-shellpath-"));
-		fs.writeFileSync(path.join(shellDir, ".zshrc"), "alias pi_shell_alias='printf zsh-alias-ok\\\\n'\n");
+		writeIsolatedZshRc(shellDir, "alias pi_shell_alias='printf zsh-alias-ok\\\\n'\n");
 		cfgShellPath.set(Settings.instance, zshPath);
 
 		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
@@ -589,12 +597,6 @@ exit 64
 				// zsh reads `.zshrc` from `$ZDOTDIR` when set; terminal integrations
 				// export their own, which would bypass the fixture rc.
 				ZDOTDIR: shellDir,
-				// The command runs through an interactive login zsh, which loads the
-				// system `/etc/zshrc`. On macOS that pulls in
-				// `/etc/zshrc_Apple_Terminal`, and under Apple Terminal it appends
-				// "Saving session..." lines to the captured output on exit. `HOME`
-				// does not isolate a system-level file; this is the opt-out Apple
-				// documents in that script.
 				SHELL_SESSIONS_DISABLE: "1",
 			},
 			prefix: undefined,
@@ -680,7 +682,7 @@ exit 64
 		}
 
 		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-zsh-pty-"));
-		fs.writeFileSync(path.join(shellDir, ".zshrc"), "alias pi_pty_alias='printf pty-alias-ok'\n");
+		writeIsolatedZshRc(shellDir, "alias pi_pty_alias='printf pty-alias-ok'\n");
 		cfgShellPath.set(Settings.instance, zshPath);
 
 		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
@@ -733,7 +735,7 @@ exit 64
 			return;
 		}
 		// Prevent the system zsh-newuser-install wizard from consuming PTY input.
-		fs.writeFileSync(path.join(tempDir, ".zshrc"), "# isolated prompt fixture\n");
+		writeIsolatedZshRc(tempDir, "# isolated prompt fixture\n");
 		cfgShellPath.set(Settings.instance, zshPath);
 		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
 			shell: zshPath,
