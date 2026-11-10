@@ -216,10 +216,19 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		// wait watched it) is exactly what this wait is for: return it now.
 		const undelivered = manager ? undeliveredJobs(manager, senderId) : [];
 		if (manager && undelivered.length > 0) {
-			return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], [], [], {
-				startedAtMs: callStartedAt,
-				settledAtEntry,
-			}, todoTracksTasks);
+			return buildJobResult(
+				this.session,
+				manager,
+				"wait",
+				[...undelivered, ...jobs],
+				[],
+				[],
+				{
+					startedAtMs: callStartedAt,
+					settledAtEntry,
+				},
+				todoTracksTasks,
+			);
 		}
 		const serviceRunning = hasLiveOwnedService(this.session);
 		if (jobs.length === 0 && !serviceRunning) {
@@ -269,7 +278,18 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		/** Jobs already settled when this call started; see {@link JobResultOptions.settledAtEntry}. */
 		settledAtEntry: ReadonlySet<string> | undefined;
 	}): Promise<AgentToolResult<CoordinationDetails>> {
-		const { jobs, manager, messaging, serviceRunning, idle, signal, onUpdate, todoTracksTasks, startedAtMs, settledAtEntry } = args;
+		const {
+			jobs,
+			manager,
+			messaging,
+			serviceRunning,
+			idle,
+			signal,
+			onUpdate,
+			todoTracksTasks,
+			startedAtMs,
+			settledAtEntry,
+		} = args;
 		const streak = idle && Date.now() - idle.endedAt < WAIT_LADDER_RESET_MS ? idle : undefined;
 		const rung = streak ? Math.min(streak.rung + 1, WAIT_LADDER_MS.length - 1) : 0;
 		const watchedIds = jobs.map(job => job.id);
@@ -404,10 +424,19 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 				throwIfAborted(signal);
 			}
 			if (manager && jobs.length > 0) {
-				const result = buildJobResult(this.session, manager, "wait", jobs, [], [], {
-					startedAtMs,
-					settledAtEntry,
-				}, todoTracksTasks);
+				const result = buildJobResult(
+					this.session,
+					manager,
+					"wait",
+					jobs,
+					[],
+					[],
+					{
+						startedAtMs,
+						settledAtEntry,
+					},
+					todoTracksTasks,
+				);
 				if (wake === "timeout") {
 					// The report is one text block (`buildJobResult`); the timeout line joins it.
 					const report = result.content.find(block => block.type === "text")?.text ?? "";
