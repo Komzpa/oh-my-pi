@@ -129,7 +129,7 @@ describe("exact todo restoration", () => {
 			schedule: { ...rows[0]!.schedule, finishedAt: 123 },
 		};
 		const dropped: TodoItem = { ...structuredClone(rows[0]!), content: "Already abandoned", status: "abandoned" };
-		const directory = await fs.mkdtemp(path.join(import.meta.dir, "../../../.tmp/accept-migrate-"));
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-accept-migrate-"));
 		directories.push(directory);
 		const manager = SessionManager.create(directory, directory);
 		managers.push(manager);

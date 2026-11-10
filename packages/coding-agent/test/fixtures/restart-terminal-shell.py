@@ -11,6 +11,8 @@ import tempfile
 import time
 
 bun, fixture, wrapper, successor, shell, mode = sys.argv[1:]
+# Fail at the missing prerequisite rather than hiding execv's error in the PTY.
+assert os.access(shell, os.X_OK), f'required interactive shell is unavailable: {shell}'
 with tempfile.TemporaryDirectory(prefix='omp-restart-tty-') as directory:
     report = Path(directory) / 'report.json'
     pid, fd = pty.fork()
@@ -48,6 +50,7 @@ with tempfile.TemporaryDirectory(prefix='omp-restart-tty-') as directory:
         text = output.decode(errors='replace')
         assert not stopped, 'job entered stopped state\n'+text
         assert 'suspended' not in text.lower() and 'stopped' not in text.lower(), text
+        assert Path(str(report)+'.done').exists(), 'successor did not finish\n'+text
         done = json.loads(Path(str(report)+'.done').read_text())
         assert done['pid'] == job['pid'], (job, done)
         expected = pid if mode == 'background' else job['pgid']
