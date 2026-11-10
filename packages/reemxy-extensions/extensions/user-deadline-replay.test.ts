@@ -97,6 +97,33 @@ test("no-deadline negative control keeps context and todo/task behavior unchange
 	expect(h.gate("task", { name: "NewWorker", agent: "coder", task: "New row" })).toBeUndefined();
 });
 
+test("a missed deadline accepts appended scope from the latest real user without changing the deadline", async () => {
+	const h = deadlineHarness();
+	await h.call(replay.set);
+	h.setNow(replay.notesRewrittenAt);
+	const request = "add to ux graph: find all the implicit state machines in the xmova";
+	const row = "Find all the implicit state machines in the xmova";
+	const append = { op: "append", items: [row], reason: `New genuine human request: '${request}'` };
+	const before = deadlines.readGoalDeadline(h.branch);
+	expect(h.gate("todo", append)).toMatchObject({ block: true });
+	h.branch.push({ type: "message", timestamp: replay.notesRewrittenAt, message: { role: "assistant", content: request } });
+	expect(h.gate("todo", append)).toMatchObject({ block: true });
+	h.user("agent-scope", request, "agent");
+	expect(h.gate("todo", append)).toMatchObject({ block: true });
+	h.branch.push({ type: "message", id: "synthetic-scope", timestamp: replay.notesRewrittenAt, message: { role: "user", synthetic: true, content: request } });
+	expect(h.gate("todo", append)).toMatchObject({ block: true });
+	h.user("new-human-scope", request);
+	expect(h.gate("todo", append)).toBeUndefined();
+	expect(h.gate("todo", { ...append, items: [row, "Add an unrelated analytics dashboard"] })).toMatchObject({ block: true });
+	expect(h.gate("todo", { ...append, items: [`${request}; add an unrelated analytics dashboard`] })).toMatchObject({ block: true });
+	expect(h.gate("task", { tasks: [{ name: "StateMachines", task: row }] })).toMatchObject({ block: true });
+	expect(h.gate("todo", { op: "init", list: [{ phase: "UX graph", items: [row] }] })).toMatchObject({ block: true });
+	expect(deadlines.readGoalDeadline(h.branch)).toEqual(before);
+	expect(await h.context()).toContain("MISSED");
+	h.user("latest-correction", "Keep working on the existing API verification");
+	expect(h.gate("todo", append)).toMatchObject({ block: true });
+});
+
 test("assistant status promises and synthetic user messages cannot extend or clear a missed deadline", async () => {
 	const h = deadlineHarness();
 	await h.call(replay.set);

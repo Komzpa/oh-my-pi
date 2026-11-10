@@ -90,6 +90,21 @@ test("an undelivered user wait demands a concrete forecast repair; delivered rev
 	expect(await demandFor([delivered])).toBeUndefined();
 });
 
+test("an unrelated held row permits both layers of deadline administration and independent ready work", async () => {
+	const now = Date.now();
+	const held = { content: "Cooling source approval", status: "blocked", blocker: "Awaiting Darafei: approve cooling source", schedule: { dependencies: [], resources: ["/fixture/cooling"], review: "user", estimate: estimate(now, 600) } };
+	const ready = { content: "Inspect roof geometry", status: "pending", schedule: { dependencies: [], resources: ["/fixture/roof"], estimate: estimate(now, 600) } };
+	const dependent = { content: "Apply cooling layout", status: "pending", schedule: { dependencies: [held.content], resources: ["/fixture/cooling"], estimate: estimate(now, 600) } };
+	const h = await demandHarness([held, ready, dependent], now + 3600_000);
+	const call = (toolName, input) => h.handlers.get("tool_call")({ toolName, input, toolCallId: "administration" }, h.ctx);
+	expect((await call("write", { path: "xd://goal_deadline", content: JSON.stringify({ action: "status" }) }))?.block).not.toBe(true);
+	expect((await call("goal_deadline", { action: "status" }))?.block).not.toBe(true);
+	expect((await call("goal_deadline", { action: "set", user_message: "move the deadline to 2026-11-11 12:00" }))?.block).not.toBe(true);
+	expect((await call("task", { tasks: [{ name: "Roof", task: ready.content, resources: ready.schedule.resources }] }))?.block).not.toBe(true);
+	expect((await call("task", { tasks: [{ name: "Cooling", task: dependent.content, resources: dependent.schedule.resources }] }))?.block).toBe(true);
+	expect(h.branch[0].message.details.phases[0].tasks[0]).toEqual(held);
+});
+
 test("a valid late whole-plan forecast permits delivery without estimate padding or a scope-cut question", async () => {
 	const now = Date.now();
 	const tasks = [{ content: "Ship the package", status: "pending", schedule: { dependencies: [], resources: ["package"], estimate: estimate(now, 1_800) } }];

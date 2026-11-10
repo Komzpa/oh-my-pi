@@ -611,9 +611,21 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 			const proposals = event.toolName === "task"
 				? (Array.isArray(input.tasks) ? input.tasks.map(task => typeof task === "string" ? task : [task?.name, task?.task].filter(Boolean).join(" ")) : [])
 				: Array.isArray(input.items) ? input.items : Array.isArray(input.list) ? input.list.flatMap((phase: { items?: unknown[] }) => phase.items ?? []) : [];
-			const servesOpenWork = proposals.length > 0 && proposals.every(item => typeof item === "string" && todoMatchesAnyDescription(item, openRows));
+			// A missed deadline preserves its scope, but cannot prevent the user adding work.
+			// Use the same genuine-user selector as the dispatcher; a tool's reason is not authority.
+			// Append first so task/init cannot bypass the owning TODO row or replace prior scope.
+			const user = event.toolName === "todo" && input.op === "append"
+				? deadlineSdk.latestDeadlineUserMessage(userEntries(ctx)) : undefined;
+			const newUserScope = user && user.id !== state!.userConstraint!.messageId && user.at >= state!.userConstraint!.recordedAt
+				? user.text : undefined;
+			const servesOpenWork = proposals.length > 0 && proposals.every(item => typeof item === "string" && (
+				todoMatchesAnyDescription(item, openRows) ||
+				// Unlike row linking, new authority is directional: quoting a request inside
+				// a larger invented expansion must not authorize that expansion.
+				(newUserScope && newUserScope.toLowerCase().includes(item.trim().toLowerCase()) && todoMatchesAnyDescription(item, [newUserScope]))
+			));
 			if (!servesOpenWork)
-				return { block: true, reason: deadlineGateError(`The ${due} deadline is missed.`, "Only add or delegate work that serves an open requested TODO row; replan it, then keep delivering.").message };
+				return { block: true, reason: deadlineGateError(`The ${due} deadline is missed.`, "Only add or delegate work that serves an open requested TODO row; replan it, then keep delivering. New scope may be appended from the latest real user request; preserve the deadline and existing scope.").message };
 		}
 		const isNativeCompletion = event.toolName === "goal" && event.input.op === "complete";
 		const isPluginCompletion = event.toolName === "update_goal" && event.input.status === "complete";

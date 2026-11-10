@@ -1104,6 +1104,9 @@ export function decideGateCall(
   // A planning problem must not prevent the lead from delivering an owner question.
   if (call.name === "ask") return { allowed: true, remedyGateIds: [] };
   if (call.name === "context_notes") return { allowed: true, remedyGateIds: [] };
+  // Device dispatch invokes the canonical tool after admitting its outer write.
+  // Deadline authorization remains the deadline tool's own responsibility.
+  if (call.name === "goal_deadline") return { allowed: true, remedyGateIds: [] };
   if (isKill(call)) return { allowed: true, remedyGateIds: [] };
   // Messaging owns target lookup and rejects unknown ids. Gates must not require a
   // running task: idle/parked workers and shell:/peer: routes are also valid replies.
@@ -6685,11 +6688,21 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       linkAnswered: false,
     };
   };
+  const staffingNotices = new WeakSet<object>();
   pi.on("tool_result", async (event, ctx) => {
     let result = await handleToolResult(event, ctx);
     const nag = zeroActiveNag(ctx);
-    if (nag && !isStaffingCall(event.toolName, event.input))
-      result = { ...result, content: [{ type: "text", text: nag, harnessNotice: true as const }, ...(result?.content ?? event.content ?? [])] };
+    const content = result?.content ?? event.content ?? [];
+    if (nag && !isStaffingCall(event.toolName, event.input)) {
+      // The device wrapper forwards inner result blocks through this hook again.
+      // Track our own blocks, preserving tool-authored text and other notices.
+      if (content.some(part => staffingNotices.has(part))) result = { ...result, content };
+      else {
+        const notice = { type: "text" as const, text: nag, harnessNotice: true as const };
+        staffingNotices.add(notice);
+        result = { ...result, content: [notice, ...content] };
+      }
+    }
     else if (event.toolName === "task" && !event.isError)
       result = { ...result, content: [...(result?.content ?? event.content ?? []), { type: "text", text: staffingAdvice.trim(), harnessNotice: true as const }] };
     return result;
