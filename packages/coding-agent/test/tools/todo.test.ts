@@ -1522,7 +1522,9 @@ describe("todoToolRenderer.renderResult view layout", () => {
 			const component = render();
 			const firstRender = component.render(120).join("\n");
 			expect(Bun.stripANSI(firstRender)).toContain("scheduled step");
-			expect(Bun.stripANSI(firstRender)).toContain("7m / 2m");
+			expect(Bun.stripANSI(firstRender)).toContain("age 7m");
+			expect(Bun.stripANSI(firstRender)).toContain("active unknown");
+			expect(Bun.stripANSI(firstRender)).toContain("remaining estimate 2m");
 			expect(Bun.stripANSI(firstRender)).not.toContain("overdue");
 			setSystemTime(new Date(forecastAt + 60 * 60_000));
 			expect(component.render(120).join("\n")).toBe(firstRender);
@@ -1568,8 +1570,10 @@ describe("todoToolRenderer.renderResult view layout", () => {
 
 		expect(rendered).toContain(theme.fg("error", `${theme.checkbox.unchecked} late step`));
 		expect(rendered).toContain(theme.fg("accent", `${theme.checkbox.unchecked} current step`));
-		expect(Bun.stripANSI(rendered)).toContain("10m / 2m");
-		expect(Bun.stripANSI(rendered)).toContain("0m / 2m");
+		expect(Bun.stripANSI(rendered)).toContain("age 10m");
+		expect(Bun.stripANSI(rendered)).toContain("age 0m");
+		expect(Bun.stripANSI(rendered)).toContain("active unknown");
+		expect(Bun.stripANSI(rendered)).toContain("remaining estimate 2m");
 	});
 
 	it("orders view rows topologically across phase sections without changing stored order", () => {
@@ -1591,9 +1595,9 @@ describe("todoToolRenderer.renderResult view layout", () => {
 		const rendered = Bun.stripANSI(
 			todoToolRenderer.renderResult(result, { expanded: true, isPartial: false }, theme).render(140).join("\n"),
 		);
-		const start = rendered.indexOf("Alpha start");
-		const bridge = rendered.indexOf("Beta bridge");
-		const later = rendered.indexOf("Alpha later");
+		const start = rendered.indexOf(`${theme.checkbox.unchecked} Alpha start`);
+		const bridge = rendered.indexOf(`${theme.checkbox.unchecked} Beta bridge`);
+		const later = rendered.indexOf(`${theme.checkbox.unchecked} Alpha later`);
 		expect(start).toBeGreaterThanOrEqual(0);
 		expect(start).toBeLessThan(bridge);
 		expect(bridge).toBeLessThan(later);

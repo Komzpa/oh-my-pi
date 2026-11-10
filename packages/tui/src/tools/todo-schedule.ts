@@ -2285,12 +2285,18 @@ export function formatTaskForecast(row: TodoTaskForecast, now: number, expanded 
 	return parts.join(" | ");
 }
 
+function formatUnknownGates(gates: string[]): string {
+	const shown = gates.slice(0, 3).map(gate => truncateToWidth(safeText(gate), 120));
+	if (gates.length > shown.length) shown.push(`+${gates.length - shown.length} unknown gates (see todo.view)`);
+	return shown.join("; ");
+}
+
 /** Bounded plan summary; consumers needing task details use `plan.rows` and `plan.issues`. */
 export function formatPlanForecast(plan: TodoPlanForecast, _now: number): string {
 	const parts: string[] = [];
 	const measured = plan.autoDeadlineForecast;
 	if (plan.rawP50Finish === undefined) parts.push("Current ETA unknown");
-	if (plan.unknownGates?.length) parts.push(plan.unknownGates.map(safeText).join("; "));
+	if (plan.unknownGates?.length) parts.push(formatUnknownGates(plan.unknownGates));
 	if (plan.capacityAssumptions?.executableObserved === false) parts.push("Conditional on worker capacity");
 	if (plan.rawP50Finish !== undefined)
 		parts.push(`Current set: point ${displayTimestamp(plan.rawP50Finish, plan.now)}`);
@@ -2420,7 +2426,7 @@ export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): 
 			parts.push(`Known work by ${displayTimestamp(plan.knownWorkFinish, now)} (partial)`);
 		parts.push(`${plan.unresolvedCount} unresolved`);
 	}
-	if (plan.unknownGates?.length) parts.push(plan.unknownGates.map(safeText).join("; "));
+	if (plan.unknownGates?.length) parts.push(formatUnknownGates(plan.unknownGates));
 	if (plan.deadlineAt !== undefined) {
 		parts.push(`due ${displayTimestamp(plan.deadlineAt, now)}`);
 		if (plan.deadlineAt < now)
