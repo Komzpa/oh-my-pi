@@ -130,6 +130,20 @@ test("unresolved relative file resources report the missing checkout instead of 
 	});
 });
 
+fs.mkdirSync(path.join(fixture, "evidence"));
+fs.writeFileSync(path.join(fixture, "evidence", "audit.json"), "{}\n");
+for (const resource of [
+	path.join(fixture, "evidence", "audit.json"),
+	path.join(fixture, "removed-checkout", "src", "implementation.ts"),
+])
+	test(`unbound resource ${path.relative(fixture, resource)} cannot select stale artifact cwd`, () => {
+		const row = JSON.parse(JSON.stringify(delivered([resource]))) as RowAuditRow;
+		expect(plan(row)).toHaveLength(0);
+		expect(rowAuditRepository(row, stale)).toMatchObject({
+			blocker: expect.stringContaining("no source checkout"),
+		});
+	});
+
 test("wrong revision pin never audits the current checkout instead", () => {
 	expect(plan(delivered([`git:${delivery}@${oldHead}`]))).toHaveLength(0);
 });

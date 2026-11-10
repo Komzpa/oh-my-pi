@@ -169,6 +169,10 @@ export function rowAuditRepository(row: RowAuditRow, cwd: string): { repoPath: s
 	if (binding) return { repoPath: binding.repoPath };
 	const root = [...roots][0];
 	if (root) return { repoPath: root };
+	if (paths.length)
+		return {
+			blocker: "Audit resources identify no source checkout; supply its absolute path or an exact git pin before audit",
+		};
 	return { repoPath: todoArtifactRepository(row, cwd) };
 }
 
