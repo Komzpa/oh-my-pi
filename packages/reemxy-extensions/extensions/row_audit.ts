@@ -201,6 +201,7 @@ export function rowAuditTask(batch: RowAuditBatch, requirementsFor: (row: string
 		.map(row =>
 			[
 				`- Row: ${JSON.stringify(row.content)}`,
+				...(row.schedule?.auditOrigin ? [`  auditOrigin: ${JSON.stringify(row.schedule.auditOrigin)}`] : []),
 				...requirementsFor(row.content).map(text => `  Linked requirement: ${text.replace(/\s+/g, " ").trim()}`),
 				`  Recorded evidence (commits and checks to re-run at HEAD): ${row.schedule?.progress?.evidence ?? "none recorded"}`,
 				`  Audit base: ${row.schedule?.auditBase ?? "first audit: full delivered range"}`,
@@ -255,6 +256,7 @@ const execGit = (repoPath: string): Promise<string | undefined> =>
 export interface RowAuditOptions {
 	now?: () => number;
 	readHead?: (repoPath: string) => Promise<string | undefined>;
+	readTarget?: (repoPath: string) => Promise<{ remote?: string; branch?: string }>;
 	/** Resolves the auditor profile; undefined means none is installed and nothing launches. */
 	resolveAuditor?: () => Promise<string | undefined>;
 	requirementsFor?: (row: string) => string[];
@@ -295,6 +297,12 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	const liveIds = new Set(jobs.flatMap(job => [job.id, job.agentId].filter((id): id is string => !!id)));
 	const isLive = (row: RowAuditRow) =>
 		[row.schedule?.owner, row.schedule?.executor?.workerId].some(id => typeof id === "string" && liveIds.has(id));
+	for (const row of rows) {
+		const audit = row.schedule?.audit;
+		const owned = [...inFlight.values()].some(keys => keys.has(rowKey(row)));
+		if (row.schedule?.auditOrigin?.resolution === "retarget" && audit?.verdict === "pending" && !owned && !isLive(row))
+			ctx.updateTodoSchedule(row.content, { audit: { ...audit, verdict: "inconclusive", findings: "one-shot check interrupted; finding not carried forward", at: now() } });
+	}
 	const candidates = rows.map(row => ({ ...row, schedule: row.schedule && { ...row.schedule,
 		resources: row.schedule.resources && [...row.schedule.resources],
 		executor: row.schedule.executor && { ...row.schedule.executor },
@@ -378,6 +386,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	let launched = 0;
 	for (const batch of batches) {
 		if (running() >= ROW_AUDIT_CAP) break;
+		const target = await options.readTarget?.(batch.repoPath);
 		// Recheck after asynchronous registry resolution: another tick may have claimed these rows.
 		batch.rows = batch.rows.filter(row => {
 			const latest = latestFor(row, batch);
@@ -392,6 +401,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		const records = new Map<string, TodoRowAudit>();
 		for (const row of batch.rows) {
 			const audit: TodoRowAudit = {
+				...target,
 				delivery: todoRowDeliveryKey(row.schedule),
 				repoPath: batch.repoPath,
 				head: batch.head,
@@ -442,7 +452,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 								at,
 							},
 						});
-						if ((audit.attempts ?? 1) < 2) retry = true;
+						if (!row.schedule?.auditOrigin?.supersededAt && (audit.attempts ?? 1) < 2) retry = true;
 						continue;
 					}
 					const requirementEdit = editsRequirements(row) || (verdict.requirementDiffs?.length ?? 0) > 0;
@@ -455,7 +465,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 					const record: TodoRowAudit = { ...audit, issues: rowAuditIssues(verdict).map(issue => ({ ...issue, severity: findingSeverity(issue) })), verdict: settled.verdict, findings: settled.findings, at };
 					if (settled.verdict === "inconclusive") {
 						// A second inconclusive result returns the findings to staffing through todoRowAfterWorker.
-						if ((audit.attempts ?? 1) < 2) retry = true;
+						if (!row.schedule?.auditOrigin?.supersededAt && (audit.attempts ?? 1) < 2) retry = true;
 						ctx.updateTodoSchedule!(content, { audit: record });
 						continue;
 					}

@@ -6,6 +6,8 @@ Check out nothing else: every check runs against HEAD in ROOT (or a detached wor
 Rows:
 {{rows}}
 
+For a row carrying auditOrigin.resolution="retarget": this is its only read-only check of a superseded delivery. The preserved old finding is historical context. Verify on current HEAD; do not look for the old PR/branch, seek old publication receipts, ask the user, change product files or create follow-ups. Check only what still applies in this checkout. Return inconclusive if that cannot be done; the harness accepts and retires the old finding.
+
 For each row:
 1. Acceptance is the row title plus its linked requirements above. Each must hold at HEAD.
 2. For every requirements-document change, inspect the delivered commits' complete requirement diff against the VERBATIM USER QUOTEs above. Report any widening as a concrete fail to the lead, naming the hunk and quote. A PRD rewrite cannot authorize itself. If quote evidence is missing, return inconclusive. Model artefacts not blocking controls does not authorize suppressing real physical infeasibility conflicts.

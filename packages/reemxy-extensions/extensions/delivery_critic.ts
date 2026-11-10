@@ -114,7 +114,7 @@ export function queueDeliveryCritic(
 	previewPath?: string,
 ): boolean {
 	const schedule = row.schedule ?? {};
-	if (schedule.auditEscalation) return false;
+	if (schedule.auditEscalation || schedule.auditOrigin?.supersededAt) return false;
 	if (schedule.review === "accepted" || schedule.review === "drop") return false;
 	const attempt = schedule.executor;
 	// Reviews and gate receipts are evidence for the existing delivery, never fresh products.

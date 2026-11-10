@@ -1,5 +1,11 @@
 import type { TodoSchedulePatchPersistedEdit, TodoPhase, TodoItem } from "@oh-my-pi/pi-tui/tools/todo";
-import { todoNeedsOwnerDecision, todoAuditResourcesKey, type TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import {
+	todoAuditOrigin,
+	todoSupersededReason,
+	todoNeedsOwnerDecision,
+	todoAuditResourcesKey,
+	type TodoSchedule,
+} from "@oh-my-pi/pi-tui/tools/todo-schedule";
 
 /** A resource edit invalidates an automatic audit, but never a human acceptance. */
 export function reconcileAuditResourceChange(previous: TodoItem, row: TodoItem): void {
@@ -82,11 +88,29 @@ export function patchTodoSchedule(
 		row.blocker = undefined;
 		row.schedule.finishedAt ??= at;
 	}
+	if (row.schedule.auditOrigin?.resolution === "retarget" && patch.audit && patch.audit.verdict !== "pending") {
+		if (patch.audit.verdict === "pass") {
+			row.status = "completed";
+		} else {
+			const origin = row.schedule.auditOrigin;
+			const reason = todoSupersededReason(origin);
+			row.status = "abandoned";
+			row.notes = [...(row.notes ?? []), reason];
+			row.schedule.auditOrigin = { ...origin, resolution: "accept" };
+			row.schedule.review = "drop";
+			row.schedule.progress = { at, evidence: reason };
+		}
+		row.blocker = undefined;
+		row.schedule.finishedAt = at;
+		delete row.schedule.auditEscalation;
+		delete row.schedule.reviewPagePending;
+		row.schedule.handoffPending = false;
+	}
 	const followUp = `Audit follow-up: ${task}`;
 	const changedFollowUps =
 		patch.auditFollowUps &&
 		JSON.stringify(patch.auditFollowUps) !== JSON.stringify(previous.schedule?.auditFollowUps);
-	const actions = changedFollowUps ? row.schedule.auditFollowUps! : [];
+	const actions = changedFollowUps && !row.schedule.auditOrigin?.supersededAt ? row.schedule.auditFollowUps! : [];
 	// Existing sessions contain generated follow-ups without a lineage field. Keep
 	// their new findings on that actionable row instead of nesting follow-ups.
 	if (actions.length && task.startsWith("Audit follow-up: ")) {
@@ -113,7 +137,11 @@ export function patchTodoSchedule(
 			content: followUp,
 			notes: actions,
 			status: "pending" as const,
-			schedule: { dependencies: [], progress: { at, evidence: actions.join("\n") } },
+			schedule: {
+				auditOrigin: todoAuditOrigin(previous),
+				dependencies: [],
+				progress: { at, evidence: actions.join("\n") },
+			},
 		};
 		const index = result.findIndex(phase => phase.name === "Later");
 		if (index < 0) result.push({ name: "Later", tasks: [followUpRow] });
@@ -124,7 +152,7 @@ export function patchTodoSchedule(
 			result[index] = {
 				...phase,
 				tasks: phase.tasks.map(candidate => {
-					if (candidate.content !== followUp) return candidate;
+					if (candidate.content !== followUp || candidate.schedule?.auditOrigin?.supersededAt) return candidate;
 					const notes = [...new Set([...(candidate.notes ?? []), ...actions])];
 					return {
 						...candidate,

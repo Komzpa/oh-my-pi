@@ -1,4 +1,6 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { auditLineage, checkableAuditFinding, reconcileSupersededAudit, withoutSupersededAudits } from "./audit-supersession";
+import type { TodoAuditOrigin } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import dispatchIgnoredInstructions from "./dispatch-ignored.md" with { type: "text" };
 import { JournalCursor } from "@oh-my-pi/pi-coding-agent/session/journal-cursor";
 import planCritic from "./plan_critic";
@@ -325,6 +327,7 @@ export interface GitIntegrationState {
   pushBranch?: string;
   pushRemote?: string;
   pushTargetMissing?: boolean;
+  targetMerged?: boolean;
   pushThresholdMs?: number;
 }
 export function pushRowTitle(state: GitIntegrationState): string {
@@ -350,7 +353,7 @@ export function reconcilePushRow(phases: TodoPhase[], state: GitIntegrationState
   const rest = phases.map(phase => ({ ...phase, tasks: phase.tasks.filter(task => task !== row) }));
   return [{ name: "Push overdue work", tasks: [pending] }, ...rest.filter(phase => phase.tasks.length)];
 }
-export async function readGitIntegrationState(cwd: string, now: number, env: NodeJS.ProcessEnv = process.env, probePush = true): Promise<GitIntegrationState | null> {
+export async function readGitIntegrationState(cwd: string, now: number, env: NodeJS.ProcessEnv = process.env, probePush = true, target?: TodoAuditOrigin): Promise<GitIntegrationState | null> {
   const gitInput = async (args: string[], input?: string): Promise<string | null> => {
     const result = Promise.withResolvers<string | null>();
     const child = execFile("git", args, { cwd, encoding: "utf8", timeout: 5_000,
@@ -380,6 +383,13 @@ export async function readGitIntegrationState(cwd: string, now: number, env: Nod
   state.pushRemote = (branch && await git("config", "--get", `branch.${branch}.pushRemote`))
     || await git("config", "--get", "remote.pushDefault")
     || (branch && await git("config", "--get", `branch.${branch}.remote`)) || "origin";
+  state.pushBranch = target?.branch ?? state.pushBranch;
+  state.pushRemote = target?.remote ?? state.pushRemote;
+  if (target?.commit && state.pushRemote) {
+    const advertised = await git("ls-remote", "--symref", state.pushRemote, "HEAD");
+    const tip = advertised?.split("\n").find(line => /^[0-9a-f]{40,64}\s+HEAD$/.test(line))?.split(/\s+/)[0];
+    if (tip && await git("merge-base", "--is-ancestor", target.commit, tip) !== null) state.targetMerged = true;
+  }
   const configured = Number(await git("config", "--get", "omp.unpushedThresholdMinutes"));
   state.pushThresholdMs = configured > 0 && Number.isFinite(configured) ? configured * 60_000 : STALE_PUSH_MS;
   if (!state.pushBranch || !state.pushRemote) return state;
@@ -1440,6 +1450,7 @@ export function leadActionPending(row: { blocker?: unknown; schedule?: unknown }
   if (schedule.review === "user" || schedule.review === "accepted" || nonEmptyString(schedule.missionCritical)) return false;
   if (typeof schedule.owner === "string" && (runningOwners.has(schedule.owner) || parseExternalWait(schedule.owner) !== null)) return false;
   if (waitsOnUser(schedule.owner, row.blocker)) return false;
+  if (row.schedule?.auditOrigin?.supersededAt) return false;
   const executor = schedule.executor;
   if (executor?.outcome === "completed" && typeof executor.finishedAt === "number") return true;
   const last = schedule.attemptHistory?.at(-1);
@@ -1890,6 +1901,7 @@ export function decideTodoDispatch(
   input: DispatchInput,
   sdk: DispatchForecastApi,
 ): DispatchDecision {
+  input = { ...input, phases: withoutSupersededAudits(input.phases) };
   const { phases, jobs, isMainSession, taskEnabled, now, deadline, lastWakeKey } = input;
   const goalPaused = input.goalPaused === true || deadline?.paused === true;
   const capacity =
@@ -2464,7 +2476,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const deliveryKey = (row) => JSON.stringify([row.content, row.schedule?.executor?.workerId, row.schedule?.executor?.startedAt, row.schedule?.executor?.finishedAt]);
   const checkDeliveries = (ctx: ExtensionContext) => {
     if (!isMain(ctx)) return;
-    if (!singleWriterLane) void checkRowAudits(ctx, { recordRequirementDiff: data => pi.appendEntry("requirement-diff-audit", data) }).catch(() => {});
+    if (!singleWriterLane) void checkRowAudits(ctx, { recordRequirementDiff: data => pi.appendEntry("requirement-diff-audit", data), readTarget: async cwd => {
+      const state = await readGitIntegrationState(cwd, Date.now());
+      return { remote: state?.pushRemote, branch: state?.pushBranch };
+    } }).catch(() => {});
     const previews = previewRecords(ctx);
     for (const phase of todoPhases(ctx)) for (const row of phase.tasks) {
       if (row.schedule?.deliveryCritic || !priorDeliveries.has(deliveryKey(row)))
@@ -4122,7 +4137,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (jobs && sprintState.idleContinuationKey?.startsWith('["zero-active",')) resetIdleContinuationDemand();
       return;
     }
-    const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
+    const phases = withoutSupersededAudits(sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx)));
     const display = leadDisplayContext(ctx, phases, { capacity: 0, activeTaskCount: 0 });
     const rows = phases.flatMap(phase => phase.tasks).filter(row => {
       const state = classifyTodoDisplayRow(row, phases, display).state;
@@ -4147,7 +4162,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (!advance) return nag;
       // Match the ordinary idle continuation's state-based rearming. A warning
       // is not new work: waking again on it creates an endless staffing loop.
-      const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
+      const phases = withoutSupersededAudits(sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx)));
       const idleKey = JSON.stringify(["zero-active", phases.map(phase => phase.tasks.map(task => [task.content, task.status, task.blocker, task.schedule]))]);
       if (sprintState.idleContinuationKey === idleKey && sprintState.idleContinuationDemands > 0) return;
       if (!idlePlanDemandedThisTurn) {
@@ -4163,7 +4178,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const now = Date.now();
     const decision = currentDecision(ctx, now, [], true, true);
     if (!decision.forecast || !decision.staffingSnapshotComplete) return;
-    const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx));
+    const phases = withoutSupersededAudits(sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx)));
     const tasks = phases.flatMap((phase) => phase.tasks);
     const userWaits = new Set((decision.userWaits ?? []).map((row) => row.content));
     const runningRows = new Set([...(decision.ownerRunStates ?? []).filter((row) => row.running).map((row) => row.content), ...(decision.verifyingRows ?? [])]);
@@ -4892,6 +4907,36 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const deliveryCheckpointSteered = new Map<string, { episode: string; delivered: boolean; pending: boolean; retryAt: number }>();
   const refreshPush = async (ctx: ExtensionContext, force = false) => {
     if (singleWriterLane || !isMain(ctx)) return;
+    const ownerSession = AgentRegistry.global().list().find(ref => ref.kind === "main"
+      && ref.session?.sessionManager === ctx.sessionManager)?.session;
+    if (ownerSession) {
+      const phases = todoPhases(ctx);
+      const archive = dispatchTodoArchive(ctx);
+      const rows = [...phases, ...archive].flatMap(phase => phase.tasks);
+      const replacements = new Map();
+      for (const row of phases.flatMap(phase => phase.tasks)) {
+        if (!isNonClosedRowStatus(row.status)) continue;
+        let origin = auditLineage(row, rows);
+        if (!origin) continue;
+        const running = ctx.getAsyncJobSnapshot()?.running ?? [];
+        if (running.some(job => job.status === "running" && [job.id, job.agentId, job.name].some(id => id && [row.schedule?.owner, row.schedule?.executor?.workerId].includes(id)))) continue;
+        origin = { ...origin, repoPath: origin.repoPath ?? ctx.cwd };
+        const state = origin.supersededAt ? { head: origin.retargetHead } : await readGitIntegrationState(origin.repoPath, Date.now(), process.env, true, origin);
+        if (!state?.head || (!origin.supersededAt && !(origin.branch && state.pushTargetMissing) && !state.targetMerged)) continue;
+        const current = origin.supersededAt ? state : await readGitIntegrationState(ctx.cwd, Date.now(), process.env, false);
+        if (!current?.head) continue;
+        const next = reconcileSupersededAudit(row, origin, current.head, await checkableAuditFinding(row, ctx.cwd), Date.now(), ctx.cwd);
+        if (next !== row) replacements.set(row.content, next);
+      }
+      if (replacements.size) {
+        const fresh = todoPhases(ctx);
+        ownerSession.commitTodoPhases(fresh.map(phase => ({ ...phase, tasks: phase.tasks.map(row => {
+          const before = phases.flatMap(phase => phase.tasks).find(candidate => candidate.content === row.content);
+          return JSON.stringify(before) === JSON.stringify(row) ? replacements.get(row.content) ?? row : row;
+        }) })));
+        cachedDecision = null;
+      }
+    }
     if (!ownsBranchWork(ctx)) {
       if (sprintState.deliveryCheckpointActive !== false) {
         sprintState = { ...sprintState, deliveryCheckpointActive: false, deliveryCheckpointAt: Date.now() };
@@ -5658,6 +5703,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return undefined;
   };
   pi.on("tool_call", async (event, ctx) => {
+    if (event.toolName === "todo" && event.input?.op === "drop" && String(event.input.reason ?? "").startsWith("superseded:")) {
+      await refreshPush(ctx, true);
+    }
+
     const nag = zeroActiveNag(ctx);
     const ownedWait = event.toolName === "wait" && (ctx.getAsyncJobSnapshot()?.running ?? []).some(job => job.status === "running" && !job.queued);
     if (nag && !isStaffingCall(event.toolName, event.input)) {

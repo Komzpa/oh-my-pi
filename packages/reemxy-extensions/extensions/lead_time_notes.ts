@@ -78,7 +78,7 @@ export function planSlipMinutes(deadlineAt: number | undefined, now: number, has
 /** The shared churn predicate, before presentation limits or dependency-chain filtering. */
 export function planChurnRows(phases: TodoScheduleInput): Array<{ row: string; failures: number; reestimates: number }> {
 	return phases.flatMap(phase => phase.tasks).flatMap(row => {
-		if (row.status === "completed" || row.status === "abandoned") return [];
+		if (row.status === "completed" || row.status === "abandoned" || row.schedule?.auditOrigin?.supersededAt) return [];
 		const failures = row.schedule?.attemptHistory?.filter(attempt => attempt.terminalStatus !== "completed" || attempt.rejectionReason).length ?? 0;
 		const reestimates = row.schedule?.cumulativeReestimateCount ?? row.schedule?.reestimateCount ?? 0;
 		return failures >= 3 || reestimates >= 3 ? [{ row: row.content, failures, reestimates }] : [];
@@ -128,7 +128,7 @@ export type WaitChainDemand = { key: string; action: string; churn: true; row: s
 
 /** Review logical edges, not resource ordering. Traverse through every open descendant. */
 export function waitChainDemands(phases: TodoScheduleInput): WaitChainDemand[] {
-	const rows = phases.flatMap(phase => phase.tasks).filter(row => row.status !== "completed" && row.status !== "abandoned");
+	const rows = phases.flatMap(phase => phase.tasks).filter(row => row.status !== "completed" && row.status !== "abandoned" && !row.schedule?.auditOrigin?.supersededAt);
 	const churnRows = new Set(actionableChurnRows(phases).map(row => row.row));
 	return rows.flatMap(head => {
 		if (unfinishedDependencyChains(phases, head.content).length) return [];

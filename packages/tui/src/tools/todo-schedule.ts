@@ -61,6 +61,43 @@ export interface TodoEstimate {
 	updatedAt: number;
 }
 
+/** Immutable delivery lineage and the harness-owned one-shot supersession receipt. */
+export interface TodoAuditOrigin {
+	parent: string;
+	remote?: string;
+	branch?: string;
+	commit?: string;
+	repoPath?: string;
+	supersededAt?: number;
+	retargetHead?: string;
+	attemptsBefore?: number;
+	resolution?: "retarget" | "accept";
+}
+
+export function todoAuditOrigin(parent: { content: string; schedule?: TodoSchedule }): TodoAuditOrigin {
+	const schedule = parent.schedule;
+	const receipt = schedule?.executor?.gitCommits?.at(-1) ?? schedule?.attemptHistory?.at(-1)?.gitCommits?.at(-1);
+	const target = /^Push: run project gates and push ([^/\s]+)\/(.+)$/.exec(parent.content);
+	const binding = schedule?.resources?.map(resource => /^git:(.+)@([0-9a-f]{7,64})$/.exec(resource)).find(Boolean);
+	return {
+		parent: parent.content,
+		remote: target?.[1] ?? schedule?.audit?.remote,
+		branch: target?.[2] ?? schedule?.audit?.branch,
+		commit: receipt?.commit ?? binding?.[2] ?? schedule?.audit?.head,
+		repoPath: receipt?.repoPath ?? binding?.[1] ?? schedule?.audit?.repoPath,
+	};
+}
+
+export function todoAuditTarget(origin: TodoAuditOrigin): string {
+	return [origin.remote && origin.branch ? `${origin.remote}/${origin.branch}` : origin.branch, origin.commit]
+		.filter(Boolean)
+		.join("@");
+}
+
+export function todoSupersededReason(origin: TodoAuditOrigin): string {
+	return `superseded: ${todoAuditTarget(origin)} merged/removed; finding not carried forward`;
+}
+
 /** Forecast metadata belongs to the exact task content; there are deliberately no generated IDs. */
 export interface TodoSchedule {
 	/** Queued dispatch owns no resources until admission succeeds. */
@@ -112,6 +149,7 @@ export interface TodoSchedule {
 	auditBase?: string;
 	auditEscalation?: string;
 	auditFollowUps?: string[];
+	auditOrigin?: TodoAuditOrigin;
 	deliveryCritic?: {
 		key: string;
 		startedAt: number;
@@ -170,6 +208,8 @@ export interface TodoAuditFinding {
 }
 
 export interface TodoRowAudit {
+	remote?: string;
+	branch?: string;
 	issues?: TodoAuditFinding[];
 	workerId?: string;
 	/** The worker was explicitly stopped; do not relaunch this audit for the same delivery and head. */
@@ -2387,6 +2427,10 @@ export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWor
 	if (task.status === "abandoned") return undefined;
 	const schedule = task.schedule;
 	const executor = schedule?.executor;
+	if (schedule?.auditOrigin?.resolution === "retarget" && task.status !== "completed") {
+		if (schedule.audit && schedule.audit.verdict !== "pending") return undefined;
+		return { kind: "verify", via: "audit", audit: schedule.audit, worker: executor?.workerId ?? "superseded-check" };
+	}
 	if (!schedule || !executor?.workerId) return undefined;
 	if (task.status === "completed" && !schedule.audit) return undefined;
 	if (schedule.review === "accepted") return undefined;

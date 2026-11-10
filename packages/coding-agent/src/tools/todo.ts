@@ -1632,6 +1632,7 @@ function applyEntry(
 			const dropped = getBatchTargets(phases, entry, errors);
 			for (const task of dropped) {
 				task.status = "abandoned";
+				if (entry.reason?.startsWith("superseded:")) task.notes = [...(task.notes ?? []), entry.reason];
 			}
 			if (errors.length === 0 && dropped.length > 0) {
 				const droppedTitles = new Set(dropped.map(task => task.content));

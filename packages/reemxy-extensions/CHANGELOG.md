@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Retire audit follow-ups for merged or removed deliveries, with at most one read-only check on current HEAD ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
 - Honor recorded dependency-chain refusals after audit handoff, and back off ignored dispatch wakes without counting reads as action.
 
 - Keep the trusted Bitbucket helper's exact numeric readback command available during dispatch staffing gates without exempting other scripts or helper mutations.
