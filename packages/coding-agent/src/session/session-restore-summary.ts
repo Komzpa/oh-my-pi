@@ -130,7 +130,9 @@ function summarizeEntry(entry: SessionEntry): SessionEntry {
 			...entry,
 			message: {
 				...entry.message,
-				content: entry.message.content.flatMap(part => (part.type === "toolCall" ? [{ ...part, arguments: {} }] : [])),
+				content: entry.message.content.flatMap(part =>
+					part.type === "toolCall" ? [{ ...part, arguments: {} }] : [],
+				),
 			},
 		};
 	if (entry.message.role === "user" || entry.message.role === "toolResult")
