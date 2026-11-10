@@ -3090,7 +3090,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("turn_start", (_event, ctx) => {
     if (!singleWriterLane && !pauseGate?.paused && !gateSwitchedOff(ctx) && isMain(ctx) && (chainDemand(todoPhases(ctx)) || recoveryFor(ctx))) {
       const wake = prepareWake(ctx);
-      pi.sendMessage({ customType: "todo-dispatch-action-required", content: wake.actionDemand, display: false, attribution: "agent" }, { deliverAs: "steer", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
+      // This recovery is repeated at every turn start. Queue it behind existing follow-ups
+      // instead of letting an internal steer continually outrank older peer messages.
+      pi.sendMessage({ customType: "todo-dispatch-action-required", content: wake.actionDemand, display: false, attribution: "agent" }, { deliverAs: "followUp", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
     }
     sprintState.lastNotices = Object.fromEntries(Object.entries(sprintState.lastNotices).filter(([key]) => !key.startsWith("todo-gate-staffing\0")));
     announceGates(ctx);

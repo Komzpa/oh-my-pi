@@ -67,20 +67,48 @@ test("no-event wake is silent, prose-only and re-estimate turns persist an escal
   expect(next.content).toContain("PR 114 acceptance");
 });
 
-test("repeated internal action demand queues behind peer follow-ups while turn-start recovery remains steering", async () => {
-  const h = await harness();
+test("turn-start and turn-end recovery cannot outrank an older peer in the real Agent queue", async () => {
+  const mock = createMockModel({ handler: { content: ["ack"] } });
+  const agent = new Agent({
+    initialState: { model: mock.model, systemPrompt: ["test"], tools: [], messages: [] },
+    streamFn: mock.stream,
+    steeringMode: "one-at-a-time",
+    followUpMode: "one-at-a-time",
+  });
+  await agent.prompt("current turn");
+
+  const h = await harness([], false, false, true, emission => {
+    const queued = {
+      role: "user",
+      content: emission.content,
+      timestamp: Date.now(),
+      customType: emission.customType,
+      supersedes: emission.options?.supersedes,
+    };
+    if (emission.options?.deliverAs === "steer") agent.steer(queued);
+    else if (emission.options?.deliverAs === "followUp") agent.followUp(queued);
+  });
+  agent.followUp({ role: "user", content: "older IRC peer", timestamp: Date.now() });
   await h.hooks.get("turn_start")({}, h.ctx);
   const startDemand = h.sent.findLast(message => message.customType === "todo-dispatch-action-required");
-  expect(startDemand?.options).toMatchObject({ deliverAs: "steer", triggerTurn: false, interruptWait: false });
 
+  // A genuine user steer remains ahead of both the older peer and internal recovery.
+  agent.steer({ role: "user", content: "genuine user steering", attribution: "user", timestamp: Date.now() });
+  await agent.continue();
+  const lastUserText = call => call.context.messages.filter(message => message.role === "user").at(-1)?.content;
+  expect(mock.calls.slice(1).map(lastUserText)).toEqual([
+    "genuine user steering",
+    "older IRC peer",
+    startDemand.content,
+  ]);
+  expect(startDemand?.options).toMatchObject({ deliverAs: "followUp", triggerTurn: false, interruptWait: false });
+
+  // Turn-end recovery still reaches the model after earlier follow-ups drain.
   await h.hooks.get("turn_end")({}, h.ctx);
-  const repeatedDemand = h.sent.findLast(message => message.customType === "todo-dispatch-action-required");
-  expect(repeatedDemand?.options).toMatchObject({
-    deliverAs: "followUp",
-    triggerTurn: false,
-    interruptWait: false,
-    supersedes: "todo-dispatch-action-required",
-  });
+  const endDemand = h.sent.findLast(message => message.customType === "todo-dispatch-action-required");
+  expect(endDemand?.options).toMatchObject({ deliverAs: "followUp", triggerTurn: false, interruptWait: false });
+  await agent.continue();
+  expect(lastUserText(mock.calls.at(-1))).toBe(endDemand.content);
 });
 
 test("successful dispatch counts as action, failed calls do not; a finished job allows a real update", async () => {
