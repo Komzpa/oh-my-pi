@@ -5,7 +5,7 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
-import todoDispatch from "./todo_dispatch";
+import todoDispatch, { formatMeasuredPlanForecast } from "./todo_dispatch";
 import syntheticPlan from "./fixtures/churndep-plan.json";
 import { waitChainDemands } from "./lead_time_notes";
 import { wakeDemand } from "./dispatch_wake";
@@ -290,7 +290,10 @@ test("measured forecast needs no deadline and does not discharge an idle staffin
   now += 60_000;
   h.phases[0].tasks[1].status = "completed";
   const result = await tool.execute("f", {}, undefined, undefined, h.ctx);
-  expect(JSON.parse(result.content[0].text)).toMatchObject({ rowsPerHour: 60, completed: 1, open: 1, eta: now + 60_000 });
+  expect(result.details.forecast).toMatchObject({ rowsPerHour: 60, completed: 1, open: 1, eta: now + 60_000 });
+  expect(result.content[0].text).toContain("60.00 rows/h");
+  expect(result.content[0].text).toContain("Remaining TODO rows: 1");
+  expect(result.content[0].text).not.toContain(String(now));
   let receipt = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
   expect(receipt.recovery.forecast).toMatchObject({ rowsPerHour: 60, open: 1 });
   expect(receipt.recovery.pending).toBeUndefined();
@@ -307,6 +310,23 @@ test("measured forecast needs no deadline and does not discharge an idle staffin
   expect(receipt.recovery.forecast.from).toBe(now - 660_000);
   expect(receipt.recovery.pending).toEqual(pending);
   expect(receipt.recovery.satisfied).toBeUndefined();
+});
+
+test("measured forecast renders the captured window and next-day finish in the user's timezone", () => {
+  const forecast = { at: 1794311619903, from: 1794306218667, completed: 5, rowsPerHour: 3.3325705449641525, open: 34, eta: 1794348348307.8 };
+  const deadline = Date.parse("2026-11-10T18:00:00Z");
+  const text = formatMeasuredPlanForecast(forecast, "Asia/Tbilisi", deadline);
+  expect(text).toContain("At this pace: 2026-11-11 02:05:48 Asia/Tbilisi (10.2 h remaining)");
+  expect(text).toContain("Completed TODO rows: 5 in 1.50 h (3.33 rows/h)");
+  expect(text).toContain("from 2026-11-10 14:23:38 Asia/Tbilisi to 2026-11-10 15:53:39 Asia/Tbilisi");
+  expect(text).toContain("Remaining TODO rows: 34");
+  expect(text).toContain("Deadline: 2026-11-10 22:00:00 Asia/Tbilisi (after deadline)");
+  expect(text).toContain("Throughput extrapolation");
+  expect(text).not.toContain(String(forecast.at));
+  const within = formatMeasuredPlanForecast(forecast, "UTC", forecast.eta);
+  expect(within).toContain("2026-11-10 22:05:48 UTC");
+  expect(within).toContain("within deadline");
+  expect(formatMeasuredPlanForecast(forecast, "Asia/Tbilisi")).not.toContain("Deadline:");
 });
 
 

@@ -1409,6 +1409,17 @@ function safeTimestamp(value: unknown, timeZone?: string): string {
   return formatLocalTimestamp(value, timeZone);
 }
 
+export function formatMeasuredPlanForecast(forecast: NonNullable<RecoveryState["forecast"]>, timeZone?: string, deadlineAt?: number): string {
+  const { at, from, completed, rowsPerHour, open, eta } = forecast;
+  return [
+    `At this pace: ${safeTimestamp(eta, timeZone)} (${((eta - at) / 3600_000).toFixed(1)} h remaining).`,
+    `Completed TODO rows: ${completed} in ${((at - from) / 3600_000).toFixed(2)} h (${rowsPerHour.toFixed(2)} rows/h), from ${safeTimestamp(from, timeZone)} to ${safeTimestamp(at, timeZone)}.`,
+    `Remaining TODO rows: ${open}.`,
+    ...(deadlineAt === undefined ? [] : [`Deadline: ${safeTimestamp(deadlineAt, timeZone)} (${eta > deadlineAt ? "after deadline" : "within deadline"}).`]),
+    "Throughput extrapolation; row sizes and added scope can change the finish.",
+  ].join("\n");
+}
+
 function localizeTimestampText(value: string, timeZone?: string): string {
   return value.replace(/\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})\b/g, (timestamp) =>
     formatLocalTimestamp(Date.parse(timestamp), timeZone),
@@ -2620,7 +2631,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       recovery.forecast = measuredRecoveryForecast(recovery, todoPhases(ctx), Date.now());
       if (demand?.kind === "deadline") satisfyRecovery(ctx);
       else saveRecovery(ctx);
-      return { content: [{ type: "text", text: JSON.stringify(recovery.forecast) }] };
+      const deadline = currentDecision(ctx).deadline;
+      return { content: [{ type: "text", text: formatMeasuredPlanForecast(recovery.forecast, deadline?.timezone, deadline?.deadlineAt) }], details: { forecast: structuredClone(recovery.forecast) } };
     },
   });
   let wakeJobs: string | undefined;
