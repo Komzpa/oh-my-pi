@@ -9,14 +9,31 @@ export type WakeDemand = { key: string; action: string; churn: boolean; row?: st
 export type WakeReceipt = {
 	key: string;
 	misses: number;
-	/** Consecutive same-demand turns with zero tool calls. */
+	/** Consecutive same-demand turns without counted action (legacy field name). */
 	noToolMisses?: number;
+	retryAt?: number;
+	resetAt?: number;
 	action: string;
 	toolCalls: number;
 	mutations: number;
 	row?: string;
 	recovery?: RecoveryState;
 };
+
+/** First ignored turn waits one minute; further ignored turns double up to fifteen. */
+export function wakeRetryMs(misses: number): number {
+	return Math.min(15 * 60_000, 60_000 * 2 ** Math.max(0, Math.min(4, misses - 1)));
+}
+
+export function wakeRetryRemaining(key: string, now: number, receipt?: WakeReceipt,
+	previous?: { key: string; at: number; resetAt?: number }): number {
+	const sameReservation = previous?.key === key && previous.resetAt === receipt?.resetAt;
+	if (receipt?.key === key && receipt.retryAt !== undefined) {
+		const reservedUntil = sameReservation ? previous.at + wakeRetryMs(receipt.misses) : 0;
+		return Math.max(0, receipt.retryAt - now, reservedUntil - now);
+	}
+	return sameReservation ? Math.max(0, previous.at + 60_000 - now) : 0;
+}
 
 export function wakeDemand(
 	phases: TodoScheduleInput,

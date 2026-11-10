@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import dispatchIgnoredInstructions from "./dispatch-ignored.md" with { type: "text" };
 import { JournalCursor } from "@oh-my-pi/pi-coding-agent/session/journal-cursor";
 import planCritic from "./plan_critic";
 import { chiefFixNow, isLegacyFixNow, fixNowIdentity, fixNowQuestion, withChiefFixNow, type ChiefDefect } from "./fix_now";
@@ -61,7 +62,7 @@ import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
 import dependencyWaitInstructions from "./dispatch-dependency-wait.md" with { type: "text" };
-import { wakeDemand as stalledWakeDemand, countsAsWakeAction, type WakeReceipt, recoveryDemand, recoveryActionObserved, measuredRecoveryForecast, type RecoveryState } from "./dispatch_wake";
+import { wakeDemand as stalledWakeDemand, wakeRetryMs, wakeRetryRemaining, countsAsWakeAction, type WakeReceipt, recoveryDemand, recoveryActionObserved, measuredRecoveryForecast, type RecoveryState } from "./dispatch_wake";
 import dispatchWakeInstructions from "./dispatch-wake.md" with { type: "text" };
 import dispatchToolRecoveryInstructions from "./dispatch-tool-recovery.md" with { type: "text" };
 import concurrentRecoveryInstructions from "./dispatch-concurrent-recovery.md" with { type: "text" };
@@ -2562,7 +2563,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const recoveryReceipt = (ctx) => selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-demand")?.data as WakeReceipt | undefined;
   const saveRecovery = (ctx, fields = {}) => {
     const prior = recoveryReceipt(ctx);
-    pi.appendEntry("todo-dispatch-action-demand", { key: prior?.key ?? "recovery-observation", row: prior?.row, action: prior?.action ?? "", misses: prior?.misses ?? 0, noToolMisses: fields.mutations ? 0 : prior?.noToolMisses ?? 0, toolCalls: 0, mutations: 0, ...fields, recovery: structuredClone(recovery) });
+    pi.appendEntry("todo-dispatch-action-demand", { ...prior, key: prior?.key ?? "recovery-observation", row: prior?.row, action: prior?.action ?? "", misses: prior?.misses ?? 0, noToolMisses: fields.mutations ? 0 : prior?.noToolMisses ?? 0, toolCalls: 0, mutations: 0, ...fields, ...(fields.mutations ? { retryAt: undefined, resetAt: Math.max(Date.now(), (recoveryReceipt(ctx)?.resetAt ?? 0) + 1) } : {}), recovery: structuredClone(recovery) });
   };
   const recoveryFor = (ctx) => {
     const session = ctx.sessionManager.getHeader()?.id;
@@ -2621,6 +2622,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ? { ...primary, key: JSON.stringify([primary.key, strict.key]), action: prompt.render(concurrentRecoveryInstructions, { primary: primary.action, recovery: strict.action }).trim() }
       : primary ?? strict ?? usual;
   };
+  const retryRemaining = (ctx: ExtensionContext, key: string) => {
+    const previous = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-wake")?.data;
+    return wakeRetryRemaining(key, Date.now(), recoveryReceipt(ctx), previous);
+  };
   const prepareWake = (ctx: ExtensionContext) => {
     const before = todoPhases(ctx);
     const jobs = (ctx.getAsyncJobSnapshot()?.recent ?? []).filter(job => job.type === "task").map(job => [job.id, job.status]);
@@ -2635,7 +2640,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     wakeTurn.demandKey = demand?.key;
     if (demand?.churn) wakeTurn.target = demand.row;
     wakeTurn.chain = chainDemand(before);
-    if (wakeTurn.chain || recovery?.pending) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: demand.key, row: demand.row, action: demand.action, edges: wakeTurn.chain?.edges, misses: receipt?.key === demand.key ? receipt.misses : 0, noToolMisses: receipt?.key === demand.key ? receipt.noToolMisses ?? 0 : 0, toolCalls: 0, mutations: 0 });
+    if (wakeTurn.chain || recovery?.pending) pi.appendEntry("todo-dispatch-action-demand", { ...(receipt?.key === demand.key ? receipt : {}), recovery: structuredClone(recovery), key: demand.key, row: demand.row, action: demand.action, edges: wakeTurn.chain?.edges, misses: receipt?.key === demand.key ? receipt.misses : 0, noToolMisses: receipt?.key === demand.key ? receipt.noToolMisses ?? 0 : 0, toolCalls: 0, mutations: 0 });
     const misses = demand && receipt?.key === demand.key ? receipt.misses : 0;
     return { silentAssistant: !realUpdate, ...(demand ? { actionDemandKey: demand.key, actionDemand: prompt.render(dispatchWakeInstructions, { ...demand, misses, escalation: misses > 0 }).trim() } : {}) };
   };
@@ -2733,11 +2738,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const wake = delivery.triggerTurn && wakeContext ? prepareWake(wakeContext) : undefined;
     if (wake?.actionDemandKey && wakeContext) {
       const now = Date.now();
-      const previous = [...selectBranchNewestFirst(wakeContext.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-wake")].find(entry => entry.type === "custom" && entry.data?.key === wake.actionDemandKey)?.data;
-      // Persist separately from demand observations: the minute ticker may append those
-      // indefinitely, but only a requested wake spends this key's five-minute allowance.
-      if (typeof previous?.at === "number" && now - previous.at < 5 * 60_000) delivery = { ...delivery, triggerTurn: false };
-      else pi.appendEntry("todo-dispatch-action-wake", { key: wake.actionDemandKey, at: now });
+      const previous = selectLatestBranchEntry(wakeContext.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-wake")?.data;
+      // One reservation shared by the minute ticker and idle timer, retained across reload.
+      if (wakeRetryRemaining(wake.actionDemandKey, now, recoveryReceipt(wakeContext), previous) > 0) delivery = { ...delivery, triggerTurn: false };
+      else pi.appendEntry("todo-dispatch-action-wake", { key: wake.actionDemandKey, at: now, resetAt: recoveryReceipt(wakeContext)?.resetAt });
     }
     if (wake?.actionDemand) content += `\n${wake.actionDemand}`;
     if (wake) details = { ...((details as Record<string, unknown>) ?? {}), ...wake };
@@ -3093,9 +3097,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("turn_start", (_event, ctx) => {
     if (!singleWriterLane && !pauseGate?.paused && !gateSwitchedOff(ctx) && isMain(ctx) && (chainDemand(todoPhases(ctx)) || recoveryFor(ctx))) {
       const wake = prepareWake(ctx);
-      // This recovery is repeated at every turn start. Queue it behind existing follow-ups
-      // instead of letting an internal steer continually outrank older peer messages.
-      pi.sendMessage({ customType: "todo-dispatch-action-required", content: wake.actionDemand, display: false, attribution: "agent" }, { deliverAs: "followUp", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
+      // Advice must not enqueue another turn; the existing wake scheduler owns retries.
+      pi.sendMessage({ customType: "todo-dispatch-action-required", content: wake.actionDemand, display: false, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
     }
     sprintState.lastNotices = Object.fromEntries(Object.entries(sprintState.lastNotices).filter(([key]) => !key.startsWith("todo-gate-staffing\0")));
     announceGates(ctx);
@@ -4773,7 +4776,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       // A real request breaks the internal no-action streak even when the advisory provider
       // has already consumed its pending-input signal before getToolChoice is evaluated.
       const priorWake = recoveryReceipt(ctx);
-      if (priorWake?.noToolMisses) pi.appendEntry("todo-dispatch-action-demand", { ...priorWake, noToolMisses: 0 });
+      if (priorWake) pi.appendEntry("todo-dispatch-action-demand", { ...priorWake, misses: 0, noToolMisses: 0, retryAt: undefined, resetAt: Math.max(Date.now(), (recoveryReceipt(ctx)?.resetAt ?? 0) + 1) });
       if (!singleWriterLane) {
         const branch = dispatchStateEntries(ctx);
         const wasAway = lastPresence === "away" || derivePresence(branch, rehydrateDeadlineState(branch), Date.now()) === "away";
@@ -5573,11 +5576,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       activeDemand = demand?.reminder?.[0]?.content ?? null;
       const receipt = recoveryReceipt(ctx);
       // Recover repeated text-only wakes without cutting off any of the chief's tools.
-      // Any actual call satisfies this turn; a tool result clears this condition immediately.
+      // Reads cannot clear the streak; only observed action or accepted refusal does.
       if (freshUserInput || !isMain(ctx) || pauseGate.paused || gateSwitchedOff(ctx) || !pi.getActiveTools().includes("task") ||
-          !receipt || (receipt.noToolMisses ?? 0) < 3 || receipt.toolCalls !== 0 || wakeTurn?.toolCalls !== 0 || wakeTurn.demandKey !== receipt.key) return undefined;
+          !receipt || (receipt.noToolMisses ?? 0) < 3 || !wakeTurn || wakeTurn.mutations > 0 || wakeTurn.rejection || wakeTurn.demandKey !== receipt.key) return undefined;
       return {
         soft: true as const, id: `todo-no-action:${receipt.key}`, toolName: "task" as const,
+        // This predicate admits calls before execution; action is counted only in tool_result.
+        // Returning false here would skip every tool and make recovery impossible.
         escalationToolChoice: "required" as const, satisfies: () => true,
         reminder: [{ role: "developer" as const, content: dispatchToolRecoveryInstructions.trim(), timestamp: Date.now() }],
       };
@@ -6509,7 +6514,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         urgent?.key ?? null,
       ]);
       const unchanged = key === lastIdlePlanCheck && eventStamp === lastPlanEventStamp;
-      if (pendingSizingNoticeIds.length === 0 && unchanged) return planTrace(ctx, "same-problems-already-delivered");
+      if (pendingSizingNoticeIds.length === 0 && unchanged && (!urgent || retryRemaining(ctx, urgent.key) > 0)) return planTrace(ctx, "same-problems-already-delivered");
       lastPlanEventStamp = eventStamp;
       if (!unchanged) lastIdlePlanCheckAt = now;
       lastIdlePlanCheck = key;
@@ -6893,15 +6898,21 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (demand && wakeTurn.mutations === 0 && !wakeTurn.rejection) {
         const previous = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-demand")?.data as WakeReceipt | undefined;
         const misses = Math.min(100, previous?.key === demand.key ? previous.misses + 1 : 1);
-        const noToolMisses = wakeTurn.toolCalls === 0 ? (previous?.key === demand.key ? previous.noToolMisses ?? 0 : 0) + 1 : 0;
-        const receipt: WakeReceipt = { recovery: structuredClone(recovery), key: demand.key, row: demand.row, action: demand.action, misses, noToolMisses, toolCalls: wakeTurn.toolCalls, mutations: 0 };
+        const noToolMisses = (previous?.key === demand.key ? previous.noToolMisses ?? 0 : 0) + 1;
+        const receipt: WakeReceipt = { recovery: structuredClone(recovery), key: demand.key, row: demand.row, action: demand.action, misses, noToolMisses, resetAt: previous?.resetAt, retryAt: Date.now() + wakeRetryMs(misses), toolCalls: wakeTurn.toolCalls, mutations: 0 };
         pi.appendEntry("todo-dispatch-action-demand", receipt);
-        // A repeated internal demand belongs behind existing follow-ups. Re-steering it at
-        // every turn end lets it continually outrank peer messages already waiting in followUp.
-        pi.sendMessage({ customType: "todo-dispatch-action-required", content: prompt.render(dispatchWakeInstructions, { ...receipt, escalation: misses > 1 }).trim(), display: false, attribution: "agent" }, { deliverAs: "followUp", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
+        // Passive advice cannot create a self-sustaining follow-up loop.
+        if (misses >= 5) {
+          const priorNotice = [...selectBranchNewestFirst(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-ignored-notice")].some(entry => entry.data?.key === demand.key);
+          if (!priorNotice) {
+            pi.appendEntry("todo-dispatch-ignored-notice", { key: demand.key });
+            pi.sendMessage({ customType: "todo-dispatch-ignored", content: prompt.render(dispatchIgnoredInstructions, demand).trim(), display: true, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false });
+          }
+        }
+        pi.sendMessage({ customType: "todo-dispatch-action-required", content: prompt.render(dispatchWakeInstructions, { ...receipt, escalation: misses > 1 }).trim(), display: false, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
       }
-      if (wakeTurn.rejection) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: wakeTurn.chain.key, action: wakeTurn.chain.action, edges: wakeTurn.chain?.edges, rejection: wakeTurn.rejection, misses: 0, toolCalls: wakeTurn.toolCalls, mutations: 0 });
-      if (wakeTurn.mutations > 0) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: demand?.key ?? "resolved", action: demand?.action ?? "", misses: 0, toolCalls: wakeTurn.toolCalls, mutations: wakeTurn.mutations });
+      if (wakeTurn.rejection) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: wakeTurn.chain.key, action: wakeTurn.chain.action, edges: wakeTurn.chain?.edges, rejection: wakeTurn.rejection, misses: 0, noToolMisses: 0, retryAt: undefined, resetAt: Math.max(Date.now(), (recoveryReceipt(ctx)?.resetAt ?? 0) + 1), toolCalls: wakeTurn.toolCalls, mutations: 0 });
+      if (wakeTurn.mutations > 0) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: demand?.key ?? "resolved", action: demand?.action ?? "", misses: 0, noToolMisses: 0, retryAt: undefined, resetAt: Math.max(Date.now(), (recoveryReceipt(ctx)?.resetAt ?? 0) + 1), toolCalls: wakeTurn.toolCalls, mutations: wakeTurn.mutations });
       wakeTurn.toolCalls = 0;
       wakeTurn.mutations = 0;
       wakeTurn.before = structuredClone(todoPhases(ctx));
@@ -7013,7 +7024,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ctx.hasPendingMessages()
     )
       return;
-    const delay = decision.wakeKey && decision.rawWakeKey !== lastWakeKey ? 0 : decision.nextCheckMs;
+    const urgent = wakeDemand(todoPhases(ctx), runningOwnerNames(ctx), Date.now(), decision.deadline?.deadlineAt, decision.forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx), ctx);
+    const delay = Math.max(urgent ? retryRemaining(ctx, urgent.key) : 0, decision.wakeKey && decision.rawWakeKey !== lastWakeKey ? 0 : decision.nextCheckMs);
     timerContext = ctx;
     idleTimer = ctx.setTimeout(async () => {
       idleTimer = null;

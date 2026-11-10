@@ -163,7 +163,7 @@ test("context keeps replies separated by real input, peer notices, visible notic
 });
 
 
-test("repeated no-action demand requires any tool once and releases after actual work", async () => {
+test("repeated no-action demand survives reads and releases after actual work", async () => {
 	const rows = [
 		{ content: "Check repair", status: "in_progress", schedule: { dependencies: [], reestimateCount: 6, estimateRevision: 7 } },
 		{ content: "Publish repair", status: "pending", schedule: { dependencies: ["Check repair"] } },
@@ -171,18 +171,9 @@ test("repeated no-action demand requires any tool once and releases after actual
 	];
 	const h = await harness(rows);
 	await h.hooks.get("turn_start")({}, h.ctx);
-	// Non-mutating calls must break the zero-call streak across later wakes.
+	// Non-mutating calls cannot clear the no-action streak.
 	for (let index = 0; index < 3; index++) {
 		await h.hooks.get("tool_call")({ toolName: "read", toolCallId: `read-${index}`, input: { path: "a.txt" } }, h.ctx);
-		await h.hooks.get("turn_end")({}, h.ctx);
-		await h.hooks.get("turn_start")({}, h.ctx);
-		expect(h.requirement()).toBeUndefined();
-	}
-	for (let index = 0; index < 3; index++) {
-		// Real Main consumes these runtime notices between turn_start and turn_end.
-		for (const customType of ["mid-run-todo-nudge", "agent-focus-gym-eval-sandbox-wake"]) {
-			await h.hooks.get("message_start")({ message: { role: "custom", customType, attribution: "agent", display: false } }, h.ctx);
-		}
 		await h.hooks.get("turn_end")({}, h.ctx);
 		await h.hooks.get("turn_start")({}, h.ctx);
 		if (index < 2) expect(h.requirement()).toBeUndefined();
@@ -207,6 +198,9 @@ test("repeated no-action demand requires any tool once and releases after actual
 	}
 	expect(h.requirement()?.escalationToolChoice).toBe("required");
 	await h.hooks.get("tool_call")({ toolName: "read", toolCallId: "native-read", input: { path: "a.txt" } }, h.ctx);
+	expect(h.requirement()?.escalationToolChoice).toBe("required");
+	rows[1].schedule.dependencies = [];
+	await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule" }, isError: false, content: [] }, h.ctx);
 	expect(h.requirement()).toBeUndefined();
 	await h.hooks.get("turn_end")({}, h.ctx);
 	await h.hooks.get("turn_start")({}, h.ctx);

@@ -18,6 +18,7 @@ async function harness(journal = [], chain = false, healthy = false, deadlineEna
   const timers = [];
   const intervals = [];
   const tools = new Map();
+  let requirement;
   const now = Date.now();
   const phases = [{ name: "Ship", tasks: [{ content: "PR 114 acceptance", status: "pending", schedule: {
     dependencies: [], cumulativeReestimateCount: healthy ? 0 : 4,
@@ -29,7 +30,7 @@ async function harness(journal = [], chain = false, healthy = false, deadlineEna
       phases[0].tasks.push({ content, status: "pending", schedule: { dependencies: [dependency], estimate: { ...phases[0].tasks[0].schedule.estimate } } });
   }
   const jobs = { running: [], recent: [], nonJobAgents: [] };
-  const api = { typebox: { Type }, registerTool: tool => tools.set(tool.name, tool), on: (name, fn) => hooks.set(name, fn), getActiveTools: () => ["todo", "task"],
+  const api = { registerSoftToolRequirementProvider: fn => { requirement = fn; }, typebox: { Type }, registerTool: tool => tools.set(tool.name, tool), on: (name, fn) => hooks.set(name, fn), getActiveTools: () => ["todo", "task"],
     appendEntry: (customType, data) => journal.push({ type: "custom", customType, data }),
     sendMessage: (message, options) => {
       const emission = { ...message, options };
@@ -49,7 +50,7 @@ async function harness(journal = [], chain = false, healthy = false, deadlineEna
   };
   await todoDispatch(api);
   const wake = async () => { await hooks.get("agent_end")({}, ctx); await timers.pop()?.(); const message = sent.findLast(message => message.options?.triggerTurn); if (message) await hooks.get("message_start")({ message: { role: "custom", ...message } }, ctx); };
-  return { hooks, ctx, sent, phases, jobs, journal, wake, tools, intervals };
+  return { hooks, ctx, sent, phases, jobs, journal, wake, tools, intervals, requirement: () => requirement };
 }
 
 test("no-event wake is silent, prose-only and re-estimate turns persist an escalating concrete action across reload", async () => {
@@ -74,48 +75,19 @@ test("no-event wake is silent, prose-only and re-estimate turns persist an escal
   expect(next.content).toContain("PR 114 acceptance");
 });
 
-test("turn-start and turn-end recovery cannot outrank an older peer in the real Agent queue", async () => {
+test("passive demand advice cannot schedule another turn or starve a queued peer", async () => {
   const mock = createMockModel({ handler: { content: ["ack"] } });
-  const agent = new Agent({
-    initialState: { model: mock.model, systemPrompt: ["test"], tools: [], messages: [] },
-    streamFn: mock.stream,
-    steeringMode: "one-at-a-time",
-    followUpMode: "one-at-a-time",
-  });
+  const agent = new Agent({ initialState: { model: mock.model, systemPrompt: ["test"], tools: [], messages: [] }, streamFn: mock.stream });
   await agent.prompt("current turn");
-
-  const h = await harness([], false, false, true, emission => {
-    const queued = {
-      role: "user",
-      content: emission.content,
-      timestamp: Date.now(),
-      customType: emission.customType,
-      supersedes: emission.options?.supersedes,
-    };
-    if (emission.options?.deliverAs === "steer") agent.steer(queued);
-    else if (emission.options?.deliverAs === "followUp") agent.followUp(queued);
-  });
+  const h = await harness();
   agent.followUp({ role: "user", content: "older IRC peer", timestamp: Date.now() });
   await h.hooks.get("turn_start")({}, h.ctx);
-  const startDemand = h.sent.findLast(message => message.customType === "todo-dispatch-action-required");
-
-  // A genuine user steer remains ahead of both the older peer and internal recovery.
-  agent.steer({ role: "user", content: "genuine user steering", attribution: "user", timestamp: Date.now() });
-  await agent.continue();
-  const lastUserText = call => call.context.messages.filter(message => message.role === "user").at(-1)?.content;
-  expect(mock.calls.slice(1).map(lastUserText)).toEqual([
-    "genuine user steering",
-    "older IRC peer",
-    startDemand.content,
-  ]);
-  expect(startDemand?.options).toMatchObject({ deliverAs: "followUp", triggerTurn: false, interruptWait: false });
-
-  // Turn-end recovery still reaches the model after earlier follow-ups drain.
   await h.hooks.get("turn_end")({}, h.ctx);
-  const endDemand = h.sent.findLast(message => message.customType === "todo-dispatch-action-required");
-  expect(endDemand?.options).toMatchObject({ deliverAs: "followUp", triggerTurn: false, interruptWait: false });
+  const demands = h.sent.filter(message => message.customType === "todo-dispatch-action-required");
+  expect(demands).toHaveLength(2);
+  for (const message of demands) expect(message.options).toMatchObject({ deliverAs: "aside", triggerTurn: false, interruptWait: false });
   await agent.continue();
-  expect(lastUserText(mock.calls.at(-1))).toBe(endDemand.content);
+  expect(mock.calls.at(-1).context.messages.filter(message => message.role === "user").at(-1).content).toBe("older IRC peer");
 });
 
 test("successful dispatch counts as action, failed calls do not; a finished job allows a real update", async () => {
@@ -176,7 +148,7 @@ test("CHURN chain review persists every link, survives reload and rejects unrela
 });
 
 test("real chain dependencies can be rejected with a persisted per-link reason, changed graphs rearm review", async () => {
-  const h = await harness([], true);
+  const h = await harness([], true, false, false);
   await h.wake();
   const head = h.phases[0].tasks[0];
   const persisted = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand");
@@ -191,7 +163,7 @@ Collateral2 <- Collateral: consumes first collateral output` };
   await h.hooks.get("turn_end")({}, h.ctx);
   const receipt = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand");
   expect(receipt.data.rejection).toBe(head.schedule.progress.evidence);
-  const resumed = await harness(h.journal, true);
+  const resumed = await harness(h.journal, true, false, false);
   resumed.phases[0].tasks[0].schedule.progress = structuredClone(head.schedule.progress);
   await resumed.wake();
   expect(resumed.sent.findLast(message => message.options?.triggerTurn)?.content).not.toContain("WAIT-CHAIN REVIEW");
@@ -330,23 +302,18 @@ test("ready-row idle age survives reload and clears only for staffing or that ro
   } finally { clock.mockRestore(); }
 });
 
-test("minute action-demand observations wake once per key every five minutes, including after reload", async () => {
+test("minute scheduler retries a pending demand once per minute across reload without ignored turns", async () => {
   let now = Date.now();
   spyOn(Date, "now").mockImplementation(() => now);
-  const h = await harness([], true);
+  const h = await harness([], true, false, false);
   await h.hooks.get("session_start")({}, h.ctx);
   const tick = h.intervals.find(interval => interval.ms === 60_000).fn;
   await tick();
   const wakes = () => h.sent.filter(message => message.options?.triggerTurn && message.details?.actionDemand);
   expect(wakes()).toHaveLength(1);
-  expect(wakes()[0].content).toContain("WAIT-CHAIN REVIEW");
-  for (let minute = 1; minute < 5; minute++) {
-    now += 60_000;
-    await tick();
-    expect(wakes()).toHaveLength(1);
-  }
-  // A new runtime instance must honor the journal reservation, even with a fresh notice cache.
-  const resumed = await harness(h.journal, true);
+  await tick();
+  expect(wakes()).toHaveLength(1);
+  const resumed = await harness(h.journal, true, false, false);
   await resumed.hooks.get("session_start")({}, resumed.ctx);
   const resumedTick = resumed.intervals.find(interval => interval.ms === 60_000).fn;
   await resumedTick();
@@ -354,12 +321,6 @@ test("minute action-demand observations wake once per key every five minutes, in
   now += 60_000;
   await resumedTick();
   expect(resumed.sent.filter(message => message.options?.triggerTurn && message.details?.actionDemand)).toHaveLength(1);
-  // Closing the demand removes its action from subsequent wake prompts.
-  for (const row of resumed.phases[0].tasks) row.status = "completed";
-  resumed.sent.length = 0;
-  now += 5 * 60_000;
-  await resumedTick();
-  expect(resumed.sent.filter(message => message.options?.triggerTurn && message.details?.actionDemand)).toHaveLength(0);
 });
 
 test("a busy lead keeps demand queued without spending its idle wake allowance", async () => {
@@ -595,4 +556,63 @@ test("schedule refusal survives audit progress replacement and reload, then expo
   resumed.phases[0].tasks[4].schedule.dependencies.push("Labels");
   await resumed.hooks.get("turn_start")({}, resumed.ctx);
   expect(resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data.action).toContain("WAIT-CHAIN REVIEW");
+});
+
+
+test("reads preserve no-action recovery and ignored wakes back off, with one visible notice per key across reload", async () => {
+  let now = Date.now();
+  spyOn(Date, "now").mockImplementation(() => now);
+  const h = await harness([], true, false, false);
+  await h.hooks.get("session_start")({}, h.ctx);
+  now += 600000;
+  await h.hooks.get("turn_start")({}, h.ctx);
+  const tick = h.intervals.find(interval => interval.ms === 60_000).fn;
+  const receipt = () => h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
+  for (const [index, delay] of [60000, 120000, 240000, 480000, 900000, 900000].entries()) {
+    await h.hooks.get("turn_start")({}, h.ctx);
+    await h.hooks.get("tool_call")({ toolName: "read", input: { path: "notes" } }, h.ctx);
+    await h.hooks.get("tool_result")({ toolName: "read", input: {}, content: [], isError: false }, h.ctx);
+    if (index >= 3) {
+      const requirement = h.requirement()(h.ctx);
+      expect(requirement.escalationToolChoice).toBe("required");
+      expect(requirement.satisfies({ name: "read" })).toBe(true);
+      expect(requirement.toolName).toBe("task");
+    }
+    await h.hooks.get("turn_end")({}, h.ctx);
+    expect(receipt().noToolMisses).toBe(index + 1);
+    expect(receipt().retryAt - now).toBe(delay);
+    const count = h.sent.filter(m => m.options?.triggerTurn).length;
+    now += delay - 1;
+    await tick();
+    expect(h.sent.filter(m => m.options?.triggerTurn)).toHaveLength(count);
+    now += 1;
+    await tick();
+    expect(h.sent.filter(m => m.options?.triggerTurn)).toHaveLength(count + 1);
+    await tick();
+    expect(h.sent.filter(m => m.options?.triggerTurn)).toHaveLength(count + 1);
+  }
+  const notices = h.sent.filter(m => m.customType === "todo-dispatch-ignored");
+  expect(notices).toHaveLength(1);
+  expect(notices[0]).toMatchObject({ display: true });
+  expect(notices[0].content).toContain(receipt().key);
+  const resumed = await harness(h.journal, true, false, false);
+  await resumed.hooks.get("turn_start")({}, resumed.ctx);
+  await resumed.hooks.get("turn_end")({}, resumed.ctx);
+  expect(resumed.sent.filter(m => m.customType === "todo-dispatch-ignored")).toHaveLength(0);
+  await h.hooks.get("input")({ source: "user", text: "continue" }, h.ctx);
+  expect(receipt()).toMatchObject({ misses: 0, noToolMisses: 0, retryAt: undefined });
+  const beforeHumanWake = h.sent.filter(m => m.options?.triggerTurn).length;
+  await tick();
+  expect(h.sent.filter(m => m.options?.triggerTurn)).toHaveLength(beforeHumanWake + 1);
+  // A changed graph has a fresh demand and no inherited delay.
+  h.phases[0].tasks[4].schedule.dependencies.push("Labels");
+  await tick();
+  await h.hooks.get("turn_start")({}, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(receipt()).toMatchObject({ misses: 1, noToolMisses: 1 });
+  // A real edge removal is counted and clears retry state.
+  h.phases[0].tasks[4].schedule.dependencies.pop();
+  await h.hooks.get("tool_result")({ toolName: "todo", input: { op: "schedule" }, content: [], isError: false }, h.ctx);
+  await h.hooks.get("turn_end")({}, h.ctx);
+  expect(receipt()).toMatchObject({ misses: 0, noToolMisses: 0, mutations: 1, retryAt: undefined });
 });

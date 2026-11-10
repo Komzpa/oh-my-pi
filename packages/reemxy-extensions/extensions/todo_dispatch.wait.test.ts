@@ -482,7 +482,7 @@ test("healthy worker telemetry does not wake the chief on a plan tick", async ()
 	}
 });
 
-test("an unchanged urgent dependency chain wakes the idle chief only once", async () => {
+test("an unchanged urgent dependency chain retries the idle chief once per due interval", async () => {
 	const previousLane = process.env.OMP_LANE_UNIT;
 	delete process.env.OMP_LANE_UNIT;
 	let now = Date.now();
@@ -499,15 +499,18 @@ test("an unchanged urgent dependency chain wakes the idle chief only once", asyn
 		expect(waitChainDemands(getLatestTodoPhasesFromEntries(h.ctx.sessionManager.getBranch()))).toHaveLength(1);
 		await h.tick();
 		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(1);
-		now += 60_000;
+		now += 59_999;
 		await h.tick();
 		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(1);
-		phases[0]!.tasks[2]!.schedule.dependencies = ["Row 1"];
+		now += 1;
 		await h.tick();
 		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(2);
-		h.setRecent([{ id: "worker-b", agentId: "worker-b", type: "task", status: "completed", label: "New result", startTime: now - 1_000 }]);
+		phases[0]!.tasks[2]!.schedule.dependencies = ["Row 1"];
 		await h.tick();
 		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(3);
+		h.setRecent([{ id: "worker-b", agentId: "worker-b", type: "task", status: "completed", label: "New result", startTime: now - 1_000 }]);
+		await h.tick();
+		expect(h.notices.filter(n => n.customType === "todo-plan-check")).toHaveLength(4);
 	} finally {
 		h.shutdown();
 		nowSpy.mockRestore();
