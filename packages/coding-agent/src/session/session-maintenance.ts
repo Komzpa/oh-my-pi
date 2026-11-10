@@ -845,7 +845,7 @@ export class SessionMaintenance {
 	async #persistPrune(result: PruneResult, reason: string): Promise<void> {
 		this.#host.sessionManager.appendToolResultPrune(result.targets, result.prunedAt);
 		const sessionContext = this.#host.buildDisplaySessionContext();
-		this.#host.agent.replaceMessages(sessionContext.messages);
+		this.#host.replaceMessagesFromSessionContext(sessionContext.messages);
 		this.#host.rebaseAdvisorPrefix(reason);
 		this.#host.syncTodoPhasesFromBranch();
 		this.#host.closeCodexProviderSessionsForHistoryRewrite();

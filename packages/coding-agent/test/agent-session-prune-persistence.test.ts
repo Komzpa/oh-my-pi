@@ -12,6 +12,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { updateEvalState } from "@oh-my-pi/pi-coding-agent/eval/state";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { logger, TempDir } from "@oh-my-pi/pi-utils";
 
@@ -30,6 +31,7 @@ describe("AgentSession per-turn prune persistence", () => {
 	let session: AgentSession;
 	let sessionManager: SessionManager;
 	let authStorage: AuthStorage;
+	let evalSessionId: string;
 
 	const BIG_CALL_ID = "call-big-useless";
 	const ADVISOR_REPLY = "ADVISOR_REPLY_SENTINEL";
@@ -38,6 +40,7 @@ describe("AgentSession per-turn prune persistence", () => {
 	beforeEach(async () => {
 		tempDir = TempDir.createSync("@pi-prune-persistence-");
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
+		evalSessionId = `prune-persistence-eval:${tempDir.path()}`;
 		authStorage.keys.setRuntime("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage);
 		sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
@@ -121,7 +124,7 @@ describe("AgentSession per-turn prune persistence", () => {
 			// once the history holds an `eval` call.
 			evalToolSession: {
 				cwd: tempDir.path(),
-				getEvalSessionId: () => "prune-persistence-eval",
+				getEvalSessionId: () => evalSessionId,
 			} as unknown as ToolSession,
 		});
 		session.agent.replaceMessages(session.buildDisplaySessionContext().messages);
@@ -187,6 +190,88 @@ describe("AgentSession per-turn prune persistence", () => {
 		}
 		const rebuiltText = rebuilt.content.find(block => block.type === "text");
 		expect(rebuiltText?.type === "text" ? rebuiltText.text : undefined).toBe(USELESS_NOTICE);
+	});
+
+	it("persists a newly rebuilt eval snapshot at prune so resume keeps the live request context", async () => {
+		const evalCallId = "call-eval-before-prune";
+		sessionManager.appendMessage({
+			role: "assistant",
+			content: [{ type: "toolCall", id: evalCallId, name: "eval", arguments: { code: "1 + 1" } }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "toolUse",
+			usage: {
+				input: 10,
+				output: 2,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 12,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		});
+		sessionManager.appendMessage({
+			role: "toolResult",
+			toolCallId: evalCallId,
+			toolName: "eval",
+			content: [{ type: "text", text: "2" }],
+			isError: false,
+			timestamp: Date.now(),
+		});
+		updateEvalState(
+			{ cwd: tempDir.path(), getEvalSessionId: () => evalSessionId } as ToolSession,
+			{ language: "js", kernelId: "prune-eval-kernel", alive: true },
+		);
+		await sessionManager.flush();
+
+		const finalAssistant = {
+			role: "assistant" as const,
+			content: [{ type: "text" as const, text: "Continuing after eval." }],
+			api: "anthropic-messages" as const,
+			provider: "anthropic" as const,
+			model: "claude-sonnet-4-5",
+			stopReason: "stop" as const,
+			usage: {
+				input: 100,
+				output: 10,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 110,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: Date.now(),
+		};
+		session.agent.emitExternalEvent({ type: "message_end", message: finalAssistant });
+		session.agent.emitExternalEvent({ type: "agent_end", messages: [finalAssistant] });
+		await session.waitForIdle();
+		expect(liveResultText()).toBe(USELESS_NOTICE);
+
+		const liveMessages = session.agent.state.messages;
+		const liveSnapshotIndex = liveMessages.findIndex(
+			message => message.role === "custom" && message.customType === "eval-state-context",
+		);
+		expect(liveSnapshotIndex).toBeGreaterThan(-1);
+		const liveSnapshot = liveMessages[liveSnapshotIndex];
+		if (liveSnapshot?.role !== "custom") throw new Error("Expected the live eval snapshot");
+
+		await sessionManager.flush();
+		const sessionFile = sessionManager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected a persisted session file");
+		const resumed = await SessionManager.open(sessionFile, tempDir.path());
+		try {
+			const resumedMessages = resumed.buildSessionContext().messages;
+			const resumedSnapshotIndex = resumedMessages.findIndex(
+				message => message.role === "custom" && message.customType === "eval-state-context",
+			);
+			expect(resumedSnapshotIndex).toBe(liveSnapshotIndex);
+			const requestIdentity = (messages: AgentMessage[]) =>
+				JSON.stringify(messages, (key, value) => (key === "errorId" ? undefined : value));
+			expect(requestIdentity(resumedMessages)).toBe(requestIdentity(liveMessages));
+			expect(requestIdentity(session.buildDisplaySessionContext().messages)).toBe(requestIdentity(resumedMessages));
+		} finally {
+			await resumed.close();
+		}
 	});
 
 	it("appends the automatic prune without rewriting the journal so resume and fork match live", async () => {
