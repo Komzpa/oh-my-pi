@@ -141,6 +141,18 @@ import {
 	perCallModelEnabled,
 } from "./settings";
 
+interface TodoRowReservation {
+	id: string;
+	phase: string;
+	content: string;
+	owner?: string;
+	previous?: TodoSchedule;
+	started: boolean;
+}
+
+// Rebuilt TaskTools share the same journal owner, including concurrent task calls.
+const todoRowReservations = new WeakMap<object, Map<string, TodoRowReservation>>();
+
 function createUsageTotals(): Usage {
 	return {
 		input: 0,
@@ -1045,6 +1057,64 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		return task && phase ? { phase: phase.name, task } : undefined;
 	}
 
+	#rowReservations(): Map<string, TodoRowReservation> {
+		const owner = this.session.sessionManager ?? this.session;
+		let reservations = todoRowReservations.get(owner);
+		if (!reservations) todoRowReservations.set(owner, (reservations = new Map()));
+		return reservations;
+	}
+
+	#reserveRow(params: SpawnParams, id: string, readOnly: boolean): string | undefined {
+		if (readOnly) return;
+		const row = this.#spawnRow(params);
+		if (!row) return;
+		const reservations = this.#rowReservations();
+		const key = `${row.phase}\0${row.task.content}`;
+		const prior = reservations.get(key);
+		if (prior && prior.id !== id)
+			return formatSpawnRefusal(`Task row ${JSON.stringify(row.task.content)} is reserved by ${prior.id}.`, id);
+		if (prior && row.task.schedule?.owner !== prior.owner)
+			return formatSpawnRefusal(`Task row ${JSON.stringify(row.task.content)} was reassigned before execution.`, id);
+		// No await between observing and reserving a row, before extension admission can yield.
+		if (!prior)
+			reservations.set(key, {
+				id,
+				phase: row.phase,
+				content: row.task.content,
+				owner: row.task.schedule?.owner,
+				previous: row.task.schedule ? structuredClone(row.task.schedule) : undefined,
+				started: false,
+			});
+	}
+
+	#releaseRow(id: string, rollback = false): void {
+		for (const [key, reservation] of this.#rowReservations()) {
+			if (reservation.id !== id) continue;
+			this.#rowReservations().delete(key);
+			if (!rollback || reservation.started) continue;
+			const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.();
+			const row = phases
+				?.find(phase => phase.name === reservation.phase)
+				?.tasks.find(task => task.content === reservation.content);
+			// Undo only our unstarted admission, never a replacement assignment or a recorded attempt.
+			if (!row || row.schedule?.owner !== id || row.schedule.executor?.workerId === id) continue;
+			const previous = reservation.previous;
+			const schedule = {
+				...row.schedule,
+				owner: previous?.owner,
+				ownerReadOnly: previous?.ownerReadOnly,
+				resources: previous?.resources,
+				resourceWait: previous?.resourceWait,
+			};
+			const updated = phases!.map(phase => ({
+				...phase,
+				tasks: phase.tasks.map(task => (task === row ? { ...task, schedule } : task)),
+			}));
+			this.session.setTodoPhases?.(updated);
+			this.session.persistTodoPhases?.(updated);
+		}
+	}
+
 	#allocateSpawn(params: SpawnParams): Promise<string> {
 		const row = this.#spawnRow(params)?.task;
 		const history = row?.schedule?.attemptHistory ?? [];
@@ -1570,9 +1640,14 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	#persistTodoExecutor(observation: TodoExecutorObservation): void {
 		const phases = this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.();
 		if (!phases) return;
+		const currentOwner = findTodoExecutorTarget(phases, observation)?.schedule?.owner;
+		const runningWorkerIds = new Set(this.#todoExecutors.keys());
+		// A queued attempt losing its assignment must not reclaim it when cancellation settles.
+		if (observation.finishedAt !== undefined && currentOwner && currentOwner !== observation.workerId)
+			runningWorkerIds.add(currentOwner);
 		const updated = applyTodoExecutorObservation(phases, {
 			...observation,
-			runningWorkerIds: new Set(this.#todoExecutors.keys()),
+			runningWorkerIds,
 		});
 		if (!updated) return;
 		const row = updated.flatMap((phase, phaseIndex) =>
@@ -1580,14 +1655,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		)[0];
 		const owner = row?.schedule?.owner;
 		this.session.setTodoPhases?.(updated);
+		if (observation.finishedAt === undefined)
+			for (const reservation of this.#rowReservations().values())
+				if (reservation.id === observation.workerId) reservation.owner = owner;
 		this.session.persistTodoPhases?.(
 			updated,
 			buildTodoExecutorPersistedEdit({
 				...observation,
-				// The resolved row replaces roster-based matching during replay. Only
-				// its current owner's liveness affects completion ownership.
+				// Preserve the same resolved assignment during journal replay.
 				row: row?.content ?? observation.row,
-				runningWorkerIds: owner && this.#todoExecutors.has(owner) ? new Set([owner]) : undefined,
+				runningWorkerIds: owner && runningWorkerIds.has(owner) ? new Set([owner]) : undefined,
 			}),
 		);
 	}
@@ -1705,22 +1782,42 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		agentId?: string;
 		detached: boolean;
 	}): SpawnRun {
-		return new SpawnRun(
+		const launched = new SpawnRun(
 			{
 				acquire: async (signal, onResourceWait) => {
 					const id = spawn.agentId;
+					const releaseUnstarted = () => {
+						if (!id || ![...this.#rowReservations().values()].some(row => row.id === id && !row.started)) return;
+						if (this.#resourceWaits.delete(id)) this.#setResourceWait(spawn.params);
+						this.#releaseRow(id, true);
+					};
+					signal.addEventListener("abort", releaseUnstarted, { once: true });
 					try {
 						if (id) await onResourceWait?.(this.#resourceWaits.get(id));
-						while (id && this.#resourceWaits.has(id)) {
-							signal.throwIfAborted();
-							await Bun.sleep(100);
-							signal.throwIfAborted();
-							const refusal = await this.#admitSpawn(spawn.params, id, signal);
-							await onResourceWait?.(this.#resourceWaits.get(id));
-							if (refusal) throw new Error(refusal);
+						while (true) {
+							while (id && this.#resourceWaits.has(id)) {
+								signal.throwIfAborted();
+								await Bun.sleep(100);
+								signal.throwIfAborted();
+								const refusal = await this.#admitSpawn(spawn.params, id, signal);
+								await onResourceWait?.(this.#resourceWaits.get(id));
+								if (refusal) throw new Error(refusal);
+							}
+							await this.#permit.acquire(signal);
+							try {
+								signal.throwIfAborted();
+								// Capacity waits do not preserve row existence, assignment or resource admission.
+								const refusal = id ? await this.#admitSpawn(spawn.params, id, signal) : undefined;
+								if (refusal) throw new Error(refusal);
+								if (!id || !this.#resourceWaits.has(id)) break;
+							} catch (error) {
+								this.#permit.release();
+								throw error;
+							}
+							this.#permit.release();
 						}
-						await this.#permit.acquire(signal);
 					} finally {
+						signal.removeEventListener("abort", releaseUnstarted);
 						if (id && this.#resourceWaits.delete(id)) {
 							this.#setResourceWait(spawn.params);
 							await onResourceWait?.(undefined);
@@ -1729,8 +1826,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				},
 				release: () => this.#permit.release(),
 			},
-			run =>
-				this.#runSpawn(
+			run => {
+				for (const reservation of this.#rowReservations().values())
+					if (reservation.id === spawn.agentId) reservation.started = true;
+				return this.#runSpawn(
 					spawn.toolCallId,
 					spawn.params,
 					run.signal,
@@ -1741,9 +1840,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					run.timing,
 					spawn.detached ? run.onArtifactsRetained : undefined,
 					run.tools,
-				),
+				);
+			},
 			{ agentId: spawn.agentId, detached: spawn.detached },
 		);
+		void launched.result.then(
+			() => {
+				if (spawn.agentId) this.#releaseRow(spawn.agentId);
+			},
+			() => {
+				if (spawn.agentId) this.#releaseRow(spawn.agentId, true);
+			},
+		);
+		return launched;
 	}
 
 	/**
@@ -1769,7 +1878,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const detached =
 			cfgAsyncEnabled.get(this.session.settings) && this.session.asyncJobManager !== undefined && !blocking;
 		const agentId = await this.#allocateSpawn(spawn);
-		if (signal.aborted || (await this.#admitSpawn(spawn, agentId, signal))) return undefined;
+		if (signal.aborted || (await this.#admitSpawn(spawn, agentId, signal))) {
+			this.#releaseRow(agentId, true);
+			return undefined;
+		}
 		return this.#launch({ toolCallId, params: spawn, index, agentId, detached });
 	}
 
@@ -1831,7 +1943,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (breaker) return breaker;
 		try {
 			const policy = await this.#resolveSpawnPreflight(params);
+			signal?.throwIfAborted();
 			if (policy.preparedSession !== undefined) return;
+			const reserved = this.#reserveRow(params, id, isReadOnlyDispatch(policy.effectiveAgent));
+			if (reserved) return reserved;
 			const result = await this.session.emitBeforeSubagentSpawn?.(
 				{
 					type: "before_subagent_spawn",
@@ -1850,6 +1965,26 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				},
 				signal,
 			);
+			signal?.throwIfAborted();
+			if (params.row !== undefined) {
+				const invalid = validateTodoExecutorRow(
+					this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.() ?? [],
+					params.row,
+				);
+				if (invalid) throw new Error(invalid);
+			}
+			for (const reservation of this.#rowReservations().values()) {
+				if (reservation.id !== id) continue;
+				const owner = this.#spawnRow(params)?.task.schedule?.owner;
+				if (owner !== reservation.owner && owner !== id) {
+					this.#releaseRow(id, true);
+					return formatSpawnRefusal(
+						`Task row ${JSON.stringify(reservation.content)} was reassigned during admission.`,
+						id,
+					);
+				}
+				reservation.owner = owner;
+			}
 			if (result?.resourceWait) {
 				this.#resourceWaits.set(
 					id,
@@ -1861,11 +1996,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			this.#resourceWaits.delete(id);
 			this.#setResourceWait(params);
 			if (result?.block) {
+				this.#releaseRow(id, true);
 				const cause = result.reason ?? "Subagent spawn blocked by extension.";
 				this.#recordRefusal(params, id, cause);
 				return this.#breaker(params) ?? formatSpawnRefusal(cause, id);
 			}
 		} catch (error) {
+			this.#releaseRow(id, true);
 			const cause = error instanceof Error ? error.message : String(error);
 			this.#recordRefusal(params, id, cause);
 			return this.#breaker(params) ?? formatSpawnRefusal(cause, id);
@@ -2278,6 +2415,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				const message = error instanceof Error ? error.message : String(error);
 				// An adopted run already executes; without its job nothing would own it.
 				spawn.run?.discard(`background job registration failed: ${message}`);
+				this.#releaseRow(spawn.agentId, true);
 				this.#resourceWaits.delete(spawn.agentId);
 				this.#setResourceWait(spawnParamsFor(params, spawn.item, defaultAgent));
 				failedSchedules.push(`${spawn.agentId}: ${message}`);

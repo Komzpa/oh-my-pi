@@ -1,10 +1,16 @@
-import { readOnlyClaim, checkoutScopesFromResources, checkoutScopesOverlap, checkoutScopesContain } from "./checkout_scope";
+import {
+	readOnlyClaim,
+	checkoutScopesFromResources,
+	checkoutScopesOverlap,
+	checkoutScopesContain,
+} from "./checkout_scope";
 import { $ } from "bun";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { restoringAgentIds } from "@oh-my-pi/pi-coding-agent/registry/restoring-agents";
 import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import type { TodoScheduleInputTask, TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { parseCommandArgs } from "@oh-my-pi/pi-coding-agent/utils/command-args";
@@ -329,9 +335,11 @@ function bashWriteTargets(argv: string[]): string[] {
 		if (options && arg.startsWith("-")) {
 			if (arg.startsWith("--")) {
 				const [name, attached] = arg.slice(2).split(/=(.*)/s);
-				if (Object.values(values).includes(name!) ||
+				if (
+					Object.values(values).includes(name!) ||
 					(executable === "touch" && name === "time") ||
-					(executable === "install" && name === "strip-program")) {
+					(executable === "install" && name === "strip-program")
+				) {
 					const value = attached ?? argv[++index];
 					if (name === "target-directory") targetDirectory = value;
 				}
@@ -362,9 +370,17 @@ function bashWriteTargets(argv: string[]): string[] {
 }
 
 function currentRowOwner(row: TodoScheduleInputTask, owner: string): boolean {
-	return row.status !== "completed" && row.status !== "abandoned" &&
-		(row.schedule?.owner === owner || (!row.schedule?.owner && row.schedule?.executor?.workerId === owner)) &&
-		!(row.schedule?.executor?.workerId === owner && row.schedule.executor.outcome !== undefined);
+	if (row.status === "completed" || row.status === "abandoned") return false;
+	const executor = row.schedule?.executor;
+	const settled = executor?.finishedAt !== undefined || executor?.outcome !== undefined;
+	if (row.schedule?.owner !== owner && (row.schedule?.owner || executor?.workerId !== owner || settled)) return false;
+	if (executor?.workerId !== owner || !settled) return true;
+	// Historical settlement does not revoke a currently assigned IRC continuation.
+	// A different current assignment, or a genuinely idle settled owner, still revokes it.
+	const registry = AgentRegistry.global();
+	const ref = registry.get(owner);
+	if (ref?.todoRow && ref.todoRow !== row.content) return false;
+	return Boolean(ref && registry.isRunning(ref)) || restoringAgentIds(registry).includes(owner);
 }
 
 /** Read the parent's current plan, never the child's copied TODO snapshot. */
@@ -386,9 +402,7 @@ export function workerRowScope(ctx: ExtensionContext) {
 	}
 	const phases = lead?.session?.getTodoPhases() ?? [];
 	for (const owner of workers.reverse()) {
-		const rows = phases
-			.flatMap(phase => phase.tasks)
-			.filter(row => currentRowOwner(row, owner));
+		const rows = phases.flatMap(phase => phase.tasks).filter(row => currentRowOwner(row, owner));
 		if (rows.length) return { rows, phases, lead: lead! };
 	}
 	// A known parent with no current assignment is a revoked/missing grant,
@@ -423,13 +437,16 @@ export async function workerScopeCovers(ctx: ExtensionContext, paths: string[]):
 	return true;
 }
 
-/** A settled executor releases its lease unless Main has assigned a different owner. */
+/** The same current assignment grants worker scope and protects it from competing admission. */
 export function holdsWriteCustody(row: TodoScheduleInputTask): boolean {
-	return row.status !== "completed" && row.status !== "abandoned" &&
-		!readOnlyClaim(row) && row.schedule?.resourceWait === undefined &&
-		!(row.schedule?.executor?.outcome !== undefined &&
-			(!row.schedule.owner || row.schedule.owner === row.schedule.executor.workerId)) &&
-		!(row.status === "pending" && !row.schedule?.owner && !row.schedule?.executor?.workerId);
+	const owner = row.schedule?.owner ?? row.schedule?.executor?.workerId;
+	return (
+		row.status !== "completed" &&
+		row.status !== "abandoned" &&
+		!readOnlyClaim(row) &&
+		row.schedule?.resourceWait === undefined &&
+		(owner ? currentRowOwner(row, owner) : row.status !== "pending")
+	);
 }
 
 // Per canonical lead session, retained only while the owning row remains open.
@@ -462,7 +479,8 @@ export async function workerToolPreflight(
 	// Explicit scope, including [], replaces the legacy cwd permission. A
 	// declaration without filesystem paths grants no writes. Only an absent
 	// declaration keeps cwd access, still subject to other workers' leases.
-	const hasDeclaredScope = Boolean(ctx.agent?.parentId && !rows.length) || rows.some(row => Array.isArray(row.schedule?.resources));
+	const hasDeclaredScope =
+		Boolean(ctx.agent?.parentId && !rows.length) || rows.some(row => Array.isArray(row.schedule?.resources));
 	const roots = declared.length ? await Promise.all(declared.map(canonical)) : hasDeclaredScope ? [] : [root];
 	const resolvedTargets: string[] = [];
 	for (const target of targets) {
@@ -481,7 +499,10 @@ export async function workerToolPreflight(
 					path.isAbsolute(resourcePath) &&
 					(inside(await canonical(resourcePath), resolved) || inside(resolved, await canonical(resourcePath)))
 				)
-					return { block: true, reason: `Write conflicts with row ${JSON.stringify(other.content)} (owner ${other.schedule?.owner ?? other.schedule?.executor?.workerId ?? "unassigned"}); wait for that writer, or have Main call todo {op:"schedule",updates:[{task:${JSON.stringify(rows[0]?.content ?? "<worker row>")},resources:[<disjoint absolute paths>]}]}.` };
+					return {
+						block: true,
+						reason: `Write conflicts with row ${JSON.stringify(other.content)} (owner ${other.schedule?.owner ?? other.schedule?.executor?.workerId ?? "unassigned"}); wait for that writer, or have Main call todo {op:"schedule",updates:[{task:${JSON.stringify(rows[0]?.content ?? "<worker row>")},resources:[<disjoint absolute paths>]}]}.`,
+					};
 			}
 		}
 		if (!roots.some(allowed => inside(allowed, resolved)))
@@ -496,17 +517,19 @@ export async function workerToolPreflight(
 		if (owner && incoming) {
 			const claims = writeClaims.get(scope.lead.session) ?? new Map<string, string[]>();
 			writeClaims.set(scope.lead.session, claims);
-			const open = scope.phases
-				.flatMap(phase => phase.tasks)
-				.filter(holdsWriteCustody);
+			const open = scope.phases.flatMap(phase => phase.tasks).filter(holdsWriteCustody);
 			// No await between observing and acquiring exact write targets.
 			for (const [holder, held] of claims) {
 				const holderRows = open.filter(row => currentRowOwner(row, holder));
-				const retained = held.filter(target => holderRows.some(row => {
-					if (!Array.isArray(row.schedule?.resources)) return true;
-					const allowed = checkoutScopesFromResources(row.schedule.resources.filter(resource => !resource.startsWith("git:")));
-					return allowed && checkoutScopesContain(allowed, [target]);
-				}));
+				const retained = held.filter(target =>
+					holderRows.some(row => {
+						if (!Array.isArray(row.schedule?.resources)) return true;
+						const allowed = checkoutScopesFromResources(
+							row.schedule.resources.filter(resource => !resource.startsWith("git:")),
+						);
+						return allowed && checkoutScopesContain(allowed, [target]);
+					}),
+				);
 				if (!retained.length) {
 					claims.delete(holder);
 					continue;

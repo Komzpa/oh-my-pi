@@ -5688,8 +5688,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName === "task" && isMain(ctx)) {
       const phases = todoPhases(ctx);
       const display = leadDisplayContext(ctx, phases, currentDecision(ctx));
+      const reservedRows = new Set<string>();
       for (const item of taskItems(event.input)) {
         for (const row of speculativeTaskRows(item, phases)) {
+          if (item.readOnly !== true && !readOnlyAudit(item)) {
+            if (reservedRows.has(String(row.content))) return { block: true, reason: `Task batch repeats writer row ${JSON.stringify(row.content)}; dispatch one executor for that row.` };
+            reservedRows.add(String(row.content));
+          }
           const owner = display.owners.get(row.content);
           if (owner) return { block: true, reason: prompt.render(gateNoticeInstructions, {
             liveOwner: true, row: JSON.stringify(row.content), owner: owner.id,

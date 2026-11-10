@@ -7,6 +7,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import type { ModelPresetSwitchResult } from "@oh-my-pi/pi-coding-agent/config/model-presets";
 import { getLiveTodoBranchEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { validateTodoExecutorRow } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { workerYieldRefusal, type WorkerContinuationState } from "./worker_continue";
@@ -568,6 +569,14 @@ export function routeSubagentSpawn(
 ): { block?: true; reason: string; resourceWait?: { row: string; workerId?: string } } | undefined {
 	const agent = stringValue(event.agent);
 	if (!agent) return undefined;
+	if (typeof event.row === "string") {
+		const phases = ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.() ?? [];
+		const invalid = validateTodoExecutorRow(phases, event.row);
+		if (invalid) return { block: true, reason: invalid };
+		const row = phases.flatMap(phase => phase.tasks).find(row => row.content === event.row)!;
+		if (event.phase !== "admission" && row.schedule?.owner && row.schedule.owner !== event.spawnKey)
+			return { block: true, reason: `Task row ${JSON.stringify(event.row)} was reassigned before execution.` };
+	}
 	let resourceWait: { row: string; workerId?: string } | undefined;
 	const admission = admitAssignedResources(event, ctx, true, holder => {
 		resourceWait = holder;
