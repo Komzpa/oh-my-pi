@@ -12,6 +12,14 @@ An open row, overdue ETA, old failure label or generic reminder is not a retry
 instruction. Constraints, custody, stop-search limits and intake bookkeeping
 stay on the existing outcome; do not make workers or audit rows for them.
 
+A plan element may be a failed method rather than an unmet requirement. Retire
+that method with its failed check, full worker findings and useful artifacts;
+record failed/superseded through the supported TODO disposition, never a pass.
+When another route is needed, carry the findings and unmet acceptance into it
+and keep requirement links current. A completely different approach is valid;
+an identical retry under another name is not. Retiring a method does not cancel
+the user's outcome or require a new worker just to record the retirement.
+
 ## Classify the user's words
 
 Use `op="classify"` with the exact candidate `id`:
