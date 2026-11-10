@@ -825,13 +825,18 @@ describe("task.batch spawning", () => {
 		const byId = new Map(seen.map(spawn => [spawn.id, spawn]));
 		const scoutSpawn = byId.get("Scout");
 		const reviewerSpawn = byId.get("Review");
-		expect(scoutSpawn?.agent).toBe(scoutAgent);
+		expect(scoutSpawn?.agent).toMatchObject({ ...scoutAgent, readOnly: true, spawns: undefined, prewalk: undefined });
 		expect(scoutSpawn?.agent.tools).toEqual(["read"]);
 		expect(scoutSpawn?.modelOverride).toEqual(["anthropic/claude-haiku-4-5:low"]);
 		expect(scoutSpawn?.outputSchema).toBe(scoutSchema);
 		expect(scoutSpawn?.outputSchemaSource).toBe("agent");
 		expect(scoutSpawn?.outputSchemaOverridesAgent).toBe(false);
-		expect(reviewerSpawn?.agent).toBe(reviewerAgent);
+		expect(reviewerSpawn?.agent).toMatchObject({
+			...reviewerAgent,
+			readOnly: true,
+			spawns: undefined,
+			prewalk: undefined,
+		});
 		expect(reviewerSpawn?.agent.tools).toEqual(["read", "bash"]);
 		expect(reviewerSpawn?.modelOverride).toEqual(["anthropic/claude-sonnet-4-6:medium"]);
 		expect(reviewerSpawn?.outputSchema).toBe(callerSchema);

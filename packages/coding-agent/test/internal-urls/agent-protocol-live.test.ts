@@ -21,7 +21,14 @@ let rootSessionFile: string;
 let artifactsDir: string;
 
 function liveSession(messages: unknown[]): AgentSession {
-	return { messages, sessionManager: { getArtifactsDir: () => artifactsDir } } as unknown as AgentSession;
+	return {
+		messages,
+		sessionManager: {
+			getArtifactsDir: () => artifactsDir,
+			getSessionFile: () => rootSessionFile,
+			iterateEntries: () => [],
+		},
+	} as unknown as AgentSession;
 }
 
 function assistantText(text: string): unknown {
@@ -196,7 +203,7 @@ describe("agent:// for agents without a published output", () => {
 			sessionFile: rootSessionFile,
 		});
 
-		expect(resource.content).toContain("SurfaceDroppedFact (parked)");
+		expect(resource.content).toContain("# SurfaceDroppedFact (on disk)");
 		expect(resource.content).toContain("retained worker progress");
 		expect(AgentRegistry.global().get("SurfaceDroppedFact")?.sessionFile).toBe(
 			path.join(artifactsDir, "SurfaceDroppedFact.jsonl"),

@@ -28,7 +28,7 @@ const contracts: Record<string, { tool?: string; operation?: string; wait?: bool
 	aborted: { tool: "task" },
 	failed: { tool: "task" },
 	refused: { tool: "task" },
-	"estimate-cap": { tool: "todo", operation: "append" },
+	"estimate-cap": {},
 	"external-blocker": { wait: true },
 	"lost-after-restart": { tool: "task" },
 	"audit-fail": { tool: "task" },
@@ -99,6 +99,12 @@ for (const id of Object.keys(contracts)) {
 				expect(text).not.toContain("ETA approaching");
 				expect(text).not.toContain("Ask the user now");
 			}
+		} else if (id === "estimate-cap") {
+			expect(notice).toContain("NEXT ACTION: inspect the current result");
+			expect(notice).toContain("split only genuinely independent remaining deliverables");
+			expect(notice).toContain("A cap does not itself require another row");
+			expect(notice).toContain("If unsplittable, preserve its running owner and output");
+			expect(notice).not.toContain('op:"append"');
 		} else {
 			expect(notice).toContain("Which endpoint?");
 		}

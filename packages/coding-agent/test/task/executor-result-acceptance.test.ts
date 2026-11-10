@@ -222,13 +222,23 @@ describe("runSubprocess result acceptance", () => {
 
 	it("terminalizes the ref and stamps the run lifecycle when the yield is accepted", async () => {
 		const harness = createHarness();
-		const ref = registerRunning(harness.session);
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-			session: harness.session,
-			extensionsResult: {} as unknown as LoadExtensionsResult,
-			setToolUIContext: () => {},
-			eventBus: new EventBus(),
-		} as CreateAgentSessionResult);
+		let ref = undefined as unknown as import("@oh-my-pi/pi-coding-agent/registry/agent-registry").AgentRef;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			ref = options.expectedAgentRef!;
+			AgentRegistry.global().attachSession(
+				options.agentId!,
+				harness.session,
+				options.sessionManager?.getSessionFile(),
+				ref,
+			);
+			AgentRegistry.global().setStatus(options.agentId!, "running", ref);
+			return {
+				session: harness.session,
+				extensionsResult: {} as unknown as LoadExtensionsResult,
+				setToolUIContext: () => {},
+				eventBus: new EventBus(),
+			} as CreateAgentSessionResult;
+		});
 
 		const result = await runSubprocess({
 			cwd: "/tmp",
@@ -251,13 +261,23 @@ describe("runSubprocess result acceptance", () => {
 
 	it("settles the owning task job when Agent Hub tombstones a running subagent", async () => {
 		const harness = createHarness({ hangPrompt: true });
-		const ref = registerRunning(harness.session);
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-			session: harness.session,
-			extensionsResult: {} as unknown as LoadExtensionsResult,
-			setToolUIContext: () => {},
-			eventBus: new EventBus(),
-		} as CreateAgentSessionResult);
+		let ref = undefined as unknown as import("@oh-my-pi/pi-coding-agent/registry/agent-registry").AgentRef;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			ref = options.expectedAgentRef!;
+			AgentRegistry.global().attachSession(
+				options.agentId!,
+				harness.session,
+				options.sessionManager?.getSessionFile(),
+				ref,
+			);
+			AgentRegistry.global().setStatus(options.agentId!, "running", ref);
+			return {
+				session: harness.session,
+				extensionsResult: {} as unknown as LoadExtensionsResult,
+				setToolUIContext: () => {},
+				eventBus: new EventBus(),
+			} as CreateAgentSessionResult;
+		});
 		const delivered = Promise.withResolvers<{ id: string; text: string }>();
 		const manager = new AsyncJobManager({
 			onJobComplete: (id, text) => delivered.resolve({ id, text }),

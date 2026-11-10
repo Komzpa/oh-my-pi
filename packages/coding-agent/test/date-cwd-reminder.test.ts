@@ -1229,7 +1229,7 @@ describe("date-cwd reminder on the provider wire", () => {
 			expect(systemPrompt).not.toContain("current working directory");
 			expect(systemPrompt).not.toContain(formatLocalCalendarDate());
 
-			const firstUser = contexts[0]!.messages[0]!;
+			const firstUser = contexts[0]!.messages.find(message => message.role === "user")!;
 			expect(firstUser.role).toBe("user");
 			const firstText =
 				typeof firstUser.content === "string" ? firstUser.content : JSON.stringify(firstUser.content);
@@ -1241,7 +1241,7 @@ describe("date-cwd reminder on the provider wire", () => {
 			// conversation prefix (system + tools + first turn) stays cached.
 			await session.sendUserMessage("second");
 			expect(contexts).toHaveLength(2);
-			const secondFirst = contexts[1]!.messages[0]!;
+			const secondFirst = contexts[1]!.messages.find(message => message.role === "user")!;
 			expect(secondFirst.role).toBe("user");
 			expect(typeof secondFirst.content).toBe(typeof firstUser.content);
 			expect(secondFirst.content).toEqual(firstUser.content);

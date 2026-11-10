@@ -45,11 +45,18 @@ export function wakeDemand(
 ): WakeDemand | undefined {
 	const rows = phases
 		.flatMap(phase => phase.tasks)
-		.filter(row => row.status !== "completed" && row.status !== "abandoned" && todoRowAfterWorker(row)?.kind !== "verify");
+		.filter(row => row.status !== "completed" && row.status !== "abandoned")
+		// Post-worker classification is only valid after actual liveness is checked.
+		.filter(row => !running.has(row.schedule?.owner ?? "") && !running.has(row.schedule?.executor?.workerId ?? ""))
+		.filter(row => {
+			const feedback = todoRowAfterWorker(row);
+			return feedback?.kind !== "verify" && (!row.schedule?.executor || feedback !== undefined);
+		});
 	const churnTitles = new Set(actionableChurnRows(phases).map(item => item.row));
-	const churn = questions.length ? undefined : rows.find(row => churnTitles.has(row.content));
+	const churn = questions.length ? undefined : rows.find(row => row.status !== "blocked" && row.schedule?.review !== "user" && churnTitles.has(row.content)
+		&& (!row.schedule?.executor || todoRowAfterWorker(row)?.kind === "needs-worker"));
 	const workerQuestion = questions[0];
-	const question = rows.find(row => row.status === "blocked" && row.schedule?.owner && row.blocker);
+	const question = rows.find(row => row.status === "blocked" && row.schedule?.review !== "user" && row.schedule?.owner && row.blocker);
 	const closed = new Set(
 		phases
 			.flatMap(phase => phase.tasks)
@@ -58,13 +65,13 @@ export function wakeDemand(
 	);
 	const ready = rows.find(
 		row =>
-			row.status !== "blocked" &&
+			row.status !== "blocked" && row.schedule?.review !== "user" &&
 			!running.has(row.schedule?.owner ?? "") &&
 			!((row.schedule?.executor?.finishedAt === undefined && !row.schedule?.executor?.outcome) && running.has(row.schedule?.executor?.workerId ?? "")) &&
 			(row.schedule?.dependencies ?? []).every(dep => closed.has(dep)),
 	);
 	const slipped = rows.length > 0 && deadline !== undefined && Math.max(now, finish ?? 0) > deadline;
-	const row = churn ?? question ?? ready ?? (slipped ? rows.find(row => !unfinishedDependencyChains(phases, row.content).length && !running.has(row.schedule?.owner ?? "")) : undefined);
+	const row = churn ?? question ?? ready ?? (slipped ? rows.find(row => row.status !== "blocked" && row.schedule?.review !== "user" && !unfinishedDependencyChains(phases, row.content).length && !running.has(row.schedule?.owner ?? "")) : undefined);
 	if (!row && !workerQuestion) return;
 	const kind = churn ? "churn" : workerQuestion || question ? "question" : ready ? "dispatch" : "slip";
 	const feedback = row && todoRowAfterWorker(row);

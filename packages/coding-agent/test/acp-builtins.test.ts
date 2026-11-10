@@ -66,6 +66,7 @@ interface FakeAcpBuiltinSession {
 	setSlashCommands(commands: unknown[]): void;
 	refreshSkillsAndCommands(): Promise<void>;
 	getTodoPhases(): Array<{ name: string; tasks: Array<{ content: string; status: string }> }>;
+	setTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	commitTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	refreshBaseSystemPrompt(): Promise<void>;
 	getHindsightSessionState(): undefined;
@@ -160,6 +161,9 @@ function createRuntime() {
 		},
 		getTodoPhases() {
 			return this._todoPhases;
+		},
+		setTodoPhases(phases) {
+			this._todoPhases = phases;
 		},
 		commitTodoPhases(phases) {
 			this._todoPhases = phases;

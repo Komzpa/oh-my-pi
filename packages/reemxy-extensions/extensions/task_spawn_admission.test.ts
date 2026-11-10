@@ -327,7 +327,7 @@ test("ROOT reader and four disjoint or unscoped writers all start; reader keeps 
 	expect(audit.agent.tools).not.toContain("write");
 	expect(audit.restrictToolNames).toBe(true);
 	expect(audit.enableMCP).toBe(false);
-	expect(f.phases[0].tasks[0].schedule?.readOnly).toBe(true);
+	expect(f.phases[0].tasks[0].schedule?.ownerReadOnly).toEqual({ owner: "Audit", readOnly: true });
 });
 
 test("explicit item scope narrows a broad row; second same-file writer queues until the first finishes", async () => {
@@ -383,7 +383,7 @@ for (const agent of ["qa-auditor", "observer"])
 		if (agent === "qa-auditor") expect(reader.agent.tools).toEqual(["read", "bash"]);
 		else expect(reader.agent.tools).not.toContain("bash");
 		expect(reader.restrictToolNames).toBe(true);
-		expect(f.phases[0].tasks[1].schedule?.readOnly).toBe(true);
+		expect(f.phases[0].tasks[1].schedule?.ownerReadOnly).toEqual({ owner: "Reader", readOnly: true });
 	});
 
 test("several ROOT waiters drain without deadlock or failed attempts", async () => {

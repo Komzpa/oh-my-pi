@@ -5549,7 +5549,23 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		// Handle session persistence
 		if (event.type === "message_end") {
-			await messageEndPersistence;
+			try {
+				await messageEndPersistence;
+			} catch (error) {
+				// Persistence is fire-and-forget from agent-core. A rejected append
+				// must remain visible, but it must not skip assistant settle work:
+				// retry recovery closes its saga there and resolves the prompt waiter.
+				const failure = toError(error);
+				logger.error("Failed to persist session message; continuing event completion", {
+					role: event.message.role,
+					error: failure.message,
+				});
+				this.emitNotice(
+					"error",
+					"Session persistence failed; the transcript may be incomplete.",
+					"session-persistence",
+				);
+			}
 			if (this.#promptGeneration !== eventPromptGeneration) return;
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
@@ -5652,7 +5668,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					const reminderDelivery = {
 						deliverAs: "nextTurn" as const,
 						triggerTurn: false,
-						supersedes: "todo-error-reminder",
 					};
 					await this.sendCustomMessage(
 						{

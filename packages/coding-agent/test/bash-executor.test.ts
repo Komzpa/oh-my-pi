@@ -732,6 +732,8 @@ exit 64
 		if (!zshPath) {
 			return;
 		}
+		// Prevent the system zsh-newuser-install wizard from consuming PTY input.
+		fs.writeFileSync(path.join(tempDir, ".zshrc"), "# isolated prompt fixture\n");
 		cfgShellPath.set(Settings.instance, zshPath);
 		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
 			shell: zshPath,
@@ -771,7 +773,7 @@ exit 64
 			},
 		);
 
-		expect(result.timedOut).toBeUndefined();
+		expect(result.timedOut, JSON.stringify({ screen, answered, writable: !!write })).toBeUndefined();
 		expect(result.exitCode).toBe(0);
 		expect(result.output).toContain("ANSWER=y");
 	});

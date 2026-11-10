@@ -14,6 +14,9 @@ import {
 	todoArtifactGitBinding,
 	todoArtifactRepository,
 	todoAuditResourcesKey,
+	todoAuditHasNewMaterialInputs,
+	todoAuditMatchesResources,
+	todoMaterialInputsKey,
 	todoRowAfterWorker,
 	todoRowDeliveryKey,
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -179,10 +182,7 @@ export function planRowAudits(
 		let attempt = audit?.attempts ?? 1;
 		let retry: string | undefined;
 		if (audit?.verdict === "inconclusive" || audit?.verdict === "omitted") {
-			const newEvidence =
-				audit.evidence !== undefined
-					? (row.schedule?.progress?.evidence ?? "") !== audit.evidence
-					: (row.schedule?.progress?.at ?? 0) > (audit.at ?? Infinity);
+			const newEvidence = todoAuditHasNewMaterialInputs(row.schedule, audit);
 			if (attempt >= 2 && !newEvidence) continue;
 			attempt = newEvidence ? 1 : attempt + 1;
 			retry = audit.findings;
@@ -196,6 +196,34 @@ export function planRowAudits(
 	return [...batches.values()];
 }
 
+/** Prior observations remain retrieval context only while revision, delivery and criterion agree. */
+function auditEvidenceHistory(
+	row: RowAuditRow,
+	head: string,
+	repoPath: string,
+): { inputsKey: string; evidence: string }[] {
+	const audit = row.schedule?.audit;
+	if (
+		!audit ||
+		audit.head !== head ||
+		audit.repoPath !== repoPath ||
+		audit.delivery !== todoRowDeliveryKey(row.schedule) ||
+		!todoAuditMatchesResources(row.schedule, audit) ||
+		audit.materialInputs?.criterion !== row.schedule?.materialInputs?.criterion
+	)
+		return [];
+	const history = [
+		...(audit.evidenceHistory ?? []),
+		...[audit.evidence, audit.findings]
+			.filter((evidence): evidence is string => !!evidence)
+			.map(evidence => ({ inputsKey: todoMaterialInputsKey(audit.materialInputs), evidence })),
+	];
+	return history.filter(
+		(entry, index) =>
+			history.findIndex(other => other.inputsKey === entry.inputsKey && other.evidence === entry.evidence) === index,
+	);
+}
+
 export function rowAuditTask(batch: RowAuditBatch, requirementsFor: (row: string) => string[] = () => []): string {
 	const rows = batch.rows
 		.map(row =>
@@ -203,7 +231,9 @@ export function rowAuditTask(batch: RowAuditBatch, requirementsFor: (row: string
 				`- Row: ${JSON.stringify(row.content)}`,
 				...(row.schedule?.auditOrigin ? [`  auditOrigin: ${JSON.stringify(row.schedule.auditOrigin)}`] : []),
 				...requirementsFor(row.content).map(text => `  Linked requirement: ${text.replace(/\s+/g, " ").trim()}`),
+				`  Material inputs: ${todoMaterialInputsKey(row.schedule?.materialInputs)}`,
 				`  Recorded evidence (commits and checks to re-run at HEAD): ${row.schedule?.progress?.evidence ?? "none recorded"}`,
+				...auditEvidenceHistory(row, batch.head, batch.repoPath).map(entry => `  Prior observation (recheck, not acceptance; inputs ${entry.inputsKey}): ${entry.evidence}`),
 				`  Audit base: ${row.schedule?.auditBase ?? "first audit: full delivered range"}`,
 				`  Previous worker (context only, not proof): agent://${row.schedule?.executor?.workerId ?? "unknown"}`,
 				...(row.retry ? [`  Previous audit was inconclusive: ${row.retry}. Obtain exactly that piece now.`] : []),
@@ -349,6 +379,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		const latest = ctx.getTodoPhases?.()?.flatMap(phase => phase.tasks).find(candidate => candidate.content === row.content);
 		if (!latest || latest.schedule?.review === "accepted" ||
 			todoRowDeliveryKey(latest.schedule) !== todoRowDeliveryKey(row.schedule) ||
+			todoMaterialInputsKey(latest.schedule?.materialInputs) !== todoMaterialInputsKey(row.schedule?.materialInputs) ||
 			resourceKey(latest) !== resourceKey(row) || rowRepo(latest, ctx.cwd) !== batch.repoPath) return undefined;
 		const binding = todoArtifactGitBinding(latest);
 		return binding && (binding.repoPath !== batch.repoPath || binding.head !== batch.head) ? undefined : latest;
@@ -410,6 +441,8 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 				verdict: "pending",
 				agent,
 				attempts: row.attempt,
+				materialInputs: row.schedule?.materialInputs && structuredClone(row.schedule.materialInputs),
+				evidenceHistory: auditEvidenceHistory(row, batch.head, batch.repoPath),
 				evidence: row.schedule?.progress?.evidence ?? "",
 			};
 			// Persist before launching: a resumed session sees the pending audit, never a bare delivery.

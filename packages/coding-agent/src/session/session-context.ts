@@ -2,6 +2,8 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { customMessageEntryMessage, isUserRequestEntry } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import {
 	canReplayRemoteCompaction,
+	type CompactionSettings,
+	remotePreserveReusable,
 	getAnthropicCompactionPayload,
 	isTurnStartEntry,
 } from "@oh-my-pi/pi-agent-core/compaction";
@@ -286,6 +288,8 @@ export interface BuildSessionContextOptions {
 	 * transcripts.
 	 */
 	model?: Model;
+	/** Preparation may need originals even when native replay is possible. */
+	compactionSettings?: CompactionSettings;
 }
 
 /** Options for `AgentSession.buildTranscriptSessionContext` (via `SessionProviderBoundary`). */
@@ -406,7 +410,16 @@ export function selectSessionContextEntriesFromLeafPath(
 	let compactionIdx = -1;
 	let resetIdx = -1;
 	for (let i = 0; i < path.length; i++) {
-		if (compactionIdx < 0 && path[i].type === "compaction") compactionIdx = i;
+		if (compactionIdx < 0 && path[i].type === "compaction") {
+			const entry = read(path[i].id) as CompactionEntry;
+			if (
+				!options?.model ||
+				(options.compactionSettings
+					? remotePreserveReusable(entry.preserveData, options.model, options.compactionSettings)
+					: canReplayRemoteCompaction(entry.preserveData, options.model))
+			)
+				compactionIdx = i;
+		}
 		if (resetIdx < 0 && path[i].type === "reset_boundary") resetIdx = i;
 	}
 	const selected = new Set<string>();

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
 	classifyTodoDisplayRow,
+	forecastTodoPlan,
 	formatTodoDisplayEta,
 	renderTodoPlanDisplay,
 	type TodoDisplayContext,
@@ -178,26 +179,74 @@ test("working rows name each worker's profile and model", () => {
 	expect(row).toContain("W-1 (ui-coder) gpt-6.1-terra:low 3m");
 });
 
-test("the accounting line shows the plan-wide P80 forecast, not only the last running row", () => {
-	const task = { content: "Unstarted row", status: "pending", schedule: {} };
+test("the accounting line shows the whole residual forecast and labels worker risk as diagnostic", () => {
 	const now = Date.UTC(2026, 10, 6, 19, 0);
-	const forecast = {
-		rows: [],
-		resourceFinish: now + 30 * 60_000,
-		risk: { p80Finish: now + 3 * 3600_000, onTimeProbability: 0.4 },
-		deadlineAt: now + 2 * 3600_000,
-	};
-	const display = renderTodoPlanDisplay(
-		[{ name: "Stage", tasks: [task] }] as never,
-		{ workers: [], owners: new Map() },
+	const input: TodoScheduleInput = [
 		{
-			now,
-			width: 300,
-			forecast: forecast as never,
-			paint,
+			name: "Stage",
+			tasks: [
+				{
+					content: "Delivery row",
+					status: "in_progress",
+					schedule: {
+						dependencies: [],
+						resources: ["shared"],
+						owner: "Worker-1",
+						startedAt: now,
+						estimate: {
+							optimisticSeconds: 600,
+							likelySeconds: 600,
+							pessimisticSeconds: 600,
+							updatedAt: now,
+							confidence: "high",
+							basis: "observed delivery duration",
+						},
+					},
+				},
+				{
+					content: "Acceptance after delivery",
+					status: "pending",
+					schedule: {
+						dependencies: ["Delivery row"],
+						resources: ["shared"],
+						estimate: {
+							optimisticSeconds: 7200,
+							likelySeconds: 7200,
+							pessimisticSeconds: 7200,
+							updatedAt: now,
+							confidence: "high",
+							basis: "observed acceptance duration",
+						},
+					},
+				},
+			],
 		},
+	];
+	const forecast = forecastTodoPlan(input, {
+		now,
+		deadlineAt: now + 2 * 3600_000,
+		capacity: 1,
+		executableCapacity: 1,
+	});
+	forecast.risk = {
+		p50Finish: now + 20 * 60_000,
+		p80Finish: now + 30 * 60_000,
+		p90Finish: now + 40 * 60_000,
+		onTimeProbability: 0.4,
+		samples: 100,
+		criticalRows: [],
+	};
+	const finish = forecast.autoDeadlineForecast?.finish;
+	expect(finish).toBeGreaterThan(now + 2 * 3600_000);
+	const clock = (at: number) =>
+		new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+	const display = renderTodoPlanDisplay(
+		input,
+		{ workers: [], owners: new Map() },
+		{ now, width: 1000, forecast, paint },
 	);
-	expect(display.lines[0]).toContain("P80 ");
-	expect(display.lines[0]).toContain("P(on time) 40%");
-	expect(display.lines[0]).toContain("due ");
+	expect(display.lines[0]).toContain(`ETA ${clock(finish!)}`);
+	expect(display.lines[0]).toContain(`due ${clock(forecast.deadlineAt!)}`);
+	expect(display.lines[0]).toContain(`Worker-attempt diagnostic ${clock(forecast.risk.p80Finish)}`);
+	expect(display.lines[0]).not.toContain("P(on time)");
 });

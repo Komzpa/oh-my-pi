@@ -11,7 +11,7 @@ test("Git integration probing yields while Git is slow and retains merge facts",
   mkdirSync(join(cwd, ".git"));
   writeFileSync(join(cwd, ".git", "MERGE_HEAD"), "merge\n");
   const executable = join(cwd, "git");
-  writeFileSync(executable, `#!${process.execPath}\nawait Bun.sleep(60);\nconst args = process.argv.slice(2).join(" ");\nconst replies = {"rev-parse HEAD":"head", "rev-parse --git-path MERGE_HEAD":".git/MERGE_HEAD", "rev-parse --short MERGE_HEAD":"merge", "diff --name-only --diff-filter=U":"a.txt\\na.txt\\nb.txt", "symbolic-ref --quiet --short HEAD":"main", "log --format=%ct head --not":"1\\n2"};\nconsole.log(replies[args] ?? "");\n`);
+  writeFileSync(executable, `#!${process.execPath}\nawait Bun.sleep(60);\nconst args = process.argv.slice(2).join(" ");\nconst replies = {"rev-parse HEAD":"head", "rev-parse --git-path MERGE_HEAD":".git/MERGE_HEAD", "rev-parse --short MERGE_HEAD":"merge", "diff --name-only --diff-filter=U":"a.txt\\na.txt\\nb.txt", "symbolic-ref --quiet --short HEAD":"main", "ls-remote --heads origin refs/heads/main":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\trefs/heads/main", "cat-file --batch-check=%(objectname) %(objecttype)":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa commit", "log --format=%ct head --not aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":"1\\n2"};\nconsole.log(replies[args] ?? "");\n`);
   chmodSync(executable, 0o755);
   let ticks = 0;
   const ticker = setInterval(() => ticks++, 10);
@@ -21,6 +21,8 @@ test("Git integration probing yields while Git is slow and retains merge facts",
     expect(state?.head).toBe("head");
     expect(state?.mergeHead).toBe("merge");
     expect(state?.unmerged).toBe(2);
+    expect(state?.pushRemote).toBe("origin");
+    expect(state?.pushBranch).toBe("main");
     expect(state?.unpushed).toBe(2);
     expect(state?.oldestUnpushedAgeMs).toBe(9_000);
   } finally {

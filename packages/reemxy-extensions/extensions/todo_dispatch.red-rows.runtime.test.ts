@@ -190,8 +190,8 @@ for (const mode of [{ worker: true }, { lane: true }, { autoOpen: false }]) {
 }
 
 for (const boundary of ["wait", "session_stop"]) {
-	test(`${boundary}: 11:04 versus 10:00 refuses; visible triage, crashing and safe overlap repair the fixed deadline`, async () => {
-		for (const remedy of ["triage", "crash", "overlap"]) {
+	test(`${boundary}: 11:04 versus 10:00 refuses; honest reforecast stays blocked, full-scope staffing and safe overlap fit the fixed deadline`, async () => {
+		for (const remedy of ["reforecast", "crash", "overlap"]) {
 			const h = await harness();
 			const now = Date.now();
 			const due = Math.floor((now + 13 * 60_000) / 1000) * 1000;
@@ -238,10 +238,22 @@ for (const boundary of ["wait", "session_stop"]) {
 				boundary === "wait"
 					? h.hooks.get("tool_call")({ toolName: "wait", input: {} }, h.ctx)
 					: h.hooks.get("session_stop")({}, h.ctx);
-			expect((await run())?.reason).toContain("64m");
-			expect((await run())?.reason).toContain("still required");
-			if (remedy === "triage") h.phases[0].tasks[1].schedule.postDeadline = true;
-			else if (remedy === "crash") {
+			const firstRefusal = await run();
+			expect(firstRefusal?.reason).toContain("64m");
+			expect(firstRefusal?.reason).toMatch(/reconcile the returned worker findings/i);
+			expect(firstRefusal?.reason).toMatch(/do not.*cut requested scope or move the deadline/i);
+			const repeated = await run();
+			expect(repeated?.reason).toMatch(/WAIT\/STOP REFUSED.*reconcile the unfinished critical work/i);
+			expect(repeated?.reason).toMatch(/new estimate alone does not finish it/i);
+			if (remedy === "reforecast") {
+				// Honest administration acknowledges the same required work; it is not delivery.
+				h.phases[0].tasks[1].schedule.estimate.updatedAt = now;
+				h.phases[0].tasks[1].schedule.estimate.basis = "Measured remaining 69 minutes; fixed due time cannot fit";
+				const reforecastRefusal = await run();
+				expect(boundary === "wait" ? reforecastRefusal?.block : reforecastRefusal?.decision === "block").toBe(true);
+				expect(schedule.forecastTodoPlan(h.phases, { now, deadlineAt: due }).deadlineStatus).toBe("will-miss");
+				expect(h.phases[0].tasks[1].schedule.estimate.likelySeconds).toBe(69 * 60);
+			} else if (remedy === "crash") {
 				// Nine independently staffed regions retain all 69 minutes of callout work.
 				h.phases[0].tasks.splice(
 					1,
@@ -260,9 +272,16 @@ for (const boundary of ["wait", "session_stop"]) {
 					evidence: "Independent callout inputs measured; overlap is safe",
 				};
 			}
-			const repaired = await run();
-			expect(repaired?.reason ?? "").not.toContain("WAIT/STOP REFUSED");
-			expect(schedule.forecastTodoPlan(h.phases, { now, deadlineAt: due }).deadlineStatus).toBe("on-track");
+			if (remedy !== "reforecast") {
+				const repaired = await run();
+				expect(repaired?.reason ?? "").not.toContain("WAIT/STOP REFUSED");
+				expect(schedule.forecastTodoPlan(h.phases, { now, deadlineAt: due }).deadlineStatus).toBe("on-track");
+			}
+			expect(h.phases[0].tasks.every(task => task.status === "pending" && !task.schedule.postDeadline)).toBe(true);
+			expect(
+				h.ctx.sessionManager.getBranch().findLast(entry => entry.customType === STATE_ENTRY).data
+					.baselineDeadlineAt,
+			).toBe(due / 1000);
 		}
 	});
 }

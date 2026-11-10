@@ -503,7 +503,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		const phases = ctx.getTodoPhases?.() ?? [];
 		const open = remainingWork(state!, phases);
 		if (!open.length) return undefined;
-		return `The recorded deadline is missed. Replan the remaining requested work now, put the most valuable shippable piece first, and keep executing. Open rows: ${open.join("; ")}. Ship the next usable piece and report the verified delta.`;
+		return `The recorded deadline is missed; keep the original deadline and full required scope visible. Reconcile returned worker feedback before retrying, continue viable independent work, and give remaining rows estimates that include verification and delivery. Retire a disproved approach as failed or superseded and carry its findings into a different route without closing unmet acceptance. Open rows: ${open.join("; ")}. Report the verified delta and unresolved work.`;
 	};
 	const updateUi = (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;

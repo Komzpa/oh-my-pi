@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Clearing a worker's resource scope revokes file writes while keeping undeclared scopes and live writer leases distinct.
+
 - Removed automatic scope-cut questions on forecast slips; chiefs preserve requested work, reconcile returned findings and use actual remaining-work forecasts.
 
 - Refresh dispatch advice against current rows, retain actual worker feedback, and retire obsolete demands and automatic retrospective gates. Failed methods may yield to a different route without passing unmet acceptance.

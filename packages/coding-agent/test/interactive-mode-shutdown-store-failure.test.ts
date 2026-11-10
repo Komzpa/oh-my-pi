@@ -112,6 +112,8 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 	}
 
 	afterEach(async () => {
+		// A failed shutdown deliberately leaves the UI live for the escape hatch.
+		mode.stop();
 		vi.restoreAllMocks();
 		authStorage.close();
 		tempDir.removeSync();

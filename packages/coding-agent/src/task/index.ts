@@ -6,6 +6,9 @@ import { formatSpawnRefusal } from "./spawn-refusal";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import { isTaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 import { taskSubprocessRenderer } from "@oh-my-pi/pi-tui/tools/subprocess";
+// The journal and bus identify one lifecycle owner across primary/advisor tool rebuilds.
+const lifecycleOwners = new WeakMap<object, WeakMap<object, Set<TaskTool>>>();
+
 /**
  * Task tool - Delegate tasks to specialized agents.
  *
@@ -46,7 +49,7 @@ import { type Effort } from "@oh-my-pi/pi-catalog/effort";
 import { truncateForPrompt } from "../tools/approval";
 import { hasWaitTool } from "../tools/wait";
 import { isIrcEnabled } from "../irc/messaging";
-import { isReadOnlyAgent, isReadOnlyDispatch } from "./read-only-policy";
+import { isReadOnlyAgent, isReadOnlyDispatch, isReadOnlyWorkerRole } from "./read-only-policy";
 import { resolveAgentModelSelection } from "../config/model-resolver";
 import { formatTaskResultSummary } from "./result-summary";
 import { isScoutSpawnable, type ResolvedSpawnPolicy, resolveSpawnPolicy } from "./spawn-policy";
@@ -1046,7 +1049,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const row = this.#spawnRow(params)?.task;
 		const history = row?.schedule?.attemptHistory ?? [];
 		const requested = params.name?.trim() || generateTaskName();
-		if (!history.length) return this.#outputManager().allocate(requested);
+		const agent = this.#discoveredAgents.find(agent => agent.name === params.agent);
+		// Audit/read-only invocations are not retries of the row's producer.
+		if (
+			!history.length ||
+			isReadOnlyWorkerRole(params.agent ?? this.#defaultAgent()) ||
+			params.readOnly === true ||
+			(agent && isReadOnlyDispatch(agent))
+		) {
+			return this.#outputManager().allocate(requested);
+		}
 		const base = stripOmpCollisionSuffixChain(history[0]!.workerName.split(".").at(-1) ?? requested);
 		return this.#outputManager().allocate(base, history.length + 1);
 	}
@@ -1476,7 +1488,20 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			session.setTodoPhases &&
 			session.persistTodoPhases
 		) {
+			const owner = session.sessionManager ?? session;
+			let buses = lifecycleOwners.get(owner);
+			if (!buses) lifecycleOwners.set(owner, (buses = new WeakMap()));
+			let subscribers = buses.get(bus);
+			if (!subscribers) buses.set(bus, (subscribers = new Set()));
+			const existing = subscribers.values().next().value;
+			if (existing) {
+				this.#todoExecutors = existing.#todoExecutors;
+				this.#reflectingWorkers = existing.#reflectingWorkers;
+			}
+			subscribers.add(this);
+			const owners = subscribers;
 			const stopLifecycle = bus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
+				if (owners.values().next().value !== this) return;
 				if (!data || typeof data !== "object") return;
 				const event = data as Partial<SubagentLifecyclePayload>;
 				if (typeof event.id !== "string" || typeof event.agent !== "string") return;
@@ -1516,6 +1541,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				}
 			});
 			const stopProgress = bus.on(TASK_SUBAGENT_PROGRESS_CHANNEL, data => {
+				if (owners.values().next().value !== this) return;
 				if (!data || typeof data !== "object") return;
 				const event = data as Partial<SubagentProgressPayload>;
 				if (event.followUpTurn) return;
@@ -1536,6 +1562,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			session.registerDisposeCallback?.(() => {
 				stopLifecycle();
 				stopProgress();
+				owners.delete(this);
 			});
 		}
 	}

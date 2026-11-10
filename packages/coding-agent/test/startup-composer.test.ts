@@ -474,7 +474,20 @@ describe("Composer prepaint", () => {
 			content: "saved conversation",
 			timestamp: Date.now(),
 		});
-		const mode = new InteractiveMode(testSession.session, "test");
+		const terminal = new CountingTerminal();
+		const composer = new Composer({ preferences: config, terminal });
+		composer.start();
+		const lease = new ComposerLease(composer);
+		const mode = new InteractiveMode(
+			testSession.session,
+			"test",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			lease.composer,
+		);
+		lease.adopt();
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		const root = AgentRegistry.global().register({
 			id: "StartupRestoreRoot",
@@ -509,24 +522,27 @@ describe("Composer prepaint", () => {
 		});
 		let renderedAtRecovery = false;
 		let historyAtRecovery = "";
-		const continuation = vi.spyOn(testSession.session, "deliverIrcMessage").mockImplementation(async () => {
+		const continuation = vi.spyOn(testSession.session, "deliverRestartContinuation").mockImplementation(async () => {
 			renderedAtRecovery = mode.initialChatRendered;
 			historyAtRecovery = Bun.stripANSI(mode.chatContainer.render(100).join("\n"));
 			recovering.resolve();
-			return "woken";
 		});
 		try {
 			const initializing = mode.init({ suppressWelcomeIntro: true });
 			// Race the real init pipeline: baseline enters the controller before replay.
 			await Promise.race([rendering.promise, recovering.promise]);
+			expect(continuation).not.toHaveBeenCalled();
 			finishRender.resolve();
 			await initializing;
+			await terminal.waitForRender();
+			await recovering.promise;
 			expect(renderedAtRecovery).toBe(true);
 			expect(historyAtRecovery).toContain("saved conversation");
 			expect(continuation).toHaveBeenCalledTimes(1);
 		} finally {
 			finishRender.resolve();
 			mode.stop();
+			lease.dispose();
 			AgentRegistry.global().unregister(root.id, root);
 			await testSession.cleanup();
 			vi.restoreAllMocks();
@@ -616,7 +632,10 @@ describe("Composer prepaint", () => {
 			lease.adopt();
 			vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 			const prompt = vi.spyOn(testSession.session, "prompt").mockResolvedValue(true);
-			const resumed = vi.spyOn(testSession.session, "resumeAfterAskReanswer").mockImplementation(() => {});
+			const resumedOnce = Promise.withResolvers<void>();
+			const resumed = vi.spyOn(testSession.session, "resumeAfterAskReanswer").mockImplementation(() => {
+				resumedOnce.resolve();
+			});
 			try {
 				await mode.init({ suppressWelcomeIntro: true });
 				expect(resumed).not.toHaveBeenCalled();
@@ -627,7 +646,11 @@ describe("Composer prepaint", () => {
 				if (draft) terminal.sendInput("\x15");
 				terminal.sendInput("\x1b[B");
 				terminal.sendInput("\r");
-				for (let i = 0; i < 100; i++) await Promise.resolve();
+				expect(resumed).not.toHaveBeenCalled();
+				terminal.sendInput("\r");
+				// Restored questions resume through child recovery after the first input-ready paint.
+				await terminal.waitForRender();
+				await resumedOnce.promise;
 				const answers = testSession.session.sessionManager
 					.getBranch()
 					.flatMap(entry =>

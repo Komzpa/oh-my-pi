@@ -320,7 +320,7 @@ function cases(now: number): Case[] {
 		row: cap,
 		state: "working",
 		workers: [{ id: owner }],
-		expected: { tool: "todo", args: { op: "append", items: ["Independent remainder"] } },
+		expected: null,
 	});
 	const external = change(blocked, { blocker: "Waiting for service maintenance window" });
 	output.push({ id: "external-blocker", row: external, state: "stuck", expected: null });

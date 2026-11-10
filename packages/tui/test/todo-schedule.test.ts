@@ -889,7 +889,14 @@ describe("audit and handoff display precedence", () => {
 			agent: "qa-auditor",
 			attempts: 2,
 		};
+		row.schedule!.progress = { at: 5, evidence: "Handoff administration" };
+		expect(classify(row).state).toBe("needs worker");
 		row.schedule!.progress = { at: 5, evidence: "worker supplied keyboard proof" };
+		row.schedule!.materialInputs = {
+			criterion: row.content,
+			receipts: ["artifact://keyboard-proof-at-head"],
+			prerequisites: [],
+		};
 		expect(classify(row).state).toBe("audit queued");
 	});
 	it("allows a handed-off question with no implementation audit or review page", () => {

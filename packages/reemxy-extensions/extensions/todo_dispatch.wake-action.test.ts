@@ -164,7 +164,7 @@ test("CHURN chain review persists every link, survives reload and rejects unrela
 
 test("real chain dependencies can be rejected with a persisted per-link reason, changed graphs rearm review", async () => {
   const h = await harness([], true, false, false);
-  await h.wake();
+  await h.hooks.get("turn_start")({}, h.ctx);
   const head = h.phases[0].tasks[0];
   const persisted = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand");
   expect(persisted?.data.key).toMatch(/^chain:/);
@@ -180,11 +180,12 @@ Collateral2 <- Collateral: consumes first collateral output` };
   expect(receipt.data.rejection).toBe(head.schedule.progress.evidence);
   const resumed = await harness(h.journal, true, false, false);
   resumed.phases[0].tasks[0].schedule.progress = structuredClone(head.schedule.progress);
-  await resumed.wake();
-  expect(resumed.sent.findLast(message => message.options?.triggerTurn)?.content).not.toContain("WAIT-CHAIN REVIEW");
+  await resumed.hooks.get("turn_start")({}, resumed.ctx);
+  expect(resumed.sent.filter(message => message.content.includes("WAIT-CHAIN REVIEW"))).toEqual([]);
+  expect(resumed.sent.some(message => message.options?.triggerTurn)).toBe(false);
   resumed.phases[0].tasks[4].schedule.dependencies.push("Labels");
-  await resumed.wake();
-  expect(resumed.sent.findLast(message => message.options?.triggerTurn)?.content).toContain("WAIT-CHAIN REVIEW");
+  await resumed.hooks.get("turn_start")({}, resumed.ctx);
+  expect(resumed.sent.findLast(message => message.customType === "todo-dispatch-action-required")?.content).toContain("WAIT-CHAIN REVIEW");
 });
 
 
@@ -419,27 +420,28 @@ function powerChain(h) {
 
 test("dependency-held Power CHURN stays silent, then rearms and escalates after Cooling finishes", async () => {
   const h = await harness([], false, false, false);
-  await h.wake();
+  await h.hooks.get("turn_start")({}, h.ctx);
   h.sent.length = 0; h.journal.length = 0;
   powerChain(h);
-  for (let i = 0; i < 3; i++) { await h.wake(); await h.hooks.get("turn_end")({}, h.ctx); }
+  for (let i = 0; i < 3; i++) { await h.hooks.get("turn_start")({}, h.ctx); await h.hooks.get("turn_end")({}, h.ctx); }
   expect(h.sent.filter(m => m.details?.actionDemand || m.customType === "todo-dispatch-action-required")).toEqual([]);
   expect(h.journal.filter(e => e.customType === "todo-dispatch-action-demand" && e.data.misses > 0)).toEqual([]);
   expect(h.sent.some(m => m.content.includes("CHURN:"))).toBe(false);
   h.jobs.running = [];
   h.phases[0].tasks[2].status = "completed";
   await h.hooks.get("turn_end")({}, h.ctx);
-  await h.wake();
+  await h.hooks.get("turn_start")({}, h.ctx);
   const notices = h.sent.filter(m => m.customType === "todo-dependency-wait");
   expect(notices).toHaveLength(1);
   expect(notices[0].content).toContain("Power <- Cooling");
   expect(h.sent.findLast(m => m.customType === "todo-dispatch-action-required")?.content).toContain("Dispatch a worker for Cooling");
-  await h.wake();
+  await h.hooks.get("turn_start")({}, h.ctx);
   expect(h.sent.filter(m => m.customType === "todo-dependency-wait")).toHaveLength(1);
   h.phases[0].tasks[1].status = "completed";
-  await h.wake();
+  await h.hooks.get("turn_start")({}, h.ctx);
   await h.hooks.get("turn_end")({}, h.ctx);
   expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.misses).toBe(1);
+  await h.hooks.get("turn_start")({}, h.ctx);
   await h.hooks.get("turn_end")({}, h.ctx);
   expect(h.sent.findLast(m => m.customType === "todo-dispatch-action-required").content).toContain("ESCALATED");
   expect(h.sent.findLast(m => m.customType === "todo-dispatch-action-required").content).toContain("Resolve the acceptance failure on Power");
@@ -447,16 +449,26 @@ test("dependency-held Power CHURN stays silent, then rearms and escalates after 
 
 test("new dependency suspends an escalated CHURN counter, including after reload", async () => {
   const h = await harness([], false, false, false);
-  await h.wake();
+  await h.hooks.get("turn_start")({}, h.ctx);
   await h.hooks.get("turn_end")({}, h.ctx);
+  await h.hooks.get("turn_start")({}, h.ctx);
   await h.hooks.get("turn_end")({}, h.ctx);
+  expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.misses).toBe(2);
   h.phases[0].tasks[0].schedule.dependencies = ["Commit"];
   h.phases[0].tasks.push({ content: "Commit", status: "in_progress", schedule: { owner: "Writer", dependencies: [] } });
   h.jobs.running.push({ id: "Writer", type: "task", status: "running" });
   await h.hooks.get("turn_end")({}, h.ctx);
   expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.misses).toBe(0);
   const resumed = await harness(h.journal, false, false, false);
-  await resumed.wake();
+  resumed.phases.splice(0, resumed.phases.length, ...structuredClone(h.phases));
+  resumed.jobs.running.push(...structuredClone(h.jobs.running));
+  await resumed.hooks.get("turn_start")({}, resumed.ctx);
+  await resumed.hooks.get("turn_end")({}, resumed.ctx);
+  expect(resumed.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.misses).toBe(0);
+  expect(resumed.sent.filter(message => message.customType === "todo-dispatch-action-required")).toEqual([]);
+  resumed.phases[0].tasks[1].status = "completed";
+  resumed.jobs.running = [];
+  await resumed.hooks.get("turn_start")({}, resumed.ctx);
   await resumed.hooks.get("turn_end")({}, resumed.ctx);
   expect(resumed.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.misses).toBe(1);
 });
@@ -513,6 +525,7 @@ for (const broken of ["missing", "cyclic"]) {
     if (broken === "cyclic") h.phases[0].tasks.push({
       content: "Broken prerequisite", status: "pending", schedule: { dependencies: ["Power"] },
     });
+    await h.hooks.get("turn_start")({}, h.ctx);
     await h.hooks.get("turn_end")({}, h.ctx);
     const notices = h.sent.filter(m => m.customType === "todo-dependency-wait" && m.details?.row === "Power");
     expect(notices).toHaveLength(1);
@@ -523,6 +536,9 @@ for (const broken of ["missing", "cyclic"]) {
     expect(notices[0].content).toContain("repair a missing/cyclic dependency");
     expect(notices[0].content).not.toContain("Cooling");
     expect(notices[0].content).not.toContain("Commit");
+    await h.hooks.get("turn_start")({}, h.ctx);
+    await h.hooks.get("turn_end")({}, h.ctx);
+    expect(h.sent.filter(m => m.customType === "todo-dependency-wait" && m.details?.row === "Power")).toHaveLength(1);
   });
 }
 

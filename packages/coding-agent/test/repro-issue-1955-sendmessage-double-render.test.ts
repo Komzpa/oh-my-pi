@@ -9,6 +9,7 @@ import type {
 	ExtensionUIContext,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
+import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext, RenderSessionContextOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
@@ -86,6 +87,7 @@ function createHarness(): Harness {
 		getAssistantThinkingRenderers: () => undefined,
 		getAssistantTextRenderers: () => [],
 		getComposerShapes: () => [],
+		setToolApprovalPreviewWaiter: () => () => {},
 	};
 
 	const messages: AgentMessage[] = [];
@@ -94,28 +96,28 @@ function createHarness(): Harness {
 		messages,
 		extensionRunner: fakeRunner,
 		/**
-		 * Mirror `AgentSession.sendCustomMessage` non-streaming
-		 * `deliverAs: "nextTurn"` / no-trigger path: persist the message as a
-		 * `custom_message` session entry and append it to the session messages
-		 * (silently — no event, no render).
+		 * Mirror the idle `nextTurn` append and its message lifecycle events.
 		 */
 		sendCustomMessage: async (msg: {
 			customType: string;
 			content: string | (TextContent | ImageContent)[];
 			display?: boolean;
 			details?: unknown;
-			attribution?: string;
+			attribution?: Extract<AgentMessage, { role: "custom" }>["attribution"];
 		}) => {
 			const parent = entries.length === 0 ? null : entries[entries.length - 1].id;
 			entries.push(makeCustomEntry(entries.length + 1, extractText(msg.content), parent));
-			messages.push({
+			const appended: AgentMessage = {
 				role: "custom",
 				customType: msg.customType,
 				content: msg.content,
 				display: msg.display ?? false,
-				attribution: "agent",
+				attribution: msg.attribution ?? "agent",
 				timestamp: Date.now(),
-			});
+			};
+			messages.push(appended);
+			await eventController.handleEvent({ type: "message_start", message: appended });
+			await eventController.handleEvent({ type: "message_end", message: appended });
 		},
 	};
 
@@ -137,6 +139,9 @@ function createHarness(): Harness {
 		settings: { get: () => false },
 		session: sessionMock,
 		viewSession: {
+			agent: { state: { streamMessage: null, pendingToolCalls: new Set() } },
+			isStreaming: false,
+			sessionId: "render-test",
 			buildTranscriptSessionContext: () => buildSessionContext(entries),
 			sessionManager: { getEntries: () => entries, getConversationTip: () => undefined },
 		},
@@ -173,6 +178,8 @@ function createHarness(): Harness {
 		},
 	} as unknown as InteractiveModeContext;
 	const helpers = new UiHelpers(ctx);
+	ctx.isInitialized = true;
+	const eventController = new EventController(ctx);
 
 	const controller = new ExtensionUiController(ctx);
 
@@ -226,8 +233,8 @@ describe("issue #1955 — sendMessage(display:true) during session_start", () =>
 			{ deliverAs: "nextTurn" },
 		);
 
-		// Drain the `.then(applyCustomMessageDisplay)` microtask chain queued by
-		// `actions.sendMessage` before the host's renderInitialMessages fires.
+		// Let the fake sender finish persisting and dispatching its message events
+		// before the host's renderInitialMessages fires.
 		await Bun.sleep(0);
 
 		// Mirror main.ts: after `mode.init()` returns, the host renders the
@@ -264,7 +271,7 @@ describe("issue #1955 — sendMessage(display:true) during session_start", () =>
 		expect(countOccurrences(rendered, marker)).toBe(1);
 	});
 
-	test("defers display rebuilds that arrive during the incremental initial replay", async () => {
+	test("keeps startup message events under the incremental initial replay", async () => {
 		const initialMarker = "INITIAL_ENTRY_127_END";
 		const lateMarker = "LATE_EXTENSION_MESSAGE_END";
 		const harness = createHarness();
@@ -299,7 +306,7 @@ describe("issue #1955 — sendMessage(display:true) during session_start", () =>
 		expect(rendered.indexOf(initialMarker)).toBeLessThan(rendered.indexOf(lateMarker));
 	});
 
-	test("defers display rebuilds that arrive during a later incremental replay", async () => {
+	test("keeps message events under a later incremental replay", async () => {
 		const existingMarker = "EXISTING_ENTRY_127_END";
 		const lateMarker = "LATE_DURING_REPLAY_END";
 		const harness = createHarness();

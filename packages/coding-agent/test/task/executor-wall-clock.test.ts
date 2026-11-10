@@ -236,7 +236,8 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			signal: abortController.signal,
 		});
 		const creationOptions = await creationStarted.promise;
-		expect(creationOptions.expectedAgentRef).toBeNull();
+		expect(creationOptions.expectedAgentRef).toBe(registry.get("late-generation"));
+		expect(creationOptions.expectedAgentRef).toMatchObject({ status: "running", starting: true, session: null });
 		abortController.abort();
 		const cancelled = await run;
 		expect(cancelled.aborted).toBe(true);

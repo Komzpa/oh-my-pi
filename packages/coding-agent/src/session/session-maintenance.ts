@@ -608,19 +608,20 @@ export class SessionMaintenance {
 	#incompleteRecoveryAttempts = 0;
 
 	/** Backoff survives user prompts and changing compaction cut points. Token growth uses the local estimate throughout. */
-	#compactionBreaker: { model: string; window: number; tokens: number; notice: string } | undefined;
+	#compactionBreaker: { sessionId: string; model: string; window: number; tokens: number; notice: string } | undefined;
 
 	#breakerModelKey(): string {
 		return `${this.#model?.provider}/${this.#model?.id}`;
 	}
 
-	#armCompactionBreaker(tokens: number): void {
+	#armCompactionBreaker(tokens: number, reason = ""): void {
 		const model = this.#model;
 		if (!model || this.#compactionBreaker) return;
 		this.cancelSpeculation();
 		const notice = prompt
 			.render(compactionBackoffNotice, {
 				model: this.#breakerModelKey(),
+				reason,
 				window: model.contextWindow,
 				tokens,
 				fixedTokens: computeNonMessageTokens(
@@ -630,7 +631,13 @@ export class SessionMaintenance {
 				),
 			})
 			.trim();
-		this.#compactionBreaker = { model: this.#breakerModelKey(), window: model.contextWindow ?? 0, tokens, notice };
+		this.#compactionBreaker = {
+			sessionId: this.#host.sessionManager.getSessionId(),
+			model: this.#breakerModelKey(),
+			window: model.contextWindow ?? 0,
+			tokens,
+			notice,
+		};
 		this.#host.emitCompactionBackoffNotice(notice);
 	}
 
@@ -642,6 +649,7 @@ export class SessionMaintenance {
 		const threshold = resolveThresholdTokens(model.contextWindow ?? 0, this.#compactionSettings);
 		if (breaker) {
 			if (
+				breaker.sessionId !== this.#host.sessionManager.getSessionId() ||
 				breaker.model !== this.#breakerModelKey() ||
 				breaker.window !== model.contextWindow ||
 				tokens < Math.min(threshold, breaker.tokens * 0.9)
@@ -659,7 +667,7 @@ export class SessionMaintenance {
 			this.#host.settings.revision,
 		);
 		if (fixed >= threshold) {
-			this.#armCompactionBreaker(tokens);
+			this.#armCompactionBreaker(tokens, FIXED_CONTEXT_DEAD_END_WARNING);
 			return true;
 		}
 		return false;
@@ -671,7 +679,14 @@ export class SessionMaintenance {
 		const window = this.#model?.contextWindow ?? 0;
 		if (window > 0) {
 			const tokens = this.#estimateStoredContextTokens();
-			if (tokens >= window) this.#armCompactionBreaker(tokens);
+			if (tokens >= window) {
+				const model = this.#model!;
+				const settings = this.#compactionSettings;
+				// A smaller reader can reopen reducible history behind a native boundary.
+				// Let its first pre-prompt pass summarize it before declaring a dead end.
+				const branch = this.#host.sessionManager.getContextBranch(model, settings);
+				if (!prepareCompaction(branch, settings, model, this.#tokenizer)) this.#armCompactionBreaker(tokens);
+			}
 		}
 	}
 
@@ -1125,7 +1140,7 @@ export class SessionMaintenance {
 			if (opts.signal?.aborted || opts.isCurrent?.() === false) throw new CompactionCancelledError();
 		};
 		assertCurrent();
-		const branchEntries = this.#host.sessionManager.getContextBranch();
+		const branchEntries = this.#host.sessionManager.getContextBranch(this.#model);
 		const latestCompaction = getLatestCompactionEntry(branchEntries);
 		const config = this.#withPlanProtection({
 			...(opts.config ?? AGGRESSIVE_SHAKE_CONFIG),
@@ -1498,7 +1513,7 @@ export class SessionMaintenance {
 					),
 				);
 			}
-			const pathEntries = this.#host.sessionManager.getContextBranch();
+			const pathEntries = this.#host.sessionManager.getContextBranch(this.#model, effectiveSettings);
 			const preparation = prepareCompaction(pathEntries, effectiveSettings, activeModel, this.#tokenizer);
 			if (!preparation) {
 				// Check why we can't compact
@@ -1894,7 +1909,7 @@ export class SessionMaintenance {
 		signalController: AbortController,
 		onCommitted: () => void,
 	): Promise<CompactionResult> {
-		const entries = this.#host.sessionManager.getContextBranch();
+		const entries = this.#host.sessionManager.getContextBranch(this.#model, this.#compactionSettings);
 		const settings = this.#compactionSettings;
 		const preparation = prepareCompaction(entries, settings, model, this.#tokenizer);
 		if (!preparation) {
@@ -2014,7 +2029,7 @@ export class SessionMaintenance {
 			return COMPACTION_CHECK_NONE;
 		}
 		const settings = this.#compactionSettings;
-		const branch = this.#host.sessionManager.getContextBranch();
+		const branch = this.#host.sessionManager.getContextBranch(this.#model, this.#compactionSettings);
 		const preparation = prepareCompaction(branch, settings, model, this.#tokenizer);
 		if (!preparation) {
 			logger.warn("Experimental context rollover skipped", { reason: "no-preparation", stage: "prepare" });
@@ -2062,7 +2077,7 @@ export class SessionMaintenance {
 				const hookResult = (await this.#host.extensionRunner.emit({
 					type: "session_before_compact",
 					preparation,
-					branchEntries: this.#host.sessionManager.getContextBranch(),
+					branchEntries: this.#host.sessionManager.getContextBranch(this.#model),
 					customInstructions: undefined,
 					signal: controller.signal,
 				})) as SessionBeforeCompactResult | undefined;
@@ -2392,7 +2407,10 @@ export class SessionMaintenance {
 		this.cancelSpeculation();
 		const model = this.#model;
 		if (!model) throw new Error("No model selected for handoff");
-		const entries = this.#host.sessionManager.getContextBranch();
+		const entries = this.#host.sessionManager.getContextBranch(
+			model,
+			resolveMethodSettings(this.#compactionSettings, "handoff"),
+		);
 		const messageCount = entries.filter(e => e.type === "message").length;
 		if (messageCount < 2) throw new Error("Nothing to hand off (no messages yet)");
 		const compactionSettings = this.#compactionSettings;
@@ -2584,7 +2602,7 @@ export class SessionMaintenance {
 		if (!model) return clear();
 		const settings = this.#compactionSettings;
 		const effectiveSettings = resolveMethodSettings(settings, method);
-		const branch = this.#host.sessionManager.getContextBranch();
+		const branch = this.#host.sessionManager.getContextBranch(model, effectiveSettings);
 		const snapshotLeafId = branch[branch.length - 1]?.id;
 		if (!snapshotLeafId) return clear();
 		const preparation = prepareCompaction(branch, effectiveSettings, model, this.#tokenizer);
@@ -2691,7 +2709,7 @@ export class SessionMaintenance {
 		) {
 			return false;
 		}
-		const branch = this.#host.sessionManager.getContextBranch();
+		const branch = this.#host.sessionManager.getContextBranch(this.#model);
 		const leafIdx = branch.findIndex(entry => entry.id === armed.snapshotLeafId);
 		if (leafIdx < 0) return false;
 		for (let i = leafIdx + 1; i < branch.length; i++) {
@@ -2976,7 +2994,7 @@ export class SessionMaintenance {
 		}
 		if (pendingMidTurnDeadEnd !== undefined) {
 			const prep = prepareCompaction(
-				this.#host.sessionManager.getContextBranch(),
+				this.#host.sessionManager.getContextBranch(this.#model, this.#compactionSettings),
 				compactionSettings,
 				model,
 				this.#tokenizer,
@@ -3121,7 +3139,7 @@ export class SessionMaintenance {
 			const deadEndFirstKeptId = this.#midTurnCompactionDeadEnds.get(activeMessages);
 			const prep = model
 				? prepareCompaction(
-						this.#host.sessionManager.getContextBranch(),
+						this.#host.sessionManager.getContextBranch(this.#model, this.#compactionSettings),
 						compactionSettings,
 						model,
 						this.#tokenizer,
@@ -3176,7 +3194,7 @@ export class SessionMaintenance {
 		if (result.automaticContinuationBlocked) {
 			const deadEndFirstKeptId = model
 				? (prepareCompaction(
-						this.#host.sessionManager.getContextBranch(),
+						this.#host.sessionManager.getContextBranch(this.#model, this.#compactionSettings),
 						compactionSettings,
 						model,
 						this.#tokenizer,
@@ -3311,7 +3329,9 @@ export class SessionMaintenance {
 		// A cut point inside the failing turn is not older reclaimable history.
 		// Require a delivered assistant turn in the part being summarized;
 		// shake selects its own victims and has a no-progress guard.
-		const payloadBranch = trustedPayloadRejection ? this.#host.sessionManager.getContextBranch() : undefined;
+		const payloadBranch = trustedPayloadRejection
+			? this.#host.sessionManager.getContextBranch(this.#model)
+			: undefined;
 		const reclaimablePayloadHistory =
 			trustedPayloadRejection &&
 			compactionAvailable &&
@@ -4336,7 +4356,7 @@ export class SessionMaintenance {
 			this.#tokenizer,
 			this.#host.settings.revision,
 		);
-		const branch = this.#host.sessionManager.getContextBranch();
+		const branch = this.#host.sessionManager.getContextBranch(this.#model);
 		const leaf = branch.at(-1);
 		const archive = snapcompact.getPreservedArchive(args.preserveData);
 		const blocks = archive
@@ -4407,7 +4427,9 @@ export class SessionMaintenance {
 	 * Current branch context tokens in the same `buildSessionContext` +
 	 * {@link #countProjectedMessages} domain as {@link #projectCompactionContextTokens}.
 	 */
-	#projectCurrentBranchContextTokens(branch: SessionEntry[] = this.#host.sessionManager.getContextBranch()): number {
+	#projectCurrentBranchContextTokens(
+		branch: SessionEntry[] = this.#host.sessionManager.getContextBranch(this.#model),
+	): number {
 		const nonMessageTokens = computeNonMessageTokens(
 			this.#host.nonMessageTokenSource(),
 			this.#tokenizer,
@@ -4705,7 +4727,7 @@ export class SessionMaintenance {
 		// elide/image tiers below can never shrink it): rebuild the archive at
 		// a threshold-derived frame budget.
 		const frameRescue = await this.#rescueSnapcompactFrameOverflow(
-			this.#host.sessionManager.getContextBranch(),
+			this.#host.sessionManager.getContextBranch(this.#model),
 			resolveMethodSettings(this.#compactionSettings, "snapcompact"),
 			signal,
 		);
@@ -5590,7 +5612,7 @@ export class SessionMaintenance {
 				return COMPACTION_CHECK_NONE;
 			}
 
-			const pathEntries = this.#host.sessionManager.getContextBranch();
+			const pathEntries = this.#host.sessionManager.getContextBranch(this.#model, effectiveSettings);
 
 			let pathEntriesForCompaction = pathEntries;
 			let preparation = prepareCompaction(pathEntriesForCompaction, effectiveSettings, this.#model, this.#tokenizer);
@@ -5632,7 +5654,7 @@ export class SessionMaintenance {
 					);
 					if (frameRescueResult) {
 						rescueRewroteHistory = true;
-						pathEntriesForCompaction = this.#host.sessionManager.getContextBranch();
+						pathEntriesForCompaction = this.#host.sessionManager.getContextBranch(this.#model, effectiveSettings);
 						frameRescueCreatedHeadroom = this.#compactionCreatedHeadroom();
 					}
 					if (!frameRescueCreatedHeadroom) {
@@ -5642,7 +5664,10 @@ export class SessionMaintenance {
 								// Only reached when a tier actually freed something, so the
 								// branch has been rewritten either way.
 								rescueRewroteHistory = true;
-								pathEntriesForCompaction = this.#host.sessionManager.getContextBranch();
+								pathEntriesForCompaction = this.#host.sessionManager.getContextBranch(
+									this.#model,
+									effectiveSettings,
+								);
 								preparation = prepareCompaction(
 									pathEntriesForCompaction,
 									effectiveSettings,
@@ -5656,11 +5681,19 @@ export class SessionMaintenance {
 				}
 				if (!preparation) {
 					const noProgressDeadEnd = reason !== "idle" && !frameRescueCreatedHeadroom;
-					if (noProgressDeadEnd) this.#armCompactionBreaker(this.#estimateStoredContextTokens());
+
 					const implicatedFrames =
 						frameRescueResult && !frameRescueCreatedHeadroom
 							? (snapcompact.getPreservedArchive(frameRescueResult.preserveData)?.frames.length ?? 0)
 							: 0;
+					if (noProgressDeadEnd) {
+						this.#armCompactionBreaker(
+							this.#estimateStoredContextTokens(),
+							this.#compactionDeadEndWarning(
+								this.#deadEndRemedies("shrink it (e.g. clear large tool output)", implicatedFrames),
+							),
+						);
+					}
 					const deadEndWarning = noProgressDeadEnd
 						? (this.#compactionBreaker?.notice ??
 							this.#compactionDeadEndWarning(
@@ -6311,7 +6344,7 @@ export class SessionMaintenance {
 					? `${action} compaction would not reduce context; trying the next preferred compaction method.`
 					: `${action} compaction would not reduce context.`;
 				if (!laterMethodUsable && reason !== "idle") {
-					this.#armCompactionBreaker(this.#estimateStoredContextTokens());
+					this.#armCompactionBreaker(this.#estimateStoredContextTokens(), noReductionMessage);
 				} else {
 					this.#host.emitNotice("warning", noReductionMessage, "compaction");
 				}
@@ -6586,7 +6619,10 @@ export class SessionMaintenance {
 			}
 		}
 		if (noProgressDeadEnd) {
-			this.#armCompactionBreaker(this.#estimateStoredContextTokens());
+			this.#armCompactionBreaker(
+				this.#estimateStoredContextTokens(),
+				this.#compactionDeadEndWarning("clear large tool output"),
+			);
 		}
 		const deadEndWarning = noProgressDeadEnd
 			? (this.#compactionBreaker?.notice ?? this.#compactionDeadEndWarning("clear large tool output"))

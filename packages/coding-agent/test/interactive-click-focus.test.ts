@@ -259,19 +259,39 @@ describe("inline click-to-focus geometry", () => {
 			expect(screenRow).toBeGreaterThanOrEqual(0);
 			term.sendInput(`\x1b[<0;5;${screenRow + 1}M`);
 		};
+		const pinnedRows = (): string[] => {
+			const rows = plainRows(term.getViewport());
+			const header = rows.findIndex(row => row.includes("Subagents · 5 running"));
+			expect(header).toBeGreaterThanOrEqual(0);
+			const end = rows.findIndex((row, index) => index > header && row.trim().length === 0);
+			return rows.slice(header + 1, end < 0 ? undefined : end);
+		};
 
 		// Collapsed by default: three rows plus the expander.
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("more — expand")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3"))).toBe(false);
+		expect(
+			pinnedRows()
+				.filter(row => row.includes("ToggleAgent"))
+				.map(row => row.match(/ToggleAgent\d/)?.[0]),
+		).toEqual(["ToggleAgent0", "ToggleAgent1", "ToggleAgent2"]);
+		expect(pinnedRows().some(row => row.includes("more — expand"))).toBe(true);
 
 		// Clicking the expander paints the slotted window with a collapse row.
 		await clickRow("more — expand");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("show less")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent4"))).toBe(true);
+		expect(
+			pinnedRows()
+				.filter(row => row.includes("ToggleAgent"))
+				.map(row => row.match(/ToggleAgent\d/)?.[0]),
+		).toEqual(["ToggleAgent0", "ToggleAgent1", "ToggleAgent2", "ToggleAgent3", "ToggleAgent4"]);
 		// Clicking it again collapses back to a few rows.
 		await clickRow("show less");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("more — expand")));
-		expect(plainRows(term.getViewport()).some(row => row.includes("ToggleAgent3"))).toBe(false);
+		expect(
+			pinnedRows()
+				.filter(row => row.includes("ToggleAgent"))
+				.map(row => row.match(/ToggleAgent\d/)?.[0]),
+		).toEqual(["ToggleAgent0", "ToggleAgent1", "ToggleAgent2"]);
 	});
 
 	/**

@@ -34,7 +34,9 @@ test("DC delivered legacy status is closed consistently; a late undelivered neig
 	expect(forecast.rows[0].status).toBe("completed");
 	expect(forecast.rows[0].overdue).toBe(false);
 	expect(formatTaskForecastDisplay(forecast.rows[0], now)).toContain(`awaiting your review → ${url}`);
-	expect(formatPlanForecastDisplay(forecast, now)).toStartWith("1 awaiting your review");
+	const display = formatPlanForecastDisplay(forecast, now);
+	expect(display).toContain("1 awaiting your review");
+	expect(display).toContain("1 overdue");
 	expect(forecast.rows[1].overdue).toBe(true);
 	expect(forecast.rows[2].status).toBe("completed");
 	expect(formatTaskForecastDisplay(forecast.rows[2], now)).not.toContain("awaiting your review");

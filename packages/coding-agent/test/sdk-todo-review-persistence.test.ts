@@ -212,6 +212,15 @@ test("a passing runtime audit closes its delivered row through the real schedule
 			updates: [{ task: "Showcase scenario", decision: "owner" }],
 		});
 		expect(staffed.isError).not.toBe(true);
+		// Direct tool execution bypasses the agent loop, which normally journals this result.
+		manager.appendMessage({
+			role: "toolResult",
+			toolCallId: "owner-staff",
+			toolName: "todo",
+			...staffed,
+			isError: staffed.isError ?? false,
+			timestamp: Date.now(),
+		});
 		const refused = await tool.execute("owner-done", { op: "done", task: "Showcase scenario" });
 		expect(refused.isError).toBe(true);
 		expect(session.getTodoPhases()[0].tasks.find(row => row.content === "Showcase scenario")?.status).toBe(

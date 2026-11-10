@@ -179,12 +179,22 @@ function createMockSession(
 }
 
 function mockCreateAgentSession(session: AgentSession) {
-	return vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-		session,
-		extensionsResult: {} as unknown as LoadExtensionsResult,
-		setToolUIContext: () => {},
-		eventBus: new EventBus(),
-	} satisfies CreateAgentSessionResult);
+	return vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+		// The executor reserves the generation; the SDK attaches that exact ref.
+		AgentRegistry.global().attachSession(
+			options.agentId!,
+			session,
+			options.sessionManager?.getSessionFile(),
+			options.expectedAgentRef ?? undefined,
+		);
+		AgentRegistry.global().setStatus(options.agentId!, "running", options.expectedAgentRef ?? undefined);
+		return {
+			session,
+			extensionsResult: {} as unknown as LoadExtensionsResult,
+			setToolUIContext: () => {},
+			eventBus: new EventBus(),
+		} satisfies CreateAgentSessionResult;
+	});
 }
 // Use a bundled scout so these runSubprocess tests exercise the built-in
 // ceiling together with a lower task.softRequestBudget setting.
@@ -282,7 +292,6 @@ describe("runSubprocess soft request budget", () => {
 			} as AgentSessionEvent);
 		});
 		const createAgentSessionSpy = mockCreateAgentSession(handle.session);
-		registerRunning(id, handle.session);
 		const parentSessionFile = `${tempDir.path()}/parent.jsonl`;
 
 		const result = await runSubprocess({ ...baseOptions(id), sessionFile: parentSessionFile });
@@ -362,7 +371,6 @@ describe("runSubprocess soft request budget", () => {
 		});
 		const advisorActive = vi.spyOn(handle.session, "isAdvisorActive");
 		mockCreateAgentSession(handle.session);
-		registerRunning(id, handle.session);
 
 		const result = await runSubprocess({
 			...baseOptions(id, eventBus),
@@ -436,7 +444,6 @@ describe("runSubprocess soft request budget", () => {
 			}
 		});
 		mockCreateAgentSession(handle.session);
-		registerRunning(id, handle.session);
 
 		const result = await runSubprocess(baseOptions(id));
 		expect(result.aborted).toBe(true);
@@ -497,7 +504,6 @@ describe("runSubprocess soft request budget", () => {
 			},
 		);
 		mockCreateAgentSession(handle.session);
-		registerRunning(id, handle.session, workerSessionFile);
 
 		const result = await runSubprocess({ ...baseOptions(id), signal: controller.signal });
 
@@ -541,7 +547,6 @@ describe("runSubprocess soft request budget", () => {
 			() => promptStopped.resolve(),
 		);
 		mockCreateAgentSession(handle.session);
-		registerRunning(id, handle.session, workerSessionFile);
 		const manager = new AsyncJobManager({ maxRunningJobs: 1 });
 		AsyncJobManager.setInstance(manager);
 		manager.register(
@@ -601,16 +606,12 @@ describe("runSubprocess soft request budget", () => {
 			emit({ type: "message_end", message } as unknown as AgentSessionEvent);
 		});
 		let capturedOptions: { subagentEventBus?: EventBus } | undefined;
-		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+		const createSpy = mockCreateAgentSession(handle.session);
+		const attachSession = createSpy.getMockImplementation()!;
+		createSpy.mockImplementation(async options => {
 			capturedOptions = options;
-			return {
-				session: handle.session,
-				extensionsResult: {} as unknown as LoadExtensionsResult,
-				setToolUIContext: () => {},
-				eventBus: new EventBus(),
-			} satisfies CreateAgentSessionResult;
+			return attachSession(options);
 		});
-		registerRunning(id, handle.session);
 
 		const terminal = waitForTerminal();
 		await runSubprocess(baseOptions(id, sessionBus, treeBus));
@@ -646,15 +647,7 @@ describe("runSubprocess soft request budget", () => {
 			pushMessage(message);
 			emit({ type: "message_end", message } as unknown as AgentSessionEvent);
 		});
-		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async () => {
-			return {
-				session: handle.session,
-				extensionsResult: {} as unknown as LoadExtensionsResult,
-				setToolUIContext: () => {},
-				eventBus: new EventBus(),
-			} satisfies CreateAgentSessionResult;
-		});
-		registerRunning(id, handle.session);
+		mockCreateAgentSession(handle.session);
 
 		await runSubprocess(baseOptions(id, sharedBus, sharedBus));
 		await terminal.promise;
@@ -673,7 +666,6 @@ describe("runSubprocess soft request budget", () => {
 			controller.abort();
 		});
 		mockCreateAgentSession(handle.session);
-		registerRunning(id, handle.session);
 
 		const result = await runSubprocess({ ...baseOptions(id), signal: controller.signal });
 

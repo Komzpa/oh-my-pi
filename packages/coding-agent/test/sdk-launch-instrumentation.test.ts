@@ -96,7 +96,7 @@ test("sprint persistence after an await names serialization without changing jou
 		});
 	});
 	const spans = logs.mock.calls.find(call => call[0] === "subagent launch spans")?.[1]?.spans;
-	expect(spans).toEqual(expect.arrayContaining([expect.objectContaining({ name: "journal.record" })]));
+	expect(spans).toEqual(expect.arrayContaining([expect.objectContaining({ name: "journal.write" })]));
 	expect(observed).toBe("state.serialize:todo-dispatch-sprint-state");
 	await manager.close();
 	const persisted = (await Bun.file(manager.getSessionFile()!).text())

@@ -1069,7 +1069,7 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		expect((h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx) as any)?.block).toBe(true);
 	});
 
-	test("a missed deadline replans open requested rows and keeps executing", async () => {
+	test("a missed deadline reconciles findings and keeps the full requested result open", async () => {
 		setSystemTime(NOW);
 		const h = harness("Ship by 19:00");
 		await h.set({ local_time: "19:00" }, "Ship by 19:00");
@@ -1081,7 +1081,9 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		const missedNotice = h.notices.findLast(notice => notice.customType === "goal-deadline-gate-notice")!.content;
 		expect(missedNotice).toContain("MISSED 1m");
 		expect(missedNotice).toContain("Remaining: Ship the API fix");
-		expect(missedNotice).toContain("put the most valuable shippable piece first");
+		expect(missedNotice).toMatch(/reconcile.*findings/i);
+		expect(missedNotice).toMatch(/preserve.*deadline.*required scope/i);
+		expect(missedNotice).toMatch(/carry unmet acceptance/i);
 		expect(h.handlers.get("tool_call")!({ toolName: "task", input: { tasks: [{ name: "ApiFix", task: "Ship the API fix" }] } }, h.ctx)).toBeUndefined();
 		expect(h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append", items: ["Ship the API fix"] } }, h.ctx)).toBeUndefined();
 		const unrelated = h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append", items: ["Add a new analytics dashboard"] } }, h.ctx) as { block?: boolean; reason?: string };
@@ -1091,10 +1093,15 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		expect(agentDescription).not.toMatch(/clear|close|new time/i);
 		h.handlers.get("turn_end")!({ toolResults: [] }, h.ctx);
 		const continuation = h.notices.findLast(notice => notice.customType === "goal-deadline-continue");
-		expect(continuation?.content).toContain("next usable piece");
+		expect(continuation?.content).toContain("Ship the API fix");
+		expect(continuation?.content).toMatch(/reconcile.*(feedback|findings)/i);
+		expect(continuation?.content).toMatch(/(keep|preserve).*deadline.*(scope|requested)/i);
+		expect(continuation?.content).not.toMatch(/put the most valuable shippable piece first|ship the next usable piece/i);
+		expect(h.branch.findLast(entry => entry.customType === STATE_ENTRY)?.data.baselineDeadlineAt).toBe(1_792_594_800);
+		expect(h.todoPhases[0].tasks).toEqual([{ content: "Ship the API fix", status: "pending" }]);
 		const waiting = h.handlers.get("tool_call")!({ toolName: "wait", input: {} }, h.ctx) as { block?: boolean; reason?: string };
 		expect(waiting.block).toBe(true);
-		expect(waiting.reason).toContain("keep executing");
+		expect(waiting.reason).toMatch(/continue viable independent work/i);
 	});
 
 	test("deadline set and arrival notices are two lines, deduped, and precede the missed-deadline refusal", async () => {
@@ -1121,7 +1128,8 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 
 		const blocked = h.handlers.get("tool_call")!({ toolName: "todo", input: { op: "append" } }, h.ctx) as { block?: boolean; reason?: string };
 		expect(blocked.block).toBe(true);
-		expect(gateNotices()[1]?.content).toContain("Replan the open requested rows");
+		expect(gateNotices()[1]?.content).toMatch(/reconcile.*findings/i);
+		expect(gateNotices()[1]?.content).toMatch(/preserve.*deadline.*required scope/i);
 		expect(blocked.reason?.split("\n", 1)[0]).toContain("19:00");
 	});
 

@@ -523,6 +523,8 @@ describe.skipIf(!liveRestartSupported)("restart process replacement CLI", () => 
 			TMPDIR: process.env.XDG_RUNTIME_DIR ?? os.tmpdir(),
 			ANTHROPIC_API_KEY: "restart-test-key",
 			PI_NO_TITLE: "1",
+			// This is a real CLI in a throwaway PTY, not the parent test runtime.
+			PI_TEST_RUNTIME: "",
 			OMP_RESTART_SESSION_ID: "",
 		};
 		const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;

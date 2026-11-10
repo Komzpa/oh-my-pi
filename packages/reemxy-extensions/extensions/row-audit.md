@@ -29,3 +29,11 @@ For a requirement-document edit also return requirementDiffs, one entry per chan
 Classify every finding with severity "blocker" or "later" and an executable action. Blocker means a visible product regression the user would reject on sight, broken build/gates/tests, data loss, or wrong model numbers. Polish, wording, extra evidence/oracles and test-shape nits are later. Only blockers fail delivery; a result with no blockers is clean/pass even with later findings. Missing severity defaults to later except regression/broken-gate kinds. Review only the delta since the recorded audit base, and verify previously reported blockers; do not reopen unchanged accepted scope.
 Return structured issues alongside the findings summary: "issues":[{"kind":"product_regression","severity":"blocker","evidence":"observed location and result","action":"repair the failing behavior and rerun its check"}]. Use an empty issues array when there are no findings.
 Mark required delivery gates with "gate":true in checks; exploratory failures corrected by a subsequent probe are not failed delivery gates.
+
+Prior observations are retrieval context bound to their recorded input identity, delivery and revision. Reopen their immutable locators and authenticate the bytes against current inputs before use; they confer no source availability, owner approval or audit pass. Administrative progress prose never supplies a new material input.
+
+Material input migration: legacy persisted rows and audits remain readable, but changing only evidence prose or its timestamp cannot reset exhausted attempts. Supply new identity through the real todo tool's schedule operation, for example:
+```json
+{"op":"schedule","updates":[{"task":"<exact row title>","materialInputs":{"criterion":"<immutable acceptance revision>","receipts":["<immutable check or source receipt locator>"],"prerequisites":["<newly available prerequisite receipt locator>"]},"evidence":"Human-readable explanation"}]}
+```
+Use the complete current material input set. Keep its identities unchanged for estimate, staffing and handoff administration. Receipt and prerequisite ordering is irrelevant. These fields describe audit inputs; they grant no approval, source availability or passing verdict by themselves.

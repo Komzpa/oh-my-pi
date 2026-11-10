@@ -12,7 +12,7 @@ import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensi
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
+import { FileSessionStorage, type SessionStorageWriter } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
@@ -544,12 +544,33 @@ describe("AgentSession dispose releases retained memory", () => {
 		let armed = false;
 		let atomicWrites = 0;
 		class FailingAtomicStorage extends FileSessionStorage {
-			override async writeTextAtomic(
+			override openWriter(
 				filePath: string,
-				body: string,
+				options?: { flags?: "a" | "w"; onError?: (err: Error) => void },
+			): SessionStorageWriter {
+				const writer = super.openWriter(filePath, options);
+				return {
+					append: line =>
+						armed && line.includes("batch-entry")
+							? Promise.reject(new Error("injected batch append failure"))
+							: writer.append(line),
+					appendSync: line => {
+						if (armed && line.includes("batch-entry")) throw new Error("injected batch append failure");
+						writer.appendSync?.(line);
+					},
+					flush: () => writer.flush(),
+					flushSync: () => writer.flushSync?.(),
+					isOpen: () => writer.isOpen(),
+					close: () => writer.close(),
+					getError: () => writer.getError(),
+				};
+			}
+			override async writeLinesAtomic(
+				filePath: string,
+				lines: readonly string[],
 				options?: { commitGuard?: () => boolean },
 			): Promise<void> {
-				if (!armed) return super.writeTextAtomic(filePath, body, options);
+				if (!armed) return super.writeLinesAtomic(filePath, lines, options);
 				atomicWrites++;
 				reachedAtomic.resolve();
 				await gate.promise;
@@ -575,9 +596,10 @@ describe("AgentSession dispose releases retained memory", () => {
 		sessionManager.releaseRetainedEntries();
 		gate.resolve();
 
-		// The batch surfaces the injected failure; the sealed repair path must
-		// not attempt a second atomic publish of the emptied entry list.
-		expect(String(await settled)).toContain("injected atomic write failure");
+		// The batch surfaces its indeterminate persistence failure with the
+		// original append error; the sealed repair path must not retry a publish.
+		expect(String(await settled)).toContain("SessionPersistenceIndeterminateError");
+		expect(String(await settled)).toContain("injected batch append failure");
 		expect(atomicWrites).toBe(1);
 		expect(await Bun.file(sessionFile).text()).toBe(bytesBeforeBatch);
 

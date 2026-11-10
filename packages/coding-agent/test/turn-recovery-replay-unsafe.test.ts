@@ -8,6 +8,8 @@ import type { Model, Usage } from "@oh-my-pi/pi-catalog/types";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { RETRY_RECOVERY_ENTRY } from "@oh-my-pi/pi-coding-agent/session/retry-recovery-annotation";
 import {
 	type RecoveryCompactionResult,
 	kUsageLimitRequestProvider,
@@ -18,6 +20,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { createProviderErrorMessage } from "../../ai/src/providers/error-message";
 import { streamFactoryDroidGemini } from "../../ai/src/providers/factory-droid/gemini";
 import { captureFetch, gemini as factoryGemini } from "../../ai/test/helpers/factory-droid";
+import { sessionMessagePersistenceKey } from "../src/session/turn-persistence";
 
 const USAGE: Usage = {
 	input: 0,
@@ -69,6 +72,27 @@ function createHost(
 		}
 	}
 	const agentState = { messages: options.messages ?? [] };
+	const sessionEntries: SessionEntry[] = agentState.messages.map((message, index) => ({
+		type: "message",
+		id: `test-entry-${index}`,
+		parentId: index === 0 ? null : `test-entry-${index - 1}`,
+		timestamp: new Date(message.timestamp).toISOString(),
+		message,
+	}));
+	let nextEntryId = sessionEntries.length;
+	const matches = (
+		predicate: (metadata: { type: string; id: string; messageRole?: string }) => boolean,
+		newestFirst: boolean,
+	): SessionEntry[] => {
+		const entries = newestFirst ? [...sessionEntries].reverse() : sessionEntries;
+		return entries.filter(entry =>
+			predicate({
+				type: entry.type,
+				id: entry.id,
+				...(entry.type === "message" ? { messageRole: entry.message.role } : {}),
+			}),
+		);
+	};
 	return {
 		agent: {
 			state: agentState,
@@ -78,12 +102,28 @@ function createHost(
 		} as never,
 		sessionManager: {
 			getLastModelChangeRole: () => options.lastModelChangeRole,
-			getBranch: () => [],
-			getBranchView: () => [],
-			iterateBranch: () => [].values(),
+			getBranch: () => [...sessionEntries],
+			getBranchView: () => [...sessionEntries],
+			iterateBranch: () => sessionEntries.values(),
+			iterateBranchMatchingNewestFirst: (
+				predicate: (metadata: { type: string; id: string; messageRole?: string }) => boolean,
+			) => matches(predicate, true).values(),
+			getBranchMatching: (predicate: (metadata: { type: string; id: string; messageRole?: string }) => boolean) =>
+				matches(predicate, false),
+			appendRetryRecovery: (entryId: string, retryRecovery: unknown) => {
+				const parentId = sessionEntries.at(-1)?.id ?? null;
+				sessionEntries.push({
+					type: "custom",
+					id: `test-entry-${nextEntryId++}`,
+					parentId,
+					timestamp: new Date().toISOString(),
+					customType: RETRY_RECOVERY_ENTRY,
+					data: { entryId, retryRecovery },
+				});
+			},
+			flush: async () => {},
 			getSessionId: () => "test-session",
 		} as never,
-		persistedAssistantEntryId: () => undefined,
 		settings,
 		modelRegistry,
 		configWarnings: [],
@@ -105,8 +145,33 @@ function createHost(
 		emitSessionEvent: async () => {},
 		scheduleAgentContinue: () => {},
 		waitForSessionMessagePersistence: async () => {},
-		appendSessionMessage: () => {},
-		sessionMessageAlreadyPersisted: () => false,
+		appendSessionMessage: (message: AssistantMessage) => {
+			const parentId = sessionEntries.at(-1)?.id ?? null;
+			sessionEntries.push({
+				type: "message",
+				id: `test-entry-${nextEntryId++}`,
+				parentId,
+				timestamp: new Date(message.timestamp).toISOString(),
+				message,
+			});
+		},
+		persistedAssistantEntryId: (message: AssistantMessage) => {
+			const key = sessionMessagePersistenceKey(message);
+			return key
+				? sessionEntries.find(
+						entry => entry.type === "message" && sessionMessagePersistenceKey(entry.message) === key,
+					)?.id
+				: undefined;
+		},
+		sessionMessageAlreadyPersisted: (message: AssistantMessage) => {
+			const key = sessionMessagePersistenceKey(message);
+			return (
+				key !== undefined &&
+				sessionEntries.some(
+					entry => entry.type === "message" && sessionMessagePersistenceKey(entry.message) === key,
+				)
+			);
+		},
 		setModelWithProviderSessionReset: async () => {},
 		resolveActiveEditMode: () => "hashline",
 		syncAfterModelChange: async () => {},

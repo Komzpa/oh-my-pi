@@ -112,7 +112,15 @@ export function retainTodoDependencyReviews(schedule: TodoSchedule): void {
 }
 
 /** Forecast metadata belongs to the exact task content; there are deliberately no generated IDs. */
+/** Explicit immutable locators, criterion revision and available prerequisite receipts; never prose. */
+export interface TodoMaterialInputs {
+	criterion: string;
+	receipts: string[];
+	prerequisites: string[];
+}
+
 export interface TodoSchedule {
+	materialInputs?: TodoMaterialInputs;
 	dependencyReviews?: Record<string, string[]>;
 	/** Queued dispatch owns no resources until admission succeeds. */
 	resourceWait?: { row: string; workerId?: string };
@@ -125,7 +133,7 @@ export interface TodoSchedule {
 	dependencies?: string[];
 	/** Exclusive while this task is running. */
 	owner?: string;
-	/** Exclusive identifiers while this task is running. `undefined` means undeclared. */
+	/** Exclusive identifiers while running. `undefined` is undeclared; [] grants no file writes. */
 	resources?: string[];
 	/** Read claims do not exclude writers; reads may observe concurrent changes. */
 	readOnly?: boolean;
@@ -222,6 +230,8 @@ export interface TodoAuditFinding {
 }
 
 export interface TodoRowAudit {
+	materialInputs?: TodoMaterialInputs;
+	evidenceHistory?: { inputsKey: string; evidence: string }[];
 	remote?: string;
 	branch?: string;
 	issues?: TodoAuditFinding[];
@@ -2497,6 +2507,22 @@ export function todoAuditMatchesResources(schedule: TodoSchedule | undefined, au
 	);
 }
 
+/** One canonical retry identity for both lifecycle and audit planner. Legacy prose grants no retry. */
+export function todoMaterialInputsKey(inputs: TodoMaterialInputs | undefined): string {
+	return JSON.stringify(
+		inputs
+			? [inputs.criterion, [...new Set(inputs.receipts)].sort(), [...new Set(inputs.prerequisites)].sort()]
+			: null,
+	);
+}
+
+export function todoAuditHasNewMaterialInputs(schedule: TodoSchedule | undefined, audit: TodoRowAudit): boolean {
+	return (
+		!!schedule?.materialInputs &&
+		todoMaterialInputsKey(schedule.materialInputs) !== todoMaterialInputsKey(audit.materialInputs)
+	);
+}
+
 /** Use the explicitly bound delivery repository before the session's checkout. */
 export function todoArtifactRepository(task: { artifactCwd?: string; schedule?: TodoSchedule }, cwd: string): string {
 	return (
@@ -2570,9 +2596,7 @@ export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWor
 	if (
 		(audit?.verdict === "inconclusive" || audit?.verdict === "omitted") &&
 		(audit.attempts ?? 1) >= 2 &&
-		(audit.evidence !== undefined
-			? (schedule.progress?.evidence ?? "") === audit.evidence
-			: (schedule.progress?.at ?? 0) <= (audit.at ?? audit.startedAt))
+		!todoAuditHasNewMaterialInputs(schedule, audit)
 	)
 		return { kind: "needs-worker", reason: "audit-inconclusive", worker, findings: audit.findings };
 	const deliverable = todoRowHasDeliverable(task);

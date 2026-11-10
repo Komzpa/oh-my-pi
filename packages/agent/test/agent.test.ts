@@ -388,16 +388,54 @@ describe("Agent", () => {
 		expect(calls).toBe(1);
 	});
 
-	it("continue() leaves queued messages owned when its signal is already aborted", async () => {
+	for (const tail of ["empty", "assistant"] as const) {
+		for (const queue of ["steering", "followUp"] as const) {
+			it.each(["pre-aborted", "external-hook", "agent-hook"] as const)(
+				`settles cancelled ${tail} ${queue} continuation (%s) with input pending for exactly one retry`,
+				async cancellation => {
+					const mock = createMockModel({ responses: [{ content: ["retried"] }] });
+					const agent = new Agent({ streamFn: mock.stream });
+					if (tail === "assistant")
+						agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
+					const before = [...agent.state.messages];
+					const queued = createUserMessage("stay queued");
+					if (queue === "steering") agent.steer(queued);
+					else agent.followUp(queued);
+					const controller = new AbortController();
+					let hookCalls = 0;
+					const detach = agent.addBeforeQueuedMessageDequeueHook(() => {
+						hookCalls++;
+						if (cancellation === "agent-hook") agent.abort();
+						else controller.abort();
+					});
+					if (cancellation === "pre-aborted") controller.abort();
+					try {
+						await expect(agent.continue(controller.signal)).resolves.toBeUndefined();
+						await agent.waitForIdle();
+						expect(agent.snapshotPendingQueues()[queue]).toEqual([queued]);
+						expect(agent.state.messages).toEqual(before);
+						expect(mock.calls).toHaveLength(0);
+						expect(agent.state.isStreaming).toBe(false);
+						expect(hookCalls).toBe(cancellation === "pre-aborted" ? 0 : 1);
+					} finally {
+						detach();
+					}
+					await agent.continue();
+					expect(mock.calls).toHaveLength(1);
+					expect(agent.state.messages.filter(message => message === queued)).toHaveLength(1);
+					expect(agent.hasQueuedMessages()).toBe(false);
+				},
+			);
+		}
+	}
+
+	it("still rejects an uncancelled assistant tail without pending input", async () => {
 		const agent = new Agent();
 		agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
-		agent.followUp({ role: "user", content: "stay queued", timestamp: Date.now() });
-		const controller = new AbortController();
-		controller.abort();
-
-		await expect(agent.continue(controller.signal)).rejects.toThrow("Cannot continue from message role: assistant");
-		expect(agent.peekFollowUpQueue()).toHaveLength(1);
+		await expect(agent.continue()).rejects.toThrow("Cannot continue from message role: assistant");
+		expect(agent.state.isStreaming).toBe(false);
 	});
+
 	it("keeps follow-up ownership when the deadline expires during a dequeue hook", async () => {
 		const mock = createMockModel({ responses: [{ content: ["done"] }] });
 		// Generous budget: the loop checks the deadline before invoking dequeue
@@ -423,7 +461,8 @@ describe("Agent", () => {
 	});
 	it("keeps queued work when continue() reaches its deadline inside a dequeue hook", async () => {
 		// Same starvation guard as above: hook entry must precede expiry.
-		const agent = new Agent({ deadline: Date.now() + 1_000 });
+		const mock = createMockModel({ responses: [{ content: ["retried"] }] });
+		const agent = new Agent({ streamFn: mock.stream, deadline: Date.now() + 1_000 });
 		agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
 		agent.addBeforeQueuedMessageDequeueHook(async signal => {
 			if (!signal) throw new Error("Expected the deadline-aware dequeue signal");
@@ -432,19 +471,31 @@ describe("Agent", () => {
 			signal.addEventListener("abort", () => resolve(), { once: true });
 			await promise;
 		});
-		agent.followUp({ role: "user", content: "stay queued before run loop", timestamp: Date.now() });
+		const queued = createUserMessage("stay queued before run loop");
+		agent.followUp(queued);
 
-		await expect(agent.continue()).rejects.toThrow("Cannot continue from message role: assistant");
+		await expect(agent.continue()).resolves.toBeUndefined();
 
-		expect(agent.peekFollowUpQueue()).toHaveLength(1);
+		expect(agent.peekFollowUpQueue()).toEqual([queued]);
+		expect(agent.state.isStreaming).toBe(false);
+		expect(mock.calls).toHaveLength(0);
+		// A deadline is immutable for this agent. Retry the retained queue with a fresh run budget.
+		const retry = new Agent({ streamFn: mock.stream, initialState: { messages: [...agent.state.messages] } });
+		retry.replaceQueues([...agent.peekSteeringQueue()], [...agent.peekFollowUpQueue()]);
+		await retry.continue();
+		expect(mock.calls).toHaveLength(1);
+		expect(retry.state.messages.filter(message => message === queued)).toHaveLength(1);
+		expect(retry.hasQueuedMessages()).toBe(false);
 	});
 
 	it("claims an abortable busy state while continue() awaits dequeue hooks", async () => {
-		const agent = new Agent();
+		const mock = createMockModel({ responses: [{ content: ["retried"] }] });
+		const agent = new Agent({ streamFn: mock.stream });
 		agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
-		agent.followUp({ role: "user", content: "stay queued", timestamp: Date.now() });
+		const queued = createUserMessage("stay queued");
+		agent.followUp(queued);
 		const hookStarted = Promise.withResolvers<void>();
-		agent.addBeforeQueuedMessageDequeueHook(async signal => {
+		const detach = agent.addBeforeQueuedMessageDequeueHook(async signal => {
 			if (!signal) throw new Error("Expected continuation dequeue signal");
 			hookStarted.resolve();
 			if (signal.aborted) return;
@@ -466,11 +517,17 @@ describe("Agent", () => {
 		await expect(agent.prompt("must not overlap")).rejects.toBeInstanceOf(AgentBusyError);
 
 		agent.abort("cancel dequeue");
-		await expect(continuing).rejects.toThrow("Cannot continue from message role: assistant");
+		await expect(continuing).resolves.toBeUndefined();
 		await idle;
 		expect(idleResolved).toBe(true);
 		expect(agent.state.isStreaming).toBe(false);
-		expect(agent.peekFollowUpQueue()).toHaveLength(1);
+		expect(agent.peekFollowUpQueue()).toEqual([queued]);
+		expect(mock.calls).toHaveLength(0);
+		detach();
+		await agent.continue();
+		expect(mock.calls).toHaveLength(1);
+		expect(agent.state.messages.filter(message => message === queued)).toHaveLength(1);
+		expect(agent.hasQueuedMessages()).toBe(false);
 	});
 
 	it("does not clear a successor prompt after continue() releases idle waiters", async () => {

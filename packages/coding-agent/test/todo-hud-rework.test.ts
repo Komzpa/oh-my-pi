@@ -94,7 +94,18 @@ describe("rework attempt TODO HUD", () => {
 						content: `${content} model row`,
 						status: "in_progress" as const,
 						schedule: {
+							owner: content,
+							resources: [],
+							estimate: {
+								optimisticSeconds: 60,
+								likelySeconds: 90,
+								pessimisticSeconds: 120,
+								confidence: "medium" as const,
+								basis: "fixture for visible HUD behavior",
+								updatedAt: now,
+							},
 							attemptHistory: prior.slice(0, 1),
+							dependencies: [],
 							executor: { workerId: "RenderCut", resolvedModel, thinkingLevel, startedAt: now },
 						},
 					})),
@@ -122,30 +133,30 @@ describe("rework attempt TODO HUD", () => {
 		try {
 			mode.setTodoExpanded(true);
 			const rendered = mode.todoContainer.render(200).join("\n");
-			const reworkRow = rendered.split("\n").find(line => line.includes("route the rejected row"));
-			const ordinaryRow = rendered.split("\n").find(line => line.includes("new first-dispatch row"));
+			const reworkRow = rendered.split("\n").findLast(line => line.includes("route the rejected row"));
+			const ordinaryRow = rendered.split("\n").findLast(line => line.includes("new first-dispatch row"));
 			expect(reworkRow).toContain("attempt 3 · gpt-6-sol · medium effort");
-			expect(rendered.split("\n").find(line => line.includes("flash model row"))).toContain(
-				"attempt 2 · deepseek-v4-flash · minimal effort",
-			);
-			expect(rendered.split("\n").find(line => line.includes("luna model row"))).toContain(
-				"attempt 2 · gpt-6-luna · max effort",
-			);
-			expect(rendered.split("\n").find(line => line.includes("pro model row"))).toContain(
-				"attempt 2 · deepseek-v4-pro · low effort",
-			);
-			expect(rendered.split("\n").find(line => line.includes("five model row"))).toContain(
-				"attempt 2 · gpt-5 · high effort",
-			);
+			expect(
+				rendered.split("\n").findLast(line => line.includes("flash model row") && line.includes("attempt ")),
+			).toContain("attempt 2 · deepseek-v4-flash · minimal effort");
+			expect(
+				rendered.split("\n").findLast(line => line.includes("luna model row") && line.includes("attempt ")),
+			).toContain("attempt 2 · gpt-6-luna · max effort");
+			expect(
+				rendered.split("\n").findLast(line => line.includes("pro model row") && line.includes("attempt ")),
+			).toContain("attempt 2 · deepseek-v4-pro · low effort");
+			expect(
+				rendered.split("\n").findLast(line => line.includes("five model row") && line.includes("attempt ")),
+			).toContain("attempt 2 · gpt-5 · high effort");
 			expect(ordinaryRow).toBeDefined();
 			expect(ordinaryRow).not.toContain("attempt ");
-			expect(rendered.split("\n").find(line => line.includes(exhaustedRow.content))).not.toContain(
+			expect(rendered.split("\n").findLast(line => line.includes(exhaustedRow.content))).not.toContain(
 				"abliterated-model",
 			);
 			available.mockReturnValue([{ ...model, provider: "abliteration", id: "abliterated-model" }]);
 			mode.setTodoExpanded(true);
 			expect(mode.todoContainer.render(200).join("\n")).toContain("abliterated-model · medium effort");
-			const due = Math.floor((now + 13 * 60_000) / 1000);
+			const due = Math.floor((now + 14 * 60_000) / 1000);
 			manager.appendCustomEntry("reemxy-goal-deadlines", {
 				version: 1,
 				goalId: "dc",
@@ -183,7 +194,7 @@ describe("rework attempt TODO HUD", () => {
 			mode.setTodoExpanded(true);
 			const missed = mode.todoContainer.render(300).join("\n");
 			expect(Bun.stripANSI(missed)).toContain("by 64m");
-			const summaryLine = missed.split("\n").find(line => line.includes("MISSES"))!;
+			const summaryLine = missed.split("\n").findLast(line => line.includes("MISSES"))!;
 			expect(summaryLine).toContain(theme.fg("error", Bun.stripANSI(summaryLine).trim()));
 			mode.todoPhases = structuredClone(mode.todoPhases);
 			mode.todoPhases[0]!.tasks[0]!.schedule!.postDeadline = true;
@@ -204,11 +215,11 @@ describe("rework attempt TODO HUD", () => {
 			expect(plain).toContain("1 open");
 			expect(plain).toContain("◉ Facility 2D");
 			expect(plain).toContain("awaiting your review → http://localhost:8767/review/dc/");
-			const awaitingLine = reviewHud.split("\n").find(line => line.includes("◉ Facility"))!;
+			const awaitingLine = reviewHud.split("\n").findLast(line => line.includes("◉ Facility"))!;
 			expect(awaitingLine).toContain(theme.fg("accent", "◉ Facility 2D: too much empty space around site"));
 			const lateLine = reviewHud
 				.split("\n")
-				.find(line => line.includes("Adaptive Facility: WebGL blit errors and tenant panes"))!;
+				.findLast(line => line.includes("Adaptive Facility: WebGL blit errors and tenant panes"))!;
 			expect(lateLine).toContain(
 				theme.fg("error", `${theme.checkbox.unchecked} Adaptive Facility: WebGL blit errors and tenant panes`),
 			);

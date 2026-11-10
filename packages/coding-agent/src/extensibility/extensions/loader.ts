@@ -505,11 +505,11 @@ async function runExtensionFactory(
 export async function importExtensionModule(extensionPath: string, cwd: string): Promise<PreparedExtension> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 	try {
-		const sourceHash = new Bun.CryptoHasher("sha256")
-			.update(await Bun.file(resolvedPath).arrayBuffer())
-			.digest("hex");
+		const sourceBytes = await Bun.file(resolvedPath).arrayBuffer();
+		const sourceHash = new Bun.CryptoHasher("sha256").update(sourceBytes).digest("hex");
+		const entrySource = new TextDecoder().decode(sourceBytes);
 		const module = (await launchStep(`extension.load:${extensionPath}`, () =>
-			withHostGuard(() => loadLegacyPiModule(resolvedPath)),
+			withHostGuard(() => loadLegacyPiModule(resolvedPath, { entrySource })),
 		)) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
 

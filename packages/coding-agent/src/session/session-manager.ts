@@ -7,6 +7,7 @@ import type {
 	ImageContent,
 	Message,
 	MessageAttribution,
+	Model,
 	ServiceTierByFamily,
 	TextContent,
 	Usage,
@@ -1130,7 +1131,9 @@ export class SessionEntryIndex {
 		return (cache.rootPath ??= path.toReversed());
 	}
 	contextLeafPath(options?: BuildSessionContextOptions): SessionEntry[] {
-		if (options?.transcript && !options.collapseCompactedHistory) {
+		// A different reader can reopen ancestors behind a provider-native cut.
+		// Select from metadata before decoding payloads, rather than reusing the active reader's closure.
+		if (options?.model || (options?.transcript && !options.collapseCompactedHistory)) {
 			return selectSessionContextEntriesFromLeafPath(this.#metadataLeafPath(), id => this.get(id)!, options);
 		}
 		let cache = this.#contextSelectionCache;
@@ -5271,9 +5274,14 @@ export class SessionManager {
 	}
 
 	/** Materialize only the current model/collapsed-display dependency closure. */
-	getContextBranch(): SessionEntry[] {
+	getContextBranch(
+		model?: Model,
+		compactionSettings?: BuildSessionContextOptions["compactionSettings"],
+	): SessionEntry[] {
 		return projectToolResultPrunes(
-			this.#index.contextLeafPath({ transcript: true, collapseCompactedHistory: true }).reverse(),
+			this.#index
+				.contextLeafPath({ transcript: true, collapseCompactedHistory: true, model, compactionSettings })
+				.reverse(),
 		);
 	}
 

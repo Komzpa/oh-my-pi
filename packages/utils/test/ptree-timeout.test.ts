@@ -103,9 +103,17 @@ sleep 30
 				expect(await pidFileExists(), "the launcher must create its worker").toBe(true);
 
 				const workerPid = Number.parseInt((await Bun.file(pidFile).text()).trim(), 10);
-				const subreaper = Process.fromPid(child.pid);
-				const command = subreaper?.children()[0];
-				const worker = Process.fromPid(workerPid);
+				let subreaper: Process | null | undefined;
+				let command: Process | undefined;
+				let worker: Process | null | undefined;
+				const treeDeadline = Date.now() + 2_000;
+				while (Date.now() < treeDeadline) {
+					subreaper = Process.fromPid(child.pid);
+					command = subreaper?.children()[0];
+					worker = Process.fromPid(workerPid);
+					if (subreaper && command && worker) break;
+					await Bun.sleep(10);
+				}
 				if (!subreaper || !command || !worker) throw new Error("failed to capture the subreaper process tree");
 				cleanupProcesses.push(worker, command, subreaper);
 				expect(worker.ppid, "the worker must initially belong to the supervised command").toBe(command.pid);

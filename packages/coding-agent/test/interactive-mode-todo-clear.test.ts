@@ -21,6 +21,20 @@ function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
 }
 
+function setModeTodos(mode: InteractiveMode, session: AgentSession, todos: TodoItem[] | TodoPhase[]): void {
+	const phases =
+		todos.length > 0 && "tasks" in todos[0]
+			? (todos as TodoPhase[])
+			: [{ name: "Todos", tasks: todos as TodoItem[] }];
+	session.setTodoPhases(phases);
+	mode.setTodos(todos);
+}
+
+function setExpandedModeTodos(mode: InteractiveMode, session: AgentSession, todos: TodoPhase[]): void {
+	mode.todoExpanded = true;
+	setModeTodos(mode, session, todos);
+}
+
 const FORECAST_TEST_NOW = Date.parse("2026-09-23T09:00:00.000Z");
 
 function scheduleWithEstimate(updatedAt: number): NonNullable<TodoItem["schedule"]> {
@@ -81,8 +95,9 @@ describe("InteractiveMode todo HUD persistence", () => {
 	});
 
 	afterEach(() => {
+		mode.todoExpanded = false;
 		session.setTodoPhases([]);
-		mode.setTodos([]);
+		setModeTodos(mode, session, []);
 		vi.useRealTimers();
 		setSystemTime();
 		vi.restoreAllMocks();
@@ -114,7 +129,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		];
 		session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
-		mode.setTodos(session.getTodoPhases());
+		setModeTodos(mode, session, session.getTodoPhases());
 		vi.advanceTimersByTime(0);
 		await session.settleInFlightMessagePersistence();
 		await session.sessionManager.flush();
@@ -147,7 +162,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		setTodoClearDelay(1);
 		vi.useFakeTimers();
 
-		mode.setTodos(unfinishedPlan());
+		setModeTodos(mode, session, unfinishedPlan());
 		vi.advanceTimersByTime(60_000);
 
 		const rendered = renderTodos(mode);
@@ -159,7 +174,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 	it("keeps the pinned HUD as the only task tree beside an expanded mutation result", () => {
 		const phases = unfinishedPlan();
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 
 		const mutationTranscript = Bun.stripANSI(
 			todoToolRenderer
@@ -185,7 +200,9 @@ describe("InteractiveMode todo HUD persistence", () => {
 	it("renders session todos after global settings are reset", async () => {
 		resetSettingsForTest();
 		try {
-			mode.setTodos([{ name: "Active", tasks: [{ content: "Keep the session plan", status: "pending" }] }]);
+			setModeTodos(mode, session, [
+				{ name: "Active", tasks: [{ content: "Keep the session plan", status: "pending" }] },
+			]);
 			expect(mode.todoContainer.render(120).join("\n")).toContain("Keep the session plan");
 		} finally {
 			await Settings.init({ inMemory: true, cwd: tempDir.path() });
@@ -195,7 +212,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 	it("keeps an unfinished plan's progress when auto-clear is instant", () => {
 		setTodoClearDelay(0);
 
-		mode.setTodos(unfinishedPlan());
+		setModeTodos(mode, session, unfinishedPlan());
 
 		const rendered = renderTodos(mode);
 		expect(rendered).toContain("2/3");
@@ -205,7 +222,9 @@ describe("InteractiveMode todo HUD persistence", () => {
 	it("leaves closed todos visible when auto-clear is disabled", () => {
 		setTodoClearDelay(-1);
 
-		mode.setTodos([{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }]);
+		setExpandedModeTodos(mode, session, [
+			{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] },
+		]);
 
 		expect(renderTodos(mode)).toContain("done task");
 	});
@@ -222,7 +241,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 				],
 			},
 		];
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 
 		const rendered = renderTodos(mode).toLowerCase();
 		expect(rendered).toContain("eta");
@@ -234,7 +253,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(compact).toContain("critical");
 
 		mode.todoExpanded = true;
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 		const expanded = renderTodos(mode).toLowerCase();
 		expect(expanded).toContain("workera");
 		expect(expanded).not.toMatch(/fixed-path|p95|cpm|confidence|float|eta eta/);
@@ -254,7 +273,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 			},
 		];
 		mode.todoExpanded = false;
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 
 		const compact = renderTodos(mode);
 		const compactLines = compact.split("\n");
@@ -265,7 +284,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		expect(compact).not.toContain(reason);
 
 		mode.todoExpanded = true;
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 		try {
 			const expanded = Bun.stripANSI(mode.todoContainer.render(240).join("\n")).replace(/\s+/g, " ");
 			expect(expanded).toContain(`Blocked item: ${reason}`);
@@ -294,7 +313,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 				],
 			},
 		];
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 
 		const row = forecastTodoPlan(phases, { now: FORECAST_TEST_NOW }).rows[0];
 		expect(row).toMatchObject({ status: "pending", estimateRequired: true });
@@ -328,7 +347,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 				],
 			},
 		];
-		mode.setTodos(phases);
+		setExpandedModeTodos(mode, session, phases);
 		const before = renderTodos(mode);
 		expect(before).toContain("II. Current repair");
 		expect(before).toContain("visible current work");
@@ -372,7 +391,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		});
 
 		try {
-			mode.setTodos([
+			setModeTodos(mode, session, [
 				{
 					name: "Implementation",
 					tasks: [
@@ -406,7 +425,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		});
 		try {
 			session.setTodoPhases([{ name: "Main plan", tasks: [{ content: "stale main task", status: "in_progress" }] }]);
-			mode.setTodos(session.getTodoPhases());
+			setModeTodos(mode, session, session.getTodoPhases());
 			focusedSession.setTodoPhases([
 				{
 					name: "Worker plan",
@@ -437,7 +456,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		const phases: TodoPhase[] = [{ name: "Implementation", tasks: [{ content: "done task", status: "completed" }] }];
 		session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
-		mode.setTodos(session.getTodoPhases());
+		setExpandedModeTodos(mode, session, session.getTodoPhases());
 		expect(renderTodos(mode)).toContain("done task");
 
 		vi.advanceTimersByTime(999);
@@ -465,7 +484,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 			},
 		];
 		session.setTodoPhases(phases);
-		mode.setTodos(session.getTodoPhases());
+		setModeTodos(mode, session, session.getTodoPhases());
 		await mode.init();
 		vi.useFakeTimers();
 		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
@@ -500,6 +519,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 	it("completes and auto-dismisses only after an explicit Main TODO done command", async () => {
 		await replaceMode();
 		setTodoClearDelay(1);
+		mode.todoExpanded = true;
 		vi.spyOn(mode.statusLine, "watchBranch").mockImplementation(() => {});
 		const startedAt = Date.now() - 60_000;
 		const phases: TodoPhase[] = [
@@ -516,7 +536,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		];
 		session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
-		mode.setTodos(session.getTodoPhases());
+		setModeTodos(mode, session, session.getTodoPhases());
 		await mode.init();
 		vi.useFakeTimers();
 		await mode.handleTodoCommand("done Fix review comments");
@@ -539,9 +559,9 @@ describe("InteractiveMode todo HUD persistence", () => {
 		vi.spyOn(session, "settleInFlightMessagePersistence").mockReturnValue(settle.promise);
 		const oldPhases: TodoPhase[] = [{ name: "Old", tasks: [{ content: "old", status: "completed" }] }];
 		const newPhases: TodoPhase[] = [{ name: "New", tasks: [{ content: "new", status: "in_progress" }] }];
-		mode.setTodos(oldPhases);
+		setModeTodos(mode, session, oldPhases);
 		mode.setTodoExpanded(true);
-		mode.setTodos(newPhases);
+		setModeTodos(mode, session, newPhases);
 		settle.resolve();
 		await Promise.resolve();
 		expect(
@@ -559,7 +579,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		const older: TodoPhase[] = [{ name: "Old", tasks: [{ content: "old task", status: "in_progress" }] }];
 		const newer: TodoPhase[] = [{ name: "New", tasks: [{ content: "new task", status: "in_progress" }] }];
 		session.setTodoPhases(older);
-		mode.setTodos(older);
+		setModeTodos(mode, session, older);
 		const pending = mode.eventController.handleEvent({
 			type: "message_end",
 			message: {
@@ -574,7 +594,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		});
 		session.sessionManager.appendCustomEntry("user_todo_edit", { phases: newer });
 		session.setTodoPhases(newer);
-		mode.setTodos(newer);
+		setModeTodos(mode, session, newer);
 		settle.resolve();
 		await pending;
 		expect(session.getTodoPhases()).toEqual(newer);
@@ -589,9 +609,9 @@ describe("InteractiveMode todo HUD persistence", () => {
 		const completed: TodoPhase[] = [{ name: "Old", tasks: [{ content: "old", status: "completed" }] }];
 		const replacement: TodoPhase[] = [{ name: "New", tasks: [{ content: "new", status: "in_progress" }] }];
 		session.sessionManager.appendCustomEntry("user_todo_edit", { phases: completed });
-		mode.setTodos(completed);
+		setModeTodos(mode, session, completed);
 		vi.advanceTimersByTime(500);
-		mode.setTodos(replacement);
+		setModeTodos(mode, session, replacement);
 		vi.advanceTimersByTime(1000);
 		await Promise.resolve();
 		expect(renderTodos(mode)).toContain("new");
@@ -602,10 +622,11 @@ describe("InteractiveMode todo HUD persistence", () => {
 		await replaceMode();
 		vi.useFakeTimers();
 		setTodoClearDelay(1);
+		mode.todoExpanded = true;
 		const phases: TodoPhase[] = [{ name: "Done", tasks: [{ content: "same task", status: "completed" }] }];
 		const oldSourceEntryId = session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 		vi.advanceTimersByTime(1000);
 		await session.settleInFlightMessagePersistence();
 		await session.sessionManager.flush();
@@ -613,7 +634,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 		const newSourceEntryId = session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 		expect(newSourceEntryId).not.toBe(oldSourceEntryId);
 		expect(renderTodos(mode)).toContain("same task");
 
@@ -634,12 +655,13 @@ describe("InteractiveMode todo HUD persistence", () => {
 		await replaceMode();
 		vi.useFakeTimers();
 		setTodoClearDelay(1);
+		mode.todoExpanded = true;
 		const settle = Promise.withResolvers<void>();
 		vi.spyOn(session, "settleInFlightMessagePersistence").mockReturnValue(settle.promise);
 		const phases: TodoPhase[] = [{ name: "Done", tasks: [{ content: "same task", status: "completed" }] }];
 		session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 		const oldSessionId = session.sessionManager.getSessionId();
 		vi.advanceTimersByTime(1000);
 
@@ -647,7 +669,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		const newSessionId = session.sessionManager.getSessionId();
 		const newSourceEntryId = session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 		expect(newSessionId).not.toBe(oldSessionId);
 		expect(renderTodos(mode)).toContain("same task");
 
@@ -694,7 +716,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 		});
 		session.sessionManager.appendCustomEntry("user_todo_edit", { phases });
 		session.setTodoPhases(phases);
-		mode.setTodos(phases);
+		setModeTodos(mode, session, phases);
 		vi.advanceTimersByTime(0);
 		await session.settleInFlightMessagePersistence();
 		await session.sessionManager.flush();
@@ -713,6 +735,25 @@ describe("InteractiveMode todo HUD persistence", () => {
 		await mode.reloadTodos();
 		expect(renderTodos(mode)).toContain("ship");
 		expect(session.getTodoPhases()).toEqual(phases);
+	});
+	it("bounds the ledger HUD while keeping the full plan available when expanded", () => {
+		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
+		const tasks: TodoItem[] = Array.from({ length: 20 }, (_, index) => ({
+			content: `Ledger work ${index}`,
+			status: "pending",
+		}));
+		session.sessionManager.appendCustomEntry("requirements_ledger", {
+			requirements: [{ classification: "accepted", rows: tasks.map(task => task.content) }],
+		});
+		setModeTodos(mode, session, [{ name: "Ledger phase", tasks }]);
+		const collapsed = renderTodos(mode);
+		expect(collapsed).toContain("20 open");
+		expect(collapsed).toContain("requirements");
+		expect(collapsed).toContain("more rows");
+		expect(collapsed).not.toContain("Ledger work 19");
+		expect(mode.todoContainer.render(120).length).toBeLessThanOrEqual(mode.getTodoHudPanelRows());
+		mode.setTodoExpanded(true);
+		expect(renderTodos(mode)).toContain("Ledger work 19");
 	});
 });
 
@@ -745,7 +786,8 @@ describe("InteractiveMode todo HUD anchor", () => {
 	});
 
 	afterEach(() => {
-		mode.setTodos([]);
+		mode.todoExpanded = false;
+		setModeTodos(mode, session, []);
 		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 24, configurable: true });
 		vi.useRealTimers();
 		vi.restoreAllMocks();
@@ -760,7 +802,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 	});
 
 	it("keeps phase identities and progress while displaying dependency-ready tasks", () => {
-		mode.setTodos([
+		setModeTodos(mode, session, [
 			{
 				name: "Foundation",
 				tasks: [
@@ -808,7 +850,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		cfgTasksTodoClearDelay.override(session.settings, -1);
 		vi.useFakeTimers();
 		const content = "Implement worker result";
-		mode.setTodos([{ name: "Implementation", tasks: [{ content, status: "in_progress" }] }]);
+		setExpandedModeTodos(mode, session, [{ name: "Implementation", tasks: [{ content, status: "in_progress" }] }]);
 		const registry = AgentRegistry.global();
 		const id = "NoCommitWorker";
 		const ref = registry.register({
@@ -835,7 +877,9 @@ describe("InteractiveMode todo HUD anchor", () => {
 		vi.advanceTimersByTime(100);
 		try {
 			expect(renderTodos(mode)).toContain("⚠ 17m no commit");
-			mode.setTodos([{ name: "Implementation", tasks: [{ content: "Unowned task", status: "in_progress" }] }]);
+			setModeTodos(mode, session, [
+				{ name: "Implementation", tasks: [{ content: "Unowned task", status: "in_progress" }] },
+			]);
 			expect(renderTodos(mode)).not.toContain("⚠ 17m no commit");
 		} finally {
 			eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
@@ -856,7 +900,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		vi.useFakeTimers();
 		cfgTasksTodoClearDelay.override(session.settings, -1);
 		const content = "Implement owned row";
-		mode.setTodos([{ name: "Implementation", tasks: [{ content, status: "in_progress" }] }]);
+		setModeTodos(mode, session, [{ name: "Implementation", tasks: [{ content, status: "in_progress" }] }]);
 		const registry = AgentRegistry.global();
 		const ownedId = "OwnedWorker";
 		const unownedId = "UnownedWorker";
@@ -920,7 +964,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		vi.useFakeTimers();
 		cfgTasksTodoClearDelay.override(session.settings, -1);
 		const content = "Ship owned work";
-		mode.setTodos([
+		setModeTodos(mode, session, [
 			{ name: "Current", tasks: [{ content: "Current pending work", status: "pending" }] },
 			{
 				name: "Background",
@@ -970,12 +1014,12 @@ describe("InteractiveMode todo HUD anchor", () => {
 	});
 
 	it("renders nothing when there are no todos", () => {
-		mode.setTodos([]);
+		setModeTodos(mode, session, []);
 		expect(mode.todoContainer.render(80)).toHaveLength(0);
 	});
 
 	it("keeps the summed progress bar but omits the roman numeral for a single-phase list", () => {
-		mode.setTodos([
+		setExpandedModeTodos(mode, session, [
 			{
 				name: "Tasks",
 				tasks: [
@@ -1004,7 +1048,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		// not a fixed row count.
 		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
 		const stage = (name: string): TodoPhase => ({ name, tasks: [{ content: `${name} task`, status: "pending" }] });
-		mode.setTodos([
+		setModeTodos(mode, session, [
 			stage("Discovery"),
 			stage("Two"),
 			stage("Three"),
@@ -1034,7 +1078,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 
 	it("sizes the collapsed todo window from the viewport instead of a fixed five", () => {
 		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 40, configurable: true });
-		mode.setTodos([
+		setModeTodos(mode, session, [
 			{
 				name: "Tasks",
 				tasks: Array.from({ length: 7 }, (_, index): TodoItem => ({
@@ -1052,7 +1096,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 
 	it("keeps the collapsed window bounded with an overflow summary on a short viewport", () => {
 		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
-		mode.setTodos([
+		setModeTodos(mode, session, [
 			{
 				name: "Tasks",
 				tasks: Array.from({ length: 20 }, (_, index): TodoItem => ({
@@ -1071,7 +1115,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 	it("accounts for every hidden task within the allocated panel", () => {
 		// 18 rows leaves a 6-row panel: one task row plus the exact hidden count.
 		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 18, configurable: true });
-		mode.setTodos([
+		setModeTodos(mode, session, [
 			{
 				name: "Tasks",
 				tasks: Array.from({ length: 10 }, (_, index): TodoItem => ({
@@ -1083,7 +1127,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(renderTodos(mode)).not.toContain("Task 10");
 		expect(renderTodos(mode)).toContain("9 more todos · /todo expand");
 
-		mode.setTodos([
+		setModeTodos(mode, session, [
 			{
 				name: "Tasks",
 				tasks: Array.from({ length: 11 }, (_, index): TodoItem => ({
@@ -1099,7 +1143,14 @@ describe("InteractiveMode todo HUD anchor", () => {
 	it("caps the stage window and names the stages past it", () => {
 		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 40, configurable: true });
 		const stage = (name: string): TodoPhase => ({ name, tasks: [{ content: `${name} task`, status: "pending" }] });
-		mode.setTodos([stage("One"), stage("Two"), stage("Three"), stage("Four"), stage("Five"), stage("Six")]);
+		setModeTodos(mode, session, [
+			stage("One"),
+			stage("Two"),
+			stage("Three"),
+			stage("Four"),
+			stage("Five"),
+			stage("Six"),
+		]);
 		const oneHidden = renderTodos(mode);
 		expect(oneHidden).toContain("V. Five");
 		expect(oneHidden).not.toContain("VI. Six");
@@ -1108,7 +1159,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 
 	it("expands and collapses the complete todo HUD through /todo", async () => {
 		Object.defineProperty(mode.ui.terminal, "rows", { get: () => 22, configurable: true });
-		mode.setTodos([
+		setModeTodos(mode, session, [
 			{
 				name: "Implementation",
 				tasks: Array.from({ length: 8 }, (_, index): TodoItem => ({
@@ -1147,7 +1198,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 
 		it("renders todo as a single line item aligned to the right when terminal height < 18", () => {
 			setTerminalRows(15);
-			mode.setTodos([
+			setModeTodos(mode, session, [
 				{
 					name: "Phase 1",
 					tasks: [
@@ -1174,7 +1225,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 
 		it("places compact todo on the right side of the active loader / intent spinner", () => {
 			setTerminalRows(14);
-			mode.setTodos([
+			setModeTodos(mode, session, [
 				{
 					name: "Tasks",
 					tasks: [
@@ -1203,7 +1254,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 
 		it("shows completed summary when all tasks are done in compact mode", () => {
 			setTerminalRows(16);
-			mode.setTodos([
+			setModeTodos(mode, session, [
 				{
 					name: "Tasks",
 					tasks: [
@@ -1220,7 +1271,7 @@ describe("InteractiveMode todo HUD anchor", () => {
 		});
 
 		it("switches dynamically between multi-line HUD and compact single line on resize", () => {
-			mode.setTodos([
+			setModeTodos(mode, session, [
 				{
 					name: "Tasks",
 					tasks: [{ content: "Refactor router", status: "in_progress" }],

@@ -116,6 +116,7 @@ describe("subagent runtime model resolution", () => {
 		{ level: undefined, collide: true },
 	]) {
 		it(`keeps literal suffix attribution distinct from thinking (${collide ? "colliding selector" : (level ?? "unset")})`, async () => {
+			const id = `literal-model-${level ?? "unset"}-${collide ? "collision" : "distinct"}`;
 			const literal = model("custom", "coding-router:max");
 			const snapshots: AgentProgress[] = [];
 			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
@@ -125,7 +126,7 @@ describe("subagent runtime model resolution", () => {
 				const recovery = new TurnRecovery({
 					model: () => activeModel,
 					thinkingLevel: () => activeLevel,
-					sessionManager: { getSessionId: () => "literal-model" },
+					sessionManager: { getSessionId: () => id },
 					settings: Settings.isolated({}),
 					modelRegistry: {},
 					configWarnings: [],
@@ -156,7 +157,7 @@ describe("subagent runtime model resolution", () => {
 				agent: { name: "task", description: "test", systemPrompt: "test", source: "bundled" },
 				task: "work",
 				index: 0,
-				id: "literal-model",
+				id,
 				modelOverride: level ? `custom/coding-router:max:${level}` : "custom/coding-router:max",
 				settings,
 				modelRegistry: {

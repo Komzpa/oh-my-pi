@@ -62,7 +62,10 @@ test("an overdue Brag/Finance model label and attempt do not permit waiting on u
   expect(reason).toContain("task");
   expect(reason).toContain("schedule");
   expect(reason).toContain("user");
-  expect(reason).toContain("postDeadline:true");
+  expect(reason).toMatch(/reconcile the returned worker findings/i);
+  expect(reason).toMatch(/do not.*cut requested scope or move the deadline/i);
+  expect(reason).toMatch(/optional work.*only when it is already optional/i);
+  expect(reason).not.toContain("postDeadline:true");
   expect(idleRedRowsRefusal(decision(rows, rows.map(row => ({ content: row.content, running: true, progressing: true }))))).toBeUndefined();
 });
 

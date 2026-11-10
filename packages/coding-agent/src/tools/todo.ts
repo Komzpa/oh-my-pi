@@ -183,6 +183,13 @@ const TodoScheduleUpdateInput = type({
 	"readOnly?": "boolean",
 	"estimate?": TodoEstimateInput,
 	"evidence?": type("string"),
+	"materialInputs?": type({
+		criterion: type("string"),
+		receipts: type("string").array(),
+		prerequisites: type("string").array(),
+	}).describe(
+		"Immutable criterion revision and receipt/source locators, including newly available prerequisite receipts. Administrative prose is not a material input.",
+	),
 	"decision?": type('"owner"').describe(
 		"Agent-authored product content beyond the owner request needs an owner decision",
 	),
@@ -1465,6 +1472,12 @@ function applyScheduleUpdates(
 		const schedule: TodoSchedule = structuredClone(
 			task.schedule && typeof task.schedule === "object" ? task.schedule : {},
 		);
+		if (update.materialInputs !== undefined) {
+			const inputs = update.materialInputs;
+			if (![inputs.criterion, ...inputs.receipts, ...inputs.prerequisites].every(value => value.trim().length > 0))
+				errors.push(`Material inputs for task "${update.task}" require nonblank immutable identities`);
+			schedule.materialInputs = structuredClone(inputs);
+		}
 		if (update.dependencies !== undefined) schedule.dependencies = [...update.dependencies];
 		schedule.cumulativeReestimateCount ??= schedule.reestimateCount ?? 0;
 		const ownerChanged = update.owner !== undefined && (update.owner.trim() || undefined) !== schedule.owner;

@@ -263,11 +263,15 @@ describe("AgentSession empty stop guard", () => {
 	});
 
 	it("retries an empty assistant stop after a tool result", async () => {
-		const { session, mock } = await createHarness([
-			recordCall("alpha", "call-record-alpha"),
-			emptyStop(),
-			{ content: ["finished after retry"], stopReason: "stop" },
-		]);
+		const { session, mock, tempDir } = await createHarness(
+			[
+				recordCall("alpha", "call-record-alpha"),
+				emptyStop(),
+				{ content: ["finished after retry"], stopReason: "stop" },
+			],
+			{},
+			{ persistSession: true },
+		);
 
 		await session.prompt("record alpha");
 		await session.waitForIdle();
@@ -282,18 +286,23 @@ describe("AgentSession empty stop guard", () => {
 			.filter(entry => entry.type === "message")
 			.map(entry => entry.message as AgentMessage);
 		expect(emptyAssistantStops(activeBranchMessages)).toHaveLength(0);
-		// A discarded empty stop is physically removed from the journal, not just
-		// reparented off the active branch: it must never be able to resurface as
-		// the active leaf on reload (the loader rebuilds from the last physical
-		// entry) if the process is killed before the recovery turn lands.
-		expect(
-			emptyAssistantStops(
-				session.sessionManager
-					.getEntries()
-					.filter(entry => entry.type === "message")
-					.map(entry => entry.message as AgentMessage),
-			),
-		).toHaveLength(0);
+		const journalMessages = session.sessionManager
+			.getEntries()
+			.filter(entry => entry.type === "message")
+			.map(entry => entry.message as AgentMessage);
+		expect(emptyAssistantStops(journalMessages)).toHaveLength(1);
+		const sessionFile = session.sessionManager.getSessionFile()!;
+		await session.sessionManager.flush();
+		const reopened = await SessionManager.open(sessionFile, tempDir.path());
+		try {
+			const reopenedActiveMessages = reopened
+				.getBranch()
+				.filter(entry => entry.type === "message")
+				.map(entry => entry.message as AgentMessage);
+			expect(emptyAssistantStops(reopenedActiveMessages)).toHaveLength(0);
+		} finally {
+			await reopened.close();
+		}
 	});
 
 	it("retries a tool-use stop that has no tool call or text", async () => {
@@ -429,13 +438,11 @@ describe("AgentSession empty stop guard", () => {
 		expect(orphanedToolUseStops).toHaveLength(0);
 	});
 	it("caps empty stop retries at three attempts and discards the final empty turn", async () => {
-		const { session, mock } = await createHarness([
-			recordCall("beta", "call-record-beta"),
-			emptyStop(),
-			emptyStop(),
-			emptyStop(),
-			emptyStop(),
-		]);
+		const { session, mock, tempDir } = await createHarness(
+			[recordCall("beta", "call-record-beta"), emptyStop(), emptyStop(), emptyStop(), emptyStop()],
+			{},
+			{ persistSession: true },
+		);
 
 		await session.prompt("record beta");
 		await session.waitForIdle();
@@ -450,20 +457,31 @@ describe("AgentSession empty stop guard", () => {
 			.map(entry => entry.message as AgentMessage);
 		expect(emptyAssistantStops(activeBranchMessages)).toHaveLength(0);
 
-		// The loader reconstructs the active branch from the last physical journal
-		// entry. The empty stop is removed from history and a marker durably
-		// selects its parent, so reload cannot reactivate the discarded turn.
+		// The append-only journal retains discarded evidence; the branch marker
+		// selects its parent so resumed context cannot reactivate those turns.
 		const journalMessages = session.sessionManager
 			.getEntries()
 			.filter(entry => entry.type === "message")
 			.map(entry => entry.message as AgentMessage);
-		expect(emptyAssistantStops(journalMessages)).toHaveLength(0);
+		expect(emptyAssistantStops(journalMessages)).toHaveLength(4);
 		const lastJournalEntry = session.sessionManager.getEntries().at(-1);
 		expect(lastJournalEntry).toMatchObject({
 			type: "branch_summary",
 			summary: "",
 			details: { kind: "discarded-entry-branch" },
 		});
+		const sessionFile = session.sessionManager.getSessionFile()!;
+		await session.sessionManager.flush();
+		const reopened = await SessionManager.open(sessionFile, tempDir.path());
+		try {
+			const reopenedActiveMessages = reopened
+				.getBranch()
+				.filter(entry => entry.type === "message")
+				.map(entry => entry.message as AgentMessage);
+			expect(emptyAssistantStops(reopenedActiveMessages)).toHaveLength(0);
+		} finally {
+			await reopened.close();
+		}
 	});
 
 	it("does not revive capped empty responses through pending todo reminders", async () => {

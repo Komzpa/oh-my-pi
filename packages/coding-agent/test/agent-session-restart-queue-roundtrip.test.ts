@@ -485,11 +485,8 @@ describe("AgentSession restart queue round trip", () => {
 			const controller = new AbortController();
 			const detach = restored.agent.addBeforeQueuedMessageDequeueHook(() => controller.abort());
 			try {
-				const outcome = await restored.agent.continue(controller.signal).then(
-					() => null,
-					(error: unknown) => (error instanceof Error ? error.message : String(error)),
-				);
-				expect(outcome).toBeNull();
+				await expect(restored.agent.continue(controller.signal)).resolves.toBeUndefined();
+				expect(restored.agent.state.isStreaming).toBe(false);
 				expect(inputs).toEqual([]);
 				expect(restored.agent.snapshotPendingQueues()[queue]).toEqual([queued]);
 			} finally {
@@ -498,6 +495,8 @@ describe("AgentSession restart queue round trip", () => {
 			await restored.agent.continue();
 			await restored.waitForIdle();
 			await currentManager().flush();
+			expect(inputs).toHaveLength(1);
+			expect(restored.agent.hasQueuedMessages()).toBe(false);
 			expect(inputs[0]).toContain("survive cancelled drain");
 			expect(
 				currentManager()

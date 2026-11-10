@@ -32,7 +32,7 @@ mock.module("../../src/modes/interactive-mode", () => ({
 		skillCommands = new Map();
 		optimisticSkillMessagePending = false;
 		constructor(...args: unknown[]) {
-			connection = args[9] as InteractiveSessionConnection;
+			connection = args[8] as InteractiveSessionConnection;
 			if (!connection) throw new Error("Normal launcher did not supply its connection");
 			const prompt = connection.prompt.bind(connection);
 			connection.prompt = (...args) => {
@@ -71,7 +71,9 @@ mock.module("../../src/modes/interactive-mode", () => ({
 		markPendingSubmissionStarted() {
 			return true;
 		}
+		settleStartupRun() {}
 		finishPendingSubmission() {}
+		restoreDroppedPrompt() {}
 		checkShutdownRequested() {}
 		renderOptimisticSkillMessage() {}
 		clearOptimisticSkillMessage() {}

@@ -117,6 +117,7 @@ test("session loading warms archive history before interactive reads, including 
 	await todoDispatch({
 		on: (event: string, handler: (event: unknown, ctx: ExtensionContext) => unknown) => handlers.set(event, handler),
 		getActiveTools: () => [],
+		appendEntry: () => {},
 		pi: { ...schedule, getLatestTodoPhasesFromEntries },
 	} as unknown as ExtensionAPI);
 	const archived = (id: string, content: string): SessionEntry =>

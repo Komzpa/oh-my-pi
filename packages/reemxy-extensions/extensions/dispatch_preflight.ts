@@ -1,4 +1,4 @@
-import { readOnlyRow, checkoutScopesFromResources, checkoutScopesOverlap } from "./checkout_scope";
+import { readOnlyClaim, checkoutScopesFromResources, checkoutScopesOverlap, checkoutScopesContain } from "./checkout_scope";
 import { $ } from "bun";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -6,7 +6,7 @@ import * as path from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
-import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { TodoScheduleInputTask, TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { parseCommandArgs } from "@oh-my-pi/pi-coding-agent/utils/command-args";
 
 export function fileToolTargets(input: Record<string, unknown>): string[] {
@@ -307,7 +307,20 @@ function inside(root: string, target: string): boolean {
 /** Known operands only; opaque scripts and substitutions are not guessed from prose. */
 function bashWriteTargets(argv: string[]): string[] {
 	const executable = path.basename(argv[0] ?? "");
-	const operands = argv.slice(1).filter(arg => !arg.startsWith("-"));
+	const operands: string[] = [];
+	let options = true;
+	for (let index = 1; index < argv.length; index++) {
+		const arg = argv[index]!;
+		if (options && arg === "--") {
+			options = false;
+			continue;
+		}
+		if (options && arg.startsWith("-")) {
+			if (executable === "mkdir" && (arg === "-m" || arg === "--mode")) index++;
+			continue;
+		}
+		operands.push(arg);
+	}
 	if (["touch", "mkdir", "rm", "rmdir", "truncate", "tee"].includes(executable)) return operands;
 	if (["cp", "install"].includes(executable)) return operands.length >= 2 ? operands.slice(-1) : [];
 	if (executable === "mv") return operands.length >= 2 ? operands : [];
@@ -373,6 +386,15 @@ export async function workerScopeCovers(ctx: ExtensionContext, paths: string[]):
 	return true;
 }
 
+/** A settled executor releases its lease unless Main has assigned a different owner. */
+export function holdsWriteCustody(row: TodoScheduleInputTask): boolean {
+	return row.status !== "completed" && row.status !== "abandoned" &&
+		!readOnlyClaim(row) && row.schedule?.resourceWait === undefined &&
+		!(row.schedule?.executor?.outcome !== undefined &&
+			(!row.schedule.owner || row.schedule.owner === row.schedule.executor.workerId)) &&
+		!(row.status === "pending" && !row.schedule?.owner && !row.schedule?.executor?.workerId);
+}
+
 // Per canonical lead session, retained only while the owning row remains open.
 const writeClaims = new WeakMap<object, Map<string, string[]>>();
 
@@ -394,13 +416,17 @@ export async function workerToolPreflight(
 	const root = await canonical(path.resolve(ctx.cwd));
 	const scope = workerRowScope(ctx);
 	const rows = scope?.rows ?? [];
-	if (targets.length && rows.some(row => readOnlyRow(row)))
+	if (targets.length && rows.some(row => readOnlyClaim(row)))
 		return { block: true, reason: "Read-only row cannot mutate files; dispatch a writer on a separate row." };
 	const declared = rows
 		.flatMap(row => row.schedule?.resources ?? [])
 		.map(resource => resource.replace(/^(?:path|repo|repository|checkout|worktree):/, "").replace(/:[^/]+$/, ""))
 		.filter(resource => path.isAbsolute(resource));
-	const roots = declared.length ? await Promise.all(declared.map(canonical)) : [root];
+	// Explicit scope, including [], replaces the legacy cwd permission. A
+	// declaration without filesystem paths grants no writes. Only an absent
+	// declaration keeps cwd access, still subject to other workers' leases.
+	const hasDeclaredScope = rows.some(row => Array.isArray(row.schedule?.resources));
+	const roots = declared.length ? await Promise.all(declared.map(canonical)) : hasDeclaredScope ? [] : [root];
 	const resolvedTargets: string[] = [];
 	for (const target of targets) {
 		if (target.includes("://")) continue;
@@ -409,14 +435,7 @@ export async function workerToolPreflight(
 		);
 		resolvedTargets.push(resolved);
 		for (const other of scope?.phases.flatMap(phase => phase.tasks) ?? []) {
-			if (
-				rows.includes(other) ||
-				other.status === "completed" ||
-				other.status === "abandoned" ||
-				readOnlyRow(other) ||
-				(other.status === "pending" && !other.schedule?.owner && !other.schedule?.executor?.workerId)
-			)
-				continue;
+			if (rows.includes(other) || !holdsWriteCustody(other)) continue;
 			for (const resource of other.schedule?.resources ?? []) {
 				const resourcePath = resource
 					.replace(/^(?:path|repo|repository|checkout|worktree):/, "")
@@ -442,14 +461,21 @@ export async function workerToolPreflight(
 			writeClaims.set(scope.lead.session, claims);
 			const open = scope.phases
 				.flatMap(phase => phase.tasks)
-				.filter(row => row.status !== "completed" && row.status !== "abandoned" && !readOnlyRow(row));
+				.filter(holdsWriteCustody);
 			// No await between observing and acquiring exact write targets.
 			for (const [holder, held] of claims) {
-				if (!open.some(row => row.schedule?.owner === holder || row.schedule?.executor?.workerId === holder)) {
+				const holderRows = open.filter(row => row.schedule?.owner === holder || row.schedule?.executor?.workerId === holder);
+				const retained = held.filter(target => holderRows.some(row => {
+					if (!Array.isArray(row.schedule?.resources)) return true;
+					const allowed = checkoutScopesFromResources(row.schedule.resources.filter(resource => !resource.startsWith("git:")));
+					return allowed && checkoutScopesContain(allowed, [target]);
+				}));
+				if (!retained.length) {
 					claims.delete(holder);
 					continue;
 				}
-				if (holder !== owner && checkoutScopesOverlap(incoming, held))
+				claims.set(holder, retained);
+				if (holder !== owner && checkoutScopesOverlap(incoming, retained))
 					return {
 						block: true,
 						reason: `Write conflicts with worker ${holder} on ${JSON.stringify(targets)}; narrow tasks[].resources or wait for its row to finish.`,

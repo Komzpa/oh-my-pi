@@ -1981,8 +1981,7 @@ export class Agent {
 
 		try {
 			const dequeueSignal = this.#continuationDequeueSignal(signal) ?? continuationAbortController.signal;
-			// Dequeue hooks can cancel this attempt without replacing its controller.
-			// Leave the queued input for the next run rather than reporting an invalid tail.
+			// Cancellation leaves pending input for retry; it is not an invalid transcript tail.
 			const messages = this.#state.messages;
 			if (messages.length === 0) {
 				// An empty transcript has nothing to resume, but a queued steer/follow-up

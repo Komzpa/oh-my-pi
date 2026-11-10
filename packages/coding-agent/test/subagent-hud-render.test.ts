@@ -11,7 +11,7 @@ import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resetHangulCompatibilityJamoWidthForTests, setHangulCompatibilityJamoWidth } from "@oh-my-pi/pi-tui";
-import type { DescribeContext } from "@oh-my-pi/pi-tui/native/node";
+import type { DescribeContext, NativeChild } from "@oh-my-pi/pi-tui/native/node";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { PINNED_HUD_TOGGLE_ID } from "@oh-my-pi/pi-coding-agent/task/output-manager";
 import {
@@ -1004,6 +1004,11 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		mode = new InteractiveMode(session, "test", undefined, undefined, undefined, eventBus);
 	});
 
+	function setModeTodos(todos: TodoPhase[]): void {
+		session.setTodoPhases(todos);
+		mode.setTodos(todos);
+	}
+
 	afterEach(async () => {
 		mode?.stop();
 		await session?.dispose();
@@ -1101,13 +1106,17 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		};
 		let paintedStatus: string | undefined;
 		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {
-			for (const child of mode.describeStatusHud([], cx).c ?? []) {
-				if ("k" in child && child.k === "checklist") {
-					paintedStatus = child.p?.phases[5]?.items[0]?.status;
+			const findChecklistStatus = (children: readonly NativeChild[]): string | undefined => {
+				for (const child of children) {
+					if (!("k" in child)) continue;
+					if (child.k === "checklist") return child.p?.phases[5]?.items[0]?.status;
+					const nested = child.c && findChecklistStatus(child.c);
+					if (nested) return nested;
 				}
-			}
+			};
+			paintedStatus = findChecklistStatus(mode.describeStatusHud([], cx).c ?? []);
 		});
-		mode.setTodos(
+		setModeTodos(
 			[
 				"Inspect inputs",
 				"Design interface",
@@ -1272,7 +1281,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 
 	it("links a live worker to its TODO row and lists other workers once", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
-		mode.setTodos([
+		setModeTodos([
 			{ name: "Work", tasks: [{ content: "job 0", status: "in_progress", schedule: { owner: "Override0" } }] },
 		]);
 		for (let index = 0; index < 5; index++) {
@@ -1281,7 +1290,9 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 		mode.applyPinnedAgentsSetting();
 		const hud = Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
-		expect(hud.split("\n").find(line => line.includes("job 0"))).toContain("Override0 (task)");
+		expect(hud.split("\n").find(line => line.includes("job 0") && line.includes(theme.checkbox.unchecked))).toContain(
+			"Override0 (task)",
+		);
 		expect(hud).toContain("unassigned workers");
 		expect(hud.match(/Override4/g)).toHaveLength(1);
 		expect(hud).not.toContain("Subagents");
@@ -1289,19 +1300,31 @@ describe("InteractiveMode subagent observer UI sync", () => {
 
 	it("groups interleaved phases under one header each, without per-row phase labels", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
-		mode.setTodos([
+		mode.todoExpanded = true;
+		const scheduled = (dependencies: string[]) => ({
+			dependencies,
+			estimate: {
+				optimisticSeconds: 60,
+				likelySeconds: 60,
+				pessimisticSeconds: 60,
+				confidence: "high" as const,
+				basis: "fixture estimate",
+				updatedAt: Date.now(),
+			},
+		});
+		setModeTodos([
 			{
 				name: "Recording",
 				tasks: [
-					{ content: "record first", status: "pending", schedule: { dependencies: [] } },
-					{ content: "record second", status: "pending", schedule: { dependencies: ["release first"] } },
+					{ content: "record first", status: "pending", schedule: scheduled([]) },
+					{ content: "record second", status: "pending", schedule: scheduled(["release first"]) },
 				],
 			},
 			{
 				name: "Release",
 				tasks: [
-					{ content: "release first", status: "pending", schedule: { dependencies: ["record first"] } },
-					{ content: "release second", status: "pending", schedule: { dependencies: ["record second"] } },
+					{ content: "release first", status: "pending", schedule: scheduled(["record first"]) },
+					{ content: "release second", status: "pending", schedule: scheduled(["record second"]) },
 				],
 			},
 		]);
@@ -1332,8 +1355,12 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		await Promise.resolve();
 		mode.applyPinnedAgentsSetting();
 		const hud = Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
-		expect(hud.split("\n").find(line => line.includes("job 0"))).toContain("MultiRow (task)");
-		expect(hud.split("\n").find(line => line.includes("job 1"))).toContain("MultiRow (task)");
+		expect(hud.split("\n").find(line => line.includes("job 0") && line.includes(theme.checkbox.unchecked))).toContain(
+			"MultiRow (task)",
+		);
+		expect(hud.split("\n").find(line => line.includes("job 1") && line.includes(theme.checkbox.unchecked))).toContain(
+			"MultiRow (task)",
+		);
 		expect(hud).not.toContain("unassigned workers");
 	});
 

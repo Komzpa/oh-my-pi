@@ -413,9 +413,12 @@ test("DivineRoadrunner replay: a yield of unverified 'fail' verdicts is inconclu
 	const notice = prompt.render(gateNotices, { audit: true, rows: '"row" (inconclusive: x)' });
 	expect(notice).toContain("read their findings and make one discriminating check");
 	expect(notice).toContain("Reuse unchanged valid product evidence");
-	// New evidence the lead records on the row reruns its audit.
+	// A newly identified executable check reopens the audit; administration does not.
 	const row = h.rows().find(candidate => candidate.content === AUDITED[1]);
+	row.schedule.progress = { at: live.now + 1, evidence: "Handoff administration; prerequisite unchanged" };
+	expect(await h.check()).toBe(0);
 	row.schedule.progress = { at: live.now + 1, evidence: "f1ee6e909: run bunx playwright test e2e/power-rows.spec.ts" };
+	row.schedule.materialInputs = { criterion: row.content, receipts: ["git:f1ee6e909/check:bunx-playwright-e2e-power-rows"], prerequisites: [] };
 	expect(await h.check()).toBe(1);
 	expect(h.launches[2].task).toContain(JSON.stringify(AUDITED[1]));
 });
@@ -629,7 +632,11 @@ test("timestamp-only evidence updates cannot restart an exhausted audit", async 
 	delivered.schedule.progress.at = live.now + 60_000;
 	expect(await h.check()).toBe(0);
 	expect(todoRowAfterWorker(delivered)).toMatchObject({ kind: "needs-worker" });
+	delivered.schedule.progress.evidence = "Estimate updated; missing browser check unchanged";
+	expect(await h.check()).toBe(0);
+	expect(todoRowAfterWorker(delivered)).toMatchObject({ kind: "needs-worker" });
 	delivered.schedule.progress.evidence = "New executable receipt at abc1234: bun test, exit 0";
+	delivered.schedule.materialInputs = { criterion: delivered.content, receipts: ["git:abc1234/check:bun-test-exit-0"], prerequisites: [] };
 	expect(await h.check()).toBe(1);
 });
 

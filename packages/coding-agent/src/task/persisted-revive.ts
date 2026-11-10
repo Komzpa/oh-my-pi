@@ -499,6 +499,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
 			modelPatternAuthFallback: restoredSeance || init.perCallModel ? undefined : init.resolvedModel,
 			settings: subagentSettings,
+			cacheWarming: false,
 			sessionManager: reopened,
 			agentId: ref.id,
 			agentDisplayName: ref.displayName,

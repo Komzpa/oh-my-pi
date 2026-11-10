@@ -119,6 +119,7 @@ function createContext(options: ContextOptions = {}) {
 		cwd: options.cwd ?? "/workspace",
 		sessionManager: {
 			getBranch: () => branch,
+			getBranchMatching: (predicate: (entry: SessionMessageEntry) => boolean) => branch.filter(predicate),
 			getCwd: () => options.cwd ?? "/workspace",
 			getSessionId: () => "session-1",
 			getArtifactsDir: () => null,

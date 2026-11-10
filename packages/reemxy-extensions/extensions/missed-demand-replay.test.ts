@@ -67,7 +67,12 @@ test("DC resume arms the already missed auto anchor and starts idle age before a
 	const key = h.receipt().recovery.pending.key;
 	await h.hooks.get("turn_start")({}, h.ctx);
 	const action = h.sent.findLast(e => e.customType === "todo-dispatch-action-required").content;
-	expect(action).toContain("Split or cut scope on Collateral");
+	expect(action).toContain("Reconcile the returned result for Collateral");
+	expect(action).toContain("agent://LeadersOrbitOnly-2");
+	expect(action).toMatch(/read the full worker output and named evidence/i);
+	expect(action).toMatch(/preserve unmet acceptance/i);
+	expect(action).toMatch(/retirement is not success/i);
+	expect(action).not.toMatch(/split or cut scope|split\/cut\/abandon/i);
 	expect(action).toContain("anchored deadline is MISSED or SLIPPED");
 	await h.hooks.get("turn_end")({}, h.ctx);
 	const resumed = await harness(h.entries, replay.now + 600001);

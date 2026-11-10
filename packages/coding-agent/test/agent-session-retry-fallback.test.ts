@@ -8547,13 +8547,8 @@ describe("AgentSession retry fallback", () => {
 	});
 
 	describe("when a retry saga's session write throws", () => {
-		// Once SessionManager has recorded a disk failure (a full disk, an
-		// unwritable transcript), rewriteEntries rejects on every call, and a
-		// retry saga rewrites the attempts it annotates on its way out: the
-		// give-up after an exhausted budget and the close of a successful retry.
-		// The "rewrite" rows reproduce that failure. appendMessage records its
-		// own write failures instead of throwing, so the "error-turn" rows inject
-		// a throw there to cover every other exit of the saga. The saga must
+		// A session append can fail while the retry saga is recording a failed
+		// turn or a recovered reply. The saga must
 		// close anyway and publish the auto_retry_end its branch publishes when
 		// the write succeeds. Left open, the in-flight prompt() hangs behind the
 		// pending promise as in #5382, `isStreaming` stays true, and every later
@@ -8564,13 +8559,14 @@ describe("AgentSession retry fallback", () => {
 		const delivery = "DELIVERY-1 from an extension";
 
 		type FailingWrite =
-			// The transcript rewrite that annotates the attempts the saga retried.
-			| "rewrite"
 			// The append of an empty error turn.
 			| "error-turn"
 			// The same append, failing only once the saga announced its first
 			// retry, so the attempt before it still records.
-			| "error-turn-after-first-retry";
+			| "error-turn-after-first-retry"
+			// The recovered assistant reply's session append fails after the retry
+			// began, exercising the successful saga's real persistence boundary.
+			| "reply-after-first-retry";
 
 		async function expectSagaClosesDespiteFailedWrite(scenario: {
 			responses: MockResponse[];
@@ -8601,27 +8597,24 @@ describe("AgentSession retry fallback", () => {
 			const sessionManager = SessionManager.inMemory();
 			session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
 			const { retryEndEvents } = trackRetryEvents(session);
-
 			let failedWrites = 0;
-			if (scenario.failingWrite === "rewrite") {
-				vi.spyOn(sessionManager, "rewriteEntries").mockImplementation(async () => {
+			let armed = scenario.failingWrite === "error-turn";
+			session.subscribe(event => {
+				if (event.type === "auto_retry_start") armed = true;
+			});
+			const appendMessage = sessionManager.appendMessage.bind(sessionManager);
+			vi.spyOn(sessionManager, "appendMessage").mockImplementation(message => {
+				const failedErrorTurn = message.role === "assistant" && message.stopReason === "error";
+				const failedRecoveredReply =
+					scenario.failingWrite === "reply-after-first-retry" &&
+					message.role === "assistant" &&
+					message.stopReason === "stop";
+				if (armed && (failedErrorTurn || failedRecoveredReply)) {
 					failedWrites++;
-					throw new Error("EACCES: permission denied, open 'session.jsonl.tmp'");
-				});
-			} else {
-				let armed = scenario.failingWrite === "error-turn";
-				session.subscribe(event => {
-					if (event.type === "auto_retry_start") armed = true;
-				});
-				const appendMessage = sessionManager.appendMessage.bind(sessionManager);
-				vi.spyOn(sessionManager, "appendMessage").mockImplementation(message => {
-					if (armed && message.role === "assistant" && message.stopReason === "error") {
-						failedWrites++;
-						throw new RangeError("Out of memory");
-					}
-					return appendMessage(message);
-				});
-			}
+					throw new RangeError("Out of memory");
+				}
+				return appendMessage(message);
+			});
 
 			await session.prompt("Fail, then settle the retry saga");
 
@@ -8641,11 +8634,11 @@ describe("AgentSession retry fallback", () => {
 			expect(getLastAssistantMessage(session).content).toEqual([{ type: "text", text: "Woke for the delivery." }]);
 		}
 
-		it("closes a saga that exhausted its retry budget", async () => {
+		it("closes a saga when the failed turn cannot be persisted before retry", async () => {
 			await expectSagaClosesDespiteFailedWrite({
-				responses: [{ throw: transientError }, { throw: transientError }],
+				responses: [{ throw: transientError }],
 				settings: { "retry.maxRetries": 1, "retry.modelFallback": false },
-				failingWrite: "rewrite",
+				failingWrite: "error-turn",
 				end: { success: false, attempt: 1, finalError: transientError },
 			});
 		});
@@ -8654,7 +8647,7 @@ describe("AgentSession retry fallback", () => {
 			await expectSagaClosesDespiteFailedWrite({
 				responses: [{ throw: transientError }, { content: ["Recovered after one retry."] }],
 				settings: { "retry.maxRetries": 1, "retry.modelFallback": false },
-				failingWrite: "rewrite",
+				failingWrite: "reply-after-first-retry",
 				end: { success: true, attempt: 1 },
 			});
 		});

@@ -7,6 +7,7 @@ import { ModelRegistry } from "../src/config/model-registry";
 import { Settings } from "../src/config/settings";
 import { createAgentSession } from "../src/sdk";
 import { AuthStorage, SqliteAuthCredentialStore } from "../src/session/auth-storage";
+import type { AgentSession } from "../src/session/agent-session";
 import { SessionManager } from "../src/session/session-manager";
 
 afterEach(() => vi.restoreAllMocks());
@@ -14,12 +15,15 @@ afterEach(() => vi.restoreAllMocks());
 test("four child launches do not wait for optional quota HTTP while parent discovery is busy", async () => {
 	using dir = TempDir.createSync("omp-sdk-optional-wait-");
 	let requests = 0;
+	const releaseHttp = Promise.withResolvers<void>();
+	const discoveryStarted = Promise.withResolvers<void>();
 	const server = Bun.serve({
 		hostname: "127.0.0.1",
 		port: 0,
-		async fetch() {
+		async fetch(request) {
 			requests++;
-			await Bun.sleep(2000);
+			if (new URL(request.url).pathname === "/models") discoveryStarted.resolve();
+			await releaseHttp.promise;
 			return Response.json({ models: [] });
 		},
 	});
@@ -28,8 +32,9 @@ test("four child launches do not wait for optional quota HTTP while parent disco
 			provider === "anthropic"
 				? {
 						id: provider,
-						async fetchUsage() {
-							await fetch(new URL("usage", server.url));
+						async fetchUsage(params) {
+							const response = await fetch(new URL("usage", server.url), { signal: params.signal });
+							await response.json();
 							return null;
 						},
 					}
@@ -43,7 +48,8 @@ test("four child launches do not wait for optional quota HTTP while parent disco
 		baseUrl: server.url.toString(),
 		api: "openai-completions",
 		fetchDynamicModels: async () => {
-			await fetch(new URL("models", server.url));
+			const response = await fetch(new URL("models", server.url));
+			await response.json();
 			return [];
 		},
 	});
@@ -71,27 +77,37 @@ test("four child launches do not wait for optional quota HTTP while parent disco
 		toolNames: [],
 		systemPrompt: ["fixture"],
 	};
-	const { session: parent } = await createAgentSession({
-		...common,
-		model: { ...primary, baseUrl: server.url.toString() },
-		sessionManager: SessionManager.inMemory(dir.path()),
-	});
-	const refresh = registry.refreshRuntimeProviders("online");
-	const started = performance.now();
-	const children = await Promise.all(
-		Array.from({ length: 4 }, (_, i) =>
-			createAgentSession({
-				...common,
-				settings: settings.overlay({}),
-				parentTaskPrefix: `optional-wait-${i}`,
-				taskDepth: 1,
-				sessionManager: SessionManager.inMemory(dir.path()),
-				modelPattern: ["anthropic/claude-sonnet-4-5", "anthropic/claude-haiku-4-5"],
-			}),
-		),
-	);
-	const elapsed = performance.now() - started;
+	const sessions: AgentSession[] = [];
+	let refresh: Promise<void> | undefined;
 	try {
+		const { session: parent } = await createAgentSession({
+			...common,
+			model: { ...primary, baseUrl: server.url.toString() },
+			sessionManager: SessionManager.inMemory(dir.path()),
+		});
+		sessions.push(parent);
+		let discoverySettled = false;
+		refresh = registry.refreshRuntimeProviders("online").finally(() => {
+			discoverySettled = true;
+		});
+		await discoveryStarted.promise;
+		const started = performance.now();
+		const children = await Promise.all(
+			Array.from({ length: 4 }, (_, i) =>
+				createAgentSession({
+					...common,
+					settings: settings.overlay({}),
+					parentTaskPrefix: `optional-wait-${i}`,
+					taskDepth: 1,
+					sessionManager: SessionManager.inMemory(dir.path()),
+					modelPattern: ["anthropic/claude-sonnet-4-5", "anthropic/claude-haiku-4-5"],
+				}).then(created => {
+					sessions.push(created.session);
+					return created;
+				}),
+			),
+		);
+		const elapsed = performance.now() - started;
 		console.log(
 			JSON.stringify({
 				elapsedMs: elapsed,
@@ -108,12 +124,17 @@ test("four child launches do not wait for optional quota HTTP while parent disco
 		expect(requests).toBeGreaterThanOrEqual(2);
 		expect(children.map(c => c.session.model?.id)).toEqual(Array(4).fill(primary.id));
 		expect(elapsed).toBeLessThan(1200);
+		expect(discoverySettled).toBe(false);
 	} finally {
-		await Promise.all(children.map(c => c.session.dispose()));
-		await parent.dispose();
-		await refresh;
-		server.stop(true);
-		auth.close();
+		// End fixture I/O before disposing sessions that share its registry.
+		releaseHttp.resolve();
+		try {
+			await refresh;
+			await Promise.all(sessions.map(session => session.dispose()));
+		} finally {
+			await server.stop(true);
+			auth.close();
+		}
 	}
 }, 15000);
 

@@ -67,9 +67,10 @@ test("completed row lifetimes cannot multiply a revised residual budget", () => 
 					content: "Open",
 					status: "in_progress",
 					schedule: {
+						executor: { workerId: "worker", startedAt: start },
 						firstEstimate: first,
 						startedAt: start,
-						estimate: { ...estimate(30), updatedAt: start + 300_000 },
+						estimate: { ...estimate(600), updatedAt: start + 300_000 },
 						dependencies: [],
 						owner: "worker",
 						resources: [],
@@ -79,13 +80,19 @@ test("completed row lifetimes cannot multiply a revised residual budget", () => 
 			],
 		},
 	];
-	const forecast = forecastTodoPlan(phases, { now: start + 600_000 });
+	const forecast = forecastTodoPlan(phases, { now: start + 600_000, capacity: 1, executableCapacity: 1 });
 	expect(forecast.calibration).toEqual({ ratio: 1, samples: 0 });
-	expect(forecast.rawP50Finish).toBe(start + 600_000);
+	expect(forecast.rawP50Finish).toBe(start + 900_000);
 	const point = forecast.rawP50Finish;
 	phases[0]!.tasks[0]!.schedule!.finishedAt = start + 60_000_000;
-	expect(forecastTodoPlan(phases, { now: start + 600_000 }).rawP50Finish).toBe(point);
+	expect(forecastTodoPlan(phases, { now: start + 600_000, capacity: 1, executableCapacity: 1 }).rawP50Finish).toBe(
+		point,
+	);
 	expect(forecast.calibrationStatus).toBe("insufficient");
+	delete phases[0]!.tasks[1]!.schedule!.executor;
+	expect(forecastTodoPlan(phases, { now: start + 600_000, capacity: 1, executableCapacity: 1 }).rawP50Finish).toBe(
+		start + 1_200_000,
+	);
 });
 
 test("successor launch retains cumulative churn and first clock while refreshing its owner budget", () => {

@@ -10,7 +10,7 @@ import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mod
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import type { ExtensionAskDialogResult, ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import type { ExtensionFormDialogResult, ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { cfgGoalContinuationModes } from "@oh-my-pi/pi-coding-agent/goals/settings";
 import type { SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -208,13 +208,13 @@ describe("InteractiveMode restart", () => {
 		const pausedGoal = await session.goalRuntime.pauseGoal();
 		if (!pausedGoal) throw new Error("expected a paused goal");
 		const askCallId = "escape-paused-goal-ask";
-		const questions = [{ id: "continue", question: "Continue?", options: [{ label: "Yes" }] }];
+		const html = '<form><label>Continue?<select name="continue"><option>Yes</option></select></label></form>';
 		sessionManager.appendMessage({
 			role: "toolResult",
 			toolName: "ask",
 			toolCallId: askCallId,
 			content: [{ type: "text", text: "Pending question; reply in this session's chat" }],
-			details: { pending: { id: askCallId, questions } },
+			details: { pending: { id: askCallId, html } },
 			timestamp: Date.now(),
 			isError: false,
 		});
@@ -236,10 +236,10 @@ describe("InteractiveMode restart", () => {
 			});
 		}
 
-		const dialog = Promise.withResolvers<ExtensionAskDialogResult | undefined>();
+		const dialog = Promise.withResolvers<ExtensionFormDialogResult | undefined>();
 		const opened = Promise.withResolvers<void>();
 		const ui = {
-			askDialog: () => {
+			formDialog: () => {
 				opened.resolve();
 				return dialog.promise;
 			},

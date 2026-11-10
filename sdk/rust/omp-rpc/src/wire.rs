@@ -6375,6 +6375,138 @@ impl<'de> Deserialize<'de> for LitRestart {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CustomPromptMessageAttribution {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "agent")]
+	Agent,
+}
+
+impl CustomPromptMessageAttribution {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Agent => "agent",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CustomPromptOptionsStreamingBehavior {
+	#[serde(rename = "steer")]
+	Steer,
+	#[serde(rename = "followUp")]
+	FollowUp,
+	#[serde(rename = "aside")]
+	Aside,
+}
+
+impl CustomPromptOptionsStreamingBehavior {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Steer => "steer",
+			Self::FollowUp => "followUp",
+			Self::Aside => "aside",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionPromptOptionsStreamingBehavior {
+	#[serde(rename = "steer")]
+	Steer,
+	#[serde(rename = "followUp")]
+	FollowUp,
+	#[serde(rename = "aside")]
+	Aside,
+}
+
+impl SessionPromptOptionsStreamingBehavior {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Steer => "steer",
+			Self::FollowUp => "followUp",
+			Self::Aside => "aside",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionPromptOptionsAttribution {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "agent")]
+	Agent,
+}
+
+impl SessionPromptOptionsAttribution {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Agent => "agent",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionDisposeOptionsReason {
+	#[serde(rename = "pre_exit")]
+	PreExit,
+	#[serde(rename = "exit")]
+	Exit,
+	#[serde(rename = "sigint")]
+	Sigint,
+	#[serde(rename = "sigterm")]
+	Sigterm,
+	#[serde(rename = "sighup")]
+	Sighup,
+	#[serde(rename = "uncaught_exception")]
+	UncaughtException,
+	#[serde(rename = "unhandled_rejection")]
+	UnhandledRejection,
+	#[serde(rename = "manual")]
+	Manual,
+}
+
+impl SessionDisposeOptionsReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::PreExit => "pre_exit",
+			Self::Exit => "exit",
+			Self::Sigint => "sigint",
+			Self::Sigterm => "sigterm",
+			Self::Sighup => "sighup",
+			Self::UncaughtException => "uncaught_exception",
+			Self::UnhandledRejection => "unhandled_rejection",
+			Self::Manual => "manual",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionAbortOptionsGoalReason {
+	#[serde(rename = "interrupted")]
+	Interrupted,
+	#[serde(rename = "internal")]
+	Internal,
+}
+
+impl SessionAbortOptionsGoalReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Interrupted => "interrupted",
+			Self::Internal => "internal",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GoalModeStateMode {
 	#[serde(rename = "active")]
 	Active,

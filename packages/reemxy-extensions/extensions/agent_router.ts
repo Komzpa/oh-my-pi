@@ -16,6 +16,7 @@ import { shortenPath, truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/rend
 import type { TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import {
 	workerToolPreflight,
+	holdsWriteCustody,
 	workerRowScope,
 	workerScopeCovers,
 	fileToolTargets,
@@ -510,7 +511,7 @@ export function admitAssignedResources(
 	if (matched.length !== 1) return;
 	const row = matched[0];
 	if (row.status === "blocked" && todoInfraBreaker(row.schedule?.attemptHistory)) return row.blocker ?? "Infra breaker: inspect todo history and repair admission before unblocking this row.";
-	const previous = checkoutScopesFromResources(row.schedule?.resources);
+	const previous = checkoutScopesFromResources(row.schedule?.resources?.filter(resource => !resource.startsWith("git:")));
 	const narrowed = checkoutScopesFromResources(event.resources);
 	if (explicit && previous && narrowed &&
 		!checkoutScopesContain([...previous, ...(checkoutScopesFromResources(worktrees) ?? [])], narrowed))
@@ -519,20 +520,11 @@ export function admitAssignedResources(
 	// An empty reader write claim must not erase the row's artifact/audit scope.
 	const resources = readOnly && explicit && event.resources.length === 0
 		? [...(row.schedule?.resources ?? [])]
-		: explicit ? assigned : [...new Set([...(row.schedule?.resources ?? []), ...assigned])];
-	const incoming = checkoutScopesFromResources(resources);
+		: explicit ? [...new Set([...assigned, ...(row.schedule?.resources ?? []).filter(resource => resource.startsWith("git:"))])] : [...new Set([...(row.schedule?.resources ?? []), ...assigned])];
+	const incoming = checkoutScopesFromResources(resources.filter(resource => !resource.startsWith("git:")));
 	for (const other of rows) {
-		if (
-			other === row ||
-			other.schedule?.resourceWait !== undefined ||
-			(other.schedule?.executor?.outcome !== undefined &&
-				(!other.schedule.owner || other.schedule.owner === other.schedule.executor.workerId)) ||
-			readOnly ||
-			readOnlyClaim(other) ||
-			(other.status === "pending" && !other.schedule?.owner && !other.schedule?.executor?.workerId)
-		)
-			continue;
-		const held = checkoutScopesFromResources(other.schedule?.resources);
+		if (other === row || readOnly || !holdsWriteCustody(other)) continue;
+		const held = checkoutScopesFromResources(other.schedule?.resources?.filter(resource => !resource.startsWith("git:")));
 		if (incoming && held && checkoutScopesOverlap(incoming, held)) {
 			onWait?.({ row: other.content, workerId: other.schedule?.executor?.workerId ?? other.schedule?.owner });
 			return `resources ${JSON.stringify(

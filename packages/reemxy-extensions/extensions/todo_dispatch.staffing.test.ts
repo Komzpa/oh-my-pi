@@ -75,11 +75,12 @@ test("a settled executor running elsewhere does not own a reassigned row", async
 test("staffing remains visible without blocking independent ready work", async () => {
 	const h = await harness([structuredClone(failed), structuredClone(fresh)]);
 	await h.hooks.get("turn_start")({}, h.ctx);
-	expect(h.notices[0].customType).toBe("todo-gate-staffing");
-	expect(h.notices[0].content).toContain("ContinentalSnail");
+	const staffing = h.notices.filter(notice => notice.customType === "todo-gate-staffing");
+	expect(staffing).toHaveLength(1);
+	expect(staffing[0].content).toContain("ContinentalSnail");
 	h.notices.length = 0;
 	await h.hooks.get("turn_start")({}, h.ctx);
-	expect(h.notices[0].customType).toBe("todo-gate-staffing");
+	expect(h.notices.filter(notice => notice.customType === "todo-gate-staffing")).toHaveLength(1);
 	const invoke = input => h.hooks.get("tool_call")({ toolName: "task", input }, h.ctx);
 	const denied = await invoke({ name: "NewOrbit", task: fresh.content, agent: "task" });
 	expect(denied?.block).not.toBe(true);

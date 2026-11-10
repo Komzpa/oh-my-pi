@@ -254,7 +254,7 @@ describe("task spawn routing", () => {
 		}
 	});
 
-	it("fires before_subagent_spawn once per child even though the task preflight resolves policy first", async () => {
+	it("runs admission before the single dispatch routing hook for each child", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [{ ...taskAgent, model: ["anthropic/claude-sonnet-4"] }],
 			projectAgentsDir: null,
@@ -265,7 +265,10 @@ describe("task spawn routing", () => {
 		const manager = createManager();
 		const session = createSession({ manager });
 		const signals: Array<AbortSignal | undefined> = [];
-		session.emitBeforeSubagentSpawn = async (_event, signal) => {
+		const phases: Array<string | undefined> = [];
+		session.emitBeforeSubagentSpawn = async (event, signal) => {
+			phases.push(event.phase);
+			if (event.phase === "admission") return;
 			signals.push(signal);
 			return { model: `openai/gpt-4.1-mini-${signals.length}`, note: `pool ${signals.length}` };
 		};
@@ -274,6 +277,7 @@ describe("task spawn routing", () => {
 		const result = await tool.execute("tc-route", { agent: "task", name: "Routed", task: "Do it." } as TaskParams);
 		await manager.getJob(result.details!.async!.jobId!)!.promise;
 
+		expect(phases).toEqual(["admission", undefined]);
 		expect(signals).toHaveLength(1);
 		expect(signals[0]).toBeInstanceOf(AbortSignal);
 		expect(runSpy.mock.calls[0]?.[0].modelOverride).toEqual(["openai/gpt-4.1-mini-1"]);

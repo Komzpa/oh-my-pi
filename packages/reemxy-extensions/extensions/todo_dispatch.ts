@@ -35,7 +35,7 @@ import { clampThinkingLevelToCeiling, resolveThinkingLevelForModel } from "@oh-m
 import { readTodoDisplayLedger } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-display";
 import { refuseProofReview, renderLeadRowInstructions } from "./lead-row-instructions";
 import { checkRowAudits } from "./row_audit";
-import { todoNeedsOwnerDecision, classifyTodoDisplayRow, todoRowAfterWorker, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanPrediction, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { todoNeedsOwnerDecision, classifyTodoDisplayRow, todoRowAfterWorker, todoRowHasDeliverable, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanPrediction, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash } from "node:crypto";
@@ -3003,10 +3003,16 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     healPlanTicker(ctx);
   });
   pi.on("turn_start", (_event, ctx) => {
-    if (!singleWriterLane && !pauseGate?.paused && !gateSwitchedOff(ctx) && isMain(ctx) && (chainDemand(todoPhases(ctx)) || recoveryFor(ctx))) {
-      const wake = prepareWake(ctx);
-      // Advice must not enqueue another turn; the existing wake scheduler owns retries.
-      pi.sendMessage({ customType: "todo-dispatch-action-required", content: wake.actionDemand, display: false, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
+    if (!singleWriterLane && !pauseGate?.paused && !gateSwitchedOff(ctx) && isMain(ctx)) {
+      // Observe dependency changes even when they suppress an actionable wake.
+      // Otherwise held rows keep stale misses and never show their blocking path.
+      const decision = currentDecision(ctx);
+      const demand = wakeDemand(todoPhases(ctx), runningOwnerNames(ctx), Date.now(), decision.deadline?.deadlineAt, decision.forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx), ctx);
+      if (demand) {
+        const wake = prepareWake(ctx);
+        // Advice must not enqueue another turn; the existing wake scheduler owns retries.
+        pi.sendMessage({ customType: "todo-dispatch-action-required", content: wake.actionDemand, display: false, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
+      }
     }
     sprintState.lastNotices = Object.fromEntries(Object.entries(sprintState.lastNotices).filter(([key]) => !key.startsWith("todo-gate-staffing\0")));
     announceGates(ctx);
@@ -5793,6 +5799,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           if (refusal) return { block: true, reason: refusal };
           gateTrace(ctx, "speculative-review-checked", { row: row.content, agent: item.agent, readOnly: readOnlyAudit(item), speculativeOn: row.schedule?.speculativeOn, dependencies: (row.schedule?.dependencies ?? []).map((content) => { const target = rows.find((candidate) => candidate.content === content); return { content, status: target?.status, review: target?.schedule?.review }; }) });
           if (readOnlyAudit(item)) continue;
+          // Speculation can use a delivered artifact or an explicit proposal;
+          // it cannot invent the missing input behind an external approval hold.
+          const unavailable = (row.schedule?.dependencies ?? []).map(content => rows.find(candidate => candidate.content === content))
+            .find(candidate => candidate && candidate.status === "blocked" && candidate.schedule?.review === "user" &&
+              !todoRowHasDeliverable(candidate) && !parseUserWait(candidate.blocker)?.proposal);
+          if (unavailable) return { block: true, reason: `Dependency ${JSON.stringify(unavailable.content)} is awaiting user input with no delivered artifact or recorded proposal. Keep ${JSON.stringify(row.content)} waiting; continue independent ready work.` };
           // A dropped title with the same exclusive resources is still the same work.
           let schedule = row.schedule ?? {};
           const resources = schedule.resources ?? [];
@@ -5832,7 +5844,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       }
     }
     if (event.toolName === "wait") {
-      if (!ownedWait && isMain(ctx) && !pauseGate?.paused) {
+      if (isMain(ctx) && !pauseGate?.paused) {
         const recovery = activeRecoveries(ctx)[0];
         if (recovery) return { block: true, reason: recoveryNotice(recovery) };
       }
@@ -5897,12 +5909,26 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
             : id === "missed-eta"
               ? `Fix each late row: ${missedEtaRowsText(overdueForMissedEta, Date.now())}. Exactly: todo schedule each late row with evidence, then task the late row. Don't start workers for unrelated work.`
             : ESCALATION_REMEDY;
+      // A review hold belongs to its row. Admit only explicitly matched canonical ready
+      // work; unrelated forecast debt must not turn that hold into a global stop.
+      const independentReadyTask = (call: GateCall): boolean => {
+        if (call.name !== "task" || !unresolvedForGate.length) return false;
+        const items = taskItems(call.arguments ?? {});
+        const phases = [{ name: "Current forecast", tasks: currentDecision(ctx).forecast?.rows ?? [] }];
+        const ready = new Set((currentDecision(ctx).forecast?.rows ?? []).filter(row => row.ready && isOpenRowStatus(row.status)).map(row => row.content));
+        return items.length > 0 && items.every(item => {
+          const rows = speculativeTaskRows(item, phases);
+          return rows.length > 0 && rows.every(row => ready.has(String(row.content)) && !unresolvedForGate.some(held => held.content === row.content));
+        });
+      };
       const gates: ActiveGate[] = escalatedIds.map((id) => ({
         id,
         remedy: remedyFor(id),
         satisfies: id === "missed-eta"
           ? (call: GateCall) => planFix(call) || taskServesRescheduledLateRow(call)
-          : planFix,
+          : id === "todo-replan"
+            ? (call: GateCall) => planFix(call) || independentReadyTask(call)
+            : planFix,
       }));
       const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
       const verdict = decideGateCall(gateCall, gates);
