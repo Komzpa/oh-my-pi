@@ -67,6 +67,22 @@ test("no-event wake is silent, prose-only and re-estimate turns persist an escal
   expect(next.content).toContain("PR 114 acceptance");
 });
 
+test("repeated internal action demand queues behind peer follow-ups while turn-start recovery remains steering", async () => {
+  const h = await harness();
+  await h.hooks.get("turn_start")({}, h.ctx);
+  const startDemand = h.sent.findLast(message => message.customType === "todo-dispatch-action-required");
+  expect(startDemand?.options).toMatchObject({ deliverAs: "steer", triggerTurn: false, interruptWait: false });
+
+  await h.hooks.get("turn_end")({}, h.ctx);
+  const repeatedDemand = h.sent.findLast(message => message.customType === "todo-dispatch-action-required");
+  expect(repeatedDemand?.options).toMatchObject({
+    deliverAs: "followUp",
+    triggerTurn: false,
+    interruptWait: false,
+    supersedes: "todo-dispatch-action-required",
+  });
+});
+
 test("successful dispatch counts as action, failed calls do not; a finished job allows a real update", async () => {
   const h = await harness();
   await h.wake();

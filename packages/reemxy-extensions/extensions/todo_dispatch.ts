@@ -6876,7 +6876,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         const misses = Math.min(100, previous?.key === demand.key ? previous.misses + 1 : 1);
         const receipt: WakeReceipt = { recovery: structuredClone(recovery), key: demand.key, row: demand.row, action: demand.action, misses, toolCalls: wakeTurn.toolCalls, mutations: 0 };
         pi.appendEntry("todo-dispatch-action-demand", receipt);
-        pi.sendMessage({ customType: "todo-dispatch-action-required", content: prompt.render(dispatchWakeInstructions, { ...receipt, escalation: misses > 1 }).trim(), display: false, attribution: "agent" }, { deliverAs: "steer", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
+        // A repeated internal demand belongs behind existing follow-ups. Re-steering it at
+        // every turn end lets it continually outrank peer messages already waiting in followUp.
+        pi.sendMessage({ customType: "todo-dispatch-action-required", content: prompt.render(dispatchWakeInstructions, { ...receipt, escalation: misses > 1 }).trim(), display: false, attribution: "agent" }, { deliverAs: "followUp", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
       }
       if (wakeTurn.rejection) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: wakeTurn.chain.key, action: wakeTurn.chain.action, edges: wakeTurn.chain?.edges, rejection: wakeTurn.rejection, misses: 0, toolCalls: wakeTurn.toolCalls, mutations: 0 });
       if (wakeTurn.mutations > 0) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: demand?.key ?? "resolved", action: demand?.action ?? "", misses: 0, toolCalls: wakeTurn.toolCalls, mutations: wakeTurn.mutations });
