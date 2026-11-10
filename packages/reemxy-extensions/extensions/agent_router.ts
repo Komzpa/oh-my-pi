@@ -515,8 +515,11 @@ export function admitAssignedResources(
 	if (explicit && previous && narrowed &&
 		!checkoutScopesContain([...previous, ...(checkoutScopesFromResources(worktrees) ?? [])], narrowed))
 		return `resources exceed row ${JSON.stringify(row.content)}; update its todo schedule resources before expanding.`;
-	const resources = explicit ? assigned : [...new Set([...(row.schedule?.resources ?? []), ...assigned])];
 	const readOnly = event.readOnly === true || readOnlyRow(row);
+	// An empty reader write claim must not erase the row's artifact/audit scope.
+	const resources = readOnly && explicit && event.resources.length === 0
+		? [...(row.schedule?.resources ?? [])]
+		: explicit ? assigned : [...new Set([...(row.schedule?.resources ?? []), ...assigned])];
 	const incoming = checkoutScopesFromResources(resources);
 	for (const other of rows) {
 		if (

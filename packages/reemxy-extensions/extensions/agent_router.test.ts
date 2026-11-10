@@ -110,6 +110,40 @@ describe("agent router", () => {
 		expect(row.schedule.readOnly).toBeUndefined();
 	});
 
+	test("read-only admission with no write resources preserves eight-file QA scope without claiming it exclusively", () => {
+		const { dir } = tempStateFile();
+		try {
+			const repo = join(dir, "repo");
+			mkdirSync(join(repo, "src"), { recursive: true });
+			execFileSync("git", ["init", "-q", repo]);
+			const artifacts = Array.from({ length: 8 }, (_, i) => join(repo, "src", `artifact-${i}.ts`));
+			for (const file of artifacts) writeFileSync(file, "export {};\n");
+			const verifier = { content: "QA eight artifacts", status: "pending", schedule: { resources: [...artifacts] } };
+			const writer = { content: "Repair second artifact", status: "pending", schedule: { resources: [...artifacts] } };
+			const collision = { content: "Repair held artifact", status: "pending", schedule: { resources: [...artifacts] } };
+			const holder = { content: "Existing writer", status: "in_progress", schedule: { owner: "holder", resources: [artifacts[0]] } };
+			const rows = [verifier, writer, collision, holder];
+			const context = ctx({ cwd: repo, getTodoPhases: () => [{ name: "Work", tasks: rows }],
+				updateTodoSchedule: (title, patch) => {
+					const row = rows.find(row => row.content === title)!;
+					row.schedule = { ...row.schedule, ...patch };
+					return true;
+				},
+			});
+			expect(admitAssignedResources({ row: verifier.content, spawnKey: "reader", readOnly: true, resources: [] }, context)).toBeUndefined();
+			expect(verifier.schedule.resources).toEqual(artifacts);
+			expect(verifier.schedule.ownerReadOnly).toEqual({ owner: "reader", readOnly: true });
+			expect(verifier.schedule.readOnly).toBeUndefined();
+			expect(admitAssignedResources({ row: writer.content, spawnKey: "writer", readOnly: false, resources: [artifacts[1]] }, context)).toBeUndefined();
+			expect(writer.schedule.resources).toEqual([artifacts[1]]);
+			expect(readOnlyClaim(writer)).toBe(false);
+			expect(admitAssignedResources({ row: collision.content, spawnKey: "collision", resources: [artifacts[0]] }, context)).toContain("holder");
+			expect(collision.schedule.resources).toEqual(artifacts);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("reusing a worker ID replaces its earlier read-only claim", () => {
 		const row = { content: "Repair a module", status: "pending", schedule: { resources: [] } };
 		const context = ctx({

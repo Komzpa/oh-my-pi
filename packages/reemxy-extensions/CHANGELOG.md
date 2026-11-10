@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Preserve a row's artifact scope when a read-only child claims no write resources.
+
 - Require fresh git proof before superseded audit drops and retarget only checks with existing structured file resources.
 
 - Retire audit follow-ups for merged or removed deliveries, with at most one read-only check on current HEAD ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
