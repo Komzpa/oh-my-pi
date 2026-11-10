@@ -75,7 +75,7 @@ describe("Native todo HUD viewport regression", () => {
 		resetSettingsForTest();
 	});
 
-	it("keeps the full plan in both native modes and clears it when the plan is removed", async () => {
+	it("keeps the full checklist and bounded fallback stage window, and clears both when the plan is removed", async () => {
 		const plan: TodoPhase[] = Array.from({ length: 8 }, (_, index) => ({
 			name: `Stage ${index}`,
 			tasks: [{ content: `Work ${index}`, status: index === 0 ? "completed" : "pending" }],
@@ -105,13 +105,27 @@ describe("Native todo HUD viewport regression", () => {
 		const tree = nodes(fallback).find(n => n.k === "tree");
 		expect(tree).toMatchObject({
 			p: {
+				nodes: [
+					{ id: "1", open: true, children: [{ id: "1.0" }, { id: "1.1" }] },
+					...plan.slice(2, 6).map((_, index) => ({ id: `${index + 2}`, open: false, children: undefined })),
+					{ id: "more" },
+					{ id: "more-todos" },
+				],
+			},
+		});
+		mode.setTodoExpanded(true);
+		expect(todo(true)).toEqual(collapsed);
+		expect(nodes(todo(false)!).find(n => n.k === "tree")).toMatchObject({
+			p: {
 				nodes: plan.map((phase, index) => ({
 					id: `${index}`,
 					children: phase.tasks.map((_, task) => ({ id: `${index}.${task}` })),
 				})),
 			},
 		});
-		mode.setTodoExpanded(true);
+		mode.setTodoExpanded(false);
+		session.sessionManager.appendCustomEntry("requirements_ledger", { requirements: [] });
+		await mode.reloadTodos();
 		expect(todo(true)).toEqual(collapsed);
 		expect(todo(false)).toEqual(fallback);
 		session.commitTodoPhases([]);

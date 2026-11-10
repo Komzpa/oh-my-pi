@@ -60,7 +60,7 @@ import { describeSegmentTrack, renderSegmentTrack, type TrackSegment } from "@oh
 import type { WorkingRowSpec } from "@oh-my-pi/pi-tui/components/loader";
 import { formatDoubleTap } from "@oh-my-pi/pi-tui/key-hint-format";
 import { thinkingLevelWord } from "@oh-my-pi/pi-tui/status-line/segments";
-import type { TspChecklistItem, TspChecklistPhase, TspText, TspTreeNode } from "@oh-my-pi/pi-wire";
+import type { TspChecklistItem, TspChecklistPhase, TspSpan, TspText, TspTreeNode } from "@oh-my-pi/pi-wire";
 import { isInsideTerminalMultiplexer } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
 	$env,
@@ -5886,157 +5886,17 @@ export class InteractiveMode implements InteractiveModeContext {
 				? linkTodoWorkers(livePhases, this.#observerRegistry.getSessions())
 				: workers;
 		activeDescs.splice(0, activeDescs.length, ...[...activeTodoWorkers.byTask.keys()].map(todo => todo.content));
+		const expanded = this.todoExpanded;
+		const displayLedger = readTodoDisplayLedgerFromManager(owner.sessionManager);
+		const multiPhase = phases.length > 1;
+		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
+		// Fixed budgets keep the HUD bounded regardless of plan size / progress.
+		const subsequentStageCap = 4; // stages shown after the active one (a trailing summary row covers the rest)
+
 		// A pending todo "lights up" (accent) when an in-flight subagent is doing
 		// its work, matched by normalized content overlap.
 		const isMatched = (todo: TodoItem): boolean =>
 			activeDescs.length > 0 && todoMatchesAnyDescription(todo.content, activeDescs);
-		const multiPhase = phases.length > 1;
-		const archivedSummary = getTodoArchiveSummaryFromEntries(getTodoArchiveBranchEntries(owner.sessionManager));
-		const totalTasks = (archivedSummary?.count ?? 0) + phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
-		const closedTasks =
-			(archivedSummary?.count ?? 0) +
-			phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
-
-		// Native clients keep the full checklist regardless of the terminal viewport.
-		// A `checklist` HUD is a pill with the whole plan as its popover.
-		const checklistPhases = livePhases.map((phase, phaseIndex) => ({
-			id: `${phaseIndex}`,
-			title: multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name,
-			collapsed: phase.tasks.every(isClosedTodo) || undefined,
-			items: phase.tasks.map((todo, taskIndex) => {
-				const note = todo.blocker ?? todo.notes?.at(-1);
-				return {
-					id: `${phaseIndex}.${taskIndex}`,
-					text: todo.content,
-					status:
-						todo.status === "completed"
-							? "done"
-							: todo.status === "abandoned"
-								? "dropped"
-								: todo.status === "blocked"
-									? "blocked"
-									: todo.status === "in_progress" || isMatched(todo)
-										? "active"
-										: "pending",
-					note,
-				} satisfies TspChecklistItem;
-			}),
-		})) satisfies TspChecklistPhase[];
-		const phaseNodes: TspTreeNode[] = checklistPhases.map(phase => ({
-			id: phase.id,
-			label: [span(phase.title, "accent strong")],
-			open: true,
-			children: phase.items.map(item => ({
-				id: item.id,
-				label: [
-					span(
-						item.status === "blocked" ? `${item.text} (blocked)` : item.text,
-						item.status === "done"
-							? "success del"
-							: item.status === "dropped"
-								? "dim del"
-								: item.status === "blocked"
-									? "warning"
-									: item.status === "active"
-										? "accent"
-										: "dim",
-					),
-					...(item.note ? [span(` · ${item.note}`, "dim em")] : []),
-				],
-				icon: item.status === "done" ? "check" : "circle",
-			})),
-		}));
-		const fallback = node(
-			"col",
-			{ role: "omp.hud.todo" },
-			[
-				row(
-					[
-						text([span("TODO", "accent strong")]),
-						node("progress", { value: closedTasks / totalTasks, label: `${closedTasks}/${totalTasks}` }),
-					],
-					{ gap: "sm", align: "center" },
-				),
-				node("tree", { nodes: phaseNodes }),
-			],
-			"todo",
-		);
-		this.#todoHudNative = {
-			checklist: node(
-				"checklist",
-				{ phases: checklistPhases, mode: "hud", role: "omp.hud.todo" },
-				undefined,
-				"todo",
-			),
-			fallback,
-		};
-		const expanded = this.todoExpanded;
-		const displayLedger = readTodoDisplayLedgerFromManager(owner.sessionManager);
-		if (!expanded && displayLedger.requirements !== undefined) {
-			const sessions = this.#observerRegistry.getSessions().filter(isHudSubagent);
-			const liveWorkers: TodoDisplayWorker[] = sessions.map(worker => ({
-				id: worker.id,
-				agent: worker.agent ?? worker.progress?.agent,
-				// Which model and profile serve each row (2026-11-06: "тут потерялось какая модель и в каком профиле работает").
-				model: isFeedModelBadgeEnabled()
-					? formatTodoModelBadge(
-							worker.progress?.resolvedModelIdentity ?? worker.progress?.resolvedModel,
-							worker.progress?.resolvedThinkingLevel,
-						) || undefined
-					: undefined,
-				startedAt:
-					worker.progressAt !== undefined && worker.progress
-						? worker.progressAt - worker.progress.durationMs
-						: worker.lastUpdate,
-			}));
-			for (const job of owner.getAsyncJobSnapshot()?.running ?? []) {
-				if (!liveWorkers.some(worker => worker.id === job.id))
-					liveWorkers.push({ id: job.id, startedAt: job.startTime });
-			}
-			const owners = new Map<string, TodoDisplayWorker>();
-			const runningWorkerIds = new Set(liveWorkers.map(worker => worker.id));
-			for (const task of livePhases.flatMap(phase => phase.tasks)) {
-				const worker =
-					liveWorkers.find(worker => worker.id === task.schedule?.executor?.workerId) ??
-					liveWorkers.find(worker => todoMatchesObservedWorker(task, { workerId: worker.id, runningWorkerIds }));
-				if (worker) owners.set(task.content, worker);
-			}
-			const ledger = readTodoDisplayLedgerFromManager(owner.sessionManager, runningWorkerIds);
-			const taskCap = cfgTaskMaxConcurrency.get(owner.settings);
-			const runningTasks = (owner.getAsyncJobSnapshot()?.running ?? []).filter(job => job.type === "task").length;
-			const display = renderTodoPlanDisplay(
-				phases,
-				{ workers: liveWorkers, owners, ...ledger, capacityFull: taskCap > 0 && runningTasks >= taskCap },
-				{
-					now,
-					width: Math.max(0, width - 2),
-					forecast: this.#todoForecast,
-					archived: archiveSummary?.count,
-					paint: (tone, text) => theme.fg(tone, text),
-				},
-			);
-			const visibleRows = Math.max(0, panelRows);
-			const overflow = display.lines.length > visibleRows;
-			const retainedRows = overflow ? Math.max(0, visibleRows - 1) : visibleRows;
-			const lines = display.lines.slice(0, retainedRows);
-			const lineOwners = display.owners.slice(0, retainedRows);
-			if (overflow && visibleRows > 0) {
-				lines.push(`${formatMoreItems(display.lines.length - retainedRows, "row")} · /todo expand`);
-				lineOwners.push(undefined);
-			}
-			this.todoContainer.addChild(
-				new SubagentHudComponent(
-					lines.map(line => truncateToWidth(replaceTabs(line), Math.max(0, width - 2), "")),
-					[],
-					undefined,
-					lineOwners,
-				),
-			);
-			return;
-		}
-		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
-		// Fixed budgets keep the HUD bounded regardless of plan size / progress.
-		const subsequentStageCap = 4; // stages shown after the active one (a trailing summary row covers the rest)
 
 		// Collapsed stage window: the active stage, any earlier stage that still
 		// holds open (blocked) work, and a bounded number of following stages, with
@@ -6153,7 +6013,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// order: down the spine, around the bend, out along the tail.
 		// Clamp so partial progress lights at least one cell; a closed plan fills
 		// the entire path until the configured auto-clear removes the HUD.
-
+		const archivedSummary = getTodoArchiveSummaryFromEntries(getTodoArchiveBranchEntries(owner.sessionManager));
+		const totalTasks = (archivedSummary?.count ?? 0) + phases.reduce((sum, phase) => sum + phase.tasks.length, 0);
+		const closedTasks =
+			(archivedSummary?.count ?? 0) +
+			phases.reduce((sum, phase) => sum + phase.tasks.filter(isClosedTodo).length, 0);
 		const withChrome = expanded || contentLines.length + 3 + (this.#todoForecast ? 1 : 0) <= panelRows;
 		const pathLen = contentLines.length + (withChrome ? tailLen : 0);
 		let filled = Math.round((closedTasks / totalTasks) * pathLen);
@@ -6206,9 +6070,179 @@ export class InteractiveMode implements InteractiveModeContext {
 					? [truncateToWidth(overflowRow, Math.max(0, width - 2), "")]
 					: []
 				: lines.map(line => truncateToWidth(line, Math.max(0, width - 2), ""));
-		this.todoContainer.addChild(
-			new SubagentHudComponent(painted, [], undefined, panelRows < 2 && !expanded ? [undefined] : lineOwners),
+		if (expanded || displayLedger.requirements === undefined) {
+			this.todoContainer.addChild(
+				new SubagentHudComponent(painted, [], undefined, panelRows < 2 && !expanded ? [undefined] : lineOwners),
+			);
+		}
+
+		// Native: the same stage window as a tree, overall progress as a bar.
+		const describeTask = (todo: TodoItem, id: string): TspTreeNode => {
+			if (isTodoAwaitingReview(todo))
+				return {
+					id,
+					label: [
+						span(
+							`◉ ${todo.content} · ${formatTaskForecastDisplay(this.#todoForecastRowsByContent.get(todo.content)!, now)}`,
+							"accent",
+						),
+					],
+					icon: "circle",
+				};
+			const done = todo.status === "completed";
+			const token =
+				todo.status === "completed"
+					? "success del"
+					: todo.status === "abandoned"
+						? "dim del"
+						: todo.status === "blocked"
+							? "warning"
+							: todo.status === "in_progress" || isMatched(todo)
+								? "accent"
+								: "dim";
+			const label: TspSpan[] = [span(todo.status === "blocked" ? `${todo.content} (blocked)` : todo.content, token)];
+			const notes = todo.notes?.length ?? 0;
+			if (notes > 0) label.push(span(` +${notes}`, "dim em"));
+			return { id, label, icon: done ? "check" : "circle" };
+		};
+		const describeTasks = (phase: TodoPhase, phaseIndex: number): TspTreeNode[] => {
+			const index = (todo: TodoItem): string => `${phaseIndex}.${phase.tasks.indexOf(todo)}`;
+			const nodes = (expanded ? phase.tasks : collapsedTasks(phase)).map(todo => describeTask(todo, index(todo)));
+			return nodes;
+		};
+		const phaseNodes: TspTreeNode[] = phaseSlice.map((phase, offset) => {
+			const phaseIndex = baseIdx + offset;
+			const isActive = phaseIndex === activeIdx;
+			const name = multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name;
+			const done = phase.tasks.filter(isClosedTodo).length;
+			const children = describeTasks(phase, phaseIndex);
+			const open = isActive || expanded || children.length > 0;
+			return {
+				id: `${phaseIndex}`,
+				label: [span(name, isActive ? "accent strong" : "muted"), span(` · ${done}/${phase.tasks.length}`, "dim")],
+				open,
+				children: open ? children : undefined,
+			};
+		});
+		if (hiddenStages > 0) {
+			phaseNodes.push({ id: "more", label: [span(formatMoreItems(hiddenStages, "stage"), "muted")] });
+		}
+		if (hudSelection && hudSelection.hidden > 0) {
+			phaseNodes.push({
+				id: "more-todos",
+				label: [span(`${formatMoreItems(hudSelection.hidden, "todo")} · /todo expand`, "muted")],
+			});
+		}
+		const fallback = node(
+			"col",
+			{ role: "omp.hud.todo" },
+			[
+				row(
+					[
+						text([span("TODO", "accent strong")]),
+						node("progress", { value: closedTasks / totalTasks, label: `${closedTasks}/${totalTasks}` }),
+					],
+					{ gap: "sm", align: "center" },
+				),
+				node("tree", { nodes: phaseNodes }),
+			],
+			"todo",
 		);
+		// A `checklist` HUD is a pill with the whole plan as its popover.
+		const checklistPhases: TspChecklistPhase[] = livePhases.map((phase, phaseIndex) => ({
+			id: `${phaseIndex}`,
+			title: multiPhase ? formatPhaseDisplayName(phase.name, phaseIndex + 1) : phase.name,
+			collapsed: phase.tasks.every(isClosedTodo) || undefined,
+			items: phase.tasks.map((todo, taskIndex): TspChecklistItem => {
+				const note = todo.blocker ?? todo.notes?.at(-1);
+				return {
+					id: `${phaseIndex}.${taskIndex}`,
+					text: todo.content,
+					status:
+						todo.status === "completed"
+							? "done"
+							: todo.status === "abandoned"
+								? "dropped"
+								: todo.status === "blocked"
+									? "blocked"
+									: todo.status === "in_progress" || isMatched(todo)
+										? "active"
+										: "pending",
+					note,
+				};
+			}),
+		}));
+		this.#todoHudNative = {
+			checklist: node(
+				"checklist",
+				{ phases: checklistPhases, mode: "hud", role: "omp.hud.todo" },
+				undefined,
+				"todo",
+			),
+			fallback,
+		};
+		if (!expanded && displayLedger.requirements !== undefined) {
+			const sessions = this.#observerRegistry.getSessions().filter(isHudSubagent);
+			const liveWorkers: TodoDisplayWorker[] = sessions.map(worker => ({
+				id: worker.id,
+				agent: worker.agent ?? worker.progress?.agent,
+				// Which model and profile serve each row (2026-11-06: "тут потерялось какая модель и в каком профиле работает").
+				model: isFeedModelBadgeEnabled()
+					? formatTodoModelBadge(
+							worker.progress?.resolvedModelIdentity ?? worker.progress?.resolvedModel,
+							worker.progress?.resolvedThinkingLevel,
+						) || undefined
+					: undefined,
+				startedAt:
+					worker.progressAt !== undefined && worker.progress
+						? worker.progressAt - worker.progress.durationMs
+						: worker.lastUpdate,
+			}));
+			for (const job of owner.getAsyncJobSnapshot()?.running ?? []) {
+				if (!liveWorkers.some(worker => worker.id === job.id))
+					liveWorkers.push({ id: job.id, startedAt: job.startTime });
+			}
+			const owners = new Map<string, TodoDisplayWorker>();
+			const runningWorkerIds = new Set(liveWorkers.map(worker => worker.id));
+			for (const task of livePhases.flatMap(phase => phase.tasks)) {
+				const worker =
+					liveWorkers.find(worker => worker.id === task.schedule?.executor?.workerId) ??
+					liveWorkers.find(worker => todoMatchesObservedWorker(task, { workerId: worker.id, runningWorkerIds }));
+				if (worker) owners.set(task.content, worker);
+			}
+			const ledger = readTodoDisplayLedgerFromManager(owner.sessionManager, runningWorkerIds);
+			const taskCap = cfgTaskMaxConcurrency.get(owner.settings);
+			const runningTasks = (owner.getAsyncJobSnapshot()?.running ?? []).filter(job => job.type === "task").length;
+			const display = renderTodoPlanDisplay(
+				phases,
+				{ workers: liveWorkers, owners, ...ledger, capacityFull: taskCap > 0 && runningTasks >= taskCap },
+				{
+					now,
+					width: Math.max(0, width - 2),
+					forecast: this.#todoForecast,
+					archived: archiveSummary?.count,
+					paint: (tone, text) => theme.fg(tone, text),
+				},
+			);
+			const visibleRows = Math.max(0, panelRows);
+			const overflow = display.lines.length > visibleRows;
+			const retainedRows = overflow ? Math.max(0, visibleRows - 1) : visibleRows;
+			const lines = display.lines.slice(0, retainedRows);
+			const lineOwners = display.owners.slice(0, retainedRows);
+			if (overflow && visibleRows > 0) {
+				lines.push(`${formatMoreItems(display.lines.length - retainedRows, "row")} · /todo expand`);
+				lineOwners.push(undefined);
+			}
+			this.todoContainer.addChild(
+				new SubagentHudComponent(
+					lines.map(line => truncateToWidth(replaceTabs(line), Math.max(0, width - 2), "")),
+					[],
+					undefined,
+					lineOwners,
+				),
+			);
+			return;
+		}
 	}
 
 	isCompactTodoMode(): boolean {
@@ -6395,7 +6429,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const sessions = this.#observerRegistry.getSessions();
 		const running = sessions.filter(isHudSubagent);
 		const expanded = this.#pinnedHudOverride ?? mode === "full";
-		const livePreview = cfgDisplaySubagentLivePreview.get(settings);
+		const livePreview = cfgDisplaySubagentLivePreview.get(this.settings);
 		const hubKey = appKey(this.keybindings, "app.agents.hub") || undefined;
 		const lines = renderSubagentHudLines(sessions, this.ui.terminal.columns, expanded, livePreview, hubKey);
 		if (lines.length === 0) return undefined;

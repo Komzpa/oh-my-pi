@@ -1020,6 +1020,24 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		resetSettingsForTest();
 	});
 
+	it("keeps rendering its worker HUD from session settings after the global settings owner is reset", async () => {
+		cfgDisplayPinnedAgents.override(session.settings, "full");
+		cfgDisplaySubagentLivePreview.override(session.settings, true);
+		await mode.init({ suppressWelcomeIntro: true });
+		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
+		vi.useFakeTimers();
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("SettingsWorker", 0, "Build isolated view", true));
+		await Promise.resolve();
+		vi.advanceTimersByTime(100);
+		resetSettingsForTest();
+		try {
+			mode.applyPinnedAgentsSetting();
+			expect(Bun.stripANSI(mode.subagentContainer.render(120).join("\n"))).toContain("SettingsWorker");
+		} finally {
+			await Settings.init({ inMemory: true, cwd: tempDir.path() });
+		}
+	});
+
 	it("updates worker lifecycle badges without replaying the parent's plan history", async () => {
 		await mode.init({ suppressWelcomeIntro: true });
 		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
@@ -1418,7 +1436,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 	});
 
 	it("advances a quiet call's elapsed marker by repainting the same HUD in place", async () => {
-		cfgDisplaySubagentLivePreview.override(Settings.instance, true);
+		cfgDisplaySubagentLivePreview.override(session.settings, true);
 		await mode.init({ suppressWelcomeIntro: true });
 		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {});
 		vi.useFakeTimers();
@@ -1443,7 +1461,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 	});
 
 	it("repaints an identical new call after the elapsed timer painted the previous call", async () => {
-		cfgDisplaySubagentLivePreview.override(Settings.instance, true);
+		cfgDisplaySubagentLivePreview.override(session.settings, true);
 		await mode.init({ suppressWelcomeIntro: true });
 		let painted = "";
 		vi.spyOn(mode.ui, "requestRender").mockImplementation(() => {
