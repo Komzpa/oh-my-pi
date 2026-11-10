@@ -114,9 +114,12 @@ function createMockSession(
 	};
 }
 
+const registeredMockSessions = new Map<string, AgentSession>();
+
 function mockCreateAgentSession(session: AgentSession) {
 	return vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
 		// The executor reserves the generation; the SDK attaches that exact ref.
+		session = registeredMockSessions.get(options.agentId!) ?? session;
 		AgentRegistry.global().attachSession(
 			options.agentId!,
 			session,
@@ -154,6 +157,7 @@ describe("runSubprocess incremental yield loops", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+		registeredMockSessions.clear();
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 		AsyncJobManager.resetForTests();
@@ -172,6 +176,11 @@ describe("runSubprocess incremental yield loops", () => {
 			enableLsp: false,
 			artifactsDir: tempDir.path(),
 		};
+	}
+
+	function registerRunning(id: string, session: AgentSession) {
+		// Registration belongs to the SDK after the executor reserves its ref.
+		registeredMockSessions.set(id, session);
 	}
 
 	/** One assistant turn whose only content is a terminal `yield`. */
@@ -248,6 +257,7 @@ describe("runSubprocess incremental yield loops", () => {
 			emitTerminalYieldTurn("DELIVERED", emit, pushMessage);
 		});
 		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 
@@ -263,6 +273,7 @@ describe("runSubprocess incremental yield loops", () => {
 		const id = "LostScout";
 		const handle = createMockSession(() => "dropped");
 		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 
@@ -278,6 +289,7 @@ describe("runSubprocess incremental yield loops", () => {
 			emitTerminalYieldTurn("RECOVERED", emit, pushMessage);
 		});
 		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 
@@ -303,6 +315,7 @@ describe("runSubprocess incremental yield loops", () => {
 			emitTerminalYieldTurn("REMINDER", emit, pushMessage);
 		});
 		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 
@@ -324,6 +337,7 @@ describe("runSubprocess incremental yield loops", () => {
 			emit({ type: "message_end", message } as AgentSessionEvent);
 		});
 		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 
@@ -363,6 +377,7 @@ describe("runSubprocess incremental yield loops", () => {
 			droppedFinal = undefined;
 		};
 		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 
@@ -386,6 +401,7 @@ describe("runSubprocess incremental yield loops", () => {
 			}
 		});
 		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 2)));
 
@@ -416,6 +432,7 @@ describe("runSubprocess incremental yield loops", () => {
 			}
 		});
 		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 
@@ -460,6 +477,7 @@ describe("runSubprocess incremental yield loops", () => {
 			emitTerminalYieldTurn("FRESH", emit, pushMessage);
 		});
 		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 
@@ -478,6 +496,7 @@ describe("runSubprocess incremental yield loops", () => {
 		});
 		handle.asyncPending.value = true;
 		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 

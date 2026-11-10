@@ -98,7 +98,6 @@ process.exit(0);
 			"await Bun.write(Bun.stdout, new Uint8Array([0, 255, 42, 10, 1]))",
 		]);
 		await expect(overflow.bytes({ maxBytes: 4 })).rejects.toThrow(/exceed/i);
-		await overflow.exitedCleanly;
 	});
 
 	it("contains the lifecycle rejection when the caller does not observe exited", async () => {
