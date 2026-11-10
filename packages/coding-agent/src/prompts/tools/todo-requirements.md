@@ -42,8 +42,13 @@ Create any genuinely missing rows first and read back their accepted identities
 before scheduling dependency edges. A refused append or schedule changes
 nothing; correct that call without inventing future titles or extra work.
 
-Already-classified requirements remain immutable without a later owner scope
-change. Cite its exact newer Rn as `supersededBy` with a nonblank reason; the
+Changing the route does not change the requirement: create/read back the new
+row first, then use `classification="linked", rows=["<new exact row>"],
+relink=true, reason="<why the method changes>"` on its existing Rn before
+retiring the old row. This linked-to-linked move needs no new user requirement.
+
+Changing an already-classified requirement's meaning/classification needs a
+later owner scope change. Cite its exact newer Rn as `supersededBy` with a nonblank reason; the
 ledger records old/new classification and rows without rewriting source or
 history. Example: `op="classify", id="R5", classification="not-a-requirement",
 supersededBy="R14", reason="R14 cancels the fold rows"`. Never invent an owner
