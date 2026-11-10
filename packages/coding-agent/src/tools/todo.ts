@@ -1610,6 +1610,30 @@ function applyEntry(
 	archived: TodoPhase[] = [],
 	options: { replay?: boolean } = {},
 ): TodoPhase[] {
+	const next = applyEntryOperation(phases, entry, errors, now, archived, options);
+	if (entry.op !== "init") return next;
+	// Reorganizing a plan does not create a new delivery or revoke its custody
+	// history. Keep the complete state of an unambiguously retained row.
+	const retained = new Map<string, TodoItem[]>();
+	for (const task of phases.flatMap(phase => phase.tasks))
+		retained.set(task.content, [...(retained.get(task.content) ?? []), task]);
+	for (const phase of next) {
+		phase.tasks = phase.tasks.map(task => {
+			const matches = retained.get(task.content);
+			return matches?.length === 1 ? structuredClone(matches[0]!) : task;
+		});
+	}
+	return next;
+}
+
+function applyEntryOperation(
+	phases: TodoPhase[],
+	entry: TodoOpEntryValue,
+	errors: string[],
+	now = Date.now(),
+	archived: TodoPhase[] = [],
+	options: { replay?: boolean } = {},
+): TodoPhase[] {
 	if (entry.op === "schedule" || entry.op === "done" || entry.op === "drop" || entry.op === "start") {
 		const targets =
 			entry.op === "schedule"
@@ -1620,17 +1644,8 @@ function applyEntry(
 		}
 	}
 	switch (entry.op) {
-		case "init": {
-			const next = initPhases(entry, errors);
-			// Reorganizing a plan does not create a new delivery or revoke its
-			// custody history. Exact retained titles keep their complete row state;
-			// a genuinely new item starts with no inherited grants or receipts.
-			const retained = new Map(phases.flatMap(phase => phase.tasks).map(task => [task.content, task]));
-			for (const phase of next) {
-				phase.tasks = phase.tasks.map(task => structuredClone(retained.get(task.content) ?? task));
-			}
-			return next;
-		}
+		case "init":
+			return initPhases(entry, errors);
 		case "start": {
 			const hit =
 				findTaskByContent(phases, entry.task ?? "") ??
