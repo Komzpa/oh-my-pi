@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep requirement classification, delivered work and audits distinct, with one audit per row and reuse of current accepted evidence
+
 - A completed requirement audit can still close its row when its launch call fails after starting the auditor
 
 ## [18.18.6] - 2026-11-09

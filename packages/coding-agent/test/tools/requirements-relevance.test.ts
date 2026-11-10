@@ -113,7 +113,6 @@ describe("requirement convergence", () => {
 		}));
 		const notice = formatRequirementGateNotice(open, 3);
 		expect(notice).toContain("at most 3 concurrent");
-		expect(notice).toContain("Group many rows sharing a checkout/area");
 		expect(Buffer.byteLength(notice)).toBeLessThan(900);
 		const runtime = new RequirementsLedgerRuntime({
 			agent: {} as never,
