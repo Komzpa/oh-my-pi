@@ -6926,12 +6926,38 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // Startup warnings may have been queued before child restoration. Revalidate at consumption.
     const isStaffing = message => message.role === "custom" && message.customType === "todo-gate-staffing";
     let messages = event.messages;
-    if (isMain(ctx) && event.messages.some(isStaffing)) {
+    // Queue replacement ends at delivery. Project only the current dispatcher snapshot,
+    // and collapse identical no-tool replies inside uninterrupted internal-wake exchanges.
+    // Human/peer input, visible notices and tool work are lossless sequence boundaries.
+    const isActionWake = message => message.role === "custom" && message.customType === "todo-dispatch-action-required" && message.display === false && message.attribution === "agent";
+    if (isMain(ctx) && messages.some(isActionWake)) {
+      const latest = messages.findLast(isActionWake);
+      const removed = new Set<number>();
+      const replies = new Map<string, number>();
+      let pendingWake = false;
+      for (const [index, message] of messages.entries()) {
+        if (isActionWake(message)) {
+          if (message !== latest) removed.add(index);
+          pendingWake = true;
+        } else if (pendingWake && message.role === "assistant" && message.content.every(part => part.type === "text" || part.type === "thinking") && !message.errorMessage && message.stopReason !== "error" && message.stopReason !== "aborted") {
+          const identity = JSON.stringify(message.content);
+          const previous = replies.get(identity);
+          if (previous !== undefined) removed.add(previous);
+          replies.set(identity, index);
+          pendingWake = false;
+        } else {
+          replies.clear();
+          pendingWake = false;
+        }
+      }
+      messages = messages.filter((_message, index) => !removed.has(index));
+    }
+    if (isMain(ctx) && messages.some(isStaffing)) {
       const phases = todoPhases(ctx);
       const refusals = assignedResourceRefusals(phases, ctx);
       const rows = staffingRows(phases, leadDisplayContext(ctx, phases, currentDecision(ctx))).filter(row => !refusals.has(row.content));
-      const last = event.messages.findLast(isStaffing);
-      messages = event.messages.flatMap(message => !isStaffing(message) ? [message]
+      const last = messages.findLast(isStaffing);
+      messages = messages.flatMap(message => !isStaffing(message) ? [message]
         : message === last && rows.length ? [{ ...message, content: prompt.render(gateNoticeInstructions, staffingData(rows)).trim() }] : []);
     }
     const defects = chiefDefects(ctx);

@@ -118,3 +118,44 @@ test("negative control: block on a row without a delivered result still passes",
 		expect(messages[0]).not.toMatch(/kill|redispatch/);
 	} finally { spy.mockRestore(); }
 });
+
+
+test("context replaces consumed dispatcher snapshots and duplicate wake-only replies without losing work", async () => {
+	const h = await harness([]);
+	const wake = (text, extra = {}) => ({ role: "custom", customType: "todo-dispatch-action-required", content: text, display: false, attribution: "agent", timestamp: 1, ...extra });
+	const reply = text => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop", timestamp: 2 });
+	const human = { role: "user", content: "Real request", timestamp: 0 };
+	const firstReply = reply("Unchanged status");
+	const lastReply = reply("Unchanged status");
+	const changedReply = reply("New finding");
+	const latestWake = wake("Current demand");
+	const call = { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "a.txt" } }], timestamp: 3 };
+	const result = { role: "toolResult", toolCallId: "call-1", toolName: "read", content: [{ type: "text", text: "Useful result" }], isError: false, timestamp: 4 };
+	const input = [human, wake("Old demand"), firstReply, wake("Newer demand"), lastReply, wake("Latest earlier demand"), changedReply, call, result, latestWake];
+	const before = structuredClone(input);
+	const shaped = await h.hooks.get("context")({ messages: input }, h.ctx);
+	expect(shaped.messages).toEqual([human, lastReply, changedReply, call, result, latestWake]);
+	// Model projection must not rewrite the journal/transcript objects it received.
+	expect(input).toEqual(before);
+});
+
+test("context keeps replies separated by real input, peer notices, visible notices and tool work", async () => {
+	const h = await harness([]);
+	const wake = () => ({ role: "custom", customType: "todo-dispatch-action-required", content: "Demand", display: false, attribution: "agent", timestamp: 1 });
+	const reply = () => ({ role: "assistant", content: [{ type: "text", text: "Same text" }], stopReason: "stop", timestamp: 2 });
+	const boundaries = [
+		{ role: "user", content: "New human request", timestamp: 3 },
+		{ role: "custom", customType: "irc:incoming", content: "Peer result", attribution: "agent", display: false, timestamp: 3 },
+		{ role: "custom", customType: "todo-dispatch-action-required", content: "Visible notice", attribution: "agent", display: true, timestamp: 3 },
+		{ role: "custom", customType: "todo-dispatch-action-required", content: "User notice", attribution: "user", display: false, timestamp: 3 },
+		{ role: "assistant", content: [{ type: "toolCall", id: "call-2", name: "todo", arguments: { op: "view" } }], timestamp: 3 },
+		{ role: "toolResult", toolCallId: "call-2", toolName: "todo", content: [{ type: "text", text: "Plan" }], timestamp: 3 },
+	];
+	for (const boundary of boundaries) {
+		const earlier = reply();
+		const later = reply();
+		const latest = wake();
+		const shaped = await h.hooks.get("context")({ messages: [wake(), earlier, boundary, latest, later] }, h.ctx);
+		expect(shaped.messages).toEqual([earlier, boundary, latest, later]);
+	}
+});
