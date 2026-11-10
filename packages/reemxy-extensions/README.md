@@ -43,6 +43,9 @@ The command MUST display the canonical core `ModelPresetSwitchResult.reason` for
 
 What stays here: the write-scope gate (one non-isolated writer per checkout), the empty/shrinking-write refusal, and spawn/outcome records in `~/.local/state/omp-agent-router/spawns.jsonl` (`chosen` is the first candidate of the chain; the outcome's `resolvedModel` is what core ran). Oracles: `agent_router.test.ts`.
 
+Worker write scope is read from the canonical parent's current row on every tool call. Explicit `resources: []` grants no writes and cannot be widened during dispatch; Main must update the row schedule first. Omitted resources retain cwd access only for a current assignment (or a legacy worker without a parent binding), subject to live foreign leases. Completion, cancellation, a settled executor, reassignment, or a missing parent assignment revokes the old worker's grant, including after state restoration. An old executor receipt never overrides the new owner.
+
+
 ## Bounded worker supervision
 
 Every row-executing profile must target about 15 minutes of work. If an assignment clearly will not fit or context approaches compaction, the worker stops at the next checkable result, reports completed work with a receipt, and proposes a split of what remains.

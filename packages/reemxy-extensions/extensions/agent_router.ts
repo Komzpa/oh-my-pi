@@ -452,7 +452,7 @@ export async function requestResourceScope(ctx: ExtensionContext, paths: string[
 		return { status: "granted", paths };
 	}
 	const scope = workerRowScope(ctx);
-	if (!scope?.lead.session) return { status: "unavailable", reason: "No canonical lead row found." };
+	if (!scope?.lead.session || !scope.rows.length) return { status: "unavailable", reason: "No canonical lead row found." };
 	const updates = scope.rows.map(row => ({
 		task: row.content,
 		resources: [...new Set([...(row.schedule?.resources ?? []), ...paths])],
@@ -512,9 +512,8 @@ export function admitAssignedResources(
 	const row = matched[0];
 	if (row.status === "blocked" && todoInfraBreaker(row.schedule?.attemptHistory)) return row.blocker ?? "Infra breaker: inspect todo history and repair admission before unblocking this row.";
 	const previous = checkoutScopesFromResources(row.schedule?.resources?.filter(resource => !resource.startsWith("git:")));
-	const narrowed = checkoutScopesFromResources(event.resources);
-	if (explicit && previous && narrowed &&
-		!checkoutScopesContain([...previous, ...(checkoutScopesFromResources(worktrees) ?? [])], narrowed))
+	if (Array.isArray(row.schedule?.resources) && scopes &&
+		(!previous || !checkoutScopesContain([...previous, ...(checkoutScopesFromResources(worktrees) ?? [])], scopes)))
 		return `resources exceed row ${JSON.stringify(row.content)}; update its todo schedule resources before expanding.`;
 	const readOnly = event.readOnly === true || readOnlyRow(row);
 	// An empty reader write claim must not erase the row's artifact/audit scope.

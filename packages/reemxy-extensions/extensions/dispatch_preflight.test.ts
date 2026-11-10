@@ -353,8 +353,10 @@ test("lead scheduling a suffixed owner survives another executor's progress and 
 		expect(await call("edit", { path: target }, context)).toMatchObject({ block: true });
 		expect(await requestResourceScope(context, [target])).toMatchObject({ status: "unavailable" });
 		const executor = { ...context, agent: { ...context.agent, id: "Scenario-5" } } as ExtensionContext;
-		expect(await call("edit", { path: target }, executor)).toBeUndefined();
-		expect(await requestResourceScope(executor, [target])).toMatchObject({ status: "granted" });
+		// Reassignment revokes the recorded old executor too; its stale receipt
+		// cannot keep write authority after Main assigns Replacement.
+		expect(await call("edit", { path: target }, executor)).toMatchObject({ block: true });
+		expect(await requestResourceScope(executor, [target])).toMatchObject({ status: "unavailable" });
 	} finally {
 		await manager.close();
 		spy.mockRestore();

@@ -308,6 +308,17 @@ function inside(root: string, target: string): boolean {
 function bashWriteTargets(argv: string[]): string[] {
 	const executable = path.basename(argv[0] ?? "");
 	const operands: string[] = [];
+	const valueOptions: Record<string, Record<string, string>> = {
+		mkdir: { m: "mode" },
+		touch: { d: "date", r: "reference", t: "time" },
+		truncate: { s: "size", r: "reference" },
+		cp: { t: "target-directory", S: "suffix" },
+		install: { t: "target-directory", m: "mode", o: "owner", g: "group", S: "suffix" },
+		mv: { t: "target-directory", S: "suffix" },
+	};
+	const values = valueOptions[executable] ?? {};
+	let targetDirectory: string | undefined;
+	let directoryMode = false;
 	let options = true;
 	for (let index = 1; index < argv.length; index++) {
 		const arg = argv[index]!;
@@ -316,15 +327,44 @@ function bashWriteTargets(argv: string[]): string[] {
 			continue;
 		}
 		if (options && arg.startsWith("-")) {
-			if (executable === "mkdir" && (arg === "-m" || arg === "--mode")) index++;
+			if (arg.startsWith("--")) {
+				const [name, attached] = arg.slice(2).split(/=(.*)/s);
+				if (Object.values(values).includes(name!) ||
+					(executable === "touch" && name === "time") ||
+					(executable === "install" && name === "strip-program")) {
+					const value = attached ?? argv[++index];
+					if (name === "target-directory") targetDirectory = value;
+				}
+				if (executable === "install" && name === "directory") directoryMode = true;
+			} else {
+				for (let offset = 1; offset < arg.length; offset++) {
+					const option = arg[offset]!;
+					if (executable === "install" && option === "d") directoryMode = true;
+					if (!(option in values)) continue;
+					const value = arg.slice(offset + 1) || argv[++index];
+					if (option === "t" && values.t === "target-directory") targetDirectory = value;
+					break;
+				}
+			}
 			continue;
 		}
 		operands.push(arg);
 	}
 	if (["touch", "mkdir", "rm", "rmdir", "truncate", "tee"].includes(executable)) return operands;
+	if (targetDirectory !== undefined && ["cp", "install", "mv"].includes(executable)) {
+		const destinations = operands.map(source => path.join(targetDirectory!, path.basename(source)));
+		return executable === "mv" ? [...operands, ...destinations] : destinations;
+	}
+	if (executable === "install" && directoryMode) return operands;
 	if (["cp", "install"].includes(executable)) return operands.length >= 2 ? operands.slice(-1) : [];
 	if (executable === "mv") return operands.length >= 2 ? operands : [];
 	return [];
+}
+
+function currentRowOwner(row: TodoScheduleInputTask, owner: string): boolean {
+	return row.status !== "completed" && row.status !== "abandoned" &&
+		(row.schedule?.owner === owner || (!row.schedule?.owner && row.schedule?.executor?.workerId === owner)) &&
+		!(row.schedule?.executor?.workerId === owner && row.schedule.executor.outcome !== undefined);
 }
 
 /** Read the parent's current plan, never the child's copied TODO snapshot. */
@@ -348,15 +388,12 @@ export function workerRowScope(ctx: ExtensionContext) {
 	for (const owner of workers.reverse()) {
 		const rows = phases
 			.flatMap(phase => phase.tasks)
-			.filter(
-				row =>
-					row.status !== "completed" &&
-					row.status !== "abandoned" &&
-					(row.schedule?.owner === owner || row.schedule?.executor?.workerId === owner),
-			);
+			.filter(row => currentRowOwner(row, owner));
 		if (rows.length) return { rows, phases, lead: lead! };
 	}
-	return undefined;
+	// A known parent with no current assignment is a revoked/missing grant,
+	// never permission to inherit the entire working directory after a restart.
+	return lead ? { rows: [], phases, lead } : undefined;
 }
 
 export function liveWorkerRows(ctx: ExtensionContext) {
@@ -425,7 +462,7 @@ export async function workerToolPreflight(
 	// Explicit scope, including [], replaces the legacy cwd permission. A
 	// declaration without filesystem paths grants no writes. Only an absent
 	// declaration keeps cwd access, still subject to other workers' leases.
-	const hasDeclaredScope = rows.some(row => Array.isArray(row.schedule?.resources));
+	const hasDeclaredScope = Boolean(ctx.agent?.parentId && !rows.length) || rows.some(row => Array.isArray(row.schedule?.resources));
 	const roots = declared.length ? await Promise.all(declared.map(canonical)) : hasDeclaredScope ? [] : [root];
 	const resolvedTargets: string[] = [];
 	for (const target of targets) {
@@ -464,7 +501,7 @@ export async function workerToolPreflight(
 				.filter(holdsWriteCustody);
 			// No await between observing and acquiring exact write targets.
 			for (const [holder, held] of claims) {
-				const holderRows = open.filter(row => row.schedule?.owner === holder || row.schedule?.executor?.workerId === holder);
+				const holderRows = open.filter(row => currentRowOwner(row, holder));
 				const retained = held.filter(target => holderRows.some(row => {
 					if (!Array.isArray(row.schedule?.resources)) return true;
 					const allowed = checkoutScopesFromResources(row.schedule.resources.filter(resource => !resource.startsWith("git:")));

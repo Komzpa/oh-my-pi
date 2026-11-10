@@ -314,11 +314,11 @@ function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): 
 export function stampTaskTransitionTimes(previous: TodoPhase[], updated: TodoPhase[], now: number): void {
 	const previousStatuses = new Map<string, TodoStatus>();
 	for (const phase of previous) {
-		for (const task of phase.tasks) previousStatuses.set(todoTransitionKey(phase.name, task.content), task.status);
+		for (const task of phase.tasks) previousStatuses.set(task.content, task.status);
 	}
 	for (const phase of updated) {
 		for (const task of phase.tasks) {
-			const previousStatus = previousStatuses.get(todoTransitionKey(phase.name, task.content));
+			const previousStatus = previousStatuses.get(task.content);
 			const enteredProgress = task.status === "in_progress" && previousStatus !== "in_progress";
 			const enteredClosed =
 				(task.status === "completed" || task.status === "abandoned") && previousStatus !== task.status;
@@ -1620,8 +1620,17 @@ function applyEntry(
 		}
 	}
 	switch (entry.op) {
-		case "init":
-			return initPhases(entry, errors);
+		case "init": {
+			const next = initPhases(entry, errors);
+			// Reorganizing a plan does not create a new delivery or revoke its
+			// custody history. Exact retained titles keep their complete row state;
+			// a genuinely new item starts with no inherited grants or receipts.
+			const retained = new Map(phases.flatMap(phase => phase.tasks).map(task => [task.content, task]));
+			for (const phase of next) {
+				phase.tasks = phase.tasks.map(task => structuredClone(retained.get(task.content) ?? task));
+			}
+			return next;
+		}
 		case "start": {
 			const hit =
 				findTaskByContent(phases, entry.task ?? "") ??

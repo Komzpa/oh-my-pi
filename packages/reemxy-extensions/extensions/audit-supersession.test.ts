@@ -295,6 +295,7 @@ test("a new runtime audit cannot erase an accepted refusal for the same dependen
 	expect(
 		await checkRowAudits(ctx, {
 			readHead: async () => sha,
+			containsCommit: async (repoPath, commit, head) => repoPath === "/repo" && commit === sha && head === sha,
 			resolveAuditor: async () => "qa-auditor",
 			requirementsFor: () => [],
 		}),

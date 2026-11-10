@@ -1,4 +1,5 @@
 // @ts-nocheck -- extension runtime fixtures follow the host's forecast contract.
+import * as os from "node:os";
 import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -165,7 +166,7 @@ test("completed executor can hand off a visible user preview; review label alone
 
 // Replay the 2026-11-06 DC wait boundary, including session-file liveness.
 test("DC lead waits on both overdue executors, refuses missing or stalled workers, and cannot stop", async () => {
-  const cwd = fs.mkdtempSync(path.join(process.cwd(), ".tmp", "waitgate-"));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "waitgate-"));
   const now = Date.now();
   const session = path.join(cwd, "lead.jsonl");
   const childDir = path.join(cwd, "lead");

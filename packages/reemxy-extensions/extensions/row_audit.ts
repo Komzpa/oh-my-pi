@@ -2,6 +2,7 @@ import { auditFindingPatch, findingSeverity, type AuditFinding } from "./audit-f
 import { editsRequirements, rowRequirementQuotes, type RequirementQuote } from "./requirement_quotes";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { homedir } from "node:os";
 import { selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { discoverAgents, getAgent } from "@oh-my-pi/pi-coding-agent/task/discovery";
@@ -134,19 +135,46 @@ export function rowAuditIssues(verdict: RowAuditVerdict): AuditFinding[] {
 	];
 }
 
-function rowRepo(row: RowAuditRow, cwd: string): string {
-	// The same resource scope used by worker dispatch may name a checkout as a
-	// plain path. Prefer its unique git root to the stale session artifact cwd.
-	// Ambiguous or non-git scopes keep the existing repository selection.
-	if (!todoArtifactGitBinding(row)) {
-		const scopes = checkoutScopesFromResources(row.schedule?.resources);
-		const roots = new Set(scopes?.map(scope => scope.split("\0")[0]) ?? []);
-		if (roots.size === 1 && scopes?.some(scope => scope.endsWith("\0."))) {
-			const root = [...roots][0]!;
-			if (existsSync(`${root}/.git`)) return root;
-		}
-	}
-	return todoArtifactRepository(row, cwd);
+function rowDeliveryCommits(row: RowAuditRow): { commit: string; repoPath: string }[] {
+	return row.schedule?.executor?.gitCommits ?? row.schedule?.attemptHistory?.at(-1)?.gitCommits ?? [];
+}
+
+/** Resolve the same file scopes as dispatch; ambiguity must never select the session checkout. */
+export function rowAuditRepository(row: RowAuditRow, cwd: string): { repoPath: string } | { blocker: string } {
+	const resources = row.schedule?.resources ?? [];
+	const pins = [...new Set(resources.filter(resource => resource.startsWith("git:")))];
+	const binding = todoArtifactGitBinding(row);
+	if (pins.length && (!binding || pins.length !== 1))
+		return {
+			blocker:
+				"Audit repository is ambiguous: conflicting or invalid git pins; keep one exact git:<checkout>@<40-character commit> binding",
+		};
+	const paths = resources.filter(resource => !resource.startsWith("git:"));
+	const scopes = checkoutScopesFromResources(paths);
+	if (paths.length && !scopes)
+		return {
+			blocker:
+				"Audit repository cannot be resolved from its resources; supply absolute checkout/file paths and one matching git pin before audit",
+		};
+	// Non-git output directories carry evidence, not source checkout identity.
+	const roots = new Set(
+		(scopes?.map(scope => scope.split("\0")[0]!) ?? []).filter(root => existsSync(`${root}/.git`)),
+	);
+	for (const receipt of rowDeliveryCommits(row)) roots.add(receipt.repoPath);
+	if (binding) roots.add(binding.repoPath);
+	if (roots.size > 1)
+		return {
+			blocker: `Audit repository is ambiguous: resources span ${[...roots].join(", ")}; split the delivery by checkout or correct its resources`,
+		};
+	if (binding) return { repoPath: binding.repoPath };
+	const root = [...roots][0];
+	if (root) return { repoPath: root };
+	return { repoPath: todoArtifactRepository(row, cwd) };
+}
+
+function rowRepo(row: RowAuditRow, cwd: string): string | undefined {
+	const identity = rowAuditRepository(row, cwd);
+	return "repoPath" in identity ? identity.repoPath : undefined;
 }
 
 /**
@@ -172,6 +200,7 @@ export function planRowAudits(
 		)
 			continue;
 		const repoPath = rowRepo(row, cwd);
+		if (!repoPath) continue;
 		const head = heads.get(repoPath) ?? "unknown";
 		const binding = todoArtifactGitBinding(row);
 		if (head === "unknown" || (binding && (binding.repoPath !== repoPath || binding.head !== head))) continue;
@@ -232,8 +261,12 @@ export function rowAuditTask(batch: RowAuditBatch, requirementsFor: (row: string
 				...(row.schedule?.auditOrigin ? [`  auditOrigin: ${JSON.stringify(row.schedule.auditOrigin)}`] : []),
 				...requirementsFor(row.content).map(text => `  Linked requirement: ${text.replace(/\s+/g, " ").trim()}`),
 				`  Material inputs: ${todoMaterialInputsKey(row.schedule?.materialInputs)}`,
+				`  Assigned resources: ${JSON.stringify(row.schedule?.resources ?? [])}`,
+				`  Delivery commits: ${JSON.stringify(rowDeliveryCommits(row))}`,
 				`  Recorded evidence (commits and checks to re-run at HEAD): ${row.schedule?.progress?.evidence ?? "none recorded"}`,
-				...auditEvidenceHistory(row, batch.head, batch.repoPath).map(entry => `  Prior observation (recheck, not acceptance; inputs ${entry.inputsKey}): ${entry.evidence}`),
+				...auditEvidenceHistory(row, batch.head, batch.repoPath).map(
+					entry => `  Prior observation (recheck, not acceptance; inputs ${entry.inputsKey}): ${entry.evidence}`,
+				),
 				`  Audit base: ${row.schedule?.auditBase ?? "first audit: full delivered range"}`,
 				`  Previous worker (context only, not proof): agent://${row.schedule?.executor?.workerId ?? "unknown"}`,
 				...(row.retry ? [`  Previous audit was inconclusive: ${row.retry}. Obtain exactly that piece now.`] : []),
@@ -286,6 +319,7 @@ const execGit = (repoPath: string): Promise<string | undefined> =>
 export interface RowAuditOptions {
 	now?: () => number;
 	readHead?: (repoPath: string) => Promise<string | undefined>;
+	containsCommit?: (repoPath: string, commit: string, head: string) => Promise<boolean>;
 	readTarget?: (repoPath: string) => Promise<{ remote?: string; branch?: string }>;
 	/** Resolves the auditor profile; undefined means none is installed and nothing launches. */
 	resolveAuditor?: () => Promise<string | undefined>;
@@ -333,34 +367,105 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		if (row.schedule?.auditOrigin?.resolution === "retarget" && audit?.verdict === "pending" && !owned && !isLive(row))
 			ctx.updateTodoSchedule(row.content, { audit: { ...audit, verdict: "inconclusive", findings: "one-shot check interrupted; finding not carried forward", at: now() } });
 	}
-	const candidates = rows.map(row => ({ ...row, schedule: row.schedule && { ...row.schedule,
-		resources: row.schedule.resources && [...row.schedule.resources],
-		executor: row.schedule.executor && { ...row.schedule.executor },
-		audit: row.schedule.audit && { ...row.schedule.audit },
-	} })).filter(row => {
-		const after = isLive(row) ? undefined : todoRowAfterWorker(row);
-		return (
-			(after?.kind === "verify" && after.via === "audit") ||
-			(after?.kind === "needs-worker" && after.reason === "audit-inconclusive")
-		);
-	});
+	const candidates = rows
+		.map(row => ({
+			...row,
+			schedule: row.schedule && {
+				...row.schedule,
+				resources: row.schedule.resources && [...row.schedule.resources],
+				executor: row.schedule.executor && {
+					...row.schedule.executor,
+					gitCommits: row.schedule.executor.gitCommits?.map(receipt => ({ ...receipt })),
+				},
+				attemptHistory: row.schedule.attemptHistory?.map(attempt => ({
+					...attempt,
+					gitCommits: attempt.gitCommits?.map(receipt => ({ ...receipt })),
+				})),
+				audit: row.schedule.audit && { ...row.schedule.audit },
+			},
+		}))
+		.filter(row => {
+			const after = isLive(row) ? undefined : todoRowAfterWorker(row);
+			return (
+				(after?.kind === "verify" && after.via === "audit") ||
+				(after?.kind === "needs-worker" && after.reason === "audit-inconclusive")
+			);
+		});
 	if (!candidates.length) return 0;
 	const heads = new Map<string, string>();
-	for (const repoPath of new Set(candidates.map(row => rowRepo(row, ctx.cwd))))
+	for (const repoPath of new Set(
+		candidates.map(row => rowRepo(row, ctx.cwd)).filter((repo): repo is string => !!repo),
+	))
 		heads.set(repoPath, (await readHead(repoPath)) ?? "unknown");
+	const blocked = new Set<string>();
 	for (const row of candidates) {
 		const binding = todoArtifactGitBinding(row);
 		const repoPath = rowRepo(row, ctx.cwd);
-		const head = heads.get(repoPath) ?? "unknown";
-		if (!binding || (binding.repoPath === repoPath && binding.head === head)) continue;
-		const latest = ctx.getTodoPhases?.()?.flatMap(phase => phase.tasks).find(candidate => candidate.content === row.content);
-		if (!latest || todoRowDeliveryKey(latest.schedule) !== todoRowDeliveryKey(row.schedule) ||
-			JSON.stringify([...(latest.schedule?.resources ?? [])].sort()) !== JSON.stringify([...(row.schedule?.resources ?? [])].sort()) ||
-			JSON.stringify(latest.schedule?.audit) !== JSON.stringify(row.schedule?.audit)) continue;
+		const identity = rowAuditRepository(row, ctx.cwd);
+		const head = repoPath ? (heads.get(repoPath) ?? "unknown") : "unknown";
+		let receiptBlocker: string | undefined;
+		if (repoPath && !("blocker" in identity)) {
+			for (const receipt of rowDeliveryCommits(row)) {
+				try {
+					if (
+						head === "unknown" ||
+						!(await (options.containsCommit ?? vcs.isAncestor)(repoPath, receipt.commit, head))
+					)
+						receiptBlocker = `Delivery commit ${receipt.commit} is not contained in ${repoPath}@${head}; restore the delivered history before audit`;
+				} catch {
+					receiptBlocker = `Cannot verify delivery commit ${receipt.commit} in ${repoPath}@${head}; restore the repository and commit before audit`;
+				}
+				if (receiptBlocker) break;
+			}
+		}
+		if (
+			!("blocker" in identity) &&
+			!receiptBlocker &&
+			(!binding || (binding.repoPath === repoPath && binding.head === head))
+		)
+			continue;
+		blocked.add(rowKey(row));
+		const latest = ctx
+			.getTodoPhases?.()
+			?.flatMap(phase => phase.tasks)
+			.find(candidate => candidate.content === row.content);
+		if (
+			!latest ||
+			todoRowDeliveryKey(latest.schedule) !== todoRowDeliveryKey(row.schedule) ||
+			JSON.stringify([...(latest.schedule?.resources ?? [])].sort()) !==
+				JSON.stringify([...(row.schedule?.resources ?? [])].sort()) ||
+			JSON.stringify(latest.schedule?.audit) !== JSON.stringify(row.schedule?.audit) ||
+			JSON.stringify(rowDeliveryCommits(latest)) !== JSON.stringify(rowDeliveryCommits(row))
+		)
+			continue;
 		const delivery = todoRowDeliveryKey(row.schedule);
-		const findings = `Pinned delivery ${binding.repoPath}@${binding.head} does not match checkout ${repoPath}@${head}; restore or rebind the artifact before audit`;
-		if (row.schedule?.audit?.delivery === delivery && row.schedule.audit.head === head && row.schedule.audit.findings === findings) continue;
-		ctx.updateTodoSchedule(row.content, { audit: { delivery, repoPath, head, resourcesKey: todoAuditResourcesKey(row.schedule), bindingMismatch: true, startedAt: now(), verdict: "inconclusive", agent: TODO_ROW_AUDITOR, attempts: 2, evidence: row.schedule?.progress?.evidence ?? "", findings, at: now() } });
+		const findings =
+			"blocker" in identity
+				? identity.blocker
+				: (receiptBlocker ??
+					`Pinned delivery ${binding!.repoPath}@${binding!.head} does not match checkout ${repoPath}@${head}; restore or rebind the artifact before audit`);
+		if (
+			row.schedule?.audit?.delivery === delivery &&
+			row.schedule.audit.head === head &&
+			row.schedule.audit.findings === findings
+		)
+			continue;
+		ctx.updateTodoSchedule(row.content, {
+			audit: {
+				delivery,
+				repoPath: repoPath ?? "",
+				head,
+				resourcesKey: todoAuditResourcesKey(row.schedule),
+				bindingMismatch: true,
+				startedAt: now(),
+				verdict: "inconclusive",
+				agent: TODO_ROW_AUDITOR,
+				attempts: 2,
+				evidence: row.schedule?.progress?.evidence ?? "",
+				findings,
+				at: now(),
+			},
+		});
 	}
 	const busy = (_repoPath: string, _head: string, row: RowAuditRow) => {
 		const key = rowKey(row);
@@ -370,17 +475,33 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		);
 	};
 	const running = () => [...inFlight.keys()].filter(key => key.startsWith(`[${JSON.stringify(session)},`)).length;
-	const batches = planRowAudits(candidates, heads, ctx.cwd, isLive, busy);
+	const batches = planRowAudits(
+		candidates.filter(row => !blocked.has(rowKey(row))),
+		heads,
+		ctx.cwd,
+		isLive,
+		busy,
+	);
 	if (!batches.length) return 0;
 	// A row may be rebound while registry resolution or an auditor is in flight.
 	// Resource identity is separate from executor delivery identity.
 	const resourceKey = (row: RowAuditRow) => todoAuditResourcesKey(row.schedule);
 	const latestFor = (row: RowAuditRow, batch: RowAuditBatch) => {
-		const latest = ctx.getTodoPhases?.()?.flatMap(phase => phase.tasks).find(candidate => candidate.content === row.content);
-		if (!latest || latest.schedule?.review === "accepted" ||
+		const latest = ctx
+			.getTodoPhases?.()
+			?.flatMap(phase => phase.tasks)
+			.find(candidate => candidate.content === row.content);
+		if (
+			!latest ||
+			latest.schedule?.review === "accepted" ||
 			todoRowDeliveryKey(latest.schedule) !== todoRowDeliveryKey(row.schedule) ||
-			todoMaterialInputsKey(latest.schedule?.materialInputs) !== todoMaterialInputsKey(row.schedule?.materialInputs) ||
-			resourceKey(latest) !== resourceKey(row) || rowRepo(latest, ctx.cwd) !== batch.repoPath) return undefined;
+			todoMaterialInputsKey(latest.schedule?.materialInputs) !==
+				todoMaterialInputsKey(row.schedule?.materialInputs) ||
+			resourceKey(latest) !== resourceKey(row) ||
+			JSON.stringify(rowDeliveryCommits(latest)) !== JSON.stringify(rowDeliveryCommits(row)) ||
+			rowRepo(latest, ctx.cwd) !== batch.repoPath
+		)
+			return undefined;
 		const binding = todoArtifactGitBinding(latest);
 		return binding && (binding.repoPath !== batch.repoPath || binding.head !== batch.head) ? undefined : latest;
 	};
