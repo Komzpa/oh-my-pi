@@ -803,11 +803,11 @@ export function estimateFloorRefusal(updates: readonly Record<string, unknown>[]
     // evidenced re-estimate for work already underway measures what remains;
     // applying the whole-attempt floor again would double-count elapsed work.
     const elapsedMs = typeof row.startedAt === "number" ? Math.max(0, now - row.startedAt) : 0;
-    // The floor bounds the estimate of a NEW attempt only. A row already in progress whose current
-    // executor has not finished is a running attempt: an evidenced update on it states the time that
-    // remains, and is accepted as given (decided from row state, not from the basis wording).
-    const runningAttempt = row.status === "in_progress" && elapsedMs > 0 && row.schedule?.executor?.finishedAt === undefined;
-    const progressUpdate = runningAttempt && typeof update.evidence === "string" && update.evidence.trim().length > 0;
+    // A finished executor can leave a smaller verification or integration remainder.
+    // Starting its successor does not make the completed work part of the estimate again.
+    // Fresh unstarted rows still use the floor; changed remaining scope requires evidence.
+    const startedWork = elapsedMs > 0;
+    const progressUpdate = startedWork && typeof update.evidence === "string" && update.evidence.trim().length > 0;
     if (progressUpdate) continue;
     const fullAttemptFloor = Math.max(sampleMedian ?? 0, attemptFloor);
     const floorMs = fullAttemptFloor;
@@ -2617,9 +2617,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     async execute(_id, _params, _signal, _update, ctx) {
       if (!isMain(ctx)) throw new Error("Only the lead can record a plan forecast");
       const demand = recoveryFor(ctx);
-      if (demand?.kind !== "deadline") throw new Error("No pending deadline demand");
       recovery.forecast = measuredRecoveryForecast(recovery, todoPhases(ctx), Date.now());
-      satisfyRecovery(ctx);
+      if (demand?.kind === "deadline") satisfyRecovery(ctx);
+      else saveRecovery(ctx);
       return { content: [{ type: "text", text: JSON.stringify(recovery.forecast) }] };
     },
   });
@@ -4628,7 +4628,15 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     } catch {}
   };
   const replanRequirement = (ctx: ExtensionContext, decision: ReturnType<typeof currentDecision>, now: number) => {
-    if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)), now / 1_000)) return;
+    const deadlineState = rehydrateDeadlineState(latestDeadlineStateEntries(ctx));
+    if (isUserDeadlineMissed(deadlineState, now / 1_000)) return;
+    if (pendingAutoForecastMissAt !== null && deadlineState?.auto !== true) {
+      // A user-supplied deadline replaces the automatic anchor. Its old miss
+      // cannot describe the new constraint; current row/plan debt is checked below.
+      pendingAutoForecastMissAt = null;
+      forecastMissActive = false;
+      forecastReplanBaseline = null;
+    }
     if (!decision.key || !decision.forecast) return gateTrace(ctx, "no-plan");
     if (!decision.staffingSnapshotComplete) return gateTrace(ctx, "staffing-snapshot-incomplete");
     if (decision.goalPaused) return gateTrace(ctx, "goal-paused");

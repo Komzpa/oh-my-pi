@@ -280,6 +280,35 @@ test("forecast tool persists measured pace and ETA; a zero-pace call leaves dema
   } finally { clock.mockRestore(); }
 });
 
+test("measured forecast needs no deadline and does not discharge an idle staffing demand", async () => {
+  let now = Date.now(); spyOn(Date, "now").mockImplementation(() => now);
+  const h = await harness([], false, true, false);
+  h.phases[0].tasks.push({ content: "Completed slice", status: "pending" });
+  await h.hooks.get("turn_start")({}, h.ctx);
+  const tool = h.tools.get("todo_dispatch_forecast");
+  await expect(tool.execute("f", {}, undefined, undefined, h.ctx)).rejects.toThrow("No measured pace window");
+  now += 60_000;
+  h.phases[0].tasks[1].status = "completed";
+  const result = await tool.execute("f", {}, undefined, undefined, h.ctx);
+  expect(JSON.parse(result.content[0].text)).toMatchObject({ rowsPerHour: 60, completed: 1, open: 1, eta: now + 60_000 });
+  let receipt = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
+  expect(receipt.recovery.forecast).toMatchObject({ rowsPerHour: 60, open: 1 });
+  expect(receipt.recovery.pending).toBeUndefined();
+  expect(receipt.recovery.satisfied).toBeUndefined();
+  now += 600_000;
+  await h.hooks.get("turn_start")({}, h.ctx);
+  receipt = h.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
+  const pending = structuredClone(receipt.recovery.pending);
+  expect(pending.kind).toBe("idle");
+  const resumed = await harness(h.journal, false, true, false);
+  resumed.phases[0].tasks.push({ content: "Completed slice", status: "completed" });
+  await resumed.tools.get("todo_dispatch_forecast").execute("f", {}, undefined, undefined, resumed.ctx);
+  receipt = resumed.journal.findLast(entry => entry.customType === "todo-dispatch-action-demand").data;
+  expect(receipt.recovery.forecast.from).toBe(now - 660_000);
+  expect(receipt.recovery.pending).toEqual(pending);
+  expect(receipt.recovery.satisfied).toBeUndefined();
+});
+
 
 test("ready-row idle age survives reload and clears only for staffing or that row's recorded hold", async () => {
   let now = Date.now(); const clock = spyOn(Date, "now").mockImplementation(() => now);

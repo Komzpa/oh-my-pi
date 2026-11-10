@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Record measured plan forecasts without requiring a missed deadline, accept evidenced final remainders, and retire an automatic deadline miss when the user sets the delivery constraint.
+
 - Preserve a row's artifact scope when a read-only child claims no write resources.
 
 - Require fresh git proof before superseded audit drops and retarget only checks with existing structured file resources.

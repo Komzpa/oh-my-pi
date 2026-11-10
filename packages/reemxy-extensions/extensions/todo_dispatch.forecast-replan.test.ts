@@ -131,3 +131,20 @@ test("new estimates answer the forecast replan without moving the anchored autom
 	expect(state.baselineDeadlineAt).toBe(Math.floor((now - 60_000) / 1_000));
 	expect(state.stages[0].deadlineAt).toBe(state.baselineDeadlineAt);
 });
+
+test("a real future user deadline supersedes the earlier automatic miss without hiding row ETA debt", async () => {
+	const now = Date.now();
+	const task = { content: "Ship the package", status: "pending", schedule: { dependencies: [], resources: ["package"], estimate: estimate(now, 1_800) } };
+	const h = await demandHarness([task], undefined, now - 60_000);
+	expect(h.provider(h.ctx)?.reminder[0].content).toContain("automatic TODO forecast deadline");
+	h.branch.push({ type: "custom", customType: STATE_ENTRY, data: {
+		version: 1, goalId: "user-delivery", goalStartedAt: Math.floor(now / 1_000), timezone: "UTC", active: true,
+		stages: [{ id: "deliver", label: "Deliver", expectedResult: "Ship the package", deadlineAt: Math.floor((now + 6 * 3_600_000) / 1_000) }],
+		baselineDeadlineAt: Math.floor((now + 6 * 3_600_000) / 1_000),
+		userConstraint: { messageId: "user-new", quote: "set deadline to 22:00", recordedAt: Math.floor(now / 1_000) },
+	} });
+	expect(h.provider(h.ctx)?.id).not.toContain("todo-forecast-replan");
+	const current = h.branch[0].message.details.phases[0].tasks[0];
+	current.schedule.estimate = undefined;
+	expect(h.provider(h.ctx)?.reminder[0].content).toContain("no usable estimate");
+});

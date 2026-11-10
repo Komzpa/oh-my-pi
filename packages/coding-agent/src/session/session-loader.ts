@@ -512,7 +512,9 @@ export function createSessionStringPool(): (entry: FileEntry) => void {
 				if (typeof value !== "string" || value.length < 64 || value.length * 2 > budget) continue;
 				const existing = strings.get(value);
 				if (existing !== undefined) {
-					object[key] = existing;
+					// Partly readonly maps (for example auditor row identities) are not
+					// frozen. Intern only writable data properties, never accessors.
+					if (Object.getOwnPropertyDescriptor(object, key)?.writable) object[key] = existing;
 					continue;
 				}
 				while (bytes + value.length * 2 > budget || strings.size >= 16_384) {

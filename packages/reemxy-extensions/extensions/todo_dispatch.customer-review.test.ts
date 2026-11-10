@@ -80,10 +80,23 @@ test("a remaining-time update on a running attempt with progress evidence is not
   expect(estimateFloorRefusal([live], rows, floors, now)).toBeUndefined();
   // Without progress evidence the same update is still floored.
   expect(estimateFloorRefusal([{ ...live, evidence: undefined }], rows, floors, now)).toContain("previous attempt took 27m");
-  // Negative control: once the executor finished, the next estimate is a new attempt and is floored.
+  // A finished attempt can leave only verification work; its duration is not a lower bound on that remainder.
   const finished = estimateRow(content, { startedAt: now - 40 * 60_000, attemptHistory, executor: { workerId: "DoItemsOnConsolidated", agentProfile: "coder", startedAt: now - 40 * 60_000, finishedAt: now - 60_000, outcome: "failed" } });
   const retryRows = forecastTodoPlan([{ name: "Work", tasks: [finished] }], { now }).rows;
-  expect(estimateFloorRefusal([live], retryRows, floors, now)).toContain("below 27m");
+  expect(estimateFloorRefusal([live], retryRows, floors, now)).toBeUndefined();
+  expect(estimateFloorRefusal([{ ...live, evidence: undefined }], retryRows, floors, now)).toContain("below 27m");
+});
+
+test("final artifact audit remainder is accepted after the implementation worker finishes", () => {
+  const floors = successfulDurationFloors([JSON.stringify({ kind: "outcome", agent: "task", status: "completed", durationMs: 494_000 })]);
+  const row = estimateRow("Remove proven disposable branches and checkouts", {
+    startedAt: now - 120 * 60_000,
+    executor: { workerId: "ReconcileCompletedCleanup", agentProfile: "task", startedAt: now - 600_000, finishedAt: now - 237_000, outcome: "completed" },
+  });
+  const rows = forecastTodoPlan([{ name: "Work", tasks: [row] }], { now }).rows;
+  const update = { task: row.content, owner: "AuditCompletedCleanupManifest", evidence: "Implementation and 811-root reconciliation delivered; only manifest-bound QA remains", estimate: { optimisticSeconds: 120, likelySeconds: 300, pessimisticSeconds: 600, confidence: "high", basis: "Verify frozen hashes 60s, coverage 120s, verdict 120s" } };
+  expect(estimateFloorRefusal([update], rows, floors, now)).toBeUndefined();
+  expect(estimateFloorRefusal([{ ...update, evidence: undefined }], rows, floors, now)).toContain("below 9m");
 });
 
 test("retry uses the previous attempt's measured duration, not a multiplied estimate", () => {
