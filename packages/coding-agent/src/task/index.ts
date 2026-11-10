@@ -2039,8 +2039,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				signal,
 				...(tools ? { onToolResult: (result: SubagentToolResult) => appendToolResult(tools, result) } : {}),
 				onProgress: progress => {
-					this.session.onTaskWorkerLaunched?.(toolCallId, spawnIndex, progress.id, progress.agent);
 					latestProgress = { ...progress, ...taskFileMetadata, recentTools: progress.recentTools.slice() };
+					this.session.onTaskWorkerLaunched?.(toolCallId, spawnIndex, progress.id, progress.agent);
 					onUpdate?.({
 						content: [{ type: "text", text: `Running agent ${progress.id}...` }],
 						details: {
