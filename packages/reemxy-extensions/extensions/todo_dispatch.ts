@@ -9,6 +9,7 @@ import { resetDeliveryCriticTimers, queueDeliveryCritic, type DeliveryRow, type 
 import { openReviewPages, probeReviewPage, ReviewAnswerPoller } from "./todo_review_opener";
 import { PREVIEW_ENTRY_TYPE, refreshPreviewVisibility, overduePreviewRows, previewScheduleRefusal, previewDispatchRefusal, previewPlanProblem, previewReason, type PreviewRecord } from "./todo_preview";
 import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import { isHarnessNotice } from "@oh-my-pi/pi-coding-agent/session/harness-notices";
 import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry, type BranchSource } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
@@ -4089,7 +4090,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("message_start", (event, ctx) => {
     inFlightAssistantHasText = false;
     if (event.message?.role === "user") { wakeTurn = undefined; wakeHasEvent = true; }
-    if (event.message?.role === "custom" && typeof event.message.details?.silentAssistant !== "boolean" && !event.message.customType.startsWith("todo-")) { wakeTurn = undefined; wakeHasEvent = true; }
+    if (event.message?.role === "custom" && typeof event.message.details?.silentAssistant !== "boolean" && !isHarnessNotice(event.message)) { wakeTurn = undefined; wakeHasEvent = true; }
     if (event.message?.role === "assistant") rescheduledRowsThisTurn.clear();
     const user = latestDeadlineUserMessage([{ type: "message", message: event.message }]);
     if (user) announceHuman(ctx, user);

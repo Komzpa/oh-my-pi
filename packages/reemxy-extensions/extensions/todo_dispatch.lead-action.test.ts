@@ -179,6 +179,10 @@ test("repeated no-action demand requires any tool once and releases after actual
 		expect(h.requirement()).toBeUndefined();
 	}
 	for (let index = 0; index < 3; index++) {
+		// Real Main consumes these runtime notices between turn_start and turn_end.
+		for (const customType of ["mid-run-todo-nudge", "agent-focus-gym-eval-sandbox-wake"]) {
+			await h.hooks.get("message_start")({ message: { role: "custom", customType, attribution: "agent", display: false } }, h.ctx);
+		}
 		await h.hooks.get("turn_end")({}, h.ctx);
 		await h.hooks.get("turn_start")({}, h.ctx);
 		if (index < 2) expect(h.requirement()).toBeUndefined();
