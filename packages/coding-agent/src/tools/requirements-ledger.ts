@@ -1151,7 +1151,7 @@ export async function evaluateRequirementDoneGate(
 			continue;
 		}
 		if (requirement.classification !== "linked" || !requirement.rows.some(row => targets.has(row))) continue;
-		if (isLegacyUnverifiedRequirement(requirement, settledRows, acceptedRows)) continue;
+		if (isLegacyUnverifiedRequirement(requirement, closedRows, acceptedRows)) continue;
 		const issues: string[] = [];
 		const awaitingUserIssues: string[] = [];
 		const stalePassRows: string[] = [];

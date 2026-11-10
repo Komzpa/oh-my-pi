@@ -1806,9 +1806,7 @@ describe("real row-scoped auditor receipts", () => {
 			expect(await getRequirementRowArtifact({ cwd, sessionManager: manager }, rows[0]!, phases)).toEqual({
 				cwd: resource,
 				head: null,
-				identities: [
-					{ kind: "git", repo: resource, commit: head, paths: [".omp/agents/qa-auditor.md", "artifact.txt"] },
-				],
+				identities: [{ kind: "git", repo: resource, commit: head }],
 				dirty: false,
 			});
 			const savedOnly: TodoPhase[] = [
@@ -1879,7 +1877,7 @@ describe("real row-scoped auditor receipts", () => {
 				cwd: resource,
 				head: null,
 				dirty: false,
-				identities: [{ kind: "git", repo: resource, commit: movedHead, base: head, paths: ["artifact.txt"] }],
+				identities: [{ kind: "git", repo: resource, commit: movedHead }],
 			});
 			// The labels, not cell order or another row's SHA, select each row's fresh artifact.
 			const otherResource = join(cwd, "scene-worktree");

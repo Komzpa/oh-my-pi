@@ -253,6 +253,12 @@ async function comparableArtifactState(state: unknown, dispatch?: unknown): Prom
 				if (identity.kind !== "git") return identity;
 				const whole = prior.identities?.find(target => target.kind === "git" && target.repo === identity.repo);
 				if (!whole || whole.kind !== "git") return identity;
+				if (
+					identity.paths !== undefined &&
+					whole.paths !== undefined &&
+					JSON.stringify([...identity.paths].sort()) !== JSON.stringify([...whole.paths].sort())
+				)
+					return identity;
 				const same =
 					whole.commit === identity.commit ||
 					(await vcs.git(identity.repo)?.resolveRef(`${whole.commit}^{tree}`)) === identity.commit;
@@ -265,6 +271,15 @@ async function comparableArtifactState(state: unknown, dispatch?: unknown): Prom
 				};
 			}),
 		);
+	}
+	if (prior?.identities && !value.identities && value.cwd && value.head) {
+		const dispatched = prior.identities.find(identity => identity.kind === "git" && identity.repo === value.cwd);
+		if (dispatched?.kind === "git") {
+			const same =
+				dispatched.commit === value.head ||
+				(await vcs.git(dispatched.repo)?.resolveRef(`${dispatched.commit}^{tree}`)) === value.head;
+			value.identities = [same ? dispatched : { kind: "git", repo: value.cwd, commit: value.head }];
+		}
 	}
 	const git = value.identities?.filter(identity => identity.kind === "git" && identity.repo === value.cwd);
 	if (!value.head && value.identities?.length === 1 && git?.length === 1 && git[0]!.kind === "git") {
@@ -1690,8 +1705,25 @@ export class RequirementsLedgerRuntime {
 					if (
 						(await comparableArtifactState(dispatch)) !==
 						(await comparableArtifactState(requirementArtifactState(current), dispatch))
-					)
-						return `${receipt.id}: row artifact changed after audit dispatch for ${JSON.stringify(row)}; dispatch: ${assignment.rowArtifacts[row]}; current: ${JSON.stringify(requirementArtifactState(current))}`;
+					) {
+						const dispatchHead =
+							dispatch.head ??
+							(dispatch.identities as RequirementIdentity[] | undefined)?.find(
+								(identity): identity is Extract<RequirementIdentity, { kind: "git" }> =>
+									identity.kind === "git" && identity.repo === current.cwd,
+							)?.commit;
+						const currentHead =
+							current.head ??
+							current.identities?.find(
+								(identity): identity is Extract<RequirementIdentity, { kind: "git" }> =>
+									identity.kind === "git" && identity.repo === current.cwd,
+							)?.commit;
+						const movedHead =
+							dispatchHead && currentHead && dispatchHead !== currentHead
+								? ` (stale HEAD: expected ${dispatchHead}, observed ${currentHead})`
+								: "";
+						return `${receipt.id}: row artifact changed after audit dispatch${movedHead} for ${JSON.stringify(row)}; dispatch: ${assignment.rowArtifacts[row]}; current: ${JSON.stringify(requirementArtifactState(current))}`;
+					}
 				}
 				const lastChange = changes.get(row);
 				const receivedAt = new Date().toISOString();
