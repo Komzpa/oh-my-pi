@@ -219,10 +219,11 @@ describe("AgentSession per-turn prune persistence", () => {
 			isError: false,
 			timestamp: Date.now(),
 		});
-		updateEvalState(
-			{ cwd: tempDir.path(), getEvalSessionId: () => evalSessionId } as ToolSession,
-			{ language: "js", kernelId: "prune-eval-kernel", alive: true },
-		);
+		updateEvalState({ cwd: tempDir.path(), getEvalSessionId: () => evalSessionId } as ToolSession, {
+			language: "js",
+			kernelId: "prune-eval-kernel",
+			alive: true,
+		});
 		await sessionManager.flush();
 
 		const finalAssistant = {
