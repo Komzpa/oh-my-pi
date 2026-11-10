@@ -1,6 +1,6 @@
 // @ts-nocheck -- fixture rows are the live wire shape, not the typed TODO model.
 import coolingYields from "./fixtures/row-audit-cooling-yields.json";
-import { beforeEach, expect, test } from "bun:test";
+import { afterAll, beforeEach, expect, test } from "bun:test";
 import { prompt } from "@oh-my-pi/pi-utils";
 import {
 	classifyTodoDisplayRow,
@@ -13,7 +13,7 @@ import {
 import live from "./fixtures/dc-rowclose-1645.json";
 import auditStall from "./fixtures/auditstall-1855.json";
 import gateNotices from "./gate-notices.md" with { type: "text" };
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import divineRoadrunner from "./fixtures/row-audit-divine-roadrunner.json";
@@ -29,7 +29,11 @@ import {
 import { renderLeadRowInstructions } from "./lead-row-instructions";
 import { decideTodoDispatch } from "./todo_dispatch";
 
-const REPO = "/home/user/proj/sunbim/datacenter-decision-graph";
+const recordedRepo = live.phases[0].tasks[0].artifactCwd;
+const fixtureRoot = mkdtempSync(join(tmpdir(), "row-audit-checkouts-"));
+const REPO = join(fixtureRoot, "delivery");
+expect(Bun.spawnSync(["git", "init", "-q", REPO]).exitCode).toBe(0);
+afterAll(() => rmSync(fixtureRoot, { recursive: true, force: true }));
 const titles = live.phases.flatMap(phase => phase.tasks.map(task => task.content));
 const COLLATERAL = titles.find(title => title.startsWith('Collateral for "Integrate finished lanes'));
 /** Verified by the delivery critic already running for this exact executor run. */
@@ -52,7 +56,19 @@ const NEEDS_WORKER = [
 	"Diagnose leader crossings after Facility rotation",
 ];
 
-const clone = () => structuredClone(live.phases);
+const clone = () => {
+	const phases = structuredClone(live.phases);
+	// The historical checkout is fixture metadata, not a checkout on this host.
+	// Keep its root and nested collateral scopes bound to one disposable repo.
+	for (const row of phases.flatMap(phase => phase.tasks)) {
+		row.artifactCwd = row.artifactCwd?.replace(recordedRepo, REPO);
+		if (row.schedule?.resources)
+			row.schedule.resources = row.schedule.resources.map(resource => resource.replace(recordedRepo, REPO));
+		if (row.schedule?.audit?.repoPath)
+			row.schedule.audit.repoPath = row.schedule.audit.repoPath.replace(recordedRepo, REPO);
+	}
+	return phases;
+};
 const runningJobs = live.running.map(id => ({
 	id,
 	agentId: id,
@@ -302,9 +318,13 @@ test("batches split per repository head and stop at the auditor cap", async () =
 	const phases = clone();
 	const rows = phases.flatMap(phase => phase.tasks).filter(row => AUDITED.includes(row.content));
 	rows.forEach((row, index) => {
-		row.artifactCwd = `/repo/${index}`;
+		const repo = join(fixtureRoot, `batch-${index}`);
+		expect(Bun.spawnSync(["git", "init", "-q", repo]).exitCode).toBe(0);
+		row.artifactCwd = repo;
+		if (row.schedule.resources)
+			row.schedule.resources = row.schedule.resources.map(resource => resource.replace(REPO, repo));
 	});
-	const heads = Object.fromEntries(rows.map((_, index) => [`/repo/${index}`, String(index).padStart(40, "a")]));
+	const heads = Object.fromEntries(rows.map((row, index) => [row.artifactCwd, String(index).padStart(40, "a")]));
 	const h = harness(phases, heads);
 	expect(await h.check()).toBe(ROW_AUDIT_CAP);
 	expect(h.launches).toHaveLength(ROW_AUDIT_CAP);
