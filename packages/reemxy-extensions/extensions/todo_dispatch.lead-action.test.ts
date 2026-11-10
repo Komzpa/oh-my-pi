@@ -50,13 +50,15 @@ async function harness(rows) {
 	const phases = [{ name: "Follow-ups", tasks: rows }];
 	const journal = [];
 	const hooks = new Map();
+	let provider;
+	const activeTools = ["todo", "task", "read", "wait"];
 	const api = {
 		on: (name, hook) => hooks.set(name, hook),
-		getActiveTools: () => ["todo", "task", "read", "wait"],
+		getActiveTools: () => activeTools,
 		appendEntry: (customType, data) => journal.push({ type: "custom", customType, data }),
 		sendMessage: () => {},
 		pi: { ...schedule, getLatestTodoPhasesFromEntries, readGoalDeadline: () => undefined, agentPauseGate: { paused: false } },
-		registerSoftToolRequirementProvider: () => {},
+		registerSoftToolRequirementProvider: value => { provider = value; },
 	};
 	await todoDispatch(api, { reviewPageProbe: async () => 200, reviewPageOpener: () => {} });
 	const ctx = {
@@ -80,7 +82,7 @@ async function harness(rows) {
 		clearInterval: () => {},
 		clearTimer: () => {},
 	};
-	return { hooks, ctx };
+	return { hooks, ctx, journal, activeTools, requirement: () => provider?.(ctx), demand: () => provider?.demand?.(ctx), pauseGate: api.pi.agentPauseGate };
 }
 
 test("block is refused on a delivered row and names the lead's own action", async () => {
@@ -158,4 +160,51 @@ test("context keeps replies separated by real input, peer notices, visible notic
 		const shaped = await h.hooks.get("context")({ messages: [wake(), earlier, boundary, latest, later] }, h.ctx);
 		expect(shaped.messages).toEqual([earlier, boundary, latest, later]);
 	}
+});
+
+
+test("repeated no-action demand requires any tool once and releases after actual work", async () => {
+	const rows = [
+		{ content: "Check repair", status: "in_progress", schedule: { dependencies: [], reestimateCount: 6, estimateRevision: 7 } },
+		{ content: "Publish repair", status: "pending", schedule: { dependencies: ["Check repair"] } },
+		{ content: "Install repair", status: "pending", schedule: { dependencies: ["Publish repair"] } },
+	];
+	const h = await harness(rows);
+	await h.hooks.get("turn_start")({}, h.ctx);
+	// Non-mutating calls must break the zero-call streak across later wakes.
+	for (let index = 0; index < 3; index++) {
+		await h.hooks.get("tool_call")({ toolName: "read", toolCallId: `read-${index}`, input: { path: "a.txt" } }, h.ctx);
+		await h.hooks.get("turn_end")({}, h.ctx);
+		await h.hooks.get("turn_start")({}, h.ctx);
+		expect(h.requirement()).toBeUndefined();
+	}
+	for (let index = 0; index < 3; index++) {
+		await h.hooks.get("turn_end")({}, h.ctx);
+		await h.hooks.get("turn_start")({}, h.ctx);
+		if (index < 2) expect(h.requirement()).toBeUndefined();
+	}
+	const requirement = h.requirement();
+	expect(requirement?.escalationToolChoice).toBe("required");
+	for (const name of ["read", "todo", "task", "bash"]) expect(requirement.satisfies({ name })).toBe(true);
+	// A pause and an unavailable active tool never force a model request.
+	h.pauseGate.paused = true;
+	expect(h.requirement()).toBeUndefined();
+	h.pauseGate.paused = false;
+	h.activeTools.splice(h.activeTools.indexOf("task"), 1);
+	expect(h.requirement()).toBeUndefined();
+	h.activeTools.push("task");
+	// Evaluating advisory demand first must not consume the human-input recovery boundary.
+	await h.hooks.get("input")({ source: "interactive", text: "Use this updated request" }, h.ctx);
+	h.demand();
+	expect(h.requirement()).toBeUndefined();
+	for (let index = 0; index < 3; index++) {
+		await h.hooks.get("turn_end")({}, h.ctx);
+		await h.hooks.get("turn_start")({}, h.ctx);
+	}
+	expect(h.requirement()?.escalationToolChoice).toBe("required");
+	await h.hooks.get("tool_call")({ toolName: "read", toolCallId: "native-read", input: { path: "a.txt" } }, h.ctx);
+	expect(h.requirement()).toBeUndefined();
+	await h.hooks.get("turn_end")({}, h.ctx);
+	await h.hooks.get("turn_start")({}, h.ctx);
+	expect(h.requirement()).toBeUndefined();
 });

@@ -62,6 +62,7 @@ import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from ".
 import dependencyWaitInstructions from "./dispatch-dependency-wait.md" with { type: "text" };
 import { wakeDemand as stalledWakeDemand, countsAsWakeAction, type WakeReceipt, recoveryDemand, recoveryActionObserved, measuredRecoveryForecast, type RecoveryState } from "./dispatch_wake";
 import dispatchWakeInstructions from "./dispatch-wake.md" with { type: "text" };
+import dispatchToolRecoveryInstructions from "./dispatch-tool-recovery.md" with { type: "text" };
 import concurrentRecoveryInstructions from "./dispatch-concurrent-recovery.md" with { type: "text" };
 
 
@@ -2554,13 +2555,13 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let persistedChildren: PersistedChild[] = [];
   let sprintState: SprintState = blankSprintState();
   let wakeContext: ExtensionContext | undefined;
-  let wakeTurn: { before: TodoScheduleInput; toolCalls: number; mutations: number; target?: string; chain?: WaitChainDemand; rejection?: string } | undefined;
+  let wakeTurn: { before: TodoScheduleInput; toolCalls: number; mutations: number; target?: string; chain?: WaitChainDemand; rejection?: string; demandKey?: string } | undefined;
   let recovery: RecoveryState | undefined;
   let recoverySession: string | undefined;
   const recoveryReceipt = (ctx) => selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-demand")?.data as WakeReceipt | undefined;
   const saveRecovery = (ctx, fields = {}) => {
     const prior = recoveryReceipt(ctx);
-    pi.appendEntry("todo-dispatch-action-demand", { key: prior?.key ?? "recovery-observation", row: prior?.row, action: prior?.action ?? "", misses: prior?.misses ?? 0, toolCalls: 0, mutations: 0, ...fields, recovery: structuredClone(recovery) });
+    pi.appendEntry("todo-dispatch-action-demand", { key: prior?.key ?? "recovery-observation", row: prior?.row, action: prior?.action ?? "", misses: prior?.misses ?? 0, noToolMisses: fields.mutations ? 0 : prior?.noToolMisses ?? 0, toolCalls: 0, mutations: 0, ...fields, recovery: structuredClone(recovery) });
   };
   const recoveryFor = (ctx) => {
     const session = ctx.sessionManager.getHeader()?.id;
@@ -2598,7 +2599,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (ctx) {
       const prior = recoveryReceipt(ctx);
       if (prior?.row && unfinishedDependencyChains(phases, prior.row).length && prior.misses > 0)
-        pi.appendEntry("todo-dispatch-action-demand", { ...prior, misses: 0, toolCalls: 0, mutations: 0 });
+        pi.appendEntry("todo-dispatch-action-demand", { ...prior, misses: 0, noToolMisses: 0, toolCalls: 0, mutations: 0 });
       const rows = phases.flatMap(phase => phase.tasks);
       const slipped = deadline !== undefined && Math.max(now, finish ?? 0) > deadline;
       const waiting = slipped ? rows.filter(row => isNonClosedRowStatus(row.status)).map(row => ({ row: row.content })) : planChurnRows(phases);
@@ -2630,9 +2631,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const decision = currentDecision(ctx);
     const demand = wakeDemand(before, runningOwnerNames(ctx), Date.now(), decision.deadline?.deadlineAt, decision.forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx), ctx);
     const receipt = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-demand")?.data as WakeReceipt | undefined;
+    wakeTurn.demandKey = demand?.key;
     if (demand?.churn) wakeTurn.target = demand.row;
     wakeTurn.chain = chainDemand(before);
-    if (wakeTurn.chain || recovery?.pending) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: demand.key, row: demand.row, action: demand.action, edges: wakeTurn.chain?.edges, misses: receipt?.key === demand.key ? receipt.misses : 0, toolCalls: 0, mutations: 0 });
+    if (wakeTurn.chain || recovery?.pending) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: demand.key, row: demand.row, action: demand.action, edges: wakeTurn.chain?.edges, misses: receipt?.key === demand.key ? receipt.misses : 0, noToolMisses: receipt?.key === demand.key ? receipt.noToolMisses ?? 0 : 0, toolCalls: 0, mutations: 0 });
     const misses = demand && receipt?.key === demand.key ? receipt.misses : 0;
     return { silentAssistant: !realUpdate, ...(demand ? { actionDemandKey: demand.key, actionDemand: prompt.render(dispatchWakeInstructions, { ...demand, misses, escalation: misses > 0 }).trim() } : {}) };
   };
@@ -4767,6 +4769,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   pi.on("input", (event, ctx) => {
     if (event.source !== "extension") {
       userInputs += 1;
+      // A real request breaks the internal no-action streak even when the advisory provider
+      // has already consumed its pending-input signal before getToolChoice is evaluated.
+      const priorWake = recoveryReceipt(ctx);
+      if (priorWake?.noToolMisses) pi.appendEntry("todo-dispatch-action-demand", { ...priorWake, noToolMisses: 0 });
       if (!singleWriterLane) {
         const branch = dispatchStateEntries(ctx);
         const wasAway = lastPresence === "away" || derivePresence(branch, rehydrateDeadlineState(branch), Date.now()) === "away";
@@ -5561,9 +5567,19 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // allowed only todo while the chief tried to staff workers). The demand text rides in every
     // request's context instead and the chief picks the tool.
     const adviseOnly = (ctx: ExtensionContext) => {
+      const freshUserInput = userInputs > userInputsSeen;
       const demand = demandProvider(ctx) as { reminder?: Array<{ content: string }> } | undefined | void;
       activeDemand = demand?.reminder?.[0]?.content ?? null;
-      return undefined;
+      const receipt = recoveryReceipt(ctx);
+      // Recover repeated text-only wakes without cutting off any of the chief's tools.
+      // Any actual call satisfies this turn; a tool result clears this condition immediately.
+      if (freshUserInput || !isMain(ctx) || pauseGate.paused || gateSwitchedOff(ctx) || !pi.getActiveTools().includes("task") ||
+          !receipt || (receipt.noToolMisses ?? 0) < 3 || receipt.toolCalls !== 0 || wakeTurn?.toolCalls !== 0 || wakeTurn.demandKey !== receipt.key) return undefined;
+      return {
+        soft: true as const, id: `todo-no-action:${receipt.key}`, toolName: "task" as const,
+        escalationToolChoice: "required" as const, satisfies: () => true,
+        reminder: [{ role: "developer" as const, content: dispatchToolRecoveryInstructions.trim(), timestamp: Date.now() }],
+      };
     };
     softRequirementApi.registerSoftToolRequirementProvider(Object.assign(adviseOnly, { demand: demandProvider }));
     nativeGateRegistered = true;
@@ -6876,7 +6892,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (demand && wakeTurn.mutations === 0 && !wakeTurn.rejection) {
         const previous = selectLatestBranchEntry(ctx.sessionManager, metadata => metadata.type === "custom" && metadata.customType === "todo-dispatch-action-demand")?.data as WakeReceipt | undefined;
         const misses = Math.min(100, previous?.key === demand.key ? previous.misses + 1 : 1);
-        const receipt: WakeReceipt = { recovery: structuredClone(recovery), key: demand.key, row: demand.row, action: demand.action, misses, toolCalls: wakeTurn.toolCalls, mutations: 0 };
+        const noToolMisses = wakeTurn.toolCalls === 0 ? (previous?.key === demand.key ? previous.noToolMisses ?? 0 : 0) + 1 : 0;
+        const receipt: WakeReceipt = { recovery: structuredClone(recovery), key: demand.key, row: demand.row, action: demand.action, misses, noToolMisses, toolCalls: wakeTurn.toolCalls, mutations: 0 };
         pi.appendEntry("todo-dispatch-action-demand", receipt);
         // A repeated internal demand belongs behind existing follow-ups. Re-steering it at
         // every turn end lets it continually outrank peer messages already waiting in followUp.
@@ -6889,6 +6906,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       wakeTurn.before = structuredClone(todoPhases(ctx));
       wakeTurn.target = demand?.churn ? demand.row : undefined;
       wakeTurn.chain = chainDemand(todoPhases(ctx));
+      wakeTurn.demandKey = demand?.key;
       wakeTurn.rejection = undefined;
     }
     releaseLapsedPostDeadline(ctx);

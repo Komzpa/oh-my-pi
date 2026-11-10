@@ -1317,6 +1317,7 @@ async function runLoopBody(
 		// getToolChoice is never advanced twice; the flag resets at the message boundary.
 		let hostToolChoice: ToolChoice | undefined;
 		let softRequiredTool: string | undefined;
+		let softEscalationToolChoice: ToolChoice | undefined;
 		let softSatisfies: SoftToolRequirement["satisfies"];
 		let directiveResolvedForTurn = false;
 		let turnOpen = false;
@@ -1418,6 +1419,7 @@ async function runLoopBody(
 						const softReq = isSoftToolRequirement(directive) ? directive : undefined;
 						hostToolChoice = directive === undefined || isSoftToolRequirement(directive) ? undefined : directive;
 						softRequiredTool = softReq?.toolName;
+						softEscalationToolChoice = softReq?.escalationToolChoice;
 						softSatisfies = softReq?.satisfies;
 						const softRequirementId = softRequirementState.id;
 						if (softReq !== undefined) {
@@ -1730,7 +1732,10 @@ async function runLoopBody(
 							status: "skipped",
 						});
 					}
-					softRequirementState.forcedToolChoice = { type: "tool", name: softRequiredTool };
+					softRequirementState.forcedToolChoice = softEscalationToolChoice ?? {
+						type: "tool",
+						name: softRequiredTool,
+					};
 					softRequirementState.escalations++;
 					hasMoreToolCalls = true;
 				} else if (hasMoreToolCalls) {

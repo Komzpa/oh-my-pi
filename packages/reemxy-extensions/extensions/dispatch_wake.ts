@@ -9,6 +9,8 @@ export type WakeDemand = { key: string; action: string; churn: boolean; row?: st
 export type WakeReceipt = {
 	key: string;
 	misses: number;
+	/** Consecutive same-demand turns with zero tool calls. */
+	noToolMisses?: number;
 	action: string;
 	toolCalls: number;
 	mutations: number;

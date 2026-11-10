@@ -142,6 +142,8 @@ export interface SoftToolRequirement {
 	id: string;
 	/** Tool that must be called before the loop runs other tools or yields. */
 	toolName: string;
+	/** Optional escalation policy; "required" keeps every tool available. Defaults to the named tool. */
+	escalationToolChoice?: ToolChoice;
 	/**
 	 * Per-call compliance check: a turn satisfies the requirement only when every
 	 * tool call passes. Defaults to `name === toolName`. Lets a host demand a
