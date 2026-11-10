@@ -311,7 +311,7 @@ describe("task respawn keeps the TODO owner linked", () => {
 		expect(text(second)).toContain("already names an earlier job");
 	});
 
-	it("leaves the row with the requested owner while that owner is still running", async () => {
+	it("refuses a duplicate worker while the requested row owner is still running", async () => {
 		const gate = Promise.withResolvers<void>();
 		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
 			await gate.promise;
@@ -329,9 +329,16 @@ describe("task respawn keeps the TODO owner linked", () => {
 			task: "A parallel helper.",
 		} as TaskParams);
 
-		expect(text(second)).toContain("Spawned agent `RenderR7ZoompanMix-2`");
-		expect(text(second)).not.toContain("already names an earlier job");
-		expect(owner()).toBe("RenderR7ZoompanMix");
-		gate.resolve();
+		try {
+			expect(text(second)).toContain("REFUSED: no worker was spawned");
+			expect(text(second)).toContain("reserved by RenderR7ZoompanMix");
+			expect(text(second)).not.toContain("Spawned agent");
+			expect(owner()).toBe("RenderR7ZoompanMix");
+			expect(manager.getRunningJobs()).toHaveLength(1);
+		} finally {
+			gate.resolve();
+		}
+		await Promise.all(manager.getAllJobs().map(job => job.promise));
+		expect(executorModule.runSubprocess).toHaveBeenCalledTimes(1);
 	});
 });

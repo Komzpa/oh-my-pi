@@ -254,7 +254,7 @@ describe("task spawn routing", () => {
 		}
 	});
 
-	it("runs admission before the single dispatch routing hook for each child", async () => {
+	it("rechecks admission after capacity acquisition before the single dispatch routing hook", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [{ ...taskAgent, model: ["anthropic/claude-sonnet-4"] }],
 			projectAgentsDir: null,
@@ -277,7 +277,7 @@ describe("task spawn routing", () => {
 		const result = await tool.execute("tc-route", { agent: "task", name: "Routed", task: "Do it." } as TaskParams);
 		await manager.getJob(result.details!.async!.jobId!)!.promise;
 
-		expect(phases).toEqual(["admission", undefined]);
+		expect(phases).toEqual(["admission", "admission", undefined]);
 		expect(signals).toHaveLength(1);
 		expect(signals[0]).toBeInstanceOf(AbortSignal);
 		expect(runSpy.mock.calls[0]?.[0].modelOverride).toEqual(["openai/gpt-4.1-mini-1"]);
