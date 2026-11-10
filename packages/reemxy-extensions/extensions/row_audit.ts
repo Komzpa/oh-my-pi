@@ -383,7 +383,8 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 					...attempt,
 					gitCommits: attempt.gitCommits?.map(receipt => ({ ...receipt })),
 				})),
-				audit: row.schedule.audit && { ...row.schedule.audit },
+				materialInputs: row.schedule.materialInputs && structuredClone(row.schedule.materialInputs),
+				audit: row.schedule.audit && structuredClone(row.schedule.audit),
 			},
 		}))
 		.filter(row => {
@@ -540,39 +541,48 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	let launched = 0;
 	for (const batch of batches) {
 		if (running() >= ROW_AUDIT_CAP) break;
-		const target = await options.readTarget?.(batch.repoPath);
-		// Recheck after asynchronous registry resolution: another tick may have claimed these rows.
-		batch.rows = batch.rows.filter(row => {
-			const latest = latestFor(row, batch);
-			const after = latest && todoRowAfterWorker(latest);
-			return latest && !latest.schedule?.auditEscalation &&
-				((after?.kind === "verify" && after.via === "audit") || (after?.kind === "needs-worker" && after.reason === "audit-inconclusive")) &&
-				todoRowDeliveryKey(latest.schedule) === todoRowDeliveryKey(row.schedule) &&
-				rowRepo(latest, ctx.cwd) === batch.repoPath && !busy(batch.repoPath, batch.head, row);
-		});
+		// Claim capacity and rows synchronously, before target lookup yields to another tick.
+		batch.rows = batch.rows.filter(row => latestFor(row, batch) && !busy(batch.repoPath, batch.head, row));
+		if (!batch.rows.length) continue;
 		const key = batchKey(batch);
-		const startedAt = now();
+		const claim = new Set(batch.rows.map(rowKey));
+		inFlight.set(key, claim);
 		const records = new Map<string, TodoRowAudit>();
-		for (const row of batch.rows) {
-			const audit: TodoRowAudit = {
-				...target,
-				delivery: todoRowDeliveryKey(row.schedule),
-				repoPath: batch.repoPath,
-				head: batch.head,
-				resourcesKey: todoAuditResourcesKey(row.schedule),
-				startedAt,
-				verdict: "pending",
-				agent,
-				attempts: row.attempt,
-				materialInputs: row.schedule?.materialInputs && structuredClone(row.schedule.materialInputs),
-				evidenceHistory: auditEvidenceHistory(row, batch.head, batch.repoPath),
-				evidence: row.schedule?.progress?.evidence ?? "",
-			};
-			// Persist before launching: a resumed session sees the pending audit, never a bare delivery.
-			if (ctx.updateTodoSchedule(row.content, { audit })) records.set(row.content, audit);
+		try {
+			const target = await options.readTarget?.(batch.repoPath);
+			batch.rows = batch.rows.filter(row => {
+				const latest = latestFor(row, batch);
+				const after = latest && todoRowAfterWorker(latest);
+				return latest && !latest.schedule?.auditEscalation && !isLive(latest) &&
+					((after?.kind === "verify" && after.via === "audit") || (after?.kind === "needs-worker" && after.reason === "audit-inconclusive"));
+			});
+			const startedAt = now();
+			for (const row of batch.rows) {
+				const audit: TodoRowAudit = {
+					...target,
+					delivery: todoRowDeliveryKey(row.schedule),
+					repoPath: batch.repoPath,
+					head: batch.head,
+					resourcesKey: todoAuditResourcesKey(row.schedule),
+					startedAt,
+					verdict: "pending",
+					agent,
+					attempts: row.attempt,
+					materialInputs: row.schedule?.materialInputs && structuredClone(row.schedule.materialInputs),
+					evidenceHistory: auditEvidenceHistory(row, batch.head, batch.repoPath),
+					evidence: row.schedule?.progress?.evidence ?? "",
+				};
+				// Persist before launching: a resumed session sees the pending audit, never a bare delivery.
+				if (ctx.updateTodoSchedule(row.content, { audit })) records.set(row.content, audit);
+			}
+		} catch (error) {
+			if (inFlight.get(key) === claim) inFlight.delete(key);
+			throw error;
 		}
-		if (!records.size) continue;
-		inFlight.set(key, new Set(batch.rows.map(rowKey)));
+		if (!records.size) {
+			if (inFlight.get(key) === claim) inFlight.delete(key);
+			continue;
+		}
 		launched++;
 		void (async () => {
 			let retry = false;
@@ -695,7 +705,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 				}
 				logger.warn("Row audit did not run", { repo: batch.repoPath, head: batch.head, error: String(error) });
 			} finally {
-				inFlight.delete(key);
+				if (inFlight.get(key) === claim) inFlight.delete(key);
 			}
 			if (retry) await checkRowAudits(ctx, options).catch(() => 0);
 		})();

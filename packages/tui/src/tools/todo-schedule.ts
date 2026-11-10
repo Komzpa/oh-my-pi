@@ -2593,7 +2593,11 @@ export function todoRowAfterWorker(task: TodoScheduleInputTask): TodoRowAfterWor
 	const audit =
 		schedule.audit?.delivery === delivery &&
 		schedule.audit.agent === TODO_ROW_AUDITOR &&
-		todoAuditMatchesResources(schedule, schedule.audit)
+		todoAuditMatchesResources(schedule, schedule.audit) &&
+		// A conclusion applies to the inputs actually checked. Exhausted inconclusive
+		// attempts still require new evidence, rather than a removal-only retry.
+		((schedule.audit.verdict !== "pass" && schedule.audit.verdict !== "fail") ||
+			todoMaterialInputsKey(schedule.materialInputs) === todoMaterialInputsKey(schedule.audit.materialInputs))
 			? schedule.audit
 			: undefined;
 	if (audit?.verdict === "fail")

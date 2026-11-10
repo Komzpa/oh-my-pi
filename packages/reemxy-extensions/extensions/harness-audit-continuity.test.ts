@@ -158,3 +158,60 @@ test("schedule writer retains material identity across administrative updates an
 	expect(todoRowAfterWorker(reloaded[0]!.tasks[0]!)).toMatchObject({ kind: "verify" });
 	expect(reloaded[0]!.tasks[0]!.schedule!.materialInputs).toEqual(materialInputs);
 });
+
+for (const verdict of ["pass", "fail"] as const) {
+	for (const input of ["criterion", "receipts", "prerequisites", "removed receipt"] as const) {
+		test(`changing ${input} invalidates a previous ${verdict} conclusion`, () => {
+			const row = fixture();
+			row.schedule!.audit!.verdict = verdict;
+			if (input === "criterion") row.schedule!.materialInputs!.criterion = "criterion:v2";
+			else if (input === "removed receipt") row.schedule!.audit!.materialInputs!.receipts = ["receipt:removed"];
+			else row.schedule!.materialInputs![input] = ["receipt:new"];
+			const restored = JSON.parse(JSON.stringify(row));
+			expect(todoRowAfterWorker(restored)).toMatchObject({ kind: "verify", via: "audit" });
+			expect(plan(restored)).toHaveLength(1);
+		});
+	}
+}
+
+test("unchanged material identities preserve a conclusion across evidence ordering and reload", () => {
+	const row = fixture();
+	row.schedule!.audit!.verdict = "pass";
+	row.schedule!.materialInputs!.receipts = ["receipt:b", "receipt:a", "receipt:a"];
+	row.schedule!.audit!.materialInputs!.receipts = ["receipt:a", "receipt:b"];
+	const restored = JSON.parse(JSON.stringify(row));
+	expect(todoRowAfterWorker(restored)).toBeUndefined();
+	expect(plan(restored)).toHaveLength(0);
+});
+
+for (const verdict of ["pass", "fail"] as const) {
+	test(`TodoTool criterion update and persisted reload retire the old ${verdict}`, async () => {
+		const row = fixture();
+		row.status = "completed";
+		row.schedule!.dependencies = [];
+		row.schedule!.audit!.verdict = verdict;
+		let phases: TodoPhase[] = [{ name: "Audit", tasks: [{ ...row, details: "", notes: [] }] }];
+		const tool = new TodoTool({
+			cwd: root,
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+			getTodoPhases: () => phases,
+			setTodoPhases: next => {
+				phases = next;
+			},
+			settings: Settings.isolated(),
+		} as ToolSession);
+		const result = await tool.execute("criterion", {
+			op: "schedule",
+			updates: [
+				{ task: row.content, materialInputs: { criterion: "criterion:v2", receipts: [], prerequisites: [] } },
+			],
+		});
+		expect(result.isError).not.toBe(true);
+		const restored = JSON.parse(JSON.stringify(phases))[0].tasks[0];
+		expect(restored.schedule.materialInputs.criterion).toBe("criterion:v2");
+		expect(todoRowAfterWorker(restored)).toMatchObject({ kind: "verify", via: "audit" });
+		expect(plan(restored)).toHaveLength(1);
+	});
+}
