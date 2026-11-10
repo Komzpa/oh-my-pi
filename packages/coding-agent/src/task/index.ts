@@ -1462,9 +1462,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						if (failed) failedCount += 1;
 					},
 				});
+				this.session.onTaskWorkerLaunched?.(toolCallId, spawn.index, spawn.agentId, spawn.progress.agent);
 				if (started.length === 0) primaryJobId = jobId;
 				started.push({ agentId: spawn.agentId, jobId });
-				this.session.onTaskWorkerLaunched?.(toolCallId, spawn.index, spawn.agentId, spawn.progress.agent);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				// An adopted run already executes; without its job nothing would own it.
