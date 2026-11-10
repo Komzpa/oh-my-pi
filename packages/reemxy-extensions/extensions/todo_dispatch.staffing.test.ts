@@ -57,6 +57,21 @@ const failed = {
 	},
 };
 const fresh = { content: "New orbit decoration", status: "pending", schedule: { dependencies: [] } };
+test("a settled executor running elsewhere does not own a reassigned row", async () => {
+	const row = structuredClone(failed);
+	row.schedule.owner = "Replacement";
+	const h = await harness([row]);
+	h.ctx.getAsyncJobSnapshot = () => ({ running: [{ id: "other-job", agentId: "ContinentalSnail", label: "Unrelated work", type: "task", status: "running" }], recent: [], nonJobAgents: [] });
+	await h.hooks.get("turn_start")({}, h.ctx);
+	expect(h.notices.find(notice => notice.customType === "todo-gate-staffing")?.content).toContain(row.content);
+	const result = await h.hooks.get("tool_call")({ toolName: "task", input: { name: "Replacement", row: row.content, task: row.content, agent: "task" } }, h.ctx);
+	expect(result?.reason ?? "").not.toContain("already has live owner");
+	// A genuinely current replacement remains protected from duplicate dispatch.
+	h.ctx.getAsyncJobSnapshot = () => ({ running: [{ id: "replacement-job", agentId: "Replacement", label: row.content, type: "task", status: "running" }], recent: [], nonJobAgents: [] });
+	const duplicate = await h.hooks.get("tool_call")({ toolName: "task", input: { name: "Another", row: row.content, task: row.content, agent: "task" } }, h.ctx);
+	expect(duplicate?.block).toBe(true);
+	expect(duplicate.reason).toContain("Replacement");
+});
 test("staffing remains visible without blocking independent ready work", async () => {
 	const h = await harness([structuredClone(failed), structuredClone(fresh)]);
 	await h.hooks.get("turn_start")({}, h.ctx);

@@ -547,7 +547,7 @@ test("new recovery demand wakes a chief even while the urgent chain is unchanged
 	}
 });
 
-test("repeated retro and checkpoint notices do not send another chief turn, and an unchanged plan-check is delivered once", async () => {
+test("reopened work sends no unsolicited retro and an unchanged plan-check is delivered once", async () => {
 	const previousLane = process.env.OMP_LANE_UNIT;
 	delete process.env.OMP_LANE_UNIT;
 	let now = Date.now();
@@ -606,19 +606,17 @@ test("repeated retro and checkpoint notices do not send another chief turn, and 
 				},
 				retro.ctx,
 			);
-			// Incident-only retros: completing the only row with no incident sends no
-			// retro notice. Reopening it does, once, with the incident named.
+			// Completing or reopening ordinary work never demands a retrospective.
 			retroRow.status = "completed";
 			await retro.tick();
 			expect(retro.notices.filter((notice) => notice.content.includes("retrospective due"))).toHaveLength(0);
 			retroRow.status = "pending";
 			await retro.tick();
 			const reopened = retro.notices.filter((notice) => notice.content.includes("retrospective due"));
-			expect(reopened).toHaveLength(1);
-			expect(reopened[0]?.content).toContain("retrospective due (reopened row)");
+			expect(reopened).toHaveLength(0);
 			now += 11 * 60_000;
 			await retro.tick();
-			expect(retro.notices.filter((notice) => notice.content.includes("retrospective due"))).toHaveLength(1);
+			expect(retro.notices.filter((notice) => notice.content.includes("retrospective due"))).toHaveLength(0);
 		} finally {
 			retro.shutdown();
 		}

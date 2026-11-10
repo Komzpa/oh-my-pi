@@ -60,14 +60,17 @@ export function wakeDemand(
 		row =>
 			row.status !== "blocked" &&
 			!running.has(row.schedule?.owner ?? "") &&
+			!((row.schedule?.executor?.finishedAt === undefined && !row.schedule?.executor?.outcome) && running.has(row.schedule?.executor?.workerId ?? "")) &&
 			(row.schedule?.dependencies ?? []).every(dep => closed.has(dep)),
 	);
 	const slipped = rows.length > 0 && deadline !== undefined && Math.max(now, finish ?? 0) > deadline;
 	const row = churn ?? question ?? ready ?? (slipped ? rows.find(row => !unfinishedDependencyChains(phases, row.content).length && !running.has(row.schedule?.owner ?? "")) : undefined);
 	if (!row && !workerQuestion) return;
 	const kind = churn ? "churn" : workerQuestion || question ? "question" : ready ? "dispatch" : "slip";
+	const feedback = row && todoRowAfterWorker(row);
 	const action = prompt
 		.render(actionTemplate, {
+			feedback: !workerQuestion && feedback?.kind === "needs-worker" ? feedback : undefined,
 			churn: !!churn,
 			question: !churn && (!!workerQuestion || !!question),
 			ready: !churn && !workerQuestion && !question && !!ready,
@@ -86,6 +89,7 @@ export function wakeDemand(
 				row?.schedule?.owner,
 				row?.schedule?.dependencies,
 				row?.blocker,
+				feedback,
 				workerQuestion,
 			]),
 		).toString(16),

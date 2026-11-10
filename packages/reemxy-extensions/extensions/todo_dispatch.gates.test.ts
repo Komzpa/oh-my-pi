@@ -2628,7 +2628,7 @@ test("armed missed-eta admits context_notes but refuses bash", () => {
 
 test("parseTodoOverride names a gate id inside the override field", () => {
   expect(parseTodoOverride({ op: "schedule", override: "answering missed-eta with new estimates" })).toBe("missed-eta");
-  expect(parseTodoOverride({ op: "append", override: "RETRO handled separately" })).toBe("retro");
+  expect(parseTodoOverride({ op: "append", override: "RETRO handled separately" })).toBeUndefined();
   // Grievances 547/590: overrides naming tracked demands must resolve to their demand keys.
   expect(parseTodoOverride({ op: "schedule", override: "todo-plan-doctor" })).toBe("todo-plan-doctor");
   expect(parseTodoOverride({ op: "schedule", override: "plan-doctor consulted offline" })).toBe("todo-plan-doctor");
@@ -2756,7 +2756,7 @@ test("an escalated demand decays once every row is closed (live sunbim 2026-10-2
   }
 }, 60_000);
 
-test("ignored retro blocks until a retro-facilitator is staffed; an override does not lift it", async () => {
+test("legacy ignored retro does not block ordinary tasks while plan enforcement survives reload", async () => {
   const cwd = repo("clean");
   const now = Date.now();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -2768,7 +2768,7 @@ test("ignored retro blocks until a retro-facilitator is staffed; an override doe
     appendEntry: () => undefined,
     sendMessage: () => undefined,
   } as unknown as ExtensionAPI;
-  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { retro: 6 } } }];
+  const branch = [...plan("ready", now), { type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, retroDueReason: "repeated failure", correctionPending: true, ignoredDemands: { retro: 6 } } }];
   await todoDispatch(api);
   const ctx = {
     cwd,
@@ -2784,15 +2784,14 @@ test("ignored retro blocks until a retro-facilitator is staffed; an override doe
     await handlers.get("session_start")!({}, ctx);
     const toolCall = handlers.get("tool_call")!;
     const task = (await toolCall({ toolName: "task", toolCallId: "u2", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
-    expect(task?.block).toBe(true);
-    expect(task?.reason).toContain("retro-facilitator");
-    // "Retro skipped per <rule>" is the bypass that let the same failure be retried.
-    await toolCall({ toolName: "todo", toolCallId: "u3", input: { ...CALLS.todoSchedule!.arguments, override: "retro skipped per no-retro rule" } }, ctx);
-    const still = (await toolCall({ toolName: "task", toolCallId: "u4", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean } | undefined;
-    expect(still?.block).toBe(true);
-    const plan = (await toolCall({ toolName: "task", toolCallId: "u5", input: { tasks: [{ agent: "plan-doctor", name: "Doctor", task: "diagnose" }] } }, ctx)) as { block?: boolean } | undefined;
-    expect(plan?.block).toBe(true);
-    expect(await toolCall({ toolName: "task", toolCallId: "u6", input: { tasks: [{ agent: "retro-facilitator", name: "Retro", task: "keep/ban decisions" }] } }, ctx)).toBeUndefined();
+    expect(task?.block, task?.reason).not.toBe(true);
+    // Removing obsolete retro state must not remove a real plan demand alongside it.
+    branch.push({ type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { retro: 6, "todo-link": 3 } } });
+    await handlers.get("session_branch")!({}, ctx);
+    const blocked = (await toolCall({ toolName: "task", toolCallId: "u3", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(blocked?.block).toBe(true);
+    expect(blocked?.reason).toContain("todo-link");
+    expect(blocked?.reason).not.toContain("retro");
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
     rmSync(cwd, { recursive: true, force: true });

@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Refresh dispatch advice against current rows, retain actual worker feedback, and retire obsolete demands and automatic retrospective gates. Failed methods may yield to a different route without passing unmet acceptance.
+
 - Recognize the same live or restoring worker in staffing checks and duplicate-dispatch refusals, including replacement executor identities.
 
 - Keep capacity waits neutral while preserving the previous worker output and wake-on-capacity instructions.

@@ -1379,7 +1379,7 @@ test("planning-round nag skips rows that wait on unfinished rows and clears once
   expect(await check()).not.toContain("planning round due");
 });
 
-test("PLAN CHECK advises retrospectives for sprint triggers and clears after retro-facilitator finishes", async () => {
+test("PLAN CHECK keeps product work moving through deadlines, corrections and reopened rows", async () => {
   const liveNow = Date.UTC(2026, 8, 25, 10, 0, 0);
   setSystemTime(new Date(liveNow));
   const row = (content: string, status: "pending" | "completed" = "pending") => ({
@@ -1446,18 +1446,15 @@ test("PLAN CHECK advises retrospectives for sprint triggers and clears after ret
 
     deadlineAt = liveNow - 1;
     const overdue = (await check());
-    expect(overdue).toContain("retrospective due (deadline passed): read the Retro block in the final answer of the 2 workers who finished since");
-    expect(overdue).toContain("worker-a, worker-b");
-    expect(overdue).toContain("from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective)");
+    expect(overdue).not.toContain("retrospective due");
     (await finishRetro());
     expect((await check())).not.toContain("retrospective due");
 
     handlers.get("input")!({ source: "interactive", text: "опять не то, я же просил иначе" }, ctx);
-    expect((await check())).toContain("retrospective due (user correction)");
+    expect((await check())).not.toContain("retrospective due");
     (await finishRetro());
 
-    // Incident-only retros: a predictable delivery opens no retro, even three hours
-    // later; the workers' Retro blocks accumulate for the next incident-driven one.
+    // Predictable deliveries and later reopened rows stay on the product path.
     plan = [{ name: "Retro", tasks: [row("Closed one", "completed"), row("Closed two", "completed"), row("Closed three", "completed")] }];
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
     expect((await check())).not.toContain("retrospective due");
@@ -1468,7 +1465,7 @@ test("PLAN CHECK advises retrospectives for sprint triggers and clears after ret
 
     plan = [{ name: "Retro", tasks: [row("Closed one"), row("Closed two"), row("Closed three")] }];
     branch[0] = { type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: plan } } };
-    expect((await check())).toContain("retrospective due (reopened row)");
+    expect((await check())).not.toContain("retrospective due");
     (await finishRetro());
   } finally {
     setSystemTime();

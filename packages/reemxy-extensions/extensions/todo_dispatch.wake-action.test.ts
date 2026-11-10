@@ -12,6 +12,21 @@ import { wakeDemand } from "./dispatch_wake";
 
 afterEach(() => vi.restoreAllMocks());
 
+test("returned findings demand reconciliation rather than automatic restaffing", () => {
+  const phases = [{ name: "Geometry", tasks: [{ content: "Cooling route", status: "in_progress", schedule: {
+    dependencies: [], owner: "Proof", executor: { workerId: "Proof", agentProfile: "researcher", startedAt: 1, finishedAt: 2, outcome: "completed" },
+  } }] }];
+  const demand = wakeDemand(phases, new Set(), Date.now());
+  expect(demand.action).toContain("agent://Proof");
+  expect(demand.action).toContain("Read the full worker output");
+  expect(demand.action).toContain("retire a disproved approach as failed/superseded");
+  expect(demand.action).toContain("retirement is not success");
+  expect(demand.action).not.toContain("Dispatch a worker");
+  // A live worker's actual question takes priority over old findings.
+  expect(wakeDemand(phases, new Set(["Proof"]), Date.now(), undefined, undefined,
+    [{ worker: "Proof", question: "Which existing renderer owns the route?" }]).action).toContain("Which existing renderer owns the route?");
+});
+
 async function harness(journal = [], chain = false, healthy = false, deadlineEnabled = true, onSend = undefined) {
   const hooks = new Map();
   const sent = [];
@@ -427,7 +442,7 @@ test("dependency-held Power CHURN stays silent, then rearms and escalates after 
   expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.misses).toBe(1);
   await h.hooks.get("turn_end")({}, h.ctx);
   expect(h.sent.findLast(m => m.customType === "todo-dispatch-action-required").content).toContain("ESCALATED");
-  expect(h.sent.findLast(m => m.customType === "todo-dispatch-action-required").content).toContain("Split or cut scope on Power");
+  expect(h.sent.findLast(m => m.customType === "todo-dispatch-action-required").content).toContain("Resolve the acceptance failure on Power");
 });
 
 test("new dependency suspends an escalated CHURN counter, including after reload", async () => {
@@ -473,7 +488,7 @@ test("synthetic chain: an hour of blocked CHURN cannot accrue demands; releasing
   cooling.status = "completed";
   // Other blocked CHURN rows remain waiting; the original Power acceptance becomes actionable.
   await h.hooks.get("turn_end")({}, h.ctx);
-  expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.action).toStartWith(`Split or cut scope on ${power.content}`);
+  expect(h.journal.findLast(e => e.customType === "todo-dispatch-action-demand").data.action).toStartWith(`Resolve the acceptance failure on ${power.content}`);
 });
 
 

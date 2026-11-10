@@ -134,7 +134,11 @@ function liveTaskWorkers(jobs: Jobs | null): LiveTaskWorker[] {
   return workers;
 }
 function liveTaskWorker(task: TaskRow | undefined, workers: LiveTaskWorker[]): LiveTaskWorker | undefined {
-  for (const identity of [task?.schedule?.executor?.workerId, task?.schedule?.owner]) {
+  const executor = task?.schedule?.executor;
+  // A settled executor belongs to a previous attempt. Its agent may now be
+  // running unrelated work; only the current assignment can establish ownership.
+  const executorId = executor?.finishedAt === undefined && !executor?.outcome ? executor?.workerId : undefined;
+  for (const identity of [executorId, task?.schedule?.owner]) {
     if (typeof identity !== "string") continue;
     // Agent IDs and job IDs have separate namespaces. Prefer the named agent
     // before a colliding job ID or a legacy numbered-job alias.
@@ -984,14 +988,11 @@ const PLAN_DEMAND_IDS = new Set(["missed-eta", "todo-plan-doctor", "todo-replan"
 // remedy says "split it", and a split adds rows. Starting their workers (task) stays refused.
 const PLAN_WORK_OPS = new Set(["init"]);
 const ESCALATION_REMEDY = "Fix the plan in a todo call: re-estimate the late row with evidence, split it, or drop it. Don't start workers to answer this.";
-// The retrospective is what stops the same failure from being retried: only staffing it lifts the gate.
 // Each escalated demand names its own fix; a generic "re-estimate the late row" sent the lead to
 // replan when the demand was an unread worker result (live DC 2026-10-28).
 const UNREAD_REMEDY = (owners: readonly string[]) =>
   `Read ${owners.length ? owners.slice(0, 4).map((owner) => `agent://${owner}`).join(", ") : "each finished worker's agent:// output"}, then close its row or send it back with the reason in a todo call.`;
-const BLOCKING_RETRO_REASONS = new Set(["repeated failure", "reopened row", "user correction"]);
-const RETRO_REMEDY = "Staff the retrospective now: one task with agent retro-facilitator. It cannot be skipped or overridden.";
-export const GATE_IDS = ["planning-issues", "chief-no-bash", "idle-wait", "checkout", "retro", "escalation", "missed-eta", "receipt", "duplicate-worker"] as const;
+export const GATE_IDS = ["planning-issues", "chief-no-bash", "idle-wait", "checkout", "escalation", "missed-eta", "receipt", "duplicate-worker"] as const;
 const READ_TIER = new Set(["read", "grep", "glob", "find"]);
 const todoOpOf = (call: GateCall): string | undefined => {
   const args = call.arguments ?? {};
@@ -1158,11 +1159,10 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
       retroCoveredIds: Array.isArray(data.retroCoveredIds) ? data.retroCoveredIds.filter((item): item is string => typeof item === "string") : [],
       retroCoveredAttempts: Array.isArray((data as Partial<SprintState>).retroCoveredAttempts) ? ((data as Partial<SprintState>).retroCoveredAttempts as unknown[]).filter((item): item is string => typeof item === "string") : [],
       retroReceiptIds: Array.isArray(data.retroReceiptIds) ? data.retroReceiptIds.filter((item): item is string => typeof item === "string") : [],
-      correctionPending: data.correctionPending === true,
-      retroDueReason: typeof data.retroDueReason === "string" ? data.retroDueReason : null,
-      ...(typeof data.retroDueDeadlineAt === "number" ? { retroDueDeadlineAt: data.retroDueDeadlineAt } : {}),
-      ...(typeof data.retroDueDeliveryKey === "string" ? { retroDueDeliveryKey: data.retroDueDeliveryKey } : {}),
-      ...(typeof data.retroDueNotifiedKey === "string" ? { retroDueNotifiedKey: data.retroDueNotifiedKey } : {}),
+      // Retire legacy automatic retro demands on reload. Explicit facilitator jobs and
+      // their receipts remain valid; ordinary work never waits for an unsolicited retro.
+      correctionPending: false,
+      retroDueReason: null,
       ...(typeof data.handledDeadlineAt === "number" ? { handledDeadlineAt: data.handledDeadlineAt } : {}),
       ...(typeof data.handledDeliveryKey === "string" ? { handledDeliveryKey: data.handledDeliveryKey } : {}),
       lastNotices: typeof data.lastNotices === "object" && data.lastNotices !== null
@@ -1172,7 +1172,7 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
         item !== null && typeof item === "object" && (item.kind === "cap" || item.kind === "stuck") &&
         typeof item.row === "string" && typeof item.owner === "string" && typeof item.at === "number") } : {}),
       ignoredDemands: typeof data.ignoredDemands === "object" && data.ignoredDemands !== null
-        ? Object.fromEntries(Object.entries(data.ignoredDemands).filter((entry): entry is [string, number] => typeof entry[1] === "number").slice(-MAX_NOTICE_KEYS))
+        ? Object.fromEntries(Object.entries(data.ignoredDemands).filter((entry): entry is [string, number] => entry[0] !== "retro" && typeof entry[1] === "number").slice(-MAX_NOTICE_KEYS))
         : {},
       idleContinuationDemands: typeof (data as Partial<SprintState>).idleContinuationDemands === "number"
         ? Math.max(0, Math.min(3, Math.floor((data as Partial<SprintState>).idleContinuationDemands!)))
@@ -1536,49 +1536,12 @@ function userWaitRows(phases: TodoScheduleInput): Array<{ content: string; quest
 function sprintSetKey(rows: string[]): string {
   return JSON.stringify([...rows].sort());
 }
-// A failed deploy/install job is how an updater or deploy rejection surfaces in the job
-// snapshot; quota failures on other labels do not match.
+// Updater jobs may deliver their structured result after the completed job snapshot.
 const UPDATER_JOB_LABEL = /updat|deploy|install|publish|rollback|release|cutover/i;
-// A completed install/updater job can still carry a rejection in its structured result: a
-// non-zero install/updater/deploy exit or non-empty blocked/remaining gaps. The result records
-// the same fact the receipt does, so derive the incident from it here, once.
+// Read the payload before settling a completed updater job so late results remain observable.
 function jobResultPayload(job: unknown): unknown {
   if (typeof job !== "object" || job === null) return undefined;
   return "result" in job ? job.result : "data" in job ? job.data : undefined;
-}
-function structuredInstallRejection(job: unknown): boolean {
-  const result = jobResultPayload(job);
-  if (typeof result !== "object" || result === null) return false;
-  // Unchecked cast to a named const: job results are untyped at this extension boundary.
-  const record = result as Record<string, unknown>;
-  // Exit keys are matched across case and separators so a camelCase installExit reads the
-  // same as install_exit, and a top-level terminal status of blocked/failed is a rejection.
-  const normalised: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) normalised[key.toLowerCase().replace(/[_\-\s]/g, "")] = value;
-  const status = normalised.status;
-  if (typeof status === "string" && ["blocked", "failed"].includes(status.trim().toLowerCase())) return true;
-  for (const key of ["install_exit", "updater_exit", "deploy_exit", "exit_code"]) {
-    const value = normalised[key.toLowerCase().replace(/[_\-\s]/g, "")];
-    if (typeof value === "number" && value !== 0) return true;
-    if (typeof value === "string" && value.trim() !== "" && value.trim() !== "0") return true;
-  }
-  for (const key of ["blocked", "remaining", "gaps"]) {
-    const value = record[key];
-    if (Array.isArray(value) && value.length > 0) return true;
-    if (typeof value === "string" && value.trim() !== "") return true;
-    if (typeof value === "object" && value !== null && Object.keys(value).length > 0) return true;
-  }
-  return false;
-}
-function dispatchedResultAgent(result: unknown): string | undefined {
-  if (typeof result !== "object" || result === null || !("agent" in result)) return undefined;
-  const agent: unknown = result.agent;
-  return typeof agent === "string" ? agent : undefined;
-}
-function isCorrectionInput(text: string, source: string): boolean {
-  if (source === "extension") return false;
-  // Only whole correction phrases in user text count; profanity and event metadata do not.
-  return /(?<![\p{L}])(?:не то|не так|опять|я же просил)(?![\p{L}])/iu.test(text);
 }
 function isRetroFacilitatorTaskResult(event: unknown): boolean {
   const details = (event as { details?: unknown } | undefined)?.details;
@@ -1602,8 +1565,7 @@ function retroFacilitatorResultId(event: unknown): string | undefined {
 }
 // Scan window paired with MAX_RETRO_RECEIPT_IDS: only receipts in the tail can be new, and only
 // retained ids are remembered, so an evicted receipt outside the window is never rediscovered and
-// re-clears demand. A receipt older than the window that was never processed keeps the old
-// behavior (demand persists until the next retro) instead of breaking the cap.
+// resets the completed-retro boundary. Older receipts are outside the processing window.
 const RETRO_RECEIPT_SCAN_ENTRIES = 500;
 function recentBranchMessages(ctx: ExtensionContext) {
   const source = ctx.sessionManager as BranchSource;
@@ -1647,7 +1609,7 @@ export function branchRetroReceiptIds(ctx: ExtensionContext, entries = recentBra
 
 // Async dispatch returns no inline results; the real worker completion arrives later as an
 // async-result `<task-result status="completed">…<output>…</output>…</task-result>` on the branch.
-// Reconcile those completed updater jobs here so settleSprintJobs sees their rejection payloads.
+// Reconcile those completed updater jobs here so settlement retains their structured results.
 export function branchAsyncTaskResults(ctx: ExtensionContext, entries = recentBranchMessages(ctx)): (Jobs["recent"][number] & { result?: unknown })[] {
   const out: (Jobs["recent"][number] & { result?: unknown })[] = [];
   const scan = (text: string) => {
@@ -2714,9 +2676,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let persistedSprintStateJson = JSON.stringify(sprintState);
   let dispatchGateBaseline: Map<string, string> | null = null;
   const taskCallBaselines = new Map<string, Map<string, string>>();
-  // Agents named by each task dispatch: a result that arrives empty or from an agent
-  // that was never dispatched means the row's owner did not do the dispatched work.
-  const dispatchedAgents = new Map<string, string[]>();
   // Names of dispatched retro-facilitator workers: an async facilitator settles through `wait`, and
   // the job snapshot carries no agent type, so the dispatch input is the only place to learn it.
   const retroFacilitatorJobs = new Set<string>();
@@ -2819,65 +2778,18 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (sprintState.seenRows.includes(content)) return;
     sprintState = { ...sprintState, seenRows: [...sprintState.seenRows, content] };
   };
-  const setRetroDue = (reason: string, meta: { deadlineAt?: number; deliveryKey?: string } = {}) => {
-    if (sprintState.retroDueReason) {
-      const newWindow = reason === sprintState.retroDueReason && (
-        (meta.deadlineAt !== undefined && meta.deadlineAt !== sprintState.retroDueDeadlineAt) ||
-        (meta.deliveryKey !== undefined && meta.deliveryKey !== sprintState.retroDueDeliveryKey)
-      );
-      if (!newWindow) return;
-    }
-    sprintState = {
-      ...sprintState,
-      retroDueReason: reason,
-      correctionPending: reason === "user correction" ? false : sprintState.correctionPending,
-      ...(meta.deadlineAt === undefined ? { retroDueDeadlineAt: undefined } : { retroDueDeadlineAt: meta.deadlineAt }),
-      ...(meta.deliveryKey === undefined ? { retroDueDeliveryKey: undefined } : { retroDueDeliveryKey: meta.deliveryKey }),
-    };
-  };
-  // An empty or substituted worker result is an incident: the next retro must observe
-  // expected vs actual from journals, receipts and transcripts.
-  const reportWorkerResultIncident = (event: { toolCallId: string; details?: unknown }) => {
-    const details = event.details;
-    const results = details !== null && typeof details === "object" && "results" in details
-      ? details.results
-      : undefined;
-    if (!Array.isArray(results) || results.length === 0) {
-      // An async dispatch returns no inline results while its workers are still pending; the
-      // completion arrives later as an async-result. That is not an empty worker result.
-      const progress = details !== null && typeof details === "object" && "progress" in details
-        ? details.progress
-        : undefined;
-      if (Array.isArray(progress) && progress.length > 0) return;
-      setRetroDue("empty worker result");
-      persistSprintState();
-      return;
-    }
-    const dispatched = dispatchedAgents.get(event.toolCallId) ?? [];
-    dispatchedAgents.delete(event.toolCallId);
-    if (dispatched.length === 0) return;
-    const substituted = results.some((result) => {
-      const agent = dispatchedResultAgent(result);
-      return agent !== undefined && agent.length > 0 && !dispatched.includes(agent);
-    });
-    if (substituted) {
-      setRetroDue("substituted worker result");
-      persistSprintState();
-    }
-  };
-  // Both task receipts and plan snapshots settle through this path. Remembering the
-  // job ID here prevents a later timer tick from reopening a covered install incident.
+  // Both task receipts and plan snapshots settle through this path. Remember each job
+  // once and keep explicitly requested facilitator completions across async delivery.
   const settleSprintJobs = (jobs: Jobs["recent"], now: number) => {
     let facilitatorSettled = false;
-    let updaterRejected = false;
     for (const job of jobs) {
       if (job.type !== "task" || !["completed", "failed"].includes(job.status)) continue;
       if (sprintState.seenJobIds.includes(job.id)) continue;
       const label = typeof job.label === "string" ? job.label : "";
       // Async dispatch settles the job snapshot before its structured result lands on the
       // branch. An updater-labelled completion with no result yet is not final: marking it seen
-      // here would drop the rejection the later async-result carries (wave4b 2026-10-14). It
-      // finalises when a result for the same id is evaluated; a failed job finalises immediately.
+      // here would skip the later async-result. It finalises when a result for the same id
+      // is evaluated; a failed job finalises immediately.
       const payload = jobResultPayload(job);
       const awaitingResult = job.status === "completed" && UPDATER_JOB_LABEL.test(label) &&
         (payload === undefined || payload === null);
@@ -2885,8 +2797,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const at = typeof job.startTime === "number" ? job.startTime : now;
       const facilitator = [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name));
       if (facilitator && job.status === "completed") facilitatorSettled = true;
-      if (UPDATER_JOB_LABEL.test(label) &&
-        (job.status === "failed" || structuredInstallRejection(job))) updaterRejected = true;
       // Failed workers are usually provider refusals, not retro participants.
       sprintState = {
         ...sprintState,
@@ -2896,14 +2806,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           : { workerFinishes: [...sprintState.workerFinishes, { jobId: job.id, id, at, row: label }] }),
       };
     }
-    return { facilitatorSettled, updaterRejected };
+    return { facilitatorSettled };
   };
-  const touchSprintState = (ctx: ExtensionContext, phases: TodoScheduleInput, jobs: Jobs | null, now: number, deadline: DispatchInput["deadline"], alarms: string[]) => {
+  const touchSprintState = (ctx: ExtensionContext, phases: TodoScheduleInput, jobs: Jobs | null, now: number) => {
     const tasks = withTodoArchive(phases, dispatchTodoArchive(ctx)).flatMap((phase) => phase.tasks);
     sprintLiveRows = new Set(tasks.map((task) => task.content));
     const open = tasks.filter((task) => isOpenRowStatus(task.status));
-    const nonClosed = tasks.filter((task) => isNonClosedRowStatus(task.status));
-    const seenJobIdsBefore = new Set(sprintState.seenJobIds);
     const nextStatuses = Object.fromEntries(tasks.map((task) => [task.content, task.status]));
     for (const task of tasks) {
       const previous = sprintState.rowStatuses[task.content];
@@ -2917,7 +2825,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (taskJobs.some((job) => typeof job.label === "string" && job.label.includes(task.content))) addSeenRow(task.content);
     }
     const recentMessages = recentBranchMessages(ctx);
-    const { facilitatorSettled, updaterRejected } = settleSprintJobs([...branchAsyncTaskResults(ctx, recentMessages), ...(jobs?.recent ?? [])], now);
+    const { facilitatorSettled } = settleSprintJobs([...branchAsyncTaskResults(ctx, recentMessages), ...(jobs?.recent ?? [])], now);
     // One persist per loop: a burst of background receipts used to persist a full snapshot per receipt.
     const freshReceipts = branchRetroReceiptIds(ctx, recentMessages).filter((receipt) => !sprintState.retroReceiptIds.includes(receipt));
     if (facilitatorSettled || freshReceipts.length > 0) finishRetro(freshReceipts.length > 0 ? freshReceipts : undefined, false, tasks.flatMap(rowAttemptKeys));
@@ -2927,70 +2835,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const knownWorkerAt = sinceRetro.length ? Math.min(...sinceRetro.map((finish) => finish.at)) : now;
       sprintState = { ...sprintState, goalWorkStartedAt: Math.min(now, knownWorkerAt) };
     }
-    if (sprintState.correctionPending) setRetroDue("user correction");
-    if (sprintState.reopenedRows.length >= 1) setRetroDue("reopened row");
-    if (
-      deadline &&
-      nonClosed.length > 0 &&
-      now >= deadline.deadlineAt &&
-      sprintState.handledDeadlineAt !== deadline.deadlineAt
-    )
-      setRetroDue("deadline passed", { deadlineAt: deadline.deadlineAt });
-    // Incident-only retros: a predictable delivery or quiet hours never open one on
-    // their own; the workers' Retro blocks accumulate for the next incident-driven
-    // retro. Only evidence this window has not seen yet can open one, so a retro that
-    // observed an incident does not re-fire on the same jobs.
-    const recentTaskJobs = (jobs?.recent ?? []).filter((job) => job.type === "task");
-    if (updaterRejected) setRetroDue("updater rejection");
-    // A lead re-dispatch of one row, read from the row's own attempt data: owners
-    // Foo -> Foo-2 -> Foo-3 accumulated on one row, or the row sent out again after an
-    // attempt already completed. Parallel workers on one row are not a re-dispatch.
-    const coveredAttempts = new Set(sprintState.retroCoveredAttempts ?? []);
-    const redispatchedRow = tasks.some((task) => {
-      const keys = rowAttemptKeys(task);
-      if (keys.every((key) => coveredAttempts.has(key))) return false;
-      const schedule = task.schedule && typeof task.schedule === "object" ? task.schedule : undefined;
-      const attempts = Array.isArray(schedule?.attemptHistory) ? schedule.attemptHistory : [];
-      const names = [
-        typeof schedule?.owner === "string" ? schedule.owner : "",
-        ...attempts.map((attempt) => typeof attempt?.workerName === "string" ? attempt.workerName : ""),
-      ].filter((name) => name !== "");
-      const distinct = new Set(names);
-      const suffixChain = distinct.size >= 2 && new Set([...distinct].map((name) => name.replace(/-\d+$/, ""))).size === 1;
-      const completedIdx = attempts.findIndex((attempt) => attempt?.terminalStatus === "completed");
-      const afterCompleted = completedIdx >= 0 && (
-        attempts.length > completedIdx + 1 || (typeof schedule?.owner === "string" && schedule.owner !== "")
-      );
-      return suffixChain || afterCompleted;
-    });
-    const failuresByLabel = new Map<string, { total: number; fresh: number }>();
-    for (const job of recentTaskJobs) {
-      if (job.status !== "failed") continue;
-      const label = typeof job.label === "string" ? job.label : "";
-      const entry = failuresByLabel.get(label) ?? { total: 0, fresh: 0 };
-      entry.total += 1;
-      if (!seenJobIdsBefore.has(job.id)) entry.fresh += 1;
-      failuresByLabel.set(label, entry);
-    }
-    const repeatedFailure = [...failuresByLabel.values()].some(
-      (entry) => entry.total >= 2 && entry.fresh >= 1,
-    ) || redispatchedRow;
-    if (repeatedFailure) setRetroDue("repeated failure");
-    // A receipt covers the row's current attempt, not just its finished workers.
-    // An unchanged pre-retro estimate aging past ETA is not a new incident.
-    const freshMissedEta = open.some((task) =>
-      alarms.some((alarm) => alarm.startsWith(`missed-eta:${JSON.stringify(task.content)}:`)) &&
-      (sprintState.lastRetroAt === null ||
-        (task.schedule?.startedAt ?? 0) > sprintState.lastRetroAt ||
-        (task.schedule?.estimate?.updatedAt ?? 0) > sprintState.lastRetroAt),
-    );
-    if (freshMissedEta) setRetroDue("missed ETA");
     sprintState = { ...sprintState, rowStatuses: nextStatuses };
     persistSprintState();
   };
   const finishRetro = (receipt?: string | string[], persist = true, coveredAttempts: string[] = []) => {
-    const handledDeadlineAt = sprintState.retroDueReason === "deadline passed" ? sprintState.retroDueDeadlineAt : sprintState.handledDeadlineAt;
-    const handledDeliveryKey = sprintState.retroDueReason === "goal delivered" ? sprintState.retroDueDeliveryKey : sprintState.handledDeliveryKey;
     const covered = new Set(sprintState.retroCoveredIds);
     for (const id of retroWorkerIds()) covered.add(id);
     const coveredRows = new Set([...(sprintState.retroCoveredAttempts ?? []), ...coveredAttempts].slice(-MAX_RETRO_RECEIPT_IDS));
@@ -3008,8 +2856,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       retroCoveredIds: [...covered],
       retroCoveredAttempts: [...coveredRows],
       retroReceiptIds: [...sprintState.retroReceiptIds, ...(Array.isArray(receipt) ? receipt : receipt === undefined ? [] as string[] : [receipt]).filter((id) => !sprintState.retroReceiptIds.includes(id))].slice(-MAX_RETRO_RECEIPT_IDS),
-      ...(handledDeadlineAt === undefined ? {} : { handledDeadlineAt }),
-      ...(handledDeliveryKey === undefined ? {} : { handledDeliveryKey }),
     };
     retroFacilitatorJobs.clear();
     if (persist) persistSprintState();
@@ -3046,7 +2892,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   const applyTodoOverride = (input: unknown, ctx: ExtensionContext, persist = true): string | undefined => {
     const gate = parseTodoOverride(input);
     // The escalated plan demands are lifted only by fixing the plan, never by naming them.
-    if (!gate || gate === "retro" || PLAN_DEMAND_IDS.has(gate)) return undefined;
+    if (!gate || PLAN_DEMAND_IDS.has(gate)) return undefined;
     sprintState = { ...sprintState, ignoredDemands: { ...sprintState.ignoredDemands, [gate]: -OVERRIDE_SUPPRESS_TURNS } };
     if (persist) persistSprintState();
     gateTrace(ctx, "override", { gate });
@@ -4836,8 +4682,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }
       }
     }
-    if (singleWriterLane) return;
-    if (isCorrectionInput(event.text, event.source)) sprintState = { ...sprintState, correctionPending: true };
   });
   let gitStateCache: { cwd: string; at: number; state: GitIntegrationState | null } | null = null;
   let mergeStateCache: { cwd: string; at: number; state: GitIntegrationState | null } | null = null;
@@ -5894,8 +5738,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           .map((task) => String(task.content));
         if (selfBlocked.length) return { block: true, reason: leadActionBlockRefusal(selfBlocked) };
       }
-      // Naming retro in a todo call no longer clears it ("Retro skipped per <rule>" let the same
-      // failure be retried all day); only a retro-facilitator task does.
       const gate = applyTodoOverride(event.input, ctx, false);
       if (gate !== undefined) persistSprintState();
       // R1/R2: refuse the same-owner reestimate on a slipping row before any other todo handling.
@@ -5988,7 +5830,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         }
       }
     }
-    if (event.toolName === "task" && taskItems(event.input).some((item) => item["agent"] === "retro-facilitator")) resetDemand("retro");
     if (event.toolName === "wait") {
       if (!ownedWait && isMain(ctx) && !pauseGate?.paused) {
         const recovery = activeRecoveries(ctx)[0];
@@ -6033,21 +5874,18 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     // Ignored plan-fix demands escalate: the model must fix the plan, not start more work. Only a
     // read-tier call or a `todo` call that changes the plan passes; an override or a worker spawn
     // does not lift it. It clears when the next plan check no longer reports the problem.
-    // An ignored retro escalates too and only a retro-facilitator task lifts it.
     const overdueForMissedEta = isDemandEscalated("missed-eta")
       ? (currentDecision(ctx).forecast?.rows.filter((row) => row.overdue) ?? [])
       : [];
     const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) =>
-      (id === "retro" || PLAN_DEMAND_IDS.has(id)) && isDemandEscalated(id) && (id !== "missed-eta" || overdueForMissedEta.length > 0));
+      PLAN_DEMAND_IDS.has(id) && isDemandEscalated(id) && (id !== "missed-eta" || overdueForMissedEta.length > 0));
     const unresolvedForGate = isMain(ctx) ? unresolvedForecastRows(currentDecision(ctx).forecast).filter(undeliveredUserWait) : [];
     if (unresolvedForGate.length && !escalatedIds.includes("todo-replan")) escalatedIds.push("todo-replan");
     if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
       const planFix = (call: GateCall): boolean => call.name === "todo" && !PLAN_WORK_OPS.has(todoOpOf(call) ?? "");
       const taskServesRescheduledLateRow = (call: GateCall): boolean => call.name === "task" && taskItems(call.arguments ?? {}).some((item) =>
         [...rescheduledRowsThisTurn].some((row) => String(item.task ?? "").includes(row)));
-      const remedyFor = (id: string, call?: GateCall) => id === "retro"
-        ? RETRO_REMEDY
-        : id === "unread-receipts"
+      const remedyFor = (id: string, call?: GateCall) => id === "unread-receipts"
           ? UNREAD_REMEDY(unreadOwners)
           : id === "todo-replan" && unresolvedForGate.length
             ? unresolvedForecastRemedy(unresolvedForGate)
@@ -6058,17 +5896,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
             : id === "missed-eta"
               ? `Fix each late row: ${missedEtaRowsText(overdueForMissedEta, Date.now())}. Exactly: todo schedule each late row with evidence, then task the late row. Don't start workers for unrelated work.`
             : ESCALATION_REMEDY;
-      const retroStaffed = (call: GateCall): boolean =>
-        call.name === "task" && taskItems(call.arguments ?? {}).some((item) => item["agent"] === "retro-facilitator");
       const gates: ActiveGate[] = escalatedIds.map((id) => ({
         id,
         remedy: remedyFor(id),
-        // Plan bookkeeping stays open under a due retro; only new work waits for the facilitator.
-        satisfies: id === "retro"
-          ? (call: GateCall) => retroStaffed(call) || planFix(call)
-          : id === "missed-eta"
-            ? (call: GateCall) => planFix(call) || taskServesRescheduledLateRow(call)
-            : planFix,
+        satisfies: id === "missed-eta"
+          ? (call: GateCall) => planFix(call) || taskServesRescheduledLateRow(call)
+          : planFix,
       }));
       const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
       const verdict = decideGateCall(gateCall, gates);
@@ -6088,10 +5921,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName === "todo" && pendingReplan) pendingReplan.answered = pendingReplan.demands;
     if (event.toolName === "todo" && pendingTaskReconciliation?.linkDemanded) pendingTaskReconciliation.linkAnswered = true;
     if (event.toolName === "task") {
-      const agents = taskItems(event.input)
-        .map((item) => item["agent"])
-        .filter((agent): agent is string => typeof agent === "string");
-      if (agents.length > 0) dispatchedAgents.set(event.toolCallId, agents);
       for (const item of taskItems(event.input)) {
         if (item.agent === "retro-facilitator" && typeof item.name === "string") {
           retroFacilitatorJobs.add(item.name);
@@ -6137,15 +5966,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     return [...counts.entries()].sort((left, right) => right[1].count - left[1].count || left[1].firstAt - right[1].firstAt || left[0].localeCompare(right[0])).slice(0, 12).map(([id]) => id);
   };
-  const retroNotifyKey = (): string => `${sprintState.retroDueReason ?? ""}|${sprintState.retroDueDeadlineAt ?? ""}|${sprintState.retroDueDeliveryKey ?? ""}|${retroWorkerIds().join(",")}`;
-  const retroRowStaffed = (phases: TodoScheduleInput): boolean => phases.flatMap((phase) => phase.tasks).some((task) => /retro/i.test(task.content) && typeof task.schedule?.owner === "string" && task.schedule.owner.length > 0);
-  const buildRetroLine = (now: number, timeZone?: string): string => {
-    if (!sprintState.retroDueReason) return "";
-    const since = sprintState.lastRetroAt ?? sprintState.goalWorkStartedAt ?? now;
-    const workerIds = retroWorkerIds();
-    if (workerIds.length === 0) return `retrospective due (${sprintState.retroDueReason}): no new eligible worker reports. Review the triggering incident using the lead's tool results, plan history and available receipts; do not fabricate worker reports or skip the incident review. Then retro-facilitator (skill://chief-of-staff Retrospective) uses that evidence to identify what happened and the next corrective action. Create a mechanism row editing a skill or prompt only when the evidence identifies an actual instruction defect; otherwise record that no instruction change is warranted. It closes only when a task with agent retro-facilitator completes; retro notes recorded on todo rows do not close it.`;
-    return `retrospective due (${sprintState.retroDueReason}): read the Retro block in the final answer of the ${workerIds.length} workers who finished since ${safeTimestamp(since, timeZone)} from agent://<id> (do not write to them; a missing block is recorded as missing), then retro-facilitator (skill://chief-of-staff Retrospective): ${workerIds.join(", ") || "none"}; for each red item, identify which instruction line (skill or prompt) missed it and output a mechanism row that edits that instruction. It closes only when a task with agent retro-facilitator completes; retro notes recorded on todo rows do not close it.`;
-  };
   let lastPlanProblems = "";
   const planCheck = async (ctx: ExtensionContext, pending: unknown[] = [], problemsOnly = false): Promise<string | null> => {
     if (!sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending) as never).some(phase => phase.tasks.length)) return null;
@@ -6164,25 +5984,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const decision = currentDecision(ctx, now, pending);
     announceGates(ctx, pending, now, decision);
     const phasesNow = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx, pending) as never);
-    touchSprintState(ctx, phasesNow, ctx.getAsyncJobSnapshot(), now, decision.deadline, decision.alarms);
-    const retroAdvice = () => {
-      if (!sprintState.retroDueReason) return "";
-      const notifyKey = retroNotifyKey();
-      if (sprintState.retroDueNotifiedKey === notifyKey) return "";
-      sprintState = { ...sprintState, retroDueNotifiedKey: notifyKey };
-      persistSprintState();
-      return buildRetroLine(now, decision.deadline?.timezone);
-    };
-    const retroLine = retroAdvice();
-    const retroFacilitatorRunning = (ctx.getAsyncJobSnapshot()?.running ?? []).some((job) =>
-      job.type === "task" && job.status === "running" && [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name)));
-    // retroLine is emitted once per incident, so it cannot count ticks; the demand stands while
-    // the retro is due and no retro-facilitator is running (a failed one leaves it due).
-    // Only a retro that stops a repeat may block (2026-10-27: retros exist so Foo -> Foo-2 ->
-    // Foo-3 cannot happen). Missed ETAs, gate rejections and failed todo updates stay advisory:
-    // forcing those produced review rows instead of product progress (live mail 2026-10-28: 8 of 10
-    // rows closed in 6 h were reviews).
-    const retroDemand = sprintState.retroDueReason && BLOCKING_RETRO_REASONS.has(sprintState.retroDueReason) && !retroFacilitatorRunning ? ["retro"] : [];
+    touchSprintState(ctx, phasesNow, ctx.getAsyncJobSnapshot(), now);
     const acceptedClosingProblems = phasesNow.flatMap(phase => phase.tasks)
       .filter(row => isNonClosedRowStatus(row.status) && row.schedule?.review === "accepted")
       // The user's Accept is the acceptance: name the one call that closes the row, never an audit to wait for.
@@ -6191,11 +5993,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (acceptedClosingProblems.length) return `PLAN CHECK: ${acceptedClosingProblems.length} problem(s). ${acceptedClosingProblems.join("; ")}`;
       // A plan with no open rows has no plan problems: decay every other demand here too, or an
       // escalated one (e.g. unread-receipts after the last row closed) would block forever.
-      trackDemands(retroDemand, false);
+      trackDemands([], false);
       persistSprintState();
-      return retroLine
-        ? `PLAN CHECK: 1 problem(s). (1) ${retroLine}. Fix them with the pass of skill://chief-of-staff.`
-        : null;
+      return null;
     }
     const rows = decision.forecast.rows ?? [];
     const openContents = new Set(
@@ -6448,7 +6248,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       }
     }
     const problems = [
-      retroLine,
       ...acceptedClosingProblems,
       ...(acceptedMergeDemand ? [acceptedMergeDemand] : []),
       ...(userUnblockDue.length ? userUnblockDue.map(({ row, question }) => `Ask the user now: ${row} — ${question}`) : []),
@@ -6477,7 +6276,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ready.length > capacity - running.length && idle > capacity ? `${idle} idle rows for ${capacity} worker slots: prune before adding` : "",
     ].filter(Boolean);
     trackDemands([
-      ...retroDemand,
       ...(receding.includes("plan-doctor") ? ["todo-plan-doctor"] : []),
       ...(pendingReplan || unresolved.length ? ["todo-replan"] : []),
       ...(unlinked.length ? ["todo-link"] : []),
@@ -6718,13 +6516,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         persistSprintState();
       }
     }
-    if (event.content?.some((part) => part.type === "text" && part.text.startsWith("Blocked:"))) {
-      setRetroDue("gate rejection");
-      persistSprintState();
-    } else if (event.toolName === "todo" && event.isError) {
-      setRetroDue("failed todo update");
-      persistSprintState();
-    }
     if (event.toolName === "todo") {
       // Only a successful tool result proves init passed validation and began a new objective.
       if (!event.isError && isMain(ctx) && (event.details as { op?: unknown } | undefined)?.op === "init")
@@ -6778,7 +6569,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (event.toolName !== "task") return;
     lastTaskDispatchRefused = Boolean(event.isError);
     if (!event.isError && isRetroFacilitatorTaskResult(event)) {
-      dispatchedAgents.delete(event.toolCallId);
       let covered: string[] = [];
       try {
         covered = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never).flatMap((phase) => phase.tasks).flatMap(rowAttemptKeys);
@@ -6800,8 +6590,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
             label: value.label ?? snapshot?.label ?? value.description ?? value.id,
           }];
         });
-        const { updaterRejected } = settleSprintJobs(settled, Date.now());
-        if (updaterRejected) setRetroDue("updater rejection");
+        settleSprintJobs(settled, Date.now());
         if (settled.length > 0) persistSprintState();
         const completedIds = new Set(settled.filter((job) => job.status === "completed").flatMap((job) => [job.id, job.agentId].filter((id): id is string => typeof id === "string")));
         if (completedIds.size) {
@@ -6838,7 +6627,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           }
         }
       }
-      reportWorkerResultIncident(event);
     }
     const baseline = taskCallBaselines.get(event.toolCallId);
     taskCallBaselines.delete(event.toolCallId);
@@ -6905,14 +6693,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       .filter((row) => row.ownership === "idle-live-owner" && row.owner && idleResumeAttempts.has(row.owner))
       .map((row) => row.owner!);
     const phases = sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never);
-    // The plan tick settles a completed facilitator up to a minute later; until then the snapshot already shows it.
-    const facilitatorDone = (ctx.getAsyncJobSnapshot()?.recent ?? []).some((job) =>
-      job.type === "task" && job.status === "completed" && [job.agentId, job.label, job.id].some((name) => typeof name === "string" && retroFacilitatorJobs.has(name)));
-    const retroDue = phases.some(phase => phase.tasks.length) && sprintState.retroDueReason && !retroRowStaffed(phases) && !facilitatorDone ? buildRetroLine(now, decision.deadline?.timezone) : "";
-    if (retroDue) {
-      sprintState = { ...sprintState, retroDueNotifiedKey: retroNotifyKey() };
-      persistSprintState();
-    }
     const facts = chief ? await integrationFacts(ctx, now) : "";
     const notice = isMain(ctx) ? returnNotice : null;
     const reviewAnswers = new Set(phases.flatMap(phase => phase.tasks).filter(row => row.schedule?.review === "user" && (latestUserRequestAt ?? (latestBranchUserMessage(ctx.sessionManager)?.at ?? 0) * 1_000) > (row.schedule.firstDeliveredAt ?? Infinity)).map(row => row.content));
@@ -6946,16 +6726,14 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ...(facts ? [facts] : []),
       ...(chief && lastTaskDispatchRefused ? ["The last task dispatch was refused; bounded work is open to you until the ready row can be dispatched."] : []),
       ...(chief && activeDemand ? [`NEXT STEP (advice; no call is skipped or refused for it): ${activeDemand}`] : []),
-      ...(retroDue ? [retroDue] : []),
     ].join("\n");
-    const workOpen = Boolean(decision.prompt || retroDue || phases.some((phase) => phase.tasks.some((task) => task.status === "pending" || task.status === "in_progress")));
+    const workOpen = Boolean(decision.prompt || phases.some((phase) => phase.tasks.some((task) => task.status === "pending" || task.status === "in_progress")));
     const semanticKey = JSON.stringify({
       notice: notice && !notice.shown ? notice.text : null,
       chief,
       facts: facts.replace(/\b\d+ min\b/g, "<minutes>"),
       refused: chief && lastTaskDispatchRefused,
       activeDemand: chief ? activeDemand : null,
-      retroDue,
       rowInstructions,
       planFact,
       plan: decision.key,
@@ -7042,19 +6820,27 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (!singleWriterLane && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) currentDecision(ctx);
     // Startup warnings may have been queued before child restoration. Revalidate at consumption.
     const isStaffing = message => message.role === "custom" && message.customType === "todo-gate-staffing";
-    let messages = event.messages;
+    // The visible ignored-demand notice is historical UI telemetry. Its demand
+    // may already be closed; the revalidated snapshot below owns model advice.
+    // Keep the journal and actual user/peer/worker messages untouched.
+    const isIgnoredDemand = message => message.role === "custom" && message.customType === "todo-dispatch-ignored" && message.attribution === "agent";
+    let messages = isMain(ctx) && event.messages.some(isIgnoredDemand) ? event.messages.filter(message => !isIgnoredDemand(message)) : event.messages;
     // Queue replacement ends at delivery. Project only the current dispatcher snapshot,
     // and collapse identical no-tool replies inside uninterrupted internal-wake exchanges.
     // Human/peer input, visible notices and tool work are lossless sequence boundaries.
     const isActionWake = message => message.role === "custom" && message.customType === "todo-dispatch-action-required" && message.display === false && message.attribution === "agent";
     if (isMain(ctx) && messages.some(isActionWake)) {
       const latest = messages.findLast(isActionWake);
+      const decision = currentDecision(ctx);
+      const demand = wakeDemand(todoPhases(ctx), runningOwnerNames(ctx), Date.now(), decision.deadline?.deadlineAt, decision.forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx), ctx);
+      const receipt = recoveryReceipt(ctx);
+      const misses = demand && receipt?.key === demand.key ? receipt.misses : 0;
       const removed = new Set<number>();
       const replies = new Map<string, number>();
       let pendingWake = false;
       for (const [index, message] of messages.entries()) {
         if (isActionWake(message)) {
-          if (message !== latest) removed.add(index);
+          if (message !== latest || !demand) removed.add(index);
           pendingWake = true;
         } else if (pendingWake && message.role === "assistant" && message.content.every(part => part.type === "text" || part.type === "thinking") && !message.errorMessage && message.stopReason !== "error" && message.stopReason !== "aborted") {
           const identity = JSON.stringify(message.content);
@@ -7067,7 +6853,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           pendingWake = false;
         }
       }
-      messages = messages.filter((_message, index) => !removed.has(index));
+      messages = messages.filter((_message, index) => !removed.has(index)).map(message => message === latest && demand
+        ? { ...message, content: prompt.render(dispatchWakeInstructions, { ...demand, misses, escalation: misses > 0 }).trim() }
+        : message);
     }
     if (isMain(ctx) && messages.some(isStaffing)) {
       const phases = todoPhases(ctx);
@@ -7161,7 +6949,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     dispatchGateBaseline = null;
     taskCallBaselines.clear();
-    dispatchedAgents.clear();
     await appendLeadTimeNote(ctx, true);
     armIdleCheck(ctx, decision);
   });

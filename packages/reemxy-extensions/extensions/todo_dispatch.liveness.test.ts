@@ -462,8 +462,7 @@ test("override (missed-eta escalation): a todo.override alone does not lift it; 
   }
 }, 60_000);
 
-test("retro escalation: a re-dispatched row (Foo -> Foo-2) blocks after three real ticks until a retro-facilitator is staffed", async () => {
-  // The retro line is emitted once per incident; the demand must still count every tick while the retro is due.
+test("a re-dispatched row stays usable after repeated ticks without an unsolicited retro", async () => {
   const now = Date.now();
   const fresh = { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium", basis: "liveness fixture", updatedAt: now };
   const handlers = new Map();
@@ -498,10 +497,8 @@ test("retro escalation: a re-dispatched row (Foo -> Foo-2) blocks after three re
     for (let i = 0; i < 4; i += 1)
       await handlers.get("tool_result")({ toolName: "todo", toolCallId: `rt-${i}`, isError: false, content: [], details: undefined }, ctx);
     const bash = await call("bash", { command: "bun test" });
-    expect(bash.admitted, "retro escalated through real ticks").toBe(false);
-    expect(bash.reason).toContain("retro-facilitator");
-    expect((await call("task", { tasks: [{ agent: "plan-doctor", name: "Doctor", task: "diagnose" }] })).admitted, "plan-doctor does not answer retro").toBe(false);
-    expect((await call("task", { tasks: [{ agent: "retro-facilitator", name: "Retro", task: "keep/ban decisions" }] })).admitted, "retro-facilitator answers it").toBe(true);
+    expect(bash.admitted, bash.reason).toBe(true);
+    expect((await call("task", { tasks: [{ agent: "plan-doctor", name: "Doctor", task: "diagnose" }] })).admitted).toBe(true);
   } finally {
     handlers.get("session_shutdown")?.({}, ctx);
   }

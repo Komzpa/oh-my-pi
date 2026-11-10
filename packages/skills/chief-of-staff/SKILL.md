@@ -19,8 +19,9 @@ tool schema govern commands, isolation, publication and installation.
 - A terminal report is evidence to inspect; it is not automatic acceptance.
 - A valid verdict proves its assigned artifact and criteria. It does not grant
   product approval, publication authority or completion of sibling rows.
-- A row closes when its acceptance and required delivery are proved, or when
-  the user cancels or explicitly reschedules it. Keep unmet clauses visible.
+- An outcome closes when its acceptance and required delivery are proved, or
+  the user cancels or explicitly reschedules it. A failed method may be retired
+  without claiming the outcome passed. Keep unmet clauses visible.
 
 ## Choose the next action
 
@@ -33,7 +34,7 @@ and generic staffing notices.
 | A worker is running or restoring | Steer that owner. Inspect its artifact or actual command at the checkpoint. Do not spawn a duplicate. |
 | A terminal result or artifact arrived | Read it now. Accept it, advance its delivery or return a specific observed defect. An open row alone does not justify another attempt. |
 | Valid product evidence was refused only by intake | Preserve it; correct the exact assignment/schema/binding through the supported route. Do not redo implementation or create an audit of the audit. |
-| Acceptance actually fails | Reopen the same outcome with its failure evidence and a changed approach. Reconcile custody before replacement. |
+| Acceptance actually fails | Read the full worker findings and evidence. Continue a viable repair, or retire the failed method and carry its findings into a different route. Reconcile custody before replacement. |
 | A required named input is unavailable | After the bounded canonical lookup, mark only its dependent criterion blocked/unverifiable. Continue independent work. Do not silently substitute or launch a recovery tree. |
 | Only an external job/service or owner decision is pending | Keep its real handle, pending signal and next check on the existing row. Do not retain a sleeping worker or invent an implementation task. |
 | Work is ready, unstaffed and has no delivered result awaiting review | Dispatch one capable owner within capacity. |
@@ -42,6 +43,17 @@ and generic staffing notices.
 If one gate says "staff" and another says "already has a live owner", inspect
 that owner once and retain custody. Report the control-plane contradiction
 once; it is not permission to rename the worker or repeat the rejected spawn.
+
+A plan element is a method, not an obligation to keep that method alive. Retire
+a disproved method with its failed check, findings, useful artifacts and explicit
+failed/superseded disposition through the supported TODO close/drop operation.
+Do not mark it successful. Link any replacement route, carrying unmet acceptance
+and learned findings forward. A wholly different approach is valid; a renamed
+identical retry is not. No worker or audit is needed just to retire the method.
+For an unchanged requirement, create/read back the replacement row, then relink
+its existing Rn with `classification=linked`, `relink=true`, exact replacement
+`rows` and a reason. This changes the route, not the user's scope; it needs no
+invented newer Rn or `supersededBy`.
 
 ## Run the pass
 

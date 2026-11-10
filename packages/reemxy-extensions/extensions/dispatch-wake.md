@@ -1,2 +1,2 @@
 {{#if escalation}}ESCALATED{{else}}REQUIRED{{/if}} DISPATCH ACTION ({{misses}} ignored turns): {{action}}
-This is an internal dispatcher wake. Perform the action with tools. Do not narrate unchanged status. Reading, waiting, failed calls, and re-estimating alone do not satisfy this demand. On a CHURN row, change scope/dependencies, dispatch a changed approach, answer the worker, or escalate the exact blocker.
+This is the current internal dispatcher snapshot. Consume returned worker feedback before deciding on another attempt. A read makes evidence available; then reconcile the existing row against it. Do not repeat unchanged status or dispatch solely to clear this notice. Keep actual missing acceptance open with its exact blocker.

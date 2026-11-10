@@ -1,6 +1,9 @@
 // @ts-nocheck -- exercises registered hooks with disposable plan state.
 import { expect, test, vi } from "bun:test";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { Agent } from "@oh-my-pi/pi-agent-core";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { convertToLlm } from "../../coding-agent/src/session/messages";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import todoDispatch, { leadActionPending } from "./todo_dispatch";
@@ -82,7 +85,7 @@ async function harness(rows) {
 		clearInterval: () => {},
 		clearTimer: () => {},
 	};
-	return { hooks, ctx, journal, activeTools, requirement: () => provider?.(ctx), demand: () => provider?.demand?.(ctx), pauseGate: api.pi.agentPauseGate };
+	return { hooks, ctx, journal, phases, activeTools, requirement: () => provider?.(ctx), demand: () => provider?.demand?.(ctx), pauseGate: api.pi.agentPauseGate };
 }
 
 test("block is refused on a delivered row and names the lead's own action", async () => {
@@ -136,7 +139,7 @@ test("context replaces consumed dispatcher snapshots and duplicate wake-only rep
 	const input = [human, wake("Old demand"), firstReply, wake("Newer demand"), lastReply, wake("Latest earlier demand"), changedReply, call, result, latestWake];
 	const before = structuredClone(input);
 	const shaped = await h.hooks.get("context")({ messages: input }, h.ctx);
-	expect(shaped.messages).toEqual([human, lastReply, changedReply, call, result, latestWake]);
+	expect(shaped.messages).toEqual([human, lastReply, changedReply, call, result]);
 	// Model projection must not rewrite the journal/transcript objects it received.
 	expect(input).toEqual(before);
 });
@@ -150,6 +153,7 @@ test("context keeps replies separated by real input, peer notices, visible notic
 		{ role: "custom", customType: "irc:incoming", content: "Peer result", attribution: "agent", display: false, timestamp: 3 },
 		{ role: "custom", customType: "todo-dispatch-action-required", content: "Visible notice", attribution: "agent", display: true, timestamp: 3 },
 		{ role: "custom", customType: "todo-dispatch-action-required", content: "User notice", attribution: "user", display: false, timestamp: 3 },
+		{ role: "custom", customType: "todo-dispatch-ignored", content: "User-authored feedback", attribution: "user", display: true, timestamp: 3 },
 		{ role: "assistant", content: [{ type: "toolCall", id: "call-2", name: "todo", arguments: { op: "view" } }], timestamp: 3 },
 		{ role: "toolResult", toolCallId: "call-2", toolName: "todo", content: [{ type: "text", text: "Plan" }], timestamp: 3 },
 	];
@@ -158,8 +162,32 @@ test("context keeps replies separated by real input, peer notices, visible notic
 		const later = reply();
 		const latest = wake();
 		const shaped = await h.hooks.get("context")({ messages: [wake(), earlier, boundary, latest, later] }, h.ctx);
-		expect(shaped.messages).toEqual([earlier, boundary, latest, later]);
+		expect(shaped.messages).toEqual([earlier, boundary, later]);
 	}
+});
+
+test("retired approach loses its stale demand while full worker feedback reaches the next model request", async () => {
+	const retired = { content: "Prove old route", status: "abandoned", schedule: { owner: "OldProof", dependencies: [] } };
+	const h = await harness([retired]);
+	const oldWake = { role: "custom", customType: "todo-dispatch-action-required", content: "Dispatch OldProof again", display: false, attribution: "agent", timestamp: 1 };
+	const finding = "Cooling proof reached inventory assertions; createCoolingCircuitRoutes failed: mergeGeometries undefined.index. Retain helper deltas and repair route geometry.";
+	const feedback = { role: "custom", customType: "async-result", content: `<task-result id="OldProof">${finding}</task-result>`, display: true, attribution: "agent", timestamp: 2 };
+	const oldIgnored = { ...oldWake, customType: "todo-dispatch-ignored", content: "Staff the already closed OldProof now", display: true };
+	const input = [oldWake, oldIgnored, feedback];
+	const shaped = await h.hooks.get("context")({ messages: input }, h.ctx);
+	expect(shaped.messages).toEqual([feedback]);
+	expect(shaped.messages[0]).toBe(feedback);
+	const mock = createMockModel({ handler: { content: ["Use the concrete route finding"] } });
+	const agent = new Agent({ initialState: { model: mock.model, systemPrompt: ["test"], tools: [], messages: shaped.messages }, convertToLlm, streamFn: mock.stream });
+	await agent.prompt("Continue using the worker findings");
+	expect(JSON.stringify(mock.calls.at(-1).context.messages)).toContain(finding);
+	expect(JSON.stringify(mock.calls.at(-1).context.messages)).not.toContain("Dispatch OldProof again");
+	// Independent remaining work gets fresh advice, never the retired target.
+	h.phases[0].tasks.push({ content: "Repair route geometry", status: "pending", schedule: { dependencies: [] } });
+	const next = await h.hooks.get("context")({ messages: input }, h.ctx);
+	expect(next.messages.find(message => message.customType === oldWake.customType)?.content).toContain("Repair route geometry");
+	expect(next.messages).toContain(feedback);
+	expect(input).toEqual([oldWake, oldIgnored, feedback]);
 });
 
 
