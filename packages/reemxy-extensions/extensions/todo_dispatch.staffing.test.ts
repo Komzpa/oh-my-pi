@@ -207,3 +207,31 @@ test("busy lead staffing bursts use one replacement key and changed staffing rep
 	expect(changed.content).not.toBe(notices[0].content);
 	expect(changed.delivery.supersedes).toBe(key);
 });
+
+// The duplicate-spawn guard and the chief-work gate must consume the same live identity.
+for (const source of ["registry", "registry-executor", "job-executor"]) test(`live staffing invalidates a warm decision (${source})`, async () => {
+ const replacement = source !== "registry";
+ const now = Date.now();
+ const estimate = { optimisticSeconds: 60, likelySeconds: 90, pessimisticSeconds: 120, confidence: "medium", basis: "live ownership regression", updatedAt: now };
+ const owner = replacement ? "Worker-old" : "Worker-new";
+ const row = { content: "Current work", status: "in_progress", schedule: { owner, dependencies: [], resources: [], estimate, executor: { workerId: "Worker-new", startedAt: now } } };
+ const h = await harness([row, ...[1, 2, 3].map(i => ({ content: `Dependent ${i}`, status: "pending", schedule: { dependencies: [row.content], resources: [], estimate } }))]);
+ let live = false;
+ h.ctx.getAsyncJobSnapshot = () => ({
+  running: source === "job-executor" && live ? [{ id: "job-new", agentId: "Worker-new", type: "task", status: "running", label: row.content, startTime: now }] : [],
+  recent: [], nonJobAgents: source === "job-executor" ? [] : [{ id: "Worker-new", live }],
+ });
+ const edit = () => h.hooks.get("tool_call")({ toolName: "edit", input: { path: "prompt.md", oldText: "zip", newText: "inline images" } }, h.ctx);
+ try {
+  expect((await edit())?.block).toBe(true);
+  live = true;
+  // Registry-backed activity can change without a task-job or TODO mutation.
+  expect((await edit())?.block).not.toBe(true);
+  const duplicate = await h.hooks.get("tool_call")({ toolName: "task", input: { name: "Replacement", row: row.content, task: row.content, agent: "task" } }, h.ctx);
+  expect(duplicate?.block).toBe(true);
+  expect(duplicate.reason).toContain("Worker-new");
+  // An idle registration must not sustain ownership; the original gate returns.
+  live = false;
+  expect((await edit())?.block).toBe(true);
+ } finally { h.hooks.get("session_shutdown")?.({}, h.ctx); }
+});

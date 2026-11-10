@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Recognize the same live or restoring worker in staffing checks and duplicate-dispatch refusals, including replacement executor identities.
+
 - Keep capacity waits neutral while preserving the previous worker output and wake-on-capacity instructions.
 
 - Show measured forecasts with local dates, the observed window and concise pace units; retain numeric data in the receipt.

@@ -1375,17 +1375,8 @@ test("a plan with problems is reported once per problem list, not again while it
     (await tick!());
     (await tick!());
     expect(sent).toHaveLength(2);
-    // Nothing ready and slots free: the check names the unchaining step, not only pruning.
-    expect(sent[1]!.content).toContain("no row is ready");
-    expect(sent[1]!.content).toContain("skill step 7");
-    // Waiting critical rows come one per line with what each waits on, and each needs its own answer.
+    // Changed chain facts reach the lead, without pinning a mandatory splitting recipe.
     expect(sent[1]!.content).toContain('Waiting rows on the chain that sets the ETA, in order:\n- "Row B" (waits on "Row A")\n- "Row C" (waits on "Row B")');
-    expect(sent[1]!.content).toContain("a row with no such part gets one line saying why");
-    expect(sent[1]!.content).toContain("not only the next one");
-    // Every link is questioned: a shared checkout or browser is a resource to copy, not a dependency.
-    expect(sent[1]!.content).toContain("that thing is the contended resource: give each row its own copy");
-    // Negative control: a chain of real dependencies gets no resource-queue paragraph.
-    expect(sent[1]!.content).not.toContain("A resource queue on this chain");
     expect(sent[1]!.content).toContain('- "Row D" (waits on "Row C")\n- "Row E" (waits on "Row D")');
     // The running critical row is being worked on and is not in the split list.
     expect(sent[1]!.content).not.toContain('- "Row A"');
@@ -2593,7 +2584,6 @@ test("the waiting list is the chain that sets the ETA and names a shared resourc
     const text = sent[0]!;
     expect(text).toContain('- "Shard three" (queued behind "Shard one": both hold resource "slot-a"; not a dependency)');
     expect(text).toContain('- "Join" (waits on "Shard three")');
-    expect(text).toContain("A resource queue on this chain is a limit you set");
     // Shard two has slack behind the slot queue, so it is not on the chain.
     expect(text).not.toContain('- "Shard two"');
   } finally {

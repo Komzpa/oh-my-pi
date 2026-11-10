@@ -64,6 +64,7 @@ import { calibrationHints, readDurationHistory } from "./todo_calibration";
 import { getUserWaitPlanningIssues, parkUserWaits, USER_WAIT_SELF_FILL } from "./todo-schedule-away";
 
 import dependencyWaitInstructions from "./dispatch-dependency-wait.md" with { type: "text" };
+import waitingWorkInstructions from "./dispatch-waiting-work.md" with { type: "text" };
 import { wakeDemand as stalledWakeDemand, wakeRetryMs, wakeRetryRemaining, countsAsWakeAction, type WakeReceipt, recoveryDemand, recoveryActionObserved, measuredRecoveryForecast, type RecoveryState } from "./dispatch_wake";
 import dispatchWakeInstructions from "./dispatch-wake.md" with { type: "text" };
 import dispatchToolRecoveryInstructions from "./dispatch-tool-recovery.md" with { type: "text" };
@@ -120,6 +121,30 @@ type Jobs = Pick<AsyncJobSnapshot, "running" | "recent"> & {
 };
 const liveJobMatchesOwner = (job: { id: string; agentId?: string }, owner: string) =>
   job.id === owner || job.agentId === owner || job.id.replace(/-\d+$/, "") === owner;
+
+// A registry-backed running/restoring child may have no task job (IRC revival/startup).
+// Use the same current-process identities for dispatch pressure and duplicate-spawn admission.
+type LiveTaskWorker = { id: string; jobId: string; agent?: string; startedAt?: number };
+function liveTaskWorkers(jobs: Jobs | null): LiveTaskWorker[] {
+  const workers: LiveTaskWorker[] = (jobs?.running ?? []).filter(job => job.type === "task" && job.status === "running")
+    .map(job => ({ id: job.agentId ?? job.id, jobId: job.id, agent: job.agent, startedAt: job.startTime }));
+  for (const worker of jobs?.nonJobAgents ?? [])
+    if (worker.live && !workers.some(candidate => candidate.id === worker.id || candidate.jobId === worker.id))
+      workers.push({ id: worker.id, jobId: worker.id, agent: undefined, startedAt: undefined });
+  return workers;
+}
+function liveTaskWorker(task: TaskRow | undefined, workers: LiveTaskWorker[]): LiveTaskWorker | undefined {
+  for (const identity of [task?.schedule?.executor?.workerId, task?.schedule?.owner]) {
+    if (typeof identity !== "string") continue;
+    // Agent IDs and job IDs have separate namespaces. Prefer the named agent
+    // before a colliding job ID or a legacy numbered-job alias.
+    const worker = workers.find(candidate => candidate.id === identity)
+      ?? workers.find(candidate => candidate.jobId === identity)
+      ?? workers.find(candidate => candidate.jobId.replace(/-\d+$/, "") === identity);
+    if (worker) return worker;
+  }
+  return undefined;
+}
 
 type PersistedChild = { id: string; owner: string | null; live: boolean };
 type SprintWorkerFinish = { jobId: string; id: string; at: number; row: string };
@@ -1401,7 +1426,9 @@ function staticKey(
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
   const persistedKey = persisted.map(({ id, owner, live }) => [id, owner, live])
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-  return JSON.stringify([tasks, jobKey, restoredKey, persistedKey, deadline ?? null, capacity ?? null, startableCapacity ?? null, goalPaused]);
+  const registryKey = (jobs?.nonJobAgents ?? []).map(({ id, live }) => [id, live])
+    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return JSON.stringify([tasks, jobKey, registryKey, restoredKey, persistedKey, deadline ?? null, capacity ?? null, startableCapacity ?? null, goalPaused]);
 }
 
 function safeTimestamp(value: unknown, timeZone?: string): string {
@@ -2024,6 +2051,7 @@ export function decideTodoDispatch(
   const openContent = new Set(open.map(({ task }) => task.content));
   const activeTaskJobs =
     jobs?.running.filter((job) => job.type === "task" && job.status === "running") ?? [];
+  const liveWorkers = liveTaskWorkers(jobs);
   // A roster entry persisted before a restart is staffing proof only while the current process
   // still knows that child; otherwise its row is lost/unstaffed, not exactly running (live
   // 2026-10-15: SurfaceDroppedFact reported staffed for ~5.4h with 0 running jobs).
@@ -2046,7 +2074,7 @@ export function decideTodoDispatch(
     return child;
   };
   const runningTaskWorkerIds = new Set(
-    activeTaskJobs.map((job) => job.agentId ?? job.id),
+    liveWorkers.map((worker) => worker.id),
   );
   const activeRestoredTaskIds = new Set(
     open.flatMap(({ task }) => {
@@ -2069,7 +2097,7 @@ export function decideTodoDispatch(
   const externallyStaffedCount = open.filter(({ task }) => externalOwners.get(task.schedule?.owner ?? "") === true).length;
   const ownerHasActiveTask = (owner: string | null) =>
     owner !== null && (
-      activeTaskJobs.some((job) => liveJobMatchesOwner(job, owner)) ||
+      liveWorkers.some((worker) => liveJobMatchesOwner({ id: worker.jobId, agentId: worker.id }, owner)) ||
       livePersistedChildForOwner(owner) !== undefined ||
       externalOwners.get(owner) === true
     );
@@ -2079,13 +2107,13 @@ export function decideTodoDispatch(
     const executorId = task.schedule?.executor?.workerId;
     const identities = [owner, executorId].filter((id): id is string => typeof id === "string" && id.length > 0);
     const settled = jobs?.recent.find(job => identities.some(id => liveJobMatchesOwner(job, id)) && job.status !== "running");
-    return { content: task.content, owner, running: (jobs?.running ?? []).some(job => job.status === "running" && identities.some(id => liveJobMatchesOwner(job, id))) || (owner !== null && externalOwners.get(owner) === true), outcome: settled?.status ?? task.schedule?.executor?.outcome };
+    return { content: task.content, owner, running: liveTaskWorker(task, liveWorkers) !== undefined || (owner !== null && externalOwners.get(owner) === true), outcome: settled?.status ?? task.schedule?.executor?.outcome };
   });
   const runningOwnedContents = new Set(
     open
       .filter(({ task }) => {
         const owner = typeof task.schedule?.owner === "string" ? task.schedule.owner : null;
-        return owner !== null && ownerHasActiveTask(owner);
+        return liveTaskWorker(task, liveWorkers) !== undefined || (owner !== null && ownerHasActiveTask(owner));
       })
       .map(({ task }) => task.content),
   );
@@ -2100,7 +2128,7 @@ export function decideTodoDispatch(
   const lostOwners = jobs !== null
     ? open.flatMap(({ task }) => {
         const owner = task.schedule?.owner;
-        return task.status === "in_progress" && typeof owner === "string" && !ownerHasActiveTask(owner) && !verifyingContents.has(task.content)
+        return task.status === "in_progress" && typeof owner === "string" && !liveTaskWorker(task, liveWorkers) && !ownerHasActiveTask(owner) && !verifyingContents.has(task.content)
           ? [{ content: task.content, owner }]
           : [];
       })
@@ -2109,7 +2137,7 @@ export function decideTodoDispatch(
   const liveResourceHolders = open
     .filter(({ task }) => {
       const owner = task.schedule?.owner;
-      return task.status === "in_progress" && typeof owner === "string" && ownerHasActiveTask(owner);
+      return task.status === "in_progress" && (liveTaskWorker(task, liveWorkers) !== undefined || (typeof owner === "string" && ownerHasActiveTask(owner)));
     })
     .map(({ task }) => task);
   const claimedLiveWorkerIds = new Set<string>();
@@ -2121,15 +2149,7 @@ export function decideTodoDispatch(
       const restoredOwner = owner === null
         ? undefined
         : input.restoredChildren?.find((child) => child.id === owner || child.owner === owner);
-      const jobByAgentId = owner === null
-        ? undefined
-        : activeTaskJobs.find((active) => active.agentId === owner);
-      const jobById = owner === null
-        ? undefined
-        : activeTaskJobs.find((active) => active.id === owner || active.id.replace(/-\d+$/, "") === owner);
-      const liveWorkerId =
-        jobByAgentId?.agentId || (jobById ? jobById.agentId || jobById.id : undefined) ||
-        activeRestoredChild?.id;
+      const liveWorkerId = liveTaskWorker(openTasksByContent.get(row.content), liveWorkers)?.id ?? activeRestoredChild?.id;
       const sharedLiveOwner = liveWorkerId !== undefined && claimedLiveWorkerIds.has(liveWorkerId);
       if (liveWorkerId !== undefined && !sharedLiveOwner) claimedLiveWorkerIds.add(liveWorkerId);
       const ownership = externalOwners.get(owner ?? "") === true
@@ -2143,7 +2163,7 @@ export function decideTodoDispatch(
                 : owner === null
                   ? "unassigned" as const
                   : "unverified" as const;
-      return { content: row.content, owner, ownership };
+      return { content: row.content, owner: liveWorkerId ?? owner, ownership };
     });
   const ownerlessReady = readyCandidates.filter((row) => row.ownership !== "live-owned" && !verifyingContents.has(row.content));
   const resourceExecutableContents = new Set(
@@ -2209,8 +2229,8 @@ export function decideTodoDispatch(
   const actionableReadyContents = new Set(
     staffingSnapshotComplete && taskEnabled && !goalPaused && capacity !== undefined &&
       (startableCapacity === undefined
-        ? capacity === 0 || activeTaskJobs.length < capacity
-        : activeTaskJobs.length < startableCapacity)
+        ? capacity === 0 || liveWorkers.length + activeRestoredTaskIds.size < capacity
+        : liveWorkers.length + activeRestoredTaskIds.size < startableCapacity)
       ? dispatchableReady.map((row) => row.content)
       : [],
   );
@@ -2431,7 +2451,7 @@ export function decideTodoDispatch(
     dispatchableReady,
     verifyingRows: [...verifyingContents],
     capacity,
-    activeTaskCount: activeTaskJobs.length + activeRestoredTaskIds.size,
+    activeTaskCount: liveWorkers.length + activeRestoredTaskIds.size,
     staffingSnapshotComplete,
     taskEnabled,
     goalPaused,
@@ -3661,22 +3681,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       writeFileSync(bySession, text);
     } catch {}
   };
-  // Any row on the chain shortens it when split, not only the next one (user 2026-09-25: "сплитать
-  // то что на критическом пути - не обязательно ближайшее декомпозировать").
-  // A link often records contention, not consumption: rows chained because they would share one
-  // checkout, browser or port (user 2026-09-25: "ну так блядь выдели им разные чекауты-ворктри??",
-  // after the chief serialized a click fix and an audit on one checkout).
-  const WHY_EACH_LINK = "For each link ask why the row waits. If it consumes the other row's output, the link is real. If the two rows only use the same thing (the checkout, a browser, a port, a test database, and so on), that thing is the contended resource: give each row its own copy and drop the link. For the checkout, a small edit to files nobody else touches (a config value, one function, …) goes into it live, and overlapping edits get isolated: true, a worktree whose branch is rebased, merged and pushed as soon as its row finishes.";
-  const SPLIT_EACH = "Every row in this chain moves the finish when split, not only the next one; the last rows of a chain (documentation, verification, delivery, …) usually hold the most work that can be prepared now. For each row name the part that can be done now without that result (fixtures, the check that will verify it, drafted text, reading the target, and so on), append it as its own row and dispatch it; a row with no such part gets one line saying why";
-  // user 2026-09-25 on three E2E shards split over two "browser slots": "чего он как будто у нас
-  // браузеров мало, запусти больше браузеров и не еби мозг".
-  const RESOURCE_QUEUE = "A resource queue on this chain is a limit you set, not one the machine has: anything that can be started, copied or allocated again (browsers, ports, worktrees, databases, …) is not scarce here. Give the queued row its own copy and remove the shared resource. Keep a shared resource only for a thing that physically exists once, and prove that by a measurement, not an assumption.";
-  const replanInstruction = (ctx: ExtensionContext, open: TodoTaskForecast[], capacity: number) => {
-    const list = criticalWaitList(ctx, open);
-    return list
-      ? `Idle rows are chained behind the running work, with ${capacity} worker slots. Waiting is not the step here. Waiting rows on the chain that sets the ETA, in order:${list}\n${list.includes("queued behind") ? `${RESOURCE_QUEUE}\n` : ""}${WHY_EACH_LINK}\n${SPLIT_EACH} (skill step 7). ${ORDER}`
-      : `Idle rows are chained behind the running work, with ${capacity} worker slots. Waiting is not the step here: split the waiting rows into the part that needs the running result and the part that can start now, and dispatch that part (skill step 7). ${ORDER}`;
-  };
+  const replanInstruction = (ctx: ExtensionContext, open: TodoTaskForecast[], capacity: number) =>
+    prompt.render(waitingWorkInstructions, { capacity, waitingRows: criticalWaitList(ctx, open) }).trim();
   const READ_ONLY_BASH = /^(?:grep|rg|ls|cat|head|tail|wc|pwd|echo|stat|test|\[|sha256sum|sha1sum|md5sum|readlink|realpath|file|cut|uniq|tr|nl|jq|cmp|basename|dirname|date|du|df|free|uptime|ps|pgrep|ss)$/;
   // Live 2026-10-12: the chief was refused `git show … | cat && sed -n '160,170p' ledger | cut -c1-400`,
   // a pure look, so its rows went overdue. sed only as a line-range print, find and sort without write/exec flags.
@@ -4054,14 +4060,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   const leadDisplayContext = (ctx, phases, decision) => {
     const jobs = ctx.getAsyncJobSnapshot();
-    const rowWorkers = (jobs?.running ?? []).filter(job => job.type === "task" && job.status === "running")
-      .map(job => ({ id: job.agentId ?? job.id, agent: job.agent, startedAt: job.startTime }));
-    for (const worker of jobs?.nonJobAgents ?? []) {
-      if (worker.live && !rowWorkers.some(candidate => candidate.id === worker.id))
-        rowWorkers.push({ id: worker.id, agent: undefined, startedAt: undefined });
-    }
+    const rowWorkers = liveTaskWorkers(jobs);
     const rowOwners = new Map(phases.flatMap(phase => phase.tasks).flatMap(row => {
-      const worker = rowWorkers.find(worker => worker.id === row.schedule?.owner || worker.id === row.schedule?.executor?.workerId);
+      const worker = liveTaskWorker(row, rowWorkers);
       return worker ? [[row.content, worker]] : [];
     }));
     return {
@@ -6464,7 +6465,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       silent.length ? `${silent.length} running worker(s) silent: ${silent.slice(0, 6).map((worker) => `${worker.name} (${worker.lastAt === undefined ? "no activity since start" : "last activity"} ${minutes(worker.ageMs)} ago)`).join(", ")}; write agent://<id> asking what it waits on. Workers not named here are active: their results arrive by themselves, so do not read their history` : "",
       ...serialQueues,
       ...await criticalWorkerWarnings(ctx, open, running),
-      understaffed && (hasReplannableWait(decision) || waitingCritical.includes("queued behind")) ? `only ${running.length} of ${capacity} worker slots run and no row is ready: the rest wait on running work. ${waitingCritical ? `Waiting rows on the chain that sets the ETA, in order:${waitingCritical}\n${waitingCritical.includes("queued behind") ? `${RESOURCE_QUEUE}\n` : ""}${WHY_EACH_LINK}\n${SPLIT_EACH} (skill step 7)` : "Split the waiting rows into the part that needs that result and the part that can start now, and dispatch the second part (skill step 7)"}` : "",
+      understaffed && (hasReplannableWait(decision) || waitingCritical.includes("queued behind"))
+        ? prompt.render(waitingWorkInstructions, { capacity, waitingRows: waitingCritical }).trim() : "",
       missing ? `${missing} planning issue(s) (missing estimates or dependencies) block every non-read tool` : "",
       overdue.length ? `${overdue.length} late row(s): ${lateRowLines.join("; ")}` : "",
       firstDeliveryLate ? `first user handoff forecast is later than its 30-minute request window or the deadline for ${JSON.stringify(firstDeliveryLate)}; cut scope and ship the smallest visible piece first` : "",

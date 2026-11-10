@@ -438,7 +438,12 @@ describe("todo dispatch supervisor", () => {
         phases: readyPlan("RosterWorker"),
         jobs: { running: [], recent: [], nonJobAgents: [{ id: "RosterWorker", live: true }] },
       }).readyCandidates[0]?.ownership,
-    ).toBe("unverified");
+    ).toBe("live-owned");
+    // nonJobAgents.live is session-corroborated activity or a restoring reservation,
+    // not a persisted label; a stale registry entry remains unstaffed.
+    expect(decide({ phases: readyPlan("RosterWorker"), jobs: {
+      running: [], recent: [], nonJobAgents: [{ id: "RosterWorker", live: false }],
+    } }).readyCandidates[0]?.ownership).toBe("unverified");
     const activeRestored = decide({
       phases: readyPlan("RestoredWorker"),
       jobs: { running: [], recent: [], nonJobAgents: [{ id: "RestoredWorker", live: true }] },
@@ -460,7 +465,7 @@ describe("todo dispatch supervisor", () => {
         persistedChildren: [{ id: "RestoredWorker", owner: "job-restored-worker", live: true }],
         idleResumeAttempts: new Set(["RestoredWorker"]),
       }).readyCandidates[0]?.ownership,
-    ).toBe("unverified");
+    ).toBe("live-owned"); // Current live registry state supersedes a past idle-resume attempt.
     expect(
       decide({
         phases: readyPlan("RosterWorker"),
@@ -735,12 +740,10 @@ describe("todo dispatch supervisor", () => {
     ];
     const independentDecision = decide({ phases: independent, jobs, deadline: due });
     expect(independentDecision.readyCandidates.map((row) => row.ownership)).toEqual([
-      "unverified",
-      "unverified",
+      "live-owned",
+      "shared-live-owner",
     ]);
-    expect(independentDecision.dispatchableReady.map((row) => row.content)).toEqual([
-      "Independent one",
-    ]);
+    expect(independentDecision.dispatchableReady).toEqual([]);
     expect(
       independentDecision.forecast?.rows.find((row) => row.content === "Independent two")?.resourceStart,
     ).toBeGreaterThan(now);
@@ -845,7 +848,7 @@ describe("todo dispatch supervisor", () => {
     ];
     const chainDecision = decide({ phases: chain, jobs, deadline: due });
     expect(chainDecision.readyCandidates.map((row) => row.content)).toEqual(["First in chain"]);
-    expect(chainDecision.readyCandidates[0]?.ownership).toBe("unverified");
+    expect(chainDecision.readyCandidates[0]?.ownership).toBe("live-owned");
     expect(chainDecision.alarms).not.toContain(
       `ownerless-ready:${JSON.stringify("Second in chain")}`,
     );
