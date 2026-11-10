@@ -1122,7 +1122,7 @@ export async function evaluateRequirementDoneGate(
 	rows: readonly string[],
 	getArtifact: (row: string, receipt?: string) => Promise<RequirementGateArtifact>,
 	rejections: ReadonlyMap<string, string> = new Map(),
-	/** Passing receipts are final while their row remains completed. */
+	/** Completed history supplies legacy closure, never an artifact freshness exemption. */
 	settledRows: ReadonlySet<string> = new Set(),
 	followUpRows: ReadonlySet<string> = new Set(),
 	acceptedRows: ReadonlySet<string> = new Set(),
@@ -1173,7 +1173,7 @@ export async function evaluateRequirementDoneGate(
 			if (acceptedRows.has(row)) continue;
 			const recorded = getRequirementRowVerdict(requirement, row);
 			if (!recorded && closedRows.has(row)) continue;
-			if (hasFinalCompletedPass(requirement, row, settledRows)) continue;
+			// A completed row still owns a versioned artifact; recheck its receipt.
 			const unhandled =
 				recorded?.collateral?.defects.filter(
 					defect => !followUpRows.has(collateralFollowUpRow(row, defect.defect)),
