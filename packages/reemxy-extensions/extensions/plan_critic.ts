@@ -145,7 +145,7 @@ export function actionObserved(action: PlanAction, before: TodoScheduleInput, af
 		case "dispatch":
 			return (
 				!!current?.schedule?.executor?.workerId &&
-				(run?.running === true || (run?.outcome ?? current.schedule.executor.outcome) === "completed") &&
+				(run?.running === true || (run ? run.outcome : current.schedule.executor.outcome) === "completed") &&
 				(current.schedule.executor.workerId !== previous.schedule?.executor?.workerId ||
 					current.schedule.executor.startedAt !== previous.schedule?.executor?.startedAt)
 			);
@@ -253,7 +253,7 @@ export default function planCritic(pi: ExtensionAPI, ownerRunStates: (ctx: Exten
 			if (action.kind === "escalate") reason = "escalation dropped: requires a concrete owner question through review page and ask";
 			else if (!row) reason = "row removed or superseded";
 			else if (row.status === "completed" || row.status === "abandoned") reason = `row ${row.status}; custody no longer active`;
-			else if (!run?.running && (run?.outcome ?? row.schedule?.executor?.outcome) === "completed") reason = "worker completed and released custody";
+			else if (!run?.running && (run ? run.outcome : row.schedule?.executor?.outcome) === "completed") reason = "worker completed and released custody";
 			else if (action.kind === "dispatch" && run?.running) reason = "row already staffed";
 			else if (action.kind === "cut_dependency" && !row.schedule?.dependencies?.includes(action.dependency!)) reason = "dependency already removed";
 			else if (dependency && (dependency.status === "completed" || dependency.status === "abandoned")) reason = "prerequisite no longer blocks the row";

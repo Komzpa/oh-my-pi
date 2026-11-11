@@ -574,3 +574,18 @@ test("dispatch recovery closes on a completed outcome, not an unrelated live wor
 	expect(chiefCriticFixes(h.ctx)).toEqual([]);
 	expect(h.event("tool_call", { toolName: "wait", toolCallId: "completed" })).toBeUndefined();
 });
+
+
+test("an authoritative unknown run supersedes a stale completed executor receipt", async () => {
+	const dispatch: PlanAction = { ...action, kind: "dispatch", dependency: undefined };
+	const h = harness([], { ...verdict, actions: [dispatch] });
+	const plan = makePlan();
+	plan[0]!.tasks[1]!.schedule = { executor: { workerId: "Old-1", startedAt: 1, outcome: "completed" } };
+	h.set(plan);
+	h.owners([{ content: dispatch.row, owner: "New-2", running: false }]);
+	await h.event("session_start"); await settle();
+	expect(chiefCriticFixes(h.ctx)).toEqual([{ row: dispatch.row, action: "Staff" }]);
+	expect(h.event("tool_call", { toolName: "wait", toolCallId: "unknown" })).toMatchObject({ block: true });
+	const before = makePlan();
+	expect(actionObserved(dispatch, before, plan, { content: dispatch.row, owner: "New-2", running: false })).toBe(false);
+});
