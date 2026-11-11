@@ -18,10 +18,11 @@ import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry, 
 import { prompt } from "@oh-my-pi/pi-utils";
 import { truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@oh-my-pi/pi-coding-agent";
-import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
-import { readTodoArchiveState, getLiveTodoBranchEntries, withTodoArchive } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { findTodoExecutorTarget, taskPacketRow, todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
+import { getLatestTodoPhasesFromEntries, readTodoArchiveState, getLiveTodoBranchEntries, getTodoActionRows, withTodoArchive } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { getTodoPlanCalibrationStore } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-calibration";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
@@ -185,6 +186,8 @@ export type SprintState = {
   deliveryCheckpointAt?: number;
   deliveryCheckpointPublished?: boolean;
   deliveryCheckpointActive?: boolean;
+  receiptReadKeys?: string[];
+  receiptReconciledKeys?: string[];
 };
 type TaskRow = TodoScheduleInput[number]["tasks"][number];
 type SnapshotRow = { number: number; phase: string; task: TaskRow };
@@ -986,14 +989,13 @@ export const DEMAND_IGNORE_MAX = 3;
 export const DEMAND_IGNORE_MAX_REPLAN = 5;
 export const OVERRIDE_SUPPRESS_TURNS = 5;
 const PLAN_DEMAND_IDS = new Set(["missed-eta", "todo-plan-doctor", "todo-replan", "todo-link", "unread-receipts"]);
-// Every todo op is plan bookkeeping except init, which replaces the plan. Append stays open: the
-// remedy says "split it", and a split adds rows. Starting their workers (task) stays refused.
-const PLAN_WORK_OPS = new Set(["init"]);
-const ESCALATION_REMEDY = "Fix the plan in a todo call: re-estimate the late row with evidence, split it, or drop it. Don't start workers to answer this.";
+// Plan repair and receipt reconciliation stay executable; only starting work is gated.
+const PLAN_WORK_OPS: Record<string, true> = { init: true, start: true, append: true, unblock: true };
+const ESCALATION_REMEDY = "Use todo schedule to record evidence and a remaining-work estimate, split the affected row with todo append, or drop it with todo drop.";
 // Each escalated demand names its own fix; a generic "re-estimate the late row" sent the lead to
 // replan when the demand was an unread worker result (live DC 2026-10-28).
 const UNREAD_REMEDY = (owners: readonly string[]) =>
-  `Read ${owners.length ? owners.slice(0, 4).map((owner) => `agent://${owner}`).join(", ") : "each finished worker's agent:// output"}, then close its row or send it back with the reason in a todo call.`;
+  `Read ${owners.length ? owners.slice(0, 4).map((owner) => `agent://${owner}`).join(", ") : "each finished worker's agent:// output"}. If truncated, write agent://<owner> to request a concise COMPLETE terminal receipt, not new implementation, then read its full root receipt. Use todo schedule on the named row with receipt findings/evidence before restaffing it.`;
 export const GATE_IDS = ["planning-issues", "chief-no-bash", "idle-wait", "checkout", "escalation", "missed-eta", "receipt", "duplicate-worker"] as const;
 const READ_TIER = new Set(["read", "grep", "glob", "find"]);
 const todoOpOf = (call: GateCall): string | undefined => {
@@ -1187,6 +1189,8 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
       ...(typeof data.deliveryCheckpointAt === "number" ? { deliveryCheckpointAt: data.deliveryCheckpointAt } : {}),
       ...(typeof data.deliveryCheckpointPublished === "boolean" ? { deliveryCheckpointPublished: data.deliveryCheckpointPublished } : {}),
       ...(typeof data.deliveryCheckpointActive === "boolean" ? { deliveryCheckpointActive: data.deliveryCheckpointActive } : {}),
+      ...(Array.isArray(data.receiptReadKeys) ? { receiptReadKeys: data.receiptReadKeys.filter((item): item is string => typeof item === "string") } : {}),
+      ...(Array.isArray(data.receiptReconciledKeys) ? { receiptReconciledKeys: data.receiptReconciledKeys.filter((item): item is string => typeof item === "string") } : {}),
     };
   }
   return blankSprintState();
@@ -1688,7 +1692,8 @@ const POST_DEADLINE_RELEASED_CUSTOM_TYPE = "todo-post-deadline-released";
 type DispatchTodoPhases = Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
 
 function todoPhases(ctx: ExtensionContext): DispatchTodoPhases {
-  return ((ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.()) ?? []) as Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
+  const live = ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.();
+  return (live ?? getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never)) as Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
 }
 
 export function updateTodoSchedule(ctx: ExtensionContext, update: (phases: DispatchTodoPhases) => DispatchTodoPhases): void {
@@ -1761,6 +1766,7 @@ export function acceptedSpeculativeMergeDemand(phases: DispatchTodoPhases): stri
     .filter((row) => (row.schedule as { review?: unknown } | undefined)?.review === "accepted")
     .flatMap((review) => {
       const completed = speculativeRows(phases, String(review.content)).filter((row) => row.status === "completed");
+      if (review.status === "completed" && review.schedule?.speculativeOn && todoRowHasDeliverable(review)) completed.unshift(review);
       return completed.length ? [`user accepted ${JSON.stringify(String(review.content))}; NEXT ACTION: fast merge/publish ${completed.map((row) => JSON.stringify(String(row.content))).join(", ")}`] : [];
     });
   return demands.length ? demands.join("; ") : undefined;
@@ -1772,6 +1778,17 @@ export function speculativeTaskRows(item: Record<string, unknown>, phases: Dispa
   if (typeof item.row === "string") return rows.filter(row => row.content === item.row);
   const preview = item.previewIntegration as { task?: string } | undefined;
   if (typeof preview?.task === "string") return rows.filter((row) => row.content === preview.task);
+  const taskText = typeof item.task === "string" ? item.task : undefined;
+  // Packet Row wins over a worker name previously bound to another row. Same resolver TaskTool uses.
+  if (taskPacketRow(taskText, rows.map(row => String(row.content ?? ""))) !== undefined) {
+    const target = findTodoExecutorTarget(phases as TodoPhase[], {
+      workerId: typeof item.name === "string" ? item.name : "",
+      taskText,
+      agentProfile: typeof item.agent === "string" ? item.agent : undefined,
+      startedAt: 0,
+    });
+    return target ? [target] : [];
+  }
   if (typeof item.name === "string") {
     const owned = rows.filter((row) => todoMatchesObservedWorker(row, { workerId: item.name }));
     if (owned.length) return owned;
@@ -1779,7 +1796,16 @@ export function speculativeTaskRows(item: Record<string, unknown>, phases: Dispa
   const brief = String(item.task ?? "").trim();
   const exact = rows.filter((row) => row.content === brief);
   if (exact.length) return exact;
-  return rows.filter((row) => typeof row.content === "string" && row.content.trim().length > 0 && brief.includes(row.content));
+  const target = findTodoExecutorTarget(phases as TodoPhase[], {
+    workerId: typeof item.name === "string" ? item.name : "",
+    taskText: brief,
+    agentProfile: typeof item.agent === "string" ? item.agent : undefined,
+    startedAt: 0,
+  });
+  const mentioned = rows.filter((row) => typeof row.content === "string" && row.content.trim().length > 0 && brief.includes(row.content));
+  const distinct = mentioned.filter((row) => !mentioned.some((other) => other !== row && typeof other.content === "string" && other.content.includes(String(row.content))));
+  if (!target) return distinct;
+  return [target, ...distinct.filter((row) => row !== target && !brief.includes(String(target.content)))];
 }
 
 function readOnlyAudit(item: Record<string, unknown>): boolean {
@@ -2677,11 +2703,19 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   let latestUserRequestAt: number | undefined;
   const rescheduledRowsThisTurn = new Set<string>();
   let idlePlanDemandedThisTurn = false;
-  // Owners whose finished result the last plan check found unread; names the unread-receipts remedy.
-  let unreadOwners: string[] = [];
   let persistedSprintStateJson = JSON.stringify(sprintState);
   let dispatchGateBaseline: Map<string, string> | null = null;
   const taskCallBaselines = new Map<string, Map<string, string>>();
+  const receiptKey = (job: Jobs["recent"][number]): string => JSON.stringify([job.id, job.agentId, job.startTime, job.endTime]);
+  const receiptJobForRow = (ctx: ExtensionContext, row: { owner?: string | null }) => {
+    const jobs = ctx.getAsyncJobSnapshot();
+    if (!row.owner || jobs?.running.some(job => liveJobMatchesOwner(job, row.owner!))) return;
+    return jobs?.recent.find(job => job.type === "task" && job.status === "completed" && liveJobMatchesOwner(job, row.owner!));
+  };
+  const unreadReceiptRows = (ctx: ExtensionContext, rows: TodoTaskForecast[]) => rows.filter(row => {
+    const job = receiptJobForRow(ctx, row);
+    return isNonClosedRowStatus(row.status) && job && !sprintState.receiptReconciledKeys?.includes(JSON.stringify([receiptKey(job), row.content]));
+  });
   // Names of dispatched retro-facilitator workers: an async facilitator settles through `wait`, and
   // the job snapshot carries no agent type, so the dispatch input is the only place to learn it.
   const retroFacilitatorJobs = new Set<string>();
@@ -5686,7 +5720,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const display = leadDisplayContext(ctx, phases, currentDecision(ctx));
       const reservedRows = new Set<string>();
       for (const item of taskItems(event.input)) {
-        for (const row of speculativeTaskRows(item, phases)) {
+        const matchedRows = speculativeTaskRows(item, phases);
+        const reviewDebt = phases.flatMap((phase) => phase.tasks).some((row) => row.schedule?.review === "user" && row.status !== "completed" && row.status !== "abandoned");
+        if (!matchedRows.length && reviewDebt && item.readOnly !== true && !readOnlyAudit(item)) {
+          return { block: true, reason: "Task does not match a scheduled row while user-review work remains open. Add and schedule the new row, or name the exact existing row." };
+        }
+        for (const row of matchedRows) {
           if (item.readOnly !== true && !readOnlyAudit(item)) {
             if (reservedRows.has(String(row.content))) return { block: true, reason: `Task batch repeats writer row ${JSON.stringify(row.content)}; dispatch one executor for that row.` };
             reservedRows.add(String(row.content));
@@ -5885,67 +5924,71 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         };
       }
     }
-    // Ignored plan-fix demands escalate: the model must fix the plan, not start more work. Only a
-    // read-tier call or a `todo` call that changes the plan passes; an override or a worker spawn
-    // does not lift it. It clears when the next plan check no longer reports the problem.
-    const overdueForMissedEta = isDemandEscalated("missed-eta")
-      ? (currentDecision(ctx).forecast?.rows.filter((row) => row.overdue) ?? [])
-      : [];
-    const escalatedIds = Object.keys(sprintState.ignoredDemands).filter((id) =>
+    // Forecast debt blocks staffing its row and declaring the whole plan complete.
+    // Other ignored demands block work starts only on their identified rows.
+    const decisionForGate = currentDecision(ctx);
+    const forecastRows = decisionForGate.forecast?.rows ?? [];
+    const phasesForGate = todoPhases(ctx);
+    const overdueForMissedEta = forecastRows.filter(row => row.overdue);
+    const escalatedIds = Object.keys(sprintState.ignoredDemands).filter(id =>
       PLAN_DEMAND_IDS.has(id) && isDemandEscalated(id) && (id !== "missed-eta" || overdueForMissedEta.length > 0));
-    const unresolvedForGate = isMain(ctx) ? unresolvedForecastRows(currentDecision(ctx).forecast).filter(undeliveredUserWait) : [];
-    if (unresolvedForGate.length && !escalatedIds.includes("todo-replan")) escalatedIds.push("todo-replan");
-    if (escalatedIds.length > 0 && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
-      const planFix = (call: GateCall): boolean => call.name === "todo" && !PLAN_WORK_OPS.has(todoOpOf(call) ?? "");
-      const taskServesRescheduledLateRow = (call: GateCall): boolean => call.name === "task" && taskItems(call.arguments ?? {}).some((item) =>
-        [...rescheduledRowsThisTurn].some((row) => String(item.task ?? "").includes(row)));
-      const remedyFor = (id: string, call?: GateCall) => id === "unread-receipts"
-          ? UNREAD_REMEDY(unreadOwners)
-          : id === "todo-replan" && unresolvedForGate.length
-            ? unresolvedForecastRemedy(unresolvedForGate)
-          : id === "todo-link"
-            ? "Link each running unassigned worker to the todo row matching its actual assignment; create a separate row if needed. Do not reassign it to an unrelated row. Use todo to update the plan."
-          : id === "missed-eta" && call && taskServesRescheduledLateRow(call)
-            ? "The late row was rescheduled in this assistant message; continue by starting its task now."
-            : id === "missed-eta"
-              ? `Fix each late row: ${missedEtaRowsText(overdueForMissedEta, Date.now())}. Exactly: todo schedule each late row with evidence, then task the late row. Don't start workers for unrelated work.`
-            : ESCALATION_REMEDY;
-      // A review hold belongs to its row. Admit only explicitly matched canonical ready
-      // work; unrelated forecast debt must not turn that hold into a global stop.
-      const independentReadyTask = (call: GateCall): boolean => {
-        if (call.name !== "task" || !unresolvedForGate.length) return false;
-        const items = taskItems(call.arguments ?? {});
-        const phases = [{ name: "Current forecast", tasks: currentDecision(ctx).forecast?.rows ?? [] }];
-        const ready = new Set((currentDecision(ctx).forecast?.rows ?? []).filter(row => row.ready && isOpenRowStatus(row.status)).map(row => row.content));
-        return items.length > 0 && items.every(item => {
-          const rows = speculativeTaskRows(item, phases);
-          return rows.length > 0 && rows.every(row => ready.has(String(row.content)) && !unresolvedForGate.some(held => held.content === row.content));
-        });
+    const unresolvedForGate = unresolvedForecastRows(decisionForGate.forecast);
+    if ((escalatedIds.length || unresolvedForGate.length) && isMain(ctx) && !pauseGate?.paused && !isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) {
+      const call = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
+      const targets = event.toolName === "todo" ? getTodoActionRows(phasesForGate, event.input ?? {}) : [];
+      const items = event.toolName === "task" ? taskItems(event.input) : [];
+      const matched = items.map(item => speculativeTaskRows(item, phasesForGate));
+      const named = (rows: readonly { content: string }[]) => rows.map(row => JSON.stringify(row.content)).join(", ");
+      const spawnTouches = (rows: readonly { content: string }[]) => matched.some(matches =>
+        matches.some(row => rows.some(held => held.content === row.content)));
+      const completesPlan = event.toolName === "todo" && event.input?.op === "done" &&
+        forecastRows.filter(row => isNonClosedRowStatus(row.status)).every(row => targets.includes(row.content));
+      if (unresolvedForGate.length && (spawnTouches(unresolvedForGate) || completesPlan)) {
+        const affected = completesPlan ? unresolvedForGate : unresolvedForGate.filter(row => matched.some(matches => matches.some(match => match.content === row.content)));
+        return { block: true, reason: `Forecast missing for ${affected.length} row(s).\nRows: ${named(affected)}. Use todo schedule with an estimate for each named row, or todo drop that row, before staffing it or completing the plan.` };
+      }
+      const jobs = ctx.getAsyncJobSnapshot();
+      const affectedRows = (id: string): TodoTaskForecast[] => {
+        if (id === "missed-eta") return overdueForMissedEta.filter(row => !rescheduledRowsThisTurn.has(row.content));
+        if (id === "unread-receipts") return unreadReceiptRows(ctx, forecastRows);
+        if (id === "todo-replan" || id === "todo-plan-doctor") return forecastRows.filter(row => !unresolvedForGate.some(held => held.content === row.content) &&
+          (decisionForGate.forecast?.planningIssues?.some(issue => issue.task === row.content) || (pendingReplan && !row.ready && isOpenRowStatus(row.status))));
+        if (id === "todo-link") {
+          const owners = new Set(decisionForGate.todoOwnerIds ?? []);
+          const linked = (jobs?.running ?? []).filter(job => job.type === "task" && !owners.has(job.id) && !owners.has(job.agentId ?? ""))
+            .flatMap(job => speculativeTaskRows({ name: job.agentId ?? job.id, task: job.label }, phasesForGate));
+          return forecastRows.filter(row => linked.some(match => match.content === row.content));
+        }
+        // A demand without a known row must not acquire authority over existing work.
+        return [];
       };
-      const gates: ActiveGate[] = escalatedIds.map((id) => ({
-        id,
-        remedy: remedyFor(id),
-        satisfies: id === "missed-eta"
-          ? (call: GateCall) => planFix(call) || taskServesRescheduledLateRow(call)
-          : id === "todo-replan"
-            // The canonical resolver validates the lead and linked quotes itself;
-            // unrelated permission-held rows must not prevent that plan repair.
-            ? (call: GateCall) => planFix(call) || independentReadyTask(call) || call.name === "resolve_requirement_conflict"
-            : planFix,
-      }));
-      const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
-      const verdict = decideGateCall(gateCall, gates);
-      // Reading a worker's commit or log is how a lead fixes the plan; a pure look passes.
-      const look = event.toolName === "bash" && typeof (event.input as { command?: unknown } | undefined)?.command === "string"
-        && isChiefBash((event.input as { command: string }).command);
-      if (!verdict.allowed && !look) {
-        gateTrace(ctx, "escalation-refused", { toolName: event.toolName, gates: verdict.remedyGateIds });
-        const remedies = [...new Set(verdict.remedyGateIds.map((id) => remedyFor(id, gateCall)))];
-        return { block: true, reason: `Plan problem ignored: ${verdict.remedyGateIds.join(", ")}. ${remedies.join(" ")}` };
+      const refused = escalatedIds.flatMap(id => {
+        const rows = affectedRows(id);
+        if (id === "todo-replan" && !rows.length && unresolvedForGate.length) return [];
+        const gatedItems = id === "todo-plan-doctor" ? items.filter(item => item.agent !== "plan-doctor") : items;
+        if (id === "todo-plan-doctor" && items.length > 0 && gatedItems.length === 0) return [];
+        const gatedMatched = gatedItems.map(item => speculativeTaskRows(item, phasesForGate));
+        const releasedKnown = id === "missed-eta" && overdueForMissedEta.length > 0 && rows.length === 0;
+        const spawn = gatedItems.length > 0 && (rows.length
+          ? gatedMatched.some(matches => matches.some(row => rows.some(held => held.content === row.content))) || (id === "unread-receipts" && gatedItems.some(item => rows.some(row => {
+            const job = receiptJobForRow(ctx, row);
+            return job && typeof item.name === "string" && liveJobMatchesOwner(job, item.name);
+          })))
+          : id === "unread-receipts" ? !forecastRows.some(row => receiptJobForRow(ctx, row)) : releasedKnown ? false : true);
+        const work = event.toolName === "todo" && PLAN_WORK_OPS[todoOpOf(call) ?? ""] && rows.some(row => targets.includes(row.content));
+        if (!spawn && !work) return [];
+        const remedy = id === "unread-receipts" ? UNREAD_REMEDY(rows.map(row => row.owner).filter(Boolean))
+          : id === "todo-link" ? "Use todo schedule to link the running worker to its actual assignment row, or todo append to create that row."
+          : id === "todo-plan-doctor" ? "Use task with agent plan-doctor to inspect the plan, then todo schedule to record the repair."
+          : ESCALATION_REMEDY;
+        return [`${id}: ${rows.length ? named(rows) : "affected rows unknown (new task spawns only)"}. ${remedy}`];
+      });
+      if (refused.length) {
+        gateTrace(ctx, "escalation-refused", { toolName: event.toolName, gates: escalatedIds });
+        return { block: true, reason: `Plan problem ignored: ${refused.join(" ")}` };
       }
     }
-    // The chief-work gate's remedy is a task dispatch, which an escalated plan demand refuses;
-    // the older ignored demand speaks first so the lead is not sent in a circle.
+    // Independent chief-work policy remains separate from row-local plan admission.
     const chief = blockWorkerWork(event as { toolName: string; input?: unknown }, ctx);
     if (chief) return chief;
     if (event.toolName === "todo" && pendingReplan) pendingReplan.answered = pendingReplan.demands;
@@ -6248,17 +6291,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     // A result that came back is read the turn it arrives (live 2026-09-25 11:14: two preflight
     // results sat unread while the chief added integration rows).
-    const settled = (ctx.getAsyncJobSnapshot()?.recent ?? []).filter((job) => job.type === "task" && job.status === "completed");
     const ownerOf = new Map<string, string>();
     try {
       for (const phase of phasesNow)
         for (const task of phase.tasks) if (typeof task.schedule?.owner === "string") ownerOf.set(task.content, task.schedule.owner);
     } catch {}
-    const unread = open.filter((row) => {
-      const owner = ownerOf.get(row.content);
-      return owner && !running.some((job) => job.id === owner || job.agentId === owner) && settled.some((job) => job.id === owner || job.agentId === owner);
-    });
-    unreadOwners = unread.map((row) => ownerOf.get(row.content)!);
+    const unread = unreadReceiptRows(ctx, open);
     const receding = recedingFinish(ctx, open, now, decision.deadline?.timezone);
     // Serial fan-in: many open rows wait directly on one row a worker is
     // running while worker slots are free (live batumarket 2026-10-22: 6 of 9 rows behind one
@@ -6285,7 +6323,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ...overrunWorkers,
       ...distantBlocked,
       planningAdvice,
-      unread.length ? `${unread.length} worker result(s) came back and their rows are still open: ${names(unread)}. Read each receipt now and close the row or send it back with the reason, before any other plan change (skill step 4)` : "",
+      unread.length ? `${unread.length} worker result(s) came back and their rows are still open: ${names(unread)}. Read each receipt and close its row or send it back with the reason before restaffing that row (skill step 4)` : "",
       finishDelayNotice,
       receding,
       checkins.length ? `${checkins.length} overdue worker check-in(s): ${checkins.slice(0, 6).map((worker) => worker.sent ? `overdue check-in ${worker.repeated ? "already " : ""}sent to ${worker.id} for ${JSON.stringify(shorten(worker.row))}; ${worker.activityText}` : `overdue check-in blocked for ${worker.id}: ${worker.text ?? missingWorkerMessageApi}; chief must write agent://${worker.id} manually`).join("; ")}${checkins.length > 6 ? `; … ${checkins.length - 6} more` : ""}` : "",
@@ -6296,7 +6334,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       ...await criticalWorkerWarnings(ctx, open, running),
       understaffed && (hasReplannableWait(decision) || waitingCritical.includes("queued behind"))
         ? prompt.render(waitingWorkInstructions, { capacity, waitingRows: waitingCritical }).trim() : "",
-      missing ? `${missing} planning issue(s) (missing estimates or dependencies) block every non-read tool` : "",
+      missing ? `${missing} planning issue(s) (missing estimates or dependencies) need row-local repair; independent work remains available` : "",
       overdue.length ? `${overdue.length} late row(s): ${lateRowLines.join("; ")}` : "",
       firstDeliveryLate ? `first user handoff forecast is later than its 30-minute request window or the deadline for ${JSON.stringify(firstDeliveryLate)}; cut scope and ship the smallest visible piece first` : "",
       unresolved.length ? `${unresolved.length} row(s) have no forecast (the TODO header's "unresolved"); ${unresolvedForecastRemedy(unresolved)}` : "",
@@ -6407,7 +6445,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return planTrace(ctx, "user-deadline-missed");
       await refreshLiveWorkerModels(ctx);
       if (!gateSwitchedOff(ctx)) absenceTick(ctx, Date.now());
-      let check = await planCheck(ctx, [], true);
+      const planCheckText = await planCheck(ctx, [], true);
+      let check = planCheckText;
       const urgent = wakeDemand(todoPhases(ctx), runningOwnerNames(ctx), Date.now(), currentDecision(ctx).deadline?.deadlineAt, currentDecision(ctx).forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx), ctx);
       if (!check && urgent) check = prompt.render(dispatchWakeInstructions, { ...urgent, misses: 0 }).trim();
       if (!check) return planTrace(ctx, "no-problems");
@@ -6426,10 +6465,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         userMessageEpoch,
         (ctx.getAsyncJobSnapshot()?.recent ?? []).filter((job) => job.type === "task").map((job) => `${job.id}:${job.status}`),
         sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never).flatMap((phase) => phase.tasks.map((task) => `${task.content}:${task.status}`)),
-        urgent?.key ?? null,
+        planCheckText ? null : urgent?.key ?? null,
       ]);
       const unchanged = key === lastIdlePlanCheck && eventStamp === lastPlanEventStamp;
-      if (pendingSizingNoticeIds.length === 0 && unchanged && (!urgent || retryRemaining(ctx, urgent.key) > 0)) return planTrace(ctx, "same-problems-already-delivered");
+      if (pendingSizingNoticeIds.length === 0 && unchanged && (planCheckText || !urgent || retryRemaining(ctx, urgent.key) > 0)) return planTrace(ctx, "same-problems-already-delivered");
       lastPlanEventStamp = eventStamp;
       if (!unchanged) lastIdlePlanCheckAt = now;
       lastIdlePlanCheck = key;
@@ -6503,6 +6542,31 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         if (event.toolName === "todo") wakeTurn.rejection = waitChainRejection(wakeTurn.chain, phases);
       } else if ((!recovery?.pending || wakeTurn.target) && countsAsWakeAction(event.toolName, event.input, wakeTurn.before, phases, wakeTurn.target)) wakeTurn.mutations += 1;
       wakeTurn.before = structuredClone(phases);
+    }
+    if (!event.isError && isMain(ctx)) {
+      if (event.toolName === "read") {
+        const details = event.details as ReadToolDetails | undefined;
+        // Truncated roots stay unread; request a concise complete receipt from the same owner, then read its root.
+        const truncated = details?.truncation !== undefined || details?.meta?.truncation !== undefined ||
+          (details?.summary?.elidedLines ?? 0) > 0 || (details?.summary?.elidedSpans ?? 0) > 0;
+        const job = !truncated && ctx.getAsyncJobSnapshot()?.recent.find(job => job.type === "task" && job.status === "completed" &&
+          [job.id, job.agentId].some(owner => owner && (event.input?.path === `agent://${owner}` || event.input?.path === `agent://${owner}:raw`)));
+        if (job) {
+          sprintState.receiptReadKeys = [...new Set([...(sprintState.receiptReadKeys ?? []), receiptKey(job)])].slice(-MAX_NOTICE_KEYS);
+          persistSprintState();
+        }
+      }
+      if (event.toolName === "todo" && (event.details as { op?: unknown } | undefined)?.op === "schedule") {
+        const rows = todoPhases(ctx).flatMap(phase => phase.tasks);
+        for (const update of todoScheduleUpdates(event.input)) {
+          if (!nonEmptyString(update.evidence)) continue;
+          const row = rows.find(row => row.content === update.task);
+          const job = row && receiptJobForRow(ctx, { owner: row.schedule?.owner });
+          if (!job || !sprintState.receiptReadKeys?.includes(receiptKey(job))) continue;
+          sprintState.receiptReconciledKeys = [...new Set([...(sprintState.receiptReconciledKeys ?? []), JSON.stringify([receiptKey(job), row.content])])].slice(-MAX_NOTICE_KEYS);
+          persistSprintState();
+        }
+      }
     }
     if (event.toolName === "todo" && !event.isError) await refreshPush(ctx, true);
     if (previewConfig(ctx).enabled && isMain(ctx)) {

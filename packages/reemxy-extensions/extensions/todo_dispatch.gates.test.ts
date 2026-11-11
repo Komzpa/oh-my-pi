@@ -31,6 +31,18 @@ import {
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch, { decideGateCall, decideTodoDispatch, parseTodoOverride, SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
 import * as dispatchModule from "./todo_dispatch";
+import { gateLocalityScenarios, gateReviewFinding, reviewFindingIds } from "./lead-gates.scenarios";
+
+test("row-local plan gates preserve independent tools and executable remedies", async () => {
+  const receipts = await gateLocalityScenarios();
+  expect(receipts.find(row => row.label === "forecast: repaired X while Y missing")?.allowed).toBe(true);
+});
+
+for (const id of reviewFindingIds) {
+  test(`review finding ${id}`, async () => {
+    await gateReviewFinding(id);
+  });
+}
 
 const todoDispatchStateDir = process.env.OMP_TODO_DISPATCH_STATE_DIR ?? join(homedir(), ".local", "state", "omp-todo-dispatch");
 
@@ -2643,7 +2655,7 @@ test("parseTodoOverride names a gate id inside the override field", () => {
   expect(parseTodoOverride(null)).toBeUndefined();
 });
 
-test("escalated plan demands refuse everything but a plan-fixing todo call; an override or a worker spawn does not lift it", async () => {
+test("escalated plan demands refuse affected staffing and unknown new spawns, not inspection or repair", async () => {
   const cwd = repo("clean");
   const now = Date.now();
   const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
@@ -2676,10 +2688,8 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     const toolCall = handlers.get("tool_call")!;
     const refused = (await toolCall({ toolName: "task", toolCallId: "u1", input: CALLS.taskRow!.arguments }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(refused?.block).toBe(true);
-    expect(refused?.reason).toContain("missed-eta");
-    expect(refused?.reason).toContain('"Row A" worker-a');
-    expect(refused?.reason).toContain("Don't start workers for unrelated work.");
-    expect(refused?.reason).toContain("Link each running unassigned worker to the todo row matching its actual assignment");
+    expect(refused?.reason).toContain("todo-link");
+    expect(refused?.reason).toContain("todo");
     expect(refused?.reason).not.toContain("chief-of-staff");
     // A pure look passes the escalation; reading results is how the plan gets fixed.
     const look = (await toolCall({ toolName: "bash", toolCallId: "u1b", input: { command: "systemctl status codex-lb" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
@@ -2748,10 +2758,8 @@ test("an escalated demand decays once every row is closed (live sunbim 2026-10-2
     const look = (await toolCall({ toolName: "bash", toolCallId: "c0", input: { command: "cd /tmp && git show --format=fuller 945d704" } }, ctx)) as { block?: boolean } | undefined;
     expect(look?.block).not.toBe(true);
     const before = (await toolCall({ toolName: "bash", toolCallId: "c1", input: { command: "make build" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
-    expect(before?.reason ?? "").toContain("unread-receipts");
-    // Its remedy is reading the result, not the missed-ETA replan text (live DC 2026-10-28).
-    expect(before?.reason ?? "").toContain("agent://");
-    expect(before?.reason ?? "").not.toContain("re-estimate");
+    expect(before?.reason ?? "").not.toContain("unread-receipts");
+    expect(before?.reason ?? "").toContain("Add and schedule the new work");
     await handlers.get("tool_result")!({ toolName: "todo", toolCallId: "c2", isError: false, content: [], details: undefined }, ctx);
     const after = (await toolCall({ toolName: "bash", toolCallId: "c3", input: { command: "make build" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(after?.reason ?? "", "closed plan clears the escalation").not.toContain("unread-receipts");
@@ -3259,7 +3267,7 @@ test("replan admits registered conflict remediation while unrelated user permiss
       task: row.content, estimate: row.schedule.estimate,
     })) }))?.block).not.toBe(true);
     const write = () => call("write", { path: join(cwd, "unauthorized.txt"), content: "change" });
-    expect((await write())?.reason).toContain("todo-replan");
+    expect((await write())?.block).toBe(true);
     expect(prepareRequirementBrief(docs, ctx, "Edit docs").refusal).toContain("unresolved product contract conflict");
     const params = { row: docs.content, quoteIds: ["R37"], resolution: "Use the existing image; do not wait for another upload." };
     expect((await call("resolve_requirement_conflict", params))?.block).not.toBe(true);
@@ -3271,7 +3279,7 @@ test("replan admits registered conflict remediation while unrelated user permiss
     await tool.execute("resolve", params, undefined, undefined, ctx);
     expect(prepareRequirementBrief(docs, ctx, "Edit docs").refusal).toBeUndefined();
     expect(permission).toEqual(permissionBefore);
-    expect((await write())?.reason).toContain("todo-replan");
+    expect((await write())?.block).toBe(true);
     expect(branch.filter(entry => entry.customType === "requirement-contract-resolution")).toHaveLength(1);
   } finally {
     await handlers.get("session_shutdown")?.({}, ctx);

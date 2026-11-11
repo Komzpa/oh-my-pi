@@ -84,6 +84,19 @@ test("external approval with a usable conditional estimate does not starve an in
  expect(blocked.schedule.review).toBe("user");
 });
 
+test("journal plan still blocks held work when optional plan snapshots are absent", async () => {
+ const now = Date.now();
+ const held = { content: "Wait for signed approval", status: "blocked", blocker: "Awaiting user: signed approval", schedule: { dependencies: [], resources: ["approval"], estimate: estimate(now, 300), review: "user" } };
+ const h = await demandHarness([held], undefined, undefined, false, ["IndependentWorker"]);
+ const refusal = await h.handlers.get("tool_call")({
+  toolName: "task",
+  input: { tasks: [{ name: "ApprovalWork", agent: "coder", row: held.content, task: held.content }] },
+  toolCallId: "journal-only-held-row",
+ }, h.ctx);
+ expect(refusal?.block).toBe(true);
+ expect(refusal?.reason).toContain(held.content);
+});
+
 
 test("review debt does not admit dependent, unknown, or mixed held dispatches", async () => {
  const now = Date.now();

@@ -46,6 +46,7 @@ async function harness(rows) {
 	return { hooks, ctx, notices, phases };
 }
 
+const estimate = { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium", basis: "Measured fixture", updatedAt: Date.now() };
 const failed = {
 	content: "Repair power source frame",
 	status: "in_progress",
@@ -53,10 +54,11 @@ const failed = {
 		owner: "ContinentalSnail",
 		progress: { evidence: "Previous frame attempt failed; repair remains open" },
 		dependencies: [],
+		estimate,
 		executor: { workerId: "ContinentalSnail", startedAt: 1, finishedAt: 2, outcome: "failed" },
 	},
 };
-const fresh = { content: "New orbit decoration", status: "pending", schedule: { dependencies: [] } };
+const fresh = { content: "New orbit decoration", status: "pending", schedule: { dependencies: [], estimate } };
 test("a settled executor running elsewhere does not own a reassigned row", async () => {
 	const row = structuredClone(failed);
 	row.schedule.owner = "Replacement";

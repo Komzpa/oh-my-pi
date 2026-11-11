@@ -41,6 +41,7 @@ async function demandHarness(tasks: unknown[], deadlineAt?: number, autoDeadline
 				getBranchMatching: predicate => branch.filter(entry => predicate(sessionContextEntryMetadata(entry))),
 				getLatestBranchMatching: predicate => branch.findLast(entry => predicate(sessionContextEntryMetadata(entry))),
 			},
+			getTodoPhases: () => branch.find(entry => entry.type === "message")?.message?.details?.phases ?? [],
 			getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
 			getTaskMaxConcurrency: () => 2,
 			hasPendingMessages: () => false,
@@ -82,8 +83,9 @@ test("an undelivered user wait demands a concrete forecast repair; delivered rev
 	const h = await demandHarness([task]);
 	const call = (toolName, input) => h.handlers.get("tool_call")({ toolName, input, toolCallId: "call" }, h.ctx);
 	const refusal = await call("task", { tasks: [{ name: "Other", task: "unrelated work" }] });
-	expect(refusal?.block).toBe(true);
-	expect(refusal.reason).toContain(task.content);
+	const sameRow = await call("task", { tasks: [{ name: "Held", task: task.content }] });
+	expect(sameRow?.block).toBe(true);
+	expect(sameRow.reason).toContain(task.content);
 	expect((await call("read", { path: "README.md" }))?.block).not.toBe(true);
 	expect((await call("todo", { op: "unblock", task: task.content }))?.block).not.toBe(true);
 	const delivered = { ...task, schedule: { ...schedule, firstDeliveredAt: now, reviewSummary: "Model comparison delivered" } };
