@@ -35,7 +35,10 @@ For requirement audits, set `requirementIds` to the linked requirements to audit
 {{/if}}{{#if effortEnabled}}`effort`: `"lo"`|`"med"`|`"hi"` by how open-ended the problem is, matching `solutionSpace`. Default `lo` for lookups, mechanical edits, and known fixes; `med` for ordinary implementation. Use `hi` only when `solutionSpace` names genuinely open choices (design or cause unknown, several competing approaches): on a given fix a high-effort implementer tends to over-engineer and widen scope.
 {{/if}}{{#if perCallModelEnabled}}`model`: one exact `provider/model-id[@upstream][:level]` string for this spawn only{{#if batchEnabled}}; per `tasks[]` item{{/if}}. `@upstream` pins an aggregator route and is part of the model identity. Only operator-approved models; no roles, arrays, globs or partial IDs. Approved: {{#list perCallModelAdvertisement.roles join=", "}}{{#list patterns join=", "}}`{{this}}`{{/list}} ({{role}}){{/list}}{{#if perCallModelAdvertisement.roles.length}}; {{/if}}{{#if perCallModelAdvertisement.parentModelWithheld}}{{else}}your own current model; {{/if}}the selected bundled/user agent's own configured model. A listed glob approves matching exact IDs; write the exact ID, NEVER the glob.{{#if perCallModelAdvertisement.allowlist.length}} Allowlist: {{#list perCallModelAdvertisement.allowlist join=", "}}`{{this}}`{{/list}} (must also be approved).{{/if}} An agent's `task.agentModelOverrides` entry or user-chosen effort conflicts with `model`. Omit unless needed. Requested model unavailable → stop and report; NEVER substitute another. Every request requires an approved model; retry fallback, context promotion and prewalk are off.
 {{/if}}{{#if structured}}`schemaMode`: default permissive warns after retries; strict fails.
-{{/if}}`resources`: optional `string[]` of checkout paths the child edits; when present it alone defines ownership; `[]` claims nothing; omit it to use the harness fallback (row owner, then title, then cwd — never prose paths).
+{{/if}}`resources`: optional `string[]` of absolute write paths for the child; when present it alone defines write scope; `[]` means no writes; omitted → scope resolves in order: workspace cwd → explicit scheduled row resources → the checkout containing the child's actual cwd.
+`workspace`: optional `{repo, base, path?}` checkout contract. `repo`: absolute Git repository path, NEVER inferred from task prose. `base`: a commit available in `repo`, resolved to an exact SHA before admission (run `git fetch` first if missing). `path`: an existing absolute checkout of the same repository at exactly `base`; omit `path` to prepare a private checkout at `base`.
+`reads`: optional `string[]` of absolute existing files or directories; admission checks every path exists before any worker starts; reads grant no writes.
+Before-worker failures name `field`, `expected`, `actual`, `action`: fix the named field and retry; NEVER substitute a missing value.
 {{#if isolationEnabled}}{{#if applyIsolatedChanges}}`isolated`: worktree; successful changes apply to parent.
 {{else}}`isolated`: worktree; changes retained, not applied.
 {{/if}}{{/if}}Children start blank;{{#if ircEnabled}} parent IRC steers immediately;{{/if}} large payloads via `local://<path>`, NEVER inline.
@@ -44,6 +47,32 @@ For requirement audits, set `requirementIds` to the linked requirements to audit
 
 {{#if batchEnabled}}`context`: shared (`# Goal`, `# Constraints`, `# Contract` interfaces); NEVER repeat per task.
 {{/if}}`task`{{#if file}} or the contents of `taskFile`{{/if}}: self-contained (`# Target` files/non-goals, `# Change` steps/APIs, `# Acceptance` observable result).
+{{#if batchEnabled}}
+Example — valid `task` input (batch):
+
+```json
+{
+  "context": "# Goal\nDocument the task workspace contract.\n# Constraints\nNo checks mid-flight.",
+  "tasks": [
+    {
+      "name": "TaskDocs",
+      "task": "# Target docs/tools/task.md and packages/coding-agent/src/prompts/tools/task.md\n# Change Document workspace, reads, resources, and the write-scope precedence.\n# Acceptance Both files state the precedence and the failure shape.",
+      "solutionSpace": "one fix: wording, contract given",
+      "workspace": {
+        "repo": "/home/kom/proj/ai_pr/omp-lane-workspace-contract",
+        "base": "1ee425a0ce5eee9cd735a896178c2d42a64c631d",
+        "path": "/home/kom/proj/ai_pr/omp-lane-workspace-contract"
+      },
+      "reads": ["/home/kom/Dropbox/Reemxy/tasks-loop/docs/omp-author-lanes.md"],
+      "resources": [
+        "/home/kom/proj/ai_pr/omp-lane-workspace-contract/docs/tools/task.md",
+        "/home/kom/proj/ai_pr/omp-lane-workspace-contract/packages/coding-agent/src/prompts/tools/task.md"
+      ]
+    }
+  ]
+}
+```
+{{/if}}
 
 {{/unless}}
 {{#if catalogOnly}}{{#if seanceGuidance}}{{seanceGuidance}}{{/if}}{{/if}}
@@ -54,4 +83,4 @@ For requirement audits, set `requirementIds` to the linked requirements to audit
 {{/if}}{{#list agents join=""}}- `{{name}}`{{#if readOnly}} (READ-ONLY; investigation only, no edits){{/if}}{{#if blocking}} (BLOCKING; inline result){{/if}}{{#if structured}} (STRUCTURED; schema result){{/if}}: {{description}} ({{#if projectAgentsMd}}project AGENTS.md; do not repeat its rules{{else}}NO AGENTS.md; supply relevant rules{{/if}})
 {{/list}}{{/if}}
 
-Resource scope: set `resources` per item to absolute file/subtree paths within its row resources. An explicit `resources: []` grants no file writes; clearing a running row to `[]` revokes its previous scope. Only a row with no resources declaration retains legacy cwd write access, subject to live leases; that does not create an exclusive ROOT claim. Use `readOnly: true` for audit/verify-only work: it preserves the agent’s command execution and browser/puppeteer tools when available, removes edit/write/ast_edit and nested task spawns, and claims no exclusive resources. Commands may inspect git, run tests/builds into worker-owned temp directories, and QA an existing preview; they must not mutate tracked checkout files. A pre/post Git tracked-tree check fails the worker if the checkout changes (including concurrent writers); outside Git no tracked-tree check is available. Named read-only agents retain their own tool lists. Readers do not block writers and see each file at read time. Without declared/inferred paths the worker is unscoped, not a ROOT writer; declare scopes for shell work. Conflicts name the holder/path: narrow `tasks[].resources` or wait for that writer.
+Resource scope: set `resources` per item to absolute file/subtree paths within its row resources. Write scope resolves first-present-wins: `resources` → workspace cwd → explicit scheduled row resources → the checkout containing the child's actual cwd (legacy, subject to live leases); `[]` means no writes, and clearing a running row to `[]` revokes its previous scope. Scope is verified before any worker starts; the child's prompt and the tool result report that verified grant, and task prose grants no rights. Declare `resources` for every path a shell script writes. Use `readOnly: true` for audit/verify-only work: it preserves the agent’s command execution and browser/puppeteer tools when available, removes edit/write/ast_edit and nested task spawns, and claims no exclusive resources. Commands may inspect git, run tests/builds into worker-owned temp directories, and QA an existing preview; they must not mutate tracked checkout files. A pre/post Git tracked-tree check fails the worker if the checkout changes (including concurrent writers); outside Git no tracked-tree check is available. Named read-only agents retain their own tool lists. Readers do not block writers and see each file at read time. Conflicts name the holder/path: narrow `tasks[].resources` or wait for that writer.

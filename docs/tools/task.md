@@ -34,7 +34,7 @@
 
 ## Inputs
 
-The wire schema is shape-swapped by `task.batch` (default on). One unit of work is `{ name?, agent?, model?, task, solutionSpace, effort?, rework?, outputSchema?, schemaMode?, tools?, isolated? }`. `isolated` exists only when `task.isolation.enabled` is true **and plan mode is disabled**; `effort` requires `task.enableEffort=true` (default off), and `tools` requires `eval.tools.enabled` (default on). `rework` is the one-line chief reason for redispatching a completed task row; omit it for a new row and infrastructure retry.
+The wire schema is shape-swapped by `task.batch` (default on). One unit of work is `{ name?, agent?, model?, task, solutionSpace, effort?, rework?, outputSchema?, schemaMode?, tools?, resources?, workspace?, reads?, isolated? }`. `isolated` exists only when `task.isolation.enabled` is true **and plan mode is disabled**; `effort` requires `task.enableEffort=true` (default off), and `tools` requires `eval.tools.enabled` (default on). `rework` is the one-line chief reason for redispatching a completed task row; omit it for a new row and infrastructure retry.
 
 `task.file` defaults to `false`: `task` is required, and `taskFile` is absent from the wire schema and rejected at runtime. Enable `task.file` to provide exactly one of `task` or `taskFile` per item, in either shape.
 
@@ -57,8 +57,37 @@ The wire schema is shape-swapped by `task.batch` (default on). One unit of work 
 | `outputSchema`  | JSON Schema (`object \| boolean \| string \| null` at the coarse wire-validation layer) | No                                    | Invocation-specific structured-output contract. Takes precedence over agent frontmatter `output` and the inherited parent session schema. Item field in batch shape, top-level in flat shape.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `schemaMode`    | `"permissive" \| "strict"`                                                              | No                                    | Validation mode for the effective output schema. Overrides the parent mode; defaults to `permissive`. After schema-retry exhaustion, permissive mode can accept invalid payloads with a warning; strict mode fails. Invalid caller schemas fail preflight in either mode.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `tools`         | `string[]`                                                                              | No                                    | Named tools already defined in the parent's Python or JS eval kernel. Present when `eval.tools.enabled=true`; child calls execute in the parent kernel, not the child's. Rejected in plan mode. Item field in batch shape, top-level in flat shape.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| `resources` | `string[]` | No | Declared exclusive checkout paths for the child. When present it alone defines ownership; `[]` claims nothing; omit it to use the harness fallback. Structural shape only (array of non-blank strings) is validated before launch. Declared `resources` are forwarded unchanged to the `before_subagent_spawn` hook; absent stays absent. Item field in batch shape, top-level in flat shape. |
+| `workspace` | `{ repo: string, base: string, path?: string }` | No | Typed checkout contract, resolved before any worker starts. `repo`: absolute source Git repository path, never inferred from task prose. `base`: a commit available in `repo`, resolved to an exact SHA before admission; run `git fetch` first when it is missing. `path`: an existing absolute checkout of the same repository at exactly `base` (same repo, exact HEAD); omit `path` to prepare a private checkout of `repo` at `base` for this item. Item field in batch shape, top-level in flat shape. |
+| `reads` | `string[]` | No | Absolute existing files or directories for the child to read; admission checks that every path exists before any worker starts. Reads grant no writes — write scope comes only from `resources`/workspace/row/cwd resolution. Item field in batch shape, top-level in flat shape. |
+| `resources` | `string[]` | No | Absolute write paths for the child; when present it alone defines write scope, and `[]` means no writes. Omitted → scope resolves in order: workspace cwd, explicit scheduled row resources, the checkout containing the child's actual cwd. Structural shape only (array of non-blank strings) is validated before launch. Declared `resources` are forwarded unchanged to the `before_subagent_spawn` hook; absent stays absent. Prose never grants rights. Item field in batch shape, top-level in flat shape. |
 | `isolated`      | `boolean`                                                                               | No                                    | Run in an isolated workspace and capture patches/branch changes. Present only when `task.isolation.enabled` is true and plan mode is disabled. Kept-alive task agents retain their workspace through idle/parked transitions and can be revived; release captures final changes and cleans the workspace.                                                                                                                                                                                                                                                                                                                                                                                                  |
+
+**Workspace resolution.** `workspace.repo` MUST be an absolute Git repository path and `workspace.base` MUST be a commit available in it; admission resolves `base` to an exact SHA before any worker starts (run `git fetch` first when the commit is missing). With `workspace.path`, the path MUST be an existing absolute checkout of the same repository with HEAD exactly at `base`; without `workspace.path`, a private checkout of `repo` at `base` is prepared for this item. `reads` paths MUST exist at admission and grant no writes. Missing input fails admission — NEVER substitute a value or infer one from task prose.
+
+A valid batch call (`task.batch` on):
+
+```json
+{
+  "context": "# Goal\nDocument the task workspace contract.\n# Constraints\nNo checks mid-flight.",
+  "tasks": [
+    {
+      "name": "TaskDocs",
+      "task": "# Target docs/tools/task.md and packages/coding-agent/src/prompts/tools/task.md\n# Change Document workspace, reads, resources, and the write-scope precedence.\n# Acceptance Both files state the precedence and the failure shape.",
+      "solutionSpace": "one fix: wording, contract given",
+      "workspace": {
+        "repo": "/home/kom/proj/ai_pr/omp-lane-workspace-contract",
+        "base": "1ee425a0ce5eee9cd735a896178c2d42a64c631d",
+        "path": "/home/kom/proj/ai_pr/omp-lane-workspace-contract"
+      },
+      "reads": ["/home/kom/Dropbox/Reemxy/tasks-loop/docs/omp-author-lanes.md"],
+      "resources": [
+        "/home/kom/proj/ai_pr/omp-lane-workspace-contract/docs/tools/task.md",
+        "/home/kom/proj/ai_pr/omp-lane-workspace-contract/packages/coding-agent/src/prompts/tools/task.md"
+      ]
+    }
+  ]
+}
+```
 
 There is no wire label field: the one-line UI label shown in the TUI/registry is generated automatically from the `task` text by the tiny/title model (fire-and-forget), so callers never provide it.
 
@@ -239,6 +268,7 @@ Artifacts and side channels:
    - batch calls: missing/empty `tasks`, duplicate provided names, missing shared `context`, top-level `task` or `taskFile` alongside `tasks`
    - any item or flat call: `taskFile` or missing `task` while `task.file` is off, empty inline task text, or both/neither task sources when file input is enabled
    - task files: relative filesystem paths, invalid `local://` URLs, unreadable or non-regular files, files larger than 4 MiB, invalid UTF-8, or empty-after-trim contents
+   - workspace/`reads`/`resources` admission: every such failure is raised before any worker starts and reports `field`, `expected`, `actual`, and `action`. Missing input (e.g. `repo` or `base`) is a failure — values are NEVER substituted or inferred from task prose.
    - invalid effort, unknown/settings-disabled agents, depth/spawn-policy denial, invalid caller output schemas, disabled isolation, or isolation/eval-tool controls in plan mode
    - unknown eval tools, disabled eval sharing, or a name defined in both parent kernels
    - per-call `model`: `task.perCallModel` does not allow this invocation kind (reported before selector validation); an invalid exact selector; both host `model` and per-call `model` supplied through the SDK; the bundled seance agent on the shared per-call path; a conflicting `task.agentModelOverrides` entry; or a mention agent whose `^provider/model:level` tag names a level, even when `model` repeats the tagged selector
@@ -281,7 +311,7 @@ Warm or revived IRC follow-ups preserve this completion contract. A yielded foll
 
 Inherited source charges are zeroed; new consultation turns use existing task/Agent Hub usage tracking.
 
-### Resource claims
+## Resource claims
 
 Each task item (or flat task call) accepts `resources: ["/absolute/path"]` and
 `readOnly: true`. Resources narrow the matched open row's existing paths; to
@@ -293,11 +323,15 @@ The read-only flag and `schedule.readOnly` restrict dispatched tools to read too
 qa-auditor, explore, scout, reviewer and security-reviewer are read-only roles.
 Shell-based review must use a writer role with explicit resources.
 
-Without explicit resources, the router uses the row resources and absolute paths
-in its assignment. With neither, it admits an unscoped worker instead of claiming
-ROOT. Known file mutations still check explicit writer claims and atomically
-reserve their exact targets for the owning row until it closes. Opaque shell
-scripts retain the existing limitation: their internal write targets cannot be
-inferred; declare their resources before dispatch. Pending unowned rows reserve
-nothing. A conflict refuses the item before spawn and names the holder and path;
-use disjoint `tasks[].resources` or wait for that writer.
+Write scope resolves first-present-wins: item `resources` → workspace cwd (the
+declared workspace's checkout) → explicit scheduled row resources → the checkout
+containing the child's actual cwd (legacy, subject to live leases) — never an
+exclusive ROOT claim. An explicit `resources: []` means no writes. Admission
+verifies the resolved scope before any worker starts; the child's prompt and the
+tool result both report that verified grant, and prose (`context`, `task`, `row`
+text) grants no rights. Known file mutations still check explicit writer claims
+and atomically reserve their exact targets for the owning row until it closes.
+Opaque shell scripts retain the existing limitation: their internal write targets
+cannot be inferred; declare their resources before dispatch. Pending unowned rows
+reserve nothing. A conflict refuses the item before spawn and names the holder
+and path; use disjoint `tasks[].resources` or wait for that writer.
