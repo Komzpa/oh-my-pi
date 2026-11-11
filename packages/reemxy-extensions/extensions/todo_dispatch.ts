@@ -995,7 +995,7 @@ const ESCALATION_REMEDY = "Use todo schedule to record evidence and a remaining-
 // Each escalated demand names its own fix; a generic "re-estimate the late row" sent the lead to
 // replan when the demand was an unread worker result (live DC 2026-10-28).
 const UNREAD_REMEDY = (owners: readonly string[]) =>
-  `Read ${owners.length ? owners.slice(0, 4).map((owner) => `agent://${owner}`).join(", ") : "each finished worker's agent:// output"}, then close its row or send it back with the reason in a todo call.`;
+  `Read ${owners.length ? owners.slice(0, 4).map((owner) => `agent://${owner}`).join(", ") : "each finished worker's agent:// output"}. If truncated, write agent://<owner> to request a concise COMPLETE terminal receipt, not new implementation, then read its full root receipt. Use todo schedule on the named row with receipt findings/evidence before restaffing it.`;
 export const GATE_IDS = ["planning-issues", "chief-no-bash", "idle-wait", "checkout", "escalation", "missed-eta", "receipt", "duplicate-worker"] as const;
 const READ_TIER = new Set(["read", "grep", "glob", "find"]);
 const todoOpOf = (call: GateCall): string | undefined => {
@@ -6529,8 +6529,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     if (!event.isError && isMain(ctx)) {
       if (event.toolName === "read") {
         const details = event.details as ReadToolDetails | undefined;
-        // Exact root path is not a full receipt when ReadTool truncated it. No second pagination protocol:
-        // a truncated result has no complete existing-tool release beyond the root read the chief already made.
+        // Truncated roots stay unread; request a concise complete receipt from the same owner, then read its root.
         const truncated = details?.truncation !== undefined || details?.meta?.truncation !== undefined;
         const job = !truncated && ctx.getAsyncJobSnapshot()?.recent.find(job => job.type === "task" && job.status === "completed" &&
           [job.id, job.agentId].some(owner => owner && (event.input?.path === `agent://${owner}` || event.input?.path === `agent://${owner}:raw`)));

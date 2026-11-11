@@ -358,16 +358,17 @@ async function armMissedEtaEscalation(repos) {
     sendMessage: () => undefined,
   };
   await todoDispatch(api);
-  const tasks = NAMES.map((content) => ({ content, status: "in_progress", schedule: { dependencies: [], resources: [content], owner: `w-${content.slice(-1)}`, estimate: stale } }));
+  const tasks = NAMES.map((content) => ({ content, status: content === "Row A" ? "pending" : "in_progress", schedule: { dependencies: [], resources: [content], owner: `w-${content.slice(-1)}`, estimate: stale } }));
   const branch = [{ type: "message", message: { role: "toolResult", toolName: "todo", details: { phases: [{ name: "Work", tasks }] } } }];
   const jobs = {
-    running: NAMES.map((content) => ({ id: `w-${content.slice(-1)}`, agentId: `w-${content.slice(-1)}`, type: "task", status: "running", label: content, startTime: now - 3_600_000 })),
+    running: NAMES.slice(1).map((content) => ({ id: `w-${content.slice(-1)}`, agentId: `w-${content.slice(-1)}`, type: "task", status: "running", label: content, startTime: now - 3_600_000 })),
     recent: [],
     nonJobAgents: [],
   };
   const ctx = {
     cwd: repos.clean,
     sessionManager: { getHeader: () => ({ id: "liveness-union" }), ...branchMock(() => branch), getSessionFile: () => undefined },
+    getTodoPhases: () => branch[0].message.details.phases,
     getAsyncJobSnapshot: () => jobs,
     getTaskMaxConcurrency: () => 20,
     isIdle: () => false,

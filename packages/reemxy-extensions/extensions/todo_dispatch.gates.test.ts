@@ -38,9 +38,11 @@ test("row-local plan gates preserve independent tools and executable remedies", 
   expect(receipts.find(row => row.label === "forecast: repaired X while Y missing")?.allowed).toBe(true);
 });
 
-test("review findings cover canonical target, doctor item, truncated receipt, and released eta", async () => {
-  for (const id of reviewFindingIds) await gateReviewFinding(id);
-});
+for (const id of reviewFindingIds) {
+  test(`review finding ${id}`, async () => {
+    await gateReviewFinding(id);
+  });
+}
 
 const todoDispatchStateDir = process.env.OMP_TODO_DISPATCH_STATE_DIR ?? join(homedir(), ".local", "state", "omp-todo-dispatch");
 

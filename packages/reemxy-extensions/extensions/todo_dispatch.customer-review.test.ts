@@ -9,6 +9,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { formatPlanForecast, formatTaskForecast, formatTaskForecastDisplay, forecastTodoPlan, getTodoPlanningIssues } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { readGoalDeadline } from "./deadlines";
+import { sessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 
 const now = Date.now();
 const validEstimate = { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium" as const, basis: "Measured fixture", updatedAt: now };
@@ -288,8 +289,8 @@ async function reviewHookHarness(initialPhases: unknown, jobs: unknown, branchEn
     sessionManager: {
       getHeader: () => ({ id: "customer-review-test" }),
       getBranch: () => branchEntries,
-      getBranchMatching: () => branchEntries,
-      getLatestBranchMatching: () => undefined,
+      getBranchMatching: (predicate) => branchEntries.filter(entry => predicate(sessionContextEntryMetadata(entry))),
+      getLatestBranchMatching: (predicate) => branchEntries.findLast(entry => predicate(sessionContextEntryMetadata(entry))),
       getSessionFile: () => undefined,
     },
     getTodoPhases: () => structuredClone(phases),

@@ -167,7 +167,12 @@ export async function gateReviewFinding(only?: (typeof reviewFindingIds)[number]
 				await probe("truncated root read does not release", "task", coder("Locality X"), false, "OwnerX");
 				await hooks.get("tool_result")!({ toolName: "read", toolCallId: "truncated-meta", input: { path: "agent://OwnerX:raw" }, isError: false, content: [{ type: "text", text: "partial" }], details: { meta: { truncation: truncated.truncation } } } as never, ctx as never);
 				await probe("truncated raw root read does not release", "task", coder("Locality X"), false);
-				await hooks.get("tool_result")!({ toolName: "read", toolCallId: "complete-root", input: { path: "agent://OwnerX" }, isError: false, content: [{ type: "text", text: "complete receipt" }], details: {} } as never, ctx as never);
+				await probe("concise terminal receipt request admitted", "write", { path: "agent://OwnerX", content: "Return a concise COMPLETE terminal receipt for Locality X with findings and evidence; do not do new implementation." }, true);
+				await probe("request alone does not release", "task", coder("Locality X"), false);
+				await probe("concise complete root read admitted", "read", { path: "agent://OwnerX" }, true);
+				await hooks.get("tool_result")!({ toolName: "read", toolCallId: "complete-root", input: { path: "agent://OwnerX" }, isError: false, content: [{ type: "text", text: "COMPLETE terminal receipt: Locality X implementation delivered; verification remains. Evidence: recorded output and remaining verification findings." }], details: {} } as never, ctx as never);
+				await probe("complete read alone does not release", "task", coder("Locality X"), false);
+				await probe("receipt findings reconciliation admitted", "todo", args, true);
 				const result = await tool.execute("complete-reconcile", args);
 				if (result.isError) throw new Error(JSON.stringify(result));
 				await hooks.get("tool_result")!({ toolName: "todo", toolCallId: "complete-reconcile", input: args, ...result } as never, ctx as never);
