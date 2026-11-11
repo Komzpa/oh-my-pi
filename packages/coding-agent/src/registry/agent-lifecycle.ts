@@ -134,6 +134,8 @@ interface ReopeningAgent {
 /** How {@link AgentLifecycleApi.release} ends an agent. */
 export interface AgentReleaseOptions {
 	preserveServices?: boolean;
+	/** Keep a pending terminal publication receipt after shutdown disposal. */
+	retainPendingPublication?: boolean;
 	/** Explicit kill: keep a terminal `aborted` row and persist the kill marker. */
 	tombstone?: boolean;
 	/** Forwarded to the live session's dispose (e.g. the reason its `session_exit` record carries). */
@@ -656,6 +658,15 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 		}
 
 		const live = this.#registry.get(id) === ref ? ref.session : null;
+		const retainPublication =
+			options?.retainPendingPublication === true &&
+			!options.tombstone &&
+			this.#registry.get(id) === ref &&
+			ref.lifecycle?.resultPublication === "pending";
+		if (retainPublication) {
+			this.#registry.detachSession(id, ref);
+			this.#registry.setStatus(id, "parked", ref);
+		}
 		if (options?.tombstone) {
 			// Apply the terminal transition synchronously, before any await. The
 			// dying session's own dispose path calls unregisterUnlessParked
@@ -701,7 +712,7 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 				this.#registry.setHistory(id, { error: message });
 			}
 		}
-		if (!options?.tombstone) this.#registry.unregister(id, ref);
+		if (!options?.tombstone && !retainPublication) this.#registry.unregister(id, ref);
 		if (releaseError !== undefined) throw releaseError;
 		return true;
 	}

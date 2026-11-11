@@ -11,7 +11,7 @@ import * as artifactModule from "@oh-my-pi/pi-coding-agent/session/artifacts";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { AssistantMessage, ToolCall } from "@oh-my-pi/pi-ai";
 import { type CursorExecResolvedCarrier, kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { resetRegisteredArtifactDirsForTests } from "@oh-my-pi/pi-coding-agent/internal-urls/registry-helpers";
@@ -337,6 +337,133 @@ describe("runSubprocess result acceptance", () => {
 			dir.removeSync();
 		}
 	});
+
+	it("does not let publication retention bypass an explicit tombstone", async () => {
+		const harness = createHarness();
+		const registry = AgentRegistry.global();
+		const ref = registerRunning(harness.session);
+		registry.setResultPublication(AGENT_ID, "pending", ref, Date.now());
+		const disposed = vi.spyOn(harness.session, "dispose");
+		await AgentLifecycleManager.global().release(AGENT_ID, ref, {
+			tombstone: true,
+			retainPendingPublication: true,
+		});
+		expect(registry.get(AGENT_ID)?.status).toBe("aborted");
+		expect(registry.get(AGENT_ID)?.session).toBeNull();
+		expect(disposed).toHaveBeenCalledTimes(1);
+	});
+
+	for (const mode of [
+		"shutdown-first",
+		"yield-first",
+		"publication-failed",
+		"ordinary-shutdown",
+		"kill-pending",
+		"one-shot-kill",
+	] as const) {
+		it(`retains shutdown publication receipt: ${mode}`, async () => {
+			const dir = TempDir.createSync("one-shot-publication-");
+			const harness = createHarness({ hangPrompt: true });
+			const controller = new AbortController();
+			const abortRelease = Promise.withResolvers<void>();
+			vi.spyOn(harness.session, "abort").mockImplementation(async () => abortRelease.promise);
+			const disposed = vi.spyOn(harness.session, "dispose");
+			const onRelease = vi.fn(async () => {});
+			const rootFile = path.join(dir.path(), "root.jsonl");
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+				AgentRegistry.global().attachSession(
+					options.agentId!,
+					harness.session,
+					path.join(dir.path(), "root", "child.jsonl"),
+					options.expectedAgentRef ?? undefined,
+				);
+				AgentRegistry.global().setStatus(options.agentId!, "running", harness.session);
+				return {
+					session: harness.session,
+					extensionsResult: {} as LoadExtensionsResult,
+					setToolUIContext: () => {},
+					eventBus: new EventBus(),
+				} as CreateAgentSessionResult;
+			});
+			const entered = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const write = artifactModule.writeArtifact;
+			vi.spyOn(artifactModule, "writeArtifact").mockImplementation(async (file, content) => {
+				if (file.endsWith(AGENT_ID + ".md")) {
+					entered.resolve();
+					await release.promise;
+					if (mode === "publication-failed") throw new Error("publication unavailable");
+				}
+				return write(file, content);
+			});
+			const result = runSubprocess({
+				cwd: dir.path(),
+				id: AGENT_ID,
+				agent: baseAgent,
+				task: "finish once",
+				index: 0,
+				keepAlive: mode !== "one-shot-kill",
+				signal: controller.signal,
+				onRelease,
+				artifactsDir: dir.path(),
+			});
+			await harness.promptEntered;
+			if (mode !== "yield-first" && mode !== "one-shot-kill") controller.abort(ASYNC_JOB_MANAGER_SHUTDOWN_REASON);
+			if (mode !== "ordinary-shutdown") harness.emitTerminalYield({ report: "completed before shutdown finished" });
+			if (mode === "yield-first") controller.abort(ASYNC_JOB_MANAGER_SHUTDOWN_REASON);
+			expect(AgentRegistry.global().get(AGENT_ID)?.lifecycle?.resultPublication).toBe(
+				mode === "ordinary-shutdown" ? undefined : "pending",
+			);
+			abortRelease.resolve();
+			await entered.promise;
+			if (mode === "kill-pending" || mode === "one-shot-kill") {
+				await fs.mkdir(path.join(dir.path(), "root"), { recursive: true });
+				await AgentLifecycleManager.global().release(AGENT_ID, AgentRegistry.global().get(AGENT_ID)!, {
+					tombstone: true,
+				});
+			}
+			const root = {
+				sessionManager: {
+					getSessionFile: () => rootFile,
+					getSessionId: () => "root",
+					ensureOnDisk: async () => {},
+					appendCustomEntry: () => {},
+					flush: async () => {},
+				},
+			} as unknown as AgentSession;
+			let captured = false;
+			const capture = captureSubagentsForRestart(root)
+				.then(() => {
+					captured = true;
+				})
+				.catch(error => error);
+			try {
+				await flushMicrotasks();
+				expect(await Bun.file(path.join(dir.path(), AGENT_ID + ".md")).exists()).toBe(false);
+				expect(captured).toBe(mode === "ordinary-shutdown" || mode === "kill-pending" || mode === "one-shot-kill");
+			} finally {
+				release.resolve();
+				const completed = await result;
+				const captureError = await capture;
+				if (mode === "publication-failed") {
+					expect(captureError).toBeInstanceOf(Error);
+					expect(AgentRegistry.global().get(AGENT_ID)?.lifecycle?.resultPublication).toBe("failed");
+					expect(AgentRegistry.global().get(AGENT_ID)?.session).toBeNull();
+				} else {
+					expect(captureError).toBeUndefined();
+					expect(completed.outputPath).toBe(path.join(dir.path(), AGENT_ID + ".md"));
+					if (mode === "kill-pending" || mode === "one-shot-kill")
+						expect(AgentRegistry.global().get(AGENT_ID)?.status).toBe("aborted");
+					else if (mode !== "yield-first") expect(AgentRegistry.global().get(AGENT_ID)).toBeUndefined();
+				}
+				if (mode !== "yield-first") {
+					expect(disposed).toHaveBeenCalledTimes(1);
+					expect(onRelease).toHaveBeenCalledTimes(1);
+				}
+				dir.removeSync();
+			}
+		});
+	}
 
 	it("does not omit a replacement generation when an old publication completes during capture", async () => {
 		const harness = createHarness();

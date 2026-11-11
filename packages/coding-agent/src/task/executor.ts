@@ -4256,9 +4256,20 @@ export async function finalizeSubagentLifecycle(args: {
 			const shutdownDispose = args.abortKind === "shutdown" ? { reason: postmortem.Reason.EXIT } : undefined;
 			if (ref && ownsRef) {
 				if (shutdownDispose) {
+					const retainPublication = Boolean(
+						args.deferPublicationCleanup && ref.lifecycle?.resultPublication === "pending",
+					);
+					if (retainPublication) {
+						args.deferPublicationCleanup!(async published => {
+							if (published && ref.status !== "aborted") registry.unregister(args.id, ref);
+						});
+					}
 					try {
 						await waitForSessionShutdown(
-							AgentLifecycleManager.global().release(args.id, ref, { dispose: shutdownDispose }),
+							AgentLifecycleManager.global().release(args.id, ref, {
+								dispose: shutdownDispose,
+								retainPendingPublication: retainPublication,
+							}),
 						);
 					} catch (error) {
 						logger.warn("runSubagent: failed to release session during manager shutdown", {
@@ -4266,7 +4277,7 @@ export async function finalizeSubagentLifecycle(args: {
 							error: String(error),
 						});
 						await disposeSession(shutdownDispose);
-						registry.unregister(args.id, ref);
+						if (!retainPublication) registry.unregister(args.id, ref);
 					}
 				} else {
 					// Route hard kills through the lifecycle owner so the terminal
@@ -4302,7 +4313,7 @@ export async function finalizeSubagentLifecycle(args: {
 			await releaseOwnedResources();
 			if (retainPublication) {
 				args.deferPublicationCleanup!(async published => {
-					if (published) registry.unregister(args.id, ref);
+					if (published && ref.status !== "aborted") registry.unregister(args.id, ref);
 				});
 			} else if (ref && ownsRef) registry.unregister(args.id, ref);
 			return;
