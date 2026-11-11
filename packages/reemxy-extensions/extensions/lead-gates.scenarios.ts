@@ -31,7 +31,7 @@ export async function gateLocalityScenarios(only?: string) {
 		let phases: TodoPhase[] = [{ name: "Work", tasks: ["Locality X", "Locality Y", "Locality Z"].map(content => ({ content, status: "pending", schedule: { dependencies: [], ...(demand !== "forecast" || content === "Locality Z" ? { estimate } : {}), ...(content === "Locality X" ? { owner: "OwnerX" } : {}) } })) }];
 		if (demand === "missed-eta") {
 			phases[0]!.tasks[0]!.status = "in_progress";
-			Object.assign(phases[0]!.tasks[0]!.schedule, { startedAt: now - 3_600_000, estimate: { ...estimate, updatedAt: now - 3_600_000 } });
+			Object.assign(phases[0]!.tasks[0]!.schedule!, { startedAt: now - 3_600_000, estimate: { ...estimate, updatedAt: now - 3_600_000 } });
 		}
 		if (known && demand !== "todo-link") phases[0]!.tasks[0]!.schedule!.estimate = { ...estimate, pessimisticSeconds: 7200 };
 		if (demand === "unread-receipts") phases[0]!.tasks[1]!.schedule!.owner = "OwnerXExtra";
@@ -68,7 +68,7 @@ export async function gateLocalityScenarios(only?: string) {
 				await probe("receipt read admitted", "read", read.input, true);
 				await hooks.get("tool_result")!({ ...read, isError: true } as never, ctx as never);
 				await probe("failed read does not release owner", "task", task("Locality X"), false);
-				const args = { op: "schedule", updates: [{ task: "Locality X", estimate, evidence: "Receipt reviewed; continue only the recorded missing output" }] };
+				const args = { op: "schedule" as const, updates: [{ task: "Locality X", estimate, evidence: "Receipt reviewed; continue only the recorded missing output" }] };
 				const tool = new TodoTool({ cwd: "/tmp", settings: Settings.isolated(), getSessionFile: () => null, getTodoPhases: () => phases, setTodoPhases: (next: TodoPhase[]) => { phases = next; } } as unknown as ToolSession);
 				const beforeRead = await tool.execute("too-early-reconcile", args);
 				await hooks.get("tool_result")!({ toolName: "todo", toolCallId: "too-early-reconcile", input: args, ...beforeRead } as never, ctx as never);
@@ -97,7 +97,7 @@ export async function gateLocalityScenarios(only?: string) {
 				await probe("mixed batch", "task", { tasks: [...task("Locality Z").tasks, ...task("Locality X").tasks] }, false, "Locality X");
 				await probe("plan completion", "todo", { op: "done", phase: "Work" }, false, "estimate");
 				await probe("independent completion", "todo", { op: "done", task: "Locality Z" }, true);
-				const args = { op: "schedule", updates: [{ task: "Locality X", estimate }] };
+				const args = { op: "schedule" as const, updates: [{ task: "Locality X", estimate }] };
 				await probe("estimate remedy", "todo", args, true);
 				const tool = new TodoTool({ cwd: "/tmp", settings: Settings.isolated(), getSessionFile: () => null, getTodoPhases: () => phases, setTodoPhases: (next: TodoPhase[]) => { phases = next; } } as unknown as ToolSession);
 				const result = await tool.execute("estimate-remedy", args);
