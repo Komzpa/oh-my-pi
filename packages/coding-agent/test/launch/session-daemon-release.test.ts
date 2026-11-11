@@ -25,7 +25,7 @@ import * as daemonPaths from "../../src/launch/paths";
 import { DAEMON_IDLE_GRACE_ENV, DAEMON_PROJECT_DIR_ENV, DAEMON_RUNTIME_DIR_ENV } from "../../src/launch/protocol";
 import { IrcBus } from "../../src/irc/bus";
 import { AgentLifecycleManager } from "../../src/registry/agent-lifecycle";
-import { AgentRegistry } from "../../src/registry/agent-registry";
+import { type AgentRef, AgentRegistry } from "../../src/registry/agent-registry";
 import * as sdkModule from "../../src/sdk";
 import { attachIrcWakeTurnMonitor, finalizeSubagentLifecycle, runSubprocess } from "../../src/task/executor";
 import { EventBus } from "../../src/utils/event-bus";
@@ -133,6 +133,7 @@ describe("per-session daemon client release", () => {
 					},
 				],
 			});
+			authStorage.keys.setRuntime(mock.provider, "test-key");
 			const settings = Settings.isolated({ "compaction.enabled": false, "todo.enabled": false });
 			const session = new AgentSession({
 				agent: new Agent({
@@ -714,6 +715,7 @@ describe("per-session daemon client release", () => {
 				workSettled = true;
 			});
 			const mock = createMockModel({ responses: [{ content: ["drained"] }] });
+			authStorage.keys.setRuntime(mock.provider, "test-key");
 			const agent = new Agent({
 				initialState: { model: mock, systemPrompt: ["Test"], tools: [], messages: [] },
 				getApiKey: () => "test-key",
@@ -833,6 +835,7 @@ describe("per-session daemon client release", () => {
 			workSettled = true;
 		});
 		const mock = createMockModel({ responses: [{ content: ["drained"] }] });
+		authStorage.keys.setRuntime(mock.provider, "test-key");
 		const agent = new Agent({
 			initialState: { model: mock, systemPrompt: ["Test"], tools: [], messages: [] },
 			getApiKey: () => "test-key",
@@ -969,7 +972,7 @@ describe("per-session daemon client release", () => {
 				},
 			});
 			const registry = AgentRegistry.global();
-			const ref = registry.register({ id: laneId, displayName: laneId, kind: "sub", session });
+			let ref: AgentRef | undefined;
 			const sessionId = manager.getSessionId();
 			const parentId = crypto.randomUUID();
 			const client = await daemonClientForProject(tempDir.path(), sessionId, { idleGraceMs: IDLE_GRACE_MS });
@@ -978,11 +981,25 @@ describe("per-session daemon client release", () => {
 			await parent.request({ op: "ping" });
 			// Only the factory and failing transport are substituted. The session,
 			// core tool run, registry, lifecycle, disposal and job manager are real.
-			const factory = spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-				session,
-				extensionsResult: { extensions: [], errors: [], runtime: new ExtensionRuntime() },
-				setToolUIContext: () => {},
-				eventBus: new EventBus(),
+			const factory = spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+				// Mirror SDK registration: standalone callers create the ref, while
+				// reservation-owning callers must retain their exact generation.
+				const registration = { id: laneId, displayName: laneId, kind: "sub" as const, session: null };
+				ref =
+					options.expectedAgentRef === undefined
+						? registry.register(registration)
+						: registry.registerIfAvailable(registration, options.expectedAgentRef);
+				if (!ref) throw new Error("Fixture SDK registration lost its generation");
+				expect(registry.get(laneId)).toBe(ref);
+				if (options.expectedAgentRef) expect(ref).toBe(options.expectedAgentRef);
+				expect(registry.attachSession(laneId, session, manager.getSessionFile() ?? null, ref)).toBe(true);
+				expect(registry.setStatus(laneId, "running", ref)).toBe(true);
+				return {
+					session,
+					extensionsResult: { extensions: [], errors: [], runtime: new ExtensionRuntime() },
+					setToolUIContext: () => {},
+					eventBus: new EventBus(),
+				};
 			});
 			const failed = spyOn(client, "request").mockRejectedValueOnce(new Error("release transport failed"));
 			const jobGate = Promise.withResolvers<void>();
@@ -1026,6 +1043,7 @@ describe("per-session daemon client release", () => {
 					8_000,
 					"Rejected teardown prevented the final task receipt",
 				);
+				if (!ref) throw new Error("Fixture SDK factory did not attach its session");
 				expect(result.exitCode).toBe(1);
 				expect(result.error).toContain("Subagent teardown failed");
 				expect(result.error).toContain("Failed to release daemon clients");
@@ -1074,7 +1092,7 @@ describe("per-session daemon client release", () => {
 				factory.mockRestore();
 				jobGate.resolve();
 				await deferredCleanup;
-				await AgentLifecycleManager.global().release(laneId, ref);
+				if (ref) await AgentLifecycleManager.global().release(laneId, ref);
 				await session.dispose();
 				await jobs.dispose({ timeoutMs: 2_000 });
 				for (const id of [sessionId, parentId]) await releaseDaemonClientsForSession(id);
