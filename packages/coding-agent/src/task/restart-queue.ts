@@ -1208,16 +1208,6 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	}
 
 	async #waitForRoot(run: ActiveRestartDrain, deadline: number): Promise<boolean> {
-		// A root that is no longer producing a turn can retain stale task-driver
-		// bookkeeping after every authoritative child has disappeared. There is
-		// nothing left to quiesce in that case, so do not spend the root deadline
-		// waiting for recorded worker ids that have no live session.
-		if (
-			!this.#session.isStreaming &&
-			run.runningAgentIds.size > 0 &&
-			getLiveSubagentsForRestart(this.#session).length === 0
-		)
-			return true;
 		const boundary = Promise.race([
 			this.#rootLease(run)
 				.waitForQuiescence()
@@ -1349,9 +1339,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	}
 
 	async #waitForWorkerGrace(run: ActiveRestartDrain, deadline: number): Promise<void> {
-		const childLeases = [...run.children.values()]
-			.filter(session => ![...run.children].some(([id, child]) => child === session && run.abandoned.has(id)))
-			.map(session => ({ session, lease: run.leases.get(session) }))
+		const liveChildren = new Map(getLiveSubagentsForRestart(this.#session).map(child => [child.id, child.session]));
+		const childLeases = [...run.children]
+			.filter(([id, session]) => !run.abandoned.has(id) && liveChildren.get(id) === session)
+			.map(([, session]) => ({ session, lease: run.leases.get(session) }))
 			.filter((item): item is { session: AgentSessionHandle; lease: RestartDrainLease } => item.lease !== undefined);
 		if (childLeases.length === 0) return;
 		run.workerGraceDeadlineAt = deadline;

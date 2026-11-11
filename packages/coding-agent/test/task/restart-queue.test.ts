@@ -358,10 +358,11 @@ describe("restart queue controller", () => {
 		const childManager = track(SessionManager.create(manager.getCwd(), file.slice(0, -".jsonl".length)));
 		childManager.appendSessionInit({ systemPrompt: ["worker"], task: "work", tools: [] });
 		await childManager.ensureOnDisk();
-		const staleQuiescence = Promise.withResolvers<void>();
-		const harness = makeSession(manager, { quiescence: staleQuiescence.promise });
+		const rootQuiescence = Promise.withResolvers<void>();
+		const harness = makeSession(manager, { quiescence: rootQuiescence.promise });
 		const childNotice = Promise.withResolvers<void>();
-		const childHarness = makeSession(childManager, { quiescence: Promise.resolve() });
+		const staleChildQuiescence = Promise.withResolvers<void>();
+		const childHarness = makeSession(childManager, { quiescence: staleChildQuiescence.promise });
 		childHarness.session.sendRestartNotice = async () => childNotice.promise;
 		const registry = AgentRegistry.global();
 		registerRoot(registry, harness.session, file);
@@ -391,12 +392,16 @@ describe("restart queue controller", () => {
 			await controller.handle({ identity, op: "request", requestId: "dead-workers" });
 			registry.unregister(childRef.id, childRef);
 			childNotice.resolve();
+			await Bun.sleep(25);
+			expect(restarts).toBe(0);
+			rootQuiescence.resolve();
 			const result = await Promise.race([terminal.promise, Bun.sleep(250).then(() => undefined)]);
 			expect(result?.state).toBe("completed");
 			expect(restarts).toBe(1);
 		} finally {
 			controller.dispose();
-			staleQuiescence.resolve();
+			rootQuiescence.resolve();
+			staleChildQuiescence.resolve();
 		}
 	});
 
