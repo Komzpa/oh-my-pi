@@ -5698,6 +5698,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			void this.#settleOwnedBrowserTabs();
 		}
 		if (event.type === "tool_execution_end") {
+			// Actual tool progress starts a fresh bounded stop-hook sequence.
+			this.#sessionStopContinuationCount = 0;
 			if (event.toolName === "goal") {
 				await this.#goalRuntime.onGoalToolCompleted();
 			} else {
@@ -6919,6 +6921,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (this.#agentKind === "sub" || !this.#extensionRunner?.hasHandlers("session_stop")) {
 			return false;
 		}
+		// Stop hooks must not turn a terminal provider failure into a fresh request.
+		// Retry policy belongs to recovery, not to extension stop enforcement.
+		if (lastAssistantMessage?.stopReason === "error") {
+			this.#resetSessionStopContinuationState();
+			return false;
+		}
 		const generation = this.#promptGeneration;
 		const result = await this.#extensionRunner.emitSessionStop({
 			messages,
@@ -6942,7 +6950,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
-		if (result?.decision !== "block" && this.#sessionStopContinuationCount >= SESSION_STOP_CONTINUATION_CAP) {
+		if (this.#sessionStopContinuationCount >= SESSION_STOP_CONTINUATION_CAP) {
 			logger.warn("session_stop continuation cap reached", {
 				providerSessionId: this.sessionId,
 				cap: SESSION_STOP_CONTINUATION_CAP,
@@ -6950,7 +6958,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
-		if (result?.decision !== "block") this.#sessionStopContinuationCount++;
+		this.#sessionStopContinuationCount++;
 		this.#sessionStopHookActive = true;
 		this.#queueHiddenNextTurnMessage(
 			{

@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { gateSwitchedOff } from "./dispatch-off-switch";
 import { auditLineage, checkableAuditFinding, reconcileSupersededAudit, withoutSupersededAudits } from "./audit-supersession";
 import type { TodoAuditOrigin } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import dispatchIgnoredInstructions from "./dispatch-ignored.md" with { type: "text" };
@@ -4257,6 +4258,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     );
   };
   pi.on("session_stop", async (_event, ctx) => {
+    if (gateSwitchedOff(ctx)) return;
     if (zeroActiveNag(ctx)) demandIdlePlanContinuation(ctx);
     const redReason = await redRowsIdleReason(ctx, "stop");
     if (redReason) return { decision: "block", reason: redReason };
@@ -5341,16 +5343,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     return lines.length ? `GIT FACTS (measured now; your context may have lost the history): ${lines.join("; ")}.` : "";
   };
   let activeDemand: string | null = null;
-  // Operator kill switch that needs no restart: touch ~/.local/state/omp-todo-dispatch/off (all
-  // sessions) or <session-id>.off. Every demand and refusal of this extension stands down; the context
-  // note (chief role, plan forecast, git facts) keeps coming because it cannot block anything.
-  const gateSwitchedOff = (ctx: ExtensionContext) => {
-    const dir = TODO_DISPATCH_STATE_DIR;
-    const session = ctx.sessionManager?.getHeader?.()?.id;
-    try { statSync(join(dir, "off")); return true; } catch {}
-    if (session) try { statSync(join(dir, `${session}.off`)); return true; } catch {}
-    return false;
-  };
   let nativeGateRegistered = false;
   const softRequirementApi = pi as unknown as SoftToolRequirementRegistrar;
   if (!singleWriterLane && softRequirementApi.registerSoftToolRequirementProvider && pauseGate) {

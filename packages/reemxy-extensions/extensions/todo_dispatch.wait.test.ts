@@ -2452,3 +2452,29 @@ test("zero-active demand rearms after an observed worker finishes without changi
 		expect(h.notices.filter(n => n.customType === "todo-idle-plan-demand")).toHaveLength(2);
 	} finally { h.shutdown(); }
 });
+
+test("operator off-switch releases a blocked session stop without disabling normal enforcement", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "stop-switch-"));
+	const previous = process.env.OMP_TODO_DISPATCH_STATE_DIR;
+	process.env.OMP_TODO_DISPATCH_STATE_DIR = dir;
+	const phases = chainedPlan(1, Date.now());
+	phases[0].tasks[0].status = "pending";
+	phases[0].tasks[0].schedule.owner = undefined;
+	const h = await noticeHarness(phases, Date.now() + 60_000);
+	h.entries.push(humanQuestion());
+	try {
+		const stop = () => h.handlers.get("session_stop")({}, h.ctx);
+		expect((await stop())?.decision).toBe("block");
+		fs.writeFileSync(path.join(dir, "notice-root.off"), "");
+		expect(await stop()).toBeUndefined();
+		fs.rmSync(path.join(dir, "notice-root.off"));
+		expect((await stop())?.decision).toBe("block");
+		fs.writeFileSync(path.join(dir, "off"), "");
+		expect(await stop()).toBeUndefined();
+	} finally {
+		h.shutdown();
+		if (previous === undefined) delete process.env.OMP_TODO_DISPATCH_STATE_DIR;
+		else process.env.OMP_TODO_DISPATCH_STATE_DIR = previous;
+		fs.rmSync(dir, { recursive: true, force: true });
+	}
+});
