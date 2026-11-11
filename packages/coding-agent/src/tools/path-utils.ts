@@ -924,7 +924,12 @@ export async function splitMixedUrlPathList(
 export async function expandDelimitedPathEntries(
 	entries: readonly string[],
 	cwd: string,
-	options: { splitter?: PathEntrySplitter; context?: ResolveContext; exclusionParts?: boolean; mixedLocalPaths?: boolean } = {},
+	options: {
+		splitter?: PathEntrySplitter;
+		context?: ResolveContext;
+		exclusionParts?: boolean;
+		mixedLocalPaths?: boolean;
+	} = {},
 ): Promise<string[]> {
 	const expanded: string[] = [];
 	for (const entry of entries) {
