@@ -1796,7 +1796,13 @@ export function speculativeTaskRows(item: Record<string, unknown>, phases: Dispa
   const brief = String(item.task ?? "").trim();
   const exact = rows.filter((row) => row.content === brief);
   if (exact.length) return exact;
-  return rows.filter((row) => typeof row.content === "string" && row.content.trim().length > 0 && brief.includes(row.content));
+  const target = findTodoExecutorTarget(phases as TodoPhase[], {
+    workerId: typeof item.name === "string" ? item.name : "",
+    taskText: brief,
+    agentProfile: typeof item.agent === "string" ? item.agent : undefined,
+    startedAt: 0,
+  });
+  return target ? [target] : [];
 }
 
 function readOnlyAudit(item: Record<string, unknown>): boolean {

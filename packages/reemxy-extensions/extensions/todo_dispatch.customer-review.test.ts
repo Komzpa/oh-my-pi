@@ -14,6 +14,15 @@ import { sessionContextEntryMetadata } from "@oh-my-pi/pi-coding-agent/session/b
 const now = Date.now();
 const validEstimate = { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium" as const, basis: "Measured fixture", updatedAt: now };
 
+test("task text does not claim a shorter row embedded in its canonical target", () => {
+  const phases = [{ name: "Work", tasks: [
+    { content: "Widget", status: "pending", schedule: { dependencies: [] } },
+    { content: "Implement canonical Widget component", status: "pending", schedule: { dependencies: [], estimate: validEstimate } },
+  ] }];
+  const item = { name: "BuildComponent", agent: "coder", task: "Implement canonical Widget component using the existing tests." };
+  expect(speculativeTaskRows(item, phases).map(row => row.content)).toEqual(["Implement canonical Widget component"]);
+});
+
 test("a newly assigned worker is not blamed for an earlier plan miss", () => {
   expect(workerPastForecast(now - 60_000, now - 5_000, now)).toBe(false);
   expect(workerPastForecast(now - 60_000, now - 120_000, now)).toBe(true);
