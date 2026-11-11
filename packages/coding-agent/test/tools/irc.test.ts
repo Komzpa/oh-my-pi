@@ -110,6 +110,67 @@ describe("IRC", () => {
 	});
 
 	describe("IrcBus", () => {
+		it.each(["startup", "revival"])("bounds recipient preparation without late delivery: %s", async phase => {
+			const late = makeFakeSession();
+			const gate = Promise.withResolvers<AgentSession>();
+			const ref = registry.register({
+				id: "Slow",
+				displayName: "task",
+				kind: "sub",
+				session: null,
+				...(phase === "startup" ? { starting: true } : { status: "parked" as const }),
+			});
+			const lifecycle = AgentLifecycleManager.global();
+			if (phase === "revival") lifecycle.adopt("Slow", { idleTtlMs: 0, revive: () => gate.promise });
+			const unsubscribe = vi.fn();
+			if (phase === "startup") {
+				const subscribe = registry.onChange.bind(registry);
+				vi.spyOn(registry, "onChange").mockImplementation(listener => {
+					const stop = subscribe(listener);
+					return () => {
+						unsubscribe();
+						stop();
+					};
+				});
+			}
+			const bounded = new IrcBus(registry, lifecycle, 5);
+			let receipt: Awaited<ReturnType<IrcBus["send"]>> | undefined;
+			const pending = bounded.send({ from: "Main", to: "Slow", body: "do not deliver late" }).then(value => {
+				receipt = value;
+			});
+			await Bun.sleep(25);
+			const beforeReady = receipt;
+			if (phase === "startup") expect(unsubscribe).toHaveBeenCalledTimes(1);
+			// Always release the fixture, including on the old code's RED path.
+			if (phase === "startup") registry.attachSession("Slow", late.session, undefined, ref);
+			else gate.resolve(late.session);
+			await pending;
+			await Bun.sleep(0);
+			expect(beforeReady?.outcome).toBe("failed");
+			expect(beforeReady?.error).toContain("not delivered");
+			expect(late.delivered).toEqual([]);
+			expect(bounded.unreadCount("Slow")).toBe(0);
+			expect(bounded.sentSince("Main", "Slow", 0)).toBe(false);
+			expect(bounded.unansweredSends("Main", 0)).toEqual([]);
+		});
+
+		it("delivers exactly once when startup becomes ready before the preparation deadline", async () => {
+			const recipient = makeFakeSession();
+			const ref = registry.register({
+				id: "Ready",
+				displayName: "task",
+				kind: "sub",
+				session: null,
+				starting: true,
+			});
+			const bounded = new IrcBus(registry, undefined, 100);
+			const pending = bounded.send({ from: "Main", to: "Ready", body: "one instruction" });
+			registry.attachSession("Ready", recipient.session, undefined, ref);
+			expect((await pending).outcome).toBe("injected");
+			expect(recipient.delivered.map(message => message.body)).toEqual(["one instruction"]);
+			expect(bounded.sentSince("Main", "Ready", 0)).toBe(true);
+		});
+
 		it("fails a startup steer when that generation is killed or replaced", async () => {
 			for (const replacement of [false, true]) {
 				const ref = registry.register({
