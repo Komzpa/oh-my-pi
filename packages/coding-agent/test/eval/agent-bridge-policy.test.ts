@@ -1287,6 +1287,14 @@ describe("runEvalAgent isolation", () => {
 	it("keeps the timeout paused through isolation baseline capture", async () => {
 		mockAgents();
 		const ops: string[] = [];
+		vi.spyOn(isolationRunner, "nativeWorkspace").mockReturnValue(async () => {
+			ops.push("workspace");
+			return {
+				dir: process.cwd(),
+				cleanup: async () => {},
+				retain: async () => ({ dir: process.cwd(), sidecarOk: true }),
+			};
+		});
 		vi.spyOn(isolationRunner, "prepareIsolationContext").mockImplementation(async () => {
 			ops.push("prepare");
 			return {
@@ -1328,6 +1336,8 @@ describe("runEvalAgent isolation", () => {
 		const resumeIdx = ops.lastIndexOf(EVAL_TIMEOUT_RESUME_OP);
 		const prepareIdx = ops.indexOf("prepare");
 		expect(pauseIdx).toBeGreaterThanOrEqual(0);
+		expect(ops.indexOf("workspace")).toBeGreaterThan(pauseIdx);
+		expect(ops.indexOf("workspace")).toBeLessThan(prepareIdx);
 		expect(prepareIdx).toBeGreaterThan(pauseIdx);
 		expect(prepareIdx).toBeLessThan(resumeIdx);
 	});
