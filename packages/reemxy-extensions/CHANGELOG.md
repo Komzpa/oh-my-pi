@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Keep CPU and memory capacity inspection available while dispatch demands require plan repair.
+
 - Clearing a worker's resource scope revokes file writes while keeping undeclared scopes and live writer leases distinct.
 
 - Removed automatic scope-cut questions on forecast slips; chiefs preserve requested work, reconcile returned findings and use actual remaining-work forecasts.

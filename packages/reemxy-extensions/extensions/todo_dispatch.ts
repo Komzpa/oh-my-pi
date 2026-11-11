@@ -3540,7 +3540,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
   };
   const replanInstruction = (ctx: ExtensionContext, open: TodoTaskForecast[], capacity: number) =>
     prompt.render(waitingWorkInstructions, { capacity, waitingRows: criticalWaitList(ctx, open) }).trim();
-  const READ_ONLY_BASH = /^(?:grep|rg|ls|cat|head|tail|wc|pwd|echo|stat|test|\[|sha256sum|sha1sum|md5sum|readlink|realpath|file|cut|uniq|tr|nl|jq|cmp|basename|dirname|date|du|df|free|uptime|ps|pgrep|ss)$/;
+  const READ_ONLY_BASH = /^(?:grep|rg|ls|cat|head|tail|wc|pwd|echo|stat|test|\[|sha256sum|sha1sum|md5sum|readlink|realpath|file|cut|uniq|tr|nl|jq|cmp|basename|dirname|date|du|df|free|getconf|uptime|ps|pgrep|ss)$/;
   // Live 2026-10-12: the chief was refused `git show … | cat && sed -n '160,170p' ledger | cut -c1-400`,
   // a pure look, so its rows went overdue. sed only as a line-range print, find and sort without write/exec flags.
   const readOnlyLook = (words: Array<{ value: string; dynamic: boolean }>) => {

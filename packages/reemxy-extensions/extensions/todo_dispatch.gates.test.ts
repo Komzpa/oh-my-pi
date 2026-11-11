@@ -2682,6 +2682,11 @@ test("escalated plan demands refuse everything but a plan-fixing todo call; an o
     // A pure look passes the escalation; reading results is how the plan gets fixed.
     const look = (await toolCall({ toolName: "bash", toolCallId: "u1b", input: { command: "systemctl status codex-lb" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
     expect(look?.reason ?? "").not.toContain("missed-eta");
+    // Capacity measurement must remain available while the lead repairs scheduling.
+    const capacity = (await toolCall({ toolName: "bash", toolCallId: "u1-capacity", input: { command: "getconf _NPROCESSORS_ONLN && free -b" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(capacity?.block).not.toBe(true);
+    const capacityThenWrite = (await toolCall({ toolName: "bash", toolCallId: "u1-capacity-write", input: { command: "getconf _NPROCESSORS_ONLN && touch capacity-probe" } }, ctx)) as { block?: boolean; reason?: string } | undefined;
+    expect(capacityThenWrite?.block).toBe(true);
     // A worker spawn answering the demand is refused too.
     for (const agent of ["retro-facilitator", "plan-doctor"]) {
       const spawn = (await toolCall({ toolName: "task", toolCallId: `u1-${agent}`, input: { tasks: [{ agent, name: "Doctor", task: "diagnose" }] } }, ctx)) as { block?: boolean } | undefined;
