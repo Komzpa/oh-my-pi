@@ -144,6 +144,9 @@ export interface RecoveryDemand extends WakeDemand {
 }
 export interface RecoveryState {
 	idleSince: Record<string, number>;
+	zeroWorkerChecks?: number;
+	zeroWorkerLastCheckAt?: number;
+	zeroWorkerCooldownUntil?: number;
 	satisfied?: string;
 	pending?: RecoveryDemand;
 	samples: Array<{ at: number; completed: string[] }>;
@@ -205,6 +208,16 @@ export function recoveryDemand(
 			(row.schedule?.dependencies ?? []).every(dep => rows.some(other => other.content === dep && !openRow(other))),
 	);
 	const spare = activeCount < capacity;
+	const zeroWorkerReady = activeCount === 0 && ready.length > 0;
+	const previousZeroCheckAt = previous?.zeroWorkerLastCheckAt;
+	const consecutiveZeroCheck =
+		previousZeroCheckAt !== undefined && now > previousZeroCheckAt && now - previousZeroCheckAt <= 2 * 60_000;
+	state.zeroWorkerChecks = zeroWorkerReady
+		? consecutiveZeroCheck
+			? (previous?.zeroWorkerChecks ?? 0) + 1
+			: 1
+		: 0;
+	state.zeroWorkerLastCheckAt = zeroWorkerReady ? now : undefined;
 	state.idleSince = Object.fromEntries(
 		ready.filter(() => spare).map(row => [row.content, state.idleSince[row.content] ?? now]),
 	);
@@ -220,7 +233,13 @@ export function recoveryDemand(
 	const slip = deadline === undefined ? 0 : Math.max(now, finish ?? 0) - deadline;
 	const step = Math.ceil(slip / RECOVERY_STEP_MS);
 	const key = `deadline:${deadline}:${step}`;
-	const idle = ready.find(row => now - state.idleSince[row.content]! >= RECOVERY_STEP_MS);
+	const zeroWorkerIdle =
+		zeroWorkerReady &&
+		(state.zeroWorkerChecks ?? 0) >= 2 &&
+		now >= (state.zeroWorkerCooldownUntil ?? 0);
+	const idle = zeroWorkerIdle
+		? ready[0]
+		: ready.find(row => now - state.idleSince[row.content]! >= RECOVERY_STEP_MS);
 	const anchor = `deadline:${deadline}:`;
 	const satisfiedStep = state.satisfied?.startsWith(anchor) ? Number(state.satisfied.slice(anchor.length)) : 0;
 	const missed = slip > 0 && step > satisfiedStep;
@@ -237,6 +256,7 @@ export function recoveryDemand(
 		baseline: recoveryBaseline(phases),
 		ready: ready.map(row => row.content),
 	};
+	if (!missed && zeroWorkerIdle) state.zeroWorkerCooldownUntil = now + RECOVERY_STEP_MS;
 	return state;
 }
 
