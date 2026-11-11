@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Failed subagent startup now releases waiting message senders before artifact publication or cleanup finishes.
+- Messages waiting for a subagent to start or revive now fail after a bounded readiness deadline without being delivered later.
+
 ## [18.18.8] - 2026-11-11
 
 ### Changed

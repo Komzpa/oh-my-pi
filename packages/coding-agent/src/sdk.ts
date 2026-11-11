@@ -1100,7 +1100,7 @@ export type SubagentDiscoveryOptions = Pick<
 
 export interface CreateAgentSessionResult {
 	/** Read current owner discovery inputs without rescanning the workspace. */
-	getSubagentDiscoveryOptions?: (restrictToolNames: boolean) => SubagentDiscoveryOptions;
+	getSubagentDiscoveryOptions?: (restrictToolNames: boolean, cwd?: string) => SubagentDiscoveryOptions;
 	/** The created session */
 	session: AgentSession;
 	/** Extensions result (loaded extensions + runtime) */
@@ -6445,7 +6445,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		return {
 			session,
 			extensionsResult,
-			getSubagentDiscoveryOptions: restrict => getSubagentDiscoveryOptions(toolSession, restrict, cwd),
+			getSubagentDiscoveryOptions: (restrict, discoveryCwd = cwd) =>
+				getSubagentDiscoveryOptions(toolSession, restrict, discoveryCwd),
 			setToolUIContext,
 			mcpManager: ownedMcpManager ?? (mcpManager instanceof MCPManager ? mcpManager : undefined),
 			modelFallbackMessage,

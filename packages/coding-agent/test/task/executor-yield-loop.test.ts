@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import * as artifacts from "@oh-my-pi/pi-coding-agent/session/artifacts";
+import type { IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/irc";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
@@ -208,6 +211,97 @@ describe("runSubprocess incremental yield loops", () => {
 		});
 		expect(create).not.toHaveBeenCalled();
 	});
+
+	for (const publicationFails of [false, true]) {
+		it(`terminates failed startup before artifact publication (fails=${publicationFails}) and releases its waiting sender`, async () => {
+			const registry = AgentRegistry.global();
+			const bus = new IrcBus(registry);
+			const id = "failed-startup-publication";
+			const reached = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			let reassigned = false;
+			const write = artifacts.writeArtifact;
+			vi.spyOn(artifacts, "writeArtifact").mockImplementation(async (file, text) => {
+				if (file.endsWith(`${id}.md`) && !reassigned) {
+					reached.resolve();
+					await release.promise;
+					if (publicationFails) throw new Error("artifact publication failed");
+				}
+				return write(file, text);
+			});
+			vi.spyOn(availability, "providerExhaustionExclusion").mockReturnValue({
+				provider: "codex-lb",
+				reason: "provider unavailable (discovery)",
+				until: Date.now() + 300_000,
+			});
+			vi.spyOn(availability, "providerExhaustionRecord").mockReturnValue(undefined);
+			const create = vi.spyOn(sdkModule, "createAgentSession");
+			let receipt: Promise<IrcDeliveryReceipt> | undefined;
+			const stop = registry.onChange(() => {
+				if (!receipt && registry.get(id)?.starting) receipt = bus.send({ from: "Main", to: id, body: "continue" });
+			});
+			const run = runSubprocess({ ...baseOptions(id, 10), modelOverride: "codex-lb/gpt-6.1-sol" });
+			try {
+				await drive(reached.promise);
+				expect(create).not.toHaveBeenCalled();
+				expect(registry.get(id)?.status).toBe("aborted");
+				expect(registry.isRunning(registry.get(id)!)).toBe(false);
+				expect(receipt).toBeDefined();
+				expect(await drive(receipt!)).toMatchObject({
+					outcome: "failed",
+					error: expect.stringContaining("stopped during startup"),
+				});
+				const old = registry.get(id)!;
+				registry.unregister(id, old);
+				stop();
+				reassigned = true;
+				const delivered = vi.fn(async () => "injected" as const);
+				const handle = createMockSession(({ emit, pushMessage }) =>
+					emitTerminalYieldTurn("reassigned", emit, pushMessage),
+				);
+				handle.session.deliverIrcMessage = delivered;
+				create.mockImplementation(async (options = {}) => {
+					Object.assign(handle.session, { sessionManager: options.sessionManager });
+					registry.attachSession(id, handle.session, undefined, options.expectedAgentRef ?? undefined);
+					return {
+						session: handle.session,
+						extensionsResult: {} as LoadExtensionsResult,
+						setToolUIContext: () => {},
+						eventBus: new EventBus(),
+					};
+				});
+				const next = await drive(
+					runSubprocess({
+						...baseOptions(id, 10),
+						modelRegistry: {
+							refresh: async () => {},
+							getAvailable: () => [],
+							getAll: () => [],
+						} as unknown as ModelRegistry,
+					}),
+				);
+				expect({ code: next.exitCode, error: next.error }).toEqual({ code: 0, error: undefined });
+				const replacement = registry.get(id)!;
+				expect(replacement).not.toBe(old);
+				expect(await bus.send({ from: "Main", to: id, body: "new assignment" })).toMatchObject({
+					outcome: "injected",
+				});
+				expect(delivered).toHaveBeenCalledTimes(1);
+				release.resolve();
+				const result = await drive(run);
+				expect(result.exitCode).toBe(1);
+				expect(result.failureKind).toBe("infrastructure");
+				expect(result.aborted).not.toBe(true);
+				expect(JSON.parse(result.error!).code).toBe("provider_chain_unavailable");
+				expect(registry.get(id)).toBe(replacement);
+				expect(replacement.status).toBe("idle");
+			} finally {
+				stop();
+				release.resolve();
+				await drive(run);
+			}
+		});
+	}
 
 	for (const [status, errorType, expectedClass] of [
 		[402, "billing_error", "entitlement"],

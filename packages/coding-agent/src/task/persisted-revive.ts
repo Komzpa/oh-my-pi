@@ -1,3 +1,4 @@
+import { readTaskWorkspace, validatePersistedTaskWorkspace } from "./workspace";
 import { cfgTaskPeerAwareness } from "./settings";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -102,7 +103,7 @@ async function restartIsolationCwd(sessionFile: string, id: string, cwd: string)
  */
 export interface PersistedSubagentReviveContext {
 	session: AgentSession;
-	getSubagentDiscoveryOptions?: (restrictToolNames: boolean) => SubagentDiscoveryOptions;
+	getSubagentDiscoveryOptions?: (restrictToolNames: boolean, cwd?: string) => SubagentDiscoveryOptions;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
 	settings: Settings;
@@ -255,6 +256,8 @@ export function createPersistedSubagentReviverFactory(
 			parentId = registry.get(parentId)?.parentId;
 		}
 		return async expectedRef => {
+			const workspace = await readTaskWorkspace(sessionFile);
+			const discoveryCwd = workspace?.cwd ?? isolatedCwd ?? restoredSeance?.cwd ?? peek.cwd;
 			// Live root state is read per revive, so a later `/new` or cwd move is followed.
 			const spec: PersistedReviveSpec = {
 				id: ref.id,
@@ -271,8 +274,10 @@ export function createPersistedSubagentReviverFactory(
 				artifactManager: ctx.session.sessionManager.getArtifactManager() ?? undefined,
 				discoveryOptions: ctx.getSubagentDiscoveryOptions?.(
 					restoredSeance !== undefined || peek.init?.restrictToolNames === true,
+					discoveryCwd,
 				),
-				preparedExtensions: ctx.session.preparedExtensions,
+				preparedExtensions:
+					discoveryCwd === ctx.session.sessionManager.getCwd() ? ctx.session.preparedExtensions : undefined,
 				authStorage: ctx.authStorage,
 				modelRegistry: ctx.modelRegistry,
 				settings: ctx.settings,
@@ -296,6 +301,7 @@ export function createPersistedSubagentReviverFactory(
 export async function revivePersistedSubagent(spec: PersistedReviveSpec, expectedRef: AgentRef): Promise<AgentSession> {
 	const ref = { id: spec.id, displayName: spec.displayName, parentId: spec.parentId };
 	const { sessionFile, taskDepth, restoredSeance } = spec;
+	const verifiedWorkspace = await readTaskWorkspace(sessionFile);
 	const registry = AgentRegistry.global();
 	// Re-open fresh on every revive: park closes the writer, so this takes
 	// the single-writer lock cleanly and restores the full message history.
@@ -303,6 +309,12 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 		suppressBreadcrumb: true,
 		throwIfMissing: true,
 	});
+	try {
+		await validatePersistedTaskWorkspace(reopened);
+	} catch (error) {
+		await reopened.close();
+		throw error;
+	}
 	const init = extractSessionInit([...reopened.iterateEntries("session_init")]);
 	if (!init) {
 		await reopened.close();
@@ -501,7 +513,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 	const lastNoteAt = findLastPersistedSubagentElapsedNoteAt(elapsedMessages, attemptStartedAt);
 	try {
 		({ session } = await createAgentSession({
-			cwd: spec.isolatedCwd ?? restoredSeance?.cwd ?? spec.root.sessionManager.getCwd(),
+			cwd: verifiedWorkspace?.cwd ?? spec.isolatedCwd ?? restoredSeance?.cwd ?? reopened.getCwd(),
 			...(spec.isolatedCwd !== undefined ? { additionalDirectories: [] } : {}),
 			costGate: spec.costGate,
 			authStorage: spec.authStorage,

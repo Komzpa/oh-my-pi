@@ -24,6 +24,13 @@ const lifecycleOwners = new WeakMap<object, WeakMap<object, Set<TaskTool>>>();
  *   - Progress tracking via JSON events
  *   - Session artifacts for debugging
  */
+import {
+	discardPreparedTaskWorkspace,
+	prepareTaskWorkspace,
+	validateTaskWorkspace,
+	type VerifiedTaskWorkspace,
+} from "./workspace";
+import { Snowflake } from "@oh-my-pi/pi-utils";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type {
@@ -96,6 +103,7 @@ import { captureReworkReflection, renderPreviousAttempts, type ReworkReflectionR
 import {
 	invalidModelSelectorReason,
 	normalizeModelSelector,
+	openIsolatedWorkspace,
 	renderSubagentUserPrompt,
 	resolveEffectiveSubagentPolicy,
 	runStructuredSubagent,
@@ -557,6 +565,8 @@ function resolveSpawnItems(params: TaskParams): TaskItem[] {
 		task: params.task,
 		taskFile: params.taskFile,
 	};
+	if (params.workspace !== undefined) item.workspace = params.workspace;
+	if (params.reads !== undefined) item.reads = params.reads;
 	if ("images" in params) item.images = params.images;
 	if ("solutionSpace" in params) item.solutionSpace = params.solutionSpace;
 	if ("rework" in params) item.rework = params.rework;
@@ -582,6 +592,13 @@ interface ResolvedTaskItem extends TaskItem {
 
 interface SpawnParams extends TaskParams {
 	taskFileSha256?: string;
+}
+
+// Rebuilt spawn params share only their dispatch item's preparation, never a name across calls.
+const spawnPreparationKeys = new WeakMap<object, object>();
+
+function spawnPreparationKey(params: TaskParams): object {
+	return spawnPreparationKeys.get(params) ?? params;
 }
 
 function submittedTaskFiles(args: unknown): string[] {
@@ -651,6 +668,9 @@ async function resolveTaskFile(owner: object, session: ToolSession, item: TaskIt
  */
 function spawnParamsFor(params: TaskParams, item: ResolvedTaskItem, defaultAgent: string): SpawnParams {
 	const spawn: SpawnParams = { agent: item.agent?.trim() || defaultAgent };
+	spawnPreparationKeys.set(spawn, item);
+	if (item.workspace !== undefined) spawn.workspace = item.workspace;
+	if (item.reads !== undefined) spawn.reads = item.reads;
 	if (item.requirementIds !== undefined) spawn.requirementIds = item.requirementIds;
 	if (item.name !== undefined) spawn.name = item.name;
 	if (item.task !== undefined) spawn.task = item.task;
@@ -1140,6 +1160,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	readonly #todoExecutors = new Map<string, TodoExecutorObservation>();
 	readonly #reworkRoutes = new Map<string, ReworkRoute>();
 	readonly #workerSessions = new Map<string, StructuredSubagentResult>();
+	readonly #preparedWorkspaces = new WeakMap<object, VerifiedTaskWorkspace>();
+	readonly #spawnWorkspaces = new Map<string, VerifiedTaskWorkspace>();
 	readonly #reflectingWorkers = new Set<string>();
 
 	#spawnRow(params: SpawnParams) {
@@ -1976,6 +1998,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	): Promise<SpawnRun | undefined> {
 		// File bytes must be captured at dispatch, not while arguments stream.
 		if (spawn.taskFile !== undefined) return undefined;
+		if (spawn.workspace !== undefined || spawn.reads !== undefined || spawn.isolated === true) return undefined;
 		if (spawn.tools?.length && this.session.getPlanModeState?.()?.enabled === true) return undefined;
 		let policy;
 		try {
@@ -2037,32 +2060,59 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 	 * normalized task params rather than smuggling internal policy over the
 	 * task wire contract.
 	 */
-	#resolveSpawnPreflight(params: TaskParams) {
-		if (params.row !== undefined) {
-			const error = validateTodoExecutorRow(
-				this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.() ?? [],
-				params.row,
-			);
-			if (error) throw new Error(error);
+	async #resolveSpawnPreflight(params: TaskParams) {
+		const key = spawnPreparationKey(params);
+		let workspace = this.#preparedWorkspaces.get(key);
+		if (!workspace) {
+			workspace = await prepareTaskWorkspace({
+				...params,
+				resources:
+					params.resources ?? (params.workspace ? undefined : this.#spawnRow(params)?.task.schedule?.resources),
+				cwd: this.session.cwd,
+				id: `workspace-${Snowflake.next()}`,
+				openWorkspace: openIsolatedWorkspace(this.session.settings),
+			});
+			this.#preparedWorkspaces.set(key, workspace);
 		}
-		return resolveEffectiveSubagentPolicy({
-			session: this.session,
-			invocationKind: "task",
-			assignment: (params.task ?? "").trim(),
-			row: params.row,
-			readOnly: params.readOnly,
-			context: this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined,
-			agent: params.agent,
-			sourceSession: params.sourceSession,
-			...spawnModelFields(params),
-			...this.#resultParams(params),
-			...this.#effortParams(params),
-			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
-			blockedAgent: this.#blockedAgent,
-			enableLsp: (this.session.enableLsp ?? true) && cfgTaskEnableLsp.get(this.session.settings),
-			enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
-			maxRuntimeMs: cfgTaskMaxRuntimeMs.get(this.session.settings),
-		});
+		try {
+			await validateTaskWorkspace(workspace);
+			if (params.row !== undefined) {
+				const error = validateTodoExecutorRow(
+					this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.() ?? [],
+					params.row,
+				);
+				if (error) throw new Error(error);
+			}
+			return await resolveEffectiveSubagentPolicy({
+				session: this.session,
+				invocationKind: "task",
+				assignment: (params.task ?? "").trim(),
+				row: params.row,
+				readOnly: params.readOnly,
+				context: this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined,
+				agent: params.agent,
+				sourceSession: params.sourceSession,
+				...spawnModelFields(params),
+				...this.#resultParams(params),
+				...this.#effortParams(params),
+				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
+				blockedAgent: this.#blockedAgent,
+				enableLsp: (this.session.enableLsp ?? true) && cfgTaskEnableLsp.get(this.session.settings),
+				enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
+				maxRuntimeMs: cfgTaskMaxRuntimeMs.get(this.session.settings),
+			});
+		} catch (error) {
+			this.#preparedWorkspaces.delete(key);
+			try {
+				await discardPreparedTaskWorkspace(workspace);
+			} catch (cleanupError) {
+				throw new AggregateError(
+					[error, cleanupError],
+					`Workspace preflight failed: ${String(error)}; cleanup failed: ${String(cleanupError)}`,
+				);
+			}
+			throw error;
+		}
 	}
 
 	async #admitSpawn(params: SpawnParams, id: string, signal?: AbortSignal): Promise<string | undefined> {
@@ -2070,6 +2120,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (breaker) return breaker;
 		try {
 			const policy = await this.#resolveSpawnPreflight(params);
+			const verifiedWorkspace = this.#preparedWorkspaces.get(spawnPreparationKey(params))!;
+			this.#spawnWorkspaces.set(id, verifiedWorkspace);
+			if (isReadOnlyDispatch(policy.effectiveAgent)) verifiedWorkspace.resources = [];
 			signal?.throwIfAborted();
 			if (policy.preparedSession !== undefined) return;
 			const reserved = this.#reserveRow(params, id, isReadOnlyDispatch(policy.effectiveAgent));
@@ -2080,13 +2133,17 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					phase: "admission",
 					row: params.row,
 					resources: params.resources,
+					workspace: params.workspace,
+					verifiedWorkspace,
+					reads: verifiedWorkspace.reads,
+					cwd: verifiedWorkspace.cwd,
 					readOnly: isReadOnlyDispatch(policy.effectiveAgent),
 					agent: policy.agentName,
 					invocationKind: "task",
 					modelRole: policy.modelRole,
 					patterns: policy.modelOverride ?? [],
 					spawnKey: id,
-					isolated: params.isolated === true,
+					isolated: params.workspace !== undefined ? false : params.isolated === true,
 					assignment: params.task,
 					context: this.#isBatchEnabled() ? params.context : undefined,
 				},
@@ -2123,6 +2180,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			this.#resourceWaits.delete(id);
 			this.#setResourceWait(params);
 			if (result?.block) {
+				await discardPreparedTaskWorkspace(verifiedWorkspace);
+				this.#preparedWorkspaces.delete(spawnPreparationKey(params));
 				this.#releaseRow(id, true);
 				const cause = result.reason ?? "Subagent spawn blocked by extension.";
 				this.#recordRefusal(params, id, cause);
@@ -2130,6 +2189,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			}
 		} catch (error) {
 			this.#releaseRow(id, true);
+			const prepared = this.#spawnWorkspaces.get(id);
+			if (prepared) await discardPreparedTaskWorkspace(prepared);
+			this.#preparedWorkspaces.delete(spawnPreparationKey(params));
 			const cause = error instanceof Error ? error.message : String(error);
 			this.#recordRefusal(params, id, cause);
 			return this.#breaker(params) ?? formatSpawnRefusal(cause, id);
@@ -2254,18 +2316,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			if (!batchEnabled) {
 				return createTaskModeError(`Task execution failed: ${preflightFailures[0]!.error}`);
 			}
-			return createTaskModeError(
-				preflightFailures
-					.map(({ index, error }) => {
-						const item = spawnItems[index]!;
-						return `Task ${item.name?.trim() || `#${index + 1}`} failed preflight: ${error}`;
-					})
-					.join("\n"),
-			);
 		}
-		const policies = preflights.map(preflight => preflight.policy!);
+		const policies = preflights.map(preflight => preflight.policy);
 		try {
 			for (const [index, policy] of policies.entries()) {
+				if (!policy) continue;
 				const route = this.#reworkRoutes.get(`${toolCallId}:${index}`);
 				if (!route) continue;
 				const blocked = await this.#prepareRework(route, policy, signal);
@@ -2276,11 +2331,12 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				`Rework preparation failed: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
+		const itemBlocking = policies.map(policy => policy?.effectiveAgent.blocking === true);
 		const toolNotices: string[] = [];
 		const unavailableBuiltins: string[] = [];
 		spawnItems.forEach((item, index) => {
 			const policy = policies[index]!;
+			if (!policy) return;
 			for (const name of strippedBuiltinTools.get(item) ?? []) {
 				if (isBuiltinToolAvailable(name, policy.effectiveAgent, this.session)) {
 					toolNotices.push(
@@ -2330,6 +2386,11 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const admittedIds = new Map<number, string>();
 		const refused: string[] = [];
 		for (const index of spawnItems.keys()) {
+			const failure = preflightFailures.find(failure => failure.index === index);
+			if (failure) {
+				refused.push(`Task ${spawnItems[index]!.name?.trim() || `#${index + 1}`} refused: ${failure.error}`);
+				continue;
+			}
 			const run = adopted.get(index);
 			const id = run?.identity.agentId ?? (await this.#allocateSpawn(normalizedSpawnParams[index]!));
 			const refusal = run ? undefined : await this.#admitSpawn(normalizedSpawnParams[index]!, id, signal);
@@ -2430,6 +2491,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		for (const [index, item] of spawnItems.entries()) {
 			const agentType = resolvedAgents[index]!;
 			const policy = policies[index]!;
+			if (!policy) continue;
 			const agentSource = policy.agent.source;
 			const run = adopted.get(index);
 			const agentId = admittedIds.get(index);
@@ -3143,6 +3205,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				invocationKind: "task" as const,
 				assignment,
 				scope: params.scope,
+				workspace: params.workspace,
+				reads: params.reads,
+				verifiedWorkspace: preAllocatedId ? this.#spawnWorkspaces.get(preAllocatedId) : undefined,
 				context,
 				agent: params.agent,
 				requirementIds: params.requirementIds,

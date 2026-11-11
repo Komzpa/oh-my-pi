@@ -1,4 +1,5 @@
 import { getSubagentDiscoveryOptions } from "@oh-my-pi/pi-coding-agent/task/structured-subagent";
+import { persistTaskWorkspace } from "@oh-my-pi/pi-coding-agent/task/workspace";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
@@ -234,7 +235,7 @@ async function createPersistedSession(
 }
 
 interface ReviveOwnerOptions {
-	discovery?: () => Partial<CreateAgentSessionOptions>;
+	discovery?: (restricted: boolean, cwd?: string) => Partial<CreateAgentSessionOptions>;
 	extensionRoots?: () => EffectiveExtensionRoots;
 	functionRoots?: boolean;
 	preparedExtensions?: readonly PreparedExtension[];
@@ -286,6 +287,50 @@ afterEach(async () => {
 });
 
 describe("persisted subagent revival", () => {
+	it.each([false, true])(
+		"cold revival discovers the verified workspace rather than its parent (foreign: %s)",
+		async foreign => {
+			const parentCwd = makeTempDir("@pi-revive-parent-");
+			const childCwd = foreign ? makeTempDir("@pi-revive-child-") : parentCwd;
+			const sessionFile = await createPersistedSession(childCwd);
+			await persistTaskWorkspace(sessionFile, {
+				repo: childCwd,
+				cwd: childCwd,
+				head: "",
+				reads: [],
+				resources: [childCwd],
+			});
+			const tree = {
+				rootPath: parentCwd,
+				rendered: "parent tree",
+				agentsMdFiles: [],
+				truncated: false,
+				totalLines: 1,
+			};
+			const parent = {
+				cwd: parentCwd,
+				workspaceTree: tree,
+				extensionPaths: ["/parent-extension.ts"],
+				skills: [],
+				rules: [],
+			} as unknown as ToolSession;
+			let captured: CreateAgentSessionOptions | undefined;
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+				captured = options;
+				return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+			});
+			const ref = createRef(sessionFile);
+			const reviver = await createFactory(parentCwd, undefined, {
+				discovery: (restricted, cwd = parentCwd) => getSubagentDiscoveryOptions(parent, restricted, cwd),
+			})(ref);
+			if (!reviver) throw new Error("Expected reviver");
+			await reviver(ref);
+			expect(captured?.cwd).toBe(childCwd);
+			expect(captured?.workspaceTree).toEqual(foreign ? undefined : tree);
+			expect(captured?.preloadedExtensionPaths).toEqual(foreign ? undefined : ["/parent-extension.ts"]);
+		},
+	);
+
 	it("initializes the extension runtime on cold revival so tool_call handlers are not fail-closed blocked", async () => {
 		const cwd = makeTempDir("@pi-revive-ext-init-");
 		const sessionFile = await createPersistedSession(cwd);

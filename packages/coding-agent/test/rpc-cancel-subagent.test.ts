@@ -219,7 +219,6 @@ describe("handleRpcCancelSubagent", () => {
 			agent: { state: { systemPrompt: ["test"] } },
 			model: undefined,
 			extensionRunner: undefined,
-			sessionManager: { appendSessionInit: () => {} },
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			getMountedXdevToolNames: () => [],
@@ -252,6 +251,8 @@ describe("handleRpcCancelSubagent", () => {
 		} as unknown as AgentSession;
 
 		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			// Use the executor-owned persisted manager, as the real SDK does.
+			Object.assign(session, { sessionManager: options.sessionManager });
 			AgentRegistry.global().attachSession(
 				options.agentId!,
 				session,
@@ -271,7 +272,12 @@ describe("handleRpcCancelSubagent", () => {
 
 		// Foreground: awaited directly, with no async job behind it.
 		const run = runSubprocess({ cwd: artifactsDir, agent, task: "work", index: 0, id, eventBus, artifactsDir });
-		await promptEntered.promise;
+		await Promise.race([
+			promptEntered.promise,
+			run.then(result => {
+				throw new Error(`Executor settled before prompt entry: ${result.error ?? result.exitCode}`);
+			}),
+		]);
 
 		await expect(handleRpcCancelSubagent(registry, id)).resolves.toBe(true);
 

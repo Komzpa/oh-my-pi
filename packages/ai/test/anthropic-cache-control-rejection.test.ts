@@ -36,6 +36,8 @@ import type { AssistantMessage, Context, FetchImpl, Model, ProviderSessionState 
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { withOfficialAnthropicEndpoint } from "./helpers";
 
+import { ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY, anthropicProviderSessionStateKey } from "../src/providers/anthropic-state";
+
 const EXTENDED_CACHE_TTL_BETA = "extended-cache-ttl-2025-04-11";
 const PROMPT_CACHING_SCOPE_BETA = "prompt-caching-scope-2026-01-05";
 /** Added by `compat.supportsPerMessageEffort`; forces a per-request override. */
@@ -57,6 +59,15 @@ const MODEL: Model<"anthropic-messages"> = buildModel({
 	contextWindow: 200_000,
 	maxTokens: 8_192,
 });
+
+const DIAGNOSTICS_KEY = `thinking-prefix-diagnostics:${MODEL.baseUrl}:${MODEL.id}`;
+
+/** Complete map shape: one fallback anchor, one independent diagnostic state, no per-client growth. */
+function expectOpaqueSessionKeys(states: Map<string, ProviderSessionState>, namedEndpoint = false): void {
+	const expected = [ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY, DIAGNOSTICS_KEY];
+	if (namedEndpoint) expected.push(anthropicProviderSessionStateKey(MODEL.baseUrl, MODEL.id));
+	expect([...states.keys()].sort()).toEqual(expected.sort());
+}
 
 const CONTEXT: Context = {
 	systemPrompt: ["You are a precise assistant.", "Follow the house style guide."],
@@ -669,20 +680,22 @@ describe("Anthropic cache_control rejection fallback", () => {
 		// free — for the first session's second turn.
 		expect(capture.bodies).toHaveLength(5);
 		expect(countBreakpoints(capture.bodies[4])).toBe(0);
-		// Neither session paid for that with more than the single anchor entry,
+		// Neither session paid for that with more than a single fallback anchor,
 		// and neither could read the other's through it.
-		expect(first.size).toBe(1);
-		expect(second.size).toBe(1);
+		expectOpaqueSessionKeys(first);
+		expectOpaqueSessionKeys(second);
+		expect(first.get(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY)).not.toBe(second.get(ANTHROPIC_OPAQUE_CLIENT_ANCHOR_KEY));
+		expect(first.get(DIAGNOSTICS_KEY)).not.toBe(second.get(DIAGNOSTICS_KEY));
 	});
 
-	it("keeps the caller's session map at one entry however many opaque clients learn a rejection", async () => {
+	it("keeps one fallback anchor plus diagnostics however many opaque clients learn a rejection", async () => {
 		const capture: Capture = { bodies: [], betaHeaders: [] };
 		const states = new Map<string, ProviderSessionState>();
 		const fetchImpl = createBreakpointRejectingFetch(capture);
 
 		// Three wrappers in a row is what an SDK that rebuilds its client per
 		// request produces. Each is isolated by the store the anchor hands it, so
-		// the caller's map holds that one anchor and never an entry per client —
+		// the caller's map holds one anchor plus diagnostics and never an entry per client —
 		// one of those would outlive the client that owns it and only be released
 		// when the whole session closes.
 		for (const baseURL of [
@@ -695,7 +708,7 @@ describe("Anthropic cache_control rejection fallback", () => {
 				providerSessionState: states,
 			}).result();
 			expect(message.stopReason).toBe("stop");
-			expect(states.size).toBe(1);
+			expectOpaqueSessionKeys(states);
 		}
 
 		// Two requests per client: every one of them took the rejection and
@@ -726,7 +739,7 @@ describe("Anthropic cache_control rejection fallback", () => {
 		expect(countBreakpoints(capture.bodies[3])).toBe(0);
 		// And the swept anchor was reusable, not stranded closed: the relearning
 		// above went back through it rather than into a second entry.
-		expect(states.size).toBe(1);
+		expectOpaqueSessionKeys(states);
 	});
 
 	it("mints no endpoint-keyed entry for an opaque injected client", async () => {
@@ -740,16 +753,16 @@ describe("Anthropic cache_control rejection fallback", () => {
 		}).result();
 
 		expect(proxied.stopReason).toBe("stop");
-		// The anchor, and nothing claiming an endpoint. A synthetic
+		// The fallback anchor and independent diagnostics, but no endpoint fallback. A synthetic
 		// `anthropic-messages:` key would be swept by
 		// `clearAnthropicFastModeFallback` as a per-endpoint state, and would let
 		// an unknowable proxy answer for whatever endpoint it forged.
-		expect(states.size).toBe(1);
+		expectOpaqueSessionKeys(states);
 		expect([...states.keys()].filter(key => key.startsWith("anthropic-messages"))).toEqual([]);
 		// The same map still takes an endpoint entry for a request it can name,
 		// so the assertions above read a live map rather than one nothing writes to.
 		await runTurn(fetchImpl, states);
-		expect(states.size).toBe(2);
+		expectOpaqueSessionKeys(states, true);
 		expect([...states.keys()].filter(key => key.startsWith("anthropic-messages:"))).toHaveLength(1);
 	});
 

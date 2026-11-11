@@ -1,3 +1,4 @@
+import type { TaskWorkspace, VerifiedTaskWorkspace } from "@oh-my-pi/pi-tui/tools/task";
 import type { ReviewPageAnswer } from "../../tools/todo";
 import type { AgentRegistryApi } from "../../registry/agent-registry";
 /**
@@ -1293,6 +1294,11 @@ export interface BeforeSubagentSpawnEvent {
 	type: "before_subagent_spawn";
 	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
 	resources?: string[];
+	workspace?: TaskWorkspace;
+	verifiedWorkspace?: VerifiedTaskWorkspace;
+	reads?: string[];
+	/** Effective checkout after harness preparation, not the parent's cwd. */
+	cwd?: string;
 	/** Agent definition name being spawned. */
 	agent: string;
 	invocationKind: "task" | "eval";

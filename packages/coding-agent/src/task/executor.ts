@@ -1,3 +1,11 @@
+import {
+	persistTaskWorkspace,
+	readTaskWorkspace,
+	renderTaskWorkspace,
+	validatePersistedTaskWorkspace,
+	validateTaskWorkspace,
+	type VerifiedTaskWorkspace,
+} from "./workspace";
 import { checkPeerSessionHandover } from "./peer-runtime";
 import { type PeerScope } from "./peer-coordination";
 import { cfgTaskPeerAwareness } from "./settings";
@@ -555,6 +563,7 @@ export interface ExecutorOptions {
 	peerScope?: PeerScope;
 	peerTask?: string;
 	cwd: string;
+	verifiedWorkspace?: VerifiedTaskWorkspace;
 	/** Cost gate of the parent session tree; the subagent's requests count toward it. */
 	costGate?: CostGateApi;
 	/** Additional workspace directories to seed on the subagent session (multi-root). */
@@ -756,6 +765,8 @@ export interface ExecutorOptions {
 	parentTelemetry?: AgentTelemetryConfig;
 	/** Skills to autoload via sendCustomMessage before the first prompt */
 	autoloadSkills?: Skill[];
+	/** Resolve declarations after child-local skill discovery. */
+	autoloadSkillNames?: readonly string[];
 	/**
 	 * Registry id of the spawning agent, recorded as this subagent's parent.
 	 * Forwarded verbatim to the SDK; the executor never derives it (the spawner
@@ -2885,6 +2896,7 @@ async function driveSessionToResult(
 	} = {},
 ): Promise<DriveOutcome> {
 	const { solutionSpace, images, onPromptBusy, restore } = options;
+	await validatePersistedTaskWorkspace(session.sessionManager);
 	const structured = options.structured !== false;
 	const abortSignal = monitor.abortSignal;
 	let exitCode = 0;
@@ -4990,10 +5002,17 @@ export async function replayRevivedAgentStart(session: AgentSession): Promise<vo
 function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 	return async expectedAgentRef => {
 		const { id } = capture.spec.prompt;
+		await readTaskWorkspace(capture.sessionFile);
 		const reopened = await SessionManager.open(capture.sessionFile, undefined, undefined, {
 			suppressBreadcrumb: true,
 			throwIfMissing: true,
 		});
+		try {
+			await validatePersistedTaskWorkspace(reopened);
+		} catch (error) {
+			await reopened.close();
+			throw error;
+		}
 		if (!hasConversationalHistory(reopened.iterateEntries("message"))) {
 			await reopened.close();
 			throw new Error(
@@ -5251,6 +5270,10 @@ export function runSubagentRunRequest(request: SubagentRunRequest): Promise<Sing
  * monitor it, and finalize its lifecycle. {@link runSubprocess} routes here.
  */
 async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<SingleResult> {
+	if (options.verifiedWorkspace) {
+		if (options.worktree) options.verifiedWorkspace = { ...options.verifiedWorkspace, cwd: options.worktree };
+		await validateTaskWorkspace(options.verifiedWorkspace);
+	}
 	const {
 		cwd,
 		agent,
@@ -5307,6 +5330,8 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 	if (options.artifactsDir) {
 		subtaskSessionFile = path.join(options.artifactsDir, `${id}.jsonl`);
 	}
+	if (subtaskSessionFile && options.verifiedWorkspace)
+		await persistTaskWorkspace(subtaskSessionFile, options.verifiedWorkspace);
 
 	const settings = options.settings ?? Settings.isolated();
 	// Per-agent advisor: the agent definition's `advisor` frontmatter or the
@@ -6129,6 +6154,8 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 					? enabledSubagentTools.filter(name => name !== "write")
 					: enabledSubagentTools;
 
+			if (options.verifiedWorkspace)
+				session.sessionManager.appendCustomEntry("verified-task-workspace", options.verifiedWorkspace);
 			session.sessionManager.appendSessionInit({
 				// Blocks as sent; the session appends a newer session_init whenever a model call's base changes.
 				systemPrompt: session.agent.state.systemPrompt,
@@ -6212,8 +6239,11 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 
 			checkAbort();
 			// Autoload skills via sendCustomMessage (same mechanic as /skill:<name>)
-			if (options.autoloadSkills?.length) {
-				for (const skill of options.autoloadSkills) {
+			const autoloadSkills = options.autoloadSkillNames
+				? options.autoloadSkillNames.flatMap(name => session.skills.filter(skill => skill.name === name))
+				: options.autoloadSkills;
+			if (autoloadSkills?.length) {
+				for (const skill of autoloadSkills) {
 					const { message, details } = await buildSkillPromptMessage(skill, { args: "" }, "autoload", session);
 					await session.sendCustomMessage(
 						{
@@ -6239,7 +6269,10 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			// last report turn, or a `yield`) as the run's result. Only a kept-alive
 			// agent has wake turns left to answer held messages in.
 			if (options.keepAlive !== false) releaseIrcWakes = session.holdIrcWakes();
-			const outcome = await driveSessionToResult(session, monitor, task, {
+			const firstPrompt = options.verifiedWorkspace
+				? `${renderTaskWorkspace(options.verifiedWorkspace)}\n${assignment ?? task}`
+				: task;
+			const outcome = await driveSessionToResult(session, monitor, firstPrompt, {
 				solutionSpace: options.solutionSpace,
 				...(options.images?.length ? { images: options.images } : {}),
 				structured,
@@ -6271,6 +6304,12 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				if (err instanceof ProviderUnavailableError) failureKind = "infrastructure";
 			}
 		} finally {
+			// A reserved generation that never acquired a session cannot receive
+			// messages. Retire it before any asynchronous cleanup or publication:
+			// those may stall independently of the already failed startup.
+			if (startingRef?.starting && !startingRef.session) {
+				AgentRegistry.global().setStatus(id, "aborted", startingRef);
+			}
 			const cleanupDeadlineAt = Date.now() + cleanupGraceMs;
 			const cleanupChangeStatus =
 				worktree === undefined

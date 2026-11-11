@@ -56,7 +56,7 @@ it("overlaps registry refresh with session setup", async () => {
 
 	const sessionCreationStarted = Promise.withResolvers<void>();
 	let sessionCreated = false;
-	const appendSessionInit = vi.fn();
+	const appendSessionInit = vi.spyOn(sessionManager, "appendSessionInit");
 	const listeners: Array<(event: AgentSessionEvent) => void> = [];
 	const session = {
 		...createSessionDefaults(),
@@ -64,7 +64,7 @@ it("overlaps registry refresh with session setup", async () => {
 		agent: { state: { systemPrompt: ["test"] } },
 		model: undefined,
 		extensionRunner: undefined,
-		sessionManager: { appendSessionInit },
+		sessionManager,
 		getActiveToolNames: () => ["yield"],
 		getEnabledToolNames: () => ["yield"],
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {

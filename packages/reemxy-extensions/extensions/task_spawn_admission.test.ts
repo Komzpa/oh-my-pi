@@ -97,12 +97,13 @@ async function fixture() {
 	} as ToolSession;
 	const tool = await TaskTool.create(session);
 	const items = [
-		{ name: "PrCaptures", agent: "task", row: "Captures", task: `Captures\nWrite ${target}` },
+		{ name: "PrCaptures", agent: "task", row: "Captures", task: `Captures\nWrite ${target}`, resources: [target] },
 		{
 			name: "Independent",
 			agent: "task",
 			row: "Independent",
 			task: `Independent\nWrite ${path.join(dir, "independent.ts")}`,
+			resources: [path.join(dir, "independent.ts")],
 		},
 	];
 	return { dir, target, phases, state, jobs, run, session, tool, items };
