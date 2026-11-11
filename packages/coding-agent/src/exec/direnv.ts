@@ -226,7 +226,7 @@ async function runDirenv(
 	const abortSignal = signal
 		? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
 		: AbortSignal.timeout(timeoutMs);
-	const proc = Bun.spawn([bin, ...args], {
+	const proc = spawnBackground([bin, ...args], {
 		cwd,
 		env,
 		stdout: "pipe",
@@ -243,6 +243,8 @@ async function runDirenv(
 	const exitCode = await proc.exited;
 	return { exitCode, stdout, stderr };
 }
+
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 
 function applyExportDiff(env: Record<string, string>, diff: DirenvExportDiff): Record<string, string> {
 	const loaded = { ...env, ...diff.set };

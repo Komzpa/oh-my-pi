@@ -1746,6 +1746,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * escape hatch: exit without writing the session log.
 	 */
 	#teardownFailed = false;
+	#preserveServicesOnRestart = false;
 	/** True once a graceful `shutdown()` teardown failed at the memoized
 	 *  dispose stage. Surfaced to the input controller so the next single
 	 *  Ctrl+C skips the double-tap gate and runs `shutdown()` — which
@@ -2493,6 +2494,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.#btwController.dispose();
 				await this.session.dispose({
 					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
+					preserveServices: this.#preserveServicesOnRestart,
 					reason,
 				});
 			},
@@ -8506,6 +8508,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			} else {
 				await this.session.dispose({
 					mnemopiConsolidateTimeoutMs: SHUTDOWN_CONSOLIDATE_BUDGET_MS,
+					preserveServices: this.#preserveServicesOnRestart,
 				});
 			}
 		} finally {

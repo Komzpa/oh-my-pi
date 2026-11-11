@@ -133,6 +133,7 @@ interface ReopeningAgent {
 
 /** How {@link AgentLifecycleApi.release} ends an agent. */
 export interface AgentReleaseOptions {
+	preserveServices?: boolean;
 	/** Explicit kill: keep a terminal `aborted` row and persist the kill marker. */
 	tombstone?: boolean;
 	/** Forwarded to the live session's dispose (e.g. the reason its `session_exit` record carries). */
@@ -160,7 +161,7 @@ export interface AgentLifecycleApi {
 	/** Dispose if live and drop timers; `tombstone` keeps a terminal `aborted` row. */
 	release(id: string, expected?: AgentRefExpectation, options?: AgentReleaseOptions): Promise<boolean>;
 	/** Tear down every adopted agent. */
-	dispose(deadlineAt?: number): Promise<void>;
+	dispose(deadlineAt?: number, preserveServices?: boolean): Promise<void>;
 }
 
 export class AgentLifecycleManager implements AgentLifecycleApi {
@@ -675,7 +676,7 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 			// dispose the captured session, even when tombstone persistence fails.
 			if (live) {
 				try {
-					await live.dispose(options?.dispose);
+					await live.dispose({ ...options?.dispose, preserveServices: options?.preserveServices });
 				} catch (error) {
 					logger.warn("AgentLifecycleManager.release: session dispose failed", { id, error: String(error) });
 				}
@@ -694,7 +695,7 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 	}
 
 	/** Teardown everything; disposing the global manager makes its next owner a fresh instance. */
-	async dispose(deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
+	async dispose(deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS, preserveServices = false): Promise<void> {
 		this.#unsubscribe?.();
 		this.#disposed = true;
 		this.#unsubscribe = undefined;
@@ -706,7 +707,9 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 		await Promise.all(
 			ids.map(async id => {
 				const running = this.#registry.get(id)?.status === "running";
-				const release = this.release(id, undefined, running ? cutOff : undefined).then(() => {});
+				const release = this.release(id, undefined, { ...(running ? cutOff : undefined), preserveServices }).then(
+					() => {},
+				);
 				try {
 					await untilAborted(AbortSignal.timeout(Math.max(0, deadlineAt - Date.now())), () => release);
 				} catch (error) {

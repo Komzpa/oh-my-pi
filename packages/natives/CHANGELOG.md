@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Contain Linux tool children and descendants in per-call scopes with a verified task cap, and keep background jobs in their original scope. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Preserve non-UTF-8 bytes when slicing shell parameter values. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Avoid duplicate termination signals so TERM traps can flush output and finish cleanup. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Return structured cancelled or timed-out results when PTY startup is interrupted before launch. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Let scoped tools launch with coreutils before 9.5 and preserve dollar bytes on systemd before 254. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Let desktop-masked workers reach the systemd user manager while keeping its runtime directory and bus address out of tool payloads. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Parent Linux tool-call scopes under a stable session slice and export sessionSliceName for lifecycle cleanup. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Run scoped shell commands, PTYs, Git hooks and eval kernels at niceness 19 and best-effort IO priority 7 while preserving the parent priority. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Materialize cyclic Git object-store chains locally while retaining borrowing for healthy chains. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+- Add unsetEnv to remove inherited variables before imports and after snapshot setup. ([#88](https://github.com/Komzpa/oh-my-pi/pull/88) by [@Komzpa](https://github.com/Komzpa))
+
 ## [18.18.8] - 2026-11-11
 
 ### Changed
