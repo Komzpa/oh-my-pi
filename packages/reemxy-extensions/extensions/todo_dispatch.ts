@@ -1802,7 +1802,10 @@ export function speculativeTaskRows(item: Record<string, unknown>, phases: Dispa
     agentProfile: typeof item.agent === "string" ? item.agent : undefined,
     startedAt: 0,
   });
-  return target ? [target] : [];
+  const mentioned = rows.filter((row) => typeof row.content === "string" && row.content.trim().length > 0 && brief.includes(row.content));
+  const distinct = mentioned.filter((row) => !mentioned.some((other) => other !== row && typeof other.content === "string" && other.content.includes(String(row.content))));
+  if (!target) return distinct;
+  return [target, ...distinct.filter((row) => row !== target && !brief.includes(String(target.content)))];
 }
 
 function readOnlyAudit(item: Record<string, unknown>): boolean {
