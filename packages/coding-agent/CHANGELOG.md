@@ -12,6 +12,8 @@
 ### Fixed
 
 - Claude auto-redeem now spends a full saved reset on an account blocked by its weekly limit when the reset also clears the Fable cap; such resets were treated as Fable-only and skipped while Fable usage had room ([#18801](https://github.com/can1357/oh-my-pi/pull/18801))
+- Fixed search and find treating `;`-separated lists of internal URLs and local paths as one target; valid lists fan out, while literal `;` in a resource name or query stays intact ([#15637](https://github.com/can1357/oh-my-pi/pull/15637) by [@Komzpa](https://github.com/Komzpa))
+- Fixed exact MCP resource discovery waiting on unrelated stalled catalogs, rejecting recovered catalog retries, or splitting URLs after source-less server handshakes fail ([#15637](https://github.com/can1357/oh-my-pi/pull/15637) by [@Komzpa](https://github.com/Komzpa))
 - Fixed agents showing as idle in the Agent Hub while still running after a failed streaming edit preview (`edit.streamingAbort`) auto-recovered the turn ([#18790](https://github.com/can1357/oh-my-pi/pull/18790) by [@H4vC](https://github.com/H4vC))
 - A browser call on a tab that is not open now says to open it with `await browser.open({ name })` (Python: `await browser.open(name=…)`) and the url and app it was opened with, instead of pointing at the removed `action:"open"` ([#18739](https://github.com/can1357/oh-my-pi/pull/18739) by [@will-bogusz](https://github.com/will-bogusz))
 - Fixed `computer.window({ app })` and `computer.windows({ app })` matching similarly named apps when the exact app name has an open window, such as Google Chrome alongside Google Chrome for Testing ([#18744](https://github.com/can1357/oh-my-pi/pull/18744) by [@will-bogusz](https://github.com/will-bogusz))
