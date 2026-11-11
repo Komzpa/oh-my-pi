@@ -360,10 +360,14 @@ describe("restart queue controller", () => {
 		await childManager.ensureOnDisk();
 		const rootQuiescence = Promise.withResolvers<void>();
 		const harness = makeSession(manager, { quiescence: rootQuiescence.promise });
+		const childNoticeStarted = Promise.withResolvers<void>();
 		const childNotice = Promise.withResolvers<void>();
 		const staleChildQuiescence = Promise.withResolvers<void>();
-		const childHarness = makeSession(childManager, { quiescence: staleChildQuiescence.promise });
-		childHarness.session.sendRestartNotice = async () => childNotice.promise;
+		const childHarness = makeSession(childManager, { quiescence: staleChildQuiescence.promise, wasRunning: true });
+		childHarness.session.sendRestartNotice = async () => {
+			childNoticeStarted.resolve();
+			await childNotice.promise;
+		};
 		const registry = AgentRegistry.global();
 		registerRoot(registry, harness.session, file);
 		const childRef = registry.register({
@@ -390,6 +394,7 @@ describe("restart queue controller", () => {
 		});
 		try {
 			await controller.handle({ identity, op: "request", requestId: "dead-workers" });
+			await childNoticeStarted.promise;
 			registry.unregister(childRef.id, childRef);
 			childNotice.resolve();
 			await Bun.sleep(25);
