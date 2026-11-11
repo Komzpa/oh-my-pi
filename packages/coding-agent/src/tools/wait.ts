@@ -316,7 +316,21 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 				? messaging.registry.awaits.hold(messaging.senderId, watchedAgents, { interruptible: true })
 				: undefined;
 		const { promise: timeout, resolve: timedOut } = Promise.withResolvers<void>();
-		const timer = setTimeout(timedOut, WAIT_LADDER_MS[rung]);
+		// A queued question has not reached a recipient turn yet. Do not turn
+		// delivery delay into repeated "no reply" results (or a worker abort).
+		// Re-check on each window: a departure/block change still ends the wait,
+		// and once delivery is consumed the ordinary bounded wait applies again.
+		let timer: Timer;
+		const checkTimeout = () => {
+			const awaitingDelivery =
+				replyWait &&
+				pendingReplies(messaging).from.some(id =>
+					messaging.registry.get(id)?.session?.hasQueuedIrcFrom(messaging.senderId),
+				);
+			if (awaitingDelivery) timer = setTimeout(checkTimeout, WAIT_LADDER_MS[rung]);
+			else timedOut();
+		};
+		timer = setTimeout(checkTimeout, WAIT_LADDER_MS[rung]);
 		const abort = Promise.withResolvers<void>();
 		const onAbort = () => abort.resolve();
 		if (signal) {
