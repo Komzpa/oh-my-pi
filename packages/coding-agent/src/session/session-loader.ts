@@ -54,8 +54,6 @@ import {
 	titleUpdateFromSlot,
 } from "./session-title-slot";
 
-const LF = new Uint8Array([0x0a]);
-
 const STREAM_LOAD_THRESHOLD_BYTES = 8 * 1024 * 1024;
 const STREAM_YIELD_BYTES = 1 * 1024 * 1024;
 const STREAM_YIELD_ENTRIES = 8_192;
@@ -270,6 +268,89 @@ function sessionHeaderIdFromPrefix(prefix: Uint8Array, final: boolean): string |
 	return isValidSessionHeader(entry) ? entry.id : undefined;
 }
 
+/**
+ * Frame one possibly multiline JSON value without reparsing its growing prefix.
+ * Bun remains the parser; these states only locate a closing token or a syntax
+ * boundary at which asking it for a result can make progress.
+ */
+class SessionRecordFrame {
+	#states: ("value" | "colon" | "key" | "object-start" | "array-start" | "object-comma" | "array-comma")[] = ["value"];
+	#containers: number[] = [];
+	#string = false;
+	#escape = false;
+	#key = false;
+	#atom = false;
+	#terminal = false;
+
+	get unfinished(): boolean {
+		return !this.#terminal;
+	}
+
+	push(byte: number): boolean {
+		if (this.#terminal) return byte === 0x0a;
+		if (this.#string) {
+			if (byte < 0x20) this.#terminal = true;
+			else if (this.#escape) this.#escape = false;
+			else if (byte === 0x5c) this.#escape = true;
+			else if (byte === 0x22) {
+				this.#string = false;
+				if (this.#key) this.#states[this.#states.length - 1] = "colon";
+				else this.#complete();
+			}
+			return this.#terminal && byte === 0x0a;
+		}
+		const whitespace = byte === 0x20 || byte === 0x09 || byte === 0x0a || byte === 0x0d;
+		if (this.#atom) {
+			if (!whitespace && byte !== 0x2c && byte !== 0x7d && byte !== 0x5d) return false;
+			this.#atom = false;
+			this.#complete();
+		}
+		if (whitespace) return this.#terminal && byte === 0x0a;
+		const state = this.#states[this.#states.length - 1];
+		if (state === "colon") {
+			if (byte === 0x3a) this.#states[this.#states.length - 1] = "value";
+			else this.#terminal = true;
+		} else if (state === "object-comma" || state === "array-comma") {
+			if (byte === 0x2c) this.#states[this.#states.length - 1] = state === "object-comma" ? "key" : "value";
+			else if (byte === (state === "object-comma" ? 0x7d : 0x5d)) this.#close();
+			else this.#terminal = true;
+		} else if (state === "key" || state === "object-start") {
+			if (byte === 0x22) {
+				this.#string = true;
+				this.#key = true;
+			} else if (state === "object-start" && byte === 0x7d) this.#close();
+			else this.#terminal = true;
+		} else if (state === "array-start" && byte === 0x5d) this.#close();
+		else if (byte === 0x7b) {
+			this.#containers.push(byte);
+			this.#states.push("object-start");
+		} else if (byte === 0x5b) {
+			this.#containers.push(byte);
+			this.#states.push("array-start");
+		} else if (byte === 0x22) {
+			this.#string = true;
+			this.#key = false;
+		} else if (byte === 0x2d || (byte >= 0x30 && byte <= 0x39) || byte === 0x74 || byte === 0x66 || byte === 0x6e)
+			this.#atom = true;
+		else this.#terminal = true;
+		return false;
+	}
+
+	#close(): void {
+		this.#states.pop();
+		this.#containers.pop();
+		this.#complete();
+	}
+
+	#complete(): void {
+		if (this.#states.length === 1) this.#terminal = true;
+		else {
+			const index = this.#states.length - 1;
+			this.#states[index] = this.#containers[index - 1] === 0x7b ? "object-comma" : "array-comma";
+		}
+	}
+}
+
 /** Parse session JSONL and visit each entry without retaining prior entries. */
 export async function visitEntriesFromFileStream(
 	filePath: string,
@@ -305,14 +386,11 @@ export async function visitEntriesFromFileStream(
 			lastYield = performance.now();
 		}
 	};
-	// Fast path: a record that is valid JSON on its own physical line. Anything
-	// else is decided by Bun.JSONL.parseChunk, as in the whole-buffer parsers:
-	// a value left unfinished at a newline extends to the next newline; a valid
-	// value followed by junk on its last line is visited with its exact byte
-	// range (`read`), and the junk to the newline is one malformed record; a
-	// value that never completes is one malformed record. The scanned range
-	// always ends at the first newline that can end the value, so it never holds
-	// more than one value.
+	let pending: { firstNewline: number; scanned: number; frame: SessionRecordFrame } | undefined;
+	// Fast path: a record that is valid JSON on its own physical line. A small
+	// byte-state framer carries multiline values across chunks so Bun parses each
+	// completed record once. Bun remains authoritative for JSON validity and the
+	// exact end of a valid prefix before trailing junk.
 	const drain = async (atEnd = false): Promise<void> => {
 		const view = sink.flush();
 		if (!view) return;
@@ -348,105 +426,95 @@ export async function visitEntriesFromFileStream(
 				stopped = true;
 				break;
 			}
-			const firstNewline = view.indexOf(0x0a, consumed);
-			if (firstNewline < 0) break;
 			const start = consumed;
-			const firstLine = decoder.decode(view.subarray(start, firstNewline)).trim();
-			if (!sawFirstLine) {
-				sawFirstLine = true;
-				const slot = firstLine ? parseTitleSlotLine(firstLine) : undefined;
-				if (slot) {
-					titleSlot = titleUpdateFromSlot(slot);
-					consumed = firstNewline + 1;
-					continue;
+			if (!pending) {
+				let firstNewline = view.indexOf(0x0a, consumed);
+				if (firstNewline < 0) {
+					if (!atEnd) break;
+					firstNewline = view.length;
 				}
-			}
-			if (!firstLine) {
-				consumed = firstNewline + 1;
-				continue;
-			}
-			// Session writers put `type` first. Only skip that canonical shape;
-			// imported/reordered and multiline JSON still uses the normal parser.
-			if (options.entryTypes) {
-				const type = /^\{\s*"type"\s*:\s*"([^"\\]+)"/.exec(firstLine)?.[1];
-				if (type && !options.entryTypes.includes(type as FileEntry["type"]) && firstLine.endsWith("}")) {
-					consumed = firstNewline + 1;
-					recordsSeen++;
-					entriesSinceYield++;
-					continue;
-				}
-			}
-			let lineEntry: FileEntry | undefined;
-			try {
-				lineEntry = withLoopPhase("session-journal:parse", () => JSON.parse(firstLine) as FileEntry);
-			} catch {}
-			if (lineEntry) {
-				consumed = firstNewline + 1;
-				await emit(lineEntry, start, consumed);
-				continue;
-			}
-			let recordEnd = firstNewline;
-			let awaitingMoreData = false;
-			// Whether a value starting at `start` is still unfinished at newline `end`.
-			// That is monotone in `end`, so the first newline that can end the value is
-			// found by bisection instead of re-parsing the growing prefix line by line,
-			// which is quadratic for a long multi-line record.
-			const unfinishedAt = (end: number): boolean => {
-				const probe = Bun.JSONL.parseChunk(view, start, end + 1);
-				return probe.values.length === 0 && !probe.error && !probe.done;
-			};
-			const lastNewline = view.lastIndexOf(0x0a);
-			if (lastNewline > firstNewline && unfinishedAt(firstNewline)) {
-				if (unfinishedAt(lastNewline)) {
-					recordEnd = lastNewline;
-				} else {
-					let low = firstNewline;
-					let high = lastNewline;
-					while (true) {
-						const middle = (low + high) >> 1;
-						let probeAt = view.indexOf(0x0a, middle);
-						if (probeAt < 0 || probeAt >= high) probeAt = view.lastIndexOf(0x0a, middle);
-						if (probeAt <= low) break;
-						if (unfinishedAt(probeAt)) low = probeAt;
-						else high = probeAt;
+				const firstLine = decoder.decode(view.subarray(start, firstNewline)).trim();
+				if (!sawFirstLine) {
+					sawFirstLine = true;
+					const slot = firstLine ? parseTitleSlotLine(firstLine) : undefined;
+					if (slot) {
+						titleSlot = titleUpdateFromSlot(slot);
+						consumed = Math.min(firstNewline + 1, view.length);
+						continue;
 					}
-					recordEnd = high;
 				}
-			}
-			while (true) {
-				const { values, error, read, done } = Bun.JSONL.parseChunk(view, start, recordEnd + 1);
-				if (values.length > 0) {
-					// `read` is the absolute end of the parsed value. On success the
-					// record keeps its trailing whitespace and newline.
-					const valueEnd = error ? read : recordEnd + 1;
-					consumed = recordEnd + 1;
-					await emit(values[0] as FileEntry, start, valueEnd);
-					if (error && !stopped) skipMalformed(read, recordEnd);
-					break;
-				}
-				if (error || done) {
-					// Malformed before any value: skip its physical line only.
-					const errorStart = Math.max(start, read);
-					const nextNewline = view.indexOf(0x0a, errorStart);
-					consumed = nextNewline + 1;
-					skipMalformed(errorStart, nextNewline);
-					break;
-				}
-				const nextNewline = view.indexOf(0x0a, recordEnd + 1);
-				if (nextNewline >= 0) {
-					recordEnd = nextNewline;
+				if (!firstLine) {
+					consumed = Math.min(firstNewline + 1, view.length);
 					continue;
 				}
-				if (!atEnd) {
-					awaitingMoreData = true;
+				// Session writers put `type` first. Only skip that canonical shape;
+				// imported/reordered and multiline JSON still uses the normal parser.
+				if (options.entryTypes) {
+					const type = /^\{\s*"type"\s*:\s*"([^"\\]+)"/.exec(firstLine)?.[1];
+					if (type && !options.entryTypes.includes(type as FileEntry["type"]) && firstLine.endsWith("}")) {
+						consumed = firstNewline + 1;
+						recordsSeen++;
+						entriesSinceYield++;
+						continue;
+					}
+				}
+				let lineEntry: FileEntry | undefined;
+				try {
+					lineEntry = withLoopPhase("session-journal:parse", () => JSON.parse(firstLine) as FileEntry);
+				} catch {}
+				if (lineEntry) {
+					consumed = Math.min(firstNewline + 1, view.length);
+					await emit(lineEntry, start, consumed);
+					continue;
+				}
+				pending = { firstNewline, scanned: start, frame: new SessionRecordFrame() };
+			}
+			let recordEnd = pending.scanned;
+			while (recordEnd < view.length && !pending.frame.push(view[recordEnd])) recordEnd++;
+			pending.scanned = recordEnd;
+			if (recordEnd === view.length) {
+				if (!atEnd) break;
+				if (pending.frame.unfinished) {
+					// The value never completes before EOF or the byte limit: one malformed record.
+					consumed = view.length;
+					skipMalformed(start, consumed);
+					pending = undefined;
 					break;
 				}
-				// The value never completes before EOF: one malformed record.
-				consumed = view.length;
-				skipMalformed(start, view.length);
-				break;
 			}
-			if (awaitingMoreData) break;
+			pending = undefined;
+			const recordLimit = Math.min(recordEnd + 1, view.length);
+			const { values, error, read, done } = withLoopPhase("session-journal:parse", () =>
+				Bun.JSONL.parseChunk(view, start, recordLimit),
+			);
+			if (values.length > 0) {
+				// `read` is the absolute end of the parsed value. On success the
+				// record keeps its trailing whitespace and newline.
+				const valueEnd = error ? read : recordLimit;
+				consumed = recordLimit;
+				await emit(values[0] as FileEntry, start, valueEnd);
+				if (error && !stopped) skipMalformed(read, recordEnd);
+				continue;
+			}
+			if (error || done) {
+				// Malformed before any value: skip through the physical line containing the error.
+				const errorStart = Math.max(start, read);
+				const nextNewline = view.indexOf(0x0a, errorStart);
+				const malformedEnd = nextNewline < 0 ? view.length : nextNewline;
+				consumed = Math.min(view.length, malformedEnd + 1);
+				skipMalformed(errorStart, malformedEnd);
+				continue;
+			}
+			// The framing scanner and Bun disagree only for malformed input; discard
+			// one physical line and continue with the next recoverable record.
+			const nextNewline = view.indexOf(0x0a, start);
+			const malformedEnd = nextNewline < 0 ? view.length : nextNewline;
+			consumed = Math.min(view.length, malformedEnd + 1);
+			skipMalformed(start, malformedEnd);
+		}
+		if (pending) {
+			pending.firstNewline -= consumed;
+			pending.scanned -= consumed;
 		}
 		sink.consume(consumed);
 		offset += consumed;
@@ -489,7 +557,6 @@ export async function visitEntriesFromFileStream(
 	}
 	if (!stopped && recordsSeen < maxRecords && !sink.isEmpty) {
 		await options.onTrailingRecord?.(offset);
-		sink.append(LF);
 		await drain(true);
 	}
 	return titleSlot;

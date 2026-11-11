@@ -377,6 +377,66 @@ describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
 		expect(await sessionLoader.readSessionHeaderId(file)).toBeUndefined();
 	});
 
+	it("bounds JSON parser work for a fragmented multiline record", async () => {
+		const content = `{
+  "results": [
+${'    "row",\n'.repeat(160_000)}    "end"
+  ]
+}
+`;
+		const file = await writeTemp(content);
+		let bytesRead = 0;
+		let parsedBytes = 0;
+		const parseChunk = Bun.JSONL.parseChunk.bind(Bun.JSONL);
+		const parser = spyOn(Bun.JSONL, "parseChunk").mockImplementation((input, start = 0, end) => {
+			const size = typeof input === "string" ? input.length : input.byteLength;
+			parsedBytes += (end ?? size) - start;
+			if (parsedBytes > 1.1 * 1024 * 1024) throw new Error("multiline parser rescanned its byte budget");
+			return parseChunk(input, start, end);
+		});
+		try {
+			await sessionLoader.visitEntriesFromFileStream(file, () => {}, {
+				maxBytes: 1024 * 1024,
+				onBytesConsumed: bytes => {
+					bytesRead += bytes;
+				},
+			});
+		} finally {
+			parser.mockRestore();
+		}
+
+		expect(bytesRead).toBe(1024 * 1024);
+		expect(parsedBytes).toBeLessThanOrEqual(bytesRead + 1);
+	});
+
+	it("parses one completed nested multiline value once across chunks", async () => {
+		const row = JSON.stringify({
+			text: 'quote " slash \\ braces {} [] café 🙂',
+			values: [true, false, null, -1.2e3],
+		});
+		const content = `{\n"id":"many-lines","rows":[\n${Array(20_000).fill(row).join(",\n")}\n]\n}\n`;
+		const file = await writeTemp(content);
+		let parsedBytes = 0;
+		const parseChunk = Bun.JSONL.parseChunk.bind(Bun.JSONL);
+		const parser = spyOn(Bun.JSONL, "parseChunk").mockImplementation((input, start = 0, end) => {
+			const size = typeof input === "string" ? input.length : input.byteLength;
+			parsedBytes += (end ?? size) - start;
+			return parseChunk(input, start, end);
+		});
+		try {
+			const positions: number[] = [];
+			const entries: FileEntry[] = [];
+			await sessionLoader.visitEntriesFromFileStream(file, entry => void entries.push(entry), {
+				onEntryPosition: (_entry, offset, length) => positions.push(offset, length),
+			});
+			expect(entries).toEqual([JSON.parse(content)]);
+			expect(positions).toEqual([0, Buffer.byteLength(content)]);
+			expect(parsedBytes).toBeLessThanOrEqual(Buffer.byteLength(content));
+		} finally {
+			parser.mockRestore();
+		}
+	});
+
 	it("reads a session id after a blank line and past the first read window, and one with no trailing newline", async () => {
 		const slotLine = serializeTitleSlot({ title: "Wide", source: "user", updatedAt: ISO });
 		const wideHeader = JSON.stringify({ ...HEADER, cwd: `/${"d".repeat(40 * 1024)}` });
