@@ -14,13 +14,13 @@ import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 const sessionDirs: string[] = [];
 afterAll(() => {
-	for (const cwd of sessionDirs) rmSync(cwd, { recursive: true, force: true });
+	for (const cwd of sessionDirs) fs.rmSync(cwd, { recursive: true, force: true });
 });
 
 function createSession(
@@ -31,7 +31,7 @@ function createSession(
 		settings?: Record<string, unknown>;
 	} = {},
 ): ToolSession {
-	const cwd = mkdtempSync(join(tmpdir(), "task-schema-"));
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "task-schema-"));
 	sessionDirs.push(cwd);
 	return {
 		cwd,
