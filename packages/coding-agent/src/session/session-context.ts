@@ -108,10 +108,18 @@ export function createRestartNoticeFilter(
 ): (notice: Pick<CustomMessageEntry, "customType" | "content" | "details">) => boolean {
 	const completedContinuations = new Set<string>();
 	const restartLatestStateById = new Map<string, string>();
+	const noticeLatestStateById = new Map<string, string>();
 	const restartLastIndexById = new Map<string, number>();
 	for (let index = 0; index < entries.length; index++) {
 		const entry = entries[index];
 		if (!entry) continue;
+		if (entry.type === "custom_message" && entry.customType === RESTART_QUEUED_NOTICE_TYPE) {
+			const requestId = restartNoticeRequestId(entry);
+			const state = restartNoticeDetailState(entry);
+			if (requestId && state) noticeLatestStateById.set(requestId, state);
+			// A notice for an older request must not supersede another pending request.
+			continue;
+		}
 		const record =
 			entry.type === "custom_message" && entry.customType === "restart-root-continuation"
 				? { requestId: restartNoticeRequestId(entry), state: "completed" }
@@ -120,6 +128,11 @@ export function createRestartNoticeFilter(
 		if (entry.type === "custom_message") completedContinuations.add(record.requestId);
 		restartLatestStateById.set(record.requestId, record.state);
 		restartLastIndexById.set(record.requestId, index);
+	}
+	// The controller journal is authoritative when present. Child-only notices
+	// supply state without letting a stale queued delivery undo that journal.
+	for (const [requestId, state] of noticeLatestStateById) {
+		if (!restartLatestStateById.has(requestId)) restartLatestStateById.set(requestId, state);
 	}
 	let latestRestartRequestId: string | undefined;
 	let latestRestartIndex = -1;
