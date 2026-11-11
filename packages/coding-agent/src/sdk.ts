@@ -270,6 +270,8 @@ import {
 } from "./system-prompt";
 import type { AgentDefinition } from "./task/types";
 import { AgentOutputManager } from "./task/output-manager";
+import { PeerRuntime } from "./task/peer-runtime";
+import type { PeerCoordinationState } from "./task/peer-coordination";
 import { wrapStreamFnWithProviderConcurrency } from "./task/provider-concurrency";
 import { sessionDelegationBias } from "./task/prompt-policy";
 import { isScoutSpawnable } from "./task/spawn-policy";
@@ -581,6 +583,7 @@ function applyMCPEnvironment(result: { exaApiKeys: string[] }): void {
 
 // Types
 export interface CreateAgentSessionOptions {
+	peerCoordination?: PeerCoordinationState;
 	/** Working directory for project-local discovery. Default: getProjectDir() */
 	cwd?: string;
 	/** Additional workspace directories beyond cwd (multi-root), absolute or cwd-relative. */
@@ -2573,7 +2576,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				activeToolNames.add(name);
 			}
 		};
+		let peerRuntime: PeerRuntime | undefined;
 		const toolSession: ToolSession = {
+			checkPeerHandover: options.peerCoordination
+				? entries => peerRuntime?.checkHandover(entries) ?? Promise.resolve(undefined)
+				: undefined,
 			get cwd() {
 				return sessionManager.getCwd();
 			},
@@ -2698,6 +2705,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			registerSessionChangeCallback: callback => session?.registerSessionChangeCallback(callback),
 			bumpFileMutationVersion: path => {
 				const next = (fileMutationVersions.get(path) ?? 0) + 1;
+				peerRuntime?.touch(path);
 				fileMutationVersions.set(path, next);
 				return next;
 			},
@@ -4544,6 +4552,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			displayName: resolvedAgentDisplayName,
 			kind: agentKind,
 			parentId: options.parentAgentId,
+			history: options.peerCoordination ? { peerCoordination: options.peerCoordination } : undefined,
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
 			status: "running" as const,
@@ -5550,6 +5559,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			throw new Error(`Agent "${resolvedAgentId}" was replaced during session initialization.`);
 		}
 		hasRegistered = true;
+		if (options.peerCoordination) {
+			peerRuntime = new PeerRuntime(session, resolvedAgentId, cwd, agentRegistry);
+			peerRuntime.startInitialization();
+			disposeCallbacks.add(() => peerRuntime?.dispose());
+		}
 		// MCP notification bridge cleanup — assigned when the bridge is wired below,
 		// invoked from the dispose wrapper AND registered as a postmortem so both
 		// explicit-dispose (SDK embedders that reuse the process across sessions) and

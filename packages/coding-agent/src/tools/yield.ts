@@ -70,6 +70,7 @@ export interface YieldDetails {
 	error?: string;
 	/** Optional result section/classification supplied by the yield caller. */
 	type?: string | string[];
+	deconfliction?: unknown;
 	/** True when the caller intentionally omitted success data so the executor uses the last assistant turn. */
 	useLastTurn?: boolean;
 	/** True when this incremental workpool yield completed every item in the active batch. */
@@ -271,12 +272,16 @@ function withSectionVariants(dataSchema: Record<string, unknown>): Record<string
 	return description !== undefined ? { description, anyOf: branches } : { anyOf: branches };
 }
 
-function wrapWorkPoolYieldParameters(items: readonly WorkPoolYieldItem[]): Record<string, unknown> {
+function wrapWorkPoolYieldParameters(
+	items: readonly WorkPoolYieldItem[],
+	deconfliction?: unknown,
+): Record<string, unknown> {
 	return {
 		type: "object",
 		additionalProperties: false,
 		description: "submit one workpool item outcome",
 		properties: {
+			...(deconfliction ? { deconfliction } : {}),
 			key: {
 				enum: items.map(item => item.index),
 				description: "1-based workpool item number",
@@ -308,6 +313,8 @@ function assertSupportedRootFields(parameters: TSchema, args: Record<string, unk
 	const declared = isRecord(parameters) && isRecord(parameters.properties) ? parameters.properties : {};
 	const unsupported: string[] = [];
 	for (const key in args) {
+		// The handover hook owns coordination metadata validation, including workpool results.
+		if (key === "deconfliction") continue;
 		if (args[key] != null && !Object.hasOwn(declared, key)) unsupported.push(key);
 	}
 	if (unsupported.length === 0) return;
@@ -373,6 +380,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 	#hasIncrementalSections = false;
 	readonly #session: ToolSession;
 	readonly #parameters: TSchema;
+	readonly #deconflictionSchema: unknown;
 	#workPoolBatchKey = "";
 	readonly #submittedWorkPoolItems = new Set<string>();
 
@@ -389,7 +397,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 
 	get parameters(): TSchema {
 		const items = this.#workPoolItems();
-		return items.length > 0 ? wrapWorkPoolYieldParameters(items) : this.#parameters;
+		return items.length > 0 ? wrapWorkPoolYieldParameters(items, this.#deconflictionSchema) : this.#parameters;
 	}
 
 	constructor(session: ToolSession) {
@@ -477,6 +485,22 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		this.#rejectUnknownSections = rejectUnknownSections;
 		this.#knownSectionLabels = knownSectionLabels;
 		this.#isKnownSection = isKnownSection;
+		if (session.checkPeerHandover && isRecord(parameters.properties)) {
+			parameters.properties.deconfliction = {
+				type: "array",
+				items: {
+					type: "object",
+					properties: {
+						peer: { type: "string" },
+						resource: { type: "string" },
+						agreement: { type: "string" },
+					},
+					required: ["peer", "resource", "agreement"],
+					additionalProperties: false,
+				},
+			};
+		}
+		this.#deconflictionSchema = (parameters.properties as Record<string, unknown>).deconfliction;
 		this.#parameters = parameters;
 	}
 
@@ -541,11 +565,19 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 		} else {
 			yieldType = parseYieldType(raw.type);
 		}
+		const deconfliction = raw.deconfliction;
+		if (deconfliction != null && !this.#session.checkPeerHandover) {
+			throw new Error("yield arguments carry unsupported root field deconfliction; peer awareness is disabled");
+		}
 		let useLastTurn = errorMessage === undefined && data === undefined && yieldType !== undefined;
 		// Incremental array-typed sections carry partial data (one finding, one
 		// field) that cannot satisfy the full output schema; the assembled result
 		// is validated as a whole at finalization (executor finalizeSubprocessOutput).
 		const isIncremental = Array.isArray(yieldType) && yieldType.length > 0;
+		if ((!isIncremental || workPoolItemId !== undefined) && this.#session.checkPeerHandover) {
+			const refusal = await this.#session.checkPeerHandover(deconfliction);
+			if (refusal) throw new Error(refusal);
+		}
 
 		if (errorMessage !== undefined && data !== undefined) {
 			throw new Error(renderDataErrorConflictMessage(errorMessage, yieldType));
@@ -736,6 +768,7 @@ export class YieldTool implements AgentTool<TSchema, YieldDetails> {
 				status,
 				error: errorMessage,
 				type: yieldType,
+				deconfliction,
 				useLastTurn: useLastTurn || undefined,
 				complete: workPoolComplete || undefined,
 				schemaOverridden: schemaValidationOverridden || undefined,
@@ -806,6 +839,7 @@ subprocessToolRegistry.register<YieldDetails>("yield", {
 			error: typeof record.error === "string" ? record.error : undefined,
 			type: isYieldType(record.type) ? record.type : undefined,
 			useLastTurn: record.useLastTurn === true ? true : undefined,
+			deconfliction: record.deconfliction,
 			complete: record.complete === true ? true : undefined,
 			schemaOverridden: record.schemaOverridden === true ? true : undefined,
 		};

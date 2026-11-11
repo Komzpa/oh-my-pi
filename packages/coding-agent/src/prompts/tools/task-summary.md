@@ -20,4 +20,7 @@
 {{mergeSummary}}
 </merge-summary>
 {{/if}}
+{{#if deconfliction}}
+<deconfliction>{{deconfliction}}</deconfliction>
+{{/if}}
 </task-result>

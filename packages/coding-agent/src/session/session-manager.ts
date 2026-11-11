@@ -42,6 +42,7 @@ import {
 	sanitizeRehydratedOpenAIResponsesAssistantMessage,
 	stripInternalDetailsFields,
 } from "./messages";
+import type { PeerCoordinationState } from "../task/peer-coordination";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import { createInterruptedToolResults, sessionExitFollowsLastMessage } from "./exit-diagnostics";
 import type { RetryFallbackRole } from "./retry-fallback-chains";
@@ -3697,6 +3698,7 @@ export class SessionManager {
 	}
 
 	appendSessionInit(init: {
+		peerCoordination?: PeerCoordinationState;
 		systemPrompt: string[];
 		task: string;
 		tools: string[];
@@ -4768,6 +4770,7 @@ export function hasConversationalHistory(entries: readonly FileEntry[]): boolean
  * the {@link SessionInitEntry} payload without its tree bookkeeping fields.
  */
 export interface PersistedSessionInit {
+	peerCoordination?: PeerCoordinationState;
 	systemPrompt: string[];
 	task: string;
 	tools: string[];
@@ -4817,6 +4820,7 @@ export function extractSessionInit(entries: readonly FileEntry[]): PersistedSess
 			restrictToolNames: entry.restrictToolNames,
 			readSummarize: entry.readSummarize,
 			spawns: entry.spawns,
+			peerCoordination: entry.peerCoordination,
 			advisor: entry.advisor,
 			isolated: entry.isolated,
 			...(entry.compactionThreshold !== undefined ? { compactionThreshold: entry.compactionThreshold } : undefined),

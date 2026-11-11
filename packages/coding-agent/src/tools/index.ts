@@ -210,6 +210,8 @@ export interface DeferredDiagnosticsEntry {
 
 /** Session context for tool factories */
 export interface ToolSession {
+	/** Task child handover gate, installed on its home thread. */
+	checkPeerHandover?: (entries: unknown) => Promise<string | undefined>;
 	/** Current working directory */
 	cwd: string;
 	/** Cost gate of the session tree, forwarded to subagents. */

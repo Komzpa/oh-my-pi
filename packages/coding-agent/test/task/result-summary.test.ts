@@ -55,6 +55,13 @@ describe("formatTaskResultSummary", () => {
 		expect(lines).toContain(preview.split("\n").at(-1) ?? "");
 	});
 
+	it("carries structured peer agreements to the lead alongside the result", () => {
+		const deconfliction = [{ peer: "Review", resource: "port:43001", agreement: "Review moved to 43002" }];
+		const summary = formatTaskResultSummary({ ...settledResult("done"), deconfliction }, { totalDurationMs: 5 });
+		expect(summary).toContain(`<deconfliction>${JSON.stringify(deconfliction)}</deconfliction>`);
+		expect(summary).toContain("<output>\ndone\n</output>");
+	});
+
 	it("inlines short output without an artifact pointer or redundant size metadata", () => {
 		const summary = formatTaskResultSummary(settledResult("done"), {
 			totalDurationMs: 5,

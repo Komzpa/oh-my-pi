@@ -2257,6 +2257,8 @@ export interface TaskItem {
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
 	schemaMode?: "permissive" | "strict";
+	/** Declared resource ownership; paths are relative to root. */
+	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
 	/** Eval-defined tool names exposed to this child. */
 	tools?: string[];
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
@@ -2290,6 +2292,8 @@ export interface TaskParams {
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
 	schemaMode?: "permissive" | "strict";
+	/** Declared resource ownership; paths are relative to root. */
+	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
 	/** Eval-defined tool names exposed to the flat-form child. */
 	tools?: string[];
 	/** Batch form (`task.batch`): one subagent per item. */
@@ -2487,6 +2491,7 @@ export interface SingleResult {
 	lastIntent?: string;
 	exitCode: number;
 	output: string;
+	deconfliction?: unknown[];
 	stderr: string;
 	truncated: boolean;
 	/**

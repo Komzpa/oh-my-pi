@@ -5,6 +5,7 @@
  * every decision that affects what a child may run lives here.
  */
 import * as fs from "node:fs/promises";
+import type { PeerScope } from "./peer-coordination";
 import * as os from "node:os";
 import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
@@ -130,6 +131,8 @@ export interface StructuredSubagentRequest {
 	invocationKind: "task" | "eval";
 	assignment: string;
 	context?: string;
+	/** Peer ownership agreement for this child. */
+	scope?: PeerScope;
 	agent?: string;
 	/** Saved source session selected for the bundled seance agent. */
 	sourceSession?: string;
@@ -795,6 +798,8 @@ function buildExecutorOptions(
 		preparedSession,
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
+		peerScope: request.scope,
+		peerTask: request.assignment.trim().slice(0, 160),
 		// Task `name` is the spawn handle (id allocation). Eval `label` is a
 		// real UI description. Copy it only for eval so generateTaskLabel can run.
 		description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,

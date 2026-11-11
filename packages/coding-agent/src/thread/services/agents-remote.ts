@@ -259,6 +259,14 @@ export class RemoteIrcBus implements IrcBusApi {
 		return this.#remote.call("wait", agentId, filter, timeoutMs, signal, options);
 	}
 
+	exchangeCursor(): number {
+		return this.#remote.callSync("exchangeCursor");
+	}
+
+	exchangedSince(from: string, to: string, sinceTs: number): boolean {
+		return this.#remote.callSync("exchangedSince", from, to, sinceTs);
+	}
+
 	take(agentId: string, from?: string): IrcMessage | undefined {
 		return this.#remote.callSync("take", agentId, from);
 	}

@@ -10816,6 +10816,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	async sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
 		options?: {
+			/** False delivers an aside without starting an idle agent. */
+			wakeIdle?: boolean;
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
 			queueChipText?: string;
@@ -10828,6 +10830,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	async #sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
 		options?: {
+			wakeIdle?: boolean;
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
 			queueChipText?: string;
@@ -10854,6 +10857,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		message: CustomMessagePayload<T>,
 		options:
 			| {
+					wakeIdle?: boolean;
 					triggerTurn?: boolean;
 					deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
 					queueChipText?: string;
@@ -10966,6 +10970,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				// IrcBridge.deliver()/#resumeStrandedIrcAsides do in plan mode. Routed through the
 				// event-emitting fold path (not a direct append) so a displayable aside that began
 				// streaming still gets the message_end its sender's rebuild-skip decision expects.
+				this.#recordWithoutTurn([normalizedAppMessage]);
+				return false;
+			}
+			if (options.wakeIdle === false) {
 				this.#recordWithoutTurn([normalizedAppMessage]);
 				return false;
 			}
