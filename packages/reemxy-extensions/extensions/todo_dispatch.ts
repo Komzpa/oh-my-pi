@@ -22,7 +22,7 @@ import type { ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@oh-my-pi/pi-coding-agent";
 import { findTodoExecutorTarget, taskPacketRow, todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
-import { readTodoArchiveState, getLiveTodoBranchEntries, getTodoActionRows, withTodoArchive } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { getLatestTodoPhasesFromEntries, readTodoArchiveState, getLiveTodoBranchEntries, getTodoActionRows, withTodoArchive } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { getTodoPlanCalibrationStore } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-calibration";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { realizesPriorityServiceTier } from "@oh-my-pi/pi-ai";
@@ -1692,7 +1692,8 @@ const POST_DEADLINE_RELEASED_CUSTOM_TYPE = "todo-post-deadline-released";
 type DispatchTodoPhases = Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
 
 function todoPhases(ctx: ExtensionContext): DispatchTodoPhases {
-  return ((ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.()) ?? []) as Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
+  const live = ctx.getTodoSnapshot?.() ?? ctx.getTodoPhases?.();
+  return (live ?? getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never)) as Array<{ name: string; tasks: Array<Record<string, unknown>> }>;
 }
 
 export function updateTodoSchedule(ctx: ExtensionContext, update: (phases: DispatchTodoPhases) => DispatchTodoPhases): void {
