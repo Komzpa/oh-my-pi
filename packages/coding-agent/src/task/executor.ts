@@ -369,8 +369,11 @@ function installSubagentRetryFallbackChain(args: {
 	);
 	if (selectedIndex < 0) return undefined;
 	const fallbackSelectors = candidates.slice(selectedIndex + 1).map(candidate => candidate.selector);
-	// A single configured model may reuse its role's (or the default) configured chain, but never an implicit parent fallback.
-	const fallbackChain = fallbackSelectors.length > 0 ? fallbackSelectors : inheritedFallbackChain;
+	// Visit the remaining pool members first, then the configured role chain.
+	const fallbackChain =
+		fallbackSelectors.length > 0 || inheritedFallbackChain !== undefined
+			? [...new Set([...fallbackSelectors, ...(inheritedFallbackChain ?? [])])]
+			: undefined;
 	if (!Array.isArray(fallbackChain) || !fallbackChain.every(entry => typeof entry === "string")) {
 		return undefined;
 	}
@@ -4732,13 +4735,10 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
 			}
 			const configuredModelPatterns = resolveConfiguredModelPatterns(modelPatterns, settings);
+			const requestedRole = modelRole ?? resolveExplicitModelRole(modelPatterns, subagentSettings);
 			const inheritedRetryFallbackChain =
-				configuredModelPatterns.length === 1
-					? resolveSubagentInheritedRetryFallbackChain(
-							subagentSettings,
-							modelRegistry,
-							modelRole ?? resolveExplicitModelRole(modelPatterns, subagentSettings),
-						)
+				configuredModelPatterns.length === 1 || (requestedRole && subagentSettings.getModelRolePool(requestedRole))
+					? resolveSubagentInheritedRetryFallbackChain(subagentSettings, modelRegistry, requestedRole)
 					: undefined;
 			const {
 				model,
