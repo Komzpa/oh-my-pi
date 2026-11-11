@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { buildSessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { type AgentRegistryApi, AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -206,6 +207,170 @@ afterEach(async () => {
 });
 
 describe("subagent restart recovery", () => {
+	it("does not let terminal notices erase a later pending notice of the same request", async () => {
+		const cwd = makeTempDir("@pi-child-later-notice-");
+		const { manager } = await createRootSession(cwd, path.join(cwd, "sessions"));
+		manager.appendCustomMessageEntry("restart-queued", "completed", true, { requestId: "same", state: "completed" });
+		manager.appendCustomMessageEntry("restart-queued", "later pending", true, { requestId: "same", state: "queued" });
+		const context = buildSessionContext(manager.getBranch(), undefined, undefined, {});
+		expect(context.messages).toEqual(expect.arrayContaining([expect.objectContaining({ content: "later pending" })]));
+	});
+
+	it("does not let a stale pending delivery override a durable controller terminal transition", async () => {
+		const cwd = makeTempDir("@pi-controller-terminal-notice-");
+		const { manager } = await createRootSession(cwd, path.join(cwd, "sessions"));
+		manager.appendCustomEntry("restart_request_transition", { record: { requestId: "same", state: "completed" } });
+		manager.appendCustomMessageEntry("restart-queued", "stale pending", true, { requestId: "same", state: "queued" });
+		const context = buildSessionContext(manager.getBranch(), undefined, undefined, {});
+		expect(context.messages.some(message => message.role === "custom" && message.content === "stale pending")).toBe(
+			false,
+		);
+	});
+
+	it.each(["completed", "cancelled", "failed"] as const)(
+		"child context reconciles exact terminal notice %s without dropping a different pending request",
+		async state => {
+			const cwd = makeTempDir("@pi-child-terminal-context-");
+			const { manager } = await createRootSession(cwd, path.join(cwd, "sessions"));
+			manager.appendCustomMessageEntry("restart-queued", "old restriction", true, {
+				requestId: "old",
+				state: "queued",
+			});
+			manager.appendCustomMessageEntry("restart-queued", "new restriction", true, {
+				requestId: "new",
+				state: "queued",
+			});
+			manager.appendCustomMessageEntry("restart-queued", "old request ended", true, { requestId: "old", state });
+			const context = buildSessionContext(manager.getBranch(), undefined, undefined, {});
+			const notices = context.messages.filter(
+				message => message.role === "custom" && message.customType === "restart-queued",
+			);
+			expect(notices).toHaveLength(2);
+			expect(notices).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ details: { requestId: "new", state: "queued" } }),
+					expect.objectContaining({ details: { requestId: "old", state } }),
+				]),
+			);
+		},
+	);
+
+	it.each([false, true])(
+		"reconciles an idle child's queued notice after cross-instance completion without waking it (retry: %s)",
+		async retry => {
+			const cwd = makeTempDir("@pi-child-restart-notice-");
+			const { manager, file } = await createRootSession(cwd, path.join(cwd, "sessions"));
+			const root = makeTestSession(manager).session;
+			const registry = AgentRegistry.global();
+			registerRoot(registry, root, file);
+			const requestId = "restart-child-notice";
+			const child = await createTranscript(cwd, file.slice(0, -6), { task: "preserve completed checkpoint" });
+			const childManager = track(await SessionManager.open(child.sessionFile));
+			childManager.appendCustomMessageEntry(
+				"restart-queued",
+				`Restart ${requestId} is queued. Do not start another model turn.`,
+				true,
+				{ requestId, state: "queued" },
+			);
+			childManager.appendCustomEntry("worker-checkpoint", { completed: "bounded work" });
+			await childManager.flush();
+			registry.register({
+				id: child.id,
+				displayName: "idle child",
+				kind: "sub",
+				parentId: MAIN_AGENT_ID,
+				session: makeTestSession(childManager).session,
+				sessionFile: child.sessionFile,
+				status: "idle",
+			});
+			await captureSubagentsForRestart(root, { requestId });
+			manager.appendCustomEntry("restart_request_transition", {
+				version: 1,
+				identity: { instanceId: "old", sessionId: manager.getSessionId(), generation: 0 },
+				record: {
+					version: 1,
+					requestId,
+					sessionId: manager.getSessionId(),
+					state: "restarting",
+					requestedAt: Date.now(),
+					updatedAt: Date.now(),
+					rootWasRunning: false,
+				},
+			});
+			await manager.flush();
+			AgentRegistry.resetGlobalForTests();
+			AgentLifecycleManager.resetGlobalForTests();
+			registerRoot(AgentRegistry.global(), root, file);
+			const deliveries: IrcMessage[] = [];
+			let childNoticeAttempts = 0;
+			const noticeSession = (m: SessionManager): AgentSession => {
+				const session = makeTestSession(m, { onDelivery: message => deliveries.push(message) }).session;
+				Object.assign(session, {
+					reconcileRestartNotices: async () => {},
+					sendRestartNotice: async (message: { content: string; details?: unknown }) => {
+						if (m.getSessionId() !== manager.getSessionId()) {
+							childNoticeAttempts++;
+							if (retry && childNoticeAttempts === 1) throw new Error("temporary notice delivery failure");
+						}
+						m.appendCustomMessageEntry("restart-queued", message.content, true, message.details);
+						await m.flush();
+					},
+				});
+				return session;
+			};
+			AgentLifecycleManager.global().setPersistedSubagentReviverFactory(
+				async ref => async () => noticeSession(track(await SessionManager.open(ref.sessionFile!))),
+				() => 0,
+			);
+			Object.assign(root, {
+				reconcileRestartNotices: async () => {},
+				sendRestartNotice: noticeSession(manager).sendRestartNotice,
+			});
+			const controller = createRestartQueueController({
+				session: root,
+				identity: () => ({ instanceId: "new", sessionId: manager.getSessionId(), generation: 1 }),
+				restart: async () => {},
+			});
+			try {
+				await controller.restore();
+				await controller.restore();
+				expect(controller.snapshot().request?.state).toBe("completed");
+				if (retry) {
+					const report = await restoreSubagentsAfterRestart(root, {
+						requestId,
+						beforeChildResume: childSession =>
+							childSession
+								.sendRestartNotice({
+									customType: "restart-queued",
+									content: "Restart request completed",
+									display: true,
+									details: { requestId, state: "completed" },
+								})
+								.then(() => undefined),
+					});
+					expect(report.failures).toEqual([]);
+					expect(childNoticeAttempts).toBe(2);
+				}
+				expect(deliveries).toHaveLength(0);
+				const restored = AgentRegistry.global().get(child.id)!;
+				expect(restored.status).toBe("idle");
+				const persistedChild = track(await SessionManager.open(child.sessionFile));
+				const entries = persistedChild.getBranch();
+				expect(entries.some(entry => entry.type === "custom" && entry.customType === "worker-checkpoint")).toBe(
+					true,
+				);
+				const context = buildSessionContext(entries, undefined, undefined, {});
+				const notices = context.messages.filter(
+					message => message.role === "custom" && message.customType === "restart-queued",
+				);
+				expect(notices).toHaveLength(1);
+				expect(notices[0]).toMatchObject({ details: { requestId, state: "completed" } });
+			} finally {
+				controller.dispose();
+			}
+		},
+	);
+
 	it.each(["checkpointed", "restarting"] as const)(
 		"manual resume of %s revives captured workers while reporting failed",
 		async state => {
