@@ -237,9 +237,13 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 
 	it("keeps exact MCP resources whole, including URL-shaped suffixes, and fans out readable HTTPS URL tails", async () => {
 		const exactUri = `skill://figma/resource;${absFile}`;
+		const exactSkillList = "skill://figma/resource;skill://demo";
 		MCPManager.setInstance({
 			getConnectedServers: () => ["figma"],
-			getServerResources: () => ({ resources: [{ uri: exactUri, name: "exact" }], templates: [] }),
+			getServerResources: () => ({
+				resources: [exactUri, exactSkillList].map(uri => ({ uri, name: "exact" })),
+				templates: [],
+			}),
 			readServerResource: async () => ({ contents: [{ uri: exactUri, text: "exact MCP resource needle" }] }),
 			waitForPendingConnections: async () => {},
 			ensureServerResources: async () => {},
@@ -248,6 +252,11 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		const read = await new ReadTool(createSession()).execute("exact-mcp-resource", { path: exactUri });
 		expect(getResultText(read)).toContain("exact MCP resource needle");
 		expect(getResultText(read)).not.toContain("local tail needle");
+		const mixedSkillRead = await new ReadTool(createSession()).execute("exact-mcp-skill-list", {
+			path: exactSkillList,
+		});
+		expect(getResultText(mixedSkillRead)).toContain("exact MCP resource needle");
+		expect(getResultText(mixedSkillRead)).not.toContain(skillBodyNeedle);
 
 		const httpsList = "skill://demo/SKILL.md;https://example.test/doc";
 		expect(await expandDelimitedPathEntries([httpsList], tmpDir, { mixedLocalPaths: true })).toEqual([

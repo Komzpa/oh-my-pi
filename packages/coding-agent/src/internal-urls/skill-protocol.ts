@@ -227,6 +227,18 @@ async function findUrlSkillAnew(
 	return findUrlSkill(url, (await host.rediscoverForUnknownName?.()) ?? skills);
 }
 
+/** Whether a loaded or rediscovered local skill owns this URL, even when its target file is missing. */
+export async function isLocallyOwnedSkillUrl(url: InternalUrl, context?: ResolveContext): Promise<boolean> {
+	const skills = context?.skills ?? getActiveSkills();
+	try {
+		await findUrlSkillAnew(url, skills, contextRediscoveryHost(skills, context));
+		return true;
+	} catch (error) {
+		if (error instanceof UnknownSkillError) return false;
+		throw error;
+	}
+}
+
 /**
  * {@link skillTargetPath}, resolved once more when the skill that owns the target is stale. Its
  * stand-in is the same skill of the same plugin ({@link findStaleSkillStandIn}), which a collision

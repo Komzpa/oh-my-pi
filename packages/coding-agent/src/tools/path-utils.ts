@@ -19,6 +19,7 @@ import {
 	windowsPathToWslMount,
 } from "@oh-my-pi/pi-utils";
 import { InternalUrlRouter } from "../internal-urls";
+import { isLocallyOwnedSkillUrl } from "../internal-urls/skill-protocol";
 import {
 	hasExactMcpResource,
 	MCP_RESOURCE_DISCOVERY_TIMEOUT,
@@ -914,6 +915,18 @@ export async function splitMixedUrlPathList(
 			return null;
 		}
 	}
+	// Local skill ownership wins without starting MCP for a list made entirely of local skills.
+	const router = InternalUrlRouter.instance();
+	const skillParts = parts.map(part => router.normalize(expandPath(part)));
+	if (
+		skillParts.every(part => extractUriScheme(part) === "skill") &&
+		(
+			await Promise.all(
+				skillParts.map(part => isLocallyOwnedSkillUrl(parseInternalUrl(router.split(part).path), context)),
+			)
+		).every(Boolean)
+	)
+		return parts;
 	// Native fallback schemes have the same exact advertised identity as
 	// skill:// and mcp:// resources, including through routed read retries.
 	if (await internalUrlIsExactMcpResource(normalizedEntry, context?.signal)) return null;
