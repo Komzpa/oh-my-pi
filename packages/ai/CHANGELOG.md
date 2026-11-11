@@ -67,6 +67,10 @@
 - A 429 or 402 worded like a context overflow (Bedrock's "429 Too many tokens, please wait…") is treated as a rate limit, so it retries and walks the fallback chain instead of compacting ([#18345](https://github.com/can1357/oh-my-pi/pull/18345) by [@nick-maderight](https://github.com/nick-maderight))
 - `auth-gateway stdio` and `serve` no longer reject credentialless Apple on-device models ([#18370](https://github.com/can1357/oh-my-pi/issues/18370))
 
+### Fixed
+
+- Fixed Anthropic thread continuations exceeding the four prompt-cache breakpoint limit after resuming long histories ([#169](https://github.com/Komzpa/oh-my-pi/pull/169) by [@Komzpa](https://github.com/Komzpa))
+
 ## [18.17.0] - 2026-11-06
 
 ### Added
