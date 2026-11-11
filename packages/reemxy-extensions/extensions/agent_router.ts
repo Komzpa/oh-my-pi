@@ -62,52 +62,11 @@ export function sessionCwdScopes(ctx: ExtensionContext): string[] | undefined {
 	}
 }
 
-function spawnTaskText(event: BeforeSubagentSpawnEvent): string | undefined {
-	const record = event as Record<string, unknown>;
-	for (const key of ["assignment", "task", "prompt", "text", "message"]) {
-		const value = record[key];
-		if (typeof value === "string" && value.trim() !== "") return value;
-	}
-	return undefined;
-}
-
-function spawnTextMatchesRowTitle(text: string, title: unknown): boolean {
-	if (typeof title !== "string" || title.trim() === "") return false;
-	const trimmed = text.trim();
-	const clean = title.trim();
-	if (trimmed.startsWith(clean)) return true;
-	const firstLine = trimmed.split("\n", 1)[0]!.trim();
-	const normalizedText = firstLine.replace(/^#\s*row\s*:\s*/i, "").trim();
-	const normalizedTitle = clean.replace(/^#\s*row\s*:\s*/i, "").trim();
-	return (
-		normalizedText !== "" &&
-		normalizedTitle !== "" &&
-		(normalizedText === normalizedTitle || normalizedText.startsWith(normalizedTitle))
-	);
-}
-
-export function lanePathsFromText(text: string): string[] {
-	const found: string[] = [];
-	const pattern = /(~\/[^\s'"`,;]+|\/[A-Za-z0-9_.-]+(?:\/[^\s'"`,;]+)*)/g;
-	for (const match of text.matchAll(pattern)) {
-		let candidate = (match[1] ?? "").replace(/[),.;'"`\]}]+$/g, "").replace(/\/+$/g, "");
-		if (!candidate || candidate === "~" || candidate === "/") continue;
-		if (candidate === "~" || candidate.startsWith("~/")) candidate = join(homedir(), candidate.slice(2));
-		if (!candidate.startsWith("/")) continue;
-		// HTTP routes (/ACK, /bundle/message/photo) are not checkout paths: the top-level directory must exist.
-		if (!existsSync(`/${candidate.split("/")[1]}`)) continue;
-		if (!found.includes(candidate)) found.push(candidate);
-	}
-	return found;
-}
-
-/** Only explicit worktree declarations supplement an explicit per-item resource list.
- * Other absolute paths (reference inputs, evidence) retain the existing narrowing policy. */
-export function assignedWorktrees(text: string): string[] {
-	const roots: string[] = [];
-	const declarations = /(?:worktree|scope\.root|cwd|["']root["'])["'`\s]*[:=]?["'`\s]*(\/[^\s"'`,;]+)/gi;
-	for (const match of text.matchAll(declarations)) roots.push(...lanePathsFromText(match[1]!));
-	return [...new Set(roots)];
+function grantedResources(event: BeforeSubagentSpawnEvent): string[] | undefined {
+	if (Array.isArray(event.resources)) return event.resources;
+	if (Array.isArray(event.verifiedWorkspace?.resources)) return event.verifiedWorkspace.resources;
+	const cwd = event.workspace && stringValue(event.verifiedWorkspace?.cwd);
+	return cwd ? [cwd] : undefined;
 }
 
 function ownedCheckoutScopes(
@@ -115,9 +74,8 @@ function ownedCheckoutScopes(
 	ctx: ExtensionContext,
 	latestTodo?: () => TodoScheduleInput,
 ): string[] | undefined {
-	const fallback: string[] = [];
-	const declared = checkoutScopesFromResources(event.resources);
-	if (declared) return declared;
+	const granted = grantedResources(event);
+	if (granted) return checkoutScopesFromResources(granted) ?? [];
 	const readPhases = (): TodoScheduleInput | undefined => {
 		if (!latestTodo) return undefined;
 		try {
@@ -137,50 +95,26 @@ function ownedCheckoutScopes(
 				const scopes = new Set<string>();
 				let complete = true;
 				for (const row of rows) {
-					const owned = checkoutScopesFromResources(row.schedule?.resources);
-					if (!owned) {
+					if (!Array.isArray(row.schedule?.resources)) {
 						complete = false;
 						break;
 					}
-					for (const scope of owned) scopes.add(scope);
+					for (const scope of checkoutScopesFromResources(row.schedule.resources) ?? []) scopes.add(scope);
 				}
-				if (complete && scopes.size) return [...scopes].sort();
+				if (complete) return [...scopes].sort();
 			}
 		} catch {
-			// Fall through to the spawn-text scope below.
+			// Fall through to the explicitly matched row or child checkout.
 		}
 	}
-	const text = spawnTaskText(event);
-	if (text) {
-		try {
-			const phases = readPhases();
-			const open = phases
-				?.flatMap(phase => phase.tasks)
-				.filter(row => row.status === "pending" || row.status === "in_progress");
-			const matched = open?.filter(row => spawnTextMatchesRowTitle(text, row.content));
-			if (matched?.length) {
-				const scopes = new Set<string>();
-				let complete = true;
-				for (const row of matched) {
-					const owned = checkoutScopesFromResources(row.schedule?.resources);
-					if (!owned) {
-						complete = false;
-						break;
-					}
-					for (const scope of owned) scopes.add(scope);
-				}
-				if (complete && scopes.size) return [...scopes].sort();
-			}
-		} catch {
-			// Fall through to the lane-path scope below.
-		}
-		const paths = lanePathsFromText(text);
-		if (paths.length) {
-			const fromPaths = checkoutScopesFromResources(paths);
-			if (fromPaths) return fromPaths;
-		}
+	if (typeof event.row === "string") {
+		const row = readPhases()
+			?.flatMap(phase => phase.tasks)
+			.find(item => item.content === event.row);
+		if (Array.isArray(row?.schedule?.resources)) return checkoutScopesFromResources(row.schedule.resources) ?? [];
 	}
-	return fallback;
+	const cwd = stringValue(event.cwd);
+	return cwd ? (checkoutScopesFromResources([cwd]) ?? []) : (sessionCwdScopes(ctx) ?? []);
 }
 
 function activeWriteWorker(
@@ -211,7 +145,7 @@ function activeWriteWorker(
 			.filter(
 				row => row.status !== "completed" && row.status !== "abandoned" && row.schedule?.owner === spawn.spawnKey,
 			);
-		if (rows?.length)
+		if (rows?.length && spawn.dynamicRowScope)
 			spawn.checkoutScopes = checkoutScopesFromResources(rows.flatMap(row => row.schedule?.resources ?? []));
 		const held = spawn.checkoutScopes ?? cwdFallback;
 		if (incoming !== undefined && held !== undefined && !checkoutScopesOverlap(incoming, held)) return false;
@@ -281,6 +215,7 @@ export interface FallbackRecord {
 interface SpawnState extends SpawnRecord {
 	recordedOutcome: boolean;
 	writerNoticeSent?: boolean;
+	dynamicRowScope?: boolean;
 }
 
 export interface RouterState {
@@ -296,6 +231,8 @@ export interface BeforeSubagentSpawnEvent {
 	assignment?: unknown;
 	context?: unknown;
 	resources?: unknown;
+	workspace?: unknown;
+	verifiedWorkspace?: { cwd?: unknown; resources?: string[] };
 	readOnly?: boolean;
 	row?: string;
 	cwd?: unknown;
@@ -453,7 +390,8 @@ export async function requestResourceScope(ctx: ExtensionContext, paths: string[
 		return { status: "granted", paths };
 	}
 	const scope = workerRowScope(ctx);
-	if (!scope?.lead.session || !scope.rows.length) return { status: "unavailable", reason: "No canonical lead row found." };
+	if (!scope?.lead.session || !scope.rows.length)
+		return { status: "unavailable", reason: "No canonical lead row found." };
 	const updates = scope.rows.map(row => ({
 		task: row.content,
 		resources: [...new Set([...(row.schedule?.resources ?? []), ...paths])],
@@ -463,17 +401,20 @@ export async function requestResourceScope(ctx: ExtensionContext, paths: string[
 	if (!pending.has(key)) {
 		pending.add(key);
 		try {
-			await scope.lead.session.steer(
-				resourceScopeNotice(ctx.agent?.id ?? "worker", action),
-				undefined,
-				{ attribution: "agent" },
-			);
+			await scope.lead.session.steer(resourceScopeNotice(ctx.agent?.id ?? "worker", action), undefined, {
+				attribution: "agent",
+			});
 		} catch (error) {
 			pending.delete(key);
 			throw error;
 		}
 	}
-	return { status: "pending", lead: scope.lead.id, action, next: 'Yield with error:"Scope pending: awaiting the lead todo schedule action"; the lead must schedule these resources before retrying. Do not repeat the request.' };
+	return {
+		status: "pending",
+		lead: scope.lead.id,
+		action,
+		next: 'Yield with error:"Scope pending: awaiting the lead todo schedule action"; the lead must schedule these resources before retrying. Do not repeat the request.',
+	};
 }
 
 /** Persist only caller-assigned paths, after canonical overlap checks, before any worker starts. */
@@ -486,9 +427,8 @@ export function admitAssignedResources(
 	const explicit = Array.isArray(event.resources);
 	if (explicit && event.resources.some(value => typeof value !== "string" || !value.startsWith("/")))
 		return "resources must contain absolute paths; use tasks[].resources to narrow the row.";
-	const text = spawnTaskText(event) ?? "";
-	const worktrees = assignedWorktrees(text);
-	const assigned = [...new Set([...(explicit ? event.resources : lanePathsFromText(text)), ...worktrees])];
+	const grant = grantedResources(event);
+	const assigned = [...new Set(grant ?? [])];
 	const scopes = checkoutScopesFromResources(assigned);
 	if (assigned.length && !scopes) return "Cannot resolve assigned resources.";
 	if (ctx.agent?.kind === "sub") {
@@ -506,25 +446,42 @@ export function admitAssignedResources(
 		row =>
 			(typeof event.spawnKey === "string" &&
 				(row.schedule?.owner === event.spawnKey || row.schedule?.executor?.workerId === event.spawnKey)) ||
-			row.content === event.row ||
-			spawnTextMatchesRowTitle(spawnTaskText(event) ?? "", row.content),
+			row.content === event.row,
 	);
 	if (matched.length !== 1) return;
 	const row = matched[0];
-	if (row.status === "blocked" && todoInfraBreaker(row.schedule?.attemptHistory)) return row.blocker ?? "Infra breaker: inspect todo history and repair admission before unblocking this row.";
-	const previous = checkoutScopesFromResources(row.schedule?.resources?.filter(resource => !resource.startsWith("git:")));
-	if (Array.isArray(row.schedule?.resources) && scopes &&
-		(!previous || !checkoutScopesContain([...previous, ...(checkoutScopesFromResources(worktrees) ?? [])], scopes)))
+	if (row.status === "blocked" && todoInfraBreaker(row.schedule?.attemptHistory))
+		return row.blocker ?? "Infra breaker: inspect todo history and repair admission before unblocking this row.";
+	const previous = checkoutScopesFromResources(
+		row.schedule?.resources?.filter(resource => !resource.startsWith("git:")),
+	);
+	const workspaceDefault = !explicit && Boolean(event.workspace && event.verifiedWorkspace?.cwd);
+	if (
+		!workspaceDefault &&
+		Array.isArray(row.schedule?.resources) &&
+		scopes &&
+		(!previous || !checkoutScopesContain(previous, scopes))
+	)
 		return `resources exceed row ${JSON.stringify(row.content)}; update its todo schedule resources before expanding.`;
 	const readOnly = event.readOnly === true || readOnlyRow(row);
 	// An empty reader write claim must not erase the row's artifact/audit scope.
-	const resources = readOnly && explicit && event.resources.length === 0
-		? [...(row.schedule?.resources ?? [])]
-		: explicit ? [...new Set([...assigned, ...(row.schedule?.resources ?? []).filter(resource => resource.startsWith("git:"))])] : [...new Set([...(row.schedule?.resources ?? []), ...assigned])];
+	const resources =
+		readOnly && grant?.length === 0
+			? [...(row.schedule?.resources ?? [])]
+			: grant !== undefined
+				? [
+						...new Set([
+							...assigned,
+							...(row.schedule?.resources ?? []).filter(resource => resource.startsWith("git:")),
+						]),
+					]
+				: [...new Set([...(row.schedule?.resources ?? []), ...assigned])];
 	const incoming = checkoutScopesFromResources(resources.filter(resource => !resource.startsWith("git:")));
 	for (const other of rows) {
 		if (other === row || readOnly || !holdsWriteCustody(other)) continue;
-		const held = checkoutScopesFromResources(other.schedule?.resources?.filter(resource => !resource.startsWith("git:")));
+		const held = checkoutScopesFromResources(
+			other.schedule?.resources?.filter(resource => !resource.startsWith("git:")),
+		);
 		if (incoming && held && checkoutScopesOverlap(incoming, held)) {
 			onWait?.({ row: other.content, workerId: other.schedule?.executor?.workerId ?? other.schedule?.owner });
 			return `resources ${JSON.stringify(
@@ -538,7 +495,8 @@ export function admitAssignedResources(
 	const owner = stringValue(event.spawnKey) ?? row.schedule?.owner;
 	const ownerReadOnly = owner ? { owner, readOnly } : undefined;
 	if (
-		persist && (JSON.stringify(resources) !== JSON.stringify(row.schedule?.resources ?? []) ||
+		persist &&
+		(JSON.stringify(resources) !== JSON.stringify(row.schedule?.resources ?? []) ||
 			owner !== row.schedule?.owner ||
 			JSON.stringify(ownerReadOnly) !== JSON.stringify(row.schedule?.ownerReadOnly)) &&
 		ctx.updateTodoSchedule?.(row.content, { resources, owner, ownerReadOnly }) !== true
@@ -549,12 +507,15 @@ export function admitAssignedResources(
 /** Inspect the same admission policy for notices without changing row ownership. */
 export function assignedResourceRefusals(phases: TodoScheduleInput, ctx: ExtensionContext): Map<string, string> {
 	const view = { ...ctx, getTodoPhases: () => phases };
-	return new Map(phases.flatMap(phase => phase.tasks)
-		.filter(row => row.status !== "completed" && row.status !== "abandoned")
-		.flatMap(row => {
-			const reason = admitAssignedResources({ row: row.content, task: row.content }, view, false);
-			return reason ? [[row.content, reason] as const] : [];
-		}));
+	return new Map(
+		phases
+			.flatMap(phase => phase.tasks)
+			.filter(row => row.status !== "completed" && row.status !== "abandoned")
+			.flatMap(row => {
+				const reason = admitAssignedResources({ row: row.content, task: row.content }, view, false);
+				return reason ? [[row.content, reason] as const] : [];
+			}),
+	);
 }
 
 export function routeSubagentSpawn(
@@ -586,8 +547,9 @@ export function routeSubagentSpawn(
 			? { resourceWait, reason: admission }
 			: { block: true, reason: admission };
 	const latestTodo = memoLatestTodo(options.latestTodo, ctx);
+	const claimsCheckout = event.isolated !== true || Boolean(event.verifiedWorkspace?.cwd);
 	const checkoutScopes =
-		event.readOnly !== true && event.isolated !== true ? ownedCheckoutScopes(event, ctx, latestTodo) : undefined;
+		event.readOnly !== true && claimsCheckout ? ownedCheckoutScopes(event, ctx, latestTodo) : undefined;
 	// git-pr-owner only runs VCS finalization (commit/PR/push), sequenced by the
 	// caller after a coder's edits land. Blocking it on a still-"running" coder
 	// deadlocks the commit-after-write flow the gate is meant to serialize, so
@@ -600,7 +562,7 @@ export function routeSubagentSpawn(
 		event.readOnly !== true &&
 		(event.readOnly === false || WRITE_CAPABLE_WORKERS.has(agent)) &&
 		agent !== "git-pr-owner" &&
-		event.isolated !== true
+		claimsCheckout
 	) {
 		const activeWriter = activeWriteWorker(state, ctx, checkoutScopes, latestTodo);
 		if (activeWriter) {
@@ -644,7 +606,12 @@ export function routeSubagentSpawn(
 		...(event.isolated === true ? { isolated: true } : {}),
 		...(checkoutScopes?.length ? { checkoutScopes } : {}),
 	};
-	state.spawns.set(recordKey(spawnKey, agent), { ...record, recordedOutcome: false });
+	state.spawns.set(recordKey(spawnKey, agent), {
+		...record,
+		isolated: event.isolated === true && !event.verifiedWorkspace?.cwd,
+		dynamicRowScope: grantedResources(event) === undefined,
+		recordedOutcome: false,
+	});
 	appendJsonl(options.stateFile ?? defaultStateFile(), record);
 	return undefined;
 }
@@ -1121,7 +1088,11 @@ export default function agentRouter(pi: ExtensionAPI, probes?: HostResourceProbe
 			// A delivered scope request has no local work left: report it once to the lead.
 			// The ordinary completion gate would otherwise demand evidence for an edit
 			// the resource gate has just forbidden.
-			if (pendingScopes.size && typeof event.input?.error === "string" && event.input.error.startsWith("Scope pending:"))
+			if (
+				pendingScopes.size &&
+				typeof event.input?.error === "string" &&
+				event.input.error.startsWith("Scope pending:")
+			)
 				return undefined;
 			const budgetMs = options.yieldGateBudgetMs ?? YIELD_GATE_BUDGET_MS;
 			const startedAt = Date.now();

@@ -48,26 +48,23 @@ Before-worker failures name `field`, `expected`, `actual`, `action`: fix the nam
 {{#if batchEnabled}}`context`: shared (`# Goal`, `# Constraints`, `# Contract` interfaces); NEVER repeat per task.
 {{/if}}`task`{{#if file}} or the contents of `taskFile`{{/if}}: self-contained (`# Target` files/non-goals, `# Change` steps/APIs, `# Acceptance` observable result).
 {{#if batchEnabled}}
-Example — valid `task` input (batch):
+Example — valid `task` input (batch), assuming `/work/project` is an existing checkout and `/work/evidence/report.txt` exists:
 
 ```json
 {
-  "context": "# Goal\nDocument the task workspace contract.\n# Constraints\nNo checks mid-flight.",
+  "context": "# Goal\nFix the input handling issue described in the report.\n# Constraints\nKeep changes within /work/project/src; no checks mid-flight.",
   "tasks": [
     {
-      "name": "TaskDocs",
-      "task": "# Target docs/tools/task.md and packages/coding-agent/src/prompts/tools/task.md\n# Change Document workspace, reads, resources, and the write-scope precedence.\n# Acceptance Both files state the precedence and the failure shape.",
-      "solutionSpace": "one fix: wording, contract given",
+      "name": "InputFix",
+      "task": "# Target\n/work/project/src; read /work/evidence/report.txt.\n# Change\nApply the bounded input handling fix described in the report.\n# Acceptance\nThe reported input produces the expected result; unrelated behavior stays unchanged.",
+      "solutionSpace": "one fix: input handling, change specified in report",
       "workspace": {
-        "repo": "/home/kom/proj/ai_pr/omp-lane-workspace-contract",
-        "base": "1ee425a0ce5eee9cd735a896178c2d42a64c631d",
-        "path": "/home/kom/proj/ai_pr/omp-lane-workspace-contract"
+        "repo": "/work/project",
+        "base": "HEAD",
+        "path": "/work/project"
       },
-      "reads": ["/home/kom/Dropbox/Reemxy/tasks-loop/docs/omp-author-lanes.md"],
-      "resources": [
-        "/home/kom/proj/ai_pr/omp-lane-workspace-contract/docs/tools/task.md",
-        "/home/kom/proj/ai_pr/omp-lane-workspace-contract/packages/coding-agent/src/prompts/tools/task.md"
-      ]
+      "reads": ["/work/evidence/report.txt"],
+      "resources": ["/work/project/src"]
     }
   ]
 }

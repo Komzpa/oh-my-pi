@@ -77,16 +77,19 @@ async function fixture() {
 	};
 }
 
-test("assignment paths become durable scope; shared context cannot grant writes; explicit scope still conflicts", async () => {
+test("explicit assignments become durable scope; shared context cannot grant writes; explicit scope still conflicts", async () => {
 	const f = await fixture();
 	try {
 		f.phases()[0]!.tasks[0]!.schedule!.owner = undefined;
+		f.lead.updateTodoSchedule!("Capture screenshots", { resources: [f.assigned] });
 		const stateFile = path.join(f.dir, "spawns.jsonl");
 		const event = {
 			agent: "task",
 			spawnKey: "BragPrScreenshots",
+			row: "Capture screenshots",
 			assignment: `Capture screenshots\nWorktree ${f.assigned}`,
 			context: `Write evidence in ${f.dir}/proof`,
+			resources: [f.assigned],
 		};
 		expect(routeSubagentSpawn(event, f.lead, undefined, { stateFile })).toBeUndefined();
 		expect(
@@ -114,6 +117,64 @@ test("assignment paths become durable scope; shared context cannot grant writes;
 	}
 });
 
+test("verified workspace default replaces source row rights and authorizes private checkout writes", async () => {
+	const f = await fixture();
+	try {
+		const source = path.join(f.dir, "old");
+		const record = { cwd: f.assigned, resources: [f.assigned] };
+		expect(
+			routeSubagentSpawn(
+				{
+					agent: "task",
+					spawnKey: "BragPrScreenshots",
+					row: "Capture screenshots",
+					workspace: { repo: source, base: "HEAD" },
+					verifiedWorkspace: record,
+				},
+				f.lead,
+				undefined,
+				{ stateFile: path.join(f.dir, "spawns.jsonl") },
+			),
+		).toBeUndefined();
+		expect(f.phases()[0]!.tasks[0]!.schedule!.resources).toEqual(record.resources);
+		expect(
+			await workerToolPreflight(
+				{ toolName: "write", input: { path: path.join(f.assigned, "result.txt") } },
+				f.worker,
+			),
+		).toBeUndefined();
+		expect(
+			await workerToolPreflight({ toolName: "write", input: { path: path.join(source, "result.txt") } }, f.worker),
+		).toMatchObject({ block: true });
+		expect(
+			routeSubagentSpawn(
+				{
+					agent: "task",
+					resources: record.resources,
+					verifiedWorkspace: record,
+				},
+				f.worker,
+				undefined,
+				{ stateFile: path.join(f.dir, "nested.jsonl") },
+			),
+		).toBeUndefined();
+		expect(
+			routeSubagentSpawn(
+				{
+					agent: "task",
+					workspace: { repo: source },
+					verifiedWorkspace: { cwd: source, resources: [source] },
+				},
+				f.worker,
+				undefined,
+				{ stateFile: path.join(f.dir, "nested.jsonl") },
+			),
+		).toMatchObject({ block: true });
+	} finally {
+		await f.cleanup();
+	}
+});
+
 test("nested children with no own row inherit live ancestor scope and cannot widen it through assignment, cwd, symlink or revocation", async () => {
 	const f = await fixture();
 	try {
@@ -134,7 +195,7 @@ test("nested children with no own row inherit live ancestor scope and cannot wid
 			await workerToolPreflight({ toolName: "write", input: { path: `${f.assigned}/escape/other.png` } }, child),
 		).toMatchObject({ block: true });
 		expect(
-			routeSubagentSpawn({ agent: "task", assignment: `Worktree ${f.dir}/wider` }, f.worker, undefined, {
+			routeSubagentSpawn({ agent: "task", resources: [`${f.dir}/wider`] }, f.worker, undefined, {
 				stateFile: `${f.dir}/spawns`,
 			}),
 		).toMatchObject({ block: true });
@@ -158,9 +219,13 @@ test("resource scope requests restating assignments grant without lead work; new
 			update: undefined,
 			ctx: ExtensionContext,
 		) => Promise<{ details: { status: string } }>;
-		let toolCall: (event: unknown, ctx: ExtensionContext) => Promise<unknown> = async () => { throw new Error("tool_call hook missing"); };
+		let toolCall: (event: unknown, ctx: ExtensionContext) => Promise<unknown> = async () => {
+			throw new Error("tool_call hook missing");
+		};
 		agentRouter({
-			on(name: string, handler: typeof toolCall) { if (name === "tool_call") toolCall = handler; },
+			on(name: string, handler: typeof toolCall) {
+				if (name === "tool_call") toolCall = handler;
+			},
 			zod: z,
 			registerTool(tool: { name: string; execute: typeof execute }) {
 				if (tool.name === "resource_scope") execute = tool.execute;
@@ -172,7 +237,12 @@ test("resource scope requests restating assignments grant without lead work; new
 		expect((await request([`${f.dir}/new-proof`])).details.status).toBe("pending");
 		expect((await request([`${f.dir}/new-proof`])).details.status).toBe("pending");
 		expect(f.steer).toHaveBeenCalledTimes(1);
-		expect(await toolCall({ toolName: "yield", input: { error: "Scope pending: awaiting the lead todo schedule action" } }, f.worker)).toBeUndefined();
+		expect(
+			await toolCall(
+				{ toolName: "yield", input: { error: "Scope pending: awaiting the lead todo schedule action" } },
+				f.worker,
+			),
+		).toBeUndefined();
 		f.phases()[0]!.tasks.push({
 			content: "Other writer",
 			status: "in_progress",
@@ -184,7 +254,9 @@ test("resource scope requests restating assignments grant without lead work; new
 		// Apply the notice's actual tool arguments, then retry the running worker.
 		const action = JSON.parse(f.steer.mock.calls[0]![0].match(/todo (\{.*\}), or/)![1]!);
 		for (const update of action.updates) f.lead.updateTodoSchedule!(update.task, { resources: update.resources });
-		expect(await workerToolPreflight({ toolName: "write", input: { path: `${f.dir}/new-proof/a` } }, f.worker)).toBeUndefined();
+		expect(
+			await workerToolPreflight({ toolName: "write", input: { path: `${f.dir}/new-proof/a` } }, f.worker),
+		).toBeUndefined();
 		expect(f.steer.mock.calls[0]![0]).toContain(`${f.dir}/new-proof`);
 		expect(
 			await workerToolPreflight({ toolName: "write", input: { path: `${f.dir}/unassigned/a` } }, f.worker),
@@ -195,16 +267,35 @@ test("resource scope requests restating assignments grant without lead work; new
 });
 
 for (const declaration of ["Worktree", "cwd:", '"scope":{"root":']) {
-	test(`assigned ${declaration} overrides stale row resources even with explicit file resources`, async () => {
+	test(`${declaration} does not widen explicit file resources`, async () => {
 		const f = await fixture();
 		try {
-			const event = { agent: "task", spawnKey: "BragPrScreenshots", row: "Capture screenshots",
+			f.lead.updateTodoSchedule!("Capture screenshots", { resources: [f.assigned] });
+			const event = {
+				agent: "task",
+				spawnKey: "BragPrScreenshots",
+				row: "Capture screenshots",
 				resources: [`${f.assigned}/src/file.ts`],
-				assignment: `Capture screenshots\n${declaration} "${f.assigned}"` };
+				assignment: `Capture screenshots\n${declaration} "${f.assigned}"`,
+			};
 			expect(routeSubagentSpawn(event, f.lead, undefined, { stateFile: `${f.dir}/spawns` })).toBeUndefined();
-			expect(await workerToolPreflight({ toolName: "edit", input: { path: `${f.assigned}/other.ts` } }, f.worker)).toBeUndefined();
-			f.phases()[0]!.tasks.push({ content: "Held", status: "in_progress", schedule: { owner: "Holder", resources: [f.assigned] } });
-			expect(routeSubagentSpawn(event, f.lead, undefined, { stateFile: `${f.dir}/spawns` })).toMatchObject({ block: true, reason: expect.stringContaining("Holder") });
-		} finally { await f.cleanup(); }
+			expect(
+				await workerToolPreflight({ toolName: "edit", input: { path: `${f.assigned}/src/file.ts` } }, f.worker),
+			).toBeUndefined();
+			expect(
+				await workerToolPreflight({ toolName: "edit", input: { path: `${f.assigned}/other.ts` } }, f.worker),
+			).toMatchObject({ block: true });
+			f.phases()[0]!.tasks.push({
+				content: "Held",
+				status: "in_progress",
+				schedule: { owner: "Holder", resources: [f.assigned] },
+			});
+			expect(routeSubagentSpawn(event, f.lead, undefined, { stateFile: `${f.dir}/spawns` })).toMatchObject({
+				block: true,
+				reason: expect.stringContaining("Holder"),
+			});
+		} finally {
+			await f.cleanup();
+		}
 	});
 }

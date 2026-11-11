@@ -1,3 +1,4 @@
+import { readTaskWorkspace, validatePersistedTaskWorkspace } from "./workspace";
 import { cfgTaskPeerAwareness } from "./settings";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -296,6 +297,7 @@ export function createPersistedSubagentReviverFactory(
 export async function revivePersistedSubagent(spec: PersistedReviveSpec, expectedRef: AgentRef): Promise<AgentSession> {
 	const ref = { id: spec.id, displayName: spec.displayName, parentId: spec.parentId };
 	const { sessionFile, taskDepth, restoredSeance } = spec;
+	const verifiedWorkspace = await readTaskWorkspace(sessionFile);
 	const registry = AgentRegistry.global();
 	// Re-open fresh on every revive: park closes the writer, so this takes
 	// the single-writer lock cleanly and restores the full message history.
@@ -303,6 +305,12 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 		suppressBreadcrumb: true,
 		throwIfMissing: true,
 	});
+	try {
+		await validatePersistedTaskWorkspace(reopened);
+	} catch (error) {
+		await reopened.close();
+		throw error;
+	}
 	const init = extractSessionInit([...reopened.iterateEntries("session_init")]);
 	if (!init) {
 		await reopened.close();
@@ -501,7 +509,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 	const lastNoteAt = findLastPersistedSubagentElapsedNoteAt(elapsedMessages, attemptStartedAt);
 	try {
 		({ session } = await createAgentSession({
-			cwd: spec.isolatedCwd ?? restoredSeance?.cwd ?? spec.root.sessionManager.getCwd(),
+			cwd: verifiedWorkspace?.cwd ?? spec.isolatedCwd ?? restoredSeance?.cwd ?? reopened.getCwd(),
 			...(spec.isolatedCwd !== undefined ? { additionalDirectories: [] } : {}),
 			costGate: spec.costGate,
 			authStorage: spec.authStorage,

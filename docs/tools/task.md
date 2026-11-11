@@ -64,26 +64,23 @@ The wire schema is shape-swapped by `task.batch` (default on). One unit of work 
 
 **Workspace resolution.** `workspace.repo` MUST be an absolute Git repository path and `workspace.base` MUST be a commit available in it; admission resolves `base` to an exact SHA before any worker starts (run `git fetch` first when the commit is missing). With `workspace.path`, the path MUST be an existing absolute checkout of the same repository with HEAD exactly at `base`; without `workspace.path`, a private checkout of `repo` at `base` is prepared for this item. `reads` paths MUST exist at admission and grant no writes. Missing input fails admission — NEVER substitute a value or infer one from task prose.
 
-A valid batch call (`task.batch` on):
+A valid batch call (`task.batch` on), assuming `/work/project` is an existing checkout and `/work/evidence/report.txt` exists:
 
 ```json
 {
-  "context": "# Goal\nDocument the task workspace contract.\n# Constraints\nNo checks mid-flight.",
+  "context": "# Goal\nFix the input handling issue described in the report.\n# Constraints\nKeep changes within /work/project/src; no checks mid-flight.",
   "tasks": [
     {
-      "name": "TaskDocs",
-      "task": "# Target docs/tools/task.md and packages/coding-agent/src/prompts/tools/task.md\n# Change Document workspace, reads, resources, and the write-scope precedence.\n# Acceptance Both files state the precedence and the failure shape.",
-      "solutionSpace": "one fix: wording, contract given",
+      "name": "InputFix",
+      "task": "# Target\n/work/project/src; read /work/evidence/report.txt.\n# Change\nApply the bounded input handling fix described in the report.\n# Acceptance\nThe reported input produces the expected result; unrelated behavior stays unchanged.",
+      "solutionSpace": "one fix: input handling, change specified in report",
       "workspace": {
-        "repo": "/home/kom/proj/ai_pr/omp-lane-workspace-contract",
-        "base": "1ee425a0ce5eee9cd735a896178c2d42a64c631d",
-        "path": "/home/kom/proj/ai_pr/omp-lane-workspace-contract"
+        "repo": "/work/project",
+        "base": "HEAD",
+        "path": "/work/project"
       },
-      "reads": ["/home/kom/Dropbox/Reemxy/tasks-loop/docs/omp-author-lanes.md"],
-      "resources": [
-        "/home/kom/proj/ai_pr/omp-lane-workspace-contract/docs/tools/task.md",
-        "/home/kom/proj/ai_pr/omp-lane-workspace-contract/packages/coding-agent/src/prompts/tools/task.md"
-      ]
+      "reads": ["/work/evidence/report.txt"],
+      "resources": ["/work/project/src"]
     }
   ]
 }

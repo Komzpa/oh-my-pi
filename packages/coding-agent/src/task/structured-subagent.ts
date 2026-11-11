@@ -1,3 +1,11 @@
+import {
+	prepareTaskWorkspace,
+	preparedTaskIsolation,
+	validateTaskWorkspace,
+	renderTaskWorkspace,
+	type TaskWorkspace,
+	type VerifiedTaskWorkspace,
+} from "./workspace";
 import { isReadOnlyAgent, isReadOnlyDispatch, isReadOnlyWorkerRole, readOnlyWorkerTools } from "./read-only-policy";
 import { BUILTIN_TOOLS } from "../tools";
 /**
@@ -135,6 +143,9 @@ export interface StructuredSubagentIdentity {
 /** One normalized child invocation. */
 export interface StructuredSubagentRequest {
 	requirementIds?: string[];
+	workspace?: TaskWorkspace;
+	reads?: string[];
+	verifiedWorkspace?: VerifiedTaskWorkspace;
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
@@ -779,12 +790,16 @@ async function applySpawnHook(
 		{
 			type: "before_subagent_spawn",
 			...(request.resources !== undefined ? { resources: request.resources } : {}),
+			workspace: request.workspace,
+			verifiedWorkspace: request.verifiedWorkspace,
+			reads: request.verifiedWorkspace?.reads ?? request.reads,
+			cwd: request.verifiedWorkspace?.cwd ?? request.session.cwd,
 			agent: policy.agentName,
 			invocationKind: request.invocationKind,
 			modelRole: policy.modelRole,
 			patterns: policy.modelOverride ?? [],
 			spawnKey,
-			isolated: request.isolation?.requested === true,
+			isolated: request.workspace !== undefined ? false : request.isolation?.requested === true,
 			assignment: request.assignment,
 			row: request.row,
 			readOnly: isReadOnlyDispatch(policy.effectiveAgent),
@@ -922,13 +937,16 @@ function buildExecutorOptions(
 	}
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
 	return {
-		cwd: session.cwd,
+		cwd: request.verifiedWorkspace?.cwd ?? session.cwd,
+		verifiedWorkspace: request.verifiedWorkspace,
 		costGate: session.costGate,
-		additionalDirectories: session.additionalDirectories,
+		additionalDirectories: request.workspace !== undefined ? undefined : session.additionalDirectories,
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
 		agent: policy.effectiveAgent,
-		task: request.assignment,
+		task: request.verifiedWorkspace
+			? `${renderTaskWorkspace(request.verifiedWorkspace)}\n${request.assignment}`
+			: request.assignment,
 		assignment: request.assignment,
 		row: request.row,
 		preparedSession,
@@ -1040,7 +1058,7 @@ async function loadPlanReference(
 }
 
 /** Isolated runs work in ovnfs checkouts when `isolation.backend` is auto and ovnfs is found, else in native clones. */
-function openIsolatedWorkspace(settings: Settings): OpenWorkspace {
+export function openIsolatedWorkspace(settings: Settings): OpenWorkspace {
 	const backend = cfgIsolationBackend.get(settings);
 	const ovnfs = backend === "auto" ? ovnfsCommand(settings) : undefined;
 	return ovnfs ? ovnfsWorkspace(ovnfs) : nativeWorkspace(parseIsolationBackend(backend));
@@ -1175,10 +1193,19 @@ function describeSalvagedWork(result: SingleResult): string {
  * lease or child dispatch; callers keep responsibility for their result text.
  */
 export async function runStructuredSubagent(request: StructuredSubagentRequest): Promise<StructuredSubagentResult> {
+	request.verifiedWorkspace ??= await prepareTaskWorkspace({
+		...request,
+		cwd: request.session.cwd,
+		id: `workspace-${Snowflake.next()}`,
+		isolated: request.isolation?.requested,
+		openWorkspace: openIsolatedWorkspace(request.session.settings),
+	});
+	await validateTaskWorkspace(request.verifiedWorkspace);
 	const policy = await selectRowAuditModel(
 		request,
 		await applySpawnHook(request, await resolveEffectiveSubagentPolicy(request)),
 	);
+	if (request.workspace !== undefined) policy.isIsolated = request.workspace.path === undefined;
 	const lease = await leaseArtifacts(request.session, request.invocationKind);
 	let changesApplied: boolean | null = null;
 	let mergeSummary = "";
@@ -1209,7 +1236,7 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		let isolationContext: IsolationContext | null = null;
 		if (policy.isIsolated) {
 			try {
-				isolationContext = await prepareIsolationContext(request.session.cwd);
+				isolationContext = await prepareIsolationContext(request.verifiedWorkspace?.repo ?? request.session.cwd);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				throw new StructuredSubagentError(
@@ -1260,13 +1287,14 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 				await bindOwnedRows();
 				result = await runSubprocess(baseOptions);
 				result.checkoutCwd = baseOptions.cwd;
+				result.verifiedWorkspace = request.verifiedWorkspace;
 				await bindOwnedRows();
 				onSubprocessResult?.(result);
 			} else {
 				result = await runIsolatedSubprocess({
 					baseOptions,
 					context: isolationContext,
-					openWorkspace: openIsolatedWorkspace(request.session.settings),
+					openWorkspace: async () => preparedTaskIsolation(request.verifiedWorkspace!.cwd),
 					agentId: id,
 					mergeMode: policy.mergeMode,
 					artifactsDir: lease.artifactsDir,
@@ -1280,6 +1308,8 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 			releaseHold?.();
 		}
 		settled = result;
+		result.verifiedWorkspace = request.verifiedWorkspace;
+		if (request.verifiedWorkspace) result.checkoutCwd = request.verifiedWorkspace.cwd;
 		attachStructuredOutputMetadata(result, policy.schema);
 		hasValidStructuredOutput = result.structuredOutput?.status === "valid";
 		requiresRecoveryArtifacts =
