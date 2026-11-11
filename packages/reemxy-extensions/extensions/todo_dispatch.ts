@@ -5720,7 +5720,12 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const display = leadDisplayContext(ctx, phases, currentDecision(ctx));
       const reservedRows = new Set<string>();
       for (const item of taskItems(event.input)) {
-        for (const row of speculativeTaskRows(item, phases)) {
+        const matchedRows = speculativeTaskRows(item, phases);
+        const reviewDebt = phases.flatMap((phase) => phase.tasks).some((row) => row.schedule?.review === "user" && row.status !== "completed" && row.status !== "abandoned");
+        if (!matchedRows.length && reviewDebt && item.readOnly !== true && !readOnlyAudit(item)) {
+          return { block: true, reason: "Task does not match a scheduled row while user-review work remains open. Add and schedule the new row, or name the exact existing row." };
+        }
+        for (const row of matchedRows) {
           if (item.readOnly !== true && !readOnlyAudit(item)) {
             if (reservedRows.has(String(row.content))) return { block: true, reason: `Task batch repeats writer row ${JSON.stringify(row.content)}; dispatch one executor for that row.` };
             reservedRows.add(String(row.content));
