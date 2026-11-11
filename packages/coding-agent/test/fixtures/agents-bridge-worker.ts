@@ -39,6 +39,7 @@ export interface PeerReport {
 
 /** Operations the test drives on the worker. */
 export interface AgentsProbe {
+	publication(id: string, state: "pending" | "published" | "failed", responseAt: number): Promise<boolean>;
 	peerCommand(id: string, text: string): Promise<PeerCommandReceipt | null>;
 	shellReplyTarget(id: string): Promise<string>;
 	threadId(): Promise<string>;
@@ -133,6 +134,16 @@ function local(id: string): AgentSession {
 }
 
 const probe: AgentsProbe = {
+	publication: async (id, state, responseAt) => {
+		const session = sessions.get(id);
+		if (!session) throw new Error("missing worker session");
+		const registry = AgentRegistry.global();
+		const ref = registry.get(id);
+		if (!ref) throw new Error("missing worker ref");
+		const recorded = registry.setResultPublication(id, state, ref, responseAt);
+		if (recorded && state === "published") registry.markResultAccepted(id, ref, responseAt);
+		return recorded;
+	},
 	peerCommand: async (id, text) => AgentRegistry.global().get(id)!.session!.executePeerSlashCommand(text),
 	shellReplyTarget: async id => IrcBus.global().resolveShellReplyTarget(id),
 	threadId: async () => threadName,

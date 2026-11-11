@@ -1121,9 +1121,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 					Promise.all([...run.isolations.values()].map(isolated => snapshotRestartIsolation(isolated))),
 				);
 			}
-			await this.#measureStage(run.record, "capture_children", () =>
+			await this.#measureStage(run.record, "capture_children", deadlineAt =>
 				captureSubagentsForRestart(this.#session, {
 					runningAgentIds: run.runningAgentIds,
+					deadlineAt,
 					requestId: run.record.requestId,
 				}),
 			);

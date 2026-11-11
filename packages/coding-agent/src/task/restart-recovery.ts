@@ -643,7 +643,7 @@ function emitReportNotice(session: AgentSession, report: RestartRecoveryReport):
  */
 export async function captureSubagentsForRestart(
 	rootSession: AgentSession,
-	options?: { runningAgentIds?: ReadonlySet<string>; requestId?: string },
+	options?: { runningAgentIds?: ReadonlySet<string>; requestId?: string; deadlineAt?: number },
 ): Promise<void> {
 	const registry = AgentRegistry.global();
 	const rootSessionFile = rootSession.sessionManager.getSessionFile();
@@ -658,6 +658,21 @@ export async function captureSubagentsForRestart(
 		rootSessionFile: path.resolve(rootSessionFile),
 	};
 	const candidates = rootSubagentRefs(rootSession, registry);
+	// A terminal yield can precede async cleanup/artifact publication. Do not
+	// omit it as accepted, or replay it as unfinished, until publication settles.
+	const deadlineAt = options?.deadlineAt ?? Date.now() + 5_000;
+	for (const ref of candidates) {
+		while (ref.lifecycle?.resultPublication === "pending") {
+			if (Date.now() >= deadlineAt)
+				throw new Error(`Cannot restart safely: subagent ${ref.id} result publication is still pending.`);
+			await Bun.sleep(Math.min(10, Math.max(1, deadlineAt - Date.now())));
+			if (registry.get(ref.id) !== ref)
+				throw new Error(`Cannot restart safely: subagent ${ref.id} changed during result publication.`);
+		}
+		if (ref.lifecycle?.resultPublication === "failed")
+			throw new Error(`Cannot restart safely: subagent ${ref.id} result artifact publication failed.`);
+	}
+
 	const resumable: AgentRef[] = [];
 	for (const ref of candidates) {
 		// A drain may have disposed the session already. Its original running

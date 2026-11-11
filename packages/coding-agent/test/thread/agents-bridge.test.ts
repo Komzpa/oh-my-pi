@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { captureSubagentsForRestart } from "../../src/task/restart-recovery";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -150,6 +151,32 @@ it("changes a worker-homed fast tier and refuses control by a different parent",
 	expect(mirror.effectiveServiceTier(model)).toBe("priority");
 	expect(await mirror.setFastMode(false)).toBe(true);
 	expect(mirror.effectiveServiceTier(model)).not.toBe("priority");
+});
+
+it("worker publication RPC fences main-thread restart capture until published", async () => {
+	const { probe } = await startWorker();
+	await probe.open("PublicationWorker", {});
+	const ref = liveRef("PublicationWorker");
+	const root = await mainSession("PublicationLead");
+	AgentRegistry.global().register({
+		id: "PublicationLead",
+		displayName: "PublicationLead",
+		kind: "main",
+		session: root,
+	});
+	ref.parentId = "PublicationLead";
+	// No persistence is needed: the pending fence must run before transcript
+	// validation, and an accepted idle child needs no continuation snapshot.
+	root.sessionManager.getSessionFile = () => "/fixture/publication-root.jsonl";
+	expect(await probe.publication("PublicationWorker", "pending", 123)).toBe(true);
+	expect(ref.lifecycle?.resultPublication).toBe("pending");
+	await expect(captureSubagentsForRestart(root, { deadlineAt: Date.now() })).rejects.toThrow(
+		"publication is still pending",
+	);
+	expect(await probe.publication("PublicationWorker", "published", 123)).toBe(true);
+	expect(ref.lifecycle?.resultPublication).toBe("published");
+	expect(ref.lifecycle?.acceptedAt).toBeNumber();
+	await captureSubagentsForRestart(root);
 });
 
 describe("agent bridging across subagent workers", () => {

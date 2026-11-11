@@ -6,6 +6,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import * as fs from "node:fs/promises";
+import * as artifactModule from "@oh-my-pi/pi-coding-agent/session/artifacts";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { AssistantMessage, ToolCall } from "@oh-my-pi/pi-ai";
 import { type CursorExecResolvedCarrier, kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
@@ -16,7 +19,7 @@ import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
@@ -32,6 +35,7 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { WaitTool } from "@oh-my-pi/pi-coding-agent/tools/wait";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { captureSubagentsForRestart } from "@oh-my-pi/pi-coding-agent/task/restart-recovery";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const AGENT_ID = "accepted-result";
@@ -168,6 +172,7 @@ function createHarness(options?: { hangPrompt?: boolean; asyncJobManager?: Async
 		settleAsyncWork: async () => {},
 		abort: async () => {},
 		dispose: async () => {},
+		addDisposer: () => {},
 		releaseTaskResources: async () => {},
 		setIrcWakeTurnObserver: (
 			observer: ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined) | undefined,
@@ -361,6 +366,179 @@ describe("runSubprocess result acceptance", () => {
 		expect(settled?.lifecycle?.responseAt).toBeNumber();
 		expect(settled?.lifecycle?.acceptedAt).toBeNumber();
 		expect(settled?.lifecycle?.terminalAt).toBeNumber();
+	});
+
+	it("restart capture cannot discard an accepted follow-up before its artifact exists", async () => {
+		const dir = TempDir.createSync("capture-publication-");
+		const harness = createHarness();
+		const release = Promise.withResolvers<void>();
+		const cleanupEntered = Promise.withResolvers<void>();
+		harness.session.releaseTaskResources = async () => {
+			cleanupEntered.resolve();
+			await release.promise;
+		};
+		const rootFile = path.join(dir.path(), "root.jsonl");
+		AgentRegistry.global().register({
+			id: AGENT_ID,
+			displayName: AGENT_ID,
+			kind: "sub",
+			parentId: "main",
+			session: harness.session,
+			status: "running",
+			sessionFile: path.join(dir.path(), "root", "child.jsonl"),
+		});
+		const root = {
+			sessionManager: {
+				getSessionFile: () => rootFile,
+				getSessionId: () => "root",
+				ensureOnDisk: async () => {},
+				appendCustomEntry: () => {},
+				flush: async () => {},
+			},
+		} as unknown as AgentSession;
+		const result = runSubagentFollowUpTurn({
+			id: AGENT_ID,
+			agent: baseAgent,
+			message: "continue",
+			artifactsDir: dir.path(),
+		});
+		await cleanupEntered.promise;
+		await expect(captureSubagentsForRestart(root, { deadlineAt: Date.now() })).rejects.toThrow(
+			"publication is still pending",
+		);
+		let captured = false;
+		const capture = captureSubagentsForRestart(root).then(() => {
+			captured = true;
+		});
+		try {
+			await flushMicrotasks();
+			expect(await Bun.file(path.join(dir.path(), AGENT_ID + ".md")).exists()).toBe(false);
+			expect(captured).toBe(false);
+		} finally {
+			release.resolve();
+			await result;
+			await capture;
+			await captureSubagentsForRestart(root);
+			expect(await Bun.file(path.join(dir.path(), AGENT_ID + ".md")).exists()).toBe(true);
+			dir.removeSync();
+		}
+	});
+
+	it("a stale finalizer cannot accept a replacement worker with the same id", async () => {
+		const harness = createHarness();
+		registerRunning(harness.session);
+		const release = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		harness.session.releaseTaskResources = async () => {
+			entered.resolve();
+			await release.promise;
+		};
+		const result = runSubagentFollowUpTurn({ id: AGENT_ID, agent: baseAgent, message: "continue" });
+		await entered.promise;
+		const replacement = createHarness();
+		const ref = registerRunning(replacement.session);
+		release.resolve();
+		await result;
+		expect(AgentRegistry.global().get(AGENT_ID)).toBe(ref);
+		expect(ref.status).toBe("running");
+		expect(ref.lifecycle?.acceptedAt).toBeUndefined();
+		expect(ref.lifecycle?.resultPublication).toBeUndefined();
+	});
+
+	for (const mode of ["initial", "followup", "wake"] as const) {
+		it(`does not accept a yield whose artifact publication failed: ${mode}`, async () => {
+			const dir = TempDir.createSync("result-publication-failure-");
+			const blockedPath = path.join(dir.path(), "not-a-directory");
+			if (mode === "initial") await fs.mkdir(blockedPath);
+			else await Bun.write(blockedPath, "file blocks artifact directory");
+			const harness = createHarness();
+			if (mode !== "initial") registerRunning(harness.session);
+			try {
+				if (mode === "initial") {
+					let blocked = false;
+					harness.session.releaseTaskResources = async () => {
+						if (blocked) return;
+						blocked = true;
+						await fs.rename(blockedPath, path.join(dir.path(), "saved-artifacts"));
+						await Bun.write(blockedPath, "file blocks artifact directory");
+					};
+					vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+						AgentRegistry.global().attachSession(
+							options.agentId!,
+							harness.session,
+							undefined,
+							options.expectedAgentRef ?? undefined,
+						);
+						AgentRegistry.global().setStatus(options.agentId!, "running", harness.session);
+						return {
+							session: harness.session,
+							extensionsResult: {} as LoadExtensionsResult,
+							setToolUIContext: () => {},
+							eventBus: new EventBus(),
+						} as CreateAgentSessionResult;
+					});
+					const result = await runSubprocess({
+						cwd: dir.path(),
+						id: AGENT_ID,
+						agent: baseAgent,
+						task: "work",
+						index: 0,
+						artifactsDir: blockedPath,
+					});
+					expect(result.outputPath).toBeUndefined();
+				} else if (mode === "followup") {
+					const result = await runSubagentFollowUpTurn({
+						id: AGENT_ID,
+						agent: baseAgent,
+						message: "continue",
+						artifactsDir: blockedPath,
+					});
+					expect(result.outputPath).toBeUndefined();
+				} else {
+					attachIrcWakeTurnMonitor(harness.session, { id: AGENT_ID, agent: baseAgent, artifactsDir: blockedPath });
+					const finish = harness.wakeObserver()?.([]);
+					harness.emitTerminalYield({ report: "durable checkpoint" });
+					await finish?.();
+				}
+
+				const ref = AgentRegistry.global().get(AGENT_ID)!;
+				expect(ref.lifecycle?.acceptedAt).toBeUndefined();
+				expect(ref.lifecycle?.resultPublication).toBe("failed");
+				ref.parentId = MAIN_AGENT_ID;
+				ref.sessionFile = null;
+				const root = {
+					sessionManager: {
+						getSessionFile: () => path.join(dir.path(), "root.jsonl"),
+						getSessionId: () => "root",
+					},
+				} as unknown as AgentSession;
+				await expect(captureSubagentsForRestart(root)).rejects.toThrow("artifact publication failed");
+			} finally {
+				dir.removeSync();
+			}
+		});
+	}
+	it("publishes a terminal wake result while restart drain remains held", async () => {
+		const dir = TempDir.createSync("wake-publication-drain-");
+		const harness = createHarness();
+		registerRunning(harness.session);
+		const released = Promise.withResolvers<"released" | "disposed">();
+		Object.defineProperty(harness.session, "isRestartDraining", { value: true, configurable: true });
+		harness.session.waitForRestartDrainRelease = () => released.promise;
+		attachIrcWakeTurnMonitor(harness.session, { id: AGENT_ID, agent: baseAgent, artifactsDir: dir.path() });
+		const finish = harness.wakeObserver()?.([]);
+		expect(finish).toBeDefined();
+		harness.emitTerminalYield({ report: "durable checkpoint" });
+		const finalized = Promise.resolve(finish?.()).then(() => true);
+		try {
+			const duringDrain = await Promise.race([finalized, Bun.sleep(100).then(() => false)]);
+			expect(duringDrain).toBe(true);
+			expect(await Bun.file(path.join(dir.path(), AGENT_ID + ".md")).text()).toContain("durable checkpoint");
+		} finally {
+			released.resolve("disposed");
+			await finalized;
+			dir.removeSync();
+		}
 	});
 
 	it("delivers every yield of a woken agent to its parent as a job completion", async () => {
@@ -966,5 +1144,183 @@ describe("runSubprocess result acceptance", () => {
 		});
 		expect(body).not.toContain("Running the tests.");
 		expect(body).toContain("produced no output");
+	});
+});
+
+describe("publication lifecycle", () => {
+	beforeEach(() => {
+		AgentRegistry.resetGlobalForTests();
+		AgentLifecycleManager.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+	});
+	it("settles acceptance when the same generation parks during finalization", async () => {
+		const dir = TempDir.createSync("publication-park-");
+		const harness = createHarness();
+		const ref = registerRunning(harness.session);
+		ref.parentId = MAIN_AGENT_ID;
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		harness.session.releaseTaskResources = async () => {
+			entered.resolve();
+			await release.promise;
+		};
+		AgentLifecycleManager.global().adopt(AGENT_ID, { idleTtlMs: 0 });
+		const resultPromise = runSubagentFollowUpTurn({
+			id: AGENT_ID,
+			agent: baseAgent,
+			message: "done",
+			artifactsDir: dir.path(),
+		});
+		await entered.promise;
+		AgentRegistry.global().setStatus(AGENT_ID, "idle", ref);
+		await AgentLifecycleManager.global().park(AGENT_ID);
+		release.resolve();
+		try {
+			const result = await resultPromise;
+			expect(result.exitCode).toBe(0);
+			expect(await Bun.file(result.outputPath!).text()).toContain("done");
+			expect(ref.status).toBe("parked");
+			expect(ref.lifecycle?.acceptedAt).toBeNumber();
+		} finally {
+			dir.removeSync();
+		}
+	});
+	it("does not leave the fence pending when finalization rejects", async () => {
+		const harness = createHarness();
+		const ref = registerRunning(harness.session);
+		harness.session.releaseTaskResources = async () => {
+			throw new Error("broker release failed");
+		};
+		await expect(runSubagentFollowUpTurn({ id: AGENT_ID, agent: baseAgent, message: "done" })).rejects.toThrow(
+			"broker release failed",
+		);
+		expect(ref.lifecycle?.resultPublication).not.toBe("pending");
+	});
+});
+
+describe("wake idle parking", () => {
+	beforeEach(() => {
+		AgentRegistry.resetGlobalForTests();
+		AgentLifecycleManager.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+	});
+	it("allows restart after TTL parking during an autonomous result write", async () => {
+		const dir = TempDir.createSync("publication-wake-park-");
+		const harness = createHarness();
+		const ref = registerRunning(harness.session);
+		ref.parentId = MAIN_AGENT_ID;
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const write = artifactModule.writeArtifact;
+		vi.spyOn(artifactModule, "writeArtifact").mockImplementation(async (path, content) => {
+			entered.resolve();
+			await release.promise;
+			return write(path, content);
+		});
+		AgentLifecycleManager.global().adopt(AGENT_ID, { idleTtlMs: 1 });
+		attachIrcWakeTurnMonitor(harness.session, { id: AGENT_ID, agent: baseAgent, artifactsDir: dir.path() });
+		const finish = harness.wakeObserver()!([])!;
+		harness.emitTerminalYield({ report: "done" });
+		AgentRegistry.global().setStatus(AGENT_ID, "idle", ref);
+		const finishing = Promise.resolve(finish());
+		await entered.promise;
+		const deadline = Date.now() + 1000;
+		while (ref.status !== "parked" && Date.now() < deadline) await Bun.sleep(1);
+		release.resolve();
+		try {
+			await finishing;
+			expect(await Bun.file(path.join(dir.path(), AGENT_ID + ".md")).text()).toContain("done");
+			expect(ref.status).toBe("parked");
+			const root = {
+				sessionManager: { getSessionFile: () => path.join(dir.path(), "root.jsonl"), getSessionId: () => "root" },
+			} as unknown as AgentSession;
+			await captureSubagentsForRestart(root, { deadlineAt: Date.now() });
+			expect(ref.lifecycle?.acceptedAt).toBeNumber();
+		} finally {
+			dir.removeSync();
+		}
+	});
+});
+
+describe("message result capture", () => {
+	beforeEach(() => {
+		AgentRegistry.resetGlobalForTests();
+		AgentLifecycleManager.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+	});
+	afterEach(() => {
+		vi.restoreAllMocks();
+		AgentLifecycleManager.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
+		IrcBus.resetGlobalForTests();
+	});
+	it("does not hand a finished message-result turn off as unaccepted running work", async () => {
+		const dir = TempDir.createSync("message-capture-");
+		const rootManager = SessionManager.create(dir.path(), path.join(dir.path(), "sessions"));
+		rootManager.appendMessage({ role: "user", content: "root", timestamp: Date.now() });
+		await rootManager.ensureOnDisk();
+		const rootFile = rootManager.getSessionFile()!;
+		const childManager = SessionManager.create(dir.path(), rootFile.slice(0, -6));
+		childManager.appendSessionInit({ systemPrompt: ["test"], task: "finish", tools: ["read"] });
+		childManager.appendMessage({ role: "user", content: "finish", timestamp: Date.now() });
+		childManager.appendMessage(assistantStopMessage([{ type: "text", text: "finished report" }]));
+		await childManager.ensureOnDisk();
+		await childManager.flush();
+		const harness = createHarness();
+		harness.session.prompt = async () => {
+			harness.emitAssistantText("finished report");
+			return true;
+		};
+		const ref = registerRunning(harness.session);
+		ref.parentId = MAIN_AGENT_ID;
+		ref.sessionFile = childManager.getSessionFile()!;
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		harness.session.releaseTaskResources = async () => {
+			entered.resolve();
+			await release.promise;
+		};
+		const resultPromise = runSubagentFollowUpTurn({
+			id: AGENT_ID,
+			agent: baseAgent,
+			message: "finish",
+			structured: false,
+			artifactsDir: dir.path(),
+		});
+		await entered.promise;
+		AgentRegistry.global().setStatus(AGENT_ID, "idle", ref);
+		const root = { sessionManager: rootManager } as unknown as AgentSession;
+		try {
+			await captureSubagentsForRestart(root, { runningAgentIds: new Set([AGENT_ID]), deadlineAt: Date.now() });
+			const handoffs = rootManager
+				.getBranch()
+				.filter(entry => entry.type === "custom" && entry.customType === "subagent_restart_handoff");
+			const children = handoffs.flatMap(
+				entry =>
+					(entry as unknown as { data: { children: { id: string; status: string; settled: boolean }[] } }).data
+						.children,
+			);
+			expect(
+				children.filter(child => child.id === AGENT_ID && !child.settled && child.status === "running"),
+			).toEqual([]);
+		} finally {
+			release.resolve();
+			await resultPromise;
+			await childManager.close();
+			await rootManager.close();
+			dir.removeSync();
+		}
 	});
 });

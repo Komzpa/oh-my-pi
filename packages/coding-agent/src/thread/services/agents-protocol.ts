@@ -36,6 +36,10 @@ export type AgentRegistryProtocol = {
 	reopen: RpcMethod<[id: string, expected: AgentRef], AgentRef | undefined>;
 	setHistory: RpcMethod<[id: string, history: AgentHistorySummary, expectedSessionFile?: string], boolean>;
 	setStatus: RpcMethod<[id: string, status: AgentStatus, expected?: AgentRefExpectation], boolean>;
+	setResultPublication: RpcMethod<
+		[id: string, state: "pending" | "published" | "failed", expected?: AgentRefExpectation, responseAt?: number],
+		boolean
+	>;
 	markResultAccepted: RpcMethod<[id: string, expected?: AgentRefExpectation, responseAt?: number], boolean>;
 	clearInitialPromptPending: RpcMethod<[id: string, session: AgentSessionHandle], boolean>;
 	staleAcceptedRuns: RpcMethod<[], AgentRef[]>;
