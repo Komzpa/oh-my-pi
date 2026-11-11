@@ -1412,7 +1412,7 @@ describe("attempt journal", () => {
 	});
 
 	it("only known audit profiles preserve the completed producer assignment", async () => {
-		for (const agentProfile of ["qa-auditor", "reviewer", "constructor"]) {
+		for (const agentProfile of ["qa-auditor", "reviewer", "gate-runner", "constructor"]) {
 			const audit = agentProfile !== "constructor";
 			const data = "producer result";
 			const snapshot = {

@@ -1,6 +1,7 @@
 import { stableStringifyJson } from "@oh-my-pi/pi-utils";
 import { assembleYieldResult } from "@oh-my-pi/pi-tui/tools/task-yield-assembly";
 import type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
+import { TODO_AUDIT_PROFILES } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import type {
 	AttemptJournalCommand,
 	AttemptJournalResult,
@@ -44,7 +45,6 @@ const hash = (value: unknown): string =>
 const json = (value: unknown): JsonValue => JSON.parse(stableStringifyJson(value)) as JsonValue;
 const sourceId = (entry: unknown): string => text(record(entry).id) ?? `fingerprint:${hash(entry)}`;
 const derivedId = (lead: string, id: string): string => `legacy:${hash([lead, id])}`;
-const AUDIT_AGENT_PROFILES: Record<string, true> = { reviewer: true, "qa-auditor": true };
 /** Distinct children that share a value. A repeated id is the same child, not a collision. */
 function sharedAmongDistinct(
 	children: readonly { id: string; toolCallId?: string; sessionId?: string }[],
@@ -235,7 +235,7 @@ export function importLegacyAttemptJournal(snapshot: LegacyAttemptJournalSnapsho
 				if (outcome === "failed") value.state = "failed";
 				else if (outcome === "completed") value.state = "unknown";
 				else if (outcome === "aborted") value.state = "aborted";
-				if (Object.hasOwn(AUDIT_AGENT_PROFILES, text(obs.agentProfile) ?? "")) value.purpose = "audit";
+				if (TODO_AUDIT_PROFILES.includes(text(obs.agentProfile) ?? "")) value.purpose = "audit";
 			}
 		}
 	}
