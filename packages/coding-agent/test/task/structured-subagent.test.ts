@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
@@ -70,6 +70,29 @@ const AGENT: AgentDefinition = {
 	output: { type: "object", properties: { agent: { type: "boolean" } } },
 };
 
+let isolationRepo: string;
+beforeAll(async () => {
+	isolationRepo = await fs.mkdtemp(path.join(os.tmpdir(), "structured-isolation-"));
+	for (const args of [
+		["init"],
+		["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture"],
+	]) {
+		const run = Bun.spawnSync(["git", "-C", isolationRepo, ...args]);
+		if (run.exitCode) throw new Error(run.stderr.toString());
+	}
+});
+afterAll(async () => {
+	await fs.rm(isolationRepo, { recursive: true, force: true });
+});
+beforeEach(() => {
+	// Unit runner mocks do not consume native workspaces; give preflight a real Git checkout.
+	vi.spyOn(isolationRunner, "nativeWorkspace").mockReturnValue(async () => ({
+		dir: isolationRepo,
+		cleanup: async () => {},
+		retain: async () => ({ dir: isolationRepo, sidecarOk: true }),
+	}));
+});
+
 function session(
 	options: {
 		cwd?: string;
@@ -87,7 +110,7 @@ function session(
 	} = {},
 ): ToolSession {
 	return {
-		cwd: options.cwd ?? "/tmp",
+		cwd: options.cwd ?? (options.isolationEnabled ? isolationRepo : "/tmp"),
 		hasUI: false,
 		outputSchema: options.outputSchema,
 		settings:
@@ -630,13 +653,13 @@ describe("structured subagent primitive", () => {
 			},
 			getApiKey: async () => "test-key",
 		});
-		const create = vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async () => {
+		const create = vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
 			const listeners: Array<(event: AgentSessionEvent) => void> = [];
 			const child = {
 				...createSessionDefaults(),
 				state: { messages: [] },
 				agent: { state: { systemPrompt: ["test"] } },
-				sessionManager: { appendSessionInit: () => {} },
+				sessionManager: options!.sessionManager!,
 				getActiveToolNames: () => ["read", "yield"],
 				getEnabledToolNames: () => ["read", "yield"],
 				subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -852,7 +875,10 @@ describe("structured subagent primitive", () => {
 				assignment: "Inspect the target.",
 				context: "Assigned worktree /tmp/worker-evidence",
 				row: undefined,
-				resources: undefined,
+				cwd: "/tmp",
+				reads: [],
+				workspace: undefined,
+				verifiedWorkspace: { repo: "/tmp", cwd: "/tmp", head: "", reads: [], resources: ["/tmp"] },
 				readOnly: false,
 				spawnKey: undefined,
 			},

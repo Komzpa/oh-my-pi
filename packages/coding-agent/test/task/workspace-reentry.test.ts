@@ -142,9 +142,14 @@ it("admits legacy isolation using the child checkout and keeps its prompt and re
 	expect(result.details?.results[0]?.checkoutCwd).toBe(child);
 });
 
-it.each([false, true])(
-	"cleans a prepared checkout when agent policy rejects before admission (cleanup fails: %s)",
-	async cleanupFails => {
+it.each([
+	[false, false],
+	[true, false],
+	[false, true],
+	[true, true],
+])(
+	"cleans a prepared checkout when agent policy rejects (cleanup fails: %s, direct: %s)",
+	async (cleanupFails, direct) => {
 		const cwd = path.join(root, "prepared");
 		const cleanup = vi.fn(async () => {
 			if (cleanupFails) throw new Error("cleanup unavailable");
@@ -165,6 +170,27 @@ it.each([false, true])(
 			getSessionFile: () => null,
 			getSessionSpawns: () => "*",
 		} as ToolSession);
+		if (direct) {
+			const error = await structured
+				.runStructuredSubagent({
+					session: {
+						cwd: repo,
+						hasUI: false,
+						settings: Settings.isolated({ "task.isolation.enabled": true }),
+						getSessionSpawns: () => "*",
+					} as ToolSession,
+					invocationKind: "task",
+					assignment: "work",
+					agent: "missing",
+					isolation: { requested: true },
+				})
+				.catch(error => error);
+			expect(String(error)).toContain("Unknown agent");
+			expect(cleanup).toHaveBeenCalledTimes(1);
+			expect(await Bun.file(path.join(cwd, ".git/HEAD")).exists()).toBe(cleanupFails);
+			if (cleanupFails) expect(String(error)).toContain("cleanup unavailable");
+			return;
+		}
 		const result = await tool.executeBlocking("rejected", {
 			name: "Rejected",
 			agent: "missing",

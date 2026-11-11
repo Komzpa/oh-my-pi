@@ -1,4 +1,5 @@
 import {
+	discardPreparedTaskWorkspace,
 	prepareTaskWorkspace,
 	preparedTaskIsolation,
 	validateTaskWorkspace,
@@ -1195,11 +1196,24 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		isolated: request.isolation?.requested,
 		openWorkspace: openIsolatedWorkspace(request.session.settings),
 	});
-	await validateTaskWorkspace(request.verifiedWorkspace);
-	const policy = await selectRowAuditModel(
-		request,
-		await applySpawnHook(request, await resolveEffectiveSubagentPolicy(request)),
-	);
+	let policy: EffectiveSubagentPolicy;
+	try {
+		await validateTaskWorkspace(request.verifiedWorkspace);
+		policy = await selectRowAuditModel(
+			request,
+			await applySpawnHook(request, await resolveEffectiveSubagentPolicy(request)),
+		);
+	} catch (error) {
+		try {
+			await discardPreparedTaskWorkspace(request.verifiedWorkspace);
+		} catch (cleanupError) {
+			throw new AggregateError(
+				[error, cleanupError],
+				`${String(error)}; workspace cleanup failed: ${String(cleanupError)}`,
+			);
+		}
+		throw error;
+	}
 	if (request.workspace !== undefined) policy.isIsolated = request.workspace.path === undefined;
 	const lease = await leaseArtifacts(request.session, request.invocationKind);
 	let changesApplied: boolean | null = null;

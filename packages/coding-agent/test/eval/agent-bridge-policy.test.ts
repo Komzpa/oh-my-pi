@@ -1160,7 +1160,13 @@ describe("runEvalAgent isolation", () => {
 	}
 
 	function mockIsolationContext(): { repoRoot: string } {
-		const repoRoot = "/repo-root";
+		const repoRoot = process.cwd();
+		// Mock the newly earlier workspace-opening boundary as well as the runner.
+		vi.spyOn(isolationRunner, "nativeWorkspace").mockReturnValue(async () => ({
+			dir: repoRoot,
+			cleanup: async () => {},
+			retain: async () => ({ dir: repoRoot, sidecarOk: true }),
+		}));
 		vi.spyOn(isolationRunner, "prepareIsolationContext").mockResolvedValue({ repoRoot });
 		return { repoRoot };
 	}
