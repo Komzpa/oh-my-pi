@@ -1,5 +1,10 @@
 import type { Api, Model } from "@oh-my-pi/pi-ai";
-import { formatModelStringWithRouting, resolveModelOverride, resolveRoleSelection } from "../config/model-resolver";
+import {
+	formatModelStringWithRouting,
+	modelSelectorBlacklistError,
+	resolveModelOverride,
+	resolveRoleSelection,
+} from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import {
 	expandDefaultRetryFallbackChains,
@@ -89,6 +94,7 @@ function expandFallbackCandidates(
 		})) {
 			// Resolve raw selectors (including `@upstream` / fuzzy) the same way
 			// turn-recovery does, instead of exact (provider, id) lookup only.
+			if (modelSelectorBlacklistError(candidate.raw, availableModels)) continue;
 			const resolved = resolveModelOverride([candidate.raw], registryShim, settings);
 			const fallback = resolved.model ?? context.modelLookup.find(candidate.provider, candidate.id);
 			if (!fallback) continue;

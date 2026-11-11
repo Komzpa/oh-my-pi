@@ -46,6 +46,7 @@ import {
 	resolveAgentPrewalkPattern,
 	resolveConfiguredModelPatterns,
 	resolveExplicitModelRole,
+	modelSelectorBlacklistError,
 	resolveModelOverride,
 	resolveModelOverrideWithAuthFallback,
 } from "../config/model-resolver";
@@ -301,6 +302,9 @@ function resolveSubagentRetryFallbackCandidates(
 	modelRegistry: ModelRegistry,
 	settings: Settings,
 ): SubagentRetryFallbackCandidate[] {
+	modelPatterns = resolveConfiguredModelPatterns(modelPatterns, settings).filter(
+		pattern => !modelSelectorBlacklistError(pattern, modelRegistry.getAvailable()),
+	);
 	const candidates: SubagentRetryFallbackCandidate[] = [];
 	const seen = new Set<string>();
 	const disabledProviders = new Set(cfgDisabledProviders.get(settings));
@@ -348,6 +352,7 @@ function resolveSubagentInheritedRetryFallbackChain(
 	}
 	const disabledProviders = new Set(cfgDisabledProviders.get(settings));
 	return fallbackChain.filter(entry => {
+		if (modelSelectorBlacklistError(entry, modelRegistry.getAvailable())) return false;
 		const resolved = resolveModelOverride([entry], modelRegistry, settings);
 		return !resolved.model || !disabledProviders.has(resolved.model.provider);
 	});
@@ -4887,7 +4892,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 							settingsOverride: cfgTaskAgentPrewalk.get(settings)[agent.name],
 							agentPrewalk: resolveAgentPrewalkDefault(agent, cfgTaskPrewalk.get(settings)),
 						});
-			if (prewalkPattern) {
+			if (prewalkPattern && !modelSelectorBlacklistError(prewalkPattern, modelRegistry.getAvailable())) {
 				await awaitAbortable(modelRegistry.awaitBackgroundRefresh());
 				const resolvedPrewalk = resolveModelOverride([prewalkPattern], modelRegistry, settings);
 				const target = resolvedPrewalk.model;

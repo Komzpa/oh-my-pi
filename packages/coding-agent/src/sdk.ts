@@ -75,6 +75,7 @@ import {
 	getModelMatchPreferences,
 	type ModelMatchPreferences,
 	parseModelPattern,
+	modelSelectorBlacklistError,
 	pickDefaultAvailableModel,
 	providerModelHint,
 	resolveAllowedModels,
@@ -3257,10 +3258,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						const primaryPatterns: Array<{
 							pattern: string;
 							retryFallback: InitialRetryFallbackState | undefined;
-						}> = resolved.configuredPatterns.map(pattern => ({
-							pattern,
-							retryFallback: undefined,
-						}));
+						}> = resolved.configuredPatterns
+							.filter(pattern => !modelSelectorBlacklistError(pattern, allEnabledModels))
+							.map(pattern => ({ pattern, retryFallback: undefined }));
 						if (!resolved.configuredRole || !cfgRetryModelFallback.get(settings)) {
 							return primaryPatterns;
 						}
@@ -3273,10 +3273,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							modelLookup: modelRegistry,
 						};
 						const originalSelector = resolved.configuredPatterns[0];
-						const availableOriginal = parseModelPattern(originalSelector, availableModels, matchPreferences);
-						const originalModel =
-							availableOriginal.model ??
-							parseModelPattern(originalSelector, allEnabledModels, matchPreferences).model;
+						const originalModel = modelSelectorBlacklistError(originalSelector, allEnabledModels)
+							? undefined
+							: (parseModelPattern(originalSelector, availableModels, matchPreferences).model ??
+								parseModelPattern(originalSelector, allEnabledModels, matchPreferences).model);
 						const chainKey = resolveRetryFallbackChainKey(
 							fallbackContext,
 							originalSelector,
@@ -3298,7 +3298,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 							...primaryPatterns,
 							...findRetryFallbackCandidates(fallbackContext, chainKey, originalSelector, originalModel, {
 								allowMissingPrimary: true,
-							}).map(candidate => ({ pattern: candidate.raw, retryFallback })),
+							})
+								.filter(candidate => !modelSelectorBlacklistError(candidate.raw, allEnabledModels))
+								.map(candidate => ({ pattern: candidate.raw, retryFallback })),
 						];
 					}
 					if (resolved.model) {
@@ -3417,7 +3419,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					selectedExplicitThinkingLevel = true;
 				}
 				let authFallbackUsed = false;
-				if (options.modelPatternAuthFallback) {
+				if (
+					options.modelPatternAuthFallback &&
+					!modelSelectorBlacklistError(options.modelPatternAuthFallback, resolutionModels)
+				) {
 					const primaryKey = await modelRegistry.getApiKey(primary.model);
 					if (primaryKey !== kNoAuth && !isAuthenticated(primaryKey)) {
 						const fallback = parseModelPattern(
@@ -3560,14 +3565,16 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				});
 				// A provider-qualified selector resolves within its provider's
 				// catalog; only bare/alias selectors need the full catalog.
-				const originalModel = parsedOriginal
-					? (modelRegistry.find(parsedOriginal.provider, parsedOriginal.id) ??
-						parseModelPattern(
-							originalSelector,
-							modelRegistry.getProviderModels(parsedOriginal.provider),
-							modelMatchPreferences,
-						).model)
-					: parseModelPattern(originalSelector, modelRegistry.getAll(), modelMatchPreferences).model;
+				const originalModel = modelSelectorBlacklistError(originalSelector, fallbackCandidates)
+					? undefined
+					: parsedOriginal
+						? (modelRegistry.find(parsedOriginal.provider, parsedOriginal.id) ??
+							parseModelPattern(
+								originalSelector,
+								modelRegistry.getProviderModels(parsedOriginal.provider),
+								modelMatchPreferences,
+							).model)
+						: parseModelPattern(originalSelector, modelRegistry.getAll(), modelMatchPreferences).model;
 				const chainKey = resolveRetryFallbackChainKey(fallbackContext, originalSelector, originalModel, "default");
 				if (!chainKey) return false;
 				const retryFallback: InitialRetryFallbackState = {
@@ -3589,6 +3596,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					originalModel,
 					{ allowMissingPrimary: true },
 				)) {
+					if (modelSelectorBlacklistError(candidate.raw, fallbackCandidates)) continue;
 					let resolved = parseModelPattern(candidate.raw, fallbackCandidates, modelMatchPreferences);
 					if (!resolved.model && !scopedByEnabledModels && !disabledProviders?.includes(candidate.provider)) {
 						resolved = parseModelPattern(

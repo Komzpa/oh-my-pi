@@ -1,4 +1,6 @@
-import { expect, it } from "bun:test";
+import * as dirs from "@oh-my-pi/pi-utils";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { expect, it, spyOn } from "bun:test";
 import * as http2 from "node:http2";
 import { streamCursor } from "@oh-my-pi/pi-ai/providers/cursor";
 import type { Context, Model } from "@oh-my-pi/pi-ai/types";
@@ -298,4 +300,54 @@ it("does not resume from a checkpoint while the exec handler is still running at
 	expect(handlerRuns).toBe(1);
 	expect(requestCount).toBe(1);
 	expect(result.stopReason).toBe("error");
+});
+
+it("blocks an HTTP2 retry when the model becomes banned during its retry wait", async () => {
+	using root = TempDir.createSync("@cursor-http2-blacklist-");
+	const rootSpy = spyOn(dirs, "getBaseConfigRoot").mockReturnValue(root.path());
+	const sessions = new Set<http2.Http2Session>();
+	const server = http2.createServer();
+	let requests = 0;
+	server.on("session", session => {
+		sessions.add(session);
+		session.on("close", () => sessions.delete(session));
+	});
+	server.on("stream", (request: http2.ServerHttp2Stream) => {
+		requests++;
+		request.once("data", () => {
+			request.respond({ ":status": 200, "content-type": "application/connect+proto" });
+			request.end(requests === 1 ? Buffer.alloc(0) : turnEndedFrame());
+		});
+	});
+	const listening = Promise.withResolvers<void>();
+	server.once("error", listening.reject);
+	server.listen(0, "127.0.0.1", listening.resolve);
+	await listening.promise;
+	const address = server.address();
+	if (!address || typeof address === "string") throw new Error("Expected HTTP2 fixture address");
+	const model = makeModel(`http://127.0.0.1:${address.port}`);
+	let waits = 0;
+	try {
+		const response = streamCursor(model, context, {
+			apiKey: "fixture-key",
+			providerRetryWait: async () => {
+				waits++;
+				await Bun.write(
+					root.join("model-blacklist.json"),
+					JSON.stringify({ [`${model.provider}/${model.id}`]: "retry fixture ban" }),
+				);
+			},
+		});
+		for await (const _event of response) {
+		}
+		const result = await response.result();
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("retry fixture ban");
+		expect(waits).toBe(1);
+		expect(requests).toBe(1);
+	} finally {
+		for (const session of sessions) session.destroy();
+		server.close();
+		rootSpy.mockRestore();
+	}
 });

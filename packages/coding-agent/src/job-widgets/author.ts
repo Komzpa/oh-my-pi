@@ -9,7 +9,12 @@ import { markPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { roleDefaultModels } from "@oh-my-pi/pi-catalog/compat/behavior";
 import { formatBytes, prompt, truncate } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { getModelMatchPreferences, parseModelPattern, resolveModelRoleValue } from "../config/model-resolver";
+import {
+	getModelMatchPreferences,
+	parseModelPattern,
+	resolveModelRoleValue,
+	modelSelectorBlacklistError,
+} from "../config/model-resolver";
 import { formatModelRoleAlias } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import { extractTextContent, extractToolCall, parseJsonPayload } from "../commit/utils";
@@ -189,6 +194,7 @@ export async function resolveWidgetModel(
 	const role = resolveModelRoleValue(formatModelRoleAlias("widget"), available, { settings, matchPreferences }).model;
 	if (role) candidates.push(role);
 	for (const pattern of roleDefaultModels().smol ?? []) {
+		if (modelSelectorBlacklistError(pattern, available)) continue;
 		const model = parseModelPattern(pattern, available, matchPreferences).model;
 		if (model) candidates.push(model);
 	}

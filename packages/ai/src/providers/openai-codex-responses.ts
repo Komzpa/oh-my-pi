@@ -1,3 +1,4 @@
+import { assertModelNotBlacklisted } from "../model-blacklist";
 import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
@@ -1704,6 +1705,7 @@ async function openCodexWebSocketTransport(
 	// so it is only consumed once this request takes it (see `onOwned` below).
 	const steered = websocketState.acceptedSteering;
 	const onOwned = () => {
+		assertModelNotBlacklisted(model);
 		if (websocketState.acceptedSteering === steered) websocketState.acceptedSteering = undefined;
 	};
 	let websocketConnection = await getOrCreateCodexWebSocketConnection(
@@ -1752,6 +1754,7 @@ async function openCodexWebSocketTransport(
 						onSseEvent,
 						onOwned,
 						releaseReservation,
+						() => assertModelNotBlacklisted(model),
 					),
 					requestBodyForState: cloneJsonTree(requestContext.transformedBody),
 					transport: "websocket",
@@ -1846,6 +1849,7 @@ async function openCodexWebSocketTransport(
 			onSseEvent,
 			onOwned,
 			releaseReservation,
+			() => assertModelNotBlacklisted(model),
 		);
 		return {
 			eventStream,
@@ -2384,8 +2388,13 @@ class CodexStreamProcessor {
 			return;
 		}
 		this.#steerConnection = connection;
-		this.#steerPump = new CodexSteerPump(source, connection, messages =>
-			toSteerInputItems(convertMessages(this.model, { messages: [...messages] })),
+		this.#steerPump = new CodexSteerPump(
+			source,
+			{
+				steer: (previousResponseId, input) =>
+					connection.steer(previousResponseId, input, () => assertModelNotBlacklisted(this.model)),
+			},
+			messages => toSteerInputItems(convertMessages(this.model, { messages: [...messages] })),
 		);
 		this.#steerPump.start(responseId);
 	}
@@ -3884,6 +3893,7 @@ class CodexWebSocketConnection {
 		onSseEvent?: (event: RawSseEvent) => void,
 		onOwned?: () => void,
 		releaseReservation?: () => void,
+		beforeDispatch?: () => void,
 	): AsyncGenerator<Record<string, unknown>> {
 		releaseReservation?.();
 		let owned = false;
@@ -3903,6 +3913,7 @@ class CodexWebSocketConnection {
 						}
 					}
 				},
+				beforeDispatch,
 			);
 		} catch (error) {
 			CODEX_DEBUG &&
@@ -3916,7 +3927,7 @@ class CodexWebSocketConnection {
 	}
 
 	/** Submit steering on the current socket, even between response readers. */
-	steer(previousResponseId: string, input: InputItem[]): Promise<CodexSteerAck> {
+	steer(previousResponseId: string, input: InputItem[], beforeDispatch?: () => void): Promise<CodexSteerAck> {
 		if (!this.#channel.isOpen()) {
 			return Promise.reject(new CodexWebSocketTransportError("websocket connection is unavailable"));
 		}
@@ -3924,6 +3935,7 @@ class CodexWebSocketConnection {
 		const waiter: CodexSteerWaiter = { previousResponseId, resolve, reject };
 		this.#steerWaiters.push(waiter);
 		try {
+			beforeDispatch?.();
 			this.#channel.sendControl({ type: "response.steer", previous_response_id: previousResponseId, input });
 		} catch (error) {
 			const index = this.#steerWaiters.indexOf(waiter);

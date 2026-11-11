@@ -11,6 +11,8 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import * as dirs from "@oh-my-pi/pi-utils";
+import * as path from "node:path";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
@@ -146,6 +148,33 @@ describe("advisor classifier-refusal fallback", () => {
 		await fellBack.promise;
 		return { s, advisorRequests, review, controls };
 	}
+
+	it("skips a banned advisor fallback and keeps the next permitted model", async () => {
+		using root = TempDir.createSync("@omp-advisor-blacklist-");
+		vi.spyOn(dirs, "getBaseConfigRoot").mockReturnValue(root.path());
+		await Bun.write(
+			path.join(root.path(), "model-blacklist.json"),
+			JSON.stringify({ [`${advisorFallback.provider}/${advisorFallback.id}`]: "fixture ban" }),
+		);
+		const { s, advisorRequests } = await startSession("refusal");
+		expect(advisorRequests).not.toContain(advisorFallback.id);
+		expect(s.getAdvisorAgent()?.state.model.id).toBe(secondFallback.id);
+	});
+
+	it("keeps a working advisor fallback when its original primary becomes banned", async () => {
+		using root = TempDir.createSync("@omp-advisor-primary-blacklist-");
+		vi.spyOn(dirs, "getBaseConfigRoot").mockReturnValue(root.path());
+		const { s, advisorRequests, review } = await startSession("overloaded");
+		const failures = advisorRequests.filter(id => id === advisorPrimary.id).length;
+		await Bun.write(
+			path.join(root.path(), "model-blacklist.json"),
+			JSON.stringify({ [`${advisorPrimary.provider}/${advisorPrimary.id}`]: "fixture ban" }),
+		);
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + PAST_COOLDOWN_MS);
+		await review("continue with the permitted fallback");
+		expect(advisorRequests.filter(id => id === advisorPrimary.id)).toHaveLength(failures);
+		expect(s.getAdvisorAgent()?.state.model.id).toBe(advisorFallback.id);
+	});
 
 	it("keeps a refusal fallback past the cooldown a provider failure would observe", async () => {
 		const { s, advisorRequests, review } = await startSession("refusal");

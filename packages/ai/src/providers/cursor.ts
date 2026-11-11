@@ -227,8 +227,10 @@ import {
 } from "../utils/block-symbols";
 import { deterministicUuid } from "../utils/deterministic-id";
 import { AssistantMessageEventStream } from "../utils/event-stream";
-import { connectProxiedSocket, getProxyForUrl, wrapFetchForProxy } from "../utils/proxy";
+import { connectProxiedSocket, getProxyForUrl } from "../utils/proxy";
 import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
+import { assertModelNotBlacklisted } from "../model-blacklist";
+import { transportFetch } from "../utils/transport-fetch";
 import { waitForRetry } from "../utils/retry-wait";
 import { sanitizeSchemaForCursor, toolWireSchema } from "../utils/schema";
 import { formatConnectEndStreamError, hasRetryableCursorErrorDetail } from "./connect-error-detail";
@@ -846,6 +848,7 @@ function wrapHttp2RunTransport(request: http2.ClientHttp2Stream): CursorRunTrans
 }
 
 interface CursorHttp1RunTransportOptions {
+	model: Model<"cursor-agent">;
 	baseUrl: string;
 	headers: Record<string, string>;
 	requestId: string;
@@ -879,7 +882,7 @@ function readConnectFrameMessage(frame: Uint8Array): Uint8Array {
 function createHttp1RunTransport(options: CursorHttp1RunTransportOptions): CursorRunTransport {
 	const abortController = new AbortController();
 	const signal = options.signal ? AbortSignal.any([options.signal, abortController.signal]) : abortController.signal;
-	const fetchImpl = wrapFetchForProxy(globalThis.fetch, "cursor");
+	const fetchImpl = transportFetch(options.model, undefined);
 	const requestId = create(BidiRequestIdSchema, { requestId: options.requestId });
 	const pendingAppends: CursorPendingAppend[] = [];
 	let appendSeqno = 0n;
@@ -1528,9 +1531,11 @@ function streamCursorWithWireMode(
 				}
 				h2Client = client;
 				client.on("error", error => settleH2(mapH2TransportError(error, baseUrl)));
+				assertModelNotBlacklisted(model);
 				runTransport = wrapHttp2RunTransport(client.request(requestHeaders));
 			} else {
 				runTransport = createHttp1RunTransport({
+					model,
 					baseUrl,
 					headers: requestHeaders,
 					requestId,
