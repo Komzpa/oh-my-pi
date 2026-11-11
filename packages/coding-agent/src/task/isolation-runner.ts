@@ -33,6 +33,7 @@ import { trackLateCleanup } from "../utils/late-cleanup";
 import type { ExecutorOptions } from "./executor";
 import { runSubprocess } from "./executor";
 import { needsNativeTeardown, writeRetainedBackend } from "./isolation-ownership";
+import { repairBorrowedWorkspaceNodeModules } from "./workspace-dependencies";
 import type { NestedRepoPatch, SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import {
 	applyNestedPatches,
@@ -565,6 +566,7 @@ export async function runIsolatedSubprocess(opts: IsolatedRunOptions): Promise<S
 	try {
 		workspace = await opts.openWorkspace(opts.context.repoRoot, opts.agentId);
 		const isolationDir = workspace.dir;
+		await repairBorrowedWorkspaceNodeModules(isolationDir);
 		const runChanges = await trackChanges(workspace, opts.context.repoRoot);
 		changes = runChanges;
 		const result = await runSubprocess({
