@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Apply lead scope grants to the existing worker across the extension boundary while retaining row, revocation and foreign-writer fences.
+
 - Keep CPU and memory capacity inspection available while dispatch demands require plan repair.
 
 - Clearing a worker's resource scope revokes file writes while keeping undeclared scopes and live writer leases distinct.

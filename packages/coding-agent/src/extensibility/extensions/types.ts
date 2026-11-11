@@ -1,4 +1,5 @@
 import type { ReviewPageAnswer } from "../../tools/todo";
+import type { AgentRegistryApi } from "../../registry/agent-registry";
 /**
  * Extension system types.
  *
@@ -915,6 +916,8 @@ export interface ExtensionContext {
 	sessionModes?: ExtensionSessionModes;
 	/** Identity of the agent this session runs: the top-level session or a subagent. */
 	agent: ExtensionAgentIdentity;
+	/** Host-owned peer registry; workers receive the canonical main-thread proxy. */
+	agentRegistry?: AgentRegistryApi;
 	/** Send a message to a live or revivable agent peer through the same route as `write agent://<id>`. */
 	sendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }>;
 	/**

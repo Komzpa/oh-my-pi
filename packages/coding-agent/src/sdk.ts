@@ -3887,6 +3887,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			},
 			answer => (hasSession ? new TodoTool(toolSession).applyReviewPageAnswer(answer) : Promise.resolve(false)),
 			() => (hasSession ? session.getTodoSnapshot() : undefined),
+			agentRegistry,
 		);
 		// A dialog waits for the user, not the agent: the session lets the display sleep while one is open.
 		const trackUserWait: UserWaitTracker = dialog => (hasSession ? session.waitForUser(dialog) : dialog());

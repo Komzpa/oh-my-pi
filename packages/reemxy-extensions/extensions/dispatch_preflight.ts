@@ -9,7 +9,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
-import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { AgentRegistry, type AgentRegistryApi } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { restoringAgentIds } from "@oh-my-pi/pi-coding-agent/registry/restoring-agents";
 import { resolveToCwd } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import type { TodoScheduleInputTask, TodoScheduleInput } from "@oh-my-pi/pi-tui/tools/todo-schedule";
@@ -369,23 +369,26 @@ function bashWriteTargets(argv: string[]): string[] {
 	return [];
 }
 
-export function currentRowOwner(row: TodoScheduleInputTask, owner: string): boolean {
+export function currentRowOwner(
+	row: TodoScheduleInputTask,
+	owner: string,
+	registry: AgentRegistryApi = AgentRegistry.global(),
+): boolean {
 	if (row.status === "completed" || row.status === "abandoned") return false;
 	const executor = row.schedule?.executor;
 	const settled = executor?.finishedAt !== undefined || executor?.outcome !== undefined;
 	if (row.schedule?.owner !== owner && (row.schedule?.owner || executor?.workerId !== owner || settled)) return false;
+	const ref = registry.get(owner);
+	if (ref?.todoRow && ref.todoRow !== row.content) return false;
 	if (executor?.workerId !== owner || !settled) return true;
 	// Historical settlement does not revoke a currently assigned IRC continuation.
 	// A different current assignment, or a genuinely idle settled owner, still revokes it.
-	const registry = AgentRegistry.global();
-	const ref = registry.get(owner);
-	if (ref?.todoRow && ref.todoRow !== row.content) return false;
 	return Boolean(ref && registry.isRunning(ref)) || restoringAgentIds(registry).includes(owner);
 }
 
 /** Read the parent's current plan, never the child's copied TODO snapshot. */
 export function workerRowScope(ctx: ExtensionContext) {
-	const registry = AgentRegistry.global();
+	const registry = ctx.agentRegistry ?? AgentRegistry.global();
 	const workers: string[] = [];
 	let workerId = ctx.agent?.id;
 	let parentId = ctx.agent?.parentId;
@@ -402,12 +405,12 @@ export function workerRowScope(ctx: ExtensionContext) {
 	}
 	const phases = lead?.session?.getTodoPhases() ?? [];
 	for (const owner of workers.reverse()) {
-		const rows = phases.flatMap(phase => phase.tasks).filter(row => currentRowOwner(row, owner));
-		if (rows.length) return { rows, phases, lead: lead! };
+		const rows = phases.flatMap(phase => phase.tasks).filter(row => currentRowOwner(row, owner, registry));
+		if (rows.length) return { rows, phases, lead: lead!, registry };
 	}
 	// A known parent with no current assignment is a revoked/missing grant,
 	// never permission to inherit the entire working directory after a restart.
-	return lead ? { rows: [], phases, lead } : undefined;
+	return lead ? { rows: [], phases, lead, registry } : undefined;
 }
 
 export function liveWorkerRows(ctx: ExtensionContext) {
@@ -438,14 +441,17 @@ export async function workerScopeCovers(ctx: ExtensionContext, paths: string[]):
 }
 
 /** The same current assignment grants worker scope and protects it from competing admission. */
-export function holdsWriteCustody(row: TodoScheduleInputTask): boolean {
+export function holdsWriteCustody(
+	row: TodoScheduleInputTask,
+	registry: AgentRegistryApi = AgentRegistry.global(),
+): boolean {
 	const owner = row.schedule?.owner ?? row.schedule?.executor?.workerId;
 	return (
 		row.status !== "completed" &&
 		row.status !== "abandoned" &&
 		!readOnlyClaim(row) &&
 		row.schedule?.resourceWait === undefined &&
-		(owner ? currentRowOwner(row, owner) : row.status !== "pending")
+		(owner ? currentRowOwner(row, owner, registry) : row.status !== "pending")
 	);
 }
 
@@ -490,7 +496,7 @@ export async function workerToolPreflight(
 		);
 		resolvedTargets.push(resolved);
 		for (const other of scope?.phases.flatMap(phase => phase.tasks) ?? []) {
-			if (rows.includes(other) || !holdsWriteCustody(other)) continue;
+			if (rows.includes(other) || !holdsWriteCustody(other, scope?.registry)) continue;
 			for (const resource of other.schedule?.resources ?? []) {
 				const resourcePath = resource
 					.replace(/^(?:path|repo|repository|checkout|worktree):/, "")
@@ -517,10 +523,10 @@ export async function workerToolPreflight(
 		if (owner && incoming) {
 			const claims = writeClaims.get(scope.lead.session) ?? new Map<string, string[]>();
 			writeClaims.set(scope.lead.session, claims);
-			const open = scope.phases.flatMap(phase => phase.tasks).filter(holdsWriteCustody);
+			const open = scope.phases.flatMap(phase => phase.tasks).filter(row => holdsWriteCustody(row, scope.registry));
 			// No await between observing and acquiring exact write targets.
 			for (const [holder, held] of claims) {
-				const holderRows = open.filter(row => currentRowOwner(row, holder));
+				const holderRows = open.filter(row => currentRowOwner(row, holder, scope.registry));
 				const retained = held.filter(target =>
 					holderRows.some(row => {
 						if (!Array.isArray(row.schedule?.resources)) return true;

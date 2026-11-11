@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Preserve the host registry and canonical TODO row binding in worker extension contexts and thread snapshots.
+
 - Preserve the source journal version when reading indexed history so current message roles survive resume ([#123](https://github.com/Komzpa/oh-my-pi/pull/123) by [@Komzpa](https://github.com/Komzpa)).
 
 - Clone large session journals once while preserving independent snapshots and restores.

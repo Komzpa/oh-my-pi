@@ -51,7 +51,7 @@ import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot, SendUserMessageOptions } from "../../session/agent-session";
 import { sendAgentMessageFromSession } from "../../irc/messaging";
-import { AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { SessionManager } from "../../session/session-manager";
 import { cfgTaskMaxConcurrency } from "../../task/settings";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
@@ -646,7 +646,7 @@ export class ExtensionRunner {
 			return Promise.resolve({ delivered: false, text: "Peer messaging is unavailable in this session." });
 		return sendAgentMessageFromSession(
 			{
-				agentRegistry: AgentRegistry.global(),
+				agentRegistry: this.agentRegistry,
 				settings: this.settings,
 				taskDepth: this.agent.depth,
 				getAgentId: () => this.agent.id,
@@ -907,6 +907,7 @@ export class ExtensionRunner {
 		private readonly updateTodoSchedule?: ExtensionContext["updateTodoSchedule"],
 		private readonly applyReviewPageAnswer?: ExtensionContext["applyReviewPageAnswer"],
 		private readonly getTodoSnapshot?: ExtensionContext["getTodoSnapshot"],
+		private readonly agentRegistry: AgentRegistryApi = AgentRegistry.global(),
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -1937,6 +1938,7 @@ export class ExtensionRunner {
 			modelRegistry: this.modelRegistry,
 			isProjectTrusted: () => true,
 			agent,
+			agentRegistry: this.agentRegistry,
 			get model() {
 				return getModel();
 			},
