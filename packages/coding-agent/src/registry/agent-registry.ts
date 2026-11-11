@@ -39,6 +39,8 @@ export interface AgentRunLifecycle {
 	responseAt?: number;
 	/** When the run's final result was accepted by its driver. */
 	acceptedAt?: number;
+	/** Terminal yield publication fence, mirrored across worker threads. */
+	resultPublication?: "pending" | "published" | "failed";
 	/** When the ref last left `running` for a terminal status. */
 	terminalAt?: number;
 }
@@ -166,6 +168,12 @@ export interface AgentRegistryApi {
 	clearInitialPromptPending(id: string, session: AgentSessionHandle): boolean;
 	/** Record that the current run handed over its final result. */
 	markResultAccepted(id: string, expected?: AgentRefExpectation, responseAt?: number): boolean;
+	setResultPublication(
+		id: string,
+		state: "pending" | "published" | "failed",
+		expected?: AgentRefExpectation,
+		responseAt?: number,
+	): boolean;
 	/** Accepted-but-running refs whose run already finished. */
 	staleAcceptedRuns(): AgentRef[];
 	/** Record a short activity gist for the work-aware roster. */
@@ -392,6 +400,24 @@ export class AgentRegistry implements AgentRegistryApi {
 	 * Returns false when the id is gone, aborted, or no longer owned by
 	 * `expected`; those cases must not stamp a newer generation.
 	 */
+	setResultPublication(
+		id: string,
+		state: "pending" | "published" | "failed",
+		expected?: AgentRefExpectation,
+		responseAt?: number,
+	): boolean {
+		const ref = this.#refs.get(id);
+		if (!ref || !this.#matchesExpected(ref, expected)) return false;
+		if (
+			state !== "pending" &&
+			(ref.lifecycle?.responseAt !== responseAt || ref.lifecycle?.resultPublication !== "pending")
+		)
+			return false;
+		ref.lifecycle = { ...ref.lifecycle, responseAt, resultPublication: state };
+		this.#emit({ type: "metadata_changed", ref });
+		return true;
+	}
+
 	markResultAccepted(id: string, expected?: AgentRefExpectation, responseAt?: number): boolean {
 		const ref = this.#refs.get(id);
 		if (!ref || ref.status === "aborted" || !this.#matchesExpected(ref, expected)) return false;

@@ -130,6 +130,15 @@ export class RemoteAgentRegistry implements AgentRegistryApi {
 		return this.#remote.callSync("setStatus", id, status, expected);
 	}
 
+	setResultPublication(
+		id: string,
+		state: "pending" | "published" | "failed",
+		expected?: AgentRefExpectation,
+		responseAt?: number,
+	): boolean {
+		return this.#remote.callSync("setResultPublication", id, state, expected, responseAt);
+	}
+
 	markResultAccepted(id: string, expected?: AgentRefExpectation, responseAt?: number): boolean {
 		return this.#remote.callSync("markResultAccepted", id, expected, responseAt);
 	}
