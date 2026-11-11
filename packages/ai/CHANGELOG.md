@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Preserved explicit null values in nullable tool fields so clearing saved state reaches the tool.
 - Retained regional Token Plan request routing for both tp- and ttp- keys alongside current catalog authentication.
 
 

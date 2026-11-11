@@ -24,7 +24,7 @@ const paint = (tone: string, text: string): string => `<${tone}>${text}</${tone}
 
 test("DC rows show actual auditors without warning and never infer UseGrid liveness from prose", () => {
 	const display = renderTodoPlanDisplay(phases, context, { now: 363264, archived: 444, paint });
-	expect(display.lines[0]).toContain("13 open — 0 working · 0 waiting · 3 auditing");
+	expect(display.lines[0]).toContain("13 open — 0 working · 3 auditing");
 	expect(display.lines[0]).toContain("461 closed (444 archived)");
 	for (const line of display.lines.filter(line => line.includes("— auditing")))
 		expect(line).not.toContain("<warning>");
@@ -128,7 +128,7 @@ test("settled rows queue audits or need a worker; stuck names why nothing can ac
 	expect(display.lines.join("\n")).toContain("blocked — stuck: awaiting vendor reply");
 	const full = renderTodoPlanDisplay(input, { ...idle, capacityFull: true }, { now: 0, width: 120, paint });
 	expect(full.lines[0]).toContain("1 waiting");
-	expect(full.lines[0]).toContain("0 need worker · 2 stuck");
+	expect(full.lines[0]).toContain("2 stuck");
 	const capacityRow = full.lines.find(line => line.includes("findings —"))!;
 	expect(capacityRow).toContain("waiting for a worker slot · after Probe");
 	expect(capacityRow).not.toContain("<warning>");
@@ -249,4 +249,35 @@ test("the accounting line shows the whole residual forecast and labels worker ri
 	expect(display.lines[0]).toContain(`due ${clock(forecast.deadlineAt!)}`);
 	expect(display.lines[0]).toContain(`Worker-attempt diagnostic ${clock(forecast.risk.p80Finish)}`);
 	expect(display.lines[0]).not.toContain("P(on time)");
+});
+
+test("narrow HUD keeps the task and live owner ahead of attempt diagnostics", () => {
+	const worker = { id: "RepairScene-22", agent: "ui-coder", model: "example-model:high", startedAt: 0 };
+	const task = {
+		content: "Repair scene controls and selection",
+		status: "in_progress" as const,
+		schedule: { owner: worker.id, firstRequirementAt: 0, executor: { workerId: worker.id, startedAt: 0 } },
+	};
+	const input = [{ name: "Delivery", tasks: [task] }];
+	const display = renderTodoPlanDisplay(
+		input,
+		{ workers: [worker], owners: new Map([[task.content, worker]]) },
+		{ now: 1200 * 60000, width: 100, paint: (_tone, text) => text },
+	);
+	const row = display.lines.find(line => line.includes("☐"))!;
+	expect(row).toContain("Repair scene controls");
+	expect(row).toContain("— working");
+	expect(row).toContain(worker.id);
+	expect(Bun.stringWidth(row)).toBeLessThanOrEqual(100);
+	expect(display.lines[0]).not.toContain("0 auditing");
+	expect(display.lines[0]).not.toContain("0 handoff pending");
+	const detail = renderTodoPlanDisplay(
+		input,
+		{ workers: [worker], owners: new Map() },
+		{
+			now: 1200 * 60000,
+			paint: (_tone, text) => text,
+		},
+	);
+	expect(detail.lines.join("\n")).toContain("queue/downtime unknown");
 });

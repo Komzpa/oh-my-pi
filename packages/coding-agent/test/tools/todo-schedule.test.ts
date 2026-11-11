@@ -1,4 +1,5 @@
 import { describe, expect, it, spyOn } from "bun:test";
+import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
 import danglingReplay from "./fixtures/stored-dangling-edge-dc.json";
 import selfEdgeReplay from "./fixtures/stored-self-edge-dc.json";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -682,11 +683,49 @@ it("persists and clears the row review artifact through schedule replay", async 
 	expect(result.isError).not.toBe(true);
 	const restored = markdownToPhases(phasesToMarkdown(harness.phases()));
 	expect(restored.phases[0].tasks[1].schedule?.reviewPage).toBe("http://localhost/review/parser");
-	await harness.tool.execute("clear-review", {
-		op: "schedule",
-		updates: [{ task: "Build parser", reviewPage: null }],
+	const clear = validateToolArguments(harness.tool, {
+		type: "toolCall",
+		id: "clear-review",
+		name: "todo",
+		arguments: {
+			op: "schedule",
+			updates: [{ task: "Build parser", review: null, reviewPage: null, reviewCard: null, speculativeOn: null }],
+		},
 	});
+	await harness.tool.execute("clear-review", harness.tool.parameters.assert(clear));
+	expect(harness.phases()[0].tasks[1].schedule?.review).toBeUndefined();
 	expect(harness.phases()[0].tasks[1].schedule?.reviewPage).toBeUndefined();
+	const replayed = markdownToPhases(phasesToMarkdown(harness.phases()));
+	expect(replayed.phases[0].tasks[1].schedule?.review).toBeUndefined();
+	expect(replayed.phases[0].tasks[1].schedule?.reviewPage).toBeUndefined();
+});
+
+it("clears an accepted proposal before reopening its unfinished implementation through validated calls", async () => {
+	const phases = structuredClone(initialPlan);
+	phases[0].tasks[2].status = "completed";
+	const row = phases[0].tasks[1];
+	row.status = "completed";
+	row.schedule!.review = "accepted";
+	const harness = createHarness(phases);
+	const clear = validateToolArguments(harness.tool, {
+		type: "toolCall",
+		id: "clear-acceptance",
+		name: "todo",
+		arguments: { op: "schedule", updates: [{ task: "Build parser", review: null }] },
+	});
+	const cleared = await harness.tool.execute("clear-acceptance", harness.tool.parameters.assert(clear));
+	expect(cleared.isError).not.toBe(true);
+	const resume = await harness.tool.execute("resume-implementation", { op: "start", task: "Build parser" });
+	expect(resume.isError).not.toBe(true);
+	const restaff = await harness.tool.execute("restaff-implementation", {
+		op: "schedule",
+		updates: [{ task: "Build parser", owner: "implementation-owner" }],
+	});
+	expect(restaff.isError).not.toBe(true);
+	expect(harness.phases()[0].tasks[1].status).toBe("in_progress");
+	expect(harness.phases()[0].tasks[1].schedule?.review).toBeUndefined();
+	const restored = markdownToPhases(phasesToMarkdown(harness.phases()));
+	expect(restored.phases[0].tasks[1].status).toBe("in_progress");
 });
 
 it("accepts the live previewReason-only schedule but rejects a truly empty schedule", async () => {

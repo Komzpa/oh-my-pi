@@ -2768,7 +2768,29 @@ export function renderTodoPlanDisplay(
 	// Current residual forecast covers the whole open set; worker-attempt risk is diagnostic.
 	const forecast = options.forecast;
 	const eta = forecast ? formatPlanForecastDisplay(forecast, now) : "";
-	const header = `${open.length} open — ${count("working")} working · ${count("waiting")} waiting · ${count("auditing")} auditing · ${count("verifying")} verifying · ${count("audit queued")} audit queued · ${count("ready to close")} ready to close · ${count("handoff pending")} handoff pending · ${count("needs you")} need you · ${count("needs worker")} need worker · ${count("stuck")} stuck · ${tasks.length - open.length + archived} closed (${archived} archived)${eta ? ` · ${eta}` : ""}`;
+	const counts = [
+		`${count("working")} working`,
+		...(
+			[
+				"waiting",
+				"auditing",
+				"verifying",
+				"audit queued",
+				"ready to close",
+				"handoff pending",
+				"needs you",
+				"needs worker",
+				"stuck",
+			] as const
+		)
+			.filter(state => count(state) > 0)
+			.map(
+				state =>
+					`${count(state)} ${state === "needs you" ? "need you" : state === "needs worker" ? "need worker" : state}`,
+			),
+	];
+	const closed = `${tasks.length - open.length + archived} closed${archived ? ` (${archived} archived)` : ""}`;
+	const header = `${open.length} open — ${counts.join(" · ")} · ${closed}${eta ? ` · ${eta}` : ""}`;
 	const lines = [header];
 	const owners: (string | undefined)[] = [undefined];
 	const push = (line: string, worker?: TodoDisplayWorker): void => {
@@ -2866,11 +2888,23 @@ export function renderTodoPlanDisplay(
 			const topCause = [...causes].sort((a, b) => b[1] - a[1])[0]?.[0];
 			const infra = failures.length;
 			const clocks = formatTodoRowClocks(task, now).join(" · ");
-			const suffix = ` — ${label}${blocker}${worker}${clocks ? ` · ${clocks}` : ""}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}${infra ? ` · infra failures ${infra} since last success: ${truncateToWidth(safeText(topCause ?? "unknown"), TRUNCATE_LENGTHS.TITLE)}` : ""}`;
-			const title = truncateToWidth(
-				safeText(task.content),
-				Math.max(0, (options.width ?? Infinity) - Bun.stringWidth(suffix) - 4),
-			);
+			let suffix = ` — ${label}${blocker}${worker}${clocks ? ` · ${clocks}` : ""}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}${infra ? ` · infra failures ${infra} since last success: ${truncateToWidth(safeText(topCause ?? "unknown"), TRUNCATE_LENGTHS.TITLE)}` : ""}`;
+			const content = safeText(task.content);
+			let title = content;
+			if (options.width !== undefined) {
+				const available = Math.max(0, options.width - 4);
+				// Keep the task identifiable before spending cells on diagnostics.
+				// Full clocks, models and failure receipts remain in the expanded view.
+				const titleWidth = Math.min(Bun.stringWidth(content), Math.floor(available * 0.45));
+				suffix = ` — ${label}${blocker}${worker}${rowEta ? ` · ${rowEta}` : ""}${attempts >= 2 ? ` · attempt ${attempts + 1}` : ""}${infra ? ` · infra failures ${infra}` : ""}`;
+				if (Bun.stringWidth(suffix) > available - titleWidth) {
+					const holder = state.worker ? ` · ${safeText(state.worker.id)}${elapsed(state.worker)}` : "";
+					const reason = blocker || (state.previous ? ` · after ${safeText(state.previous)}` : "");
+					suffix = ` — ${label}${holder}${reason}${rowEta ? ` · ${rowEta}` : ""}${infra ? ` · infra failures ${infra}` : ""}`;
+				}
+				suffix = truncateToWidth(suffix, Math.max(0, available - titleWidth));
+				title = truncateToWidth(content, Math.max(0, available - Bun.stringWidth(suffix)));
+			}
 			push(
 				// Highlight rows a live worker is on, so "who is running" reads at a glance;
 				// rows needing the owner or stuck are warnings, everything idle stays dim.

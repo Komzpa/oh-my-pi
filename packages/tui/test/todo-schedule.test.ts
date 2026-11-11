@@ -790,7 +790,7 @@ describe("audit and handoff display precedence", () => {
 			"audit queued",
 		]);
 		const display = renderTodoPlanDisplay(input, idle, { now: NOW, paint: (_tone, text) => text });
-		expect(display.lines[0]).toContain("0 need you");
+		expect(display.lines[0]).not.toContain("need you");
 	});
 	it("shows only a live or launching audit as verifying", () => {
 		const row = delivered();
