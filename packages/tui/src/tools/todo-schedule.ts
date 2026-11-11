@@ -2423,20 +2423,10 @@ export function formatTaskForecastDisplay(row: TodoTaskForecast, now: number, ex
 	return parts.join(" · ");
 }
 
-export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): string {
+export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number, compact = false): string {
 	const parts: string[] = [];
 	const finish = plan.autoDeadlineForecast?.finish;
 	parts.push(finish === undefined ? "Current ETA unknown" : `ETA ${displayTimestamp(finish, now)}`);
-	if (plan.capacityAssumptions?.executableObserved === false) parts.push("conditional on worker capacity");
-	const awaiting = plan.rows.filter(isTodoAwaitingReview).length;
-	if (awaiting) parts.push(`${awaiting} awaiting your review`);
-	if (plan.risk) parts.push(`Worker-attempt diagnostic ${displayTimestamp(plan.risk.p80Finish, plan.now)}`);
-	if (plan.unresolvedCount > 0) {
-		if (plan.knownWorkFinish !== undefined)
-			parts.push(`Known work by ${displayTimestamp(plan.knownWorkFinish, now)} (partial)`);
-		parts.push(`${plan.unresolvedCount} unresolved`);
-	}
-	if (plan.unknownGates?.length) parts.push(formatUnknownGates(plan.unknownGates));
 	if (plan.deadlineAt !== undefined) {
 		parts.push(`due ${displayTimestamp(plan.deadlineAt, now)}`);
 		if (plan.deadlineAt < now)
@@ -2449,10 +2439,22 @@ export function formatPlanForecastDisplay(plan: TodoPlanForecast, now: number): 
 			);
 		else if (plan.deadlineStatus) parts.push(plan.deadlineStatus);
 	}
+	if (plan.capacityAssumptions?.executableObserved === false) parts.push("conditional on worker capacity");
+	const awaiting = plan.rows.filter(isTodoAwaitingReview).length;
+	if (awaiting) parts.push(`${awaiting} awaiting your review`);
+	if (plan.risk && !compact)
+		parts.push(`Worker-attempt diagnostic ${displayTimestamp(plan.risk.p80Finish, plan.now)}`);
+	if (plan.unresolvedCount > 0) {
+		if (plan.knownWorkFinish !== undefined && !compact)
+			parts.push(`Known work by ${displayTimestamp(plan.knownWorkFinish, now)} (partial)`);
+		parts.push(`${plan.unresolvedCount} unresolved`);
+	}
+	if (plan.unknownGates?.length && !compact) parts.push(formatUnknownGates(plan.unknownGates));
+
 	if (plan.planningIssues.length) parts.push(`plan required: ${plan.planningIssues.length} repairs`);
 	const overdue = plan.rows.filter(row => row.overdue).length;
 	if (overdue) parts.push(`${overdue} overdue`);
-	if (plan.riskModelUnavailable) parts.push("risk model unavailable");
+	if (plan.riskModelUnavailable && !compact) parts.push("risk model unavailable");
 	return parts.join(" · ");
 }
 
@@ -2767,7 +2769,7 @@ export function renderTodoPlanDisplay(
 	const archived = options.archived ?? 0;
 	// Current residual forecast covers the whole open set; worker-attempt risk is diagnostic.
 	const forecast = options.forecast;
-	const eta = forecast ? formatPlanForecastDisplay(forecast, now) : "";
+	const eta = forecast ? formatPlanForecastDisplay(forecast, now, options.width !== undefined) : "";
 	const counts = [
 		`${count("working")} working`,
 		...(
@@ -2790,13 +2792,22 @@ export function renderTodoPlanDisplay(
 			),
 	];
 	const closed = `${tasks.length - open.length + archived} closed${archived ? ` (${archived} archived)` : ""}`;
-	const header = `${open.length} open — ${counts.join(" · ")} · ${closed}${eta ? ` · ${eta}` : ""}`;
+	const header = `${open.length} open — ${counts.join(" · ")} · ${closed}${eta && options.width === undefined ? ` · ${eta}` : ""}`;
 	const lines = [header];
 	const owners: (string | undefined)[] = [undefined];
 	const push = (line: string, worker?: TodoDisplayWorker): void => {
 		lines.push(line);
 		owners.push(worker?.id);
 	};
+	if (eta && options.width !== undefined) {
+		const missed = forecast?.deadlineAt !== undefined && forecast.deadlineAt < now;
+		push(
+			paint(
+				missed || forecast?.deadlineStatus === "will-miss" ? "warning" : "dim",
+				truncateToWidth(eta, options.width),
+			),
+		);
+	}
 	if (context.requirements) {
 		const requirements = context.requirements.filter(
 			row => row.classification !== "merged" && row.classification !== "not-a-requirement",

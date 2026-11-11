@@ -179,7 +179,7 @@ test("working rows name each worker's profile and model", () => {
 	expect(row).toContain("W-1 (ui-coder) gpt-6.1-terra:low 3m");
 });
 
-test("the accounting line shows the whole residual forecast and labels worker risk as diagnostic", () => {
+test("the HUD shows the residual forecast and leaves worker risk in the detailed view", () => {
 	const now = Date.UTC(2026, 10, 6, 19, 0);
 	const input: TodoScheduleInput = [
 		{
@@ -245,9 +245,11 @@ test("the accounting line shows the whole residual forecast and labels worker ri
 		{ workers: [], owners: new Map() },
 		{ now, width: 1000, forecast, paint },
 	);
-	expect(display.lines[0]).toContain(`ETA ${clock(finish!)}`);
-	expect(display.lines[0]).toContain(`due ${clock(forecast.deadlineAt!)}`);
-	expect(display.lines[0]).toContain(`Worker-attempt diagnostic ${clock(forecast.risk.p80Finish)}`);
+	expect(display.lines.join("\n")).toContain(`ETA ${clock(finish!)}`);
+	expect(display.lines.join("\n")).toContain(`due ${clock(forecast.deadlineAt!)}`);
+	expect(display.lines.join("\n")).not.toContain("Worker-attempt diagnostic");
+	const detail = renderTodoPlanDisplay(input, { workers: [], owners: new Map() }, { now, forecast, paint });
+	expect(detail.lines.join("\n")).toContain(`Worker-attempt diagnostic ${clock(forecast.risk.p80Finish)}`);
 	expect(display.lines[0]).not.toContain("P(on time)");
 });
 
@@ -280,4 +282,27 @@ test("narrow HUD keeps the task and live owner ahead of attempt diagnostics", ()
 		},
 	);
 	expect(detail.lines.join("\n")).toContain("queue/downtime unknown");
+});
+
+test("bounded HUD separates the forecast and keeps its due time ahead of diagnostic prose", () => {
+	const now = Date.UTC(2026, 10, 11, 12);
+	const input: TodoScheduleInput = [
+		{
+			name: "Delivery",
+			tasks: [{ content: "Await source", status: "blocked", blocker: "Source authorization is missing" }],
+		},
+	];
+	const forecast = forecastTodoPlan(input, { now, deadlineAt: now - 3600000, executableCapacity: 1 });
+	forecast.unknownGates = ["Unchanged diagnostic detail ".repeat(30)];
+	const display = renderTodoPlanDisplay(
+		input,
+		{ workers: [], owners: new Map() },
+		{ now, width: 100, forecast, paint: (_tone, text) => text },
+	);
+	const line = display.lines.find(line => line.startsWith("Current ETA unknown"));
+	expect(line).toBeDefined();
+	expect(line).toContain("due ");
+	expect(line).toContain("overdue 1h0m");
+	expect(Bun.stringWidth(line!)).toBeLessThanOrEqual(100);
+	expect(display.lines[0]).not.toContain("Unchanged diagnostic");
 });

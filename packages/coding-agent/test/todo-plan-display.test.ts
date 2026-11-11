@@ -49,7 +49,9 @@ test("collapsed live DC HUD reads ledger and live audit assignments without warn
 		mode.setTodos(structuredClone(live.phases) as TodoPhase[]);
 		mode.setTodoExpanded(false);
 		const output = Bun.stripANSI(mode.todoContainer.render(200).join("\n"));
-		expect(output).toContain("13 open — 0 working · 0 waiting · 3 auditing");
+		expect(output).toContain("13 open — 0 working · 3 auditing");
+		expect(output).not.toContain("0 waiting");
+		expect(output).not.toContain("queue/downtime unknown");
 		expect(output).toContain("requirements 54/169 passed · 4 failed");
 		expect(output).toContain("Measure XMOVA render performance on mccatie M1 GPU — auditing");
 		expect(output).not.toContain("effort O/L/P");

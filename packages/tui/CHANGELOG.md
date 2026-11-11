@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Keep task titles and live owners visible in narrow TODO panels; omit empty status counters and leave verbose attempt clocks in the expanded view.
+- Keep task titles and live owners visible in narrow TODO panels; omit empty status counters, separate the deadline forecast and leave verbose attempt clocks in the expanded view.
 
 - TODO plan ETA now uses remaining execution, actual worker capacity and unfinished delivery gates; task age and worker-attempt diagnostics cannot substitute for the plan finish.
 - Count a full worker pool as waiting for a slot; reserve stuck warnings for blocked work.
