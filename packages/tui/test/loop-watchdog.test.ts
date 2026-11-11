@@ -567,6 +567,7 @@ test("a post-await launch block reports its pending extension and distinguishes 
 			"ui.loop-blocked",
 			{
 				blockedMs: 350,
+				cause: "macrotask-delay",
 				cpuMs: expect.any(Number),
 				phase: "launch-overlap:extension.init:delayed",
 				phaseMs: 0,
