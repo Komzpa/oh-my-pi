@@ -529,3 +529,48 @@ test("multiple later plan actions on one row retain every executable follow-up",
 	expect(h.plan()[0]!.tasks[1]!.schedule!.auditFollowUps).toEqual(next);
 	expect(h.event("tool_call", { toolName: "wait", toolCallId: "later-actions" })).toBeUndefined();
 });
+
+for (const outcome of ["failed", "aborted", undefined] as const) {
+	test(`retained ${outcome ?? "unknown"} worker identity cannot discharge dispatch recovery`, async () => {
+		const dispatch: PlanAction = { ...action, kind: "dispatch", dependency: undefined };
+		const h = harness([], { ...verdict, actions: [dispatch] });
+		const plan = makePlan();
+		plan[0]!.tasks[1]!.schedule = { executor: { workerId: "Previous-1", startedAt: 1, outcome } };
+		h.set(plan);
+		h.owners([{ content: dispatch.row, owner: "Previous-1", running: false, outcome }]);
+		await h.event("session_start"); await settle();
+		expect(chiefCriticFixes(h.ctx)).toEqual([{ row: dispatch.row, action: "Staff" }]);
+		expect(h.event("tool_call", { toolName: "wait", toolCallId: "blocked" })).toMatchObject({ block: true });
+		// A successful task tool can still report a failed startup. A new ID is not evidence of a running worker.
+		h.event("tool_call", { toolName: "task", toolCallId: "retry" });
+		const retried = structuredClone(plan);
+		retried[0]!.tasks[1]!.schedule!.executor = { workerId: "Retry-2", startedAt: 2, outcome: "failed" };
+		h.set(retried);
+		h.owners([{ content: dispatch.row, owner: "Retry-2", running: false, outcome: "failed" }]);
+		h.event("tool_result", { toolName: "task", toolCallId: "retry", isError: false });
+		expect(chiefCriticFixes(h.ctx)).toEqual([{ row: dispatch.row, action: "Staff" }]);
+		expect(h.event("tool_call", { toolName: "wait", toolCallId: "still-blocked" })).toMatchObject({ block: true });
+		// An actual live replacement closes staffing, preventing duplicate dispatch.
+		h.owners([{ content: dispatch.row, owner: "Retry-2", running: true }]);
+		expect(chiefCriticFixes(h.ctx)).toEqual([]);
+		expect(h.event("tool_call", { toolName: "wait", toolCallId: "staffed" })).toBeUndefined();
+	});
+}
+
+test("dispatch recovery closes on a completed outcome, not an unrelated live worker or stale completed receipt", async () => {
+	const dispatch: PlanAction = { ...action, kind: "dispatch", dependency: undefined };
+	const h = harness([], { ...verdict, actions: [dispatch] });
+	const plan = makePlan();
+	plan[0]!.tasks[1]!.schedule = { executor: { workerId: "Old-1", startedAt: 1, outcome: "completed" } };
+	h.set(plan);
+	h.owners([
+		{ content: dispatch.row, owner: "Retry-2", running: false, outcome: "failed" },
+		{ content: "Labels", owner: "Unrelated-3", running: true },
+	]);
+	await h.event("session_start"); await settle();
+	expect(chiefCriticFixes(h.ctx)).toEqual([{ row: dispatch.row, action: "Staff" }]);
+	expect(h.event("tool_call", { toolName: "wait", toolCallId: "no-proof" })).toMatchObject({ block: true });
+	h.owners([{ content: dispatch.row, owner: "Retry-2", running: false, outcome: "completed" }]);
+	expect(chiefCriticFixes(h.ctx)).toEqual([]);
+	expect(h.event("tool_call", { toolName: "wait", toolCallId: "completed" })).toBeUndefined();
+});

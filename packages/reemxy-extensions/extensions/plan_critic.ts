@@ -125,12 +125,11 @@ export function chiefCriticFixes(ctx: ExtensionContext): Array<{ row: string; ac
 		const row = rows.find(row => row.content === action.row);
 		if (!row || row.status === "completed" || row.status === "abandoned") return false;
 		if (action.kind === "cut_dependency" && !row.schedule?.dependencies?.includes(action.dependency!)) return false;
-		if (action.kind === "dispatch" && row.schedule?.executor?.workerId) return false;
 		return true;
 	}).map(action => ({ row: action.row, action: verbs[action.kind], ...((binding.leadTurns ?? 0) >= 2 ? { severity: -1 } : {}) }));
 }
 /** Evidence is a successful native tool call plus its observed plan mutation, never lead prose. */
-export function actionObserved(action: PlanAction, before: TodoScheduleInput, after: TodoScheduleInput): boolean {
+export function actionObserved(action: PlanAction, before: TodoScheduleInput, after: TodoScheduleInput, run?: CriticOwnerRunState): boolean {
 	const oldRows = before.flatMap(phase => phase.tasks);
 	const rows = after.flatMap(phase => phase.tasks);
 	const previous = oldRows.find(row => row.content === action.row);
@@ -146,6 +145,7 @@ export function actionObserved(action: PlanAction, before: TodoScheduleInput, af
 		case "dispatch":
 			return (
 				!!current?.schedule?.executor?.workerId &&
+				(run?.running === true || (run?.outcome ?? current.schedule.executor.outcome) === "completed") &&
 				(current.schedule.executor.workerId !== previous.schedule?.executor?.workerId ||
 					current.schedule.executor.startedAt !== previous.schedule?.executor?.startedAt)
 			);
@@ -253,12 +253,13 @@ export default function planCritic(pi: ExtensionAPI, ownerRunStates: (ctx: Exten
 			if (action.kind === "escalate") reason = "escalation dropped: requires a concrete owner question through review page and ask";
 			else if (!row) reason = "row removed or superseded";
 			else if (row.status === "completed" || row.status === "abandoned") reason = `row ${row.status}; custody no longer active`;
-			else if (!run?.running && (run?.outcome === "completed" || row.schedule?.executor?.outcome === "completed")) reason = "worker completed and released custody";
-			else if (action.kind === "dispatch" && (run?.running || row.schedule?.executor?.workerId)) reason = "row already staffed";
+			else if (!run?.running && (run?.outcome ?? row.schedule?.executor?.outcome) === "completed") reason = "worker completed and released custody";
+			else if (action.kind === "dispatch" && run?.running) reason = "row already staffed";
 			else if (action.kind === "cut_dependency" && !row.schedule?.dependencies?.includes(action.dependency!)) reason = "dependency already removed";
 			else if (dependency && (dependency.status === "completed" || dependency.status === "abandoned")) reason = "prerequisite no longer blocks the row";
 			else if (action.dependency && binding.trajectories?.[action.dependency] !== snapshots[action.dependency]) reason = "prerequisite changed since verdict; regenerate";
-			else if (!binding.trajectories?.[action.row] || binding.trajectories[action.row] !== snapshots[action.row]) reason = "row or owner run changed since verdict; regenerate";
+			// Failed redispatch changes the trajectory too; it does not satisfy staffing.
+			else if (action.kind !== "dispatch" && (!binding.trajectories?.[action.row] || binding.trajectories[action.row] !== snapshots[action.row])) reason = "row or owner run changed since verdict; regenerate";
 			if (reason) {
 				binding.addressed[action.id] = { reason: `auto-closed: ${reason}` };
 				changed = true;
@@ -470,7 +471,7 @@ export default function planCritic(pi: ExtensionAPI, ownerRunStates: (ctx: Exten
 		if (!main(ctx)) return;
 		if (binding && previous && !event.isError) {
 			for (const action of pendingActions(binding))
-				if (actionObserved(action, previous, phases(ctx)))
+				if (actionObserved(action, previous, phases(ctx), ownerRunStates(ctx).find(run => run.content === action.row)))
 					binding.addressed[action.id] = { reason: "Observed native plan mutation", toolCallId: event.toolCallId };
 			save();
 		}
