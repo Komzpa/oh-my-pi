@@ -796,27 +796,18 @@ export async function splitDelimitedPathEntry(
 			options.exclusionParts,
 		);
 	}
-	if (options.mixedLocalPaths === true && isInternalUrlPath(normalizedEntry)) {
-		// Before the all-internal branch, which keeps the whole string when any
-		// part is not itself an internal URL. `splitMixedUrlPathList` declines
-		// unless every non-URL part is an existing literal path, so a URL whose
-		// own path contains `;` (`local://report;`) stays one resource.
-		const mixed = await splitMixedUrlPathList(
-			normalizedEntry,
-			cwd,
-			part => isInternalUrlPath(part) || (options.exclusionParts === true && isExclusionPart(part)),
-		);
-		if (mixed && mixed.length > 1) return mixed;
-	}
-	// An internal URL that still carries a top-level `;` is a flattened list
-	// (`history://A;history://B`, `skill://x;/abs/path`): fan it out the same way
-	// read's mixed-URL recovery does. Splitting is deliberately strict: every
-	// part must be a URL or an existing literal path without glob characters, so
-	// `catalog://items;active` and `skill://demo;*.md` stay whole. When a URL part
-	// has its own path segments, a relative tail (`skill://demo/a;b.md`) is
-	// ambiguous with a literal `;` in the resource name, so only anchored tails
-	// (absolute, `./`, `../`, `~`) fan out and the URL keeps literal precedence.
 	if (isInternalUrlPath(normalizedEntry)) {
+		// Search tools opt into mixed local targets. Rewrite callers retain the
+		// upstream all-internal boundary so a URL suffix cannot select a cwd file.
+		const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, splitter, "semicolon", "none");
+		if (
+			!parts ||
+			(options.mixedLocalPaths !== true &&
+				parts.some(part => !isInternalUrlPath(part) && !(options.exclusionParts === true && isExclusionPart(part))))
+		)
+			return null;
+		// Apply the same literal-resource, query/fragment and MCP precedence to
+		// both mixed search lists and lists containing only internal URLs.
 		return splitMixedUrlPathList(normalizedEntry, cwd, isInternalUrlPath, options.context, options.exclusionParts);
 	}
 	// A real POSIX file may contain a delimiter and a selector-shaped tail

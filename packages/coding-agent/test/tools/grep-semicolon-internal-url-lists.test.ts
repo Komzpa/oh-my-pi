@@ -86,6 +86,20 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		expect(text).toContain("abs path needle");
 	});
 
+	it("keeps mixed local targets behind the search opt-in while retaining all-internal lists", async () => {
+		const target = `skill://demo;${absFile}`;
+		expect(await splitDelimitedPathEntry(target, tmpDir)).toBeNull();
+		expect(await splitDelimitedPathEntry(target, tmpDir, { mixedLocalPaths: false })).toBeNull();
+		expect(await expandDelimitedPathEntries([target], tmpDir, { mixedLocalPaths: true })).toEqual([
+			"skill://demo",
+			absFile,
+		]);
+		expect(await splitDelimitedPathEntry("skill://demo;skill://demo/SKILL.md", tmpDir)).toEqual([
+			"skill://demo",
+			"skill://demo/SKILL.md",
+		]);
+	});
+
 	it("searches mixed internal URL lists while excluding filesystem tails", async () => {
 		const targets = path.join(tmpDir, "targets");
 		await Bun.write(path.join(targets, "keep.md"), "included directory needle\n");
@@ -97,10 +111,12 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		expect(getResultText(result)).toContain(skillBodyNeedle);
 		expect(getResultText(result)).toContain("included directory needle");
 		expect(getResultText(result)).not.toContain("excluded directory needle");
-		expect(await expandDelimitedPathEntries(["skill://demo;!*.md"], tmpDir)).toEqual(["skill://demo;!*.md"]);
-		expect(await expandDelimitedPathEntries(["skill://demo/a;"], tmpDir, { exclusionParts: true })).toEqual([
-			"skill://demo/a;",
+		expect(await expandDelimitedPathEntries(["skill://demo;!*.md"], tmpDir, { mixedLocalPaths: true })).toEqual([
+			"skill://demo;!*.md",
 		]);
+		expect(
+			await expandDelimitedPathEntries(["skill://demo/a;"], tmpDir, { mixedLocalPaths: true, exclusionParts: true }),
+		).toEqual(["skill://demo/a;"]);
 	});
 
 	it("review regression: reads searches and finds a literal selector-shaped local tail", async () => {
@@ -186,7 +202,10 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 	it("anchors file URL tails after expanding them to filesystem paths", async () => {
 		const fileUrl = `file://${absFile}`;
 		const target = `skill://demo/SKILL.md;${fileUrl}`;
-		expect(await expandDelimitedPathEntries([target], tmpDir)).toEqual(["skill://demo/SKILL.md", fileUrl]);
+		expect(await expandDelimitedPathEntries([target], tmpDir, { mixedLocalPaths: true })).toEqual([
+			"skill://demo/SKILL.md",
+			fileUrl,
+		]);
 
 		const searched = await new GrepTool(createSession()).execute("file-url-tail-search", {
 			pattern: "needle",
@@ -203,7 +222,9 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		expect(getResultText(read)).toContain(skillBodyNeedle);
 		expect(getResultText(read)).toContain("abs path needle");
 		const missingTarget = `skill://demo/SKILL.md;file://${path.join(tmpDir, "missing.md")}`;
-		expect(await expandDelimitedPathEntries([missingTarget], tmpDir)).toEqual([missingTarget]);
+		expect(await expandDelimitedPathEntries([missingTarget], tmpDir, { mixedLocalPaths: true })).toEqual([
+			missingTarget,
+		]);
 		await expect(
 			new GrepTool(createSession()).execute("missing-file-url-tail", {
 				pattern: "needle",
@@ -229,7 +250,7 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		expect(getResultText(read)).not.toContain("local tail needle");
 
 		const httpsList = "skill://demo/SKILL.md;https://example.test/doc";
-		expect(await expandDelimitedPathEntries([httpsList], tmpDir)).toEqual([
+		expect(await expandDelimitedPathEntries([httpsList], tmpDir, { mixedLocalPaths: true })).toEqual([
 			"skill://demo/SKILL.md",
 			"https://example.test/doc",
 		]);
@@ -252,7 +273,9 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		// tail attached (`https://host/a;b.md` stays whole when b.md exists).
 		await Bun.write(path.join(tmpDir, "b.md"), "relative after https needle\n");
 		const httpsWithPath = "skill://demo;https://example.test/a;b.md";
-		expect(await expandDelimitedPathEntries([httpsWithPath], tmpDir)).toEqual([httpsWithPath]);
+		expect(await expandDelimitedPathEntries([httpsWithPath], tmpDir, { mixedLocalPaths: true })).toEqual([
+			httpsWithPath,
+		]);
 	});
 
 	it("waits for deferred MCP catalogs before preserving an exact semicolon resource", async () => {
@@ -288,7 +311,9 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 				return Promise.withResolvers<MCPManager>().promise;
 			});
 			let outcome: string | undefined;
-			const checking = expandDelimitedPathEntries([`skill://demo;${absFile}`], tmpDir).then(
+			const checking = expandDelimitedPathEntries([`skill://demo;${absFile}`], tmpDir, {
+				mixedLocalPaths: true,
+			}).then(
 				() => {
 					outcome = "split";
 				},
@@ -317,7 +342,9 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 				return loading.promise;
 			});
 			let outcome: string | undefined;
-			const checking = expandDelimitedPathEntries([`skill://demo;${absFile}`], tmpDir).then(
+			const checking = expandDelimitedPathEntries([`skill://demo;${absFile}`], tmpDir, {
+				mixedLocalPaths: true,
+			}).then(
 				() => {
 					outcome = "split";
 				},
@@ -354,6 +381,7 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		});
 		const controller = new AbortController();
 		const checking = expandDelimitedPathEntries([`skill://demo;${absFile}`], tmpDir, {
+			mixedLocalPaths: true,
 			context: { signal: controller.signal },
 		});
 		await started.promise;
@@ -395,6 +423,7 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		} as unknown as MCPManager);
 		const controller = new AbortController();
 		const checking = expandDelimitedPathEntries([`skill://figma/deferred;${absFile}`], tmpDir, {
+			mixedLocalPaths: true,
 			context: { cwd: tmpDir, signal: controller.signal },
 		});
 		expect(
@@ -462,7 +491,10 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		try {
 			const target = `local://notes;${absFile}`;
 			// Without the scheme short-circuit this spends the discovery budget and throws.
-			expect(await expandDelimitedPathEntries([target], tmpDir)).toEqual(["local://notes", absFile]);
+			expect(await expandDelimitedPathEntries([target], tmpDir, { mixedLocalPaths: true })).toEqual([
+				"local://notes",
+				absFile,
+			]);
 			const result = await new GrepTool(session).execute("local-list-no-mcp-wait", {
 				pattern: "needle",
 				path: target,
@@ -477,7 +509,10 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 	it("fans out colon-prefixed relative tails after a path-bearing URL", async () => {
 		await Bun.write(path.join(tmpDir, "b.md"), "colon relative needle\n");
 		const target = "skill://demo/SKILL.md;:./b.md";
-		expect(await expandDelimitedPathEntries([target], tmpDir)).toEqual(["skill://demo/SKILL.md", ":./b.md"]);
+		expect(await expandDelimitedPathEntries([target], tmpDir, { mixedLocalPaths: true })).toEqual([
+			"skill://demo/SKILL.md",
+			":./b.md",
+		]);
 		const result = await new GrepTool(createSession()).execute("colon-relative-search", {
 			pattern: "needle",
 			path: target,
@@ -574,7 +609,7 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 		] as const) {
 			// A glob is parsed below skill:// after delimiter recovery; prove the
 			// recovery step itself retained the exact authored target as well.
-			expect(await expandDelimitedPathEntries([target], tmpDir)).toEqual([target]);
+			expect(await expandDelimitedPathEntries([target], tmpDir, { mixedLocalPaths: true })).toEqual([target]);
 			await expect(tool.execute("semicolon-whole", { pattern: "needle", path: target })).rejects.toMatchObject({
 				message: diagnosis,
 			});
@@ -660,7 +695,10 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 			const literalProbe = spyOn(nodeFs.promises, "lstat").mockImplementation((async (target: nodeFs.PathLike) =>
 				target === resolvedTail ? tailStat : realLstat(target)) as typeof nodeFs.promises.lstat);
 			try {
-				expect(await expandDelimitedPathEntries([`${url};${tail}`], tmpDir)).toEqual([url, tail]);
+				expect(await expandDelimitedPathEntries([`${url};${tail}`], tmpDir, { mixedLocalPaths: true })).toEqual([
+					url,
+					tail,
+				]);
 			} finally {
 				literalProbe.mockRestore();
 			}
@@ -679,7 +717,10 @@ describe("GrepTool semicolon internal-URL path lists", () => {
 			const literalProbe = spyOn(nodeFs.promises, "lstat").mockImplementation((async (target: nodeFs.PathLike) =>
 				target === resolvedUnc ? uncStat : realLstat(target)) as typeof nodeFs.promises.lstat);
 			try {
-				expect(await expandDelimitedPathEntries([`${url};${tail}`], tmpDir)).toEqual([url, tail]);
+				expect(await expandDelimitedPathEntries([`${url};${tail}`], tmpDir, { mixedLocalPaths: true })).toEqual([
+					url,
+					tail,
+				]);
 			} finally {
 				literalProbe.mockRestore();
 			}
