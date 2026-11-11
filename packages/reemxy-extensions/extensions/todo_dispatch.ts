@@ -5928,7 +5928,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         satisfies: id === "missed-eta"
           ? (call: GateCall) => planFix(call) || taskServesRescheduledLateRow(call)
           : id === "todo-replan"
-            ? (call: GateCall) => planFix(call) || independentReadyTask(call)
+            // The canonical resolver validates the lead and linked quotes itself;
+            // unrelated permission-held rows must not prevent that plan repair.
+            ? (call: GateCall) => planFix(call) || independentReadyTask(call) || call.name === "resolve_requirement_conflict"
             : planFix,
       }));
       const gateCall = { name: event.toolName, arguments: (event.input ?? {}) as Record<string, unknown> };
