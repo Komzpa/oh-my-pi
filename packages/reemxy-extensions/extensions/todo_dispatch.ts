@@ -6546,7 +6546,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
           persistSprintState();
         }
       }
-      if (event.toolName === "todo") {
+      if (event.toolName === "todo" && (event.details as { op?: unknown } | undefined)?.op === "schedule") {
         const rows = todoPhases(ctx).flatMap(phase => phase.tasks);
         for (const update of todoScheduleUpdates(event.input)) {
           if (!nonEmptyString(update.evidence)) continue;

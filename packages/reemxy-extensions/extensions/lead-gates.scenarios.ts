@@ -111,7 +111,7 @@ export async function gateLocalityScenarios(only?: string) {
 	return receipts;
 }
 
-export const reviewFindingIds = ["canonical-target", "doctor-item", "truncated-receipt", "released-eta"] as const;
+export const reviewFindingIds = ["canonical-target", "doctor-item", "receipt-operation", "truncated-receipt", "released-eta"] as const;
 
 /** One registered-hook contract per review finding. `only` selects one; omit it to run all four. */
 export async function gateReviewFinding(only?: (typeof reviewFindingIds)[number]) {
@@ -120,7 +120,7 @@ export async function gateReviewFinding(only?: (typeof reviewFindingIds)[number]
 		if (only && only !== id) return;
 		const now = Date.now();
 		const estimate = { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium" as const, basis: "Measured fixture", updatedAt: now };
-		const demand = id === "canonical-target" ? "todo-replan" : id === "doctor-item" ? "todo-plan-doctor" : id === "truncated-receipt" ? "unread-receipts" : "missed-eta";
+		const demand = id === "canonical-target" ? "todo-replan" : id === "doctor-item" ? "todo-plan-doctor" : id === "truncated-receipt" || id === "receipt-operation" ? "unread-receipts" : "missed-eta";
 		let phases: TodoPhase[] = [{ name: "Work", tasks: ["Locality X", "Locality Y", "Locality Z"].map(content => ({ content, status: "pending" as const, schedule: { dependencies: [], ...(id === "canonical-target" && content === "Locality X" ? {} : { estimate }), ...(content === "Locality X" ? { owner: "OwnerX" } : {}), ...(id === "canonical-target" && content === "Locality Z" ? { owner: "PriorWorker" } : {}) } })) }];
 		if (id === "doctor-item") phases[0]!.tasks[0]!.schedule!.estimate = { ...estimate, pessimisticSeconds: 7200 };
 		if (id === "released-eta") {
@@ -131,7 +131,7 @@ export async function gateReviewFinding(only?: (typeof reviewFindingIds)[number]
 		const hooks = new Map<string, (event: never, ctx: never) => unknown>();
 		const api = { on: (name: string, hook: (event: never, ctx: never) => unknown) => hooks.set(name, hook), getActiveTools: () => ["todo", "task", "read"], appendEntry: (customType: string, data: unknown) => journal.push({ type: "custom", customType, data }), sendMessage: () => {}, registerSoftToolRequirementProvider: () => {}, pi: { ...schedule, getLatestTodoPhasesFromEntries, agentPauseGate: { paused: false } } } as unknown as ExtensionAPI;
 		await todoDispatch(api);
-		const jobs = { running: [{ id: "Independent", agentId: "Independent", label: "Independent work", type: "task", status: "running", startTime: now }], recent: id === "truncated-receipt" ? [{ id: "OwnerX", agentId: "OwnerX", type: "task", status: "completed", startTime: now - 1000, endTime: now }] : [], nonJobAgents: [] };
+		const jobs = { running: [{ id: "Independent", agentId: "Independent", label: "Independent work", type: "task", status: "running", startTime: now }], recent: id === "truncated-receipt" || id === "receipt-operation" ? [{ id: "OwnerX", agentId: "OwnerX", type: "task", status: "completed", startTime: now - 1000, endTime: now }] : [], nonJobAgents: [] };
 		const ctx = { cwd: "/tmp", agent: { kind: "main" }, getTodoPhases: () => phases, sessionManager: { getHeader: () => ({ id: `review-${id}` }), getBranch: () => journal, getBranchMatching: (predicate: (entry: unknown) => boolean) => journal.filter(predicate), getLatestBranchMatching: (predicate: (entry: unknown) => boolean) => journal.findLast(predicate), getSessionFile: () => undefined }, getAsyncJobSnapshot: () => jobs, getTaskMaxConcurrency: () => 1, isIdle: () => false, hasPendingMessages: () => false, setTimeout: () => ({}), setInterval: () => ({}), clearTimer: () => {}, getTodoPreviewConfig: () => ({ enabled: false }) } as unknown as ExtensionContext;
 		await hooks.get("session_branch")!({} as never, ctx as never);
 		const probe = async (label: string, name: string, args: Record<string, unknown>, allowed: boolean, remedy?: string) => {
@@ -155,6 +155,15 @@ export async function gateReviewFinding(only?: (typeof reviewFindingIds)[number]
 				await probe("doctor-only remedy", "task", { tasks: [doctor] }, true);
 				await probe("mixed doctor and coder X", "task", { tasks: [doctor, ...coder("Locality X").tasks] }, false, "Locality X");
 				await probe("mixed doctor and independent Z", "task", { tasks: [doctor, ...coder("Locality Z").tasks] }, true);
+			}
+			if (id === "receipt-operation") {
+				const args = { op: "view" as const, updates: [{ task: "Locality X", estimate, evidence: "A view result cannot reconcile a worker receipt" }] };
+				const tool = new TodoTool({ cwd: "/tmp", settings: Settings.isolated(), getSessionFile: () => null, getTodoPhases: () => phases, setTodoPhases: (next: TodoPhase[]) => { phases = next; } } as unknown as ToolSession);
+				await hooks.get("tool_result")!({ toolName: "read", toolCallId: "complete-root", input: { path: "agent://OwnerX" }, isError: false, content: [{ type: "text", text: "COMPLETE terminal receipt for Locality X" }], details: {} } as never, ctx as never);
+				const view = await tool.execute("non-schedule-reconcile", args);
+				if (view.isError) throw new Error(JSON.stringify(view));
+				await hooks.get("tool_result")!({ toolName: "todo", toolCallId: "non-schedule-reconcile", input: args, ...view } as never, ctx as never);
+				await probe("successful non-schedule todo does not reconcile", "task", coder("Locality X"), false, "OwnerX");
 			}
 			if (id === "truncated-receipt") {
 				const args = { op: "schedule" as const, updates: [{ task: "Locality X", estimate, evidence: "Receipt reviewed; continue only the recorded missing output" }] };
