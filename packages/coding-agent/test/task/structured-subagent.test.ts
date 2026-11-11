@@ -30,6 +30,8 @@ import {
 import * as planHandoff from "@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import * as todoModule from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -813,18 +815,30 @@ describe("structured subagent primitive", () => {
 		expect(evalPolicy.enableIrc).toBe(taskPolicy.enableIrc);
 	});
 
-	it("rejects an invalid caller schema before executor dispatch in both modes", async () => {
+	it("caller false disables inherited schemas and accepts a raw auditor table in both modes", async () => {
 		mockDiscovery();
-		const dispatch = vi.spyOn(executorModule, "runSubprocess");
-
+		const table =
+			"| id | verdict | evidence | artifact identity |\n| --- | --- | --- | --- |\n| R1 | pass | observed login | file:/receipt@sha256=abc |";
 		for (const schemaMode of ["permissive", "strict"] as const) {
-			await expect(runStructuredSubagent(request({ outputSchema: false, schemaMode }))).rejects.toThrow(
-				schemaMode === "strict"
-					? "Invalid strict caller output schema: boolean false schema rejects all outputs"
-					: "Invalid caller output schema: boolean false schema rejects all outputs",
+			const policy = await resolveEffectiveSubagentPolicy(
+				request({ outputSchema: false, schemaMode, session: session({ outputSchema: { type: "object" } }) }),
 			);
+			const output = executorModule.finalizeSubprocessOutput({
+				rawOutput: "",
+				exitCode: 0,
+				stderr: "",
+				doneAborted: false,
+				signalAborted: false,
+				yieldItems: [{ status: "success", data: table }],
+				outputSchema: policy.schema.schema,
+				outputSchemaSource: policy.schema.source,
+				outputSchemaMode: policy.schema.mode,
+			});
+			expect(output.exitCode).toBe(0);
+			expect(output.rawOutput).toBe(table);
+			expect(output.structuredOutput).toBeUndefined();
+			expect(policy.schema.outputSchemaOverridesAgent).toBe(true);
 		}
-		expect(dispatch).not.toHaveBeenCalled();
 	});
 
 	it("returns a prose answer in one turn when structured task results are disabled", async () => {
@@ -993,21 +1007,17 @@ describe("structured subagent primitive", () => {
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 
-	it("keeps invalid inherited schemas permissive but rejects them when session strict mode is inherited", async () => {
-		const invalidAgent = { ...AGENT, output: false };
-		mockDiscovery(invalidAgent);
-		expect((await resolveEffectiveSubagentPolicy(request())).schema).toMatchObject({
-			source: "agent",
-			mode: "permissive",
-		});
-
-		const noAgentOutput = { ...AGENT, output: undefined };
-		mockDiscovery(noAgentOutput);
+	it("inherited false disables wrappers rather than rejecting strict output", async () => {
+		mockDiscovery({ ...AGENT, output: false });
+		const agent = await resolveEffectiveSubagentPolicy(request({ schemaMode: "strict" }));
+		expect(agent.schema.source).toBe("none");
+		expect(agent.schema.schema).toBeUndefined();
+		mockDiscovery({ ...AGENT, output: undefined });
 		const strictSession = session({ outputSchema: false });
 		strictSession.outputSchemaMode = "strict";
-		await expect(resolveEffectiveSubagentPolicy(request({ session: strictSession }))).rejects.toThrow(
-			"Invalid strict effective output schema: boolean false schema rejects all outputs",
-		);
+		const inherited = await resolveEffectiveSubagentPolicy(request({ session: strictSession }));
+		expect(inherited.schema.source).toBe("none");
+		expect(inherited.schema.schema).toBeUndefined();
 	});
 
 	it("persists nested patch text with the compatible recovery path and wording", async () => {
@@ -1787,5 +1797,29 @@ describe("per-call model preflight", () => {
 			expect(policy.modelOverride).toEqual(["mock/target"]);
 			expect(policy.perCallModelGrants?.agentName).toBe("seance");
 		});
+	});
+	it("binds worker-owned rows before and after a run without materializing the branch", async () => {
+		mockDiscovery();
+		const manager = SessionManager.inMemory("/tmp");
+		let todoId: string;
+		Object.assign(manager, { getBranchMatching: () => [manager.getEntry(todoId)!] });
+		const snapshot = (content: string) => ({
+			phases: [{ name: "Plan", tasks: [{ content, status: "pending", schedule: { owner: "Worker" } }] }],
+		});
+		todoId = manager.appendCustomEntry(todoModule.USER_TODO_EDIT_CUSTOM_TYPE, snapshot("Before"));
+		vi.spyOn(manager, "getBranch").mockImplementation(() => {
+			throw new Error("full branch read forbidden");
+		});
+		const bind = vi
+			.spyOn(todoModule, "bindRequirementRowArtifact")
+			.mockResolvedValue({ cwd: "/tmp", head: null, dirty: false });
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async () => {
+			todoId = manager.appendCustomEntry(todoModule.USER_TODO_EDIT_CUSTOM_TYPE, snapshot("After"));
+			return result();
+		});
+		await runStructuredSubagent(
+			request({ identity: { id: "Worker" }, session: { ...session(), sessionManager: manager } }),
+		);
+		expect(bind.mock.calls.map(call => call[1])).toEqual(["Before", "After"]);
 	});
 });

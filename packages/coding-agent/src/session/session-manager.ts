@@ -1,3 +1,4 @@
+import { getAssistantProviderReplayState } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -994,6 +995,7 @@ export class SessionManager {
 	 * in-memory (pre-blob-externalization) entry, so inline images survive.
 	 */
 	onEntryAppended?: (entry: SessionEntry) => void;
+	#entryAppendedListeners = new Set<(entry: SessionEntry) => void>();
 
 	#turnBudgetTotal: number | null = null;
 	#turnBudgetHard = false;
@@ -2057,6 +2059,13 @@ export class SessionManager {
 				logger.warn("collab entry hook failed", { error: String(err) });
 			}
 		}
+		for (const listener of this.#entryAppendedListeners) {
+			try {
+				listener(entry);
+			} catch (err) {
+				logger.warn("SessionManager entry append observer failed", { error: String(err) });
+			}
+		}
 	}
 
 	#resetToNewSession(options?: NewSessionOptions, forcedSessionFile?: string): string | undefined {
@@ -2162,6 +2171,10 @@ export class SessionManager {
 		}
 		if (entry.type === "message" && entry.message.role === "assistant" && normalizeAssistantUsage(entry.message)) {
 			logger.warn("Assistant message recorded with incomplete usage", { id: entry.id });
+		}
+		if (entry.type === "message" && entry.message.role === "assistant") {
+			const replay = getAssistantProviderReplayState(entry.message);
+			if (replay) entry.assistantProviderReplay = replay;
 		}
 		this.#entries.push(entry);
 		this.#index.insert(entry);
@@ -3418,6 +3431,14 @@ export class SessionManager {
 		this.#sessionNameChangedCallbacks.add(cb);
 		return () => {
 			this.#sessionNameChangedCallbacks.delete(cb);
+		};
+	}
+
+	/** Subscribe to each appended session entry without replacing the collab replication tap. */
+	subscribeEntryAppended(listener: (entry: SessionEntry) => void): () => void {
+		this.#entryAppendedListeners.add(listener);
+		return () => {
+			this.#entryAppendedListeners.delete(listener);
 		};
 	}
 

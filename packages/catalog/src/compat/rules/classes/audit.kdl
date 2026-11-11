@@ -1,0 +1,43 @@
+// Relative audit strength: small / ordinary / strong / maximum, not lineage class.
+// Missing strength stays unknown and cannot establish an independent audit.
+class "openai" {
+	// residue: product tiers cross the GPT/Codex taxonomy families.
+	models "*astra*" { audit-strength 4; }
+	models "*sol*" { audit-strength 3; }
+	models "*luna*" "*terra*" { audit-strength 2; }
+}
+class "anthropic" {
+	family "opus" { audit-strength 3; }
+	family "sonnet" { audit-strength 2; }
+	family "haiku" { audit-strength 1; }
+}
+class "xai" {
+	// residue: build is a product tier; 4.7 is the reviewed strong release.
+	models "grok-4.7*" { audit-strength 3; }
+	models "grok-build*" { audit-strength 2; }
+}
+class "meta" {
+	family "muse-wonder" { audit-vendor "muse"; audit-strength 3; }
+	family "muse-spark" { audit-vendor "muse"; audit-strength 2; }
+}
+class "deepseek" {
+	family "pro" { audit-strength 2; }
+	family "flash" { audit-strength 1; }
+}
+class "kimi" { audit-strength 2; }
+class "qwen" { audit-strength 2; }
+class "gemini" {
+	audit-vendor "google"
+	family "pro" { audit-strength 2; }
+	family "flash" { audit-strength 1; }
+	family "lite" { audit-strength 1; }
+}
+class "gemma" { audit-vendor "google"; audit-strength 1; }
+class "mimo" { audit-vendor "xiaomi"; audit-strength 2; }
+class "unknown" {
+	// residue: these independent audit lanes have no catalog lineage class.
+	models "abliterated-model*" { audit-vendor "abliteration"; audit-strength 2; }
+	models "abliterated-model-large*" priority=10 { audit-vendor "abliteration"; audit-strength 3; }
+	models "mercury*" { audit-vendor "inception"; audit-strength 1; }
+	models "nemotron*" { audit-vendor "nvidia"; audit-strength 2; }
+}

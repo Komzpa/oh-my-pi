@@ -473,6 +473,9 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 		shape: "scalar",
 		values: ["off", "semantic"],
 	},
+	// Comparable audit strength is deliberately separate from lineage classification.
+	"audit-vendor": { key: "auditVendor", set: "catalog", shape: "scalar" },
+	"audit-strength": { key: "auditStrength", set: "catalog", shape: "scalar" },
 	"delegation-bias": { key: "delegationBias", set: "catalog", shape: "scalar", values: DELEGATION_BIASES },
 	"discovery-api": { key: "discoveryApi", set: "catalog", shape: "scalar" },
 	"edit-prompt-variant": { key: "editPromptVariant", set: "catalog", shape: "scalar", values: ["full", "compact"] },

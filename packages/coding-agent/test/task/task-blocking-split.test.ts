@@ -110,6 +110,42 @@ describe("task per-item blocking split", () => {
 		AgentRegistry.resetGlobalForTests();
 	});
 
+	it("records the actual worker before a frozen result update fails the launch call", async () => {
+		mockDiscovery();
+		const gate = Promise.withResolvers<void>();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			await gate.promise;
+			return makeResult(options.id!, options.agent.name);
+		});
+		const manager = createManager();
+		const session = createSession({ manager });
+		const launched = vi.fn();
+		session.onTaskWorkerLaunched = launched;
+		const tool = await TaskTool.create(session);
+		try {
+			await expect(
+				tool.execute(
+					"launch-error",
+					{
+						agent: "task",
+						name: "FrozenResultWorker",
+						task: "Return existing evidence.",
+					} as TaskParams,
+					undefined,
+					update => {
+						if (!firstText(update).startsWith("Spawned agent")) return;
+						const frozen = Object.freeze({ value: 0 }) as { value: number };
+						frozen.value = 1;
+					},
+				),
+			).rejects.toThrow();
+			expect(launched).toHaveBeenCalledWith("launch-error", 0, "FrozenResultWorker", "task");
+			expect(manager.getRunningJobs().some(job => job.agentId === "FrozenResultWorker")).toBe(true);
+		} finally {
+			gate.resolve();
+		}
+	});
+
 	it("runs blocking items inline while non-blocking siblings spawn as jobs", async () => {
 		mockDiscovery();
 		const gates = new Map<string, PromiseWithResolvers<void>>();

@@ -452,6 +452,8 @@ export interface ToolSession {
 	modelRegistry?: import("../config/model-registry").ModelRegistry;
 	/** Agent output manager for unique agent:// IDs across task invocations */
 	agentOutputManager?: AgentOutputManager;
+	/** Authenticated task identity, recorded before a later launch/result error can hide it. */
+	onTaskWorkerLaunched?(toolCallId: string, index: number, workerId: string, agent: string): void;
 	/** Manager of this session's root, shared only with that root's subagents. */
 	asyncJobManager?: AsyncJobManagerApi;
 	/** MCP manager visible to subagents without relying on the process-global singleton. */

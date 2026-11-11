@@ -405,6 +405,11 @@ export type AgentSource = "bundled" | "user" | "project";
 
 export type SubagentStatus = "pending" | "running" | "completed" | "failed" | "aborted";
 
+export interface TodoAwaitingUser {
+	action: string;
+	ids?: string[];
+}
+
 export interface TodoItem {
 	content: string;
 	status: TodoStatus;
@@ -412,6 +417,14 @@ export interface TodoItem {
 	blocker?: string;
 	details?: string;
 	notes?: string[];
+	/** Persisted checkout whose clean HEAD is the row's QA artifact. */
+	artifactCwd?: string;
+	/** Owner whose checkout was last verified as artifactCwd. */
+	artifactOwner?: string;
+	/** Explicit deployment identity for this requirement row. */
+	deployment?: string;
+	/** User-owned pending check; it does not constitute verification or close the row. */
+	awaitingUser?: TodoAwaitingUser;
 }
 
 export interface TodoPhase {
@@ -1554,6 +1567,7 @@ export interface NegotiateProtocolResult {
 
 export interface PromptParams {
 	message: string;
+	rawRequirementText?: string;
 	/** Images attached to the message. */
 	images?: ImageContent[];
 	streamingBehavior?: StreamingBehavior;

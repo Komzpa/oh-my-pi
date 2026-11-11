@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
-import type { AgentMessage, SyntheticToolResultDetails } from "@oh-my-pi/pi-agent-core";
+import { AgentBusyError, type AgentMessage, type SyntheticToolResultDetails } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -138,6 +138,60 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 	afterAll(() => {
 		authStorage.close();
 		tempDir.removeSync();
+	});
+
+	it("admits a candidate synchronously once after a busy retry, before its prompt consumer runs", async () => {
+		const host = createHost(model, modelRegistry);
+		const events: string[] = [];
+		const state = { isStreaming: true };
+		host.agent = {
+			state,
+			prompt: async () => {
+				if (state.isStreaming) throw new AgentBusyError();
+				state.isStreaming = true;
+				await Promise.resolve();
+				events.push("consumer");
+				state.isStreaming = false;
+			},
+			waitForIdle: async () => {
+				events.push("idle");
+				state.isStreaming = false;
+			},
+		} as never;
+		await new TurnRecovery(host).promptAgentWithIdleRetry(
+			[],
+			undefined,
+			() => events.push("claimed"),
+			() => events.push("admitted"),
+		);
+		expect(events).toEqual(["idle", "admitted", "consumer", "claimed"]);
+	});
+
+	it("keeps the shared dispatch timeout diagnostic without admitting a busy candidate", async () => {
+		const host = createHost(model, modelRegistry);
+		let admissions = 0;
+		let waits = 0;
+		host.agent = {
+			state: { isStreaming: true },
+			prompt: async () => {
+				throw new AgentBusyError();
+			},
+			waitForIdle: async () => {
+				waits++;
+			},
+		} as never;
+		const clock = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(30_001);
+		try {
+			await expect(
+				new TurnRecovery(host).promptAgentWithIdleRetry([], undefined, undefined, () => {
+					admissions++;
+				}),
+			).rejects.toThrow("Timed out waiting for prior agent run to finish before prompting.");
+			expect(admissions).toBe(0);
+			expect(waits).toBe(0);
+		} finally {
+			clock.mockRestore();
+		}
 	});
 
 	it("rolls back a usage fallback cancelled during model reconciliation", async () => {

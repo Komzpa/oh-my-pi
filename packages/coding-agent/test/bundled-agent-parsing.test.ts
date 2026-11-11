@@ -105,4 +105,14 @@ describe("bundled agent parsing", () => {
 			});
 		}
 	});
+
+	it("opens a requirement image before a qa-auditor verdict", () => {
+		const auditor = getBundledAgent("qa-auditor");
+		expect(auditor?.systemPrompt).toContain(
+			"When the QA AUDIT INPUT requirement carries an image, open that image before any verdict.",
+		);
+		expect(auditor?.systemPrompt).toContain(
+			"A terse word like `fix` alone never justifies `unverifiable` while an image exists.",
+		);
+	});
 });

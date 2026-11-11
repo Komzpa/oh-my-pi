@@ -4,6 +4,7 @@
  * The two public frontends deliberately retain their presentation concerns, but
  * every decision that affects what a child may run lives here.
  */
+import { selectRowAuditModel } from "./audit-model-selection";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
@@ -37,9 +38,11 @@ import isolationRecoveryHintTemplate from "../prompts/tools/isolation-recovery-h
 import salvagedChildHintTemplate from "../prompts/tools/salvaged-child-hint.md" with { type: "text" };
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { AUTO_THINKING, type TaskEffort } from "@oh-my-pi/pi-tui/thinking";
+import type { TaskImage } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "../tools";
 import { isIrcEnabled } from "../irc/messaging";
 import { buildOutputValidator } from "../tools/output-schema-validator";
+import { bindRequirementRowArtifact, getRequirementArtifactTodoPhases } from "../tools/todo";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
 import { type ExecutorOptions, runSubprocess, type SubagentToolResult } from "./executor";
@@ -126,6 +129,7 @@ export interface StructuredSubagentIdentity {
 
 /** One normalized child invocation. */
 export interface StructuredSubagentRequest {
+	requirementIds?: string[];
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
@@ -151,6 +155,8 @@ export interface StructuredSubagentRequest {
 	 * a project or user agent shadowing the name gets it as a {@link perCallModel}.
 	 */
 	seanceModel?: string | string[];
+	/** Images to include in the subagent's initial context. */
+	images?: TaskImage[];
 
 	/** Presence, rather than truthiness, makes this the highest-priority schema. */
 	outputSchema?: unknown;
@@ -294,16 +300,20 @@ function resolveSchema(
 	structured: boolean,
 ): StructuredSubagentSchemaResolution {
 	const mode = request.schemaMode ?? request.session.outputSchemaMode ?? "permissive";
+	const noWrapper = { schema: undefined, source: "none" as const, mode, outputSchemaOverridesAgent: true };
 	if (!structured) {
 		return { schema: undefined, source: "none", mode, outputSchemaOverridesAgent: false };
 	}
 	if (Object.hasOwn(request, "outputSchema")) {
+		if (request.outputSchema === false) return noWrapper;
 		return { schema: request.outputSchema, source: "caller", mode, outputSchemaOverridesAgent: true };
 	}
 	if (agent.output !== undefined) {
+		if (agent.output === false) return noWrapper;
 		return { schema: agent.output, source: "agent", mode, outputSchemaOverridesAgent: false };
 	}
 	if (request.session.outputSchema !== undefined) {
+		if (request.session.outputSchema === false) return noWrapper;
 		return { schema: request.session.outputSchema, source: "session", mode, outputSchemaOverridesAgent: false };
 	}
 	return { schema: undefined, source: "none", mode, outputSchemaOverridesAgent: false };
@@ -818,7 +828,9 @@ function buildExecutorOptions(
 		solutionSpace: request.solutionSpace?.trim() || undefined,
 		structured: policy.structured,
 		...(policy.schema.source === "none"
-			? {}
+			? policy.schema.outputSchemaOverridesAgent
+				? { outputSchema: undefined, outputSchemaOverridesAgent: true }
+				: {}
 			: {
 					outputSchemaSource: policy.schema.source,
 					outputSchema: policy.schema.schema,
@@ -832,6 +844,7 @@ function buildExecutorOptions(
 		enableIrc: policy.enableIrc,
 		maxRuntimeMs: request.maxRuntimeMs,
 		restrictToolNames,
+		...(request.images?.length ? { images: request.images } : {}),
 		keepAlive: request.keepAlive,
 		signal: request.signal,
 		eventBus: session.eventBus,
@@ -1031,7 +1044,10 @@ function describeSalvagedWork(result: SingleResult): string {
  * lease or child dispatch; callers keep responsibility for their result text.
  */
 export async function runStructuredSubagent(request: StructuredSubagentRequest): Promise<StructuredSubagentResult> {
-	const policy = await applySpawnHook(request, await resolveEffectiveSubagentPolicy(request));
+	const policy = await selectRowAuditModel(
+		request,
+		await applySpawnHook(request, await resolveEffectiveSubagentPolicy(request)),
+	);
 	const lease = await leaseArtifacts(request.session, request.invocationKind);
 	let changesApplied: boolean | null = null;
 	let mergeSummary = "";
@@ -1085,7 +1101,35 @@ export async function runStructuredSubagent(request: StructuredSubagentRequest):
 		let result: SingleResult;
 		try {
 			if (!isolationContext) {
+				// Bind before the run and again after it: a row can be scheduled to this
+				// child mid-run, and the child's registry entry is gone once it finishes.
+				const bindOwnedRows = async (): Promise<void> => {
+					const manager = request.session.sessionManager;
+					if (!manager) return;
+					const phases = getRequirementArtifactTodoPhases(manager);
+					for (const phase of phases) {
+						for (const task of phase.tasks) {
+							if (!("schedule" in task)) continue;
+							const schedule = task.schedule;
+							if (!schedule || typeof schedule !== "object" || !("owner" in schedule) || schedule.owner !== id)
+								continue;
+							await bindRequirementRowArtifact(
+								{
+									cwd: baseOptions.cwd,
+									sessionManager: manager,
+									executionCheckout: { owner: id, cwd: baseOptions.cwd },
+								},
+								task.content,
+								phases,
+								{ appendEntry: (type, data) => manager.appendCustomEntry(type, data) },
+							);
+						}
+					}
+				};
+				await bindOwnedRows();
 				result = await runSubprocess(baseOptions);
+				result.checkoutCwd = baseOptions.cwd;
+				await bindOwnedRows();
 				onSubprocessResult?.(result);
 			} else {
 				result = await runIsolatedSubprocess({
