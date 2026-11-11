@@ -22,7 +22,15 @@ remove();
 `,
 			);
 			const child = Bun.spawn([process.execPath, entry], {
-				env: { ...process.env, HOME: dir, XDG_STATE_HOME: dir, XDG_DATA_HOME: dir, XDG_CACHE_HOME: dir },
+				env: {
+					...process.env,
+					HOME: dir,
+					XDG_STATE_HOME: dir,
+					XDG_DATA_HOME: dir,
+					XDG_CACHE_HOME: dir,
+					// CI marks test children explicitly, so their logs use os.tmpdir() instead of HOME/XDG.
+					TMPDIR: dir,
+				},
 				stdout: "ignore",
 				stderr: "pipe",
 			});
