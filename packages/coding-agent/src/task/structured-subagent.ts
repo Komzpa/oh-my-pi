@@ -912,7 +912,9 @@ function buildExecutorOptions(
 ): ExecutorOptions {
 	const { session } = request;
 	const preparedSession = policy.preparedSession;
-	const { skills, autoloadSkills } = resolveAutoloadSkills(session, policy.agent);
+	const { autoloadSkills } = resolveAutoloadSkills(session, policy.agent);
+	const discoveryCwd = request.verifiedWorkspace?.cwd ?? session.cwd;
+	const sameWorkspace = discoveryCwd === session.cwd;
 	const localProtocolOptions = sessionLocalProtocolOptions(session);
 	const restrictToolNames =
 		preparedSession !== undefined ||
@@ -1006,20 +1008,15 @@ function buildExecutorOptions(
 		modelRegistry: session.modelRegistry,
 		settings: session.settings,
 		asyncJobManager: session.asyncJobManager,
-		...getSubagentDiscoveryOptions(session, restrictToolNames),
+		...getSubagentDiscoveryOptions(session, restrictToolNames, discoveryCwd),
 		mcpManager: enableMCP ? (session.mcpManager ?? MCPManager.instance()) : undefined,
 		mcpToolScope: session.mcpToolScope,
 		enableMCP,
 		customTools: customTools.length ? customTools : undefined,
 		workPoolYieldItems: request.workPoolYieldItems,
-		contextFiles: session.contextFiles,
 		noContextFiles: session.noContextFiles,
-		skills,
 		// Autoload runs after session start, outside the seance isolation options.
-		autoloadSkills: preparedSession ? undefined : autoloadSkills,
-		workspaceTree: session.workspaceTree,
-		promptTemplates: session.promptTemplates,
-		rules: session.rules,
+		autoloadSkills: preparedSession || !sameWorkspace ? undefined : autoloadSkills,
 		// Root policy and module paths have separate jobs: the live policy drives
 		// recursive sub-discovery; preloaded paths only avoid re-scanning/reusing
 		// parent-bound extension instances while constructing the child.
@@ -1027,9 +1024,6 @@ function buildExecutorOptions(
 		// capture outlives its parking, so a bound copy would keep this parent's
 		// whole session graph alive for as long as the child can be revived.
 		extensionRoots: session.effectiveExtensionRoots,
-		preloadedExtensionPaths: restrictToolNames ? [] : session.extensionPaths,
-		preloadedPreparedExtensions: session.preparedExtensions,
-		preloadedCustomToolPaths: restrictToolNames ? [] : session.customToolPaths,
 		localProtocolOptions,
 		parentArtifactManager: preparedSession ? undefined : (session.getArtifactManager?.() ?? undefined),
 		onRelease:

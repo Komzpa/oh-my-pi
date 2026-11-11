@@ -141,3 +141,86 @@ it("admits legacy isolation using the child checkout and keeps its prompt and re
 	expect(result.details?.results[0]?.verifiedWorkspace).toEqual(admissions[0]);
 	expect(result.details?.results[0]?.checkoutCwd).toBe(child);
 });
+
+it.each([false, true])(
+	"cleans a prepared checkout when agent policy rejects before admission (cleanup fails: %s)",
+	async cleanupFails => {
+		const cwd = path.join(root, "prepared");
+		const cleanup = vi.fn(async () => {
+			if (cleanupFails) throw new Error("cleanup unavailable");
+			await fs.rm(cwd, { recursive: true, force: true });
+		});
+		vi.spyOn(discovery, "discoverAgents").mockResolvedValue({
+			agents: [{ name: "task", description: "task", systemPrompt: "", source: "bundled" }],
+			projectAgentsDir: null,
+		});
+		vi.spyOn(structured, "openIsolatedWorkspace").mockReturnValue(async () => {
+			await vcs.clone(repo, cwd);
+			return { dir: cwd, cleanup, retain: async () => ({ dir: cwd, sidecarOk: true }) };
+		});
+		const tool = await TaskTool.create({
+			cwd: repo,
+			hasUI: false,
+			settings: Settings.isolated({ "task.batch": false, "async.enabled": false, "task.isolation.enabled": true }),
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+		} as ToolSession);
+		const result = await tool.executeBlocking("rejected", {
+			name: "Rejected",
+			agent: "missing",
+			task: "work",
+			isolated: true,
+		});
+		expect(JSON.stringify(result.content)).toContain("Unknown agent");
+		expect(cleanup).toHaveBeenCalledTimes(1);
+		expect(await Bun.file(path.join(cwd, ".git/HEAD")).exists()).toBe(cleanupFails);
+		if (cleanupFails) expect(JSON.stringify(result.content)).toContain("cleanup unavailable");
+	},
+);
+
+it.each([false, true])("scopes executor discovery to the actual workspace (foreign: %s)", async foreign => {
+	const cwd = foreign ? path.join(root, "foreign") : repo;
+	if (foreign) await vcs.clone(repo, cwd);
+	vi.spyOn(discovery, "discoverAgents").mockResolvedValue({
+		agents: [{ name: "task", description: "task", systemPrompt: "", source: "bundled" }],
+		projectAgentsDir: null,
+	});
+	const run = vi.spyOn(executor, "runSubprocess").mockImplementation(async options => ({
+		index: 0,
+		id: options.id,
+		agent: "task",
+		agentSource: "bundled",
+		task: options.task,
+		exitCode: 0,
+		output: "done",
+		stderr: "",
+		truncated: false,
+		durationMs: 1,
+		tokens: 0,
+		requests: 0,
+	}));
+	const tree = { rootPath: repo, rendered: "PARENT TREE", agentsMdFiles: [], truncated: false, totalLines: 1 };
+	const parent = {
+		cwd: repo,
+		hasUI: false,
+		settings: Settings.isolated(),
+		getSessionFile: () => null,
+		getSessionSpawns: () => "*",
+		workspaceTree: tree,
+		rules: [],
+		skills: [],
+		contextFiles: [],
+		extensionPaths: ["/parent-extension.ts"],
+	} as unknown as ToolSession;
+	await structured.runStructuredSubagent({
+		session: parent,
+		invocationKind: "task",
+		assignment: "work",
+		workspace: { repo: cwd, path: cwd, base: (await vcs.requireGit(cwd).headSha())! },
+	});
+	const options = run.mock.calls[0]![0];
+	expect(options.cwd).toBe(cwd);
+	expect(options.workspaceTree).toEqual(foreign ? undefined : tree);
+	expect(options.preloadedExtensionPaths).toEqual(foreign ? undefined : ["/parent-extension.ts"]);
+	expect(options.rules).toEqual(foreign ? undefined : []);
+});

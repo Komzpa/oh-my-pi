@@ -2074,32 +2074,45 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			});
 			this.#preparedWorkspaces.set(key, workspace);
 		}
-		await validateTaskWorkspace(workspace);
-		if (params.row !== undefined) {
-			const error = validateTodoExecutorRow(
-				this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.() ?? [],
-				params.row,
-			);
-			if (error) throw new Error(error);
+		try {
+			await validateTaskWorkspace(workspace);
+			if (params.row !== undefined) {
+				const error = validateTodoExecutorRow(
+					this.session.getTodoSnapshot?.() ?? this.session.getTodoPhases?.() ?? [],
+					params.row,
+				);
+				if (error) throw new Error(error);
+			}
+			return await resolveEffectiveSubagentPolicy({
+				session: this.session,
+				invocationKind: "task",
+				assignment: (params.task ?? "").trim(),
+				row: params.row,
+				readOnly: params.readOnly,
+				context: this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined,
+				agent: params.agent,
+				sourceSession: params.sourceSession,
+				...spawnModelFields(params),
+				...this.#resultParams(params),
+				...this.#effortParams(params),
+				...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
+				blockedAgent: this.#blockedAgent,
+				enableLsp: (this.session.enableLsp ?? true) && cfgTaskEnableLsp.get(this.session.settings),
+				enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
+				maxRuntimeMs: cfgTaskMaxRuntimeMs.get(this.session.settings),
+			});
+		} catch (error) {
+			this.#preparedWorkspaces.delete(key);
+			try {
+				await discardPreparedTaskWorkspace(workspace);
+			} catch (cleanupError) {
+				throw new AggregateError(
+					[error, cleanupError],
+					`Workspace preflight failed: ${String(error)}; cleanup failed: ${String(cleanupError)}`,
+				);
+			}
+			throw error;
 		}
-		return resolveEffectiveSubagentPolicy({
-			session: this.session,
-			invocationKind: "task",
-			assignment: (params.task ?? "").trim(),
-			row: params.row,
-			readOnly: params.readOnly,
-			context: this.#isBatchEnabled() ? params.context?.trim() || undefined : undefined,
-			agent: params.agent,
-			sourceSession: params.sourceSession,
-			...spawnModelFields(params),
-			...this.#resultParams(params),
-			...this.#effortParams(params),
-			...("isolated" in params ? { isolation: { requested: params.isolated } } : {}),
-			blockedAgent: this.#blockedAgent,
-			enableLsp: (this.session.enableLsp ?? true) && cfgTaskEnableLsp.get(this.session.settings),
-			enableIrc: isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0),
-			maxRuntimeMs: cfgTaskMaxRuntimeMs.get(this.session.settings),
-		});
 	}
 
 	async #admitSpawn(params: SpawnParams, id: string, signal?: AbortSignal): Promise<string | undefined> {
