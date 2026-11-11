@@ -101,7 +101,9 @@ interface Evidence {
 }
 
 /** Reuse the same assembly used by the executor, only for a saved terminal tool result. */
-function savedYield(entries: readonly unknown[]): { data: JsonValue; status: "success" | "aborted" | "invalid" } | undefined {
+function savedYield(
+	entries: readonly unknown[],
+): { data: JsonValue; status: "success" | "aborted" | "invalid" } | undefined {
 	let schema: unknown;
 	let lastText: string | undefined;
 	const calls = new Set<string>();
@@ -233,7 +235,7 @@ export function importLegacyAttemptJournal(snapshot: LegacyAttemptJournalSnapsho
 				if (outcome === "failed") value.state = "failed";
 				else if (outcome === "completed") value.state = "unknown";
 				else if (outcome === "aborted") value.state = "aborted";
-				if (AUDIT_AGENT_PROFILES[text(obs.agentProfile) ?? ""]) value.purpose = "audit";
+				if (Object.hasOwn(AUDIT_AGENT_PROFILES, text(obs.agentProfile) ?? "")) value.purpose = "audit";
 			}
 		}
 	}

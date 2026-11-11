@@ -238,10 +238,11 @@ function reduceTask(p: AttemptJournalProjection, e: AttemptJournalEvent & Attemp
 				canonical(e.source.entryIds) !== canonical(previous.source.entryIds)
 			)
 				fail("adoption must select retained source evidence");
-			if (e.result) {
-				const candidates = previous.source.conflicts;
+			const candidates = Array.isArray(previous.source.conflicts) ? previous.source.conflicts : [];
+			if (candidates.length > 0) {
 				if (
-					!Array.isArray(candidates) ||
+					!e.result ||
+					e.state !== (e.result.executionOutcome === "success" ? "succeeded" : "failed") ||
 					!candidates.some(
 						candidate =>
 							object(candidate) &&
@@ -250,7 +251,9 @@ function reduceTask(p: AttemptJournalProjection, e: AttemptJournalEvent & Attemp
 							candidate.mediaType === e.result?.mediaType,
 					)
 				)
-					fail("adopted result is not retained conflict evidence");
+					fail("conflict adoption requires selected result matching retained evidence and outcome");
+			} else if (e.result) {
+				fail("adopted result is not retained conflict evidence");
 			}
 		} else if (e.generation !== previous.generation) fail("generation must be advanced explicitly");
 		if (
@@ -336,11 +339,18 @@ function reduceTask(p: AttemptJournalProjection, e: AttemptJournalEvent & Attemp
 			)
 				fail("row already has an exclusive stage owner");
 		}
-		row.revision++;
-		row.owner = e.owner;
-		row.stageTaskId = e.owner ? e.taskId : undefined;
-		if (attempt.purpose === "work") row.currentWork = { taskId: e.taskId, attempt: e.attempt };
-		p.rows[attempt.rowId] = row;
+		const assignsRow =
+			creation ||
+			row.stageTaskId === e.taskId ||
+			row.currentWork?.taskId === e.taskId ||
+			(!row.owner && !row.stageTaskId && !row.currentWork);
+		if (assignsRow) {
+			row.revision++;
+			row.owner = e.owner;
+			row.stageTaskId = e.owner ? e.taskId : undefined;
+			if (attempt.purpose === "work") row.currentWork = { taskId: e.taskId, attempt: e.attempt };
+			p.rows[attempt.rowId] = row;
+		}
 	}
 }
 export function reduceAttemptJournalEvent(

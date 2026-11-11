@@ -8,7 +8,7 @@ import {
 	getAttemptJournalAssignment,
 	replayAttemptJournalEvents,
 } from "../../src/task/attempt-journal";
-import type { AttemptJournalAttempt } from "../../src/task/attempt-journal-types";
+import type { AttemptJournalAttempt, JsonValue } from "../../src/task/attempt-journal-types";
 import { importLegacyAttemptJournal } from "../../src/task/attempt-journal-import";
 
 type Command = Parameters<AttemptJournal["append"]>[0];
@@ -1266,6 +1266,254 @@ describe("attempt journal", () => {
 				owner: null,
 				source: { entryIds: ["malformed-handoff"] },
 			});
+		});
+	});
+	it("conflicting artifacts require selecting a matching terminal result during adoption", async () => {
+		const artifact = (id: string, data: string, executionOutcome: "success" | "failure") => ({
+			id,
+			workerId: "conflict-worker",
+			data,
+			artifactUri: `data:text/plain,${data}`,
+			sha256: new Bun.SHA256().update(data).digest("hex"),
+			mediaType: "text/plain",
+			executionOutcome,
+		});
+		const artifacts = [artifact("one", "first", "success"), artifact("two", "second", "failure")];
+		await withJournal(async journal => {
+			for (const command of importLegacyAttemptJournal({ leadSessionId: "lead", artifacts }))
+				await journal.append(command);
+			const imported = journal.snapshot().tasks["conflict-worker"].attempts["0"];
+			expect(imported.state).toBe("legacy-unresolved");
+			if (!imported.source) throw new Error("Missing conflict evidence");
+			const adopt = (state: string, extra: Record<string, unknown> = {}) =>
+				taskCommand("LegacyAdopted", {
+					commandId: `adopt-${state}-${Object.keys(extra).join("-")}`,
+					taskId: "conflict-worker",
+					rowId: undefined,
+					attempt: 0,
+					state,
+					generation: 1,
+					owner: { ...owner, leaseEpoch: 1 },
+					source: imported.source,
+					expectedRevision: 1,
+					expectedAttempt: 0,
+					expectedGeneration: 0,
+					expectedLeaseEpoch: 0,
+					...extra,
+				});
+			const before = journal.snapshot();
+			for (const state of ["queued", "running", "aborted", "cancelled"]) {
+				await expect(journal.append(adopt(state))).rejects.toThrow();
+				expect(journal.snapshot()).toEqual(before);
+			}
+			await expect(journal.append(adopt("queued", { checkpoint: "child.jsonl" }))).rejects.toThrow();
+			expect(journal.snapshot()).toEqual(before);
+			const selected = {
+				artifactUri: artifacts[0].artifactUri,
+				sha256: artifacts[0].sha256,
+				mediaType: "text/plain",
+				executionOutcome: "success",
+			};
+			await expect(
+				journal.append(adopt("failed", { result: selected, artifact: { data: "first", mediaType: "text/plain" } })),
+			).rejects.toThrow();
+			expect(journal.snapshot()).toEqual(before);
+			const foreign = {
+				...selected,
+				sha256: new Bun.SHA256().update("foreign").digest("hex"),
+				artifactUri: "data:text/plain,foreign",
+			};
+			await expect(
+				journal.append(
+					adopt("succeeded", { result: foreign, artifact: { data: "foreign", mediaType: "text/plain" } }),
+				),
+			).rejects.toThrow();
+			expect(journal.snapshot()).toEqual(before);
+			await journal.append(
+				adopt("succeeded", { result: selected, artifact: { data: "first", mediaType: "text/plain" } }),
+			);
+			expect(journal.snapshot().tasks["conflict-worker"].attempts["0"]).toMatchObject({
+				state: "succeeded",
+				result: selected,
+			});
+		});
+	});
+
+	it("old custody changes cannot replace newer released work", async () => {
+		for (const replacement of [null, { ...owner, workerId: "old-replacement", leaseEpoch: 2 }]) {
+			await withJournal(async journal => {
+				await journal.append(taskCommand("AttemptQueued"));
+				await journal.append(taskCommand("AttemptAborted", { state: "aborted", ...cas(journal) }));
+				await journal.append(
+					taskCommand("AttemptQueued", {
+						commandId: "new-work",
+						taskId: "new-task",
+						owner: { ...owner, workerId: "new-worker" },
+						expectedRowRevision: journal.snapshot().rows["row-1"].revision,
+					}),
+				);
+				const newTask = journal.snapshot().tasks["new-task"];
+				await journal.append(
+					taskCommand("OwnerTransferred", {
+						commandId: "new-release",
+						taskId: "new-task",
+						owner: null,
+						expectedRevision: newTask.revision,
+						expectedAttempt: 1,
+						expectedGeneration: 1,
+						expectedLeaseEpoch: 1,
+						expectedRowRevision: journal.snapshot().rows["row-1"].revision,
+					}),
+				);
+				const row = journal.snapshot().rows["row-1"];
+				await journal.append(
+					taskCommand("OwnerTransferred", {
+						commandId: "old-transfer",
+						state: "aborted",
+						owner: replacement,
+						...cas(journal),
+					}),
+				);
+				expect(journal.snapshot().rows["row-1"]).toEqual(row);
+				expect(getAttemptJournalAssignment(journal.snapshot(), "row-1")).toMatchObject({
+					taskId: "new-task",
+					state: "queued",
+					owner: null,
+				});
+				expect(journal.snapshot().tasks["task-1"].attempts["1"].owner).toEqual(replacement);
+			});
+		}
+	});
+
+	it("batched children retain distinct identities and import idempotently", async () => {
+		const snapshot = {
+			leadSessionId: "lead",
+			children: [
+				{ id: "child-a", toolCallId: "batch-call", entries: [] },
+				{ id: "child-b", toolCallId: "batch-call", entries: [] },
+			],
+		};
+		await withJournal(async journal => {
+			const commands = importLegacyAttemptJournal(snapshot);
+			const sequences = [];
+			for (const command of commands) sequences.push((await journal.append(command)).seq);
+			const before = journal.snapshot();
+			expect(
+				Object.values(before.tasks)
+					.map(task => task.attempts["0"].source?.entryIds)
+					.sort(),
+			).toEqual([["child-a"], ["child-b"]]);
+			expect(commands.at(-1)?.kind).toBe("ImportCompleted");
+			expect(before.imports).toHaveLength(1);
+			for (const [index, command] of importLegacyAttemptJournal(snapshot).entries())
+				expect((await journal.append(command)).seq).toBe(sequences[index]);
+			expect(journal.snapshot()).toEqual(before);
+		});
+	});
+
+	it("only known audit profiles preserve the completed producer assignment", async () => {
+		for (const agentProfile of ["qa-auditor", "reviewer", "constructor"]) {
+			const audit = agentProfile !== "constructor";
+			const data = "producer result";
+			const snapshot = {
+				leadSessionId: "lead",
+				todoPhases: [
+					{
+						name: "phase",
+						tasks: [
+							{
+								id: "row-1",
+								schedule: {
+									attemptHistory: [
+										{
+											attemptId: "producer:1",
+											workerName: "producer",
+											startedAt: 1,
+											terminalStatus: "completed",
+										},
+									],
+									executor: { workerId: "audit-worker", agentProfile, startedAt: 2 },
+								},
+							},
+						],
+					},
+				],
+				artifacts: [
+					{
+						id: "result",
+						workerId: "producer",
+						data,
+						artifactUri: `data:text/plain,${data}`,
+						sha256: new Bun.SHA256().update(data).digest("hex"),
+						mediaType: "text/plain",
+						executionOutcome: "success" as const,
+					},
+				],
+			};
+			await withJournal(async journal => {
+				for (const command of importLegacyAttemptJournal(snapshot)) await journal.append(command);
+				const assignment = getAttemptJournalAssignment(journal.snapshot(), "row-1");
+				if (audit) {
+					expect(assignment).toMatchObject({
+						taskId: "producer:1",
+						state: "succeeded",
+						result: { sha256: snapshot.artifacts[0].sha256 },
+					});
+				} else {
+					expect(assignment).toMatchObject({ taskId: "audit-worker:2", state: "unknown", purpose: "work" });
+					expect(assignment?.result).toBeUndefined();
+				}
+				expect(journal.snapshot().tasks["audit-worker:2"].attempts["0"]).toMatchObject({
+					rowId: "row-1",
+					purpose: audit ? "audit" : "work",
+				});
+			});
+		}
+	});
+
+	it("incomplete strict saved yield retains evidence without inventing success", async () => {
+		const entries: JsonValue[] = [
+			{
+				type: "session_init",
+				id: "init",
+				outputSchema: {
+					type: "object",
+					properties: { a: { type: "string" }, b: { type: "string" } },
+					required: ["a", "b"],
+					additionalProperties: false,
+				},
+			},
+			{
+				type: "message",
+				id: "call",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "toolCall", id: "yield-call", name: "yield", arguments: { type: ["a"], data: "value" } },
+					],
+				},
+			},
+			{
+				type: "message",
+				id: "result",
+				message: {
+					role: "toolResult",
+					toolCallId: "yield-call",
+					isError: false,
+					details: { status: "success", type: ["a"], data: "value", complete: true },
+				},
+			},
+		];
+		await withJournal(async journal => {
+			for (const command of importLegacyAttemptJournal({
+				leadSessionId: "lead",
+				children: [{ id: "saved-child", entries }],
+			}))
+				await journal.append(command);
+			const attempt = journal.snapshot().tasks["saved-child"].attempts["0"];
+			expect(attempt.state).toBe("unknown");
+			expect(attempt.result).toBeUndefined();
+			expect(attempt.source?.evidence).toEqual([{ id: "saved-child", entries }]);
 		});
 	});
 });
