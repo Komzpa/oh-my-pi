@@ -6538,7 +6538,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (event.toolName === "read") {
         const details = event.details as ReadToolDetails | undefined;
         // Truncated roots stay unread; request a concise complete receipt from the same owner, then read its root.
-        const truncated = details?.truncation !== undefined || details?.meta?.truncation !== undefined;
+        const truncated = details?.truncation !== undefined || details?.meta?.truncation !== undefined ||
+          (details?.summary?.elidedLines ?? 0) > 0 || (details?.summary?.elidedSpans ?? 0) > 0;
         const job = !truncated && ctx.getAsyncJobSnapshot()?.recent.find(job => job.type === "task" && job.status === "completed" &&
           [job.id, job.agentId].some(owner => owner && (event.input?.path === `agent://${owner}` || event.input?.path === `agent://${owner}:raw`)));
         if (job) {
