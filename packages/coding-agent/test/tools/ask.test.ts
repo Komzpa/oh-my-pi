@@ -125,7 +125,7 @@ describe("AskTool form dialog", () => {
 		const notes = [
 			{ name: "store", question: "Session store", option: "Redis", value: "redis", text: "  shared\ncache " },
 		];
-		const result = await new AskTool(createSession()).execute(
+		const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-notes",
 			{ html: DB_FORM },
 			undefined,

@@ -13,11 +13,11 @@ afterEach(() => {
 	for (const worker of workers.splice(0)) worker.terminate();
 });
 
-function bounded<T>(promise: Promise<T>): Promise<T> {
+function bounded<T>(promise: Promise<T>, timeoutMs = 2000, stage = "provider operation"): Promise<T> {
 	return Promise.race([
 		promise,
-		Bun.sleep(2000).then(() => {
-			throw new Error("Provider probe timed out");
+		Bun.sleep(timeoutMs).then(() => {
+			throw new Error(`Provider probe timed out during ${stage}`);
 		}),
 	]);
 }
@@ -31,8 +31,10 @@ async function host(): Promise<{ worker: SubagentWorker; probe: ProviderProbe }>
 	});
 	workers.push(worker);
 	endRuns.push(worker.beginRun());
-	await bounded(worker.ready);
-	return { worker, probe: await bounded(promise) };
+	// Loading the production service graph competes with other CI test processes.
+	// Keep the limiter-operation deadline separate from worker initialization.
+	await bounded(worker.ready, 30_000, "worker initialization");
+	return { worker, probe: await bounded(promise, 30_000, "probe registration") };
 }
 
 function settings(limit: number): Settings {
