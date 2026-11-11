@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Refused browser CDP websocket connections retain the resolved websocket URL and the underlying handshake error (including HTTP 404), including on Bun 1.4.4.
+
 ## [18.18.8] - 2026-11-11
 
 ### Changed
