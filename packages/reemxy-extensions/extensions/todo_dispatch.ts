@@ -1765,6 +1765,7 @@ export function acceptedSpeculativeMergeDemand(phases: DispatchTodoPhases): stri
     .filter((row) => (row.schedule as { review?: unknown } | undefined)?.review === "accepted")
     .flatMap((review) => {
       const completed = speculativeRows(phases, String(review.content)).filter((row) => row.status === "completed");
+      if (review.status === "completed" && review.schedule?.speculativeOn && todoRowHasDeliverable(review)) completed.unshift(review);
       return completed.length ? [`user accepted ${JSON.stringify(String(review.content))}; NEXT ACTION: fast merge/publish ${completed.map((row) => JSON.stringify(String(row.content))).join(", ")}`] : [];
     });
   return demands.length ? demands.join("; ") : undefined;

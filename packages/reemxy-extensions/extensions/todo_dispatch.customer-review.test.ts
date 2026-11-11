@@ -223,6 +223,23 @@ test("explicit customer acceptance makes completed speculative results ready for
   expect(acceptedSpeculativeMergeDemand(harness.phases())).toContain('NEXT ACTION: fast merge/publish "Verify UI"');
 });
 
+test("verified child checkpoint remains publishable while sibling acceptance is blocked", () => {
+  const phases = [{ name: "Delivery", tasks: [
+    { content: "Parent delivery", status: "blocked", blocker: "acceptance remains open", schedule: { review: "user", dependencies: [] } },
+    { content: "Verified child slice", status: "completed", schedule: {
+      review: "accepted",
+      speculativeOn: "Parent delivery",
+      dependencies: [],
+      attemptHistory: [{ terminalStatus: "completed", gitCommits: ["abcdef123456"] }],
+    } },
+    { content: "Sibling acceptance", status: "blocked", blocker: "awaiting separate acceptance", schedule: { review: "user", dependencies: [] } },
+  ] }];
+
+  expect(acceptedSpeculativeMergeDemand(phases)).toBe('user accepted "Verified child slice"; NEXT ACTION: fast merge/publish "Verified child slice"');
+  expect(phases[0].tasks[0].status).toBe("blocked");
+  expect(phases[0].tasks[2].status).toBe("blocked");
+});
+
 test("structured redo and drop preserve dependent work and attempt history", async () => {
   for (const verdict of ["redo", "drop"]) {
     const phases = reviewPlan();
