@@ -165,7 +165,13 @@ export class WorkPool {
 			this.items.push(item);
 			queued.push(item);
 		}
-		this.#ensurePoolJob();
+		try {
+			this.#ensurePoolJob();
+		} catch (error) {
+			for (const item of queued) item.status = "failed";
+			this.closed = true;
+			throw error;
+		}
 		for (const item of queued) this.#queueDispatch(item);
 		return queued.map(item => item.id);
 	}
@@ -175,11 +181,14 @@ export class WorkPool {
 		const manager = this.session.asyncJobManager;
 		if (!manager) throw new ToolError("workpool() needs the session's async job manager; unavailable here");
 		if (manager.getJob(this.name)) throw new ToolError(`workpool job id "${this.name}" already exists`);
-		this.#poolJobStarted = true;
 		const id = manager.register(
 			"task",
 			this.name,
 			async ({ signal }) => {
+				const unsubscribe = manager.onJobSettled(() => {
+					if (this.closed) return;
+					for (const agent of this.agents) if (agent.state === "idle" && agent.queue.length) this.#drain(agent);
+				});
 				const onAbort = (): void => {
 					this.close();
 					for (const batch of this.batches) manager.cancel(batch.jobId, { ownerId: this.ownerId });
@@ -202,11 +211,13 @@ export class WorkPool {
 					this.#card(signal.aborted ? "cancelled" : "completed", this.ownerId, summary);
 					return this.#renderAggregateResult();
 				} finally {
+					unsubscribe();
 					signal.removeEventListener("abort", onAbort);
 				}
 			},
 			{ id: this.name, ownerId: this.ownerId, queued: true },
 		);
+		this.#poolJobStarted = true;
 		if (id !== this.name) {
 			manager.cancel(id, { ownerId: this.ownerId });
 			throw new ToolError(`workpool job id "${this.name}" is unavailable`);
@@ -311,7 +322,8 @@ export class WorkPool {
 		for (let offset = 0; offset < this.agents.length; offset++) {
 			const index = (this.rrCursor + offset) % this.agents.length;
 			const agent = this.agents[index];
-			if (agent?.state === "running") {
+			// A retiring worker still occupies its pool slot until its job settles.
+			if (agent && (agent.state === "running" || agent.jobId !== undefined)) {
 				this.rrCursor = (index + 1) % this.agents.length;
 				return agent;
 			}
@@ -323,6 +335,10 @@ export class WorkPool {
 		if (agent.queue.length === 0) {
 			agent.state = "idle";
 			this.#notifyDrained();
+			return;
+		}
+		if (this.session.asyncJobManager?.atCapacity) {
+			agent.state = "idle";
 			return;
 		}
 		const items = agent.queue.splice(0);
@@ -345,7 +361,13 @@ export class WorkPool {
 		this.batches.push(batch);
 		const message = this.#batchMessage(batch);
 		if (agent.turns > 0) this.#card("batch", agent.id, message);
-		this.#startTurn(agent, batch, message);
+		try {
+			this.#startTurn(agent, batch, message);
+		} catch (error) {
+			const output = error instanceof Error ? error.message : String(error);
+			// Registration never started a worker, but this batch still needs a terminal result.
+			void this.#finishTurn(agent, batch, { exitCode: 1, output, error: output }).then(() => this.#advance(agent));
+		}
 	}
 
 	#batchMessage(batch: WorkPoolBatch): string {
@@ -432,6 +454,8 @@ export class WorkPool {
 		batch.jobId = jobId;
 		agent.jobId = jobId;
 		manager.watchJobs([jobId]);
+		// The callback result does not free the manager slot until its job promise settles.
+		void manager.getJob(jobId)!.promise.then(() => this.#advance(agent));
 	}
 
 	async #settleTurn(agent: WorkPoolAgent, batch: WorkPoolBatch, result: TurnOutcome): Promise<string> {
@@ -454,7 +478,6 @@ export class WorkPool {
 		for (const item of batch.items)
 			item.status = batch.status === "completed" && failedItems.has(item.id) ? "failed" : batch.status;
 		agent.turns++;
-		agent.jobId = undefined;
 		const ref = AgentRegistry.global().get(agent.id);
 		// Retained idle workers can wake through IRC, so clear the runtime schema and cached inline declaration together.
 		// A refresh failure must not strand the pool in #waitForDrain(): items are
@@ -492,19 +515,15 @@ export class WorkPool {
 				}
 			}
 		}
-		if (this.freshAgents) {
+		if (this.freshAgents || !yieldCleared || !ref || (ref.status !== "idle" && ref.status !== "parked"))
 			agent.state = "dead";
-			const index = this.agents.indexOf(agent);
-			if (index !== -1) this.agents.splice(index, 1);
-			const next = this.#freshQueue.shift();
-			if (next) this.#queueDispatch(next);
-			this.#notifyDrained();
-			return;
-		}
-		if (yieldCleared && ref && (ref.status === "idle" || ref.status === "parked")) {
+	}
+
+	#advance(agent: WorkPoolAgent): void {
+		agent.jobId = undefined;
+		if (agent.state !== "dead") {
 			this.#drain(agent);
 		} else {
-			agent.state = "dead";
 			const stranded = agent.queue.splice(0);
 			const index = this.agents.indexOf(agent);
 			if (index !== -1) this.agents.splice(index, 1);
@@ -512,6 +531,10 @@ export class WorkPool {
 				item.agentId = undefined;
 				item.batchId = undefined;
 				this.#queueDispatch(item);
+			}
+			if (this.freshAgents) {
+				const next = this.#freshQueue.shift();
+				if (next) this.#queueDispatch(next);
 			}
 		}
 		this.#notifyDrained();

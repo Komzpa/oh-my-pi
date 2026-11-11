@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
+import { launchStep, runLaunchTrace, takeLaunchPhaseCandidates } from "@oh-my-pi/pi-utils/launch-trace";
 import { LoopWatchdog } from "@oh-my-pi/pi-tui/loop-watchdog";
 import {
 	currentLoopPhase,
@@ -44,6 +45,7 @@ function harness(options: Partial<{ intervalMs: number; thresholdMs: number; sle
 }
 
 function drain(): void {
+	takeLaunchPhaseCandidates(Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY);
 	resetLoopPhaseWindow();
 	while (currentLoopPhase() !== undefined) popLoopPhase();
 }
@@ -484,4 +486,39 @@ describe("LoopWatchdog long-block classification", () => {
 		h.fireTick();
 		expect(h.wd.isStalled()).toBe(false);
 	});
+});
+
+test("a post-await launch block reports its pending extension and distinguishes wall overlap from CPU attribution", async () => {
+	const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+	vi.spyOn(logger, "debug").mockImplementation(() => {});
+	let now = 0;
+	vi.spyOn(performance, "now").mockImplementation(() => now);
+	const { wd, setNow, fireTick } = harness();
+	wd.start();
+	try {
+		await runLaunchTrace({ id: "watchdog" }, () =>
+			launchStep("extension.init:delayed", async () => {
+				await Promise.resolve();
+				now = 600;
+				setNow(600);
+				fireTick();
+			}),
+		);
+		expect(warnSpy.mock.calls[0]).toEqual([
+			"ui.loop-blocked",
+			{
+				blockedMs: 350,
+				cpuMs: expect.any(Number),
+				phase: "launch-overlap:extension.init:delayed",
+				phaseMs: 0,
+			},
+		]);
+		setNow(850);
+		fireTick();
+		setNow(1450);
+		fireTick();
+		expect(warnSpy.mock.calls.at(-1)?.[1]).toMatchObject({ phase: "unknown" });
+	} finally {
+		wd.stop();
+	}
 });

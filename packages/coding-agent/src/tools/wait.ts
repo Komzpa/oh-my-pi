@@ -177,6 +177,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		// Any wait ends the idle streak unless its window elapses too (`#elapsed`).
 		const idle = this.#idle;
 		this.#idle = undefined;
+		const drainSignal = this.session.getRestartDrainSignal?.();
+		if (drainSignal) signal = signal ? AbortSignal.any([signal, drainSignal]) : drainSignal;
 		const registry = this.session.agentRegistry;
 		const senderId = this.session.getAgentId?.() ?? undefined;
 		const messaging = registry && senderId ? { registry, senderId } : undefined;
@@ -185,6 +187,8 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		const callStartedAt = Date.now();
 		const manager = this.session.asyncJobManager;
 		const settledAtEntry = manager ? settledJobIds(manager, senderId) : undefined;
+		// A running task job is already listed on its TODO row (or under "unassigned workers") once a real plan exists.
+		const todoTracksTasks = (this.session.getTodoPhases?.() ?? []).some(phase => phase.tasks.length > 0);
 
 		if (messaging) {
 			const queued = takeQueuedMessages(messaging);
@@ -212,10 +216,19 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		// wait watched it) is exactly what this wait is for: return it now.
 		const undelivered = manager ? undeliveredJobs(manager, senderId) : [];
 		if (manager && undelivered.length > 0) {
-			return buildJobResult(this.session, manager, "wait", [...undelivered, ...jobs], [], [], {
-				startedAtMs: callStartedAt,
-				settledAtEntry,
-			});
+			return buildJobResult(
+				this.session,
+				manager,
+				"wait",
+				[...undelivered, ...jobs],
+				[],
+				[],
+				{
+					startedAtMs: callStartedAt,
+					settledAtEntry,
+				},
+				todoTracksTasks,
+			);
 		}
 		const serviceRunning = hasLiveOwnedService(this.session);
 		if (jobs.length === 0 && !serviceRunning) {
@@ -242,6 +255,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 			signal,
 			onUpdate,
 			startedAtMs: callStartedAt,
+			todoTracksTasks,
 			settledAtEntry,
 		});
 	}
@@ -258,12 +272,24 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		idle: IdleStreak | undefined;
 		signal: AbortSignal | undefined;
 		onUpdate: AgentToolUpdateCallback<CoordinationDetails> | undefined;
+		todoTracksTasks: boolean;
 		/** Epoch ms when the enclosing `wait` call started; see {@link JobResultOptions.startedAtMs}. */
 		startedAtMs: number;
 		/** Jobs already settled when this call started; see {@link JobResultOptions.settledAtEntry}. */
 		settledAtEntry: ReadonlySet<string> | undefined;
 	}): Promise<AgentToolResult<CoordinationDetails>> {
-		const { jobs, manager, messaging, serviceRunning, idle, signal, onUpdate, startedAtMs, settledAtEntry } = args;
+		const {
+			jobs,
+			manager,
+			messaging,
+			serviceRunning,
+			idle,
+			signal,
+			onUpdate,
+			todoTracksTasks,
+			startedAtMs,
+			settledAtEntry,
+		} = args;
 		const streak = idle && Date.now() - idle.endedAt < WAIT_LADDER_RESET_MS ? idle : undefined;
 		const rung = streak ? Math.min(streak.rung + 1, WAIT_LADDER_MS.length - 1) : 0;
 		const watchedIds = jobs.map(job => job.id);
@@ -326,7 +352,7 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 		const emitProgress = () =>
 			onUpdate?.({
 				content: [{ type: "text", text: "" }],
-				details: { op: "wait", jobs: snapshotJobs(this.session, jobs) },
+				details: { op: "wait", jobs: snapshotJobs(this.session, jobs), todoTracksTasks },
 			});
 		const progressTimer = onUpdate && jobs.length > 0 ? setInterval(emitProgress, PROGRESS_INTERVAL_MS) : undefined;
 		if (jobs.length > 0) emitProgress();
@@ -384,17 +410,33 @@ export class WaitTool implements AgentTool<typeof waitSchema, CoordinationDetail
 					// Not `useless`: a message woke the agent, which the loop guard
 					// must treat as progress rather than an idle poll.
 					return {
-						content: [{ type: "text", text: "Wait interrupted by message." }],
+						content: [
+							{
+								type: "text",
+								text: this.session.getRestartDrainSignal?.().aborted
+									? "Wait interrupted for session restart."
+									: "Wait interrupted by message.",
+							},
+						],
 						details: { op: "wait", jobs: [], interrupted: true },
 					};
 				}
 				throwIfAborted(signal);
 			}
 			if (manager && jobs.length > 0) {
-				const result = buildJobResult(this.session, manager, "wait", jobs, [], [], {
-					startedAtMs,
-					settledAtEntry,
-				});
+				const result = buildJobResult(
+					this.session,
+					manager,
+					"wait",
+					jobs,
+					[],
+					[],
+					{
+						startedAtMs,
+						settledAtEntry,
+					},
+					todoTracksTasks,
+				);
 				if (wake === "timeout") {
 					// The report is one text block (`buildJobResult`); the timeout line joins it.
 					const report = result.content.find(block => block.type === "text")?.text ?? "";

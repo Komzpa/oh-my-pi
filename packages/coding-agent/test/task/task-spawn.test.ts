@@ -21,7 +21,7 @@ import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { createAgentsHubDeps } from "@oh-my-pi/pi-coding-agent/modes/agents-hub-deps";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
+import { TaskTool, checkoutLockOwnerFromTaskError } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import * as isolationRunner from "@oh-my-pi/pi-coding-agent/task/isolation-runner";
@@ -254,7 +254,7 @@ describe("task spawn routing", () => {
 		}
 	});
 
-	it("fires before_subagent_spawn once per child even though the task preflight resolves policy first", async () => {
+	it("rechecks admission after capacity acquisition before the single dispatch routing hook", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
 			agents: [{ ...taskAgent, model: ["anthropic/claude-sonnet-4"] }],
 			projectAgentsDir: null,
@@ -265,7 +265,10 @@ describe("task spawn routing", () => {
 		const manager = createManager();
 		const session = createSession({ manager });
 		const signals: Array<AbortSignal | undefined> = [];
-		session.emitBeforeSubagentSpawn = async (_event, signal) => {
+		const phases: Array<string | undefined> = [];
+		session.emitBeforeSubagentSpawn = async (event, signal) => {
+			phases.push(event.phase);
+			if (event.phase === "admission") return;
 			signals.push(signal);
 			return { model: `openai/gpt-4.1-mini-${signals.length}`, note: `pool ${signals.length}` };
 		};
@@ -274,6 +277,7 @@ describe("task spawn routing", () => {
 		const result = await tool.execute("tc-route", { agent: "task", name: "Routed", task: "Do it." } as TaskParams);
 		await manager.getJob(result.details!.async!.jobId!)!.promise;
 
+		expect(phases).toEqual(["admission", "admission", undefined]);
 		expect(signals).toHaveLength(1);
 		expect(signals[0]).toBeInstanceOf(AbortSignal);
 		expect(runSpy.mock.calls[0]?.[0].modelOverride).toEqual(["openai/gpt-4.1-mini-1"]);
@@ -1062,5 +1066,16 @@ describe("task spawn routing", () => {
 
 		gates.get("Fifth")!.resolve();
 		await Promise.all(jobs.map(job => job.promise));
+	});
+});
+
+describe("checkout-lock fast refusal", () => {
+	it("extracts the holding owner so the tool can return NOT STARTED", () => {
+		expect(
+			checkoutLockOwnerFromTaskError(
+				"Refusing coder: coder worker ExactWorker is running in this checkout; pass isolated: true.",
+			),
+		).toBe("ExactWorker");
+		expect(checkoutLockOwnerFromTaskError("Task execution failed: boom")).toBeUndefined();
 	});
 });

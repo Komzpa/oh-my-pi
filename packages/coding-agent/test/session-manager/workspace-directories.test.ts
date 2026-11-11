@@ -1,3 +1,4 @@
+import { parseSessionContent } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -118,12 +119,8 @@ describe("SessionManager workspace directories", () => {
 
 		await session.removeWorkspaceDirectory(path.join(tempDir.path(), "extra"));
 		const file = session.getSessionFile()!;
-		const header = JSON.parse(
-			fs
-				.readFileSync(file, "utf8")
-				.split("\n")
-				.filter(l => l.trim())[1]!,
-		);
+		const header = parseSessionContent(fs.readFileSync(file, "utf8")).entries[0];
+		if (header?.type !== "session") throw new Error("Expected logical session header");
 		expect(header.additionalDirectories).toBeUndefined();
 	});
 
@@ -145,12 +142,8 @@ describe("SessionManager workspace directories", () => {
 
 		await session.setAdditionalDirectories([path.join(tempDir.path(), "added")]);
 		const file = session.getSessionFile()!;
-		const header = JSON.parse(
-			fs
-				.readFileSync(file, "utf8")
-				.split("\n")
-				.filter(l => l.trim())[1]!,
-		);
+		const header = parseSessionContent(fs.readFileSync(file, "utf8")).entries[0];
+		if (header?.type !== "session") throw new Error("Expected logical session header");
 		expect(header.additionalDirectories).toEqual([path.join(tempDir.path(), "added")]);
 	});
 

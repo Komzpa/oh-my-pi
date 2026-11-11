@@ -109,6 +109,22 @@ describe.skipIf(process.platform === "win32")("resume picker across git worktree
 		expect(await SessionManager.isFromRemovedWorktree(listed, repo)).toBe(false);
 	});
 
+	it("reads a relocated header revision between the listing windows", async () => {
+		const session = await answeredSession(repo);
+		session.appendCustomEntry("before-move", { padding: "x".repeat(5000) });
+		const { path: worktree } = await createSessionWorktree(repo, Settings.isolated(), "wt/buried");
+		await session.moveTo(worktree);
+		session.appendCustomEntry("after-move", { padding: "x".repeat(40_000) });
+		await session.close();
+
+		const listed = (await pickerSessions(repo)).find(info => info.id === session.getSessionId())!;
+		expect(listed.cwd).toBe(worktree);
+		expect(listed.firstMessage).toBe(`work in ${repo}`);
+		expect(await SessionManager.isFromRemovedWorktree(listed, repo)).toBe(false);
+		await $`git worktree remove --force ${worktree} && git worktree prune`.cwd(repo).quiet();
+		expect(await SessionManager.isFromRemovedWorktree(listed, repo)).toBe(true);
+	});
+
 	it("can keep the current-folder picker isolated while all-projects still reaches other worktrees", async () => {
 		const moved = await sessionMovedByWt("wt/scoped");
 		const stayed = await answeredSession(repo);

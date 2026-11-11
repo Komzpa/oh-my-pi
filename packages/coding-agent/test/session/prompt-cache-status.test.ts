@@ -370,6 +370,18 @@ describe("AgentSession prompt-cache status", () => {
 			await createSession(model);
 		});
 
+		it("infers cache status without materializing arbitrary journal payloads", () => {
+			const sentAt = Date.now();
+			session.sessionManager.appendCustomEntry("unrelated", { payload: "old payload" });
+			append(usage({ cacheWrite: 50_000, cttl: { ephemeral5m: 50_000 } }));
+			vi.spyOn(session.sessionManager, "getBranchView").mockImplementation(() => {
+				throw new Error("unbounded branch payload read");
+			});
+			expect(session.getPromptCacheStatus(sentAt + 1)).toMatchObject({ state: "warm", inferred: true });
+			session.sessionManager.appendCustomEntry("unrelated", { payload: "new payload" });
+			expect(session.getPromptCacheStatus(sentAt + 2)).toMatchObject({ state: "warm", touchedAt: sentAt });
+		});
+
 		it("is read off the newest cached reply's send time and its model's lifetime", () => {
 			const sentAt = Date.now();
 			append(usage({ cacheWrite: 50_000, cttl: { ephemeral5m: 50_000 } }));

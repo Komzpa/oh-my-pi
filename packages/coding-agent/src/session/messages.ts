@@ -55,6 +55,7 @@ import type { AssistantMessage, ImageContent, Message, TextContent, UserMessage 
 import { copyPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
+import restartHarnessNotice from "../prompts/restart-harness-notice.md" with { type: "text" };
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { cleanTinyMessage, formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 import { stripXdUrlPrefix } from "@oh-my-pi/pi-tui/tools/xd-url";
@@ -1194,6 +1195,31 @@ function convertOne(m: AgentMessage, interruptedNext: boolean): Message[] {
 						role: "user",
 						content: customMessageContentToLlmContent(m.content),
 						attribution: "user",
+						timestamp: m.timestamp,
+					},
+				];
+			}
+			if (m.customType === "restart-root-continuation" || m.customType === "restart-queued") {
+				return [
+					{
+						role: "user",
+						content: [
+							{
+								type: "text",
+								text: prompt
+									.render(restartHarnessNotice, {
+										content:
+											typeof m.content === "string"
+												? m.content
+												: customMessageContentToLlmContent(m.content)
+														.filter(part => part.type === "text")
+														.map(part => part.text)
+														.join("\n"),
+									})
+									.trim(),
+							},
+						],
+						attribution: "agent",
 						timestamp: m.timestamp,
 					},
 				];

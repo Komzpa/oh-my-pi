@@ -114,13 +114,26 @@ function createMockSession(
 	};
 }
 
+const registeredMockSessions = new Map<string, AgentSession>();
+
 function mockCreateAgentSession(session: AgentSession) {
-	return vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-		session,
-		extensionsResult: {} as unknown as LoadExtensionsResult,
-		setToolUIContext: () => {},
-		eventBus: new EventBus(),
-	} satisfies CreateAgentSessionResult);
+	return vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+		// The executor reserves the generation; the SDK attaches that exact ref.
+		session = registeredMockSessions.get(options.agentId!) ?? session;
+		AgentRegistry.global().attachSession(
+			options.agentId!,
+			session,
+			options.sessionManager?.getSessionFile(),
+			options.expectedAgentRef ?? undefined,
+		);
+		AgentRegistry.global().setStatus(options.agentId!, "running", options.expectedAgentRef ?? undefined);
+		return {
+			session,
+			extensionsResult: {} as unknown as LoadExtensionsResult,
+			setToolUIContext: () => {},
+			eventBus: new EventBus(),
+		} satisfies CreateAgentSessionResult;
+	});
 }
 
 const baseAgent: AgentDefinition = {
@@ -144,6 +157,7 @@ describe("runSubprocess incremental yield loops", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+		registeredMockSessions.clear();
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 		AsyncJobManager.resetForTests();
@@ -165,14 +179,8 @@ describe("runSubprocess incremental yield loops", () => {
 	}
 
 	function registerRunning(id: string, session: AgentSession) {
-		AgentRegistry.global().register({
-			id,
-			displayName: id,
-			kind: "sub",
-			session,
-			sessionFile: null,
-			status: "running",
-		});
+		// Registration belongs to the SDK after the executor reserves its ref.
+		registeredMockSessions.set(id, session);
 	}
 
 	/** One assistant turn whose only content is a terminal `yield`. */

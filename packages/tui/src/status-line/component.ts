@@ -2805,7 +2805,42 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	 * usage aggregation, VCS probing, or segment getters run on a cache hit.
 	 * Fills `target` in place so the per-frame probe allocates nothing.
 	 */
+	#externalProbeFrame = false;
+	#externalProbeRead = false;
+	#externalProbeMemo = new StatusLineExternalInputs();
+
+	/** Share the external snapshot only within one synchronous compositor paint. */
+	beginFrame(): void {
+		this.#externalProbeFrame = true;
+		this.#externalProbeRead = false;
+	}
+
+	endFrame(): void {
+		this.#externalProbeFrame = false;
+		this.#externalProbeRead = false;
+	}
+
 	#readStatusLineExternalInputs(target: StatusLineExternalInputs): void {
+		const memo = this.#externalProbeMemo;
+		if (this.#externalProbeFrame && this.#externalProbeRead && memo.sessionRef === this.session) {
+			Object.assign(target, memo);
+		} else {
+			this.#readSessionExternalInputs(target);
+			if (this.#externalProbeFrame) {
+				Object.assign(memo, target);
+				this.#externalProbeRead = true;
+			}
+		}
+		// Settings, workspace and theme have independent owners and remain live.
+		target.themeRef = theme;
+		target.themeEpoch = getThemeEpoch();
+		target.projectDir = getProjectDir();
+		target.sessionSettingsRef = this.host.getSessionSettingsIdentity(this.session);
+		target.sessionSettingsRevision = this.host.getSessionSettingsRevision(this.session);
+		target.globalSettingsRevision = this.host.getSettingsRevision();
+	}
+
+	#readSessionExternalInputs(target: StatusLineExternalInputs): void {
 		const state = this.session.state;
 		const stateMessages = state.messages ?? EMPTY_MESSAGES;
 		const stateLastMessage = stateMessages[stateMessages.length - 1];
@@ -2857,14 +2892,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		}
 		const tools = this.session.agent?.state?.tools;
 		const skills = this.session.skills;
-		target.themeRef = theme;
-		target.themeEpoch = getThemeEpoch();
-		target.projectDir = getProjectDir();
 		target.sessionRef = this.session;
 		target.sessionFile = this.session.sessionFile;
-		target.sessionSettingsRef = this.host.getSessionSettingsIdentity(this.session);
-		target.sessionSettingsRevision = this.host.getSessionSettingsRevision(this.session);
-		target.globalSettingsRevision = this.host.getSettingsRevision();
 		target.stateRef = state;
 		target.stateMessagesRef = stateMessages;
 		target.stateMessagesLength = stateMessages.length;

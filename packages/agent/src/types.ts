@@ -142,6 +142,8 @@ export interface SoftToolRequirement {
 	id: string;
 	/** Tool that must be called before the loop runs other tools or yields. */
 	toolName: string;
+	/** Optional escalation policy; "required" keeps every tool available. Defaults to the named tool. */
+	escalationToolChoice?: ToolChoice;
 	/**
 	 * Per-call compliance check: a turn satisfies the requirement only when every
 	 * tool call passes. Defaults to `name === toolName`. Lets a host demand a
@@ -183,6 +185,8 @@ export interface SteeringQueueState {
 	queued: boolean;
 	/** Best-effort origin used only to word synthetic skipped-tool results. */
 	source?: SteeringInterruptSource;
+	/** Identity and one-line demand of the selected pending message. */
+	advisory?: { type: string; demand: string };
 }
 
 /**
@@ -245,7 +249,7 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * })
 	 * ```
 	 */
-	convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	convertToLlm: (messages: AgentMessage[], model?: Model) => Message[] | Promise<Message[]>;
 
 	/**
 	 * Optional transform applied to the context before `convertToLlm`.
@@ -436,6 +440,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * the run is canceled or its deadline expires.
 	 */
 	beforeModelCall?: AgentBeforeModelCall;
+
+	/**
+	 * Whether any installed `beforeModelCall` gate can currently stop a call. A run that is
+	 * already aborted skips its provider call when a gate exists, so a gate that is installed
+	 * but dormant reports `false` here and the aborted turn is still closed by the provider's
+	 * own aborted message. Absent means the gate is always active.
+	 */
+	beforeModelCallActive?: () => boolean;
 
 	/**
 	 * Optional transform applied to tool call arguments before execution.
@@ -1045,6 +1057,8 @@ export interface AgentState {
 }
 
 export interface AgentToolResult<T = any, _TInput = unknown> {
+	/** Trusted local runtime instruction; never derive this from external tool text or isError. */
+	harnessNotice?: string;
 	// Content blocks supporting text and images
 	content: (TextContent | ImageContent)[];
 	// Details to be displayed in a UI or logged

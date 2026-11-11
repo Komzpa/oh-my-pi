@@ -1,3 +1,6 @@
+import coolingYields from "../../reemxy-extensions/extensions/fixtures/row-audit-cooling-yields.json";
+import { YieldTool as RowAuditYieldTool } from "../src/tools/yield";
+import type { ToolSession } from "../src/tools";
 /**
  * Tests for ExtensionRunner - conflict detection, error handling, tool wrapping.
  */
@@ -10,6 +13,7 @@ import type { AgentMessage, AgentTool, AgentToolContext } from "@oh-my-pi/pi-age
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import type { MessageCreateParams } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import { Agent } from "@oh-my-pi/pi-agent-core";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { convertToLlm, wrapSteeringForModel } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -23,8 +27,12 @@ import {
 	testSetExtensionHandlerTimeoutMs,
 	testSetSessionShutdownHandlerTimeoutMs,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { sendAgentMessageFromSession } from "@oh-my-pi/pi-coding-agent/irc/messaging";
+import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type {
 	Extension,
+	ExtensionContext,
 	ExtensionError,
 	ExtensionUIContext,
 	InputEvent,
@@ -32,6 +40,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, logger, TempDir } from "@oh-my-pi/pi-utils";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
@@ -69,6 +78,8 @@ describe("ExtensionRunner", () => {
 	afterEach(() => {
 		testSetExtensionHandlerTimeoutMs(EXTENSION_HANDLER_TIMEOUT_MS);
 		testSetSessionShutdownHandlerTimeoutMs(SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS);
+		IrcBus.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
 		tempDir.removeSync();
 	});
 
@@ -115,7 +126,7 @@ describe("ExtensionRunner", () => {
 		expect(runner.createContext().cwd).toBe(dirB);
 	});
 
-	it("exposes the initialized host mode to extension contexts", async () => {
+	it("exposes initialized mode and forwards subagent fast-mode changes", async () => {
 		const result = await loadTestExtensions();
 		const runner = new ExtensionRunner(
 			result.extensions,
@@ -139,6 +150,7 @@ describe("ExtensionRunner", () => {
 			getSessionName: () => undefined,
 			setSessionName: async () => {},
 		};
+		const setSubagentFastMode = vi.fn((_id: string, _enabled: boolean) => true);
 		const contextActions = {
 			getModel: () => undefined,
 			isIdle: () => true,
@@ -148,12 +160,15 @@ describe("ExtensionRunner", () => {
 			getContextUsage: () => undefined,
 			compact: async () => {},
 			getSystemPrompt: () => [],
+			setSubagentFastMode,
 		};
 
 		expect(runner.createContext().mode).toBe("print");
 
 		runner.initialize(actions, contextActions, undefined, undefined, "rpc");
 		expect(runner.createContext().mode).toBe("rpc");
+		expect(runner.createContext().setSubagentFastMode?.("worker-1", true)).toBe(true);
+		expect(setSubagentFastMode).toHaveBeenCalledWith("worker-1", true);
 
 		runner.initialize(actions, contextActions, undefined, undefined, "json");
 		expect(runner.createContext().mode).toBe("json");
@@ -207,6 +222,215 @@ describe("ExtensionRunner", () => {
 		expect(compact).toHaveBeenCalledWith("preserve current task");
 	});
 
+	it("lets extension handlers send agent messages through the session IRC path", async () => {
+		const deliveredBodies: string[] = [];
+		const registry = AgentRegistry.global();
+		registry.register({
+			id: "Main",
+			displayName: "main",
+			kind: "main",
+			session: {} as never,
+		});
+		registry.register({
+			id: "Worker",
+			displayName: "worker",
+			kind: "sub",
+			session: {
+				deliverIrcMessage: async (message: { from: string; body: string }) => {
+					deliveredBodies.push(`${message.from}:${message.body}`);
+					return "injected";
+				},
+			} as never,
+		});
+
+		const results: Array<{ delivered: boolean; text: string }> = [];
+		const messageSession = {
+			agentRegistry: registry,
+			settings: Settings.isolated({}),
+			taskDepth: 1,
+			getAgentId: () => "Main",
+			getSessionFile: () => null,
+		};
+		const extensionPath = path.join(extensionsDir, "agent-message.ts");
+		// Asserted: optional registries added by other topics (e.g. transcriptPresenters) stay empty here.
+		const extension = {
+			path: extensionPath,
+			resolvedPath: extensionPath,
+			handlers: new Map([
+				[
+					"session_start",
+					[
+						async (...args: unknown[]) => {
+							const ctx = args[1] as ExtensionContext;
+							results.push(await ctx.sendAgentMessage("Worker", "status?"));
+							results.push(await ctx.sendAgentMessage("Missing", "status?"));
+						},
+					],
+				],
+			]),
+			tools: new Map(),
+			assistantThinkingRenderers: [],
+			assistantTextRenderers: [],
+			linkSchemes: [],
+			fileWriteFallbackHandlers: [],
+			fileDeleteFallbackHandlers: [],
+			messageRenderers: new Map(),
+			composerShapes: new Map(),
+			commands: new Map(),
+			flags: new Map(),
+			shortcuts: new Map(),
+		} as unknown as Extension;
+		const runner = new ExtensionRunner(
+			[extension],
+			new ExtensionRuntime(),
+			tempDir.path(),
+			sessionManager,
+			modelRegistry,
+		);
+		runner.initialize(
+			{
+				sendMessage: () => {},
+				sendUserMessage: async () => {},
+				appendEntry: () => {},
+				setLabel: () => {},
+				getActiveTools: () => [],
+				getAllTools: () => [],
+				setActiveTools: async () => {},
+				getCommands: () => [],
+				setModel: async () => false,
+				getThinkingLevel: () => undefined,
+				setThinkingLevel: () => {},
+				getSessionName: () => undefined,
+				setSessionName: async () => {},
+			},
+			{
+				getModel: () => undefined,
+				isIdle: () => true,
+				abort: () => {},
+				hasPendingMessages: () => false,
+				shutdown: () => {},
+				getContextUsage: () => undefined,
+				compact: async () => {},
+				getSystemPrompt: () => [],
+				sendAgentMessage: (to, message) => sendAgentMessageFromSession(messageSession, to, message),
+			},
+		);
+
+		await runner.emit({ type: "session_start" });
+
+		expect(results[0]).toEqual({ delivered: true, text: "Delivered to Worker." });
+		expect(deliveredBodies).toEqual(["Main:status?"]);
+		expect(results[1]?.delivered).toBe(false);
+		expect(results[1]?.text).toContain("Unknown agent");
+
+		const unavailable = await sendAgentMessageFromSession({ ...messageSession, enableIrc: false }, "Worker", "later");
+		expect(unavailable.delivered).toBe(false);
+		expect(unavailable.text).toContain("unavailable");
+	});
+
+	it("routes ctx.sendAgentMessage through the shared IRC path even when the host never wired it", async () => {
+		const registry = AgentRegistry.global();
+		registry.register({ id: "Main", displayName: "main", kind: "main", session: {} as never });
+		const deliveredBodies: string[] = [];
+		registry.register({
+			id: "Worker",
+			displayName: "worker",
+			kind: "sub",
+			session: {
+				deliverIrcMessage: async (message: { from: string; body: string }) => {
+					deliveredBodies.push(`${message.from}:${message.body}`);
+					return "injected";
+				},
+			} as never,
+		});
+		// Never initialized: mirrors hosts that construct a runner without
+		// context actions, where ctx.sendAgentMessage used to answer
+		// "unavailable" while `write agent://` delivered.
+		const runner = new ExtensionRunner(
+			[],
+			new ExtensionRuntime(),
+			tempDir.path(),
+			sessionManager,
+			modelRegistry,
+			undefined,
+			Settings.isolated({}),
+			undefined,
+			undefined,
+			{ kind: "sub", id: "Main", name: "Main", depth: 1 },
+		);
+		const ctx = runner.createContext();
+
+		const result = await ctx.sendAgentMessage("Worker", "status?");
+		expect(result).toEqual({ delivered: true, text: "Delivered to Worker." });
+		expect(deliveredBodies).toEqual(["Main:status?"]);
+
+		const missing = await ctx.sendAgentMessage("Nobody", "hello?");
+		expect(missing.delivered).toBe(false);
+
+		const direct = await sendAgentMessageFromSession(
+			{
+				agentRegistry: registry,
+				settings: Settings.isolated({}),
+				taskDepth: 1,
+				getAgentId: () => "Main",
+				getSessionFile: () => null,
+			},
+			"Worker",
+			"status?",
+		);
+		expect(direct).toEqual({ delivered: true, text: "Delivered to Worker." });
+	});
+
+	it("delivers check-ins through a real AgentSession command context", async () => {
+		const registry = AgentRegistry.global();
+		const deliveredBodies: string[] = [];
+		registry.register({
+			id: "Worker",
+			displayName: "worker",
+			kind: "sub",
+			session: {
+				deliverIrcMessage: async (message: { from: string; body: string }) => {
+					deliveredBodies.push(`${message.from}:${message.body}`);
+					return "injected";
+				},
+			} as never,
+		});
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const results: Array<{ delivered: boolean; text: string }> = [];
+		const commandPath = path.join(extensionsDir, "check-in.ts");
+		const session = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+			sessionManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			agentId: "Main",
+			agentRegistry: registry,
+			customCommands: [
+				{
+					path: commandPath,
+					resolvedPath: commandPath,
+					source: "project",
+					command: {
+						name: "check-in",
+						description: "Deliver an overdue check-in",
+						execute: async (_args, ctx) => {
+							results.push(await (ctx as unknown as ExtensionContext).sendAgentMessage("Worker", "status?"));
+							return undefined;
+						},
+					},
+				},
+			],
+		});
+		registry.register({ id: "Main", displayName: "main", kind: "main", session });
+		try {
+			await session.prompt("/check-in");
+			expect(results).toEqual([{ delivered: true, text: "Delivered to Worker." }]);
+			expect(deliveredBodies).toEqual(["Main:status?"]);
+		} finally {
+			await session.dispose();
+		}
+	});
 	describe("shortcut conflicts", () => {
 		it("warns when extension shortcut conflicts with built-in", async () => {
 			const extCode = `
@@ -4993,6 +5217,144 @@ describe("ExtensionRunner", () => {
 			);
 			return runner;
 		};
+
+		it("delivery critic launches through the native task implementation at low effort", async () => {
+			const seen: { params?: unknown } = {};
+			const native = { ...nativeProbe(seen), name: "task" };
+			const runner = await runnerWithNative(native);
+			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
+			expect(seen.params).toEqual({
+				agent: "reviewer",
+				name: "CriticDelivery",
+				task: "Review completed rack controls",
+				effort: "lo",
+			});
+			expect(result?.content).toEqual([{ type: "text", text: "native ran" }]);
+		});
+
+		it("delivery critic awaits a generic background-capable worker without detaching its verdict", async () => {
+			const seen: { params?: unknown } = {};
+			const native = {
+				...nativeProbe(seen),
+				name: "task",
+				executeBlocking: async (_id: string, params: unknown) => {
+					seen.params = params;
+					return { content: [{ type: "text" as const, text: "final verdict" }], details: {} };
+				},
+			};
+			const runner = await runnerWithNative(native);
+			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
+			expect(seen.params).toEqual({
+				agent: "reviewer",
+				name: "CriticDelivery",
+				task: "Review completed rack controls",
+				effort: "lo",
+			});
+			expect(result?.content).toEqual([{ type: "text", text: "final verdict" }]);
+		});
+
+		it("Cooling audit rejects malformed and missing-row yields in-tool, then forwards the corrected verdict", async () => {
+			const seen: { params?: unknown; onUpdate?: unknown } = {};
+			const runner = await runnerWithNative({ ...nativeProbe(seen), name: "task" });
+			const valid = coolingYields[1].arguments.data!;
+			const row = valid.rows![0].row;
+			const received: unknown[] = [];
+			await runner
+				.createContext()
+				.runRowAudit?.("audit", "qa-auditor", undefined, undefined, row, [row], output => received.push(output));
+			const params = seen.params as { outputSchema?: unknown; schemaMode?: "strict" };
+			const tool = new RowAuditYieldTool({
+				cwd: tempDir.path(),
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				outputSchema: params.outputSchema,
+				outputSchemaMode: params.schemaMode,
+			} as ToolSession);
+			// Repetition must never reach the permissive schema override.
+			for (let i = 0; i < 5; i++) {
+				await expect(tool.execute("bad", coolingYields[0].arguments)).rejects.toThrow(
+					JSON.stringify(params.outputSchema, null, 2),
+				);
+			}
+			await expect(tool.execute("missing", { data: { rows: [] } })).rejects.toThrow("does not match schema");
+			// A completed-looking result without structured evidence must return to the same auditor.
+			const bare = { row, verdict: "fail", findings: "A check failed" };
+			await expect(tool.execute("no-evidence", { data: { rows: [bare] } })).rejects.toThrow("does not match schema");
+			await expect(
+				tool.execute("empty-evidence", { data: { rows: [{ ...bare, checks: [], screenshots: [] }] } }),
+			).rejects.toThrow("does not match schema");
+			await expect(
+				tool.execute("bad-check", { data: { rows: [{ ...bare, checks: [{ command: "npm test" }] }] } }),
+			).rejects.toThrow("does not match schema");
+			const checkOnly = await tool.execute("check-only", {
+				data: { rows: [{ ...bare, checks: [{ command: "npm test", exitCode: 1 }] }] },
+			});
+			expect(checkOnly.details?.status).toBe("success");
+			const shotOnly = await tool.execute("screenshot-only", {
+				data: { rows: [{ ...bare, screenshots: [{ path: "/tmp/capture.png" }] }] },
+			});
+			expect(shotOnly.details?.status).toBe("success");
+			const inconclusive = await tool.execute("inconclusive", {
+				data: { rows: [{ ...bare, verdict: "inconclusive" }] },
+			});
+			expect(inconclusive.details?.status).toBe("success");
+			const result = await tool.execute("corrected", { data: valid });
+			expect(result.details?.status).toBe("success");
+			const update = seen.onUpdate as (value: unknown) => void;
+			update({
+				details: {
+					progress: [
+						{
+							id: "audit",
+							extractedToolData: { yield: [{ data: coolingYields[0].arguments.data }, result.details] },
+						},
+					],
+				},
+			});
+			expect(received).toEqual([valid]);
+			// Multi-row coverage rejects duplicates even if the array has the right length.
+			await runner
+				.createContext()
+				.runRowAudit?.("audit", "qa-auditor", undefined, undefined, row, [row, "Other row"]);
+			const multi = seen.params as { outputSchema: unknown };
+			const multiTool = new RowAuditYieldTool({
+				cwd: tempDir.path(),
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				outputSchema: multi.outputSchema,
+				outputSchemaMode: "strict",
+			} as ToolSession);
+			await expect(
+				multiTool.execute("duplicate", { data: { rows: [valid.rows![0], valid.rows![0]] } }),
+			).rejects.toThrow("does not match schema");
+		});
+
+		it("names row audits and plan critics at native dispatch by purpose", async () => {
+			const seen: { params?: unknown } = {};
+			const runner = await runnerWithNative({ ...nativeProbe(seen), name: "task" });
+			await runner
+				.createContext()
+				.runRowAudit?.("audit protocol", "qa-auditor", undefined, undefined, "Cooling pipes");
+			expect(seen.params).toEqual({ agent: "qa-auditor", task: "audit protocol", name: "AuditCoolingPipes" });
+			await runner.createContext().runRowAudit?.("audit protocol", "qa-auditor");
+			expect(seen.params).toMatchObject({ name: "QaAuditor" });
+			await runner
+				.createContext()
+				.runRowAudit?.(
+					"audit protocol",
+					"qa-auditor",
+					undefined,
+					undefined,
+					"Very long cooling pipes installation subject beyond the limit",
+				);
+			expect(seen.params).toMatchObject({ name: "AuditVeryLongCoolingPipesInstalla".slice(0, 32) });
+			await runner.createContext().runDeliveryCritic?.("plan protocol", undefined, "Plan");
+			expect(seen.params).toEqual({ agent: "reviewer", task: "plan protocol", effort: "lo", name: "CriticPlan" });
+		});
 
 		it("inherits the wrapper call's signal and onUpdate for a bare invokeTool", async () => {
 			const seen: { signal?: AbortSignal; onUpdate?: unknown; params?: unknown } = {};

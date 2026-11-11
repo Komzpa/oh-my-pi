@@ -105,6 +105,19 @@ const nativeAndIntegrationPackages = [
 	"packages/typescript-edit-benchmark",
 ];
 
+const leadInstructionTestCommand: TestCommand = {
+	label: "lead instruction coverage",
+	cwd: ".",
+	command: [
+		"bun",
+		"test",
+		...onlyFailuresArgs,
+		"./packages/reemxy-extensions/extensions/lead-instructions.test.ts",
+		"./packages/reemxy-extensions/extensions/lead-gates.test.ts",
+	],
+	parallel: 1,
+};
+
 const projectToolTestCommand: TestCommand = {
 	label: ".omp/tests (project-local TUI debug tool)",
 	cwd: ".",
@@ -335,7 +348,11 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 		case "workspace":
 			return fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8));
 		case "native":
-			return [...nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4)), projectToolTestCommand];
+			return [
+				...nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4)),
+				projectToolTestCommand,
+				leadInstructionTestCommand,
+			];
 		case "coding-agent-singleton":
 			return await codingAgentTestCommands("singleton");
 		case "coding-agent-ui":
@@ -367,6 +384,7 @@ async function commandsForMode(mode: Mode): Promise<TestCommand[]> {
 				...fastWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 8, { extraArgs: onlyFailuresArgs })),
 				...nativeAndIntegrationPackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
 				projectToolTestCommand,
+				leadInstructionTestCommand,
 				...localOnlyWorkspacePackages.map(pkg => workspaceTestCommand(pkg, 4, { extraArgs: onlyFailuresArgs })),
 				...(await commandsForMode("coding-agent-heavy")),
 			];

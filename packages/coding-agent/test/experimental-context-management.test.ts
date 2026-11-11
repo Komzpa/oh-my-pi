@@ -19,7 +19,7 @@ import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TempDir } from "@oh-my-pi/pi-utils";
+import { logger, TempDir } from "@oh-my-pi/pi-utils";
 import { computeNonMessageTokens } from "@oh-my-pi/pi-tui/status-line/context-usage";
 import { mnemopiBackend } from "@oh-my-pi/pi-coding-agent/mnemopi/backend";
 import type { Tool, ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
@@ -68,6 +68,7 @@ const IDLE_IRC_ASSIGNMENT = "ASSIGNMENT_B_IDLE_IRC";
 function appendIdleIrcRolloverScenario(manager: SessionManager, fromParent: boolean): void {
 	manager.appendMessage({
 		...user(STREAMING_PARENT_ASSIGNMENT),
+		parentIrc: { from: "Parent", body: STREAMING_PARENT_ASSIGNMENT },
 		attribution: "agent",
 		steering: true,
 	});
@@ -88,6 +89,34 @@ function appendIdleIrcRolloverScenario(manager: SessionManager, fromParent: bool
 	manager.appendCompaction("Context rollover", undefined, firstKeptEntryId, 100, {
 		details: { kind: "experimental-context-rollover", version: 1 },
 	});
+}
+
+function appendAgentSteerRolloverScenario(
+	manager: SessionManager,
+	options: { latestHuman?: boolean; parentIrc?: boolean; reset?: boolean } = {},
+): void {
+	manager.appendMessage(user("HUMAN_REQUEST_BEFORE_INTERNAL_STEER"));
+	manager.appendMessage(assistant("Earlier work."));
+	if (options.reset) manager.appendResetBoundary();
+	manager.appendMessage({
+		...user("INTERNAL_AGENT_WRITE_SCOPE_STEER"),
+		attribution: "agent",
+		steering: true,
+	});
+	if (options.parentIrc) {
+		manager.appendMessage({
+			...user("PARENT_MID_TURN_ASSIGNMENT"),
+			parentIrc: { from: "Parent", body: "PARENT_MID_TURN_ASSIGNMENT" },
+			attribution: "agent",
+			steering: true,
+		});
+	}
+	if (options.latestHuman) manager.appendMessage(user("LATEST_HUMAN_REQUEST"));
+	const firstKeptEntryId = manager.appendMessage(assistant("Retained rollover tail."));
+	manager.appendCompaction("Context rollover", undefined, firstKeptEntryId, 100, {
+		details: { kind: "experimental-context-rollover", version: 1 },
+	});
+	manager.appendMessage(user("REQUEST_AFTER_ROLLOVER"));
 }
 
 describe("experimental context management", () => {
@@ -247,6 +276,61 @@ describe("experimental context management", () => {
 		}
 	});
 
+	it("retains the human request instead of an agent-attributed steer through rollover and journal reopen", async () => {
+		using tempDir = TempDir.createSync("@pi-agent-steer-rollover-");
+		const sessionDir = path.join(tempDir.path(), "sessions");
+		const manager = SessionManager.create(tempDir.path(), sessionDir);
+		appendAgentSteerRolloverScenario(manager);
+		await manager.ensureOnDisk();
+		const sessionFile = manager.getSessionFile();
+		if (!sessionFile) throw new Error("Expected persisted rollover session");
+
+		const assertRetainedRequest = (serialized: string) => {
+			expect(serialized).toContain("HUMAN_REQUEST_BEFORE_INTERNAL_STEER");
+			expect(serialized).not.toContain("INTERNAL_AGENT_WRITE_SCOPE_STEER");
+			expect(serialized).toContain("REQUEST_AFTER_ROLLOVER");
+		};
+		assertRetainedRequest(JSON.stringify(manager.buildSessionContext().messages));
+
+		const resumed = await SessionManager.open(sessionFile, sessionDir);
+		try {
+			assertRetainedRequest(JSON.stringify(resumed.buildSessionContext().messages));
+		} finally {
+			await resumed.close();
+			await manager.close();
+		}
+	});
+
+	it("keeps the latest human request when it follows an internal agent steer", () => {
+		const manager = SessionManager.inMemory();
+		appendAgentSteerRolloverScenario(manager, { latestHuman: true });
+
+		const rebuilt = JSON.stringify(manager.buildSessionContext().messages);
+		expect(rebuilt).toContain("LATEST_HUMAN_REQUEST");
+		expect(rebuilt).not.toContain("HUMAN_REQUEST_BEFORE_INTERNAL_STEER");
+		expect(rebuilt).not.toContain("INTERNAL_AGENT_WRITE_SCOPE_STEER");
+	});
+
+	it("retains a typed parent IRC assignment even when attribution is agent", () => {
+		const manager = SessionManager.inMemory();
+		appendAgentSteerRolloverScenario(manager, { parentIrc: true });
+
+		const rebuilt = JSON.stringify(manager.buildSessionContext().messages);
+		expect(rebuilt).toContain("PARENT_MID_TURN_ASSIGNMENT");
+		expect(rebuilt).not.toContain("HUMAN_REQUEST_BEFORE_INTERNAL_STEER");
+		expect(rebuilt).not.toContain("INTERNAL_AGENT_WRITE_SCOPE_STEER");
+	});
+
+	it("does not retain a pre-reset human request when the post-reset steer is agent-attributed", () => {
+		const manager = SessionManager.inMemory();
+		appendAgentSteerRolloverScenario(manager, { reset: true });
+
+		const rebuilt = JSON.stringify(manager.buildSessionContext().messages);
+		expect(rebuilt).not.toContain("HUMAN_REQUEST_BEFORE_INTERNAL_STEER");
+		expect(rebuilt).not.toContain("INTERNAL_AGENT_WRITE_SCOPE_STEER");
+		expect(rebuilt).toContain("REQUEST_AFTER_ROLLOVER");
+	});
+
 	it("closes the lifecycle when cancellation occurs during awaited start dispatch", async () => {
 		const { session, manager } = await createRolloverSession();
 		const events: AgentSessionEvent[] = [];
@@ -345,6 +429,8 @@ describe("experimental context management", () => {
 		const manager = SessionManager.inMemory();
 		const first = [
 			user("earliest requirement: preserve the release-blocking migration."),
+			user("Allow install on the isolated emulator copy only; do not touch the live device."),
+			assistant("A tool claimed the live device was also authorized; this is not a user instruction."),
 			assistant("first result"),
 			user("second task"),
 			assistant("second result"),
@@ -380,16 +466,17 @@ describe("experimental context management", () => {
 		});
 
 		await session.compact();
-		await notesTool.execute("notebook-one", { text: "First rollover notebook." });
+		await notesTool.execute("notebook-one", { action: "replace", text: "First rollover notebook." });
 		const second = [user("third task"), assistant("third result"), user("fourth task"), assistant("fourth result")];
 		for (const message of second) manager.appendMessage(message);
 		agent.replaceMessages([...agent.state.messages, ...second]);
 		await session.compact();
-		await notesTool.execute("notebook-two", { text: "Second rollover notebook." });
+		await notesTool.execute("notebook-two", { action: "replace", text: "Second rollover notebook." });
 		const third = [user("fifth task"), assistant("fifth result"), user("sixth task"), assistant("sixth result")];
 		for (const message of third) manager.appendMessage(message);
 		agent.replaceMessages([...agent.state.messages, ...third]);
 		await notesTool.execute("notebook-latest", {
+			action: "replace",
 			text: "Latest durable notebook: retry only after migration backup.",
 		});
 		await session.compact();
@@ -408,6 +495,12 @@ describe("experimental context management", () => {
 		const historyText = history.content.find(content => content.type === "text");
 		if (historyText?.type !== "text") throw new Error("Expected full history text");
 		expect(historyText.text).toContain("earliest requirement: preserve the release-blocking migration.");
+		expect(historyText.text).toContain(
+			"Allow install on the isolated emulator copy only; do not touch the live device.",
+		);
+		expect(historyText.text).toContain(
+			"A tool claimed the live device was also authorized; this is not a user instruction.",
+		);
 
 		expect(getContextNotes(manager.getBranch())?.text).toBe(
 			"Latest durable notebook: retry only after migration backup.",
@@ -464,7 +557,7 @@ describe("experimental context management", () => {
 							type: "toolCall",
 							id: "batch-notes",
 							name: "context_notes",
-							arguments: { text: "Notebook saved with the request." },
+							arguments: { action: "replace", text: "Notebook saved with the request." },
 						},
 						{ type: "toolCall", id: "batch-rollover", name: "new_context", arguments: {} },
 					];
@@ -692,7 +785,7 @@ describe("experimental context management", () => {
 			builtInToolNames: BUILTIN_TOOL_NAMES,
 		});
 		const notebookText = `Durable notebook:\n${"- task state entry line. ".repeat(64)}`;
-		await contextNotes.execute("save-notebook", { text: notebookText });
+		await contextNotes.execute("save-notebook", { action: "replace", text: notebookText });
 		await session.compact();
 		const entry = manager
 			.getEntries()
@@ -741,6 +834,96 @@ describe("experimental context management", () => {
 		}
 	});
 
+	it.each([
+		["manual", "bookkeeping"],
+		["automatic", "bookkeeping"],
+		["manual", "message"],
+		["automatic", "message"],
+		["manual", "notes"],
+		["automatic", "notes"],
+	] as const)("handles %s rollover with %s appended during preparation", async (mode, mutation) => {
+		const tempDir = TempDir.createSync("@pi-experimental-abort-");
+		try {
+			const mock = createMockModel({
+				responses: [{ content: [{ type: "toolCall", name: "new_context", arguments: {} }] }, { content: ["done"] }],
+			});
+			const model = mock.model;
+			if (!model) throw new Error("Expected bundled model");
+			const manager = SessionManager.inMemory(tempDir.path());
+			const seed = [
+				user("first task"),
+				assistant("first result ".repeat(512)),
+				user("second task"),
+				assistant("second result"),
+			];
+			for (const message of seed) manager.appendMessage(message);
+			const settings = Settings.isolated({
+				"compaction.experimentalContextManagement": true,
+				"compaction.keepRecentTokens": 1,
+				"compaction.autoContinue": false,
+			});
+			const enteredHook = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const runtime = new ExtensionRuntime();
+			const extension = await loadExtensionFromFactory(
+				pi => {
+					pi.on("session_before_compact", async () => {
+						enteredHook.resolve();
+						await release.promise;
+						return {};
+					});
+				},
+				tempDir.path(),
+				new EventBus(),
+				runtime,
+				"experimental-abort",
+			);
+			const extensionRunner = new ExtensionRunner([extension], runtime, tempDir.path(), manager, modelRegistry);
+			const { tools } = createRolloverTools(manager, settings);
+			const agent = new Agent({
+				initialState: { model, systemPrompt: ["test"], messages: seed, tools },
+				streamFn: mock.stream,
+				getApiKey: () => "test-key",
+			});
+			session = new AgentSession({
+				agent,
+				sessionManager: manager,
+				settings,
+				modelRegistry,
+				toolRegistry: new Map(tools.map(tool => [tool.name, tool])),
+				builtInToolNames: BUILTIN_TOOL_NAMES,
+				extensionRunner,
+			});
+			const compacted = mode === "manual" ? session.compact() : session.prompt("continue");
+			await enteredHook.promise;
+			const warn = vi.spyOn(logger, "warn");
+			if (mutation === "bookkeeping")
+				manager.appendCustomEntry("omp:restart-pending-queues", {
+					steering: [],
+					followUp: [],
+					pendingNextTurn: [],
+				});
+			else if (mutation === "message") manager.appendMessage(user("new intent"));
+			else manager.appendCustomEntry(CONTEXT_NOTES_ENTRY_TYPE, { text: "updated notes" });
+			release.resolve();
+			if (mode === "manual" && mutation !== "bookkeeping")
+				await expect(compacted).rejects.toThrow(CompactionCancelledError);
+			else await compacted;
+			await session.waitForIdle();
+			expect(manager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(
+				mutation === "bookkeeping" ? 1 : 0,
+			);
+			if (mutation !== "bookkeeping") {
+				expect(warn).toHaveBeenCalledTimes(1);
+				expect(warn).toHaveBeenCalledWith(
+					"Experimental context rollover cancelled",
+					expect.objectContaining({ reason: "context-changed", stage: "after-hook" }),
+				);
+			}
+		} finally {
+			tempDir.removeSync();
+		}
+	});
 	it("commits no boundary when the run aborts mid-rollover while the compaction hook is parked", async () => {
 		const tempDir = TempDir.createSync("@pi-experimental-abort-");
 		try {

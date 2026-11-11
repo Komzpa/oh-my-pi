@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
-import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { cfgComposerTokenRate } from "@oh-my-pi/pi-coding-agent/modes/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -63,15 +63,17 @@ describe("InteractiveMode native dock activity line", () => {
 			modelRegistry,
 		});
 		mode = new InteractiveMode(session, "test");
+		await mode.init({ suppressWelcomeIntro: true });
 	});
 
 	afterEach(() => {
 		mode.loadingAnimation?.stop();
 		mode.loadingAnimation = undefined;
 		mode.statusContainer.disposeChildren();
-		mode.setTodos([]);
+		session.setTodoPhases([]);
+		mode.setTodos(session.getTodoPhases());
 		session.tokenRate.reset();
-		cfgComposerTokenRate.clearOverride(settings);
+		cfgComposerTokenRate.clearOverride(session.settings);
 	});
 
 	afterAll(async () => {
@@ -89,8 +91,9 @@ describe("InteractiveMode native dock activity line", () => {
 		expect(activity()).toEqual({ k: "col", p: undefined, c: [], key: undefined });
 	});
 
-	it("holds the todo in the activity line, not the HUD pills row, between turns", () => {
-		mode.setTodos(PLAN);
+	it("holds the todo in the activity line, not the HUD pills row, between turns", async () => {
+		session.commitTodoPhases(PLAN);
+		await mode.reloadTodos();
 		const line = activity();
 		expect(role(line)).toBe("omp.hud.activity");
 		expect(keys(line)).toEqual(["todo"]);
@@ -104,7 +107,7 @@ describe("InteractiveMode native dock activity line", () => {
 		expect(nodes(fallback).some(n => n.k === "tree")).toBe(true);
 	});
 
-	it("puts the working row before the todo while a turn runs, and the status alone without a plan", () => {
+	it("puts the working row before the todo while a turn runs, and the status alone without a plan", async () => {
 		mode.ensureLoadingAnimation();
 		const statusOnly = activity();
 		expect(keys(statusOnly)).toEqual(["status"]);
@@ -112,7 +115,8 @@ describe("InteractiveMode native dock activity line", () => {
 		expect(role(status)).toBe("omp.hud.status");
 		expect(status.c).toEqual([mode.loadingAnimation!]);
 
-		mode.setTodos(PLAN);
+		session.commitTodoPhases(PLAN);
+		await mode.reloadTodos();
 		expect(keys(activity())).toEqual(["status", "todo"]);
 	});
 
@@ -121,7 +125,7 @@ describe("InteractiveMode native dock activity line", () => {
 		session.tokenRate.seed(1_000, 10_000);
 		expect(rate()).toBeUndefined();
 
-		cfgComposerTokenRate.override(settings, true);
+		cfgComposerTokenRate.override(session.settings, true);
 		expect(rate()?.p).toMatchObject({ value: 100, unit: "tok/s" });
 
 		session.tokenRate.reset();

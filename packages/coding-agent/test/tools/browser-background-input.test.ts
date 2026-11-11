@@ -54,7 +54,11 @@ async function openTabs(browser: Browser, openBackground: (url: string) => Promi
 	await openBackground(`${origin}/target`);
 	const target = await (await browser.waitForTarget(t => t.url() === `${origin}/target`)).page();
 	if (!target) throw new Error("Missing background page");
-	await target.waitForFunction("document.readyState === 'complete'");
+	// CDP exposes the target URL before its initial about:blank context is replaced.
+	await target.waitForFunction(
+		`location.href === ${JSON.stringify(`${origin}/target`)} && document.readyState === 'complete'`,
+		{ polling: 50 },
+	);
 	expect(await target.evaluate(() => document.visibilityState)).toBe("hidden");
 	return target;
 }

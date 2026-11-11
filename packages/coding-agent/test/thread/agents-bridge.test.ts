@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -100,7 +101,79 @@ async function mainSession(id: string): Promise<AgentSession> {
 	return session;
 }
 
+it("a running worker reads the parent's updated TODO resources over the real peer bridge", async () => {
+	const session = await mainSession("ScopeLead");
+	AgentRegistry.global().register({ id: "ScopeLead", displayName: "ScopeLead", kind: "main", session });
+	const { probe } = await startWorker();
+	const phases = [
+		{
+			name: "Work",
+			tasks: [
+				{ content: "Fix pipes", status: "in_progress" as const, schedule: { owner: "Pipes", resources: ["/old"] } },
+			],
+		},
+	];
+	session.setTodoPhases(phases);
+	expect(await probe.peerResources("ScopeLead")).toEqual(["/old"]);
+	phases[0]!.tasks[0]!.schedule.resources = ["/replacement"];
+	session.setTodoPhases(phases);
+	expect(await probe.peerResources("ScopeLead")).toEqual(["/replacement"]);
+});
+
+it("delivers hidden next-turn notices to a worker-homed session", async () => {
+	const { probe } = await startWorker();
+	await probe.open("W1", {});
+	const mirror = mirrorOf(liveRef("W1").session);
+	await mirror.sendCustomMessage(
+		{ customType: "repeated-status-notice", content: "Already delivered", display: false, attribution: "agent" },
+		{ deliverAs: "nextTurn", triggerTurn: false },
+	);
+	expect(await probe.localCustomTypes("W1")).toContain("repeated-status-notice");
+	expect(mirror.isStreaming).toBe(false);
+	await mirror.prompt("continue");
+	expect(await probe.localCustomTypes("W1")).toContain("repeated-status-notice");
+});
+
+it("changes a worker-homed fast tier and refuses control by a different parent", async () => {
+	const { probe } = await startWorker();
+	await probe.open("W1", {});
+	const ref = liveRef("W1");
+	ref.parentId = "Lead";
+	const mirror = mirrorOf(ref.session);
+	const unsubscribe = mirror.subscribe(() => {});
+	cleanups.push(unsubscribe);
+	const model = mirror.model;
+	if (!model) throw new Error("worker model missing");
+	expect(await AgentRegistry.global().setSubagentFastMode("Other", "W1", true)).toBe(false);
+	expect(mirror.effectiveServiceTier(model)).not.toBe("priority");
+	expect(await AgentRegistry.global().setSubagentFastMode("Lead", "W1", true)).toBe(true);
+	expect(mirror.effectiveServiceTier(model)).toBe("priority");
+	expect(await mirror.setFastMode(false)).toBe(true);
+	expect(mirror.effectiveServiceTier(model)).not.toBe("priority");
+});
+
 describe("agent bridging across subagent workers", () => {
+	it("drains and releases a worker journal through the restart owner", async () => {
+		const { probe } = await startWorker();
+		using temp = TempDir.createSync("omp-restart-worker-");
+		await probe.openPersisted("RestartWorker", temp.path());
+		const remote = mirrorOf(liveRef("RestartWorker").session);
+		await remote.prompt("work before restart");
+		const lease = remote.beginRestartDrain();
+		await remote.sendRestartNotice({ customType: "restart-queued", content: "checkpoint pending", display: true });
+		await lease.waitForQuiescence();
+		await remote.flushRestartJournal();
+		const entries = await remote.getRestartBranchEntries();
+		expect(entries.some(entry => entry.type === "message" && entry.message.role === "user")).toBe(true);
+		expect(remote.isStreaming).toBe(false);
+		lease.release();
+		expect(await remote.prompt("continue after cancelled restart")).toBe(true);
+		await waitFor(() => !remote.isStreaming);
+		expect(
+			remote.messages.some(message => message.role === "custom" && message.customType === "restart-queued"),
+		).toBe(true);
+	});
+
 	it("mirrors a real worker-homed AgentSession on main: streaming, run state, events, messages", async () => {
 		const { worker, probe } = await startWorker();
 		const key = await probe.open("W1", { gated: true });

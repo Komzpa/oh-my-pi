@@ -250,20 +250,22 @@ describe("handleRpcCancelSubagent", () => {
 			subscribeRunState: () => () => {},
 			addDisposer: () => {},
 		} as unknown as AgentSession;
-		AgentRegistry.global().register({
-			id,
-			displayName: id,
-			kind: "sub",
-			session,
-			sessionFile: path.join(artifactsDir, `${id}.jsonl`),
-			status: "running",
+
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			AgentRegistry.global().attachSession(
+				options.agentId!,
+				session,
+				options.sessionManager?.getSessionFile(),
+				options.expectedAgentRef ?? undefined,
+			);
+			AgentRegistry.global().setStatus(options.agentId!, "running", options.expectedAgentRef ?? undefined);
+			return {
+				session,
+				extensionsResult: {} as unknown as LoadExtensionsResult,
+				setToolUIContext: () => {},
+				eventBus: new EventBus(),
+			} as CreateAgentSessionResult;
 		});
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-			session,
-			extensionsResult: {} as unknown as LoadExtensionsResult,
-			setToolUIContext: () => {},
-			eventBus: new EventBus(),
-		} as CreateAgentSessionResult);
 		registry.setSubscriptionLevel("progress");
 		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
 

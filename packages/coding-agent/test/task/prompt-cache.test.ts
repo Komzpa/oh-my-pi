@@ -14,6 +14,7 @@ import * as sdk from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { HEADER_REVISION } from "../../src/session/journal-records";
 import * as settingsStream from "@oh-my-pi/pi-coding-agent/session/settings-stream-fn";
 import type { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discovery from "@oh-my-pi/pi-coding-agent/task/discovery";
@@ -395,10 +396,15 @@ describe("task sibling prompt-cache routing", () => {
 					await lifecycle.park(ref.id);
 					const records = Bun.JSONL.parse(await Bun.file(ref.sessionFile).text()) as Array<{
 						type: string;
+						customType?: string;
 						taskPromptCacheKey?: string;
+						data?: { taskPromptCacheKey?: string };
 					}>;
 					for (const record of records) {
 						if (record.type === "session") delete record.taskPromptCacheKey;
+						if (record.type === "custom" && record.customType === HEADER_REVISION) {
+							delete record.data?.taskPromptCacheKey;
+						}
 					}
 					await Bun.write(ref.sessionFile, `${records.map(record => JSON.stringify(record)).join("\n")}\n`);
 					const withoutCandidate = localSession(await lifecycle.ensureLive(ref.id));

@@ -92,3 +92,11 @@ describe("AgentOutputManager", () => {
 		expect(await mgr.allocate("@omp:other")).toBe("@omp:other");
 	});
 });
+
+// Resends request the recorded owner, including owners from older suffix-chain versions.
+it("flattens repeated owner names and keeps the ordinal monotonic after resume", async () => {
+	const mgr = new AgentOutputManager(() => null, { parentPrefix: "Lead" });
+	await mgr.reserve(["Lead.PhonePacking-7-3-2-2", "Lead.PhonePacking-62"]);
+	expect(await mgr.allocate("PhonePacking", 63)).toBe("Lead.PhonePacking-63");
+	expect(await mgr.allocate("PhonePacking", 63)).toBe("Lead.PhonePacking-64");
+});

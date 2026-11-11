@@ -73,7 +73,7 @@ import { ReadTool } from "./read";
 import type { PlanProposalHandler } from "./resolve";
 import { SecurityScanTool } from "./security-scan";
 import { supportsExternalThinking, ThinkTool } from "./think";
-import { type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { type TodoPersistedEdit, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { TodoTool } from "./todo";
 import { WriteTool } from "./write";
 import { WaitTool } from "./wait";
@@ -222,6 +222,8 @@ export interface ToolSession {
 	canPromptUser?: boolean;
 	/** Keep `ask` in a headless fork's roster; execution still requires UI. */
 	advertiseHeadlessAsk?: boolean;
+	/** Submit an interactive ask answer as an ordinary queued user message. */
+	submitUserReply?: (text: string) => void;
 	/** The user approves `cfg://` writes for this session (top-level TUI session only). */
 	settingsApproval?: boolean;
 	/**
@@ -352,7 +354,12 @@ export interface ToolSession {
 	 * cost ledger (`appendModelUsage`) without changing advisor-local IDs.
 	 */
 	sessionManager?: Pick<SessionManager, "appendCustomEntry" | "ensureOnDisk" | "flush" | "getBranch" | "getEntries"> &
-		Partial<Pick<SessionManager, "getSessionId" | "getLeafId" | "appendModelUsage" | "getArtifactContent">>;
+		Partial<
+			Pick<
+				SessionManager,
+				"getSessionId" | "getLeafId" | "appendModelUsage" | "getArtifactContent" | "getBranchView"
+			>
+		>;
 	/** Get eval kernel owner ID for session-scoped retained-kernel cleanup. */
 	getEvalKernelOwnerId?: () => string | null;
 	/** Current enabled eval prelude definitions. */
@@ -446,6 +453,7 @@ export interface ToolSession {
 		event: BeforeSubagentSpawnEvent,
 		signal?: AbortSignal,
 	): Promise<BeforeSubagentSpawnEventResult | undefined>;
+	getRestartDrainSignal?: () => AbortSignal;
 	/** Auth storage for passing to subagents (avoids re-discovery) */
 	authStorage?: import("../session/auth-storage").AuthStorage;
 	/** Model registry for passing to subagents (avoids re-discovery) */
@@ -480,6 +488,8 @@ export interface ToolSession {
 	getClientBridge?: () => ClientBridge | undefined;
 	/** Get cached todo phases for this session. */
 	getTodoPhases?: () => TodoPhase[];
+	/** Stable immutable view for read and copy-on-write lifecycle paths. */
+	getTodoSnapshot?: () => readonly TodoPhase[];
 	/** Replace cached todo phases for this session. */
 	setTodoPhases?: (phases: TodoPhase[]) => void;
 	/**
@@ -488,7 +498,7 @@ export interface ToolSession {
 	 * toolResult entry; callers that produce none (the eval bridge, Cursor sync)
 	 * use this so branch rehydration agrees with the in-memory list.
 	 */
-	commitTodoPhases?: (phases: TodoPhase[]) => void;
+	persistTodoPhases?: (phases: TodoPhase[], edit?: TodoPersistedEdit) => void;
 	/** Active workpool items whose incremental yields complete the current turn. */
 	getWorkPoolYieldItems?: () => readonly WorkPoolYieldItem[];
 	/**

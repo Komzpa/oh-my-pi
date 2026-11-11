@@ -124,7 +124,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -236,7 +236,8 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			signal: abortController.signal,
 		});
 		const creationOptions = await creationStarted.promise;
-		expect(creationOptions.expectedAgentRef).toBeNull();
+		expect(creationOptions.expectedAgentRef).toBe(registry.get("late-generation"));
+		expect(creationOptions.expectedAgentRef).toMatchObject({ status: "running", starting: true, session: null });
 		abortController.abort();
 		const cancelled = await run;
 		expect(cancelled.aborted).toBe(true);
@@ -272,7 +273,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -348,7 +349,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -447,7 +448,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -580,7 +581,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -662,7 +663,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -721,7 +722,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -774,7 +775,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {

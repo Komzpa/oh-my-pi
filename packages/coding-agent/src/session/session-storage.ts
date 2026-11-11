@@ -101,6 +101,8 @@ export interface SessionStorageWriter {
 export interface SessionStorageWriteOptions {
 	/** Current UTF-8 byte length, or `null` when the target must not exist. */
 	expectedSize?: number | null;
+	/** Optional asynchronous source for bounded chunks of a large file-backed body. */
+	readLine?: (index: number) => string | Promise<string>;
 }
 
 /**
@@ -692,28 +694,31 @@ function writeLinesToFileSync(target: string, lines: readonly string[]): void {
 }
 
 /**
- * Async {@link writeLinesToFileSync} through a buffered Bun file sink.
- * `target` must be a fresh path: a sink does not truncate an existing file.
+ * Async {@link writeLinesToFileSync} through bounded I/O-pool writes.
+ * `target` must be a fresh staging path.
  */
-async function writeLinesToFile(target: string, lines: readonly string[]): Promise<void> {
-	const sink = Bun.file(target).writer({ highWaterMark: LINE_STREAM_CHUNK });
+async function writeLinesToFile(
+	target: string,
+	lines: readonly string[],
+	readLine?: (index: number) => string | Promise<string>,
+): Promise<void> {
+	const file = await fs.promises.open(target, "wx");
 	try {
-		for (const line of lines) {
-			// Backpressured writes can reject after end() has otherwise completed.
-			// Do not publish a partial transcript before every write is confirmed.
-			const written = sink.write(line);
-			if (typeof written !== "number") await written;
+		let sliceStart = performance.now();
+		let chunk = "";
+		for (let i = 0; i < lines.length; i++) {
+			chunk += readLine ? await readLine(i) : lines[i];
+			if (chunk.length >= LINE_STREAM_CHUNK || performance.now() - sliceStart >= 4) {
+				await file.writeFile(chunk);
+				chunk = "";
+				await Bun.sleep(1);
+				sliceStart = performance.now();
+			}
 		}
-	} catch (err) {
-		try {
-			// Release the descriptor so the caller can discard the staging file.
-			await sink.end();
-		} catch {
-			// The write failure is the error worth reporting.
-		}
-		throw err;
+		if (chunk) await file.writeFile(chunk);
+	} finally {
+		await file.close();
 	}
-	await sink.end();
 }
 
 export class FileSessionStorage implements SessionStorage {
@@ -1135,7 +1140,7 @@ export class FileSessionStorage implements SessionStorage {
 		if (this.writeTextAtomic !== FileSessionStorage.prototype.writeTextAtomic) {
 			return this.writeTextAtomic(fpath, lines.join(""), options);
 		}
-		await this.#publishAtomic(fpath, tempPath => writeLinesToFile(tempPath, lines), options);
+		await this.#publishAtomic(fpath, tempPath => writeLinesToFile(tempPath, lines, options?.readLine), options);
 	}
 
 	/** Async {@link #publishSync}: stages via `stage`, then guard-checks and publishes without yielding. */

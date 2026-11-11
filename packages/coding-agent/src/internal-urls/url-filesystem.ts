@@ -641,6 +641,10 @@ export class InternalUrlFilesystem {
 		const { handler, spec } = route;
 		const target = parseUrlPath(input, spec);
 		const url = formatUrlPath(target);
+		if (!create && handler?.materialize) {
+			const materialized = await handler.materialize(parseInternalUrl(url), this.#context);
+			if (materialized) return { kind: "host", url, spec: { ...spec, immutable: true }, path: materialized };
+		}
 		if (!handler?.locate || spec.backing !== "file") {
 			if (create) throw this.#readOnly({ url, spec });
 			return this.#virtualNode(route, target, url);

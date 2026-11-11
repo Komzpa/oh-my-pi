@@ -1,0 +1,5 @@
+DECISION: Yes—#92 is the right owner, and the narrow signed-thinking recovery fix is appropriate.
+
+The observed failure is an assistant stop with no delivered text or tool call; treating signed-thinking-only stops as empty should route them through the existing bounded recovery. Preserve image, server-tool, and redacted-thinking handling, the three-retry cap, and the visible exhaustion warning; update the stale signed-thinking tests.
+
+Proceed under the branch and lease workflow in the brief. The absent skill does not change this design or ownership decision.

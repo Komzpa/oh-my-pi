@@ -174,7 +174,12 @@ function resolveCollision(
 		.filter(([_, e]) => e.body === candidateBody && Bun.deepEquals(e.frontmatter, candidateFrontmatter))
 		.map(([name]) => name);
 
-	if (bareSkill && ((bareInstalled && !candidateInstalled) || (candidateCustom && !bareCustom))) {
+	// Project-authored stakeholder and other skills override extension defaults.
+	const projectOverride =
+		candidate._source?.provider === "agents" &&
+		candidate._source.level === "project" &&
+		bareSkill?._source?.provider === "omp-plugins";
+	if (bareSkill && ((bareInstalled && !candidateInstalled) || (candidateCustom && !bareCustom) || projectOverride)) {
 		if (identical.includes(candidate.name)) return { name: candidate.name, dropped: identical };
 		const bareEntry = admitted.get(candidate.name)!;
 		let namespacedBare = `${bareEntry.namespace}/${bareEntry.rawName}`;

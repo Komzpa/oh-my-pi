@@ -2721,4 +2721,63 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		expect(cliOptions.model?.provider).toBe(scopedTarget.provider);
 		expect(cliOptions.model?.id).toBe(scopedTarget.id);
 	});
+	test("checks only one historical configuration payload per kind during resume", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled model");
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendModelChange(`${model.provider}/${model.id}`);
+		for (let i = 0; i < 100; i++) {
+			sessionManager.appendThinkingLevelChange(Effort.High);
+			sessionManager.appendServiceTierChange({ openai: "priority" });
+		}
+		const iterate = sessionManager.iterateBranch.bind(sessionManager);
+		const latest = sessionManager.getLatestBranchMatching.bind(sessionManager);
+		const decoded = { thinking_level_change: 0, service_tier_change: 0 };
+		let unfilteredReads = 0;
+		vi.spyOn(sessionManager, "getLatestBranchMatching").mockImplementation(predicate => {
+			const entry = latest(predicate);
+			if (entry?.type === "thinking_level_change" || entry?.type === "service_tier_change") decoded[entry.type]++;
+			return entry;
+		});
+		vi.spyOn(sessionManager, "iterateBranch").mockImplementation(function* (type) {
+			for (const entry of iterate(type)) {
+				if (!type) unfilteredReads++;
+				yield entry;
+			}
+		});
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			model,
+			authStorage: fixtureAuthStorage,
+			modelRegistry: fixtureModelRegistry,
+			sessionManager,
+			settings: Settings.isolated(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			rules: [],
+			preloadedCustomToolPaths: [],
+			toolNames: ["read"],
+		});
+		try {
+			const startupDecoded = { ...decoded, unfiltered: unfilteredReads };
+			expect(session.thinkingLevel).toBe(Effort.High);
+			expect(sessionManager.buildSessionContext().serviceTier).toEqual({ openai: "priority" });
+			expect(startupDecoded).toEqual({
+				thinking_level_change: 1,
+				service_tier_change: 1,
+				// Startup now uses metadata-selected latest records, with no
+				// unfiltered historical payload scan even for an in-memory journal.
+				unfiltered: 0,
+			});
+		} finally {
+			await session.dispose();
+		}
+	});
 });

@@ -1,21 +1,78 @@
+import { logger } from "@oh-my-pi/pi-utils";
+import { getTodoPlanCalibrationStore, type TodoPlanCalibrationStore } from "./todo-plan-calibration";
+import { patchTodoSchedule, reconcileAuditResourceChange } from "../session/todo-schedule-patch";
 import {
+	selectLatestBranchEntry,
+	selectBranchNewestFirst,
+	isTodoSelectionEntryMetadata,
+	type BranchSource,
+} from "../session/branch-selection";
+import type {
+	TodoArchivePersistedEdit,
+	TodoArchiveSummary,
+	TodoOperationPersistedEdit,
+	TodoReworkAttemptPersistedEdit,
+} from "@oh-my-pi/pi-tui/tools/todo";
+import {
+	formatTodoArchiveSummary,
 	type TodoStatus,
 	type TodoOperation,
 	type TodoItem,
 	type TodoPhase,
 	type TodoCompletionTransition,
 	type TodoToolDetails,
+	type TodoPersistedEdit,
 } from "@oh-my-pi/pi-tui/tools/todo";
+import {
+	todoNeedsOwnerDecision,
+	retainTodoDependencyReviews,
+	forecastTodoPlan,
+	formatPlanForecast,
+	formatPlanForecastDisplay,
+	formatTaskForecastDisplay,
+	getTodoPlanningIssues,
+	type TodoConfidence,
+	type RowRiskOptions,
+	type TodoSchedule,
+	type TodoPlanForecast,
+	type TodoPlanPrediction,
+	type TodoReworkAttempt,
+	validateTodoDependencies,
+} from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 
 import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 
+import { launchScope } from "@oh-my-pi/pi-utils/launch-trace";
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
+import type { SessionContextEntryMetadata } from "../session/session-context";
 import type { SessionEntry } from "../session/session-entries";
+import { loadRowRisk } from "../task/row-risk";
+import { cfgTaskMaxConcurrency } from "../task/settings";
 
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
+import { readGoalDeadline, readGoalDeadlineFromManager } from "../goals/deadlines";
+import { applyTodoExecutorObservation, appendTodoReworkAttempt, type TodoExecutorObservation } from "./todo-executor";
+
+import {
+	readTodoPlanHistory,
+	settleTodoPlanRecord,
+	todoPlanCalibrationHistory,
+	todoPlanMembers,
+	TODO_PLAN_HISTORY_CUSTOM_TYPE,
+} from "./todo-plan-history";
+
+export interface ReviewPageAnswer {
+	task: string;
+	page: string;
+	card: string;
+	contentSha: string;
+	answer: "accept" | "redo" | "drop";
+	note: string;
+	at: string;
+}
 
 /** Whether an unknown value is a persisted todo phase. */
 export function isTodoPhase(value: unknown): value is TodoPhase {
@@ -46,11 +103,104 @@ export function committedTodoPhases(result: AgentToolResult): TodoPhase[] | unde
 	return phases;
 }
 
+/** Compact todo edit carried by new persisted todo results/custom entries. */
+export function committedTodoEdit(result: AgentToolResult): TodoPersistedEdit | undefined {
+	if (result.isError || !isRecord(result.details)) return undefined;
+	const edit = result.details.edit;
+	return isTodoPersistedEdit(edit) ? edit : undefined;
+}
+
+export const TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL = 100;
+
+export const TODO_CLOSED_COMPACTION_THRESHOLD = 50;
+export const TODO_LIVE_CLOSED_TAIL = 10;
+
+/** Compact closed history at a row closure, retaining actionable review and dependency context. */
+export function archiveTodoPhases(
+	phases: TodoPhase[],
+	_now: number,
+): { phases: TodoPhase[]; archivedPhases: TodoPhase[] } {
+	const isClosed = (task: TodoItem): boolean => task.status === "completed" || task.status === "abandoned";
+	const tasks = phases.flatMap(phase => phase.tasks);
+	const closed = tasks.filter(isClosed);
+	if (closed.length < TODO_CLOSED_COMPACTION_THRESHOLD) return { phases, archivedPhases: [] };
+	const dependencies = new Set(
+		tasks
+			.filter(task => !isClosed(task))
+			.flatMap(task => [
+				...(task.schedule?.dependencies ?? []),
+				...(task.schedule?.speculativeOn ? [task.schedule.speculativeOn] : []),
+			]),
+	);
+	// Legacy rows lack finish times: their stable list order supplies the recent tail.
+	const recent = [...closed].sort((a, b) => (a.schedule?.finishedAt ?? 0) - (b.schedule?.finishedAt ?? 0));
+	const retained = new Set(recent.slice(-TODO_LIVE_CLOSED_TAIL));
+	const live: TodoPhase[] = [];
+	const archivedPhases: TodoPhase[] = [];
+	for (const phase of phases) {
+		const keep: TodoItem[] = [];
+		const remove: TodoItem[] = [];
+		for (const task of phase.tasks) {
+			const schedule = task.schedule;
+			const protectedRow =
+				dependencies.has(task.content) ||
+				schedule?.review === "user" ||
+				schedule?.review === "redo" ||
+				schedule?.handoffPending ||
+				schedule?.reviewPagePending;
+			if (isClosed(task) && !retained.has(task) && !protectedRow) remove.push(cloneTask(task));
+			else keep.push(task);
+		}
+		if (keep.length) live.push({ ...phase, tasks: keep });
+		if (remove.length) archivedPhases.push({ ...phase, tasks: remove });
+	}
+	return { phases: live, archivedPhases };
+}
+
 // =============================================================================
 // Schema
 // =============================================================================
 
-const TodoOp = type('"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "view"');
+const TodoOp = type(
+	'"init" | "start" | "done" | "rm" | "drop" | "block" | "unblock" | "append" | "schedule" | "view"',
+).describe("operation to apply");
+
+const TodoEstimateInput = type({
+	optimisticSeconds: type("number"),
+	likelySeconds: type("number"),
+	pessimisticSeconds: type("number"),
+	confidence: type('"low" | "medium" | "high"'),
+	basis: type("string"),
+});
+
+const TodoScheduleUpdateInput = type({
+	task: type("string"),
+	"content?": type("string").describe("Rename the row; keeps its owner and history"),
+	"dependencies?": type("string").array(),
+	"owner?": type("string"),
+	"agentProfile?": type("string"),
+	"resources?": type("string").array(),
+	"readOnly?": "boolean",
+	"estimate?": TodoEstimateInput,
+	"evidence?": type("string"),
+	"materialInputs?": type({
+		criterion: type("string"),
+		receipts: type("string").array(),
+		prerequisites: type("string").array(),
+	}).describe(
+		"Immutable criterion revision and receipt/source locators, including newly available prerequisite receipts. Administrative prose is not a material input.",
+	),
+	"decision?": type('"owner"').describe(
+		"Agent-authored product content beyond the owner request needs an owner decision",
+	),
+	"review?": type('"user" | "accepted" | "redo" | "drop" | null'),
+	"reviewCard?": type("string | null").describe("Published review card slug"),
+	"reviewPage?": type("string | null").describe("HTTP URL of the published decision review page"),
+	"speculativeOn?": type("string | null"),
+	"postDeadline?": type("boolean").describe(
+		"Explicitly move this row outside deadline scope; keep it as an after deadline follow-up",
+	),
+});
 
 const InitListEntry = type({
 	phase: type("string"),
@@ -60,14 +210,27 @@ const InitListEntry = type({
 const todoSchema = type({
 	op: TodoOp,
 	"list?": InitListEntry.array().describe("phases for init"),
-	"task?": type("string").describe("verbatim task content"),
-	"phase?": type("string"),
-	// No `atLeastLength(1)` here: `items` is only meaningful for `init`/`append`,
-	// and both enforce non-empty with op-specific errors. A stray `items: []` on
-	// an op that ignores it (e.g. `view`) must not be a hard schema rejection.
-	"items?": type("string").array().describe("tasks for flat init or append"),
-	"reason?": type("string").describe("blocker note for block"),
-});
+	"task?": type("string").describe("verbatim task content; with view, show that task and its full attempt history"),
+	"phase?": type("string").describe("phase name; with view, lists that whole phase including closed rows"),
+	"archive?": type("boolean").describe("with view, include archived rows"),
+	"previewReason?": type({
+		task: "string",
+		kind: '"deferred" | "not-applicable" | "external-blocker"',
+		detail: "string",
+		"deferUntil?": "number",
+	}),
+	"items?": type("string")
+		.describe("task content")
+		.array()
+		.describe("tasks for single-phase init or append; exact task contents to close in one done/drop"),
+	"reason?": type("string").describe(
+		"required concise external blocker (max 160 normalized characters), naming its actor or condition",
+	),
+	"updates?": TodoScheduleUpdateInput.array().describe("atomic batch of task scheduling updates (schedule)"),
+	"override?": type("string").describe(
+		"names the plan-check demand this call answers; the gate suppresses that demand for a few turns",
+	),
+}).describe("apply a single todo operation");
 
 type TodoParams = TodoSchema;
 type TodoSchema = typeof todoSchema.infer;
@@ -86,18 +249,41 @@ function findTaskByContent(phases: TodoPhase[], content: string): { task: TodoIt
 	return undefined;
 }
 
+/** Starting an archived row brings it back into its phase: the archive hides closed rows, it does not forbid reopening them. */
+function restoreArchivedTask(
+	phases: TodoPhase[],
+	archived: TodoPhase[],
+	content: string | undefined,
+): { task: TodoItem; phase: TodoPhase } | undefined {
+	if (!content) return undefined;
+	for (const archivedPhase of archived) {
+		const task = archivedPhase.tasks.find(t => t.content === content);
+		if (!task) continue;
+		let phase = findPhaseByName(phases, archivedPhase.name);
+		if (!phase) {
+			phase = { name: archivedPhase.name, tasks: [] };
+			phases.push(phase);
+		}
+		const restored = cloneTask(task);
+		phase.tasks.push(restored);
+		return { task: restored, phase };
+	}
+	return undefined;
+}
+
 function findPhaseByName(phases: TodoPhase[], name: string): TodoPhase | undefined {
 	return phases.find(phase => phase.name === name);
 }
 
 function cloneTask(task: TodoItem): TodoItem {
-	return task.blocker !== undefined
-		? { content: task.content, status: task.status, blocker: task.blocker }
-		: { content: task.content, status: task.status };
+	return structuredClone(task);
 }
 
 function clonePhases(phases: TodoPhase[]): TodoPhase[] {
-	return phases.map(phase => ({ name: phase.name, tasks: phase.tasks.map(cloneTask) }));
+	return phases.map(phase => {
+		const { tasks, ...metadata } = phase;
+		return { ...structuredClone(metadata), tasks: tasks.map(cloneTask) };
+	});
 }
 
 function todoTransitionKey(phase: string, content: string): string {
@@ -125,18 +311,35 @@ function getCompletionTransitions(previous: TodoPhase[], updated: TodoPhase[]): 
 	return transitions;
 }
 
-function normalizeInProgressTask(phases: TodoPhase[]): void {
-	const orderedTasks = phases.flatMap(phase => phase.tasks);
-	if (orderedTasks.length === 0) return;
-
-	const inProgressTasks = orderedTasks.filter(task => task.status === "in_progress");
-	if (inProgressTasks.length > 1) {
-		for (const task of inProgressTasks.slice(1)) {
-			task.status = "pending";
+export function stampTaskTransitionTimes(previous: TodoPhase[], updated: TodoPhase[], now: number): void {
+	const previousStatuses = new Map<string, TodoStatus>();
+	for (const phase of previous) {
+		for (const task of phase.tasks) previousStatuses.set(task.content, task.status);
+	}
+	for (const phase of updated) {
+		for (const task of phase.tasks) {
+			const previousStatus = previousStatuses.get(task.content);
+			const enteredProgress = task.status === "in_progress" && previousStatus !== "in_progress";
+			const enteredClosed =
+				(task.status === "completed" || task.status === "abandoned") && previousStatus !== task.status;
+			if (!enteredProgress && !enteredClosed) continue;
+			const schedule: TodoSchedule = { ...task.schedule };
+			if (enteredProgress) {
+				schedule.startedAt ??= now;
+				if (previousStatus === "completed" || previousStatus === "abandoned") delete schedule.finishedAt;
+			}
+			if (enteredClosed) schedule.finishedAt = now;
+			task.schedule = schedule;
 		}
 	}
+}
 
-	if (inProgressTasks.length > 0) return;
+function normalizeInProgressTask(phases: TodoPhase[]): void {
+	// Operations may preserve legacy/multi-row in-progress state. Never rewrite
+	// unrelated rows to enforce a global single-active-row invariant; only
+	// promote one focus row when no row is currently in progress.
+	const orderedTasks = phases.flatMap(phase => phase.tasks);
+	if (orderedTasks.some(task => task.status === "in_progress")) return;
 
 	const firstPendingTask = orderedTasks.find(task => task.status === "pending");
 	if (firstPendingTask) firstPendingTask.status = "in_progress";
@@ -158,6 +361,13 @@ export const USER_TODO_EDIT_CUSTOM_TYPE = "user_todo_edit";
 
 export const TODO_HUD_STATE_CUSTOM_TYPE = "todo_hud_state";
 
+/** Entries that can carry todo state or HUD choices; replay over only these is equivalent to the full branch. */
+export function isTodoStateEntryMetadata(metadata: SessionContextEntryMetadata): boolean {
+	if (metadata.type === "custom")
+		return metadata.customType === USER_TODO_EDIT_CUSTOM_TYPE || metadata.customType === TODO_HUD_STATE_CUSTOM_TYPE;
+	return metadata.type === "message" && metadata.messageRole === "toolResult" && metadata.toolName === "todo";
+}
+
 export type TodoHudVisibility = "dismissed" | "revealed";
 
 export interface TodoSnapshotIdentity {
@@ -173,19 +383,28 @@ function todoPhasesFingerprint(phases: readonly TodoPhase[]): string {
 	return JSON.stringify(
 		phases.map(phase => ({
 			name: phase.name,
-			tasks: phase.tasks.map(task =>
-				task.blocker === undefined
-					? { content: task.content, status: task.status }
-					: { content: task.content, status: task.status, blocker: task.blocker },
-			),
+			tasks: phase.tasks.map(task => ({ ...task })),
 		})),
 	);
 }
 
-function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
+/**
+ * Copy JSON-shaped todo data out of a session entry by value. Entry payloads may be proxies from a lazily
+ * loading session store, which structuredClone rejects; every replayed row starts as plain data.
+ */
+function copyTodoData<T>(value: T): T {
+	if (value === null || typeof value !== "object") return value;
+	if (Array.isArray(value)) return value.map(item => copyTodoData(item)) as T;
+	const copy: Record<string, unknown> = {};
+	for (const [key, child] of Object.entries(value)) copy[key] = copyTodoData(child);
+	return copy as T;
+}
+
+// Internal scans borrow snapshots; mutation and public read boundaries make their own detached copies.
+function canonicalTodoPhases(entry: SessionEntry, copy = false): TodoPhase[] | undefined {
 	if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
 		const phases = (entry.data as { phases?: unknown } | undefined)?.phases;
-		return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
+		return Array.isArray(phases) ? (copy ? copyTodoData(phases as TodoPhase[]) : (phases as TodoPhase[])) : undefined;
 	}
 	if (entry.type !== "message") return undefined;
 	const message = entry.message as {
@@ -197,23 +416,313 @@ function canonicalTodoPhases(entry: SessionEntry): TodoPhase[] | undefined {
 	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
 	if (message.details?.op === "view") return undefined;
 	const phases = message.details?.phases;
-	return Array.isArray(phases) ? (phases as TodoPhase[]) : undefined;
+	return Array.isArray(phases) ? (copy ? copyTodoData(phases as TodoPhase[]) : (phases as TodoPhase[])) : undefined;
 }
+
+function isTodoReworkAttempt(value: unknown): value is TodoReworkAttempt {
+	if (
+		!isRecord(value) ||
+		typeof value.attemptId !== "string" ||
+		typeof value.workerName !== "string" ||
+		typeof value.resolvedModel !== "string" ||
+		typeof value.effort !== "string" ||
+		typeof value.startedAt !== "number" ||
+		!Number.isFinite(value.startedAt) ||
+		typeof value.finishedAt !== "number" ||
+		!Number.isFinite(value.finishedAt) ||
+		typeof value.durationMs !== "number" ||
+		!Number.isFinite(value.durationMs) ||
+		value.durationMs < 0 ||
+		(value.terminalStatus !== "completed" &&
+			value.terminalStatus !== "failed" &&
+			value.terminalStatus !== "aborted") ||
+		!Array.isArray(value.deliverablePaths) ||
+		!value.deliverablePaths.every(path => typeof path === "string")
+	)
+		return false;
+	return [
+		"rejectionReason",
+		"reflectionAnswer",
+		"noAnswerReason",
+		"finalReportParagraph",
+		"infraFailureLine",
+		"infraFailureError",
+	].every(key => value[key] === undefined || typeof value[key] === "string");
+}
+
+function isTodoPersistedEdit(value: unknown): value is TodoPersistedEdit {
+	if (
+		!isRecord(value) ||
+		value.v !== 1 ||
+		typeof value.at !== "number" ||
+		!Number.isFinite(value.at) ||
+		typeof value.kind !== "string"
+	) {
+		return false;
+	}
+	if (value.kind === "schedule_patch")
+		return (
+			typeof value.task === "string" &&
+			(value.adviceOnly === undefined || value.adviceOnly === true) &&
+			isRecord(value.patch) &&
+			(value.cleared === undefined ||
+				(Array.isArray(value.cleared) && value.cleared.every(key => typeof key === "string")))
+		);
+	if (value.kind === "op") return typeof value.op === "string" && value.params !== undefined;
+	if (value.kind === "archive") {
+		return (
+			Array.isArray(value.archivedPhases) &&
+			value.archivedPhases.every(isTodoPhase) &&
+			(value.operation === undefined || (isTodoPersistedEdit(value.operation) && value.operation.kind === "op"))
+		);
+	}
+	if (value.kind === "attempt") {
+		return typeof value.phase === "string" && typeof value.content === "string" && isTodoReworkAttempt(value.attempt);
+	}
+	if (value.kind !== "executor" || !isRecord(value.observation)) return false;
+	const observation = value.observation;
+	const outcome = observation.outcome;
+	return (
+		typeof observation.workerId === "string" &&
+		typeof observation.startedAt === "number" &&
+		Number.isFinite(observation.startedAt) &&
+		(observation.finishedAt === undefined ||
+			(typeof observation.finishedAt === "number" && Number.isFinite(observation.finishedAt))) &&
+		(outcome === undefined || outcome === "completed" || outcome === "failed" || outcome === "aborted") &&
+		(observation.runningWorkerIds === undefined ||
+			(Array.isArray(observation.runningWorkerIds) &&
+				observation.runningWorkerIds.every(workerId => typeof workerId === "string")))
+	);
+}
+
+function compactTodoEditFromEntry(entry: SessionEntry): TodoPersistedEdit | undefined {
+	if (entry.type === "custom" && entry.customType === USER_TODO_EDIT_CUSTOM_TYPE) {
+		const edit = (entry.data as { edit?: unknown } | undefined)?.edit;
+		return isTodoPersistedEdit(edit) ? copyTodoData(edit) : undefined;
+	}
+	if (entry.type !== "message") return undefined;
+	const message = entry.message as {
+		role?: string;
+		toolName?: string;
+		details?: { op?: unknown; edit?: unknown };
+		isError?: boolean;
+	};
+	if (message.role !== "toolResult" || message.toolName !== "todo" || message.isError) return undefined;
+	if (message.details?.op === "view") return undefined;
+	return isTodoPersistedEdit(message.details?.edit) ? copyTodoData(message.details.edit) : undefined;
+}
+
+type TodoReplayResult = { phases: TodoPhase[]; mutable: boolean };
+
+function replayTodoEdit(
+	phases: TodoPhase[] | undefined,
+	edit: TodoPersistedEdit,
+	options: { mutable?: boolean; archived?: TodoPhase[] } = {},
+): TodoReplayResult | undefined {
+	if (
+		!phases &&
+		!(edit.kind === "op" && edit.op === "init") &&
+		!(edit.kind === "archive" && edit.operation?.op === "init")
+	)
+		return undefined;
+	const current = phases ? (options.mutable ? phases : copyTodoData(phases)) : [];
+	if (edit.kind === "op" && edit.healedSelfEdges) healStoredSelfEdges(current);
+	if (edit.kind === "op" && edit.healedDanglingEdges) healStoredDanglingEdges(current, options.archived);
+	if (edit.kind === "schedule_patch") {
+		const updated = patchTodoSchedule(
+			current,
+			edit.task,
+			{ ...edit.patch, ...Object.fromEntries((edit.cleared ?? []).map(key => [key, undefined])) },
+			edit.at,
+			{ legacyFollowUps: !edit.adviceOnly },
+		);
+		return updated ? { phases: updated, mutable: true } : undefined;
+	}
+	if (edit.kind === "executor") {
+		const updated = applyTodoExecutorObservation(current, {
+			...edit.observation,
+			runningWorkerIds: new Set(edit.observation.runningWorkerIds ?? []),
+		});
+		return updated ? { phases: updated, mutable: true } : undefined;
+	}
+	if (edit.kind === "attempt") {
+		const updated = appendTodoReworkAttempt(current, edit, edit.attempt);
+		return updated ? { phases: updated, mutable: true } : undefined;
+	}
+	if (edit.kind === "archive") {
+		let updated = current;
+		if (edit.operation) {
+			const replayed = replayTodoEdit(updated, edit.operation, { ...options, mutable: true });
+			// The committed archive is authoritative even when an operation target is already absent.
+			if (replayed) updated = replayed.phases;
+		}
+		const archived = new Set(
+			edit.archivedPhases.flatMap(phase => phase.tasks.map(task => todoTransitionKey(phase.name, task.content))),
+		);
+		const live = updated.flatMap(phase => {
+			const tasks = phase.tasks.filter(task => !archived.has(todoTransitionKey(phase.name, task.content)));
+			return tasks.length > 0 ? [{ name: phase.name, tasks }] : [];
+		});
+		return { phases: live, mutable: true };
+	}
+	let resolved = resolveTodoParams(edit.params, current.length > 0);
+	if (typeof resolved === "string") return undefined;
+	if (resolved.op !== edit.op || resolved.op === "view") return undefined;
+	if (resolved.op === "append" && resolved.items) {
+		// Replay additions idempotently; live calls still reject duplicate rows.
+		const items = resolved.items.filter(content => !findTaskByContent(current, content));
+		if (items.length === 0) return { phases: current, mutable: true };
+		resolved = { ...resolved, items };
+	}
+	if (resolved.op === "schedule") {
+		const errors: string[] = [];
+		const next = applyEntry(current, resolved, errors, edit.at, options.archived, { replay: true });
+		if (errors.length > 0) return undefined;
+		applyReviewClosures(next, edit.reviewClosures ?? [], edit.at);
+		return { phases: next, mutable: true };
+	}
+	const applied = applyParams(current, resolved, edit.at, options.archived);
+	if (applied.errors.length > 0) return undefined;
+	return { phases: applied.phases, mutable: true };
+}
+
+export { isTodoSelectionEntryMetadata } from "../session/branch-selection";
+
+interface TodoArchiveBranchSource extends BranchSource {
+	readonly bodyRevision?: number;
+}
+interface TodoArchiveState {
+	phases: TodoPhase[];
+	summary?: TodoArchiveSummary;
+}
+const todoArchiveBranches = new WeakMap<
+	object,
+	TodoArchiveState & { latest: unknown; bodyRevision?: number; entries: SessionEntry[] }
+>();
+
+/** Fold archive history during resume without retaining decoded historical entries. */
+export function getTodoArchiveBranchEntries(manager: TodoArchiveBranchSource | undefined): SessionEntry[] {
+	if (!manager) return [];
+	const latest = selectLatestBranchEntry(manager, isTodoSelectionEntryMetadata);
+	const revision = latest?.id ?? latest;
+	const cached = todoArchiveBranches.get(manager);
+	const sameBody = cached?.bodyRevision === manager.bodyRevision;
+	if (cached && sameBody && cached.latest === revision) return cached.entries;
+	let extendsCached = false;
+	let hasEdit = false;
+	function* history(): IterableIterator<SessionEntry> {
+		for (const entry of selectBranchNewestFirst(manager!, isTodoSelectionEntryMetadata)) {
+			if (cached && sameBody && (entry.id ?? entry) === cached.latest) {
+				extendsCached = true;
+				if (hasEdit) yield* cached.entries.toReversed();
+				return;
+			}
+			if (compactTodoEditFromEntry(entry)) hasEdit = true;
+			yield entry;
+		}
+	}
+	const { phases, summary, fromAt, toAt } = foldTodoArchiveNewestFirst(history());
+	if (cached && extendsCached && !hasEdit) {
+		cached.latest = revision;
+		return cached.entries;
+	}
+	const entries = Number.isFinite(fromAt)
+		? [fromAt, toAt].map((at, index): SessionEntry => ({
+				type: "custom",
+				id: `todo-archive-fold-${index}`,
+				parentId: null,
+				timestamp: new Date(0).toISOString(),
+				customType: USER_TODO_EDIT_CUSTOM_TYPE,
+				data: { edit: { v: 1, kind: "archive", at, archivedPhases: index === 0 ? phases : [] } },
+			}))
+		: [];
+	todoArchiveBranches.set(manager, { latest: revision, bodyRevision: manager.bodyRevision, entries, phases, summary });
+	return entries;
+}
+
+/** Detached archive data for one consumer operation, without replaying folded entries. */
+export function readTodoArchiveState(manager: TodoArchiveBranchSource | undefined): TodoArchiveState {
+	getTodoArchiveBranchEntries(manager);
+	const state = manager ? todoArchiveBranches.get(manager) : undefined;
+	return {
+		phases: state ? structuredClone(state.phases) : [],
+		summary: state?.summary ? { ...state.summary } : undefined,
+	};
+}
+
+/** Latest full live snapshot and its compact edit/HUD tail; archives use the full history reader. */
+export function getLiveTodoBranchEntries(manager: BranchSource | undefined): SessionEntry[] {
+	if (!manager) return [];
+	const entries: SessionEntry[] = [];
+	for (const entry of selectBranchNewestFirst(manager, isTodoSelectionEntryMetadata)) {
+		entries.push(entry);
+		if (canonicalTodoPhases(entry) !== undefined) break;
+	}
+	return entries.reverse();
+}
+
+export function shouldPersistTodoFullSnapshotCheckpoint(entriesNewestFirst: Iterable<SessionEntry>): boolean {
+	let compactEditsSinceSnapshot = 0;
+	for (const entry of entriesNewestFirst) {
+		if (canonicalTodoPhases(entry)) return compactEditsSinceSnapshot >= TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL;
+		// Once the interval is reached the answer is `true` whether or not a snapshot is found, so stop reading.
+		if (compactTodoEditFromEntry(entry) && ++compactEditsSinceSnapshot >= TODO_FULL_SNAPSHOT_CHECKPOINT_INTERVAL)
+			return true;
+	}
+	return true;
+}
+
+// HUD sync asks for the identity on every subagent progress event; a full replay copies every
+// todo edit on the branch (5 s of a 30 s live DC profile). The answer only changes when the
+// selected todo entries change, so reuse it while the same newest entry and count are selected.
+const latestTodoSnapshotIdentityCache = new WeakMap<
+	SessionEntry,
+	{ first: SessionEntry; length: number; identity: TodoSnapshotIdentity | undefined }
+>();
 
 /** Identify the latest durable canonical todo snapshot on the active branch. */
 export function getLatestTodoSnapshotIdentity(entries: SessionEntry[]): TodoSnapshotIdentity | undefined {
+	const last = entries.at(-1);
+	if (!last) return undefined;
+	const cached = latestTodoSnapshotIdentityCache.get(last);
+	if (cached && cached.first === entries[0] && cached.length === entries.length) return cached.identity;
+	const identity = computeLatestTodoSnapshotIdentity(entries);
+	latestTodoSnapshotIdentityCache.set(last, { first: entries[0]!, length: entries.length, identity });
+	return identity;
+}
+
+function computeLatestTodoSnapshotIdentity(entries: SessionEntry[]): TodoSnapshotIdentity | undefined {
 	let latest: TodoPhase[] | undefined;
+	let mutable = false;
 	let sourceEntryId: string | undefined;
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const phases = canonicalTodoPhases(entries[i]);
-		if (phases) {
-			latest = phases;
-			sourceEntryId = entries[i].id;
-			break;
-		}
+	const archived = getLatestTodoArchiveFromEntries(entries, { includeRestored: true });
+	for (const entry of entries) {
+		const phases = canonicalTodoPhases(entry);
+		const edit = phases ? undefined : compactTodoEditFromEntry(entry);
+		const replayed: TodoReplayResult | undefined = phases
+			? { phases, mutable: false }
+			: edit
+				? replayTodoEdit(latest, edit, { mutable, archived })
+				: undefined;
+		if (!replayed) continue;
+		latest = replayed.phases;
+		mutable = replayed.mutable;
+		sourceEntryId = entry.id;
 	}
 	if (!latest || !sourceEntryId) return undefined;
 	return { sourceEntryId, fingerprint: todoPhasesFingerprint(latest) };
+}
+
+function matchesLatestTodoSnapshot(
+	entries: SessionEntry[],
+	phases: readonly TodoPhase[],
+	snapshot: TodoSnapshotIdentity,
+): boolean {
+	const fingerprint = todoPhasesFingerprint(phases);
+	return (
+		fingerprint === snapshot.fingerprint ||
+		fingerprint === todoPhasesFingerprint(getLatestTodoPhasesFromEntries(entries))
+	);
 }
 
 /** Return the persisted HUD choice only when it targets the current canonical snapshot exactly. */
@@ -222,7 +731,7 @@ export function getTodoHudVisibility(
 	phases: readonly TodoPhase[],
 ): TodoHudVisibility | undefined {
 	const snapshot = getLatestTodoSnapshotIdentity(entries);
-	if (!snapshot || snapshot.fingerprint !== todoPhasesFingerprint(phases)) return undefined;
+	if (!snapshot || !matchesLatestTodoSnapshot(entries, phases, snapshot)) return undefined;
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		if (entry.type !== "custom" || entry.customType !== TODO_HUD_STATE_CUSTOM_TYPE) continue;
@@ -245,16 +754,262 @@ export function createTodoHudStateData(
 	visibility: TodoHudVisibility,
 ): TodoHudStateEntryData | undefined {
 	const snapshot = getLatestTodoSnapshotIdentity(entries);
-	if (!snapshot || snapshot.fingerprint !== todoPhasesFingerprint(phases)) return undefined;
+	if (!snapshot || !matchesLatestTodoSnapshot(entries, phases, snapshot)) return undefined;
 	return { ...snapshot, visibility };
 }
 
+const todoPhasesNeedingCheckpoint = new WeakSet<TodoPhase[]>();
+
+/** True once for phases the loader migrated; the owner persists them as one checkpoint. */
+export function takeTodoMigrationCheckpoint(phases: TodoPhase[]): boolean {
+	return todoPhasesNeedingCheckpoint.delete(phases);
+}
+
 export function getLatestTodoPhasesFromEntries(entries: SessionEntry[]): TodoPhase[] {
-	for (let i = entries.length - 1; i >= 0; i--) {
-		const phases = canonicalTodoPhases(entries[i]);
-		if (phases) return clonePhases(phases);
+	// A full snapshot supersedes every earlier replay operation. Only its compact tail can change the live plan.
+	let latest: TodoPhase[] | undefined;
+	let snapshotIndex = -1;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const phases = canonicalTodoPhases(entries[index]!, false);
+		if (!phases) continue;
+		latest = phases;
+		snapshotIndex = index;
+		break;
 	}
-	return [];
+	let mutable = false;
+	const archived = getLatestTodoArchiveFromEntries(entries, { includeRestored: true });
+	for (let index = snapshotIndex + 1; index < entries.length; index++) {
+		const edit = compactTodoEditFromEntry(entries[index]!);
+		const replayed: TodoReplayResult | undefined = edit
+			? replayTodoEdit(latest, edit, { mutable, archived })
+			: undefined;
+		if (!replayed) continue;
+		latest = replayed.phases;
+		mutable = replayed.mutable;
+	}
+	if (!latest) return [];
+	const restored = copyTodoData(latest);
+	const missingTimes = new Map<string, TodoItem[]>();
+	for (const phase of restored) {
+		for (const task of phase.tasks) {
+			if (task.status !== "completed" || Number.isFinite(task.schedule?.finishedAt)) continue;
+			const key = todoTransitionKey(phase.name, task.content);
+			const matches = missingTimes.get(key) ?? [];
+			matches.push(task);
+			missingTimes.set(key, matches);
+		}
+	}
+	// Old snapshots omitted finishedAt. Recover only timestamps still needed by the final rows, newest first.
+	// A snapshot that removes/reopens a row cuts off older timestamps. Compact edits never supplied legacy
+	// completionTimes; their transition timestamps are already in the replayed schedules.
+	for (let index = snapshotIndex; index >= 0 && missingTimes.size > 0; index--) {
+		const entry = entries[index]!;
+		const phases = canonicalTodoPhases(entry, false);
+		if (!phases) continue;
+		const matches = new Map<string, { count: number; completed: boolean }>();
+		for (const phase of phases) {
+			for (const task of phase.tasks) {
+				const key = todoTransitionKey(phase.name, task.content);
+				if (!missingTimes.has(key)) continue;
+				const match = matches.get(key) ?? { count: 0, completed: false };
+				match.count++;
+				match.completed ||= task.status === "completed";
+				matches.set(key, match);
+			}
+		}
+		for (const key of missingTimes.keys()) if (!matches.get(key)?.completed) missingTimes.delete(key);
+		if (entry.type !== "message") continue;
+		const message = entry.message as { details?: { completedTasks?: unknown } };
+		if (!Array.isArray(message.details?.completedTasks)) continue;
+		const timestamp = Date.parse(entry.timestamp);
+		if (!Number.isFinite(timestamp)) continue;
+		for (const transition of message.details.completedTasks) {
+			if (!isRecord(transition) || typeof transition.phase !== "string" || typeof transition.content !== "string")
+				continue;
+			const key = todoTransitionKey(transition.phase, transition.content);
+			const tasks = missingTimes.get(key);
+			if (!tasks || matches.get(key)?.count !== 1) continue;
+			for (const task of tasks) task.schedule = { ...task.schedule, finishedAt: timestamp };
+			missingTimes.delete(key);
+		}
+	}
+	// Legacy Accept snapshots predate reviewClosures. Close through the same derivation,
+	// then let the owning loader persist one checkpoint rather than rewriting history.
+	let migrated = false;
+	const now = Date.now();
+	for (const phase of restored) {
+		for (const task of phase.tasks) {
+			if (task.schedule?.review !== "accepted" || task.status === "completed" || task.status === "abandoned")
+				continue;
+			let acceptedAt: number | undefined;
+			for (let index = entries.length - 1; index >= 0; index--) {
+				const entry = entries[index]!;
+				const edit = compactTodoEditFromEntry(entry);
+				const params = edit?.kind === "op" ? resolveTodoParams(edit.params, true) : undefined;
+				if (edit?.kind === "op" && params && typeof params !== "string" && params.op === "schedule") {
+					const update = params.updates?.find(update => update.task === task.content);
+					if (update?.review === "accepted") {
+						acceptedAt = edit.at;
+						break;
+					}
+					if (update?.review !== undefined) break;
+				}
+				const snapshot = canonicalTodoPhases(entry, false);
+				if (!snapshot) continue;
+				const row = snapshot
+					.find(candidate => candidate.name === phase.name)
+					?.tasks.find(row => row.content === task.content);
+				if (row?.schedule?.review !== "accepted") break;
+				const at = Date.parse(entry.timestamp);
+				if (Number.isFinite(at)) acceptedAt = at;
+			}
+			applyReviewClosures(
+				restored,
+				[{ task: task.content, reason: task.schedule.reviewClosingBlocked }],
+				acceptedAt ?? now,
+			);
+			migrated = true;
+		}
+	}
+	if (migrated) todoPhasesNeedingCheckpoint.add(restored);
+	return restored;
+}
+
+/** Recover archived rows from durable archive edits without changing the active live phases. */
+function foldTodoArchiveNewestFirst(
+	entries: Iterable<SessionEntry>,
+	includeRestored = false,
+): { phases: TodoPhase[]; summary?: TodoArchiveSummary; fromAt: number; toAt: number } {
+	const archived = new Map<string, { order: number; tasks: Map<string, { order: number; task: TodoItem }> }>();
+	const restored = new Set<string>();
+	let order = 0;
+	let fromAt = Infinity;
+	let toAt = -Infinity;
+	for (const entry of entries) {
+		const edit = compactTodoEditFromEntry(entry);
+		if (!edit) continue;
+		const operation = edit.kind === "archive" ? edit.operation : edit.kind === "op" ? edit : undefined;
+		if (edit.kind === "archive") {
+			fromAt = Math.min(fromAt, edit.at);
+			toAt = Math.max(toAt, edit.at);
+			for (const phase of edit.archivedPhases.toReversed()) {
+				let group = archived.get(phase.name);
+				if (!group) {
+					group = { order: -order++, tasks: new Map() };
+					archived.set(phase.name, group);
+				}
+				group.order = -order++;
+				for (const task of phase.tasks.toReversed()) {
+					if (restored.has(task.content)) continue;
+					const present = group.tasks.get(task.content);
+					group.tasks.set(task.content, { order: -order++, task: present?.task ?? structuredClone(task) });
+				}
+			}
+		}
+		if (operation?.op === "init") break;
+		if (!includeRestored && operation && isRecord(operation.params)) {
+			const params = operation.params;
+			const targets =
+				operation.op === "schedule" && Array.isArray(params.updates)
+					? params.updates.filter(isRecord).map(update => update.task)
+					: [params.task, ...(Array.isArray(params.items) ? params.items : [])];
+			for (const target of targets) if (typeof target === "string") restored.add(target);
+		}
+	}
+	const phases = [...archived]
+		.sort((a, b) => a[1].order - b[1].order)
+		.map(([name, group]) => ({
+			name,
+			tasks: [...group.tasks.values()].sort((a, b) => a.order - b.order).map(value => value.task),
+		}));
+	const tasks = phases.flatMap(phase => phase.tasks);
+	return {
+		phases,
+		fromAt,
+		toAt,
+		summary: tasks.length
+			? {
+					count: tasks.length,
+					done: tasks.filter(task => task.status === "completed").length,
+					dropped: tasks.filter(task => task.status === "abandoned").length,
+					fromAt,
+					toAt,
+				}
+			: undefined,
+	};
+}
+
+/** Recover archived rows without retaining or changing live phases. */
+export function getLatestTodoArchiveFromEntries(
+	entries: SessionEntry[],
+	options: { includeRestored?: boolean } = {},
+): TodoPhase[] {
+	return foldTodoArchiveNewestFirst(entries.toReversed(), options.includeRestored).phases;
+}
+
+export function getTodoArchiveSummaryFromEntries(
+	entries: SessionEntry[],
+	additional?: TodoArchivePersistedEdit,
+): TodoArchiveSummary | undefined {
+	const allEntries = additional
+		? [
+				...entries,
+				{ type: "custom", customType: USER_TODO_EDIT_CUSTOM_TYPE, data: { edit: additional } } as SessionEntry,
+			]
+		: entries;
+	return foldTodoArchiveNewestFirst(allEntries.toReversed()).summary;
+}
+
+/** Archived completions remain dependency evidence, not live forecast rows. */
+function withArchivedPrerequisites(phases: TodoPhase[], archived: TodoPhase[]): TodoPhase[] {
+	const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
+	const dependencies = new Set(
+		phases.flatMap(phase => phase.tasks.flatMap(task => task.schedule?.dependencies ?? [])),
+	);
+	const evidence = archived.flatMap(phase => {
+		const tasks = phase.tasks.filter(
+			task => task.status === "completed" && dependencies.has(task.content) && !liveContents.has(task.content),
+		);
+		return tasks.length > 0 ? [{ name: phase.name, tasks }] : [];
+	});
+	return evidence.length > 0 ? [...phases, ...evidence] : phases;
+}
+
+/** Complete ledger for accounting consumers; live rows override reopened archived identities. */
+export function withTodoArchive(phases: TodoPhase[], archived: TodoPhase[]): TodoPhase[] {
+	const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
+	const last = new Map(archived.flatMap(phase => phase.tasks.map(task => [task.content, task] as const)));
+	return [
+		...phases,
+		...archived.map(phase => ({
+			...phase,
+			tasks: phase.tasks.filter(task => !liveContents.has(task.content) && last.get(task.content) === task),
+		})),
+	];
+}
+
+export function forecastTodoLivePlan(
+	phases: TodoPhase[],
+	archived: TodoPhase[],
+	options: {
+		now: number;
+		capacity?: number;
+		deadlineAt?: number;
+		risk?: RowRiskOptions;
+		history?: readonly TodoPlanPrediction[];
+		calibrationStore?: TodoPlanCalibrationStore;
+	},
+): TodoPlanForecast {
+	const liveContents = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
+	const forecast = forecastTodoPlan(withTodoArchive(phases, archived), {
+		...options,
+		history: [
+			...(options.calibrationStore ?? getTodoPlanCalibrationStore()).snapshot(options.now),
+			...(options.history ?? []),
+		],
+	});
+	forecast.rows = forecast.rows.filter(row => liveContents.has(row.content));
+	return forecast;
 }
 
 function resolveTaskOrError(
@@ -291,6 +1046,25 @@ function resolvePhaseOrError(phases: TodoPhase[], name: string | undefined, erro
 	return phase;
 }
 
+/** `done`/`drop` accept a batch of exact task contents in `items`, so closing or pruning many
+ *  rows is one call instead of one round trip per row. */
+function getBatchTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoItem[] {
+	// Closing or dropping never falls back to "every row": an empty batch or a call with no target
+	// is a mistake, not a request to finish the whole plan.
+	if (entry.items && entry.items.length === 0 && !entry.task) {
+		errors.push("items is empty; name the rows to close or drop");
+		return [];
+	}
+	if (!entry.items && !entry.task && !entry.phase) {
+		errors.push("done/drop needs a task, a phase, or items");
+		return [];
+	}
+	if (!entry.items || entry.items.length === 0) return getTaskTargets(phases, entry, errors);
+	const names = entry.task ? [entry.task, ...entry.items] : entry.items;
+	const hits = names.map(name => resolveTaskOrError(phases, name, errors)?.task);
+	return [...new Set(hits.filter((task): task is TodoItem => task !== undefined))];
+}
+
 function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoItem[] {
 	if (entry.task) {
 		const hit = resolveTaskOrError(phases, entry.task, errors);
@@ -303,7 +1077,14 @@ function getTaskTargets(phases: TodoPhase[], entry: TodoOpEntryValue, errors: st
 	return phases.flatMap(phase => phase.tasks);
 }
 
-/** Default phase name for flat `init` and `append` to an empty list. */
+/** Enforce structural limits only; the prompt guides external-gate semantics. */
+function validateBlockReason(reason: string | undefined): string | undefined {
+	const normalized = reason?.replace(/\s+/g, " ").trim();
+	if (!normalized || normalized.length > 160) return undefined;
+	return normalized;
+}
+
+/** Phase name for `init` given a flat `items` list with no explicit `phase`. */
 const DEFAULT_INIT_PHASE = "Tasks";
 
 function initPhases(entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
@@ -384,50 +1165,528 @@ function appendItems(phases: TodoPhase[], entry: TodoOpEntryValue, errors: strin
 }
 
 function removeTasks(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+	const pruneDependencies = (removed: Set<string>) => {
+		if (removed.size === 0) return;
+		for (const phase of phases) {
+			for (const task of phase.tasks) {
+				const deps = task.schedule?.dependencies;
+				if (Array.isArray(deps)) task.schedule!.dependencies = deps.filter(dep => !removed.has(dep));
+			}
+		}
+	};
 	if (entry.task) {
 		const hit = resolveTaskOrError(phases, entry.task, errors);
 		if (!hit) return phases;
 		hit.phase.tasks = hit.phase.tasks.filter(candidate => candidate !== hit.task);
+		pruneDependencies(new Set([hit.task.content]));
 		return phases;
 	}
 	if (entry.phase) {
 		const phase = resolvePhaseOrError(phases, entry.phase, errors);
 		if (!phase) return phases;
+		const removed = new Set(phase.tasks.map(task => task.content));
 		phase.tasks = [];
+		pruneDependencies(removed);
 		return phases;
 	}
+	const removed = new Set(phases.flatMap(phase => phase.tasks.map(task => task.content)));
 	for (const phase of phases) {
 		phase.tasks = [];
+	}
+	pruneDependencies(removed);
+	return phases;
+}
+
+function indexTasksByContent(phases: TodoPhase[]): Map<string, TodoItem[]> {
+	const indexed = new Map<string, TodoItem[]>();
+	for (const phase of phases) {
+		for (const task of phase.tasks) {
+			const matches = indexed.get(task.content);
+			if (matches) matches.push(task);
+			else indexed.set(task.content, [task]);
+		}
+	}
+	return indexed;
+}
+
+/** Repair legacy self-edges before taking the next durable snapshot. */
+function healStoredSelfEdges(phases: TodoPhase[]): string[] {
+	const healed: string[] = [];
+	for (const row of phases.flatMap(phase => phase.tasks)) {
+		const schedule = row.schedule;
+		if (!schedule) continue;
+		const selfDependency = schedule.dependencies?.includes(row.content);
+		const selfSpeculation = schedule.speculativeOn === row.content;
+		if (!selfDependency && !selfSpeculation) continue;
+		if (selfDependency) schedule.dependencies = schedule.dependencies!.filter(dep => dep !== row.content);
+		if (selfSpeculation) delete schedule.speculativeOn;
+		healed.push(row.content);
+	}
+	return healed;
+}
+
+/** Repair persisted edges without forgiving invalid edges submitted by this operation. */
+function healStoredDanglingEdges(phases: TodoPhase[], archived: TodoPhase[] = []): string[] {
+	const targets = new Map(
+		[...archived, ...phases].flatMap(phase => phase.tasks.map(row => [row.content, row] as const)),
+	);
+	const removed: string[] = [];
+	for (const row of phases.flatMap(phase => phase.tasks)) {
+		const schedule = row.schedule;
+		if (!schedule) continue;
+		const dangling = (target: string): boolean => !targets.has(target) || targets.get(target)?.status === "abandoned";
+		for (const target of schedule.dependencies ?? []) {
+			if (dangling(target)) removed.push(`${JSON.stringify(row.content)} dependencies → ${JSON.stringify(target)}`);
+		}
+		if (schedule.dependencies) schedule.dependencies = schedule.dependencies.filter(target => !dangling(target));
+		if (schedule.speculativeOn && dangling(schedule.speculativeOn)) {
+			removed.push(`${JSON.stringify(row.content)} speculativeOn → ${JSON.stringify(schedule.speculativeOn)}`);
+			delete schedule.speculativeOn;
+		}
+	}
+	return removed;
+}
+
+/** Reuse the shared graph validator; unknown prerequisites remain forecast issues. */
+function validateScheduleDependencyGraph(
+	phases: TodoPhase[],
+	scheduleOverrides: Map<TodoItem, TodoSchedule>,
+	renamedTasks: Map<TodoItem, string>,
+	errors: string[],
+	archived: TodoPhase[],
+	checkOwners = true,
+): void {
+	const candidatePhases = phases.map(phase => ({
+		name: phase.name,
+		tasks: phase.tasks.map(task => {
+			const schedule = scheduleOverrides.get(task) ?? task.schedule;
+			return {
+				content: renamedTasks.get(task) ?? task.content,
+				status: task.status,
+				...(task.blocker === undefined ? {} : { blocker: task.blocker }),
+				...(schedule === undefined ? {} : { schedule }),
+			};
+		}),
+	}));
+	for (const issue of getTodoPlanningIssues(candidatePhases)) {
+		if (checkOwners && issue.code === "owner-overlap") errors.push(issue.message);
+	}
+	const edges = (schedule: TodoSchedule | undefined): string[] => [
+		...(schedule?.dependencies ?? []),
+		...(schedule?.speculativeOn ? [schedule.speculativeOn] : []),
+	];
+	const graph = new Map(
+		candidatePhases.flatMap(phase => phase.tasks.map(row => [row.content, edges(row.schedule)] as const)),
+	);
+	const previousNames = new Map(
+		phases.flatMap(phase => phase.tasks.map(row => [row.content, renamedTasks.get(row) ?? row.content] as const)),
+	);
+	// Only a newly added edge can introduce a cycle. Check against the whole candidate
+	// graph so two rows added in the same operation cannot bypass validation.
+	for (const row of phases.flatMap(phase => phase.tasks)) {
+		const name = renamedTasks.get(row) ?? row.content;
+		// Compare resolved row identities across renames. An unresolved old title that
+		// becomes a row in this operation is a new edge and still needs validation.
+		const previous = new Set(
+			edges(row.schedule).flatMap(dep => {
+				const target = previousNames.get(dep);
+				return target === undefined ? [] : [target];
+			}),
+		);
+		for (const dependency of graph.get(name) ?? []) {
+			if (previous.has(dependency)) continue;
+			const target = [...candidatePhases, ...archived]
+				.flatMap(phase => phase.tasks)
+				.find(row => row.content === dependency);
+			if (!target || target.status === "abandoned") {
+				const schedule = scheduleOverrides.get(row) ?? row.schedule;
+				const field = schedule?.speculativeOn === dependency ? "speculativeOn" : "dependencies";
+				const clear = field === "speculativeOn" ? { speculativeOn: null } : { dependencies: [] };
+				errors.push(
+					`Invalid ${field} target ${JSON.stringify(dependency)} for task ${JSON.stringify(name)}: target is missing or dropped. Clear with ${JSON.stringify({ op: "schedule", updates: [{ task: name, ...clear }] })}`,
+				);
+				continue;
+			}
+			const pending = [dependency];
+			const visited = new Set<string>();
+			while (pending.length) {
+				const current = pending.pop()!;
+				if (current === name) {
+					errors.push(
+						dependency === name
+							? `Task cannot depend on itself: ${name}`
+							: `Task introduces a dependency cycle: ${name}`,
+					);
+					break;
+				}
+				if (visited.has(current)) continue;
+				visited.add(current);
+				pending.push(...(graph.get(current) ?? []));
+			}
+		}
+	}
+	for (const issue of validateTodoDependencies(withArchivedPrerequisites(candidatePhases, archived))) {
+		if (
+			issue.code === "missing-dependency" ||
+			issue.code === "self-dependency" ||
+			issue.code === "dependency-cycle" ||
+			issue.code === "dependencies-unknown" ||
+			issue.code === "unresolved-prerequisite" ||
+			issue.code === "abandoned-dependency" ||
+			issue.code === "completed-dependency-history-unknown"
+		)
+			continue;
+		errors.push(issue.message);
+	}
+}
+
+interface AcceptedEstimateFields {
+	optimisticSeconds: number;
+	likelySeconds: number;
+	pessimisticSeconds: number;
+	confidence: TodoConfidence;
+}
+
+function isSameAcceptedEstimate(
+	left: TodoSchedule["estimate"],
+	right: AcceptedEstimateFields,
+): left is NonNullable<TodoSchedule["estimate"]> {
+	return (
+		left !== undefined &&
+		left.optimisticSeconds === right.optimisticSeconds &&
+		left.likelySeconds === right.likelySeconds &&
+		left.pessimisticSeconds === right.pessimisticSeconds
+	);
+}
+
+/** Rows in one schedule call that may share an O/L/P triple before the call is refused. */
+const IDENTICAL_ESTIMATE_LIMIT = 2;
+
+/**
+ * An identical triple on three or more rows of one call is a pasted default, not an estimate: it
+ * carries no per-row information and makes every forecast and every displayed duration the same
+ * number (2026-10-21: seven rows were all passed 1200/2400/3600 s and all showed "40m"; the month's
+ * actual/mean ratio was 0.2-0.3 for most models). The todo schema has no notion of a declared batch
+ * shard, so such rows are refused. Replay of recorded history is exempt: a session stays loadable.
+ */
+function identicalEstimateErrors(changed: ReadonlyArray<{ task: string; estimate: AcceptedEstimateFields }>): string[] {
+	const groups = new Map<string, string[]>();
+	for (const { task, estimate } of changed) {
+		const key = `${estimate.optimisticSeconds}/${estimate.likelySeconds}/${estimate.pessimisticSeconds}`;
+		groups.set(key, [...(groups.get(key) ?? []), task]);
+	}
+	const errors: string[] = [];
+	for (const [key, tasks] of groups) {
+		if (tasks.length <= IDENTICAL_ESTIMATE_LIMIT) continue;
+		const firstTask = tasks[0]!.replace(/\s+/g, " ").slice(0, 24);
+		errors.push(
+			`Re-estimate "${firstTask}" individually${tasks.length > 1 ? ` (+${tasks.length - 1} more rows)` : ""}, only the skipped estimates were not applied.\n${tasks.length} rows in this schedule call share the same optimistic/likely/pessimistic estimate ${key} s (${tasks.map(task => `"${task}"`).join(", ")}). An identical triple is a copied default; estimate each row separately from its own scope, history and risk.`,
+		);
+	}
+	return errors;
+}
+
+function applyScheduleUpdates(
+	phases: TodoPhase[],
+	entry: TodoOpEntryValue,
+	errors: string[],
+	now: number,
+	archived: TodoPhase[],
+	options: { replay?: boolean } = {},
+): TodoPhase[] {
+	const updates = entry.updates;
+	if (!updates || updates.length === 0) {
+		if (entry.previewReason) return phases;
+		errors.push("schedule requires a non-empty updates array or previewReason");
+		return phases;
+	}
+
+	const initialErrorCount = errors.length;
+	const tasksByContent = indexTasksByContent(phases);
+	const seenUpdates = new Set<string>();
+	const candidates = new Map<TodoItem, TodoSchedule>();
+	const renamedTasks = new Map<TodoItem, string>();
+	const renamedContent = new Map<string, string>();
+	const renamedTitles = new Set<string>();
+	const changedEstimates: Array<{ task: string; estimate: AcceptedEstimateFields }> = [];
+	for (const update of updates) {
+		if (seenUpdates.has(update.task)) {
+			errors.push(`Duplicate schedule update for task "${update.task}"`);
+			continue;
+		}
+		seenUpdates.add(update.task);
+		if (!options.replay && update.review === "redo" && !update.evidence?.trim())
+			errors.push(`Redo for task "${update.task}" requires the user's correction in evidence`);
+
+		const targets = tasksByContent.get(update.task);
+		if (!targets) {
+			errors.push(`Task "${update.task}" not found; schedule tasks by exact content`);
+			continue;
+		}
+		if (targets.length !== 1) {
+			errors.push(`Task content "${update.task}" is not unique; schedule requires exact unique identity`);
+			continue;
+		}
+		const task = targets[0]!;
+		if (update.content !== undefined) {
+			if (!update.content.trim()) {
+				errors.push(`New content for task "${update.task}" must be nonblank`);
+			} else if (update.content !== task.content) {
+				const collision = renamedTitles.has(update.content) || tasksByContent.has(update.content);
+				if (collision) {
+					errors.push(
+						`Cannot rename task "${update.task}" to "${update.content}": another row already has that content`,
+					);
+				} else {
+					renamedTasks.set(task, update.content);
+					renamedContent.set(task.content, update.content);
+					renamedTitles.add(update.content);
+				}
+			}
+		}
+		if (update.owner !== undefined && update.owner !== "" && update.owner.trim() === "") {
+			errors.push(`Owner for task "${update.task}" must be nonblank or the empty string to clear it`);
+		}
+		if (update.resources) {
+			const seenResources = new Set<string>();
+			for (const resource of update.resources) {
+				const normalized = resource.trim();
+				if (!normalized) errors.push(`Resources for task "${update.task}" must be nonblank identifiers`);
+				if (seenResources.has(normalized)) errors.push(`Task "${update.task}" repeats resource "${resource}"`);
+				seenResources.add(normalized);
+			}
+		}
+		if (update.estimate) {
+			const { optimisticSeconds, likelySeconds, pessimisticSeconds, basis } = update.estimate;
+			if (
+				![optimisticSeconds, likelySeconds, pessimisticSeconds].every(Number.isFinite) ||
+				optimisticSeconds < 0 ||
+				optimisticSeconds > likelySeconds ||
+				likelySeconds > pessimisticSeconds
+			) {
+				errors.push(
+					`Estimate for task "${update.task}" must be finite, nonnegative, and ordered optimistic ≤ likely ≤ pessimistic`,
+				);
+			}
+			if (!basis.trim()) errors.push(`Estimate basis for task "${update.task}" must be nonblank`);
+		}
+
+		const schedule: TodoSchedule = structuredClone(
+			task.schedule && typeof task.schedule === "object" ? task.schedule : {},
+		);
+		if (update.materialInputs !== undefined) {
+			const inputs = update.materialInputs;
+			if (![inputs.criterion, ...inputs.receipts, ...inputs.prerequisites].every(value => value.trim().length > 0))
+				errors.push(`Material inputs for task "${update.task}" require nonblank immutable identities`);
+			schedule.materialInputs = structuredClone(inputs);
+		}
+		if (update.dependencies !== undefined) schedule.dependencies = [...update.dependencies];
+		schedule.cumulativeReestimateCount ??= schedule.reestimateCount ?? 0;
+		const ownerChanged = update.owner !== undefined && (update.owner.trim() || undefined) !== schedule.owner;
+		if (update.owner !== undefined) {
+			if (update.owner === "") delete schedule.owner;
+			else schedule.owner = update.owner.trim();
+		}
+		if (ownerChanged) schedule.reestimateCount = 0;
+
+		if (update.agentProfile !== undefined) schedule.agentProfile = update.agentProfile.trim() || undefined;
+		if (update.readOnly !== undefined) schedule.readOnly = update.readOnly;
+		if (update.resources !== undefined) schedule.resources = update.resources.map(resource => resource.trim());
+		if (update.estimate) {
+			const estimate = { ...update.estimate, basis: update.estimate.basis.trim() };
+			const previousEstimate = schedule.estimate;
+			schedule.firstEstimate ??= previousEstimate ? { ...previousEstimate } : { ...estimate, updatedAt: now };
+			if (isSameAcceptedEstimate(previousEstimate, estimate)) {
+				schedule.estimate = { ...estimate, updatedAt: previousEstimate.updatedAt };
+			} else {
+				changedEstimates.push({ task: update.task, estimate });
+				schedule.reestimateCount = (schedule.reestimateCount ?? 0) + (previousEstimate && !ownerChanged ? 1 : 0);
+				schedule.cumulativeReestimateCount += previousEstimate ? 1 : 0;
+				schedule.estimateRevision = (schedule.estimateRevision ?? (previousEstimate ? 1 : 0)) + 1;
+				schedule.estimate = { ...estimate, updatedAt: now };
+			}
+		}
+		retainTodoDependencyReviews(schedule);
+		if (update.evidence?.trim()) schedule.progress = { at: now, evidence: update.evidence.trim() };
+		retainTodoDependencyReviews(schedule);
+		if (update.decision !== undefined) schedule.decision = update.decision;
+		if (update.reviewCard === null) delete schedule.reviewCard;
+		else if (update.reviewCard !== undefined) schedule.reviewCard = update.reviewCard.trim();
+		if (update.reviewPage === null) delete schedule.reviewPage;
+		else if (update.reviewPage !== undefined) schedule.reviewPage = update.reviewPage.trim();
+		if (update.review === null) delete schedule.review;
+		else if (update.review !== undefined) schedule.review = update.review;
+		if (update.postDeadline !== undefined) schedule.postDeadline = update.postDeadline;
+		if (update.speculativeOn === null || update.speculativeOn?.trim() === "") delete schedule.speculativeOn;
+		else if (update.speculativeOn !== undefined) schedule.speculativeOn = update.speculativeOn.trim();
+		candidates.set(task, schedule);
+	}
+
+	if (!options.replay) errors.push(...identicalEstimateErrors(changedEstimates));
+	if (errors.length > initialErrorCount) return phases;
+	if (renamedContent.size > 0) {
+		for (const phase of phases) {
+			for (const task of phase.tasks) {
+				const schedule = candidates.get(task) ?? task.schedule;
+				if (!schedule?.dependencies) continue;
+				const previousDependencies = schedule.dependencies;
+				const dependencies = previousDependencies.map(dependency => renamedContent.get(dependency) ?? dependency);
+				if (dependencies.some((dependency, index) => dependency !== previousDependencies[index]))
+					candidates.set(task, { ...structuredClone(schedule), dependencies });
+			}
+		}
+	}
+	if (!options.replay) {
+		const rows = phases.flatMap(phase => phase.tasks);
+		const deferred = new Set(
+			rows
+				.filter(row => (candidates.get(row) ?? row.schedule)?.postDeadline)
+				.map(row => renamedTasks.get(row) ?? row.content),
+		);
+		for (const row of rows) {
+			const schedule = candidates.get(row) ?? row.schedule;
+			if (schedule?.postDeadline || row.status === "completed" || row.status === "abandoned") continue;
+			for (const dependency of schedule?.dependencies ?? []) {
+				if (deferred.has(dependency))
+					errors.push(
+						`Task "${row.content}" still requires after-deadline task "${dependency}"; keep the prerequisite in scope or record a safe dependency re-plan`,
+					);
+			}
+		}
+	}
+	validateScheduleDependencyGraph(phases, candidates, renamedTasks, errors, archived, !options.replay);
+	if (errors.length > initialErrorCount) return phases;
+	for (const [task, schedule] of candidates) {
+		const previous = { ...task, schedule: task.schedule };
+		task.schedule = schedule;
+		reconcileAuditResourceChange(previous, task);
+	}
+	for (const [task, content] of renamedTasks) task.content = content;
+	for (const update of updates) {
+		const row = findTaskByContent(phases, update.content ?? update.task)?.task;
+		if (!row || (update.review !== "redo" && update.review !== "drop")) continue;
+		delete row.blocker;
+		delete row.schedule!.reviewClosingBlocked;
+		if (update.review === "drop") {
+			applyEntry(phases, { op: "drop", task: row.content }, errors, now, archived);
+			row.schedule!.finishedAt = now;
+		} else {
+			row.status = "in_progress";
+			delete row.schedule!.auditEscalation;
+			row.schedule!.auditRounds = 0;
+			row.schedule!.handoffPending = false;
+			delete row.schedule!.finishedAt;
+			delete row.schedule!.executor;
+			row.schedule!.startedAt ??= now;
+		}
 	}
 	return phases;
 }
 
-function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string[]): TodoPhase[] {
+function applyReviewClosures(
+	phases: TodoPhase[],
+	closures: Array<{ task: string; reason?: string }>,
+	now: number,
+): void {
+	for (const closure of closures) {
+		const row = findTaskByContent(phases, closure.task)?.task;
+		if (!row || row.schedule?.review !== "accepted") continue;
+		// The user's Accept on the delivered result is the acceptance: an internal
+		// completion gate (for example a requirement re-audit whose auditor is out of
+		// budget) never keeps the row open, blocked or red. Its reason stays on the row
+		// as a background follow-up; a real defect it finds later becomes a new row.
+		delete row.schedule.reviewClosingBlocked;
+		if (closure.reason) row.schedule.acceptedAuditFollowUp = closure.reason;
+		else delete row.schedule.acceptedAuditFollowUp;
+		delete row.blocker;
+		row.status = "completed";
+		row.schedule.finishedAt ??= now;
+	}
+}
+
+function applyEntry(
+	phases: TodoPhase[],
+	entry: TodoOpEntryValue,
+	errors: string[],
+	now = Date.now(),
+	archived: TodoPhase[] = [],
+	options: { replay?: boolean } = {},
+): TodoPhase[] {
+	const next = applyEntryOperation(phases, entry, errors, now, archived, options);
+	if (entry.op !== "init") return next;
+	// Reorganizing a plan does not create a new delivery or revoke its custody
+	// history. Keep the complete state of an unambiguously retained row.
+	const retained = new Map<string, TodoItem[]>();
+	for (const task of phases.flatMap(phase => phase.tasks))
+		retained.set(task.content, [...(retained.get(task.content) ?? []), task]);
+	for (const phase of next) {
+		phase.tasks = phase.tasks.map(task => {
+			const matches = retained.get(task.content);
+			return matches?.length === 1 ? structuredClone(matches[0]!) : task;
+		});
+	}
+	return next;
+}
+
+function applyEntryOperation(
+	phases: TodoPhase[],
+	entry: TodoOpEntryValue,
+	errors: string[],
+	now = Date.now(),
+	archived: TodoPhase[] = [],
+	options: { replay?: boolean } = {},
+): TodoPhase[] {
+	if (entry.op === "schedule" || entry.op === "done" || entry.op === "drop" || entry.op === "start") {
+		const targets =
+			entry.op === "schedule"
+				? (entry.updates ?? []).map(update => update.task)
+				: [entry.task, ...(entry.items ?? [])];
+		for (const target of targets) {
+			if (target && !findTaskByContent(phases, target)) restoreArchivedTask(phases, archived, target);
+		}
+	}
 	switch (entry.op) {
 		case "init":
 			return initPhases(entry, errors);
 		case "start": {
-			const hit = resolveTaskOrError(phases, entry.task, errors);
+			const hit =
+				findTaskByContent(phases, entry.task ?? "") ??
+				restoreArchivedTask(phases, archived, entry.task) ??
+				resolveTaskOrError(phases, entry.task, errors);
 			if (!hit) return phases;
-			for (const phase of phases) {
-				for (const candidate of phase.tasks) {
-					if (candidate.status === "in_progress" && candidate !== hit.task) {
-						candidate.status = "pending";
-					}
-				}
+			const planningIssues = getTodoPlanningIssues(phases);
+			if (planningIssues.length > 0) {
+				errors.push(
+					`Cannot start work while plan repairs remain: ${planningIssues.map(issue => issue.message).join("; ")}`,
+				);
+				return phases;
 			}
 			hit.task.status = "in_progress";
 			return phases;
 		}
 		case "done": {
-			for (const task of getTaskTargets(phases, entry, errors)) {
+			for (const task of getBatchTargets(phases, entry, errors)) {
 				task.status = "completed";
 			}
 			return phases;
 		}
 		case "drop": {
-			for (const task of getTaskTargets(phases, entry, errors)) {
+			const dropped = getBatchTargets(phases, entry, errors);
+			for (const task of dropped) {
 				task.status = "abandoned";
+				if (entry.reason?.startsWith("superseded:")) task.notes = [...(task.notes ?? []), entry.reason];
+			}
+			if (errors.length === 0 && dropped.length > 0) {
+				const droppedTitles = new Set(dropped.map(task => task.content));
+				for (const phase of phases) {
+					for (const task of phase.tasks) {
+						if (droppedTitles.has(task.content)) continue;
+						const deps = task.schedule?.dependencies;
+						if (Array.isArray(deps)) task.schedule!.dependencies = deps.filter(dep => !droppedTitles.has(dep));
+						if (task.schedule?.speculativeOn && droppedTitles.has(task.schedule.speculativeOn))
+							delete task.schedule.speculativeOn;
+					}
+				}
 			}
 			return phases;
 		}
@@ -436,17 +1695,17 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 				errors.push("block requires a task or phase target");
 				return phases;
 			}
-			// Collapse whitespace runs (incl. newlines) to single spaces: a blocker
-			// note rides on one Markdown checklist line (as a trailing HTML comment)
-			// and one HUD/summary line, so an embedded newline from a multi-line
-			// external error or user question would corrupt the round-trip parse and
-			// the rendered line. Normalizing here keeps every consumer one-line-safe.
-			const reason = entry.reason?.replace(/\s+/g, " ").trim() || undefined;
+			// A blocker is not a status-only escape hatch. Validate before resolving
+			// or mutating any task so task, phase, and re-block requests are atomic.
+			const reason = validateBlockReason(entry.reason);
+			if (!reason) {
+				errors.push("block requires a nonblank reason of at most 160 characters after whitespace normalization");
+				return phases;
+			}
 			for (const task of getTaskTargets(phases, entry, errors)) {
 				// Only actionable open work can be blocked: blocking a phase must not
-				// reopen completed/abandoned tasks or erase finished progress. An
-				// already-blocked task stays eligible so a later block can refine its
-				// blocker note (e.g. first blocked without a reason, then with one).
+				// reopen completed/abandoned tasks or erase finished progress. Existing
+				// blocked tasks stay eligible only when a replacement reason is supplied.
 				if (task.status !== "pending" && task.status !== "in_progress" && task.status !== "blocked") continue;
 				task.status = "blocked";
 				task.blocker = reason;
@@ -470,6 +1729,8 @@ function applyEntry(phases: TodoPhase[], entry: TodoOpEntryValue, errors: string
 			return removeTasks(phases, entry, errors);
 		case "append":
 			return appendItems(phases, entry, errors);
+		case "schedule":
+			return applyScheduleUpdates(phases, entry, errors, now, archived, options);
 		case "view":
 			return phases;
 	}
@@ -502,6 +1763,13 @@ function inferTodoOp(args: Record<string, unknown>, hasExistingPhases: boolean):
  * for a normal model retry.
  */
 function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntryValue | string {
+	// Tool arguments cannot establish user authority over the goal deadline.
+	if (isRecord(raw)) {
+		const updates = Array.isArray(raw.updates) ? raw.updates : [];
+		const deadlineKeys = ["deadlineAt", "due", "dueAt", "deadlineRenegotiation"];
+		if ([raw, ...updates].some(value => isRecord(value) && deadlineKeys.some(key => key in value)))
+			return "The deadline belongs to the user. Todo operations cannot change the due time. Re-plan the work to fit the existing deadline.";
+	}
 	const direct = todoSchema(raw);
 	if (!(direct instanceof type.errors)) return direct;
 	if (isRecord(raw) && raw.op === undefined) {
@@ -514,10 +1782,21 @@ function resolveTodoParams(raw: unknown, hasExistingPhases: boolean): TodoOpEntr
 	return `Invalid todo arguments: ${direct.summary}`;
 }
 
-function applyParams(phases: TodoPhase[], params: TodoOpEntryValue): { phases: TodoPhase[]; errors: string[] } {
+function applyParams(
+	phases: TodoPhase[],
+	params: TodoOpEntryValue,
+	now = Date.now(),
+	archived: TodoPhase[] = [],
+): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
-	const next = applyEntry(phases, params, errors);
-	normalizeInProgressTask(next);
+	const previous = clonePhases(phases);
+	const next = applyEntry(phases, params, errors, now, archived);
+	// A schedule rename keeps status, owner and history attached: it is not a
+	// status transition, so content-keyed transition stamping must not see it.
+	if (params.op !== "schedule") {
+		normalizeInProgressTask(next);
+		stampTaskTransitionTimes(previous, next, now);
+	}
 	return { phases: next, errors };
 }
 
@@ -528,10 +1807,15 @@ export function applyOpsToPhases(
 ): { phases: TodoPhase[]; errors: string[] } {
 	const errors: string[] = [];
 	let next = clonePhases(currentPhases);
+	const now = Date.now();
 	for (const op of ops) {
-		next = applyEntry(next, op, errors);
+		const previous = clonePhases(next);
+		next = applyEntry(next, op, errors, now);
+		if (op.op !== "schedule" && op.op !== "view") {
+			normalizeInProgressTask(next);
+			stampTaskTransitionTimes(previous, next, now);
+		}
 	}
-	normalizeInProgressTask(next);
 	return { phases: next, errors };
 }
 
@@ -552,20 +1836,176 @@ export function resolveTodoMarkdownPath(input: string, cwd: string): string {
 	return resolveToCwd(raw, cwd);
 }
 
-/** Render todo phases as a Markdown checklist suitable for editing/copying. */
-export function phasesToMarkdown(phases: TodoPhase[]): string {
+interface TodoMarkdownMetadata {
+	blocker?: string;
+	details?: string;
+	notes?: string[];
+	schedule?: TodoSchedule;
+}
+
+const TODO_METADATA_COMMENT = /\s+<!--\s*omp-todo:v1:([A-Za-z0-9_-]+)\s*-->$/;
+
+function encodeTodoMetadata(task: TodoItem): string {
+	const metadata: TodoMarkdownMetadata = {
+		...(task.status === "blocked" && task.blocker !== undefined ? { blocker: task.blocker } : {}),
+		...(task.details !== undefined ? { details: task.details } : {}),
+		...(task.notes !== undefined ? { notes: [...task.notes] } : {}),
+		...(task.schedule !== undefined ? { schedule: task.schedule } : {}),
+	};
+	if (Object.keys(metadata).length === 0) return "";
+	const encoded = Buffer.from(JSON.stringify(metadata)).toString("base64url");
+	return ` <!-- omp-todo:v1:${encoded} -->`;
+}
+
+function decodeTodoMetadata(encoded: string): TodoMarkdownMetadata {
+	let value: unknown;
+	try {
+		value = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8"));
+	} catch {
+		throw new Error("invalid todo metadata encoding");
+	}
+	if (!isRecord(value)) throw new Error("todo metadata must be an object");
+	if (value.blocker !== undefined && typeof value.blocker !== "string") throw new Error("invalid blocker metadata");
+	if (value.details !== undefined && typeof value.details !== "string") throw new Error("invalid details metadata");
+	if (
+		value.notes !== undefined &&
+		(!Array.isArray(value.notes) || !value.notes.every(note => typeof note === "string"))
+	) {
+		throw new Error("invalid notes metadata");
+	}
+	if (value.schedule !== undefined && !isRecord(value.schedule)) throw new Error("invalid schedule metadata");
+	return {
+		...(typeof value.blocker === "string" ? { blocker: value.blocker } : {}),
+		...(typeof value.details === "string" ? { details: value.details } : {}),
+		...(Array.isArray(value.notes) ? { notes: [...value.notes] } : {}),
+		...(isRecord(value.schedule) ? { schedule: structuredClone(value.schedule) as TodoSchedule } : {}),
+	};
+}
+
+/**
+ * Human view of the plan for `/todo`: open rows with status, owner, ETA and criticality, closed rows
+ * counted per phase. `all` lists closed rows too. No round-trip metadata: that belongs to
+ * `/todo edit`/`export` only.
+ */
+export function formatTodoView(
+	phases: TodoPhase[],
+	options: { now?: number; capacity?: number; all?: boolean; archive?: boolean; archivedPhases?: TodoPhase[] } = {},
+): string {
+	const now = options.now ?? Date.now();
+	const forecast = forecastTodoLivePlan(phases, options.archivedPhases ?? [], {
+		now,
+		...(options.capacity === undefined ? {} : { capacity: options.capacity }),
+	});
+	const rows = new Map(forecast.rows.map(row => [row.content, row]));
+	const lines = [formatPlanForecastDisplay(forecast, now)];
+	const archivedTasks = (options.archivedPhases ?? []).flatMap(phase => phase.tasks);
+	if (archivedTasks.length)
+		lines.push(
+			formatTodoArchiveSummary({
+				count: archivedTasks.length,
+				done: archivedTasks.filter(task => task.status === "completed").length,
+				dropped: archivedTasks.filter(task => task.status === "abandoned").length,
+				fromAt: now,
+				toAt: now,
+			}),
+		);
+	let hidden = 0;
+	const finished: string[] = [];
+	for (const phase of phases) {
+		const closed = phase.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+		if (closed === phase.tasks.length && !options.all) {
+			finished.push(`${phase.name} (${closed})`);
+			hidden += closed;
+			continue;
+		}
+		lines.push("", `${phase.name} · ${closed}/${phase.tasks.length} closed`);
+		for (const task of phase.tasks) {
+			const terminal = task.status === "completed" || task.status === "abandoned";
+			if (terminal && !options.all) {
+				hidden += 1;
+				continue;
+			}
+			const row = rows.get(task.content);
+			const owner = task.schedule?.owner;
+			const parts = [
+				formatOpenTaskState(task, row ? formatTaskForecastDisplay(row, now) : task.status),
+				...(owner && !terminal && !["main", "root"].includes(owner.toLowerCase()) ? [`owner ${owner}`] : []),
+			];
+			lines.push(`  ${TODO_VIEW_MARK[task.status]} ${task.content} · ${parts.join(" · ")}`);
+		}
+	}
+	if (finished.length > 0) lines.push("", `Closed phases: ${finished.join(", ")}`);
+	if (hidden > 0) lines.push("", `${hidden} closed row(s) hidden; /todo all lists them.`);
+	if (options.archive) {
+		const archive = options.archivedPhases ?? [];
+		const archiveCount = archive.reduce((sum, phase) => sum + phase.tasks.length, 0);
+		lines.push("", `Archived rows (${archiveCount}):`);
+		for (const phase of archive) {
+			lines.push(`  ${phase.name}`);
+			for (const task of phase.tasks) {
+				const schedule = task.schedule;
+				const actualSeconds =
+					Number.isFinite(schedule?.startedAt) && Number.isFinite(schedule?.finishedAt)
+						? Math.max(0, Math.round((schedule!.finishedAt! - schedule!.startedAt!) / 1000))
+						: undefined;
+				const evidence = [
+					...(schedule?.owner ? [`owner ${schedule.owner}`] : []),
+					...(schedule?.estimate ? [`estimate ${schedule.estimate.likelySeconds}s`] : []),
+					...(actualSeconds !== undefined ? [`actual ${actualSeconds}s`] : []),
+					...(schedule?.executor
+						? [
+								`executor ${schedule.executor.workerId}${schedule.executor.outcome ? ` (${schedule.executor.outcome})` : ""}`,
+							]
+						: []),
+					...(Number.isFinite(schedule?.finishedAt)
+						? [`finished ${new Date(schedule!.finishedAt!).toISOString()}`]
+						: []),
+				];
+				lines.push(
+					`    ${TODO_VIEW_MARK[task.status]} ${task.content}${evidence.length ? ` · ${evidence.join(" · ")}` : ""}`,
+				);
+			}
+		}
+	}
+	return lines.join("\n");
+}
+
+const TODO_VIEW_MARK: Record<TodoStatus, string> = {
+	pending: "☐",
+	in_progress: "◐",
+	completed: "☑",
+	abandoned: "✗",
+	blocked: "⊘",
+};
+
+function hasExecutorResult(task: TodoItem): boolean {
+	return (
+		task.status !== "completed" && task.status !== "abandoned" && task.schedule?.executor?.finishedAt !== undefined
+	);
+}
+
+function formatOpenTaskState(task: TodoItem, forecast: string): string {
+	if (task.schedule?.review === "accepted" && task.status !== "completed" && task.status !== "abandoned")
+		return `accepted by user, closing${task.schedule.reviewClosingBlocked ? ` blocked: ${task.schedule.reviewClosingBlocked}` : ""}`;
+	return hasExecutorResult(task) ? "result arrived: review" : forecast;
+}
+
+/**
+ * Render todo phases as a Markdown checklist. `metadata` (default on) appends the hidden schedule
+ * comment that `/todo edit`/`export`/`import` need for a lossless round-trip; views and model
+ * reminders turn it off so readers do not get base64.
+ */
+export function phasesToMarkdown(phases: TodoPhase[], options: { metadata?: boolean } = {}): string {
+	const withMetadata = options.metadata !== false;
 	if (phases.length === 0) return "# Todos\n";
 	const out: string[] = [];
 	for (let i = 0; i < phases.length; i++) {
 		if (i > 0) out.push("");
 		out.push(`# ${phases[i].name}`);
 		for (const task of phases[i].tasks) {
-			// A blocked task's reason rides in a trailing HTML comment: invisible in
-			// rendered markdown, unambiguous to parse back (task content can't
-			// contain the comment delimiters), so the note survives `/todo edit` and
-			// export/import round-trips.
-			const blockerNote = task.status === "blocked" && task.blocker ? ` <!-- blocker: ${task.blocker} -->` : "";
-			out.push(`- [${STATUS_TO_MARKER[task.status]}] ${task.content}${blockerNote}`);
+			// One base64url HTML comment keeps structured metadata hidden from rendered Markdown.
+			const metadata = withMetadata ? encodeTodoMetadata(task) : "";
+			out.push(`- [${STATUS_TO_MARKER[task.status]}] ${task.content}${metadata}`);
 		}
 	}
 	return `${out.join("\n")}\n`;
@@ -618,15 +2058,31 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 				errors.push(`Line ${lineNum + 1}: unknown status marker "[${marker}]" (use [ ], [x], [/], [-], [!])`);
 				continue;
 			}
-			// Recover a blocked task's reason from its trailing HTML comment (see
-			// phasesToMarkdown), then strip the comment from the visible content.
 			const rawContent = taskMatch[2].trim();
-			const blockerMatch = /^(.*?)\s*<!--\s*blocker:\s*(.*?)\s*-->$/.exec(rawContent);
-			if (status === "blocked" && blockerMatch) {
-				currentPhase.tasks.push({ content: blockerMatch[1].trim(), status, blocker: blockerMatch[2].trim() });
-			} else {
-				currentPhase.tasks.push({ content: rawContent, status });
+			const metadataMatch = TODO_METADATA_COMMENT.exec(rawContent);
+			let content = rawContent;
+			let metadata: TodoMarkdownMetadata = {};
+			if (metadataMatch) {
+				content = rawContent.slice(0, metadataMatch.index).trim();
+				try {
+					metadata = decodeTodoMetadata(metadataMatch[1]);
+				} catch (error) {
+					errors.push(`Line ${lineNum + 1}: ${error instanceof Error ? error.message : "invalid todo metadata"}`);
+					currentPhase.tasks.push({ content: rawContent, status });
+					continue;
+				}
 			}
+			const blockerMatch = /^(.*?)\s*<!--\s*blocker:\s*(.*?)\s*-->$/.exec(content);
+			if (status === "blocked" && blockerMatch) content = blockerMatch[1].trim();
+			const task: TodoItem = { content, status };
+			if (status === "blocked") {
+				const blocker = metadata.blocker ?? blockerMatch?.[2].trim();
+				if (blocker !== undefined) task.blocker = blocker;
+			}
+			if (metadata.details !== undefined) task.details = metadata.details;
+			if (metadata.notes !== undefined) task.notes = [...metadata.notes];
+			if (metadata.schedule !== undefined) task.schedule = structuredClone(metadata.schedule);
+			currentPhase.tasks.push(task);
 			continue;
 		}
 
@@ -636,10 +2092,17 @@ export function markdownToPhases(md: string): { phases: TodoPhase[]; errors: str
 	normalizeInProgressTask(phases);
 	return { phases, errors };
 }
-
-function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false): string {
-	const tasks = phases.flatMap(phase => phase.tasks);
-	if (tasks.length === 0) {
+function formatSummary(
+	phases: TodoPhase[],
+	errors: string[],
+	forecast: TodoPlanForecast,
+	readOnly = false,
+	now = Date.now(),
+	focusPhase?: string,
+	accountingPhases = phases,
+): string {
+	const tasks = accountingPhases.flatMap(phase => phase.tasks);
+	if (tasks.length === 0 || phases.length === 0) {
 		if (errors.length > 0) return `Errors: ${errors.join("; ")}`;
 		return readOnly ? "Todo list is empty." : "Todo list cleared.";
 	}
@@ -652,9 +2115,8 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 		.filter(phase => phase.tasks.length > 0);
 	const remainingTasks = remainingByPhase.flatMap(phase => phase.tasks.map(task => ({ ...task, phase: phase.name })));
 
-	let currentIdx = phases.findIndex(phase =>
-		phase.tasks.some(task => task.status === "pending" || task.status === "in_progress"),
-	);
+	let currentIdx = phases.findIndex(phase => phase.tasks.some(task => task.status === "in_progress"));
+	if (currentIdx === -1) currentIdx = phases.findIndex(phase => phase.tasks.some(task => task.status === "pending"));
 	if (currentIdx === -1) currentIdx = phases.length - 1;
 	const current = phases[currentIdx];
 	const done = current.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
@@ -664,51 +2126,202 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 	if (remainingTasks.length === 0) {
 		lines.push("Remaining items: none.");
 	} else {
-		lines.push(`Remaining items (${remainingTasks.length}):`);
+		// The lead acts on the critical path first, so the open list says which rows are on it.
+		const critical = new Set(
+			forecast.rows.filter(row => row.criticalityKnown === true && row.critical).map(row => row.content),
+		);
+		lines.push(`Remaining items (${remainingTasks.length}${critical.size ? `, ${critical.size} critical` : ""}):`);
 		for (const task of remainingTasks) {
-			lines.push(`  - ${task.content} [${task.status}] (${task.phase})`);
+			const state = formatOpenTaskState(task, task.status);
+			lines.push(`  - ${task.content} [${state}] (${task.phase})${critical.has(task.content) ? " critical" : ""}`);
 		}
 	}
 	// Closed = completed + abandoned, mirroring the per-phase `done` count.
 	const closedAll = tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
 	const blockedAll = tasks.filter(task => task.status === "blocked").length;
-	// The active phase is the EARLIEST one still holding open work, so the
-	// in-progress pointer can sit in a phase whose successors already have
-	// completed tasks. Detect that "worked ahead" case to explain the
-	// otherwise-surprising backward pointer instead of letting it read as a
-	// completed task reverting to pending.
-	const workedAhead = phases.some(
-		(phase, idx) =>
-			idx > currentIdx && phase.tasks.some(task => task.status === "completed" || task.status === "abandoned"),
-	);
 	lines.push(
 		`Overall: ${closedAll}/${tasks.length} done, ${remainingTasks.length} open${blockedAll > 0 ? `, ${blockedAll} blocked` : ""}.`,
 	);
-	lines.push(
-		`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length})${
-			workedAhead
-				? " — earliest phase with open tasks; the in-progress pointer auto-advances to the earliest open task on each completion, so it can sit behind out-of-order work (nothing was un-completed)."
-				: "."
-		}`,
-	);
+	lines.push(`Active phase ${currentIdx + 1}/${phases.length} "${current.name}" (${done}/${current.tasks.length}).`);
+	// Closed rows are counted, not listed: a long session re-read 135 finished rows on every view.
+	// `view` with `phase` lists that whole phase, closed rows included.
 	for (const phase of phases) {
+		const closed = phase.tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+		if (phase.name !== focusPhase) {
+			lines.push(`  ${phase.name}: ${closed}/${phase.tasks.length} closed`);
+			continue;
+		}
 		lines.push(`  ${phase.name}:`);
 		for (const task of phase.tasks) {
 			const checkbox = task.status === "completed" ? "[X]" : "[ ]";
+			const blocker = task.blocker?.trim();
 			const tag =
 				task.status === "in_progress"
 					? " (in progress)"
 					: task.status === "abandoned"
 						? " (dropped)"
 						: task.status === "blocked"
-							? task.blocker
-								? ` (blocked: ${task.blocker})`
-								: " (blocked)"
+							? blocker
+								? ` (blocked: ${blocker})`
+								: " (blocked: reason required)"
 							: "";
 			lines.push(`    - ${checkbox} ${task.content}${tag}`);
 		}
 	}
+	const blockedTasks = tasks.filter(task => task.status === "blocked");
+	if (blockedTasks.length > 0) {
+		lines.push(
+			"Blocked work is not settled by recording a reason: take safe actions to clear each blocker or reformulate it, then unblock and continue the work.",
+		);
+		for (const task of blockedTasks) lines.push(`  - recover: ${task.content}`);
+	}
+	lines.push("", formatPlanForecast(forecast, now));
+	if (forecast.planningIssues.length > 0) {
+		lines.push(`Planning repairs required (${forecast.planningIssues.length}):`);
+		for (const issue of forecast.planningIssues) lines.push(`  - ${issue.task}: ${issue.message}`);
+	}
 	return lines.join("\n");
+}
+
+type TodoRowDelta = {
+	kind: "added" | "removed" | "updated";
+	phase: string;
+	task: TodoItem;
+	previous?: TodoItem;
+	fields?: string[];
+};
+
+function todoRowDeltas(previous: TodoPhase[], phases: TodoPhase[]): TodoRowDelta[] {
+	const before = new Map<string, { phase: string; task: TodoItem }>();
+	const after = new Map<string, { phase: string; task: TodoItem }>();
+	for (const phase of previous)
+		for (const task of phase.tasks)
+			before.set(JSON.stringify([phase.name, task.content]), { phase: phase.name, task });
+	for (const phase of phases)
+		for (const task of phase.tasks)
+			after.set(JSON.stringify([phase.name, task.content]), { phase: phase.name, task });
+
+	const deltas: TodoRowDelta[] = [];
+	for (const [rowKey, current] of after) {
+		const old = before.get(rowKey);
+		if (!old) {
+			deltas.push({ kind: "added", ...current });
+			continue;
+		}
+		const fields: string[] = [];
+		if (old.task.status !== current.task.status) fields.push("status");
+		if (old.task.blocker !== current.task.blocker) fields.push("blocker");
+		if (old.task.details !== current.task.details) fields.push("details");
+		if (JSON.stringify(old.task.schedule ?? null) !== JSON.stringify(current.task.schedule ?? null))
+			fields.push("schedule");
+		if (JSON.stringify(old.task.notes ?? null) !== JSON.stringify(current.task.notes ?? null)) fields.push("notes");
+		if (fields.length > 0) deltas.push({ kind: "updated", ...current, previous: old.task, fields });
+	}
+	for (const [rowKey, old] of before) if (!after.has(rowKey)) deltas.push({ kind: "removed", ...old });
+	return deltas;
+}
+
+function formatMutationSummary(
+	op: TodoOperation,
+	previous: TodoPhase[],
+	phases: TodoPhase[],
+	errors: string[],
+	forecast: TodoPlanForecast,
+	now: number,
+	accountingPhases = phases,
+): string {
+	const tasks = accountingPhases.flatMap(phase => phase.tasks);
+	const open = tasks.filter(task => task.status === "pending" || task.status === "in_progress").length;
+	const closed = tasks.filter(task => task.status === "completed" || task.status === "abandoned").length;
+	const blocked = tasks.filter(task => task.status === "blocked");
+	const deltas = todoRowDeltas(previous, phases);
+	const lines: string[] = [];
+	if (errors.length > 0) lines.push(`Errors: ${errors.join("; ")}`);
+	lines.push(`${op}: ${deltas.length} row(s) changed.`);
+	for (const delta of deltas) {
+		const status =
+			delta.previous && delta.previous.status !== delta.task.status
+				? `${delta.previous.status} → ${delta.task.status}`
+				: delta.task.status;
+		const fields = delta.fields?.length ? `; changed=${delta.fields.join(",")}` : "";
+		const blocker =
+			delta.task.status === "blocked" ? `; blocker=${JSON.stringify(delta.task.blocker ?? "reason required")}` : "";
+		lines.push(`  ${delta.kind} ${delta.task.content} (${delta.phase}) [${status}]${fields}${blocker}`);
+	}
+	lines.push(`Overall: ${closed}/${tasks.length} closed, ${open} open, ${blocked.length} blocked.`);
+	const next = nextActionableTask(phases);
+	lines.push(
+		next
+			? `Next: ${next.content} [${next.status}]`
+			: blocked.length > 0
+				? "Next: safely resolve or reformulate blocked work; a blocker reason does not settle the task."
+				: "Next: none; all tasks are closed.",
+	);
+	lines.push(`Forecast: ${formatPlanForecast(forecast, now)}`);
+	const changedContent = new Set(deltas.filter(delta => delta.kind !== "removed").map(delta => delta.task.content));
+	const changedIssues = forecast.planningIssues.filter(issue => changedContent.has(issue.task));
+	if (forecast.planningIssues.length > 0) {
+		lines.push(
+			`Planning repairs remain: ${forecast.planningIssues.length}${changedIssues.length === 0 ? "; details omitted for unchanged rows; use todo.view" : "."}`,
+		);
+		for (const issue of changedIssues) lines.push(`  - ${issue.task}: ${issue.message}`);
+	}
+	if (blocked.length > 0)
+		lines.push(
+			`Blocked gate: ${blocked.length} row(s) are not dispatchable; inspect todo.view for unchanged blocker reasons and recover safely.`,
+		);
+	return lines.join("\n");
+}
+
+export function buildTodoOpPersistedEdit(
+	op: TodoOperation,
+	params: unknown,
+	at = Date.now(),
+): TodoOperationPersistedEdit {
+	return { v: 1, kind: "op", at, op, params: structuredClone(params) };
+}
+
+/** Build a row-keyed append event for the existing durable Todo custom-entry writer. */
+export function buildTodoReworkAttemptPersistedEdit(
+	row: { phase: string; content: string },
+	attempt: TodoReworkAttempt,
+	at = Date.now(),
+): TodoReworkAttemptPersistedEdit {
+	return { v: 1, kind: "attempt", at, phase: row.phase, content: row.content, attempt: structuredClone(attempt) };
+}
+
+export function buildTodoExecutorPersistedEdit(
+	observation: TodoExecutorObservation,
+	at = Date.now(),
+): TodoPersistedEdit {
+	return {
+		v: 1,
+		kind: "executor",
+		at,
+		observation: {
+			workerId: observation.workerId,
+			...(observation.row !== undefined ? { row: observation.row } : {}),
+			...(observation.agentProfile ? { agentProfile: observation.agentProfile } : {}),
+			...(observation.description ? { description: observation.description } : {}),
+			...(observation.taskText ? { taskText: observation.taskText } : {}),
+			...(observation.resolvedModel ? { resolvedModel: observation.resolvedModel } : {}),
+			...(observation.thinkingLevel ? { thinkingLevel: observation.thinkingLevel } : {}),
+			startedAt: observation.startedAt,
+			...(observation.finishedAt !== undefined ? { finishedAt: observation.finishedAt } : {}),
+			...(observation.outcome ? { outcome: observation.outcome } : {}),
+			...(observation.runningWorkerIds ? { runningWorkerIds: [...observation.runningWorkerIds].sort() } : {}),
+		},
+	};
+}
+
+function attachLiveTodoDetails(
+	details: TodoToolDetails,
+	phases: TodoPhase[],
+	forecast: TodoPlanForecast,
+): TodoToolDetails {
+	Object.defineProperty(details, "phases", { value: phases, enumerable: false, configurable: true });
+	Object.defineProperty(details, "forecast", { value: forecast, enumerable: false, configurable: true });
+	return details;
 }
 
 // =============================================================================
@@ -717,6 +2330,9 @@ function formatSummary(phases: TodoPhase[], errors: string[], readOnly = false):
 
 export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	readonly name = "todo";
+	#calibrationReady = getTodoPlanCalibrationStore()
+		.refresh()
+		.catch(error => logger.warn("Forecast calibration load failed", { error }));
 	readonly approval = "read" as const;
 	readonly label = "Todo";
 	readonly summary = "Write a structured todo list to track progress within a session";
@@ -727,10 +2343,64 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 	// Raw args reach execute() on schema failure; resolveTodoParams re-validates
 	// and repairs the one recoverable shape (missing `op`, unambiguous payload).
 	readonly lenientArgValidation = true;
+	#validatingReviewClosure = false;
 
 	readonly loadMode = "discoverable";
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(todoDescription);
+	}
+
+	/** Consume a verified page decision through the ordinary review transition. */
+	async applyReviewPageAnswer(answer: ReviewPageAnswer): Promise<boolean> {
+		const rows = (this.session.getTodoPhases?.() ?? []).flatMap(phase => phase.tasks);
+		const matches = rows.filter(row => row.content === answer.task);
+		if (matches.length !== 1) return false;
+		const row = matches[0];
+		const key = JSON.stringify([answer.page, answer.card, answer.contentSha, answer.answer]);
+		if (
+			row.schedule?.review !== "user" ||
+			row.schedule.reviewPage !== answer.page ||
+			(row.schedule.reviewCard && row.schedule.reviewCard !== answer.card) ||
+			row.schedule.reviewAnswers?.includes(key) ||
+			(answer.answer === "redo" && !answer.note.trim())
+		)
+			return false;
+		const evidence = `owner ${answer.answer === "accept" ? "accepted" : answer.answer === "redo" ? "requested redo" : "dropped"} on review page at ${answer.at}${answer.note ? `: ${answer.note}` : ""}`;
+		const result = await this.execute("review-page-answer", {
+			op: "schedule",
+			updates: [
+				{
+					task: answer.task,
+					reviewCard: answer.card,
+					review: answer.answer === "accept" ? "accepted" : answer.answer,
+					evidence,
+				},
+			],
+		});
+		if (!committedTodoPhases(result)) return false;
+		// Forecast calculation can yield; keep unrelated edits made during that await.
+		const phases = clonePhases(this.session.getTodoPhases?.() ?? []);
+		const target = phases.flatMap(phase => phase.tasks).find(row => row.content === answer.task);
+		if (
+			!target?.schedule ||
+			target.schedule.reviewPage !== answer.page ||
+			target.schedule.review !== (answer.answer === "accept" ? "accepted" : answer.answer)
+		)
+			return false;
+		target.schedule.reviewAnswers = [...(target.schedule.reviewAnswers ?? []), key];
+		target.schedule.reviewPagePending = false;
+		target.schedule.handoffPending = false;
+		target.schedule.reviewSummary = evidence;
+		if (answer.answer === "redo") {
+			target.status = "pending";
+			target.schedule.reviewSummary = answer.note;
+		}
+		const edit = committedTodoEdit(result);
+		if (edit?.kind === "archive")
+			this.session.sessionManager?.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { edit });
+		this.session.sessionManager?.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases });
+		this.session.setTodoPhases?.(phases);
+		return true;
 	}
 
 	async execute(
@@ -752,23 +2422,258 @@ export class TodoTool implements AgentTool<typeof todoSchema, TodoToolDetails> {
 		}
 		const entry = resolved;
 		const op = entry.op;
-		// Pure-view calls are reads: no normalization, no state write.
+		await this.#calibrationReady;
+		const now = Date.now();
+		const archiveState = readTodoArchiveState(this.session.sessionManager);
+		const priorArchive = archiveState.phases;
+		const healedRows = healStoredSelfEdges(previousPhases);
+		const healedEdges = healStoredDanglingEdges(previousPhases, priorArchive);
+		const manager = this.session.sessionManager;
+		const deadline = manager
+			? readGoalDeadlineFromManager(manager, this.session.cwd, { includePaused: true })
+			: readGoalDeadline([], this.session.cwd, { includePaused: true });
+		const skippedEstimates: string[] = [];
+		if (entry.op === "schedule") {
+			const changed = (entry.updates ?? []).flatMap(update => {
+				const estimate = update.estimate;
+				const previous = findTaskByContent(previousPhases, update.task)?.task.schedule?.estimate;
+				return estimate && !isSameAcceptedEstimate(previous, estimate) ? [{ task: update.task, estimate }] : [];
+			});
+			skippedEstimates.push(...identicalEstimateErrors(changed));
+			const counts = new Map<string, number>();
+			const key = (estimate: AcceptedEstimateFields) =>
+				`${estimate.optimisticSeconds}/${estimate.likelySeconds}/${estimate.pessimisticSeconds}`;
+			for (const row of changed) counts.set(key(row.estimate), (counts.get(key(row.estimate)) ?? 0) + 1);
+			const skipped = new Set(
+				changed.filter(row => counts.get(key(row.estimate))! > IDENTICAL_ESTIMATE_LIMIT).map(row => row.task),
+			);
+			entry.updates = entry.updates?.map(update => {
+				if (!skipped.has(update.task)) return update;
+				const accepted = { ...update };
+				delete accepted.estimate;
+				return accepted;
+			});
+		}
 		const readOnly = op === "view";
 		const { phases: updated, errors } = readOnly
 			? { phases: previousPhases, errors: [] as string[] }
-			: applyParams(clonePhases(previousPhases), entry);
-		// A batch with any error is discarded wholesale: persisting a
-		// half-applied batch makes the natural retry hit "already exists" for
-		// the ops that did land. State and rendered summary stay at previous.
+			: applyParams(clonePhases(previousPhases), entry, now, priorArchive);
+		if (op === "done" && !this.#validatingReviewClosure) {
+			for (const phase of updated)
+				for (const row of phase.tasks) {
+					const before = previousPhases.flatMap(phase => phase.tasks).find(task => task.content === row.content);
+					if (row.status === "completed" && before?.status !== "completed" && todoNeedsOwnerDecision(row.schedule))
+						errors.push(
+							`Owner decision required for ${JSON.stringify(row.content)}; show its product content and record the owner's answer before closing.`,
+						);
+				}
+		}
+		// Use the ordinary done operation so every native completion gate still runs.
+		const reviewClosures: Array<{ task: string; reason?: string }> = [];
+		if (op === "schedule" && errors.length === 0) {
+			for (const update of entry.updates ?? []) {
+				if (update.review !== "accepted") continue;
+				let result: AgentToolResult<TodoToolDetails>;
+				this.#validatingReviewClosure = true;
+				try {
+					result = await this.execute(
+						_toolCallId,
+						{ op: "done", task: update.task },
+						_signal,
+						undefined,
+						_context,
+					);
+				} finally {
+					this.#validatingReviewClosure = false;
+				}
+				const reason = result.isError
+					? result.content
+							.filter(part => part.type === "text")
+							.map(part => part.text)
+							.join("\n") || "Completion gate refused without a text reason"
+					: undefined;
+				reviewClosures.push({ task: update.content ?? update.task, ...(reason ? { reason } : {}) });
+			}
+			applyReviewClosures(updated, reviewClosures, now);
+		}
+		// An unsuccessful batch must neither commit an operation nor age out existing rows.
 		const failed = errors.length > 0;
-		const effective = failed ? previousPhases : updated;
-		const completedTasks = readOnly || failed ? [] : getCompletionTransitions(previousPhases, updated);
-		if (!readOnly && !failed) this.session.setTodoPhases?.(updated);
-		const details: TodoToolDetails = { op, phases: effective, storage };
+		const previousStatuses = new Map(
+			previousPhases.flatMap(phase => phase.tasks.map(task => [task.content, task.status] as const)),
+		);
+		const closesRow = updated.some(phase =>
+			phase.tasks.some(
+				task =>
+					(task.status === "completed" || task.status === "abandoned") &&
+					previousStatuses.get(task.content) !== task.status,
+			),
+		);
+		const archived = !readOnly && !failed && closesRow ? archiveTodoPhases(updated, now) : undefined;
+		const effective = archived?.phases ?? (failed ? previousPhases : updated);
+		const archivedPhases = op === "init" && !failed ? [] : priorArchive;
+		const newArchive = archived?.archivedPhases ?? [];
+		// A schedule rename changes titles, not statuses: content-keyed completion
+		// diffing must not report renamed closed rows as newly completed.
+		const completedTasks =
+			readOnly || failed || (op === "schedule" && !reviewClosures.length)
+				? []
+				: getCompletionTransitions(previousPhases, updated);
+		if (((!readOnly && !failed) || healedRows.length || healedEdges.length) && !this.#validatingReviewClosure)
+			this.session.setTodoPhases?.(effective);
+		const operation = !readOnly && !failed ? buildTodoOpPersistedEdit(op, entry, now) : undefined;
+		if (operation && healedRows.length) operation.healedSelfEdges = true;
+		if (operation && healedEdges.length) operation.healedDanglingEdges = true;
+		if (operation && reviewClosures.length) operation.reviewClosures = reviewClosures;
+		const archiveEdit: TodoArchivePersistedEdit | undefined =
+			newArchive.length > 0 ? { v: 1, kind: "archive", at: now, operation, archivedPhases: newArchive } : undefined;
+		const historyRecords = readTodoPlanHistory(manager);
+		if (operation && !this.#validatingReviewClosure && manager) {
+			for (const record of historyRecords) {
+				const settled = settleTodoPlanRecord(
+					record,
+					withTodoArchive(effective, [...archivedPhases, ...newArchive]),
+					now,
+					op === "init",
+				);
+				if (settled) {
+					manager.appendCustomEntry(TODO_PLAN_HISTORY_CUSTOM_TYPE, settled);
+					try {
+						await getTodoPlanCalibrationStore().append(settled);
+					} catch (error) {
+						logger.warn("Forecast calibration append failed", { error });
+					}
+				}
+			}
+		}
+		try {
+			await getTodoPlanCalibrationStore().refresh();
+		} catch (error) {
+			logger.warn("Forecast calibration refresh failed", { error });
+		}
+		const forecast = forecastTodoLivePlan(effective, [...archivedPhases, ...newArchive], {
+			history: todoPlanCalibrationHistory(historyRecords, now),
+			now,
+			capacity: cfgTaskMaxConcurrency.get(this.session.settings),
+			risk: await loadRowRisk(
+				this.session.settings,
+				this.session.modelRegistry,
+				this.session.cwd,
+				this.session.effectiveExtensionRoots?.(),
+				now,
+			),
+			...(deadline === undefined ? {} : { deadlineAt: deadline.deadlineAt }),
+		});
+		if (operation && !this.#validatingReviewClosure && manager?.getSessionId && forecast.rawP50Finish !== undefined) {
+			const sessionId = manager.getSessionId();
+			const hour = Math.floor(now / 3_600_000);
+			const members = [...todoPlanMembers(effective)]
+				.filter(([, row]) => row.status !== "completed" && row.status !== "abandoned")
+				.map(([key]) => key);
+			if (
+				members.length &&
+				!historyRecords.some(
+					record =>
+						record.prediction.sessionId === sessionId &&
+						Math.floor(record.prediction.originAt / 3_600_000) === hour,
+				)
+			) {
+				manager.appendCustomEntry(TODO_PLAN_HISTORY_CUSTOM_TYPE, {
+					prediction: {
+						sessionId,
+						originAt: now,
+						rawP50Finish: forecast.rawP50Finish,
+						capacity: forecast.capacityAssumptions?.requested,
+						provenance: forecast.provenance,
+						predictionVersion: forecast.predictionVersion,
+						membershipFingerprint: forecast.membershipFingerprint,
+						...(forecast.calibratedUpperFinish === undefined
+							? {}
+							: { upperFinish: forecast.calibratedUpperFinish }),
+					},
+					members,
+				});
+			}
+		}
+		const details = attachLiveTodoDetails(
+			{
+				op,
+				storage,
+				forecastAt: now,
+				...(archiveEdit ? { edit: archiveEdit } : operation ? { edit: operation } : {}),
+			} as TodoToolDetails,
+			effective,
+			forecast,
+		);
+		const archiveSummary =
+			op === "init" && !failed
+				? getTodoArchiveSummaryFromEntries([], archiveEdit)
+				: archiveEdit
+					? getTodoArchiveSummaryFromEntries(getTodoArchiveBranchEntries(this.session.sessionManager), archiveEdit)
+					: archiveState.summary;
+		if (archiveSummary) details.archiveSummary = archiveSummary;
+		if (readOnly && entry.archive) details.archivedPhases = archivedPhases;
+		if (deadline) details.deadlineAt = deadline.deadlineAt;
 		if (completedTasks.length > 0) details.completedTasks = completedTasks;
-
+		const matchingTasks =
+			readOnly && entry.task
+				? [...effective, ...archivedPhases].flatMap(phase =>
+						phase.tasks.filter(task => task.content === entry.task).map(task => ({ phase: phase.name, task })),
+					)
+				: undefined;
+		const accountingPhases = withTodoArchive(effective, [...archivedPhases, ...newArchive]);
+		const summary = matchingTasks
+			? matchingTasks.length
+				? JSON.stringify(matchingTasks, null, 2)
+				: `Task not found: ${JSON.stringify(entry.task)}`
+			: readOnly && entry.archive
+				? formatTodoView(effective, { now, all: true, archive: true, archivedPhases })
+				: op === "init" || readOnly
+					? formatSummary(
+							effective,
+							errors,
+							forecast,
+							readOnly,
+							now,
+							readOnly ? entry.phase : undefined,
+							accountingPhases,
+						)
+					: formatMutationSummary(op, previousPhases, updated, errors, forecast, now, accountingPhases);
+		const droppedEdges =
+			op === "drop" && !failed
+				? healStoredDanglingEdges(
+						clonePhases(previousPhases).map(phase => ({
+							...phase,
+							tasks: phase.tasks.map(row => ({
+								...row,
+								status:
+									effective.flatMap(p => p.tasks).find(t => t.content === row.content)?.status ?? row.status,
+							})),
+						})),
+						archivedPhases,
+					)
+				: [];
 		return {
-			content: [{ type: "text", text: formatSummary(effective, errors, readOnly) }],
+			content: [
+				{
+					type: "text",
+					text: [
+						...skippedEstimates,
+						summary,
+						...(archiveSummary ? [formatTodoArchiveSummary(archiveSummary)] : []),
+						...(healedEdges.length ? [`Healed stored dangling edges: ${healedEdges.join("; ")}`] : []),
+						...(droppedEdges.length ? [`Removed inbound edges: ${droppedEdges.join("; ")}`] : []),
+						...(healedRows.length
+							? [`Healed stored self-edges: ${healedRows.map(row => JSON.stringify(row)).join("; ")}`]
+							: []),
+						...reviewClosures
+							.filter(row => row.reason)
+							.map(
+								row =>
+									`${JSON.stringify(row.task)}: accepted by user, closed; background requirement audit still open (never blocks this row): ${row.reason}`,
+							),
+					].join("\n"),
+				},
+			],
 			details,
 			isError: errors.length > 0 ? true : undefined,
 		};

@@ -374,6 +374,7 @@ describe("wait", () => {
 			const bridge = new IrcBridge({
 				agent: { steer: () => {} } as unknown as Agent,
 				isDisposed: () => false,
+				isRestartDraining: () => false,
 				isStreaming: () => true,
 				planModeEnabled: () => false,
 				emitSessionEvent: async () => {},

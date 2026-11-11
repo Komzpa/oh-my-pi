@@ -14,6 +14,8 @@ try {
  * CLI entry point — registers all commands explicitly and delegates to the
  * lightweight CLI runner from pi-utils.
  */
+import "./restart-terminal";
+import "./restart-children-startup";
 import type * as WorkerThreads from "node:worker_threads";
 import type { MessagePort } from "node:worker_threads";
 import type { CliConfig, CommandMetadata } from "@oh-my-pi/pi-utils/cli";
@@ -31,6 +33,7 @@ import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from
 import { installSqliteLockShim } from "@oh-my-pi/pi-natives/sqlite-locks";
 import { isNativeShell, runNativeShell } from "./cli/native-shell";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
+import { bootstrapJitDebugInfo } from "./cli/jit-bootstrap";
 import {
 	AUTO_UPDATE_WORKER_ARG,
 	BLOB_BROKER_WORKER_ARG,
@@ -42,9 +45,11 @@ import {
 	PARENT_WATCHDOG_WORKER_ARG,
 	STATS_ACTIVITY_WORKER_ARG,
 	SUBAGENT_WORKER_ARG,
+	RESTART_SNAPSHOT_WORKER_ARG,
 	TERMINAL_OUTPUT_WORKER_ARG,
 	TEXT_PREDICT_WORKER_ARG,
 } from "./cli/worker-selectors";
+import type * as RestartSnapshotWorker from "./task/restart-snapshot-worker";
 import type * as JsProcessEntry from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
 import { startParentWatchdog } from "./subprocess/parent-watchdog";
@@ -71,6 +76,7 @@ if (process.platform !== "win32") {
 // CLI builds are unaffected. A compiled binary's entry module is by definition
 // the process entry, so the define-folded PI_COMPILED marker stands in.
 const isProcessEntry = import.meta.main || process.env.PI_COMPILED === "true";
+if (isProcessEntry) bootstrapJitDebugInfo(process.env.PI_COMPILED === "true");
 
 /**
  * Worker inboxes must attach before this entry module reaches its first await,
@@ -160,6 +166,8 @@ async function runSmokeTest(): Promise<void> {
 	const { smokeTestTerminalOutputWorker } = await import("./launch/terminal-output-worker-client");
 	const { smokeTestTextPredictDaemon } = await import("./predict/client");
 	const { smokeTestSubagentWorker } = await import("./thread/subagent-worker");
+	const snapshots: typeof RestartSnapshotWorker = require("./task/restart-snapshot-worker");
+	await snapshots.smokeTestRestartSnapshotWorker();
 	await smokeTestSyncWorker();
 	await smokeTestStatsActivityWorker();
 
@@ -202,6 +210,11 @@ const TTS_WORKER_ARG = "__omp_worker_tts";
 const MNEMOPI_EMBED_WORKER_ARG = "__omp_worker_mnemopi_embed";
 
 async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
+	if (arg === RESTART_SNAPSHOT_WORKER_ARG) {
+		const snapshots: typeof RestartSnapshotWorker = require("./task/restart-snapshot-worker");
+		await snapshots.runRestartSnapshotWorker();
+		return true;
+	}
 	if (arg === TINY_WORKER_ARG) {
 		await runTinyWorker();
 		return true;
@@ -564,6 +577,7 @@ export async function runCli(argv: string[]): Promise<void> {
 	let stopStartupComposer: (() => void) | undefined;
 	if (
 		!process.env.PI_TIMING &&
+		!process.env.OMP_RESTART_PREPARE &&
 		process.stdin.isTTY === true &&
 		process.stdout.isTTY === true &&
 		resolvedArgv.every(arg => PREPAINT_SAFE_FLAGS[arg] === true)

@@ -210,7 +210,26 @@ export class IrcBus implements IrcBusApi {
 	}
 
 	async #deliver(message: IrcMessage): Promise<IrcDeliveryReceipt> {
-		const ref = this.#registry.get(message.to);
+		let ref = this.#registry.get(message.to);
+		if (ref?.starting && !ref.session) {
+			const expected = ref;
+			const ready = Promise.withResolvers<void>();
+			const check = () => {
+				const current = this.#registry.get(message.to);
+				if (current !== expected || !current.starting || current.status !== "running" || current.session)
+					ready.resolve();
+			};
+			const stop = this.#registry.onChange(check);
+			try {
+				check();
+				await ready.promise;
+			} finally {
+				stop();
+			}
+			ref = this.#registry.get(message.to);
+			if (ref !== expected || ref.status === "aborted")
+				return { to: message.to, outcome: "failed", error: `Agent "${message.to}" stopped during startup.` };
+		}
 		if (!ref) {
 			return {
 				to: message.to,

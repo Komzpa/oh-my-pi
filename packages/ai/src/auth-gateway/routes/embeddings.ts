@@ -8,6 +8,8 @@ import {
 	buildGatewayApiKeyResolver,
 	gatewayRequestLogFields,
 	mirrorRequestAbort,
+	observeGatewayProviderFailure,
+	observeGatewayProviderSuccess,
 	recordGatewayUsage,
 	resolveGatewayApiKey,
 } from "../dispatch";
@@ -69,6 +71,7 @@ export async function handleEmbeddings(
 			fetch: bootOpts.fetch,
 			signal: controller.signal,
 		});
+		observeGatewayProviderSuccess(bootOpts.storage, model.provider);
 		recordGatewayUsage(bootOpts.storage, model, client, result.usage);
 		return json(
 			200,
@@ -77,6 +80,7 @@ export async function handleEmbeddings(
 		);
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
+		observeGatewayProviderFailure(bootOpts.storage, model, error);
 		const classified = classifyGatewayError(error);
 		logger.warn("auth-gateway embeddings failed", {
 			format: "embeddings",

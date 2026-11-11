@@ -1,3 +1,4 @@
+import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 /**
  * Extension loader - loads TypeScript extension modules using native Bun import.
  */
@@ -241,6 +242,13 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		const list = this.extension.handlers.get(event) ?? [];
 		list.push(handler);
 		this.extension.handlers.set(event, list);
+	}
+
+	registerSoftToolRequirementProvider(provider: NonNullable<Extension["softToolRequirementProvider"]>): void {
+		if (this.extension.softToolRequirementProvider !== undefined) {
+			throw new Error(`Extension "${this.extension.path}" already registered a soft tool requirement provider`);
+		}
+		this.extension.softToolRequirementProvider = provider;
 	}
 
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown>(tool: ToolDefinition<TParams, TDetails>): void {
@@ -497,7 +505,12 @@ async function runExtensionFactory(
 export async function importExtensionModule(extensionPath: string, cwd: string): Promise<PreparedExtension> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 	try {
-		const module = (await withHostGuard(() => loadLegacyPiModule(resolvedPath))) as LoadedExtensionModule;
+		const sourceBytes = await Bun.file(resolvedPath).arrayBuffer();
+		const sourceHash = new Bun.CryptoHasher("sha256").update(sourceBytes).digest("hex");
+		const entrySource = new TextDecoder().decode(sourceBytes);
+		const module = (await launchStep(`extension.load:${extensionPath}`, () =>
+			withHostGuard(() => loadLegacyPiModule(resolvedPath, { entrySource })),
+		)) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
 
 		if (typeof factory !== "function") {
@@ -509,7 +522,7 @@ export async function importExtensionModule(extensionPath: string, cwd: string):
 			};
 		}
 
-		return { path: extensionPath, factory, resolvedPath, error: null };
+		return { path: extensionPath, factory, resolvedPath, sourceHash, error: null };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return { path: extensionPath, factory: null, resolvedPath, error: `Failed to load extension: ${message}` };
@@ -529,8 +542,11 @@ async function bindExtension(
 	}
 	try {
 		const extension = createExtension(extensionPath, imported.resolvedPath);
+		extension.sourceHash = imported.sourceHash;
 		const api = new ConcreteExtensionAPI(extension, runtime, cwd, eventBus);
-		await withHostGuard(() => runExtensionFactory(factory, api, runtime));
+		await launchStep(`extension.init:${extensionPath}`, () =>
+			withHostGuard(() => runExtensionFactory(factory, api, runtime)),
+		);
 
 		return { extension, error: null };
 	} catch (err) {
@@ -551,7 +567,7 @@ export async function loadExtensionFromFactory(
 ): Promise<Extension> {
 	const extension = createExtension(name, name);
 	const api = new ConcreteExtensionAPI(extension, runtime, cwd, eventBus);
-	await runExtensionFactory(factory, api, runtime);
+	await launchStep(`extension.init:${name}`, () => runExtensionFactory(factory, api, runtime));
 	return extension;
 }
 

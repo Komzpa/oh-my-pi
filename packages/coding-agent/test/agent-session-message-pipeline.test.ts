@@ -1186,8 +1186,10 @@ describe("AgentSession message pipeline", () => {
 		]);
 		// Compare prompt-bearing fields, not per-request timestamps or usage metadata.
 		const promptMessages = (context: Context) => context.messages.map(({ role, content }) => ({ role, content }));
+		const promptTools = (context: Context) =>
+			context.tools?.map(({ name, description, parameters }) => ({ name, description, parameters }));
 		expect(followup.systemPrompt).toEqual(initial.systemPrompt);
-		expect(followup.tools).toEqual(initial.tools);
+		expect(promptTools(followup)).toEqual(promptTools(initial));
 		expect(initial.tools?.map(tool => tool.name)).toEqual(["side_tool"]);
 		expect(promptMessages(followup).slice(0, initial.messages.length)).toEqual(promptMessages(initial));
 		expect(followup.messages.at(-2)?.content).toEqual([{ type: "text", text: "Side answer" }]);
@@ -2388,10 +2390,14 @@ describe("AgentSession message pipeline", () => {
 			await session.sendUserMessage("second");
 
 			expect(contexts).toHaveLength(2);
-			expect(contexts[0]!.messages).toHaveLength(1);
-			expect(contexts[1]!.messages).toHaveLength(3);
-			expect(contexts[1]!.messages[0]).toBe(contexts[0]!.messages[0]);
-			expect((contexts[1]!.messages[1] as { content: unknown }).content).toEqual([
+			// Context setup may prepend a developer notice. Every initial message
+			// remains the append-only prefix, followed by the rewritten reply and
+			// the next user turn.
+			expect(contexts[1]!.messages).toHaveLength(contexts[0]!.messages.length + 2);
+			for (const [index, message] of contexts[0]!.messages.entries()) {
+				expect(contexts[1]!.messages[index]).toBe(message);
+			}
+			expect((contexts[1]!.messages.at(-2) as { content: unknown }).content).toEqual([
 				{ type: "text", text: "rewritten assistant" },
 			]);
 		} finally {
@@ -3348,6 +3354,12 @@ describe("AgentSession message pipeline", () => {
 				modelRegistry: createModelRegistryStub() as never,
 			});
 			sessions.push(session);
+			const toolCatalog = session.agent.state.tools.map(({ name, label, description, parameters }) => ({
+				name,
+				label,
+				description,
+				parameters,
+			}));
 
 			const result = await session.runEphemeralTurn({ promptText: "Side Question?", tools });
 
@@ -3361,7 +3373,14 @@ describe("AgentSession message pipeline", () => {
 				expect(capturedContext!.tools!.map(tool => tool.name)).toEqual(["side_tool"]);
 				expect(capturedOptions?.toolChoice).toBeUndefined();
 			}
-			expect(session.agent.state.tools).toEqual([tool]);
+			expect(
+				session.agent.state.tools.map(({ name, label, description, parameters }) => ({
+					name,
+					label,
+					description,
+					parameters,
+				})),
+			).toEqual(toolCatalog);
 
 			// Developer reminder injected immediately before user prompt
 			const messages = capturedContext!.messages;

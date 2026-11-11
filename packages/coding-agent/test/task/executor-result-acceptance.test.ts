@@ -27,7 +27,7 @@ import {
 	runSubagentFollowUpTurn,
 	runSubprocess,
 } from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import { type AgentDefinition, TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { WaitTool } from "@oh-my-pi/pi-coding-agent/tools/wait";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
@@ -222,13 +222,23 @@ describe("runSubprocess result acceptance", () => {
 
 	it("terminalizes the ref and stamps the run lifecycle when the yield is accepted", async () => {
 		const harness = createHarness();
-		const ref = registerRunning(harness.session);
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-			session: harness.session,
-			extensionsResult: {} as unknown as LoadExtensionsResult,
-			setToolUIContext: () => {},
-			eventBus: new EventBus(),
-		} as CreateAgentSessionResult);
+		let ref = undefined as unknown as import("@oh-my-pi/pi-coding-agent/registry/agent-registry").AgentRef;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			ref = options.expectedAgentRef!;
+			AgentRegistry.global().attachSession(
+				options.agentId!,
+				harness.session,
+				options.sessionManager?.getSessionFile(),
+				ref,
+			);
+			AgentRegistry.global().setStatus(options.agentId!, "running", ref);
+			return {
+				session: harness.session,
+				extensionsResult: {} as unknown as LoadExtensionsResult,
+				setToolUIContext: () => {},
+				eventBus: new EventBus(),
+			} as CreateAgentSessionResult;
+		});
 
 		const result = await runSubprocess({
 			cwd: "/tmp",
@@ -251,13 +261,23 @@ describe("runSubprocess result acceptance", () => {
 
 	it("settles the owning task job when Agent Hub tombstones a running subagent", async () => {
 		const harness = createHarness({ hangPrompt: true });
-		const ref = registerRunning(harness.session);
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-			session: harness.session,
-			extensionsResult: {} as unknown as LoadExtensionsResult,
-			setToolUIContext: () => {},
-			eventBus: new EventBus(),
-		} as CreateAgentSessionResult);
+		let ref = undefined as unknown as import("@oh-my-pi/pi-coding-agent/registry/agent-registry").AgentRef;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			ref = options.expectedAgentRef!;
+			AgentRegistry.global().attachSession(
+				options.agentId!,
+				harness.session,
+				options.sessionManager?.getSessionFile(),
+				ref,
+			);
+			AgentRegistry.global().setStatus(options.agentId!, "running", ref);
+			return {
+				session: harness.session,
+				extensionsResult: {} as unknown as LoadExtensionsResult,
+				setToolUIContext: () => {},
+				eventBus: new EventBus(),
+			} as CreateAgentSessionResult;
+		});
 		const delivered = Promise.withResolvers<{ id: string; text: string }>();
 		const manager = new AsyncJobManager({
 			onJobComplete: (id, text) => delivered.resolve({ id, text }),
@@ -674,6 +694,33 @@ describe("runSubprocess result acceptance", () => {
 		}
 	});
 
+	it("does not attribute a previous abort to an empty continuation but reports a new abort", async () => {
+		const harness = createHarness();
+		registerRunning(harness.session);
+		const previous: AssistantMessage = {
+			...assistantStopMessage([]),
+			stopReason: "aborted",
+			errorMessage: "Request was aborted",
+		};
+		const latest = vi.spyOn(harness.session, "getLastAssistantMessage").mockReturnValue(previous);
+		const eventBus = new EventBus();
+		const statuses: string[] = [];
+		eventBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, event => {
+			if (typeof event === "object" && event !== null && "status" in event) statuses.push(String(event.status));
+		});
+		attachIrcWakeTurnMonitor(harness.session, { id: AGENT_ID, agent: baseAgent, eventBus });
+		const observer = harness.wakeObserver();
+		if (!observer) throw new Error("wake-turn observer was not registered");
+		const empty = observer([]);
+		await empty?.(undefined);
+		expect(statuses).toEqual(["started", "failed"]);
+		statuses.length = 0;
+		const cancelled = observer([]);
+		latest.mockReturnValue({ ...previous, timestamp: previous.timestamp + 1 });
+		await cancelled?.(undefined);
+		expect(statuses).toEqual(["started", "aborted"]);
+	});
+
 	it.each([true, false])(
 		"reports an IRC-only wake accurately to the parent (already messaged: %s)",
 		async alreadyMessaged => {
@@ -814,6 +861,7 @@ describe("runSubprocess result acceptance", () => {
 		let finish: ((error?: unknown) => void | Promise<void>) | undefined;
 		const bridge = new IrcBridge({
 			isDisposed: () => false,
+			isRestartDraining: () => false,
 			isStreaming: () => false,
 			planModeEnabled: () => false,
 			emitSessionEvent: async () => {},

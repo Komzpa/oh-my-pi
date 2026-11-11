@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type {
 	ExtensionActions,
 	ExtensionCommandContextActions,
@@ -7,7 +8,27 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
-import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { createTestSession, type TestSessionContext } from "./utilities";
+
+const hosts: Array<{ host: InteractiveMode; context: TestSessionContext }> = [];
+
+beforeEach(async () => {
+	resetSettingsForTest();
+	await Settings.init({ inMemory: true });
+	await initTheme();
+});
+
+afterEach(async () => {
+	for (const { host } of hosts) host.stop();
+	vi.restoreAllMocks();
+	for (const { context } of hosts) {
+		Reflect.deleteProperty(context.session, "extensionRunner");
+		await context.cleanup();
+	}
+	hosts.length = 0;
+	resetSettingsForTest();
+});
 
 async function createHost(initializeUi: boolean) {
 	let actions: ExtensionContextActions | undefined;
@@ -34,30 +55,28 @@ async function createHost(initializeUi: boolean) {
 		onError() {},
 		async emit() {},
 	};
-	const host = Object.assign(Object.create(InteractiveMode.prototype), {
+	const context = await createTestSession({ inMemory: true });
+	const session = context.session;
+	Object.defineProperties(session, {
+		isStreaming: { get: () => state.streaming, configurable: true },
+		queuedMessageCount: { get: () => state.queued, configurable: true },
+		hasAdmittedSubmission: { get: () => state.admitted > 0, configurable: true },
+	});
+	vi.spyOn(session, "hasPendingAsyncWork").mockImplementation(() => state.asyncWork);
+	vi.spyOn(session, "waitForIdle").mockResolvedValue(undefined);
+	vi.spyOn(session, "waitForAdmittedSubmissions").mockImplementation(() => {
+		if (state.admitted === 0) return Promise.resolve();
+		const settled = Promise.withResolvers<void>();
+		state.settleAdmitted = settled.resolve;
+		return settled.promise;
+	});
+	const host = new InteractiveMode(session, "test");
+	hosts.push({ host, context });
+	Object.defineProperty(session, "extensionRunner", { value: runner, configurable: true });
+	Object.assign(host, {
 		shutdownRequested: false,
 		syncComposerShape() {},
 		syncExtensionLinks() {},
-		session: {
-			extensionRunner: runner,
-			get isStreaming() {
-				return state.streaming;
-			},
-			get queuedMessageCount() {
-				return state.queued;
-			},
-			get hasAdmittedSubmission() {
-				return state.admitted > 0;
-			},
-			hasPendingAsyncWork: () => state.asyncWork,
-			async waitForIdle() {},
-			waitForAdmittedSubmissions() {
-				if (state.admitted === 0) return Promise.resolve();
-				const settled = Promise.withResolvers<void>();
-				state.settleAdmitted = settled.resolve;
-				return settled.promise;
-			},
-		},
 		hasPendingSubmission: () => state.pendingSubmission,
 		async shutdown() {
 			state.closed = true;
@@ -66,12 +85,11 @@ async function createHost(initializeUi: boolean) {
 			errors.push(message);
 		},
 		setToolUIContext() {},
-		editor: { setText() {}, handleInput() {}, getText: () => "" },
 		setWorkingMessage() {},
 		setEditorComponent() {},
 		toolOutputExpanded: false,
 		setToolsExpanded() {},
-	}) as InteractiveModeContext;
+	});
 	Object.defineProperty(host, "isShuttingDown", { get: () => state.closed });
 	const controller = new ExtensionUiController(host);
 	if (initializeUi) await controller.initHooksAndCustomTools();

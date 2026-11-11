@@ -272,7 +272,7 @@ describe("SessionManager + RedisSessionStorage", () => {
 		second.appendMessage({ role: "user", content: "durable Redis peer turn", timestamp: Date.now() });
 		await second.close();
 
-		await expect(first.rewriteEntries()).rejects.toBeInstanceOf(SessionWriteConflictError);
+		await expect(first.rewriteEntries({ forceFullRewrite: true })).rejects.toBeInstanceOf(SessionWriteConflictError);
 		expect(redis.strings.get(`omp:sessions:file:${sessionFile}`)).toContain("durable Redis peer turn");
 	});
 

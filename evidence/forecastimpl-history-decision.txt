@@ -1,0 +1,5 @@
+DECISION: Yes—accept this scope.
+
+Immutable current-branch history and the optional multi-session caller seam are useful, truthful partial delivery; single-session evidence cannot satisfy the five-session calibration gate. Keep raw PERT quantiles and report calibration as insufficient with counts.
+
+Keep raw beta residuals as point estimates; when evidence is insufficient, use raw-model P80 as the automatic fallback. Record canonical offline corpus collection as a later explicit gap.

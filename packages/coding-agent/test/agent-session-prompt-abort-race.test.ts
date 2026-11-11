@@ -58,6 +58,7 @@ describe("AgentSession prompt admission racing abort", () => {
 			streamFn: mock.stream,
 		});
 		const fallbackRegistry = new ModelRegistry(authStorage);
+		if (options.modelRegistry) options.modelRegistry = Object.assign({}, options.modelRegistry, { authStorage });
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),

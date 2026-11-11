@@ -2249,8 +2249,15 @@ export interface TaskItem {
 	/** Inline instructions; exactly one of task or taskFile is required. */
 	task?: string;
 	taskFile?: string;
+	/** Exact open todo content. */
+	row?: string;
+	/** Restrict this dispatch to read tools. */
+	readOnly?: boolean;
+	previewIntegration?: { task: string; kind: "refresh" | "integration" };
 	/** How open-ended the work is; required by the schema and the child's sole `auto` thinking classification input. */
 	solutionSpace?: string;
+	/** Chief's one-line rejection reason for redispatching a completed row. */
+	rework?: string;
 	/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */
 	effort?: "lo" | "med" | "hi";
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
@@ -2259,6 +2266,8 @@ export interface TaskItem {
 	schemaMode?: "permissive" | "strict";
 	/** Eval-defined tool names exposed to this child. */
 	tools?: string[];
+	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
 }
@@ -2282,8 +2291,14 @@ export interface TaskParams {
 	task?: string;
 	/** Absolute path or local:// URL to a UTF-8 file (flat form), mutually exclusive with task. */
 	taskFile?: string;
+	/** Exact open todo content. */
+	row?: string;
+	/** Restrict this dispatch to read tools. */
+	readOnly?: boolean;
 	/** How open-ended the work is (flat form); see {@link TaskItem.solutionSpace}. */
 	solutionSpace?: string;
+	/** Chief's one-line rejection reason for redispatching a completed row. */
+	rework?: string;
 	/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */
 	effort?: "lo" | "med" | "hi";
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
@@ -2292,6 +2307,8 @@ export interface TaskParams {
 	schemaMode?: "permissive" | "strict";
 	/** Eval-defined tool names exposed to the flat-form child. */
 	tools?: string[];
+	/** Declared exclusive checkout paths for the flat-form child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	/** Batch form (`task.batch`): one subagent per item. */
 	tasks?: TaskItem[];
 	/** Batch form: shared background prepended to every assignment; required by the batch schema. */

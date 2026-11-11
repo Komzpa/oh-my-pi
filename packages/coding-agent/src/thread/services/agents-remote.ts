@@ -102,6 +102,10 @@ export class RemoteAgentRegistry implements AgentRegistryApi {
 		this.#listeners = new ForwardedListeners("agent-registry", forward => remote.callSync("subscribe", forward));
 	}
 
+	setSubagentFastMode(parentId: string, id: string, enabled: boolean): Promise<boolean> {
+		return this.#remote.call("setSubagentFastMode", parentId, id, enabled);
+	}
+
 	register(input: RegisterInput): AgentRef {
 		return this.#remote.callSync("register", input);
 	}
@@ -112,6 +116,10 @@ export class RemoteAgentRegistry implements AgentRegistryApi {
 
 	reopen(id: string, expected: AgentRef): AgentRef | undefined {
 		return this.#remote.callSync("reopen", id, expected);
+	}
+
+	restoreIdentity(id: string, expected: AgentRef, identity: { displayName: string; parentId?: string }): boolean {
+		return this.#remote.callSync("restoreIdentity", id, expected, identity);
 	}
 
 	setHistory(id: string, history: AgentHistorySummary, expectedSessionFile?: string): boolean {

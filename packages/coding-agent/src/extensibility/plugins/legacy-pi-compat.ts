@@ -1609,6 +1609,10 @@ class ExtensionGraphSources {
 	readonly #analyses = new Map<string, Promise<ExtensionSourceAnalysis>>();
 	readonly #relativeRequires = new Map<string, Promise<string | null>>();
 
+	constructor(entryRealPath: string, entrySource?: string) {
+		if (entrySource !== undefined) this.#sources.set(entryRealPath, Promise.resolve(entrySource));
+	}
+
 	resolveRelativeRequire(specifier: string, importerPath: string): Promise<string | null> {
 		const key = path.resolve(path.dirname(importerPath), specifier);
 		let resolved = this.#relativeRequires.get(key);
@@ -2240,14 +2244,14 @@ interface ExtensionModuleGraph {
  * synchronous bridge. Resolved ESM imports inside third-party dependencies
  * omit the reload tag so their importer paths stay query-free.
  */
-async function collectExtensionModules(entryRealPath: string): Promise<ExtensionModuleGraph> {
+async function collectExtensionModules(entryRealPath: string, entrySource?: string): Promise<ExtensionModuleGraph> {
 	const modules = new Map<string, string>();
 	const commonJsPaths = new Set<string>();
 	const synchronousSourcePaths = new Set<string>();
 	const queuedCacheBustResolvedImports = new Map<string, boolean>([[entryRealPath, true]]);
 	const queuedModuleKinds = new Map<string, ExtensionModuleKind>([[entryRealPath, "esm"]]);
 	const queuedEsmBranchPaths = new Set<string>();
-	const sources = new ExtensionGraphSources();
+	const sources = new ExtensionGraphSources(entryRealPath, entrySource);
 	const queue: Array<{
 		file: string;
 		cacheBustResolvedImports: boolean;
@@ -2641,13 +2645,16 @@ async function installExtensionGraphHook(
  * Returns a clearable handle to drop cached sources that weren't consumed
  * during the initial load; `undefined` when no new modules were discovered.
  */
-async function ensureExtensionGraphHook(entryRealPath: string): Promise<{ clear(): void } | undefined> {
+async function ensureExtensionGraphHook(
+	entryRealPath: string,
+	entrySource?: string,
+): Promise<{ clear(): void } | undefined> {
 	const {
 		modules: currentModules,
 		commonJsPaths,
 		cacheBustResolvedImportModules: discoveredCacheBustModules,
 		synchronousSourcePaths,
-	} = await collectExtensionModules(entryRealPath);
+	} = await collectExtensionModules(entryRealPath, entrySource);
 	let cacheBustResolvedImportModules = extensionGraphCacheBustResolvedImportModules.get(entryRealPath);
 	if (!cacheBustResolvedImportModules) {
 		cacheBustResolvedImportModules = new Set<string>();
@@ -2732,14 +2739,21 @@ async function ensureExtensionGraphHook(entryRealPath: string): Promise<{ clear(
  * imports keep their plain paths, so Bun evaluates them once per process and
  * every importer shares them, as a native `import()` would.
  */
-export async function loadLegacyPiModule(resolvedPath: string, options: { reload?: boolean } = {}): Promise<unknown> {
+export async function loadLegacyPiModule(
+	resolvedPath: string,
+	options: {
+		reload?: boolean;
+		/** Source already read for this load's hash; retained only until the initial import finishes. */
+		entrySource?: string;
+	} = {},
+): Promise<unknown> {
 	// Bun reports the realpath of a loaded module to `onLoad` and exposes it as
 	// `import.meta.url`. Resolve symlinks here too (macOS `/var`→`/private/var`,
 	// `bun link`/pnpm installs) so the rewrite filter matches the path Bun
 	// actually hands the hook.
 	const entryRealPath = await realpathOrSelf(path.resolve(resolvedPath));
 	await ensureLegacyPiOverridesReady();
-	const pendingSources = await ensureExtensionGraphHook(entryRealPath);
+	const pendingSources = await ensureExtensionGraphHook(entryRealPath, options.entrySource);
 	try {
 		// Dynamic import is required: legacy extension entry paths are user/plugin supplied at runtime.
 		// Use the raw filesystem path so Bun keys the `?mtime` suffix as part of

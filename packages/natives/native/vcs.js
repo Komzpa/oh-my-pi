@@ -77,6 +77,23 @@ export function gitInfo(dir) {
 	return api().vcsGitRepoInfo(dir);
 }
 
+/** Read the committer time without blocking the interactive event loop. */
+export async function lastCommitTime(repo) {
+	const head = await repo.head();
+	if (!head.commit) return 0;
+	const child = Bun.spawn(["git", "log", "-1", "--format=%ct", head.commit, "--"], {
+		cwd: repo.info().repoRoot,
+		stdout: "pipe",
+		stderr: "ignore",
+		timeout: 5_000,
+		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+	});
+	const [output, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+	const text = output.trim();
+	const seconds = Number(text);
+	return exitCode === 0 && text !== "" && Number.isFinite(seconds) ? seconds * 1000 : undefined;
+}
+
 /** Discover the Jujutsu workspace containing `dir`; `null` when absent. */
 export function jj(dir) {
 	return api().vcsJjDiscover(dir);
@@ -188,4 +205,35 @@ export function watch(repo, onChange, intervalMs = HEAD_WATCH_INTERVAL_MS) {
 	};
 	fs.watchFile(target, { interval: intervalMs }, listener).unref();
 	return () => fs.unwatchFile(target, listener);
+}
+
+/** Read-only ancestry probe. Exit 1 is a measured negative; errors remain errors. */
+export async function isAncestor(dir, commit, descendant = "HEAD") {
+	const child = Bun.spawn(["git", "merge-base", "--is-ancestor", commit, descendant], {
+		cwd: dir, stdout: "ignore", stderr: "pipe", timeout: 5_000,
+		env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" },
+	});
+	const stderr = await new Response(child.stderr).text();
+	const code = await child.exited;
+	if (code === 0) return true;
+	if (code === 1) return false;
+	throw vcsError("Cli", stderr || `git ancestry probe exited ${code}`);
+}
+
+/** Stable patch identities from the shared object store; no worktree files are read. */
+export async function commitPatchIds(dir, revision, since, limit = 2048) {
+	const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", GIT_NO_LAZY_FETCH: "1" };
+	const show = Bun.spawn(["git", "log", "--no-ext-diff", "--no-textconv", "--format=commit %H", "-p", "--no-merges",
+		`--max-count=${limit}`, ...(since === undefined ? [] : [`--since=${new Date(since).toISOString()}`]), revision, "--"], {
+		cwd: dir, stdout: "pipe", stderr: "ignore", timeout: 10_000, env,
+	});
+	const ids = Bun.spawn(["git", "patch-id", "--stable"], {
+		cwd: dir, stdin: show.stdout, stdout: "pipe", stderr: "ignore", timeout: 10_000, env,
+	});
+	const [output, showCode, idsCode] = await Promise.all([new Response(ids.stdout).text(), show.exited, ids.exited]);
+	if (showCode !== 0 || idsCode !== 0) throw vcsError("Cli", "git patch identity probe failed");
+	return output.trim().split("\n").filter(Boolean).map(line => {
+		const [patchId, commit] = line.split(/\s+/);
+		return { patchId, commit };
+	});
 }

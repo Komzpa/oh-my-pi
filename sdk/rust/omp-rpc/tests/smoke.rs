@@ -89,7 +89,7 @@ fn smoke_real_server() {
 	assert_eq!(client.protocol_version(), 2);
 	let mut seen = Vec::new();
 
-	let state = client.call(&GetStateCommand {}).unwrap();
+	let state = client.call(&GetStateCommand { view: None }).unwrap();
 	println!(
 		"get_state: session {} steering {:?} streaming {}",
 		state.session_id, state.steering_mode, state.is_streaming
@@ -129,6 +129,7 @@ fn smoke_real_server() {
 				tasks: vec![TodoItem {
 					content: "blocked task".into(),
 					status:  TodoStatus::Blocked,
+					schedule: None,
 					blocker: Some("waiting".into()),
 					details: None,
 					notes:   None,
@@ -369,7 +370,7 @@ fn smoke_scripted_model() {
 	assert!(echoed);
 
 	let messages = client.get_messages().unwrap();
-	let state = client.call(&GetStateCommand {}).unwrap();
+	let state = client.call(&GetStateCommand { view: None }).unwrap();
 	println!(
 		"get_messages: {} messages, get_state messageCount {}",
 		messages.len(),

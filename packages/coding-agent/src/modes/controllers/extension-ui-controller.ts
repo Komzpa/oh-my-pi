@@ -31,6 +31,7 @@ import { getSessionSlashCommands } from "../../extensibility/extensions/get-comm
 import { cfgExtensionAssistantTextRenderers } from "../../extensibility/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { ApprovalDialogComponent } from "@oh-my-pi/pi-tui/overlays/approval-dialog";
+import { sendAgentMessageFromSession } from "../../irc/messaging";
 import {
 	type AskDialogInputGuard,
 	type AskDialogPrompt,
@@ -300,8 +301,10 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			sendAgentMessage: (to, message) => sendAgentMessageFromSession(this.ctx.session, to, message),
 			runEphemeralTurn: args => this.ctx.session.runEphemeralTurn(args),
 			startLive: options => this.ctx.startRemoteLive(options),
+			setSubagentFastMode: (id, enabled) => this.ctx.session.setSubagentFastMode(id, enabled),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -525,8 +528,10 @@ export class ExtensionUiController {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
 			compact: instructionsOrOptions => this.#compactSession(instructionsOrOptions),
 			getSystemPrompt: () => this.ctx.session.systemPrompt,
+			sendAgentMessage: (to, message) => sendAgentMessageFromSession(this.ctx.session, to, message),
 			runEphemeralTurn: args => this.ctx.session.runEphemeralTurn(args),
 			startLive: options => this.ctx.startRemoteLive(options),
+			setSubagentFastMode: (id, enabled) => this.ctx.session.setSubagentFastMode(id, enabled),
 		};
 		const commandActions: ExtensionCommandContextActions = {
 			getContextUsage: () => this.ctx.session.getContextUsage(),
@@ -1705,21 +1710,10 @@ export class ExtensionUiController {
 			options?.deliverAs === "followUp" ||
 			options?.deliverAs === "aside";
 		if (startsTurn && this.#rejectGuestExtensionTurn()) return;
-		const wasStreaming = this.ctx.session.isStreaming;
-		const messageCountBefore = this.ctx.session.messages.length;
 		const normalized = normalizeCustomMessagePayload(message);
-		this.ctx.session
-			.sendCustomMessage(normalized, options)
-			.then(() => {
-				// `deliverAs: "nextTurn"` without a trigger is the one idle arm that appends
-				// to the session silently (no message_start/message_end), so nothing else
-				// paints it and nothing else in the transcript changed.
-				const silentAppend = options?.deliverAs === "nextTurn" && options.triggerTurn !== true;
-				this.#applyCustomMessageDisplay(wasStreaming, normalized, silentAppend ? messageCountBefore : undefined);
-			})
-			.catch((err: unknown) => {
-				this.ctx.showError(`Extension sendMessage failed: ${err instanceof Error ? err.message : String(err)}`);
-			});
+		this.ctx.session.sendCustomMessage(normalized, options).catch((err: unknown) => {
+			this.ctx.showError(`Extension sendMessage failed: ${err instanceof Error ? err.message : String(err)}`);
+		});
 	};
 
 	/** Every `sendUserMessage` form prompts or queues a user turn (see `AgentSession.sendUserMessage`). */
@@ -1735,42 +1729,6 @@ export class ExtensionUiController {
 		});
 		return task;
 	};
-
-	/**
-	 * @param silentAppendBaseline message count before a silent idle `nextTurn` append,
-	 *   or `undefined` when the send was not such an append.
-	 */
-	#applyCustomMessageDisplay(
-		wasStreaming: boolean,
-		message: { customType: string; display?: boolean },
-		silentAppendBaseline: number | undefined,
-	): void {
-		// For non-streaming cases with display=true, update UI
-		// (streaming cases update via message_end event).
-		// Gate on initialChatRendered (#1955): an extension's session_start
-		// sendMessage({display:true}) runs before renderInitialMessages, which would
-		// re-render from session entries AND re-append via preserveExistingChat,
-		// duplicating the message. After the initial render the chat must be updated.
-		if (wasStreaming || !message.display || !this.ctx.initialChatRendered) return;
-		if (silentAppendBaseline !== undefined && !this.ctx.session.isStreaming) {
-			// Append only the new message instead of replaying the whole transcript (#12183).
-			// The count and type checks fail when the send did not land as a plain append
-			// (e.g. it was queued behind a turn that began meanwhile), which falls through
-			// to the rebuild below.
-			const messages = this.ctx.session.messages;
-			const appended = messages.at(-1);
-			if (
-				messages.length === silentAppendBaseline + 1 &&
-				appended?.role === "custom" &&
-				appended.customType === message.customType
-			) {
-				this.ctx.addMessageToChat(appended);
-				this.ctx.ui.requestRender();
-				return;
-			}
-		}
-		this.ctx.rebuildChatFromMessages();
-	}
 
 	/**
 	 * Present a modal dialog on the shared editor surface, serializing against any

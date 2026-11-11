@@ -1,3 +1,5 @@
+import { isReadOnlyAgent, isReadOnlyDispatch, isReadOnlyWorkerRole, readOnlyWorkerTools } from "./read-only-policy";
+import { BUILTIN_TOOLS } from "../tools";
 /**
  * Shared policy resolution and execution for task and eval subagents.
  *
@@ -10,7 +12,9 @@ import path from "node:path";
 import { $env, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
 import { modelKind } from "@oh-my-pi/pi-catalog/types";
+import type { Effort } from "@oh-my-pi/pi-ai";
 import {
+	agentInheritsParentModel,
 	resolveAgentModelSelection,
 	resolveConfiguredModelPatterns,
 	resolveExplicitModelRole,
@@ -129,6 +133,7 @@ export interface StructuredSubagentRequest {
 	session: ToolSession;
 	invocationKind: "task" | "eval";
 	assignment: string;
+	readOnly?: boolean;
 	context?: string;
 	agent?: string;
 	/** Saved source session selected for the bundled seance agent. */
@@ -165,8 +170,11 @@ export interface StructuredSubagentRequest {
 	effort?: TaskEffort;
 	/** Caller's description of how open-ended the work is; steers the child's `auto` thinking classification. */
 	solutionSpace?: string;
+	/** Exact internal rung effort; wins over coarse effort and model selector defaults. */
+	thinkingLevel?: Effort;
 	identity?: StructuredSubagentIdentity;
 	index?: number;
+	row?: string;
 	parentToolCallId?: string;
 	detached?: boolean;
 	invokedAt?: number;
@@ -197,6 +205,8 @@ export interface StructuredSubagentRequest {
 	/** Workpool items accepted by the child yield tool during this turn. */
 	workPoolYieldItems?: WorkPoolYieldItem[];
 	signal?: AbortSignal;
+	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	onProgress?: (progress: AgentProgress) => void;
 	/** See {@link ExecutorOptions.onToolResult}. */
 	onToolResult?: (result: SubagentToolResult) => void;
@@ -247,6 +257,8 @@ export interface StructuredSubagentResult {
 	artifactsDir: string;
 	temporaryArtifacts: boolean;
 }
+
+/** Effort suffixes the router appends to its chosen model (`model:effort`). */
 
 /** Machine-readable failure category so adapters can retain their native errors. */
 export class StructuredSubagentError extends Error {
@@ -567,7 +579,37 @@ export async function resolveEffectiveSubagentPolicy(
 		}
 	}
 
-	const effectiveAgent = planMode ? createPlanModeAgent(agent) : agent;
+	const row = request.session
+		.getTodoPhases?.()
+		.flatMap(phase => phase.tasks)
+		.find(row => row.content === request.row || request.assignment.trim().startsWith(row.content));
+	const readOnly =
+		request.readOnly === true ||
+		row?.schedule?.readOnly === true ||
+		isReadOnlyWorkerRole(row?.schedule?.agentProfile ?? "") ||
+		isReadOnlyWorkerRole(agentName);
+	if (
+		(readOnly || isReadOnlyAgent(agent)) &&
+		request.customTools?.some(tool => !["browser", "puppeteer"].includes(tool.name))
+	)
+		throw new StructuredSubagentError("preflight", "Read-only dispatch cannot use custom tools.");
+	const baseAgent = planMode ? createPlanModeAgent(agent) : agent;
+	const effectiveAgent = readOnly
+		? {
+				...baseAgent,
+				readOnly: true,
+				tools: readOnlyWorkerTools(
+					baseAgent.tools ?? [
+						...Object.keys(BUILTIN_TOOLS),
+						"yield",
+						...(request.customTools?.map(tool => tool.name) ?? []),
+						...["browser", "puppeteer"].filter(name => request.session.getToolByName?.(name)),
+					],
+				),
+				spawns: undefined,
+				prewalk: undefined,
+			}
+		: baseAgent;
 	// An agent declaring `structured: true` keeps its result contract when the caller opts out (`task.structured` off).
 	const structured = request.structured !== false || effectiveAgent.structured === true;
 	const schema = resolveSchema(request, effectiveAgent, structured);
@@ -642,6 +684,7 @@ export async function resolveEffectiveSubagentPolicy(
 			"Subagent isolated execution requires task.isolation.enabled; it is currently false.",
 		);
 	}
+	const inheritsParentModel = agentInheritsParentModel(modelResolution);
 	return {
 		discovery,
 		agentName,
@@ -650,12 +693,12 @@ export async function resolveEffectiveSubagentPolicy(
 		modelOverride,
 		preparedSession: preparedSeance?.session,
 		modelRole,
+		structured,
 		serviceTierOverride,
 		compactionThresholdOverride,
 		oauthAccountPools,
-		parentActiveModelPattern,
+		parentActiveModelPattern: inheritsParentModel ? parentActiveModelPattern : undefined,
 		perCallModelGrants,
-		structured,
 		schema,
 		planMode,
 		isIsolated,
@@ -697,19 +740,31 @@ async function applySpawnHook(
 	const spawnResult = await emit(
 		{
 			type: "before_subagent_spawn",
+			...(request.resources !== undefined ? { resources: request.resources } : {}),
 			agent: policy.agentName,
 			invocationKind: request.invocationKind,
 			modelRole: policy.modelRole,
 			patterns: policy.modelOverride ?? [],
 			spawnKey,
+			isolated: request.isolation?.requested === true,
+			assignment: request.assignment,
+			row: request.row,
+			readOnly: isReadOnlyDispatch(policy.effectiveAgent),
+			context: request.context,
 		},
 		request.signal,
 	);
 	if (spawnResult?.block) {
 		throw new StructuredSubagentError("preflight", spawnResult.reason ?? "Subagent spawn blocked by extension.");
 	}
-	if (spawnResult?.model === undefined) return policy;
+	if (spawnResult?.model === undefined) {
+		return policy;
+	}
+	// Explicit rework selectors win over extension routing.
+	if (request.model !== undefined) return policy;
 	const replacement = resolveConfiguredModelPatterns(spawnResult.model, request.session.settings);
+	// A routed replacement ends the parent-model fallback.
+	if (replacement.length > 0) policy = { ...policy, parentActiveModelPattern: undefined };
 	if (replacement.length === 0) return policy;
 	return { ...policy, modelOverride: replacement, modelRoute: spawnResult.note };
 }
@@ -771,6 +826,31 @@ function resolveAutoloadSkills(session: ToolSession, agent: AgentDefinition) {
 	return { skills, autoloadSkills };
 }
 
+/** Discovery inputs shared by ordinary spawn and same-process cold revival. */
+export function getSubagentDiscoveryOptions(
+	session: ToolSession,
+	restrictToolNames: boolean,
+	discoveryCwd = session.workspaceTree?.rootPath ?? session.cwd,
+) {
+	const sameWorkspace = discoveryCwd === session.cwd;
+	return {
+		contextFiles: sameWorkspace
+			? session.contextFiles?.filter(file => path.basename(file.path).toLowerCase() !== "agents.md")
+			: undefined,
+		skills: sameWorkspace && session.skills ? [...session.skills] : undefined,
+		workspaceTree: sameWorkspace ? session.workspaceTree : undefined,
+		promptTemplates: sameWorkspace ? session.promptTemplates : undefined,
+		rules: sameWorkspace ? session.rules : undefined,
+		extensionRoots: session.effectiveExtensionRoots?.bind(session),
+		preloadedExtensionPaths: restrictToolNames ? [] : sameWorkspace ? session.extensionPaths : undefined,
+		preloadedPreparedExtensions: sameWorkspace ? session.preparedExtensions : undefined,
+		preloadedCustomToolPaths: restrictToolNames ? [] : sameWorkspace ? session.customToolPaths : undefined,
+		inheritedSessionAgents: session.getSessionAgents?.(),
+		parentHindsightSessionState: session.getHindsightSessionState?.(),
+		parentMnemopiSessionState: session.getMnemopiSessionState?.(),
+	};
+}
+
 function buildExecutorOptions(
 	request: StructuredSubagentRequest,
 	policy: EffectiveSubagentPolicy,
@@ -781,7 +861,27 @@ function buildExecutorOptions(
 	const preparedSession = policy.preparedSession;
 	const { skills, autoloadSkills } = resolveAutoloadSkills(session, policy.agent);
 	const localProtocolOptions = sessionLocalProtocolOptions(session);
-	const restrictToolNames = preparedSession !== undefined || policy.planMode || session.restrictToolNames === true;
+	const restrictToolNames =
+		preparedSession !== undefined ||
+		policy.planMode ||
+		isReadOnlyDispatch(policy.effectiveAgent) ||
+		session.restrictToolNames === true;
+	const customTools = [...(request.customTools ?? [])];
+	if (isReadOnlyDispatch(policy.effectiveAgent)) {
+		for (const name of policy.effectiveAgent.tools ?? []) {
+			if (!["browser", "puppeteer"].includes(name) || customTools.some(tool => tool.name === name)) continue;
+			const tool = session.getToolByName?.(name);
+			if (!tool) continue;
+			customTools.push({
+				name,
+				label: tool.label,
+				description: tool.description,
+				parameters: tool.parameters,
+				execute: (id, params, onUpdate, _context, signal) =>
+					tool.execute(id, params, signal, onUpdate, session.getToolContext?.()),
+			});
+		}
+	}
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
 	return {
 		cwd: session.cwd,
@@ -790,8 +890,9 @@ function buildExecutorOptions(
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
 		agent: policy.effectiveAgent,
-		task: renderSubagentUserPrompt(request.assignment),
-		assignment: request.assignment.trim(),
+		task: request.assignment,
+		assignment: request.assignment,
+		row: request.row,
 		preparedSession,
 		context: request.context?.trim() || undefined,
 		planReference: undefined,
@@ -817,6 +918,7 @@ function buildExecutorOptions(
 		effort: policy.effort,
 		solutionSpace: request.solutionSpace?.trim() || undefined,
 		structured: policy.structured,
+		exactThinkingLevel: request.thinkingLevel,
 		...(policy.schema.source === "none"
 			? {}
 			: {
@@ -842,11 +944,11 @@ function buildExecutorOptions(
 		modelRegistry: session.modelRegistry,
 		settings: session.settings,
 		asyncJobManager: session.asyncJobManager,
-		inheritedSessionAgents: session.getSessionAgents?.(),
+		...getSubagentDiscoveryOptions(session, restrictToolNames),
 		mcpManager: enableMCP ? (session.mcpManager ?? MCPManager.instance()) : undefined,
 		mcpToolScope: session.mcpToolScope,
 		enableMCP,
-		customTools: request.customTools,
+		customTools: customTools.length ? customTools : undefined,
 		workPoolYieldItems: request.workPoolYieldItems,
 		contextFiles: session.contextFiles,
 		noContextFiles: session.noContextFiles,
@@ -868,8 +970,6 @@ function buildExecutorOptions(
 		preloadedCustomToolPaths: restrictToolNames ? [] : session.customToolPaths,
 		localProtocolOptions,
 		parentArtifactManager: preparedSession ? undefined : (session.getArtifactManager?.() ?? undefined),
-		parentHindsightSessionState: session.getHindsightSessionState?.(),
-		parentMnemopiSessionState: session.getMnemopiSessionState?.(),
 		onRelease:
 			preparedSession !== undefined && lease.temporary
 				? async () => {
@@ -915,8 +1015,8 @@ function buildFailureResult(
 			id,
 			agent: policy.agent.name,
 			agentSource: policy.agent.source,
-			task: renderSubagentUserPrompt(request.assignment),
-			assignment: request.assignment.trim(),
+			task: request.assignment,
+			assignment: request.assignment,
 			description: request.invocationKind === "eval" ? trimToUndefined(request.identity?.label) : undefined,
 			exitCode: 1,
 			output: "",

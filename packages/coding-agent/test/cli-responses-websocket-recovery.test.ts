@@ -31,6 +31,9 @@ async function withCli(
 	}) => Promise<void>,
 	options: { first?: number; idle?: number; websockets?: boolean | "default"; modelPreference?: boolean } = {},
 ): Promise<void> {
+	// First-event deadlines include the handshake: give loaded CI time to reach
+	// the socket before exercising recovery. Preserve the selected idle deadline.
+	options = { ...options, first: Math.max(5, options.first ?? 5), idle: options.idle ?? 5 };
 	using tempDir = TempDir.createSync("@omp-responses-rpc-");
 	const home = tempDir.join("home");
 	const project = tempDir.join("project");

@@ -129,6 +129,7 @@ describe("async speculative compaction", () => {
 				events.push(event.type);
 			},
 			emitNotice: () => {},
+			emitCompactionBackoffNotice: () => {},
 			scheduleAgentContinue: () => {},
 			scheduleCompactionContinuation: () => false,
 			persistTurnMessagesForMidRunCompaction: options.persistTurnMessagesForMidRunCompaction ?? (async () => false),
@@ -648,7 +649,7 @@ describe("async speculative compaction", () => {
 		expect(agent.state.messages[0]).toEqual(freshUser);
 	});
 
-	it("suppresses speculation at a dead-end cut point and re-arms when the cut point advances", async () => {
+	it("suppresses speculation after no reduction and rearms after meaningful growth", async () => {
 		sessionManager = SessionManager.inMemory();
 		sessionManager.appendMessage(userMessage("earlier request ".repeat(400)));
 		sessionManager.appendMessage(assistantMessage("earlier response ".repeat(400), model));
@@ -680,7 +681,7 @@ describe("async speculative compaction", () => {
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 		expect(sessionManager.getEntries().filter(entry => entry.type === "compaction")).toHaveLength(0);
 
-		const nextRequest = userMessage("new request opens a cut point");
+		const nextRequest = userMessage("new request opens a cut point ".repeat(10000));
 		sessionManager.appendMessage(nextRequest);
 		activeMessages.push(nextRequest);
 		await maintenance.maintainContextMidRun(activeMessages, undefined, context);

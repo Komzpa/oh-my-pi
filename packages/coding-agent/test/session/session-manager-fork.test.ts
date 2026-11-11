@@ -147,7 +147,7 @@ describe("SessionManager.forkFrom", () => {
 		expect(await Bun.file(path.join(sourceArtifactsDir, "1.read.log")).text()).toBe("tool output");
 	});
 
-	it("forks a seance in place: source untouched, history kept, startup contracts inert, artifacts not copied", async () => {
+	it("forks a seance in place: source untouched, context kept, startup contracts omitted, artifacts not copied", async () => {
 		using tempDir = TempDir.createSync("@omp-session-seance-fork-");
 		const { cwd, sourceFile, sourceArtifactsDir } = await createSessionWithArtifacts(tempDir.path());
 		const timestamp = new Date().toISOString();
@@ -175,7 +175,7 @@ describe("SessionManager.forkFrom", () => {
 			id: "witness-request",
 			parentId: "inherited-init",
 			timestamp,
-			message: { role: "user", content: "early request before resume", timestamp: 1 },
+			message: { role: "user" as const, content: "early request before resume", timestamp: 1 },
 		};
 		const laterInit = {
 			...inheritedInit,
@@ -188,7 +188,7 @@ describe("SessionManager.forkFrom", () => {
 			id: "later-source-message",
 			parentId: "later-inherited-init",
 			timestamp,
-			message: { role: "user", content: "later source turn", timestamp: 3 },
+			message: { role: "user" as const, content: "later source turn", timestamp: 3 },
 		};
 		const sourceText = `${[sourceHeader, inheritedInit, request, laterInit, laterMessage]
 			.map(entry => JSON.stringify(entry))
@@ -205,13 +205,11 @@ describe("SessionManager.forkFrom", () => {
 		});
 		try {
 			expect(await fs.readFile(sourceFile, "utf8")).toBe(sourceText);
-			const asSourceInit = { type: "custom", customType: "source_session_init" };
-			expect(await loadHistory(forkFile)).toEqual([
-				{ ...asSourceInit, id: inheritedInit.id, parentId: null, timestamp, data: inheritedInit },
-				request,
-				{ ...asSourceInit, id: laterInit.id, parentId: laterInit.parentId, timestamp, data: laterInit },
-				laterMessage,
-			] as unknown as SessionEntry[]);
+			const snapshot = await loadHistory(forkFile);
+			expect(snapshot.map(entry => (entry.type === "message" ? entry.message : null))).toEqual([
+				request.message,
+				laterMessage.message,
+			]);
 			// Revival reads the header's source pointer and finds no inherited contract to resurrect.
 			expect(await SessionManager.peekSessionInit(forkFile)).toMatchObject({
 				seanceSource: path.resolve(sourceFile),
@@ -222,6 +220,67 @@ describe("SessionManager.forkFrom", () => {
 			await expect(fs.stat(forkFile.slice(0, -".jsonl".length))).rejects.toMatchObject({ code: "ENOENT" });
 		} finally {
 			await forked.close();
+		}
+	});
+
+	it("seance keeps the compacted conversation while omitting retired history and off-branch runtime state", async () => {
+		using temp = TempDir.createSync("seance-context-");
+		const { cwd, sessionDir, sourceFile } = await createSessionWithArtifacts(temp.path());
+		const timestamp = new Date().toISOString();
+		const records = [
+			{ type: "session", version: CURRENT_SESSION_VERSION, id: "parent", cwd, timestamp },
+			{
+				type: "message",
+				id: "old",
+				parentId: null,
+				timestamp,
+				message: { role: "user", content: "retired request", timestamp: 1 },
+			},
+			{
+				type: "custom",
+				id: "noise",
+				parentId: "old",
+				timestamp,
+				customType: "user_todo_edit",
+				data: { retired: "x".repeat(1024 * 1024) },
+			},
+			{
+				type: "compaction",
+				id: "compact",
+				parentId: "noise",
+				timestamp,
+				summary: "Retained summary",
+				firstKeptEntryId: "",
+				tokensBefore: 100,
+			},
+			{
+				type: "message",
+				id: "recent",
+				parentId: "compact",
+				timestamp,
+				message: { role: "user", content: "current question", timestamp: 2 },
+			},
+		];
+		await Bun.write(sourceFile, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+		const source = await SessionManager.open(sourceFile, sessionDir, undefined, { suppressBreadcrumb: true });
+		const fork = await SessionManager.forkFrom(sourceFile, cwd, sessionDir, undefined, {
+			seance: true,
+			suppressBreadcrumb: true,
+		});
+		try {
+			expect(fork.buildSessionContext().messages).toEqual(source.buildSessionContext().messages);
+			expect((await fs.stat(fork.getSessionFile()!)).size).toBeLessThan(10000);
+			const reopened = await SessionManager.open(fork.getSessionFile()!, sessionDir, undefined, {
+				suppressBreadcrumb: true,
+			});
+			try {
+				expect(reopened.buildSessionContext().messages).toEqual(source.buildSessionContext().messages);
+			} finally {
+				await reopened.close();
+			}
+		} finally {
+			await fork.close();
+			await source.close();
 		}
 	});
 

@@ -77,8 +77,13 @@ function keepGatedItemKeys<T, I>(item: FluentType<T, I>): FluentType<unknown, I>
 export const taskItemSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
+	"row?": "string",
+	"readOnly?": "boolean",
+	"rework?": "string",
+	"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
@@ -87,8 +92,13 @@ export const taskItemSchema = type({
 const taskItemSchemaIsolated = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
+	"row?": "string",
+	"readOnly?": "boolean",
+	"rework?": "string",
+	"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
@@ -99,8 +109,13 @@ const taskItemSchemaIsolated = type({
 export const taskSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
+	"row?": "string",
+	"readOnly?": "boolean",
+	"rework?": "string",
+	"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
@@ -110,8 +125,13 @@ export const taskSchema = type({
 const taskSchemaNoIsolation = type({
 	"name?": "string",
 	agent: "string = 'task'",
+	"resources?": "string[]",
 	task: "string",
 	solutionSpace: "string",
+	"row?": "string",
+	"readOnly?": "boolean",
+	"rework?": "string",
+	"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"tools?": "string[]",
@@ -201,10 +221,15 @@ function createTaskSchema(options: {
 				agent,
 				...taskFields,
 				solutionSpace: "string",
+				"row?": "string",
+				"readOnly?": "boolean",
+				"rework?": "string",
+				"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 				...effortField,
 				...schemaFields,
 				...toolsField,
 				...gatedFields,
+				"resources?": "string[]",
 				"isolated?": "boolean",
 				"+": "delete",
 			});
@@ -219,8 +244,13 @@ function createTaskSchema(options: {
 		const item = type.raw({
 			"name?": "string",
 			agent,
+			"resources?": "string[]",
 			...taskFields,
 			solutionSpace: "string",
+			"row?": "string",
+			"readOnly?": "boolean",
+			"rework?": "string",
+			"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 			...effortField,
 			...schemaFields,
 			...toolsField,
@@ -241,10 +271,15 @@ function createTaskSchema(options: {
 			agent,
 			...taskFields,
 			solutionSpace: "string",
+			"row?": "string",
+			"readOnly?": "boolean",
+			"rework?": "string",
+			"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 			...effortField,
 			...schemaFields,
 			...toolsField,
 			...gatedFields,
+			"resources?": "string[]",
 			"isolated?": "boolean",
 			"+": "delete",
 		});
@@ -252,8 +287,13 @@ function createTaskSchema(options: {
 	return type.raw({
 		"name?": "string",
 		agent,
+		"resources?": "string[]",
 		...taskFields,
 		solutionSpace: "string",
+		"row?": "string",
+		"readOnly?": "boolean",
+		"rework?": "string",
+		"previewIntegration?": type({ task: "string", kind: '"refresh" | "integration"' }),
 		...effortField,
 		...schemaFields,
 		...toolsField,
@@ -326,6 +366,8 @@ export function canSpawnAtDepth(maxRecursionDepth: number, taskDepth: number): b
 
 /** Agent definition (bundled or discovered) */
 export interface AgentDefinition {
+	/** Effective dispatch contract; independent of shell/browser capabilities. */
+	readOnly?: boolean;
 	name: string;
 	description: string;
 	systemPrompt: string;

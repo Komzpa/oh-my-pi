@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Keep task titles and live owners visible in narrow TODO panels; omit empty status counters, separate the deadline forecast and leave verbose attempt clocks in the expanded view.
+
+- TODO plan ETA now uses remaining execution, actual worker capacity and unfinished delivery gates; task age and worker-attempt diagnostics cannot substitute for the plan finish.
+- Count a full worker pool as waiting for a slot; reserve stuck warnings for blocked work.
+- Show TODO infrastructure failures since last success with their top cause and resource wait holder.
+- Keep TODO point forecasts on residual PERT work, with experimental whole-plan uncertainty and throughput shown only as a diagnostic ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Reuse unchanged worker HUD rows and status inputs during terminal paints ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Give an exact dependency update when one worker owns collateral rows ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- TODO rows show queued audits and pending handoffs separately, and request review only after verification and handoff finish.
+- Show certain deadline misses in red with lateness, and dim explicit after-deadline follow-ups ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Agent hub task summaries display the task itself and no longer depend on a prompt prefix.
+
+### Changed
+
+- Show one TODO progress summary with live work, grouped dependencies, audits and user review states ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
+### Added
+
+- Forecast deadline probability and P50/P80/P90 finish from worker pools and empirical redo risk ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
+
 ## [18.18.8] - 2026-11-11
 
 - The live transcript reuses its per-block walk list across each frame's readers instead of rebuilding it three times per frame, so settled transcripts cost fewer short-lived allocations per frame ([#18705](https://github.com/can1357/oh-my-pi/pull/18705) by [@yuzu-octopus](https://github.com/yuzu-octopus))

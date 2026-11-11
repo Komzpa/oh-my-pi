@@ -221,4 +221,12 @@ class "openai" {
 			}
 		}
 	}
+
+	// residue: revision =6.1 also includes undelimited and patch spellings.
+	// API scope includes custom OpenAI-compatible deployments (such as codex-lb).
+	on-api "openai-responses" "openai-codex-responses" {
+		models "gpt-6.1" "gpt-6.1-*" {
+			harness-notice-role "user"
+		}
+	}
 }

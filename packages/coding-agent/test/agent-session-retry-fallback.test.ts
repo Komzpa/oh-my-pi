@@ -3440,62 +3440,78 @@ describe("AgentSession retry fallback", () => {
 		}
 	});
 
-	it("allows model fallback on 402 Payment Required when all sibling credentials are exhausted", async () => {
-		const primaryModel = getBundledModel("openai", "gpt-4o") ?? getBundledModel("anthropic", "claude-sonnet-4-5");
-		const fallbackModel = getBundledModel("google", "gemini-1.5-pro") ?? getBundledModel("openai", "gpt-4o-mini");
-		if (!primaryModel || !fallbackModel) {
-			throw new Error("Expected bundled test models to exist");
+	it("skips same-provider model fallback only for latched billing-cap 402 responses", async () => {
+		const primaryModel = getBundledModel("openai", "gpt-4o");
+		const sameProviderFallback = getBundledModel("openai", "gpt-4o-mini");
+		const otherProviderFallback = getBundledModel("google", "gemini-1.5-pro");
+		if (!primaryModel || !sameProviderFallback || !otherProviderFallback) {
+			throw new Error("Expected bundled same-provider and cross-provider test models");
 		}
-
-		const requestedModels: string[] = [];
-		const mock = createMockModel();
-		const agent = new Agent({
-			getApiKey: model => `${model.provider}-test-key`,
-			initialState: {
-				model: primaryModel,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-			streamFn: (model, context, options) => {
-				requestedModels.push(`${model.provider}/${model.id}`);
-				if (model.provider === primaryModel.provider && model.id === primaryModel.id) {
-					mock.push({ throw: Object.assign(new Error("Payment Required"), { status: 402 }) });
-				} else {
-					mock.push({ content: [`ok:${model.provider}/${model.id}`] });
-				}
-				return mock.stream(model, context, options);
-			},
-		});
-
+		const primarySelector = `${primaryModel.provider}/${primaryModel.id}`;
+		const sameProviderSelector = `${sameProviderFallback.provider}/${sameProviderFallback.id}`;
+		const otherProviderSelector = `${otherProviderFallback.provider}/${otherProviderFallback.id}`;
 		vi.spyOn(modelRegistry.authStorage.limits, "markReached").mockResolvedValue({ switched: false });
+		const runCase = async (errorMessage: string, expectedFallback: Model, shouldRemainDepleted: boolean) => {
+			const requestedModels: string[] = [];
+			let latchedAtFailure = false;
+			const agent = new Agent({
+				getApiKey: model => `${model.provider}-test-key`,
+				initialState: {
+					model: primaryModel,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (model, context, options) => {
+					const mock = createMockModel({ provider: model.provider, id: model.id });
+					requestedModels.push(`${model.provider}/${model.id}`);
+					if (model.provider === primaryModel.provider && model.id === primaryModel.id) {
+						modelRegistry.authStorage.health.markProviderDepleted(primaryModel.provider, {
+							status: 402,
+							message: errorMessage,
+						});
+						latchedAtFailure = modelRegistry.authStorage.health.isProviderDepleted(primaryModel.provider);
+						mock.push({ throw: new Error(errorMessage) });
+					} else {
+						mock.push({ content: [`ok:${model.provider}/${model.id}`] });
+					}
+					return mock.stream(model, context, options);
+				},
+			});
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 1,
+				"retry.maxRetries": 1,
+				"retry.modelFallback": true,
+				"retry.fallbackChains": {
+					[primarySelector]: [sameProviderSelector, otherProviderSelector],
+				},
+			});
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry,
+			});
+			try {
+				await session.prompt("Advance past a failed provider when appropriate");
+				await session.waitForIdle();
+				expect(latchedAtFailure).toBe(shouldRemainDepleted);
+				expect(requestedModels).toEqual([primarySelector, `${expectedFallback.provider}/${expectedFallback.id}`]);
+				expect(session.model?.provider).toBe(expectedFallback.provider);
+				expect(session.model?.id).toBe(expectedFallback.id);
+				expect(modelRegistry.authStorage.health.isProviderDepleted(primaryModel.provider)).toBe(
+					shouldRemainDepleted,
+				);
+			} finally {
+				await session.dispose();
+				session = undefined;
+				modelRegistry.authStorage.health.resetProviderDepletion(primaryModel.provider);
+			}
+		};
 
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			"retry.baseDelayMs": 1,
-			"retry.maxRetries": 1,
-			"retry.modelFallback": true,
-			"retry.fallbackChains": {
-				[`${primaryModel.provider}/${primaryModel.id}`]: [`${fallbackModel.provider}/${fallbackModel.id}`],
-			},
-		});
-
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-
-		await session.prompt("Prompt triggering fallback on exhausted siblings");
-		await session.waitForIdle();
-
-		expect(requestedModels).toEqual([
-			`${primaryModel.provider}/${primaryModel.id}`,
-			`${fallbackModel.provider}/${fallbackModel.id}`,
-		]);
-		expect(session.model?.provider).toBe(fallbackModel.provider);
-		expect(session.model?.id).toBe(fallbackModel.id);
+		await runCase("HTTP 402 Payment Required", otherProviderFallback, true);
+		await runCase("HTTP 402 A subscription is required for this endpoint", sameProviderFallback, false);
 	});
 
 	it("applies a provider-wildcard chain to any model of that provider", async () => {
@@ -8531,13 +8547,8 @@ describe("AgentSession retry fallback", () => {
 	});
 
 	describe("when a retry saga's session write throws", () => {
-		// Once SessionManager has recorded a disk failure (a full disk, an
-		// unwritable transcript), rewriteEntries rejects on every call, and a
-		// retry saga rewrites the attempts it annotates on its way out: the
-		// give-up after an exhausted budget and the close of a successful retry.
-		// The "rewrite" rows reproduce that failure. appendMessage records its
-		// own write failures instead of throwing, so the "error-turn" rows inject
-		// a throw there to cover every other exit of the saga. The saga must
+		// A session append can fail while the retry saga is recording a failed
+		// turn or a recovered reply. The saga must
 		// close anyway and publish the auto_retry_end its branch publishes when
 		// the write succeeds. Left open, the in-flight prompt() hangs behind the
 		// pending promise as in #5382, `isStreaming` stays true, and every later
@@ -8548,13 +8559,14 @@ describe("AgentSession retry fallback", () => {
 		const delivery = "DELIVERY-1 from an extension";
 
 		type FailingWrite =
-			// The transcript rewrite that annotates the attempts the saga retried.
-			| "rewrite"
 			// The append of an empty error turn.
 			| "error-turn"
 			// The same append, failing only once the saga announced its first
 			// retry, so the attempt before it still records.
-			| "error-turn-after-first-retry";
+			| "error-turn-after-first-retry"
+			// The recovered assistant reply's session append fails after the retry
+			// began, exercising the successful saga's real persistence boundary.
+			| "reply-after-first-retry";
 
 		async function expectSagaClosesDespiteFailedWrite(scenario: {
 			responses: MockResponse[];
@@ -8585,27 +8597,24 @@ describe("AgentSession retry fallback", () => {
 			const sessionManager = SessionManager.inMemory();
 			session = new AgentSession({ agent, sessionManager, settings, modelRegistry });
 			const { retryEndEvents } = trackRetryEvents(session);
-
 			let failedWrites = 0;
-			if (scenario.failingWrite === "rewrite") {
-				vi.spyOn(sessionManager, "rewriteEntries").mockImplementation(async () => {
+			let armed = scenario.failingWrite === "error-turn";
+			session.subscribe(event => {
+				if (event.type === "auto_retry_start") armed = true;
+			});
+			const appendMessage = sessionManager.appendMessage.bind(sessionManager);
+			vi.spyOn(sessionManager, "appendMessage").mockImplementation(message => {
+				const failedErrorTurn = message.role === "assistant" && message.stopReason === "error";
+				const failedRecoveredReply =
+					scenario.failingWrite === "reply-after-first-retry" &&
+					message.role === "assistant" &&
+					message.stopReason === "stop";
+				if (armed && (failedErrorTurn || failedRecoveredReply)) {
 					failedWrites++;
-					throw new Error("EACCES: permission denied, open 'session.jsonl.tmp'");
-				});
-			} else {
-				let armed = scenario.failingWrite === "error-turn";
-				session.subscribe(event => {
-					if (event.type === "auto_retry_start") armed = true;
-				});
-				const appendMessage = sessionManager.appendMessage.bind(sessionManager);
-				vi.spyOn(sessionManager, "appendMessage").mockImplementation(message => {
-					if (armed && message.role === "assistant" && message.stopReason === "error") {
-						failedWrites++;
-						throw new RangeError("Out of memory");
-					}
-					return appendMessage(message);
-				});
-			}
+					throw new RangeError("Out of memory");
+				}
+				return appendMessage(message);
+			});
 
 			await session.prompt("Fail, then settle the retry saga");
 
@@ -8625,11 +8634,11 @@ describe("AgentSession retry fallback", () => {
 			expect(getLastAssistantMessage(session).content).toEqual([{ type: "text", text: "Woke for the delivery." }]);
 		}
 
-		it("closes a saga that exhausted its retry budget", async () => {
+		it("closes a saga when the failed turn cannot be persisted before retry", async () => {
 			await expectSagaClosesDespiteFailedWrite({
-				responses: [{ throw: transientError }, { throw: transientError }],
+				responses: [{ throw: transientError }],
 				settings: { "retry.maxRetries": 1, "retry.modelFallback": false },
-				failingWrite: "rewrite",
+				failingWrite: "error-turn",
 				end: { success: false, attempt: 1, finalError: transientError },
 			});
 		});
@@ -8638,7 +8647,7 @@ describe("AgentSession retry fallback", () => {
 			await expectSagaClosesDespiteFailedWrite({
 				responses: [{ throw: transientError }, { content: ["Recovered after one retry."] }],
 				settings: { "retry.maxRetries": 1, "retry.modelFallback": false },
-				failingWrite: "rewrite",
+				failingWrite: "reply-after-first-retry",
 				end: { success: true, attempt: 1 },
 			});
 		});

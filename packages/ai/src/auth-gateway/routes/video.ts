@@ -11,6 +11,8 @@ import {
 	buildGatewayApiKeyResolver,
 	gatewayRequestLogFields,
 	mirrorRequestAbort,
+	observeGatewayProviderFailure,
+	observeGatewayProviderSuccess,
 	resolveGatewayApiKey,
 } from "../dispatch";
 import { gatewayResponseHeaders, json, resolveClientIdentity, codedErrorResponse } from "../http";
@@ -159,6 +161,7 @@ export async function handleVideoSubmit(
 			fetch: bootOpts.fetch,
 			signal: controller.signal,
 		});
+		observeGatewayProviderSuccess(bootOpts.storage, model.provider);
 		const gatewayId = videoServer.encodeGatewayJobId({
 			provider: model.provider,
 			modelId: model.id,
@@ -171,6 +174,7 @@ export async function handleVideoSubmit(
 		);
 	} catch (error) {
 		if (controller.signal.aborted) return aborted();
+		observeGatewayProviderFailure(bootOpts.storage, model, error);
 		const classified = classifyGatewayError(error);
 		logger.warn("auth-gateway video submit failed", { format: "video-submit", error: classified.message, peer });
 		return codedErrorResponse(classified.status, classified.type, classified.message);
@@ -191,6 +195,7 @@ export async function handleVideoPoll(
 	logVideoRequest(bootOpts, requestId, "poll", resolved, peer);
 	try {
 		const job = await pollVideo(resolved.model, resolved.upstreamId, videoOptions(bootOpts, resolved, peer));
+		observeGatewayProviderSuccess(bootOpts.storage, resolved.model.provider);
 		recordCompletedUsage(bootOpts, resolved, req, job);
 		return json(
 			200,
@@ -203,6 +208,7 @@ export async function handleVideoPoll(
 		);
 	} catch (error) {
 		if (resolved.controller.signal.aborted) return aborted();
+		observeGatewayProviderFailure(bootOpts.storage, resolved.model, error);
 		const classified = classifyGatewayError(error);
 		logger.warn("auth-gateway video poll failed", { format: "video-poll", error: classified.message, peer });
 		return codedErrorResponse(classified.status, classified.type, classified.message);
@@ -230,6 +236,7 @@ export async function handleVideoContent(
 		return new Response(content.body, { status: 200, headers });
 	} catch (error) {
 		if (resolved.controller.signal.aborted) return aborted();
+		observeGatewayProviderFailure(bootOpts.storage, resolved.model, error);
 		const classified = classifyGatewayError(error);
 		logger.warn("auth-gateway video content failed", { format: "video-content", error: classified.message, peer });
 		return codedErrorResponse(classified.status, classified.type, classified.message);

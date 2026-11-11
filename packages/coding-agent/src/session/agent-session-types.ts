@@ -22,9 +22,9 @@ import type {
 import type { postmortem } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import type { AsyncJob, AsyncJobDeliveryState, AsyncJobManager, AsyncJobManagerApi } from "../async";
+import type { AgentRegistryApi } from "../registry/agent-registry";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { AgentDefinition } from "../task/types";
-import type { AgentRegistryApi } from "../registry/agent-registry";
 import type { SessionAccountPoolScope } from "../config/account-pools";
 import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
@@ -110,6 +110,8 @@ export interface AsyncJobInspection {
 export interface AsyncJobSnapshot {
 	running: AsyncJobSnapshotItem[];
 	recent: AsyncJobSnapshotItem[];
+	/** Exact ids and session-corroborated liveness for registry agents without a running job. */
+	nonJobAgents?: Array<{ id: string; live: boolean }>;
 	delivery: AsyncJobDeliveryState;
 }
 
@@ -124,6 +126,12 @@ export interface AsyncJobTree {
 }
 
 export type { ShakeMode, ShakeResult } from "./shake-types";
+/** Stops this session at the next safe model boundary until released. */
+export interface RestartDrainLease {
+	wasRunning: boolean;
+	waitForQuiescence(): Promise<void>;
+	release(): void;
+}
 
 /**
  * Prewalk switches an active session one-way from its starting model to a
@@ -372,10 +380,10 @@ export interface AgentSessionConfig {
 	asyncJobManager?: AsyncJobManagerApi;
 	/** Registry identity used for IRC routing. */
 	agentId?: string;
+	/** Registry holding this session and its live subagents. */
+	agentRegistry?: AgentRegistryApi;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";
-	/** Registry whose awaits table records this agent blocked on the user while a dialog waits for their answer. */
-	agentRegistry?: AgentRegistryApi;
 	/** Provider-facing session ID override. */
 	providerSessionId?: string;
 	/** OAuth account pools enforced on the session's key lookups; the session lifts them on dispose. */
@@ -529,10 +537,14 @@ export interface FollowUpOptions {
 	attribution?: MessageAttribution;
 	/** Called synchronously with the messages pushed onto the follow-up queue. See {@link PromptOptions.onPromptQueued}. */
 	onPromptQueued?: PromptOptions["onPromptQueued"];
+	/** Called synchronously once the message is on its queue. See {@link PromptOptions.onPromptAdmitted}. */
+	onPromptAdmitted?: () => void;
 }
 
 /** Options for AgentSession.steer(). */
 export interface SteerOptions {
+	/** Administrative context only: never start a new turn or revive an idle worker. */
+	passive?: boolean;
 	/** Explicit billing/initiator attribution. */
 	attribution?: MessageAttribution;
 	/** Called synchronously with the messages pushed onto the steering queue. See {@link PromptOptions.onPromptQueued}. */

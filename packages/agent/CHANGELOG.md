@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Skipped tools name the pending advisory and the tool to retry; passive notices preserve running waits ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Cancelled queue drains preserve pending input for the next turn without reporting an assistant-role error ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
+
+### Changed
+
+- Tool-result pruning now returns pure decisions with stable branch-local projections instead of mutating historical messages.
+
+
 ## [18.18.8] - 2026-11-11
 
 - Fixed a cursor tool result transform failure being swallowed silently — it is now logged as a warning ([#18654](https://github.com/can1357/oh-my-pi/pull/18654) by [@yuzu-octopus](https://github.com/yuzu-octopus))

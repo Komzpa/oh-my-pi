@@ -1457,6 +1457,25 @@ export function askTimeoutMs(settings: Settings): number | undefined {
 	return timeoutSeconds === 0 ? undefined : timeoutSeconds * 1000;
 }
 
+/** Opt-in lead policy; ordinary upstream ask behavior remains the default. */
+export const cfgAskGateEnabled = register({
+	id: "ask.gate.enabled",
+	type: "boolean",
+	default: false,
+});
+
+export const cfgAskGateAgent = register({
+	id: "ask.gate.agent",
+	type: "string",
+	default: "",
+});
+
+export const cfgAskGateRecentSeconds = register({
+	id: "ask.gate.recentSeconds",
+	type: "number",
+	default: 0,
+});
+
 export const cfgAskNotify = register({
 	id: "ask.notify",
 	type: "enum",

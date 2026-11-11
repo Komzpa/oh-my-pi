@@ -60,6 +60,9 @@ export declare function requireGit(dir: string): VcsGitRepo;
 /** Repository metadata only (cheap fs walk) — for synchronous render paths. */
 export declare function gitInfo(dir: string): VcsGitRepoInfo | null;
 
+/** Latest committer time in milliseconds; zero for an unborn repository. */
+export declare function lastCommitTime(repo: VcsGitRepo): Promise<number | undefined>;
+
 /** Discover the Jujutsu workspace containing `dir`; `null` when absent. */
 export declare function jj(dir: string): VcsJjWorkspace | null;
 
@@ -104,3 +107,9 @@ export declare const HEAD_WATCH_INTERVAL_MS: number;
 
 /** Watch a repository for head changes; returns a disposer. */
 export declare function watch(repo: VcsRepo, onChange: () => void, intervalMs?: number): () => void;
+
+/** Whether commit is an ancestor of descendant (HEAD by default). */
+export declare function isAncestor(dir: string, commit: string, descendant?: string): Promise<boolean>;
+
+/** Stable patch identities from a bounded reachable walk (milliseconds since epoch). */
+export declare function commitPatchIds(dir: string, revision: string, since?: number, limit?: number): Promise<{ patchId: string; commit: string }[]>;

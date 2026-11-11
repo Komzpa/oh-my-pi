@@ -12,6 +12,7 @@
 import type { AgentMessage, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type {
@@ -30,6 +31,8 @@ import type {
 import type { CustomMessage } from "../session/messages";
 import type { ServingModel } from "../session/retry-fallback-chains";
 import type { AgentDefinition } from "../task/types";
+import type { RestartDrainLease } from "../session/agent-session-types";
+import type { SessionEntry } from "../session/session-entries";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { ThreadId } from "./identity";
 import { emptyMirrorState } from "./remote-agent-session";
@@ -122,6 +125,10 @@ export class PeerAgentSession implements AgentSessionHandle {
 
 	get messages(): AgentMessage[] {
 		return mainBridge().remote.callSync("readMessages", this);
+	}
+
+	getTodoPhases(): TodoPhase[] {
+		return mainBridge().remote.callSync("readTodoPhases", this);
 	}
 
 	get sessionFile(): string | undefined {
@@ -219,8 +226,31 @@ export class PeerAgentSession implements AgentSessionHandle {
 		return mainBridge().remote.call("steer", this, text, images, options);
 	}
 
+	get isDisposed(): boolean {
+		return this.#field("isDisposed");
+	}
+	getRestartPendingInputCount(): number {
+		return this.#field("restartPendingInputCount");
+	}
+	beginRestartDrain(): RestartDrainLease {
+		return mainBridge().remote.callSync("beginRestartDrain", this);
+	}
+	getRestartBranchEntries(): Promise<SessionEntry[]> {
+		return mainBridge().remote.call("getRestartBranchEntries", this);
+	}
+	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void> {
+		return mainBridge().remote.call("sendRestartNotice", this, message);
+	}
+	flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void> {
+		return mainBridge().remote.call("flushRestartJournal", this, options);
+	}
+
 	abort(options?: SessionAbortOptions): Promise<void> {
 		return mainBridge().remote.call("abort", this, options);
+	}
+
+	setFastMode(enabled: boolean): Promise<boolean> {
+		return mainBridge().remote.call("setFastMode", this, enabled);
 	}
 
 	setWorkPoolYieldItems(items: readonly WorkPoolYieldItem[]): Promise<void> {

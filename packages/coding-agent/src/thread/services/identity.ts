@@ -104,6 +104,7 @@ interface RefSnapshot {
 	readonly createdAt: number;
 	readonly lastActivity: number;
 	readonly activity: AgentRef["activity"];
+	readonly todoRow: AgentRef["todoRow"];
 	readonly history: AgentRef["history"];
 	readonly lifecycle: AgentRef["lifecycle"];
 }
@@ -158,6 +159,7 @@ const mainRefCodec: RpcCodec<AgentRef> = {
 			createdAt: ref.createdAt,
 			lastActivity: ref.lastActivity,
 			activity: ref.activity,
+			todoRow: ref.todoRow,
 			history: ref.history,
 			lifecycle: ref.lifecycle,
 		}) satisfies RefSnapshot,
@@ -189,6 +191,7 @@ function refresh(ref: AgentRef, snapshot: RefSnapshot): AgentRef {
 	ref.createdAt = snapshot.createdAt;
 	ref.lastActivity = snapshot.lastActivity;
 	ref.activity = snapshot.activity;
+	ref.todoRow = snapshot.todoRow;
 	ref.history = snapshot.history;
 	ref.lifecycle = snapshot.lifecycle;
 	return ref;
