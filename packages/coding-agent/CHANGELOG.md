@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Clone large session journals once while preserving independent snapshots and restores.
 - Keep auditor dispatch and session journaling working with readonly artifact declarations.
 - Preserve dependency reviews across later audit writes and keep new delivery findings actionable after older audits are retired.
 - Retire audit follow-ups for merged or removed deliveries, with at most one read-only check on current HEAD ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).

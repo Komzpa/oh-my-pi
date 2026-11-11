@@ -186,6 +186,53 @@ class PublishedRewriteStorage extends FileSessionStorage {
 }
 
 describe("bounded resume memory", () => {
+	it("clones the session payload once while preserving snapshot isolation", async () => {
+		using dir = TempDir.createSync("@resume-clone-copy-count-");
+		const entries = threeCompactions();
+		const file = await writeJournal(dir.path(), entries);
+		const session = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
+		const cloneSpy = spyOn(globalThis, "structuredClone");
+		let clone: SessionManager | undefined;
+		try {
+			clone = session.cloneCurrentSession({ persist: false });
+			expect(cloneSpy).toHaveBeenCalledTimes(2);
+			const original = session.getEntry("old-large");
+			const copied = clone.getEntry("old-large");
+			if (
+				original?.type !== "message" ||
+				original.message.role !== "toolResult" ||
+				copied?.type !== "message" ||
+				copied.message.role !== "toolResult"
+			)
+				throw new Error("Expected cloned tool history");
+			expect(copied).toEqual(original);
+			const originalContent = original.message.content;
+			copied.message.content = [{ type: "text", text: "clone-only" }];
+			expect(session.getEntry("old-large")).toMatchObject({ message: { content: originalContent } });
+		} finally {
+			cloneSpy.mockRestore();
+			await clone?.close();
+			await session.close();
+		}
+	});
+
+	it("opens an indexed journal without a second historical payload scan", async () => {
+		using dir = TempDir.createSync("@resume-no-rescan-");
+		const file = await writeJournal(dir.path(), threeCompactions());
+		const read = spyOn(sessionLoader, "readPositionedSessionEntry");
+		let session: SessionManager | undefined;
+		try {
+			session = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
+			expect(read.mock.calls.map(([, position]) => position.id)).not.toContain("old-large");
+			const historical = session.getEntry("old-large");
+			expect(historical).toMatchObject({ type: "message", message: { role: "toolResult" } });
+			expect(read.mock.calls.map(([, position]) => position.id)).toContain("old-large");
+		} finally {
+			read.mockRestore();
+			await session?.close();
+		}
+	});
+
 	it("does not reread historical payloads while a filtered selection is still retained", async () => {
 		using dir = TempDir.createSync("@resume-selection-reuse-");
 		const file = await writeJournal(dir.path(), threeCompactions());

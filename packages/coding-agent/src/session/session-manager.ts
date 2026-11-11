@@ -3235,7 +3235,8 @@ export class SessionManager {
 		const persist = options?.persist ?? this.#persist;
 		const clone = new SessionManager(this.#cwd, this.#sessionDir, persist, this.#storage);
 		clone.#suppressBreadcrumb = true;
-		clone.restoreState(this.captureState());
+		// This snapshot is already owned and never escapes the clone operation.
+		clone.#restoreState(this.captureState(), false);
 		if (!persist) {
 			clone.#sessionFile = undefined;
 			clone.#expectedDiskSize = null;
@@ -3247,6 +3248,10 @@ export class SessionManager {
 	}
 
 	restoreState(snapshot: SessionManagerStateSnapshot): void {
+		this.#restoreState(snapshot, true);
+	}
+
+	#restoreState(snapshot: SessionManagerStateSnapshot, cloneEntries: boolean): void {
 		this.#closeWriterEventually();
 		this.#diskTail = Promise.resolve();
 		this.#clearDiskError();
@@ -3262,7 +3267,10 @@ export class SessionManager {
 		this.#fallbackRuntimeOnly = snapshot.fallbackRuntimeOnly;
 		// A completed moveTo drops the stash, so a rollback restores it here.
 		this.#taskSiblingCandidate = snapshot.taskSiblingCandidate;
-		this.#applyEntries(structuredClone(snapshot.header), cloneOwnedRecords(snapshot.entries));
+		this.#applyEntries(
+			cloneEntries ? structuredClone(snapshot.header) : snapshot.header,
+			cloneEntries ? cloneOwnedRecords(snapshot.entries) : snapshot.entries,
+		);
 		this.#additionalDirectories = [...(snapshot.header.additionalDirectories ?? [])];
 		this.#sessionName = snapshot.sessionName;
 
