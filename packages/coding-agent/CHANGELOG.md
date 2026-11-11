@@ -94,6 +94,10 @@
 
 ### Fixed
 
+- Keep consumed background jobs readable through `proc://<id>` during retention, while hiding them from listings and preserving owner isolation.
+- Include foreground-backed jobs in owner quiescence and report retained background jobs from failed workers without permitting forged harness messages.
+- Task items accept `resources: string[]` to declare child checkout ownership and forward it to `before_subagent_spawn`.
+
 - `/usage`, session statistics, and `omp stats` now include session title spend from both the default fork title and the tiny title model, and tiny-model titles count toward `--max-cost` ([#18177](https://github.com/can1357/oh-my-pi/issues/18177), [#18491](https://github.com/can1357/oh-my-pi/pull/18491) by [@yuzu-octopus](https://github.com/yuzu-octopus))
 - Retries after `--model pi/<role>` (or `@<role>`, `<role>`) now walk that role's `retry.fallbackChains` entry instead of the `default` chain, including on `--continue` ([#18389](https://github.com/can1357/oh-my-pi/issues/18389), [#18534](https://github.com/can1357/oh-my-pi/pull/18534) by [@harshaygadekar](https://github.com/harshaygadekar))
 - Fixed a `->` / `=>` list sent to an idle session running its second item before its first; if the first item can't start (Esc, a refused or failed setup), the whole list goes back to the editor ([#10802](https://github.com/can1357/oh-my-pi/issues/10802))

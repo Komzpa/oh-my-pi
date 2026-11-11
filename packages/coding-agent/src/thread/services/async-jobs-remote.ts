@@ -28,6 +28,7 @@ import type {
 	AsyncJobFilter,
 	AsyncJobManagerApi,
 	AsyncJobProcess,
+	AsyncJobQueryOptions,
 	AsyncJobReapResult,
 	AsyncJobRegisterOptions,
 	AsyncJobRun,
@@ -292,8 +293,8 @@ export class RemoteAsyncJobManager implements AsyncJobManagerApi {
 		return this.#row(wire);
 	}
 
-	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[] {
-		return this.#rows(this.#remote.callSync("getRunningJobs", filter));
+	getRunningJobs(filter?: AsyncJobFilter, options?: AsyncJobQueryOptions): AsyncJob[] {
+		return this.#rows(this.#remote.callSync("getRunningJobs", filter, options));
 	}
 
 	getRecentJobs(limit?: number, filter?: AsyncJobFilter): AsyncJob[] {

@@ -284,10 +284,14 @@ describe("AgentSession owner-routed async delivery", () => {
 		expect(running.find(job => job.id === "proc-job")?.command).toBe(command);
 		expect(running.find(job => job.id === "task-job")?.command).toBeUndefined();
 
+		manager.watchJobs(["proc-job"]);
 		gate.resolve("done");
-		await session.settleAsyncWork();
+		await manager.getJob("proc-job")?.promise;
 		const recent = session.getAsyncJobSnapshot()?.recent ?? [];
 		expect(recent.find(job => job.id === "proc-job")?.command).toBe(command);
+		manager.unwatchJobs(["proc-job"]);
+		await session.settleAsyncWork();
+		expect(session.getAsyncJobSnapshot()?.recent.find(job => job.id === "proc-job")).toBeUndefined();
 	});
 
 	it("delivers a background task's whole inline report without cutting it again", async () => {
