@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Retained regional Token Plan request routing for both tp- and ttp- keys alongside current catalog authentication.
+
+
 ## [18.18.8] - 2026-11-11
 
 - Fixed provider in-flight lock cleanup failures being swallowed silently — they are now logged instead of ignored ([#18654](https://github.com/can1357/oh-my-pi/pull/18654) by [@yuzu-octopus](https://github.com/yuzu-octopus))
@@ -27,10 +32,6 @@
 ### Fixed
 
 - Claude Fable launch resets now report the Fable weekly limit they clear instead of an unknown window ([#18661](https://github.com/can1357/oh-my-pi/pull/18661) by [@TheAifam5](https://github.com/TheAifam5))
-
-### Fixed
-
-- Retained regional Token Plan request routing for both tp- and ttp- keys alongside current catalog authentication.
 
 ## [18.18.4] - 2026-11-09
 

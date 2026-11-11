@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- TODO plan ETA now uses remaining execution, actual worker capacity and unfinished delivery gates; task age and worker-attempt diagnostics cannot substitute for the plan finish.
+- Count a full worker pool as waiting for a slot; reserve stuck warnings for blocked work.
+- Show TODO infrastructure failures since last success with their top cause and resource wait holder.
+- Keep TODO point forecasts on residual PERT work, with experimental whole-plan uncertainty and throughput shown only as a diagnostic ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Reuse unchanged worker HUD rows and status inputs during terminal paints ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Give an exact dependency update when one worker owns collateral rows ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- TODO rows show queued audits and pending handoffs separately, and request review only after verification and handoff finish.
+- Show certain deadline misses in red with lateness, and dim explicit after-deadline follow-ups ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+- Agent hub task summaries display the task itself and no longer depend on a prompt prefix.
+
+### Changed
+
+- Show one TODO progress summary with live work, grouped dependencies, audits and user review states ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
+### Added
+
+- Forecast deadline probability and P50/P80/P90 finish from worker pools and empirical redo risk ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
+
+
 ## [18.18.8] - 2026-11-11
 
 - The live transcript reuses its per-block walk list across each frame's readers instead of rebuilding it three times per frame, so settled transcripts cost fewer short-lived allocations per frame ([#18705](https://github.com/can1357/oh-my-pi/pull/18705) by [@yuzu-octopus](https://github.com/yuzu-octopus))
@@ -25,28 +46,6 @@
 ### Fixed
 
 - Saved-reset messages name the Claude Fable weekly limit as "Claude Fable weekly" instead of its raw id ([#18661](https://github.com/can1357/oh-my-pi/pull/18661) by [@TheAifam5](https://github.com/TheAifam5))
-
-### Fixed
-
-- TODO plan ETA now uses remaining execution, actual worker capacity and unfinished delivery gates; task age and worker-attempt diagnostics cannot substitute for the plan finish.
-
-- Count a full worker pool as waiting for a slot; reserve stuck warnings for blocked work.
-
-- Show TODO infrastructure failures since last success with their top cause and resource wait holder.
-- Keep TODO point forecasts on residual PERT work, with experimental whole-plan uncertainty and throughput shown only as a diagnostic ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
-- Reuse unchanged worker HUD rows and status inputs during terminal paints ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
-- Give an exact dependency update when one worker owns collateral rows ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
-- TODO rows show queued audits and pending handoffs separately, and request review only after verification and handoff finish.
-- Show certain deadline misses in red with lateness, and dim explicit after-deadline follow-ups ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
-- Agent hub task summaries display the task itself and no longer depend on a prompt prefix.
-
-### Changed
-
-- Show one TODO progress summary with live work, grouped dependencies, audits and user review states ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
-
-### Added
-
-- Forecast deadline probability and P50/P80/P90 finish from worker pools and empirical redo risk ([#92](https://github.com/Komzpa/oh-my-pi/pull/92) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.18.6] - 2026-11-09
 
@@ -149,7 +148,6 @@
 
 ### Fixed
 
-- Fixed terminal Device Attributes replies (such as `^[[?64;1;2;4;6;17;18;21;22c`) leaking into the shell prompt on exit ([#18662](https://github.com/can1357/oh-my-pi/pull/18662) by [@asuffield](https://github.com/asuffield))
 - Ctrl+J from a win32-input-mode record with `VK_J` and `Uc=LF` now decodes as `ctrl+j`, so Windows Terminal / mini-term insert a newline instead of submitting ([#18253](https://github.com/can1357/oh-my-pi/pull/18253) by [@Clannad47](https://github.com/Clannad47))
 - The BTW history page (`f` on a side answer) scrolls its reader and history list with the mouse wheel, matching the other scrolling sheets ([#18303](https://github.com/can1357/oh-my-pi/pull/18303) by [@ImAlexBlock](https://github.com/ImAlexBlock))
 - The BTW history list shows the date for questions asked before today (and the year for ones from an earlier year), instead of a bare time that read as today's; a follow-up asked on a later day than its topic shows its date too ([#18210](https://github.com/can1357/oh-my-pi/pull/18210) by [@a-glapinski](https://github.com/a-glapinski))
