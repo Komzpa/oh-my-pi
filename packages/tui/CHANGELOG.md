@@ -357,6 +357,13 @@
 - Fixed the ask dialog's Note (button or `n`) right after a pick moved to the next question annotating that question's highlighted row instead of the answer just picked ([#17126](https://github.com/can1357/oh-my-pi/pull/17126) by [@H4vC](https://github.com/H4vC))
 - Fixed the ask dialog's Next button reopening the custom-answer editor after Other was cancelled instead of moving on to the next question or Review tab
 
+### Fixed
+
+- Fixed inline images in Konsole leaving stale copies or deleting neighboring images when the transcript scrolls
+- Fixed pasted-image thumbnails in the Konsole composer leaving stale copies after history appends
+- Preserved frame-local image clipping and replay-history ownership while tracking Konsole SIXEL placements through physical scrolling
+- Deferred live Konsole SIXEL painting until overflowing history scrolls finish, preventing terminal-induced raster drift and stale copies above the viewport
+
 ## [18.13.0] - 2026-10-26
 
 ### Breaking Changes
@@ -535,6 +542,7 @@
 - Fixed the status line `pr` segment keeping the previous branch's PR after switching to the default branch, a detached HEAD, or a branch without a PR ([#15455](https://github.com/can1357/oh-my-pi/pull/15455) by [@ravshansbox](https://github.com/ravshansbox))
 - Fixed the status-line footer total leaving out task subagent spend; it now reads the session's cumulative usage, the same source the interactive status line uses ([#14393](https://github.com/can1357/oh-my-pi/pull/14393) by [@F0Rextasy](https://github.com/F0Rextasy))
 - Fixed transcript rows disappearing from scrollback or reappearing out of order when bottom chrome stays taller after a turn, self-clearing HUDs close, or the composer shape changes ([#15820](https://github.com/can1357/oh-my-pi/pull/15820) by [@emmahyde](https://github.com/emmahyde))
+
 
 ## [18.11.1] - 2026-10-15
 
