@@ -52,6 +52,7 @@ NEXT ACTION: reconcile this row's current result, then start one capable worker 
 
 {{#if scopeChanged}}Row {{row}} write scope is now {{resources}}; applies to this running worker immediately.{{/if}}
 
-{{#if liveOwner}}{{row}} already has live owner {{owner}} (running or restoring). Steer agent://{{owner}} instead of re-dispatching this row. To replace a stalled owner, use the existing reestimate/recovery path, kill that exact owner and read its stop receipt before dispatching the replacement.{{/if}}
+{{#if liveOwner}}Steer agent://{{owner}}; this row already has a live owner.
+{{row}} is owned by {{owner}} (running or restoring). Do not re-dispatch it. To replace a stalled owner, use the existing reestimate/recovery path, kill that exact owner and read its stop receipt before dispatching the replacement.{{/if}}
 
 {{#if scopeRequest}}Harness (not Darafei): write scope request from {{worker}}. READY LEAD ACTION: inspect conflicts and approve with todo {{action}}, or tell the worker why refused. Assigned paths already auto-grant; these paths extend the current row.{{/if}}

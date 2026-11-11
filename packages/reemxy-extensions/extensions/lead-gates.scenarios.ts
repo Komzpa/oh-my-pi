@@ -111,12 +111,14 @@ export async function gateLocalityScenarios(only?: string) {
 	return receipts;
 }
 
-export const reviewFindingIds = ["canonical-target", "doctor-item", "receipt-operation", "summary-elision", "truncated-receipt", "released-eta"] as const;
+export const reviewFindingIds = ["canonical-target", "doctor-item", "truncated-receipt", "released-eta"] as const;
+export const p2ReviewFindingIds = ["receipt-operation", "summary-elision"] as const;
+type ReviewFindingId = (typeof reviewFindingIds)[number] | (typeof p2ReviewFindingIds)[number];
 
 /** One registered-hook contract per review finding. `only` selects one; omit it to run all four. */
-export async function gateReviewFinding(only?: (typeof reviewFindingIds)[number]) {
+export async function gateReviewFinding(only?: ReviewFindingId) {
 	const receipts: Array<{ label: string; allowed: boolean; reason?: string }> = [];
-	const run = async (id: (typeof reviewFindingIds)[number]) => {
+	const run = async (id: ReviewFindingId) => {
 		if (only && only !== id) return;
 		const now = Date.now();
 		const estimate = { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium" as const, basis: "Measured fixture", updatedAt: now };
@@ -210,7 +212,8 @@ export async function gateReviewFinding(only?: (typeof reviewFindingIds)[number]
 			}
 		} finally { await hooks.get("session_shutdown")?.({} as never, ctx as never); }
 	};
-	for (const id of reviewFindingIds) await run(id);
+	if (only) await run(only);
+	else for (const id of [...reviewFindingIds, ...p2ReviewFindingIds]) await run(id);
 	return receipts;
 }
 

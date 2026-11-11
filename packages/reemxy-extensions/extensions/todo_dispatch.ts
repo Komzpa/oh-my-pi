@@ -5945,7 +5945,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         forecastRows.filter(row => isNonClosedRowStatus(row.status)).every(row => targets.includes(row.content));
       if (unresolvedForGate.length && (spawnTouches(unresolvedForGate) || completesPlan)) {
         const affected = completesPlan ? unresolvedForGate : unresolvedForGate.filter(row => matched.some(matches => matches.some(match => match.content === row.content)));
-        return { block: true, reason: `Forecast missing for ${named(affected)}. Use todo schedule with an estimate for each named row, or todo drop that row, before staffing it or completing the plan.` };
+        return { block: true, reason: `Forecast missing for ${affected.length} row(s).\nRows: ${named(affected)}. Use todo schedule with an estimate for each named row, or todo drop that row, before staffing it or completing the plan.` };
       }
       const jobs = ctx.getAsyncJobSnapshot();
       const affectedRows = (id: string): TodoTaskForecast[] => {
@@ -6445,7 +6445,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (isUserDeadlineMissed(rehydrateDeadlineState(latestDeadlineStateEntries(ctx)))) return planTrace(ctx, "user-deadline-missed");
       await refreshLiveWorkerModels(ctx);
       if (!gateSwitchedOff(ctx)) absenceTick(ctx, Date.now());
-      let check = await planCheck(ctx, [], true);
+      const planCheckText = await planCheck(ctx, [], true);
+      let check = planCheckText;
       const urgent = wakeDemand(todoPhases(ctx), runningOwnerNames(ctx), Date.now(), currentDecision(ctx).deadline?.deadlineAt, currentDecision(ctx).forecast?.expectedResourceFinish, pendingWorkerQuestions(ctx), ctx);
       if (!check && urgent) check = prompt.render(dispatchWakeInstructions, { ...urgent, misses: 0 }).trim();
       if (!check) return planTrace(ctx, "no-problems");
@@ -6464,10 +6465,10 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
         userMessageEpoch,
         (ctx.getAsyncJobSnapshot()?.recent ?? []).filter((job) => job.type === "task").map((job) => `${job.id}:${job.status}`),
         sdk.getLatestTodoPhasesFromEntries(todoStateEntries(ctx) as never).flatMap((phase) => phase.tasks.map((task) => `${task.content}:${task.status}`)),
-        urgent?.key ?? null,
+        planCheckText ? null : urgent?.key ?? null,
       ]);
       const unchanged = key === lastIdlePlanCheck && eventStamp === lastPlanEventStamp;
-      if (pendingSizingNoticeIds.length === 0 && unchanged && (!urgent || retryRemaining(ctx, urgent.key) > 0)) return planTrace(ctx, "same-problems-already-delivered");
+      if (pendingSizingNoticeIds.length === 0 && unchanged && (planCheckText || !urgent || retryRemaining(ctx, urgent.key) > 0)) return planTrace(ctx, "same-problems-already-delivered");
       lastPlanEventStamp = eventStamp;
       if (!unchanged) lastIdlePlanCheckAt = now;
       lastIdlePlanCheck = key;
