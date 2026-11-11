@@ -44,6 +44,23 @@ test("idle row demands staffing after ten continuous minutes of spare capacity; 
 	expect(full.idleSince).toEqual({});
 });
 
+test("ready rows with zero workers trigger one bounded reconcile", () => {
+	const phases = plan();
+	let unavailable = recoveryDemand(phases, running, 1_000, 0, undefined, undefined);
+	unavailable = recoveryDemand(phases, running, 2_000, 0, undefined, undefined, unavailable);
+	expect(unavailable.pending).toBeUndefined();
+	expect(unavailable.zeroWorkerChecks).toBe(0);
+	const first = recoveryDemand(phases, running, 1_000, 2, undefined, undefined);
+	expect(first.pending).toBeUndefined();
+	const second = recoveryDemand(phases, running, 2_000, 2, undefined, undefined, first);
+	expect(second.pending).toMatchObject({ kind: "idle", row: "Delivery" });
+	const same = recoveryDemand(phases, running, 3_000, 2, undefined, undefined, second);
+	expect(same.pending?.key).toBe(second.pending?.key);
+	const satisfied = { ...same, pending: undefined };
+	const cooling = recoveryDemand(phases, running, 4_000, 2, undefined, undefined, satisfied);
+	expect(cooling.pending).toBeUndefined();
+});
+
 test("staffing must be a new live executor; completion and estimate changes are not structural recovery", () => {
 	const phases = plan();
 	const state = recoveryDemand(phases, running, 3000, 2, 2000, undefined);

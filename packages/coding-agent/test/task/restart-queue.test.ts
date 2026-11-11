@@ -353,6 +353,63 @@ describe("restart queue controller", () => {
 		}
 	});
 
+	it("queued restart advances when recorded workers are dead and live set is empty", async () => {
+		const { manager, file } = await createRoot(makeTempDir());
+		const childManager = track(SessionManager.create(manager.getCwd(), file.slice(0, -".jsonl".length)));
+		childManager.appendSessionInit({ systemPrompt: ["worker"], task: "work", tools: [] });
+		await childManager.ensureOnDisk();
+		const rootQuiescence = Promise.withResolvers<void>();
+		const harness = makeSession(manager, { quiescence: rootQuiescence.promise });
+		const childNoticeStarted = Promise.withResolvers<void>();
+		const childNotice = Promise.withResolvers<void>();
+		const staleChildQuiescence = Promise.withResolvers<void>();
+		const childHarness = makeSession(childManager, { quiescence: staleChildQuiescence.promise, wasRunning: true });
+		childHarness.session.sendRestartNotice = async () => {
+			childNoticeStarted.resolve();
+			await childNotice.promise;
+		};
+		const registry = AgentRegistry.global();
+		registerRoot(registry, harness.session, file);
+		const childRef = registry.register({
+			id: childManager.getSessionId(),
+			displayName: "RecordedWorker",
+			kind: "sub",
+			parentId: MAIN_AGENT_ID,
+			session: childHarness.session,
+			sessionFile: childManager.getSessionFile(),
+			status: "running",
+		});
+		const identity = identityFor(manager, "dead-workers", 1);
+		const terminal = Promise.withResolvers<RestartRequestRecord>();
+		let restarts = 0;
+		const controller = createRestartQueueController({
+			session: harness.session,
+			identity: () => identity,
+			restart: async () => {
+				restarts++;
+			},
+			onStateChange: record => {
+				if (record.state === "completed" || record.state === "failed") terminal.resolve(record);
+			},
+		});
+		try {
+			await controller.handle({ identity, op: "request", requestId: "dead-workers" });
+			await childNoticeStarted.promise;
+			registry.unregister(childRef.id, childRef);
+			childNotice.resolve();
+			await Bun.sleep(25);
+			expect(restarts).toBe(0);
+			rootQuiescence.resolve();
+			const result = await Promise.race([terminal.promise, Bun.sleep(250).then(() => undefined)]);
+			expect(result?.state).toBe("completed");
+			expect(restarts).toBe(1);
+		} finally {
+			controller.dispose();
+			rootQuiescence.resolve();
+			staleChildQuiescence.resolve();
+		}
+	});
+
 	it("uses recent replacement duration to reserve more work on the next request", async () => {
 		const { manager, file } = await createRoot(makeTempDir());
 		const harness = makeSession(manager);

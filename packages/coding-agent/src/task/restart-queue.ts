@@ -1339,9 +1339,10 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	}
 
 	async #waitForWorkerGrace(run: ActiveRestartDrain, deadline: number): Promise<void> {
-		const childLeases = [...run.children.values()]
-			.filter(session => ![...run.children].some(([id, child]) => child === session && run.abandoned.has(id)))
-			.map(session => ({ session, lease: run.leases.get(session) }))
+		const liveChildren = new Map(getLiveSubagentsForRestart(this.#session).map(child => [child.id, child.session]));
+		const childLeases = [...run.children]
+			.filter(([id, session]) => !run.abandoned.has(id) && liveChildren.get(id) === session)
+			.map(([, session]) => ({ session, lease: run.leases.get(session) }))
 			.filter((item): item is { session: AgentSessionHandle; lease: RestartDrainLease } => item.lease !== undefined);
 		if (childLeases.length === 0) return;
 		run.workerGraceDeadlineAt = deadline;
