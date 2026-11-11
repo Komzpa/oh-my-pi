@@ -1208,6 +1208,16 @@ class RestartQueueControllerImpl implements RestartQueueController {
 	}
 
 	async #waitForRoot(run: ActiveRestartDrain, deadline: number): Promise<boolean> {
+		// A root that is no longer producing a turn can retain stale task-driver
+		// bookkeeping after every authoritative child has disappeared. There is
+		// nothing left to quiesce in that case, so do not spend the root deadline
+		// waiting for recorded worker ids that have no live session.
+		if (
+			!this.#session.isStreaming &&
+			run.runningAgentIds.size > 0 &&
+			getLiveSubagentsForRestart(this.#session).length === 0
+		)
+			return true;
 		const boundary = Promise.race([
 			this.#rootLease(run)
 				.waitForQuiescence()
