@@ -31,8 +31,9 @@ async function withCli(
 	}) => Promise<void>,
 	options: { first?: number; idle?: number; websockets?: boolean | "default"; modelPreference?: boolean } = {},
 ): Promise<void> {
-	// Ordinary requests allow startup time; explicit deadline probes retain their budgets.
-	options = { first: 5, idle: 5, ...options };
+	// First-event deadlines include the handshake: give loaded CI time to reach
+	// the socket before exercising recovery. Preserve the selected idle deadline.
+	options = { ...options, first: Math.max(5, options.first ?? 5), idle: options.idle ?? 5 };
 	using tempDir = TempDir.createSync("@omp-responses-rpc-");
 	const home = tempDir.join("home");
 	const project = tempDir.join("project");
@@ -592,9 +593,9 @@ describe("real CLI Responses WebSocket recovery", () => {
 							expect(fixture.requests).toHaveLength(1);
 							expect(fixture.httpRequests).toHaveLength(2);
 						},
-						// The first-event budget includes the handshake. Allow loaded CI to
-						// reach the socket so this tests the selected stream timeout and recovery.
-						{ first: 5, idle: phase === "idle" ? 0.2 : 5 },
+						// A first-event deadline shorter than ~1 s can expire during the WebSocket
+						// handshake on a loaded machine, before the request reaches the socket.
+						{ first: 1, idle: phase === "idle" ? 0.2 : 1 },
 					);
 				} finally {
 					await fixture.server.stop(true);
