@@ -46,6 +46,10 @@ test("idle row demands staffing after ten continuous minutes of spare capacity; 
 
 test("ready rows with zero workers trigger one bounded reconcile", () => {
 	const phases = plan();
+	let unavailable = recoveryDemand(phases, running, 1_000, 0, undefined, undefined);
+	unavailable = recoveryDemand(phases, running, 2_000, 0, undefined, undefined, unavailable);
+	expect(unavailable.pending).toBeUndefined();
+	expect(unavailable.zeroWorkerChecks).toBe(0);
 	const first = recoveryDemand(phases, running, 1_000, 2, undefined, undefined);
 	expect(first.pending).toBeUndefined();
 	const second = recoveryDemand(phases, running, 2_000, 2, undefined, undefined, first);

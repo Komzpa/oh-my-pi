@@ -208,7 +208,7 @@ export function recoveryDemand(
 			(row.schedule?.dependencies ?? []).every(dep => rows.some(other => other.content === dep && !openRow(other))),
 	);
 	const spare = activeCount < capacity;
-	const zeroWorkerReady = activeCount === 0 && ready.length > 0;
+	const zeroWorkerReady = activeCount === 0 && spare && ready.length > 0;
 	const previousZeroCheckAt = previous?.zeroWorkerLastCheckAt;
 	const consecutiveZeroCheck =
 		previousZeroCheckAt !== undefined && now > previousZeroCheckAt && now - previousZeroCheckAt <= 2 * 60_000;
