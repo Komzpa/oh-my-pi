@@ -170,6 +170,8 @@ export type SystemPromptRebuilder = (
 ) => Promise<{ systemPrompt: string[]; xdevCatalogNames?: readonly string[] }>;
 
 interface SessionToolsOptions {
+	getStartupContext?: () => string | undefined;
+	memoryAgentDir?: string;
 	autoApprove?: boolean;
 	toolRegistry?: Map<string, AgentTool>;
 	createVibeTools?: () => AgentTool[];
@@ -205,6 +207,9 @@ interface SystemPromptPreparation {
 	systemPrompt: string[];
 	/** Memory backend note to deliver with the turn ({@link MemoryPromptPreparation.notice}). */
 	memoryNotice?: MemoryPromptPreparation["notice"];
+	/** Dynamic memory delivered as a persisted conversation message. */
+	startupContext?: { content: string; details: { cwd: string } };
+	memoryContext?: { content: string; details: { backend: string; cwd: string; scope?: string; recall?: string } };
 	/** Publish staged state at validated delivery; false declines the prepared turn without mutation. */
 	commit?(): boolean;
 }
@@ -547,10 +552,14 @@ export class SessionTools {
 	 * prefix without the intended prompt refresh. The refresh lifecycle updates it.
 	 */
 	#promptSurface: PromptSurface;
+	readonly #memoryAgentDir: string;
+	readonly #getStartupContext: (() => string | undefined) | undefined;
 	#acpPermissionDecisions = new Map<string, "allow_always" | "reject_always">();
 
 	constructor(host: SessionToolsHost, options: SessionToolsOptions) {
 		this.#host = host;
+		this.#getStartupContext = options.getStartupContext;
+		this.#memoryAgentDir = options.memoryAgentDir ?? host.settings.getAgentDir();
 		this.#autoApprove = options.autoApprove === true;
 		this.#toolRegistry = options.toolRegistry ?? new Map();
 		this.#createVibeTools = options.createVibeTools;
@@ -2610,61 +2619,94 @@ export class SessionTools {
 		};
 	}
 
+	/** Indexed backends skip archive payloads; older backends retain the same branch semantics. */
+	#latestConversationContext(
+		manager: SessionManager,
+		customType: string,
+		matches: (details: Record<string, unknown>) => boolean,
+	): SessionEntry | undefined {
+		const indexed = manager as SessionManager & {
+			iterateBranchMatchingNewestFirst?: (
+				predicate: (metadata: { type: SessionEntry["type"]; customType?: string }) => boolean,
+			) => Iterable<SessionEntry>;
+		};
+		const entries = indexed.iterateBranchMatchingNewestFirst
+			? indexed.iterateBranchMatchingNewestFirst(
+					metadata =>
+						metadata.type === "reset_boundary" ||
+						(metadata.type === "custom_message" &&
+							(metadata.customType === undefined || metadata.customType === customType)),
+				)
+			: manager.getBranch().toReversed();
+		for (const entry of entries) {
+			if (entry.type === "reset_boundary") break;
+			if (
+				entry.type === "custom_message" &&
+				entry.customType === customType &&
+				isRecord(entry.details) &&
+				matches(entry.details)
+			)
+				return entry;
+		}
+		return undefined;
+	}
+
 	/** Stages memory prompt injection; the owning turn commits it together with extension policy. */
 	async buildSystemPromptForAgentStart(
 		promptText: string,
 		isCurrent: () => boolean,
 		signal?: AbortSignal,
 	): Promise<SystemPromptPreparation> {
+		const cwd = this.#host.sessionManager.getCwd();
+		const startup = this.#getStartupContext?.();
+		const startupDelivered =
+			startup &&
+			this.#latestConversationContext(this.#host.sessionManager, "startup-context", details => details.cwd === cwd);
+		const startupContext = startup && !startupDelivered ? { content: startup, details: { cwd } } : undefined;
 		const backend = await resolveMemoryBackend(this.#host.settings);
-		if (!isCurrent() || !backend.beforeAgentStartPrompt) return { systemPrompt: this.#baseSystemPrompt };
+		if (!isCurrent() || !this.#host.memoryBackendSession().memoryEnabled)
+			return { startupContext, systemPrompt: this.#baseSystemPrompt };
 
 		try {
-			const memory = await backend.beforeAgentStartPrompt(this.#host.memoryBackendSession(), promptText, signal);
-			if (!isCurrent() || !memory) return { systemPrompt: this.#baseSystemPrompt };
-			const injected = memory.context;
-			if (!injected) {
-				return {
-					systemPrompt: this.#baseSystemPrompt,
-					memoryNotice: memory.notice,
-					commit: () => isCurrent() && memory.commit(),
-				};
-			}
-
-			let refreshed: SystemPromptPreparation | undefined;
-			try {
-				refreshed = await this.runToolRegistryMutation(() => this.#prepareBaseSystemPrompt(isCurrent));
-			} catch (refreshErr) {
-				logger.debug("Memory backend prompt refresh after beforeAgentStartPrompt failed", {
-					backend: backend.id,
-					error: String(refreshErr),
-				});
-			}
-			if (!isCurrent()) return { systemPrompt: this.#baseSystemPrompt };
-
-			const preparedBase = refreshed?.systemPrompt ?? this.#baseSystemPrompt;
-			const stablePrompt = [...preparedBase, injected];
+			const memory = await backend.beforeAgentStartPrompt?.(this.#host.memoryBackendSession(), promptText, signal);
+			if (!isCurrent()) return { startupContext, systemPrompt: this.#baseSystemPrompt };
+			const owner = this.#host.memoryBackendSession();
+			const cwd = owner.sessionManager.getCwd();
+			const scope = backend.conversationScope?.(owner);
+			const delivered = this.#latestConversationContext(
+				owner.sessionManager,
+				"memory-context",
+				details => details.backend === backend.id && details.cwd === cwd && details.scope === scope,
+			);
+			const newRecall =
+				memory?.context &&
+				(delivered?.type !== "custom_message" ||
+					!delivered.details ||
+					typeof delivered.details !== "object" ||
+					!("recall" in delivered.details) ||
+					delivered.details.recall !== memory.context);
+			const context = delivered
+				? newRecall
+					? memory?.context
+					: undefined
+				: backend.buildConversationContext
+					? await backend.buildConversationContext(owner, memory?.context, this.#memoryAgentDir)
+					: memory?.context;
 			return {
-				systemPrompt: stablePrompt,
-				memoryNotice: memory.notice,
-				commit: () => {
-					if (!isCurrent() || !memory.commit()) return false;
-					refreshed?.commit?.();
-					// A handler may have refreshed tools or policy. Promote the recall onto
-					// that winning base, never replace it with the preparation's snapshot.
-					const currentBase = this.#baseSystemPrompt;
-					this.#host.captureMemoryPromotionSnapshot(currentBase);
-					this.#baseSystemPrompt = currentBase === preparedBase ? stablePrompt : [...currentBase, injected];
-					this.#applyAgentSystemPrompt(this.#baseSystemPrompt);
-					return true;
-				},
+				startupContext,
+				systemPrompt: this.#baseSystemPrompt,
+				memoryContext: context
+					? { content: context, details: { backend: backend.id, cwd, scope, recall: memory?.context } }
+					: undefined,
+				memoryNotice: memory?.notice,
+				commit: () => isCurrent() && (memory?.commit() ?? true),
 			};
 		} catch (err) {
 			logger.debug("Memory backend beforeAgentStartPrompt failed", {
 				backend: backend.id,
 				error: String(err),
 			});
-			return { systemPrompt: this.#baseSystemPrompt };
+			return { startupContext, systemPrompt: this.#baseSystemPrompt };
 		}
 	}
 

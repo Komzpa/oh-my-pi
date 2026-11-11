@@ -2159,7 +2159,7 @@ describe("AgentSession message pipeline", () => {
 		await Bun.sleep(0);
 	});
 
-	it("keeps first-turn memory in the stable prompt on the next turn", async () => {
+	it("keeps first-turn memory in conversation history on the next turn", async () => {
 		const api = "test-injected-memory-append-only-cache";
 		const contexts: Context[] = [];
 		let remembered = false;
@@ -2168,7 +2168,7 @@ describe("AgentSession message pipeline", () => {
 			id: "mnemopi",
 			async start() {},
 			async buildDeveloperInstructions() {
-				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
+				return "static memory instructions";
 			},
 			async clear() {},
 			async enqueue() {},
@@ -2207,6 +2207,7 @@ describe("AgentSession message pipeline", () => {
 			maxTokens: 1024,
 		} as ModelSpec<Api>) as Model<Api>;
 		const agent = new Agent({
+			convertToLlm,
 			initialState: {
 				model,
 				systemPrompt: ["base", "static memory instructions"],
@@ -2221,9 +2222,7 @@ describe("AgentSession message pipeline", () => {
 			settings: Settings.isolated({ "compaction.enabled": false, "provider.appendOnlyContext": "on" }),
 			modelRegistry: createModelRegistryStub() as never,
 			rebuildSystemPrompt: async () => ({
-				systemPrompt: remembered
-					? ["base", `static memory instructions\n\n${injected}`]
-					: ["base", "static memory instructions"],
+				systemPrompt: ["base", "static memory instructions"],
 			}),
 		});
 		sessions.push(session);
@@ -2234,7 +2233,9 @@ describe("AgentSession message pipeline", () => {
 		expect(contexts).toHaveLength(2);
 		const firstSystemPrompt = contexts[0]!.systemPrompt;
 		expect(firstSystemPrompt).toBeDefined();
-		expect(firstSystemPrompt!.join("\n")).toContain(injected);
+		expect(firstSystemPrompt!.join("\n")).not.toContain(injected);
+		expect(JSON.stringify(contexts[0]!.messages)).toContain(injected);
+		expect(JSON.stringify(contexts[1]!.messages)).toContain(injected);
 		expect(contexts[1]!.systemPrompt).toEqual(firstSystemPrompt);
 	});
 
@@ -2962,7 +2963,7 @@ describe("AgentSession message pipeline", () => {
 		}
 	});
 
-	it("clears promoted memory from the base prompt when switching sessions", async () => {
+	it("does not carry recalled conversation context when switching sessions", async () => {
 		using tempDir = TempDir.createSync("@pi-injected-memory-switch-");
 		const sessionManager = SessionManager.create(tempDir.path(), tempDir.join("sessions"));
 		const firstSessionFile = sessionManager.getSessionFile();
@@ -2982,7 +2983,7 @@ describe("AgentSession message pipeline", () => {
 			id: "mnemopi",
 			async start() {},
 			async buildDeveloperInstructions() {
-				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
+				return "static memory instructions";
 			},
 			async clear() {},
 			async enqueue() {},
@@ -3021,6 +3022,7 @@ describe("AgentSession message pipeline", () => {
 			maxTokens: 1024,
 		} as ModelSpec<Api>) as Model<Api>;
 		const agent = new Agent({
+			convertToLlm,
 			initialState: {
 				model,
 				systemPrompt: ["base", "static memory instructions"],
@@ -3039,9 +3041,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 			modelRegistry: createModelRegistryStub() as never,
 			rebuildSystemPrompt: async () => ({
-				systemPrompt: remembered
-					? ["base", `static memory instructions\n\n${injected}`]
-					: ["base", "static memory instructions"],
+				systemPrompt: ["base", "static memory instructions"],
 			}),
 		});
 		sessions.push(session);
@@ -3055,7 +3055,8 @@ describe("AgentSession message pipeline", () => {
 		} as unknown as MnemopiSessionState);
 
 		await session.sendUserMessage("first");
-		expect(session.systemPrompt.join("\n")).toContain(injected);
+		expect(session.systemPrompt.join("\n")).not.toContain(injected);
+		expect(JSON.stringify(contexts[0]!.messages)).toContain(injected);
 		recallAvailable = false;
 
 		await session.switchSession(nextSessionFile!);
@@ -3064,9 +3065,10 @@ describe("AgentSession message pipeline", () => {
 		expect(session.systemPrompt.join("\n")).not.toContain(injected);
 		expect(contexts).toHaveLength(2);
 		expect(contexts[1]!.systemPrompt?.join("\n")).not.toContain(injected);
+		expect(JSON.stringify(contexts[1]!.messages)).not.toContain(injected);
 	});
 
-	it("clears promoted memory from the base prompt when starting a new session", async () => {
+	it("does not carry recalled conversation context when starting a new session", async () => {
 		const api = "test-injected-memory-new-session-cache";
 		const contexts: Context[] = [];
 		let remembered = false;
@@ -3076,7 +3078,7 @@ describe("AgentSession message pipeline", () => {
 			id: "mnemopi",
 			async start() {},
 			async buildDeveloperInstructions() {
-				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
+				return "static memory instructions";
 			},
 			async clear() {},
 			async enqueue() {},
@@ -3115,6 +3117,7 @@ describe("AgentSession message pipeline", () => {
 			maxTokens: 1024,
 		} as ModelSpec<Api>) as Model<Api>;
 		const agent = new Agent({
+			convertToLlm,
 			initialState: {
 				model,
 				systemPrompt: ["base", "static memory instructions"],
@@ -3133,9 +3136,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 			modelRegistry: createModelRegistryStub() as never,
 			rebuildSystemPrompt: async () => ({
-				systemPrompt: remembered
-					? ["base", `static memory instructions\n\n${injected}`]
-					: ["base", "static memory instructions"],
+				systemPrompt: ["base", "static memory instructions"],
 			}),
 		});
 		sessions.push(session);
@@ -3149,7 +3150,8 @@ describe("AgentSession message pipeline", () => {
 		} as unknown as MnemopiSessionState);
 
 		await session.sendUserMessage("first");
-		expect(session.systemPrompt.join("\n")).toContain(injected);
+		expect(session.systemPrompt.join("\n")).not.toContain(injected);
+		expect(JSON.stringify(contexts[0]!.messages)).toContain(injected);
 		recallAvailable = false;
 
 		await session.newSession();
@@ -3158,9 +3160,10 @@ describe("AgentSession message pipeline", () => {
 		expect(session.systemPrompt.join("\n")).not.toContain(injected);
 		expect(contexts).toHaveLength(2);
 		expect(contexts[1]!.systemPrompt?.join("\n")).not.toContain(injected);
+		expect(JSON.stringify(contexts[1]!.messages)).not.toContain(injected);
 	});
 
-	it("does not duplicate promoted memory in the base prompt when forking", async () => {
+	it("does not duplicate recalled conversation context when forking", async () => {
 		using tempDir = TempDir.createSync("@pi-injected-memory-fork-");
 		const sessionManager = SessionManager.create(tempDir.path(), tempDir.join("sessions"));
 		expect(sessionManager.getSessionFile()).toBeString();
@@ -3174,7 +3177,7 @@ describe("AgentSession message pipeline", () => {
 			id: "mnemopi",
 			async start() {},
 			async buildDeveloperInstructions() {
-				return remembered ? `static memory instructions\n\n${injected}` : "static memory instructions";
+				return "static memory instructions";
 			},
 			async clear() {},
 			async enqueue() {},
@@ -3213,6 +3216,7 @@ describe("AgentSession message pipeline", () => {
 			maxTokens: 1024,
 		} as ModelSpec<Api>) as Model<Api>;
 		const agent = new Agent({
+			convertToLlm,
 			initialState: {
 				model,
 				systemPrompt: ["base", "static memory instructions"],
@@ -3231,9 +3235,7 @@ describe("AgentSession message pipeline", () => {
 			}),
 			modelRegistry: createModelRegistryStub() as never,
 			rebuildSystemPrompt: async () => ({
-				systemPrompt: remembered
-					? ["base", `static memory instructions\n\n${injected}`]
-					: ["base", "static memory instructions"],
+				systemPrompt: ["base", "static memory instructions"],
 			}),
 		});
 		sessions.push(session);
@@ -3247,12 +3249,13 @@ describe("AgentSession message pipeline", () => {
 		} as unknown as MnemopiSessionState);
 
 		await session.sendUserMessage("first");
-		expect(session.systemPrompt.join("\n")).toContain(injected);
+		expect(session.systemPrompt.join("\n")).not.toContain(injected);
+		expect(JSON.stringify(contexts[0]!.messages)).toContain(injected);
 
 		await session.fork();
 		await session.sendUserMessage("second");
 
-		const forkedPrompt = contexts[1]!.systemPrompt?.join("\n") ?? "";
+		const forkedPrompt = JSON.stringify(contexts[1]!.messages);
 		const occurrences = forkedPrompt.split(injected).length - 1;
 		expect(occurrences).toBe(1);
 	});

@@ -2662,6 +2662,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			waitForUser: dialog => this.waitForUser(dialog),
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
+			getStartupContext: config.getStartupContext,
+			memoryAgentDir: config.memoryAgentDir,
 			autoApprove: config.autoApprove,
 			toolRegistry: config.toolRegistry,
 			createVibeTools: config.createVibeTools,
@@ -9383,6 +9385,28 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			};
 			if (!overrideIsCurrent()) continue;
 			const messages: AgentMessage[] = [];
+			if (basePreparation.startupContext) {
+				messages.push({
+					role: "custom",
+					customType: "startup-context",
+					content: basePreparation.startupContext.content,
+					details: basePreparation.startupContext.details,
+					display: false,
+					attribution: "agent",
+					timestamp: Date.now(),
+				});
+			}
+			if (basePreparation.memoryContext) {
+				messages.push({
+					role: "custom",
+					customType: "memory-context",
+					content: basePreparation.memoryContext.content,
+					details: basePreparation.memoryContext.details,
+					display: false,
+					attribution: "agent",
+					timestamp: Date.now(),
+				});
+			}
 			if (basePreparation.memoryNotice) {
 				messages.push({
 					role: "custom",

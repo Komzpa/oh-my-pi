@@ -162,7 +162,6 @@ export {
 
 interface TaskDescriptionOptions {
 	agents: AgentDefinition[];
-	sessionAgents: readonly AgentDefinition[];
 	isolationEnabled: boolean;
 	applyIsolatedChanges: boolean;
 	disabledAgents: string[];
@@ -172,6 +171,7 @@ interface TaskDescriptionOptions {
 	perCallModelAdvertisement?: PerCallModelAdvertisement;
 	evalToolsEnabled: boolean;
 	structured: boolean;
+	catalogOnly?: boolean;
 	file: boolean;
 	asyncEnabled: boolean;
 	ircEnabled: boolean;
@@ -190,7 +190,7 @@ function defaultAgentFor(spawnPolicy: ResolvedSpawnPolicy, planMode: boolean): s
 function renderDescription(options: TaskDescriptionOptions): string {
 	const spawnPolicy = resolveSpawnPolicy(options.parentSpawns);
 	const spawningDisabled = !spawnPolicy.enabled;
-	const agents = [...options.agents, ...options.sessionAgents];
+	const agents = options.agents;
 	let filteredAgents =
 		options.disabledAgents.length > 0 ? agents.filter(agent => !options.disabledAgents.includes(agent.name)) : agents;
 	if (spawningDisabled) {
@@ -202,7 +202,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	if (options.planMode) {
 		filteredAgents = filteredAgents.filter(agent => !isBundledSeance(agent));
 	}
-	const renderedAgents = filteredAgents.map(agent => ({
+	const renderedAgents = (options.catalogOnly ? filteredAgents : []).map(agent => ({
 		name: agent.name,
 		description: agent.description,
 		readOnly: isReadOnlyAgent(agent),
@@ -215,7 +215,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 	return prompt.render(taskDescriptionTemplate, {
 		agents: renderedAgents,
 		scoutAvailable,
-		spawningDisabled,
+		spawningDisabled: options.catalogOnly === true && spawningDisabled,
 		defaultAgent: defaultAgentFor(spawnPolicy, options.planMode),
 		isolationEnabled: options.isolationEnabled,
 		applyIsolatedChanges: options.applyIsolatedChanges,
@@ -227,10 +227,11 @@ function renderDescription(options: TaskDescriptionOptions): string {
 		structured: options.structured,
 		file: options.file,
 		asyncEnabled: options.asyncEnabled,
-		hasBlockingAgents: renderedAgents.some(agent => agent.blocking),
-		hasStructuredAgents: renderedAgents.some(agent => agent.structured),
-		hasModelMentions: options.sessionAgents.length > 0,
-		seanceGuidance: seanceAgent && isBundledSeance(seanceAgent) ? seanceTaskGuidance : "",
+		hasBlockingAgents: true,
+		hasStructuredAgents: true,
+		hasModelMentions: true,
+		seanceGuidance: options.catalogOnly && seanceAgent && isBundledSeance(seanceAgent) ? seanceTaskGuidance : "",
+		catalogOnly: options.catalogOnly,
 		ircEnabled: options.ircEnabled,
 		asyncGuidance: options.asyncGuidance,
 	});
@@ -954,17 +955,25 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 
 	/** Dynamic description that reflects current task settings. */
 	get description(): string {
+		return this.#renderDescription();
+	}
+
+	/** Project-scoped catalog, excluded from provider-native tool schemas. */
+	get projectInstructions(): string {
+		return this.#renderDescription(true);
+	}
+
+	#renderDescription(catalogOnly = false): string {
 		const disabledAgents = cfgTaskDisabledAgents.get(this.session.settings);
 		const agents =
 			discoverySnapshots.get(discoveryCacheKey(this.session.cwd, this.session.effectiveExtensionRoots?.())) ??
 			this.#discoveredAgents;
-		const sessionAgents = this.session.advertisedSessionAgents?.() ?? this.session.getSessionAgents?.() ?? [];
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
 		const isolationEnabled = cfgTaskIsolationEnabled.get(this.session.settings);
 		const perCallModel = perCallModelEnabled(this.session.settings, "task");
 		return renderDescription({
+			catalogOnly,
 			agents,
-			sessionAgents,
 			isolationEnabled: !planMode && isolationEnabled,
 			applyIsolatedChanges: cfgTaskIsolationApply.get(this.session.settings),
 			disabledAgents,

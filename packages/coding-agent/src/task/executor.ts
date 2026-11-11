@@ -4134,6 +4134,8 @@ function buildSubagentSessionOptions(
 		expectedAgentRef,
 		resolveServiceTierByFamily: launch?.resolveServiceTierByFamily,
 		onFirstChatDispatch: launch?.onFirstChatDispatch,
+		agentRolePrompt: inputs.agentSystemPrompt,
+		systemPromptIsStartupContext: true,
 		// A launch prompts its assignment only after setup; a revive's turns are its IRC wakes.
 		awaitingAssignment: launch !== undefined,
 		systemPrompt: defaultPrompt => {
@@ -4149,7 +4151,7 @@ function buildSubagentSessionOptions(
 					: (heldIrcRoster(inputs, defaultPrompt) ??
 						collectIrcPeerRoster(AgentRegistry.global(), inputs.id, inputs.ircRoot.sessionFile));
 			const subagentPrompt = prompt.render(subagentSystemPromptTemplate, {
-				agent: inputs.agentSystemPrompt,
+				agent: "",
 				context: inputs.context,
 				planReference: inputs.planReference,
 				planReferencePath: inputs.planReferencePath,

@@ -278,7 +278,8 @@ function wrapWorkPoolYieldParameters(items: readonly WorkPoolYieldItem[]): Recor
 		description: "submit one workpool item outcome",
 		properties: {
 			key: {
-				enum: items.map(item => item.index),
+				type: "integer",
+				minimum: 1,
 				description: "1-based workpool item number",
 			},
 			data: { description: "Self-contained outcome and evidence for this item" },

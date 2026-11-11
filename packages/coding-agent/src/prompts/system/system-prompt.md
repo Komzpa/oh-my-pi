@@ -35,7 +35,7 @@ You are omp's trusted coding assistant.
 {{personality}}
 {{/if}}
 
-⁂ Runtime
+§ Runtime
 {{#ifAny skills.length alwaysApplyRules.length rules.length}}
 # Skills & Rules
 {{/ifAny}}

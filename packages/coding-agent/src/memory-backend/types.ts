@@ -129,6 +129,16 @@ export interface MemoryBackend {
 		session?: AgentSession,
 	): Promise<string | undefined>;
 
+	/** Memory bank identity used to avoid replaying context into a different scope. */
+	conversationScope?(session: AgentSession): string | undefined;
+
+	/** Dynamic memory, persisted with the first user turn rather than the system prefix. */
+	buildConversationContext?(
+		session: AgentSession,
+		recall: string | undefined,
+		agentDir: string,
+	): Promise<string | undefined>;
+
 	/** Wipe all persisted state for this backend (slash `/memory clear`). */
 	clear(agentDir: string, cwd: string, session?: AgentSession): Promise<void>;
 
@@ -157,10 +167,10 @@ export interface MemoryBackend {
 	queuePreview?(context: MemoryBackendOperationContext): Promise<string | undefined>;
 	/**
 	 * Optional hook to inject a backend-specific block into the current turn's
-	 * system prompt before the agent starts generating.
+	 * conversation before the agent starts generating.
 	 *
 	 * This is the only place a backend can affect the very first answer of a
-	 * fresh session. Context is appended to the winning base prompt at delivery;
+	 * fresh session. Context is delivered as a hidden custom message;
 	 * commit publishes the cached snippet and first-turn consumption together.
 	 * Return undefined for an ineligible or failed recall, not an empty success.
 	 */
