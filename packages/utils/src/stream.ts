@@ -627,8 +627,10 @@ export function parseJsonlLenient<T>(buffer: string, options: { onMalformedRecor
 				entries.push(...ext);
 			}
 		}
-		if (error) {
-			let malformedStart = read;
+		if (error || read === cursor) {
+			// With no complete value, Bun's error cursor may already be past
+			// later physical records. Recover from this record's own start.
+			let malformedStart = values.length > 0 ? read : cursor;
 			while (malformedStart < len && isWhitespace(buffer.charCodeAt(malformedStart))) {
 				malformedStart++;
 			}
@@ -638,10 +640,6 @@ export function parseJsonlLenient<T>(buffer: string, options: { onMalformedRecor
 			if (nextNewline === -1) break;
 			cursor = nextNewline + 1;
 			continue;
-		}
-		if (read === cursor) {
-			if (buffer.substring(cursor).trim().length > 0) options.onMalformedRecord?.();
-			break;
 		}
 		cursor = read;
 		if (done) break;

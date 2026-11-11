@@ -77,6 +77,56 @@ function messageTexts(entries: FileEntry[]): string[] {
 }
 
 describe("loadEntriesFromFileStream (Bun.JSONL parity)", () => {
+	it("recovers after a malformed multiline record and marks the journal for rewrite", async () => {
+		const content = `${JSON.stringify(HEADER)}\n{"type":"message",\n\n${JSON.stringify(msg("tail", "s1", "kept"))}\n`;
+		const file = await writeTemp(content);
+		const loaded = await sessionLoader.loadEntriesFromFileStream(file);
+
+		expect(entryIds(loaded.entries)).toEqual(["s1", "tail"]);
+		expect(loaded.malformedRecords).toBe(1);
+		expect(loaded.malformedRecords).toBe(sessionLoader.parseSessionContent(content).malformedRecords);
+		const indexed: string[] = [];
+		const resumed = await sessionLoader.visitSessionFileForResume(file, entry => {
+			indexed.push(entry.id);
+		});
+		try {
+			expect(indexed).toEqual(["tail"]);
+			expect(resumed.malformedRecords).toBe(1);
+		} finally {
+			if (resumed.sourceFd !== undefined) fs.closeSync(resumed.sourceFd);
+		}
+	});
+
+	it("uses the source session version when reading a positioned record", async () => {
+		for (const [version, expectedRole] of [
+			[2, "custom"],
+			[3, "hookMessage"],
+		] as const) {
+			const header = { ...HEADER, version };
+			const rawMessage = {
+				type: "message",
+				id: "legacy-hook",
+				parentId: "s1",
+				timestamp: ISO,
+				message: { role: "hookMessage", content: [], timestamp: 1 },
+			};
+			const file = await writeTemp(`${JSON.stringify(header)}\n${JSON.stringify(rawMessage)}\n`);
+			let position: Parameters<typeof sessionLoader.readPositionedSessionEntry>[1] | undefined;
+			const resume = await sessionLoader.visitSessionFileForResume(file, (_entry, located) => {
+				position = located;
+			});
+			try {
+				if (!position || resume.sourceFd === undefined) throw new Error("missing positioned entry or source fd");
+				expect(sessionLoader.readPositionedSessionEntry(resume.sourceFd, position)).toMatchObject({
+					type: "message",
+					message: { role: expectedRole },
+				});
+			} finally {
+				if (resume.sourceFd !== undefined) fs.closeSync(resume.sourceFd);
+			}
+		}
+	});
+
 	it("keeps lifecycle records while avoiding unrelated payload parsing, including imported JSON", async () => {
 		const custom = { type: "custom", id: "spawn", parentId: null, timestamp: ISO, customType: "vibe", data: {} };
 		const content = [

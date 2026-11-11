@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Preserve the source journal version when reading indexed history so current message roles survive resume ([#123](https://github.com/Komzpa/oh-my-pi/pull/123) by [@Komzpa](https://github.com/Komzpa)).
+
 - Clone large session journals once while preserving independent snapshots and restores.
 - Keep auditor dispatch and session journaling working with readonly artifact declarations.
 - Preserve dependency reviews across later audit writes and keep new delivery findings actionable after older audits are retired.

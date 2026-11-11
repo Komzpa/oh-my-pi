@@ -761,6 +761,8 @@ export async function loadEntriesFromFile(
 
 /** Physical payload source and migrated identity shared by resume and read-only history. */
 export interface PositionedSessionEntry extends SessionContextEntryMetadata {
+	/** Header version of the physical record, before resume migrations. */
+	sourceVersion?: number;
 	/** Current-version record whose physical bytes need no migration. */
 	rawCopy?: boolean;
 	offset: number;
@@ -796,9 +798,11 @@ export async function visitSessionFileForResume(
 		const snapshotBytes = fs.fstatSync(sourceFd).size;
 		const references = new ExecutorObservationReferences();
 		const revisions = new Map<string, PositionedSessionEntry>();
+		let sourceVersion = CURRENT_SESSION_VERSION;
 		await visitEntriesFromFileStream(
 			filePath,
 			entry => {
+				if (entry.type === "session") sourceVersion = entry.version ?? 1;
 				const revised = entryRevision(entry);
 				if (revised) references.ids.add(revised.id);
 				references.visit(revised ?? entry);
@@ -813,6 +817,7 @@ export async function visitSessionFileForResume(
 					if (revised)
 						revisions.set(revised.id, {
 							...sessionContextEntryMetadata(revised),
+							sourceVersion,
 							offset,
 							length,
 							firstKeptEntryId: revised.type === "compaction" ? revised.firstKeptEntryId : undefined,
@@ -915,6 +920,7 @@ export async function visitSessionFileForResume(
 				}
 				const position: PositionedSessionEntry = {
 					rawCopy: !revisionPosition && version >= CURRENT_SESSION_VERSION,
+					sourceVersion: revisionPosition?.sourceVersion ?? version,
 					...sessionContextEntryMetadata(entry),
 					offset,
 					length,
@@ -974,7 +980,10 @@ export function readPositionedSessionEntry(fd: number, position: PositionedSessi
 		entry.firstKeptEntryId = position.firstKeptEntryId!;
 		delete (entry as CompactionEntry & { firstKeptEntryIndex?: number }).firstKeptEntryIndex;
 	}
-	migrateToCurrentVersion([{ type: "session", version: 2 } as SessionHeader, entry]);
+	migrateToCurrentVersion([
+		{ type: "session", version: Math.max(position.sourceVersion ?? 2, 2) } as SessionHeader,
+		entry,
+	]);
 	if (entry.type === "message" && entry.message.role === "assistant") {
 		entry.message = sanitizeRehydratedOpenAIResponsesAssistantMessage(entry.message);
 	}

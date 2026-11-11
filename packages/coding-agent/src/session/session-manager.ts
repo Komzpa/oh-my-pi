@@ -739,6 +739,7 @@ export class SessionEntryIndex {
 		const isNew = !this.#entriesById.has(entry.id);
 		const indexed: IndexedSessionEntry = position ?? {
 			...sessionContextEntryMetadata(entry),
+			sourceVersion: CURRENT_SESSION_VERSION,
 			offset,
 			length,
 			entry: offset === undefined ? entry : undefined,

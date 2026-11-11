@@ -6,6 +6,9 @@
 
 - Launch diagnostics now show span offsets, the largest gaps between boundaries, and event-loop timer drift ([#93](https://github.com/Komzpa/oh-my-pi/pull/93) by [@Komzpa](https://github.com/Komzpa)).
 
+### Fixed
+
+- Recover later valid JSONL records after a malformed multiline record with no parsed prefix ([#123](https://github.com/Komzpa/oh-my-pi/pull/123) by [@Komzpa](https://github.com/Komzpa)).
 
 ## [18.18.8] - 2026-11-11
 
