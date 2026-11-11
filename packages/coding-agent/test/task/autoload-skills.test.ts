@@ -120,7 +120,10 @@ describe("autoloadSkills in executor", () => {
 				});
 			});
 
-			vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+				Object.assign(session, { sessionManager: options?.sessionManager });
+				return createSessionResult(session);
+			});
 
 			const mockSkills: Skill[] = [
 				{
@@ -201,7 +204,10 @@ describe("autoloadSkills in executor", () => {
 			});
 		});
 
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			Object.assign(session, { sessionManager: options?.sessionManager });
+			return createSessionResult(session);
+		});
 
 		await runSubprocess(baseOptions);
 
@@ -236,7 +242,10 @@ describe("autoloadSkills in executor", () => {
 			return originalPrompt(text, options);
 		};
 
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			Object.assign(session, { sessionManager: options?.sessionManager });
+			return createSessionResult(session);
+		});
 
 		const mockSkill: Skill = {
 			name: "user-created-skill",
@@ -328,7 +337,10 @@ describe("autoloadSkills through task spawn", () => {
 					isError: false,
 				});
 			});
-			vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(child));
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+				Object.assign(child, { sessionManager: options?.sessionManager });
+				return createSessionResult(child);
+			});
 
 			await runStructuredSubagent({
 				session: parent,

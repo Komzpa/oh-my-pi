@@ -67,7 +67,6 @@ function mockSession(opts: {
 		agent: { state: { systemPrompt: ["test"] } },
 		model: undefined,
 		extensionRunner: undefined,
-		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
 		subscribe: (l: (event: AgentSessionEvent) => void) => {
@@ -107,12 +106,15 @@ describe("runSubprocess deferred cleanup outcome (issue #9670)", () => {
 			// The session's abort cleanup never settles within the grace window.
 			abort: () => abortGate.promise,
 		});
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-			session,
-			extensionsResult: {} as unknown as LoadExtensionsResult,
-			setToolUIContext: () => {},
-			eventBus: new EventBus(),
-		} as CreateAgentSessionResult);
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			Object.assign(session, { sessionManager: options?.sessionManager });
+			return {
+				session,
+				extensionsResult: {} as unknown as LoadExtensionsResult,
+				setToolUIContext: () => {},
+				eventBus: new EventBus(),
+			} as CreateAgentSessionResult;
+		});
 
 		let deferredCleanup: Promise<void> | undefined;
 		const result = await runSubprocess({

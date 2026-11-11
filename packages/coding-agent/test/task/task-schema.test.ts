@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -14,7 +14,14 @@ import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
-let taskSchemaSessionIndex = 0;
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const sessionDirs: string[] = [];
+afterAll(() => {
+	for (const cwd of sessionDirs) rmSync(cwd, { recursive: true, force: true });
+});
 
 function createSession(
 	options: {
@@ -24,8 +31,10 @@ function createSession(
 		settings?: Record<string, unknown>;
 	} = {},
 ): ToolSession {
+	const cwd = mkdtempSync(join(tmpdir(), "task-schema-"));
+	sessionDirs.push(cwd);
 	return {
-		cwd: `/tmp/task-schema-${taskSchemaSessionIndex++}`,
+		cwd,
 		hasUI: false,
 		settings: Settings.isolated({
 			"task.isolation.enabled": false,
