@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Render gaps longer than two seconds now log a bounded pipeline timeline for diagnosis.
+
+### Fixed
+
+- Fixed every keypress in a long session rescanning the whole retained transcript: `TranscriptContainer` now tracks writes to the child array it owns and skips retained-history reconciliation on stable renders, and still reconciles when the children array is replaced from outside ([#16542](https://github.com/can1357/oh-my-pi/pull/16542) by [@Komzpa](https://github.com/Komzpa))
+- Fixed typing stalls when frequent background updates repeatedly postponed the pending keypress repaint.
+- Keep the working-row animation moving without keyboard input when synchronized output is unavailable ([#16542](https://github.com/can1357/oh-my-pi/pull/16542) by [@Komzpa](https://github.com/Komzpa)).
+
 ## [18.18.8] - 2026-11-11
 
 - The live transcript reuses its per-block walk list across each frame's readers instead of rebuilding it three times per frame, so settled transcripts cost fewer short-lived allocations per frame ([#18705](https://github.com/can1357/oh-my-pi/pull/18705) by [@yuzu-octopus](https://github.com/yuzu-octopus))

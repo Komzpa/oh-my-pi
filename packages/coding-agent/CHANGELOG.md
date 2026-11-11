@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Interactive sessions can capture a 30-second CPU profile without restarting by receiving SIGUSR2.
+
 ## [18.18.8] - 2026-11-11
 
 ### Changed
