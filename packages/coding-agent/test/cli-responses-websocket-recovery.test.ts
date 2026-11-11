@@ -592,9 +592,9 @@ describe("real CLI Responses WebSocket recovery", () => {
 							expect(fixture.requests).toHaveLength(1);
 							expect(fixture.httpRequests).toHaveLength(2);
 						},
-						// A first-event deadline shorter than ~1 s can expire during the WebSocket
-						// handshake on a loaded machine, before the request reaches the socket.
-						{ first: 1, idle: phase === "idle" ? 0.2 : 1 },
+						// The first-event budget includes the handshake. Allow loaded CI to
+						// reach the socket so this tests the selected stream timeout and recovery.
+						{ first: 5, idle: phase === "idle" ? 0.2 : 5 },
 					);
 				} finally {
 					await fixture.server.stop(true);
