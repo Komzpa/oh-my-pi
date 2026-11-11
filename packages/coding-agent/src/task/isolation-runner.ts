@@ -32,7 +32,7 @@ import { generateCommitMessage } from "../utils/commit-message-generator";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import type { ExecutorOptions } from "./executor";
 import { runSubprocess } from "./executor";
-import { needsNativeTeardown, writeRetainedBackend } from "./isolation-ownership";
+import { needsNativeTeardown, writeIsolationOwner, writeRetainedBackend } from "./isolation-ownership";
 import { repairBorrowedWorkspaceNodeModules } from "./workspace-dependencies";
 import type { NestedRepoPatch, SingleResult } from "@oh-my-pi/pi-tui/tools/task";
 import {
@@ -46,6 +46,7 @@ import {
 	type DeltaPatchResult,
 	ensureIsolation,
 	getRepoRoot,
+	type IsolationHandle,
 	mergeTaskBranches,
 	type WorktreeBaseline,
 } from "./worktree";
@@ -429,9 +430,10 @@ export interface IsolationWorkspace {
 export type OpenWorkspace = (repoRoot: string, agentId: string) => Promise<IsolationWorkspace>;
 
 /** Workspaces materialised by the natives PAL, `backend` a hint (`undefined` ⇒ the resolver picks). */
-export function nativeWorkspace(backend: IsoBackendKind | undefined): OpenWorkspace {
+export function nativeWorkspace(backend: IsoBackendKind | undefined, prepared?: IsolationHandle): OpenWorkspace {
 	return async (repoRoot, agentId) => {
-		const handle = await ensureIsolation(repoRoot, agentId, backend);
+		const handle = prepared ?? (await ensureIsolation(repoRoot, agentId, backend));
+		if (prepared) await writeIsolationOwner(path.dirname(handle.mergedDir), agentId);
 		return {
 			dir: handle.mergedDir,
 			retain: (relocate = true) => retainIsolationWorkspace(handle.mergedDir, handle.backend, relocate),

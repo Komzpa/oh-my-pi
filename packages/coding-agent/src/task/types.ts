@@ -111,6 +111,20 @@ function keepGatedItemKeys<T, I>(item: FluentType<T, I>): FluentType<unknown, I>
 	});
 }
 
+const workspaceRule = type({
+	repo: type("string").describe("Absolute source Git repository path; never inferred from task prose."),
+	base: type("string").describe(
+		"Commit available in repo, resolved to an exact SHA before admission. Use bash git fetch if missing.",
+	),
+	"path?": type("string").describe(
+		"Existing absolute checkout of the same repository at exactly base. Omit to prepare a private checkout at base.",
+	),
+});
+const workspaceFields = {
+	"workspace?": workspaceRule,
+	"reads?": type("string[]").describe("Absolute existing files or directories to read; these do not grant writes."),
+};
+
 export const taskItemSchema = type({
 	"artifact?": "string",
 	"images?": taskImagesRule,
@@ -118,6 +132,7 @@ export const taskItemSchema = type({
 	"requirementIds?": "string[]",
 	agent: "string = 'task'",
 	"resources?": "string[]",
+	...workspaceFields,
 	task: "string",
 	solutionSpace: "string",
 	"row?": "string",
@@ -136,6 +151,7 @@ const taskItemSchemaIsolated = type({
 	"requirementIds?": "string[]",
 	agent: "string = 'task'",
 	"resources?": "string[]",
+	...workspaceFields,
 	task: "string",
 	solutionSpace: "string",
 	"row?": "string",
@@ -157,6 +173,7 @@ export const taskSchema = type({
 	"requirementIds?": "string[]",
 	agent: "string = 'task'",
 	"resources?": "string[]",
+	...workspaceFields,
 	task: "string",
 	solutionSpace: "string",
 	"row?": "string",
@@ -178,6 +195,7 @@ const taskSchemaNoIsolation = type({
 	"requirementIds?": "string[]",
 	agent: "string = 'task'",
 	"resources?": "string[]",
+	...workspaceFields,
 	task: "string",
 	solutionSpace: "string",
 	"row?": "string",
@@ -287,6 +305,7 @@ function createTaskSchema(options: {
 				...toolsField,
 				...gatedFields,
 				"resources?": "string[]",
+				...workspaceFields,
 				"isolated?": "boolean",
 				"images?": taskImagesRule,
 				"+": "delete",
@@ -305,6 +324,7 @@ function createTaskSchema(options: {
 			"requirementIds?": "string[]",
 			agent,
 			"resources?": "string[]",
+			...workspaceFields,
 			...taskFields,
 			solutionSpace: "string",
 			"row?": "string",
@@ -345,6 +365,7 @@ function createTaskSchema(options: {
 			...toolsField,
 			...gatedFields,
 			"resources?": "string[]",
+			...workspaceFields,
 			"isolated?": "boolean",
 			"images?": taskImagesRule,
 			"+": "delete",
@@ -356,6 +377,7 @@ function createTaskSchema(options: {
 		"requirementIds?": "string[]",
 		agent,
 		"resources?": "string[]",
+		...workspaceFields,
 		...taskFields,
 		solutionSpace: "string",
 		"row?": "string",

@@ -16,7 +16,6 @@ import agentRouter, {
 	admitAssignedResources,
 	countLiveWorkerModels,
 	createRouterState,
-	lanePathsFromText,
 	recordAsyncResultOutcome,
 	recordRetryFallbackApplied,
 	recordTaskOutcome,
@@ -105,7 +104,9 @@ describe("agent router", () => {
 		expect(admitAssignedResources({ row: row.content, spawnKey: "reader", readOnly: true }, context)).toBeUndefined();
 		expect(row.schedule.readOnly).toBeUndefined();
 		expect(row.schedule.ownerReadOnly).toEqual({ owner: "reader", readOnly: true });
-		expect(admitAssignedResources({ row: row.content, spawnKey: "writer", readOnly: false }, context)).toBeUndefined();
+		expect(
+			admitAssignedResources({ row: row.content, spawnKey: "writer", readOnly: false }, context),
+		).toBeUndefined();
 		expect(row.schedule.ownerReadOnly).toEqual({ owner: "writer", readOnly: false });
 		expect(row.schedule.readOnly).toBeUndefined();
 	});
@@ -119,25 +120,54 @@ describe("agent router", () => {
 			const artifacts = Array.from({ length: 8 }, (_, i) => join(repo, "src", `artifact-${i}.ts`));
 			for (const file of artifacts) writeFileSync(file, "export {};\n");
 			const verifier = { content: "QA eight artifacts", status: "pending", schedule: { resources: [...artifacts] } };
-			const writer = { content: "Repair second artifact", status: "pending", schedule: { resources: [...artifacts] } };
-			const collision = { content: "Repair held artifact", status: "pending", schedule: { resources: [...artifacts] } };
-			const holder = { content: "Existing writer", status: "in_progress", schedule: { owner: "holder", resources: [artifacts[0]] } };
+			const writer = {
+				content: "Repair second artifact",
+				status: "pending",
+				schedule: { resources: [...artifacts] },
+			};
+			const collision = {
+				content: "Repair held artifact",
+				status: "pending",
+				schedule: { resources: [...artifacts] },
+			};
+			const holder = {
+				content: "Existing writer",
+				status: "in_progress",
+				schedule: { owner: "holder", resources: [artifacts[0]] },
+			};
 			const rows = [verifier, writer, collision, holder];
-			const context = ctx({ cwd: repo, getTodoPhases: () => [{ name: "Work", tasks: rows }],
+			const context = ctx({
+				cwd: repo,
+				getTodoPhases: () => [{ name: "Work", tasks: rows }],
 				updateTodoSchedule: (title, patch) => {
 					const row = rows.find(row => row.content === title)!;
 					row.schedule = { ...row.schedule, ...patch };
 					return true;
 				},
 			});
-			expect(admitAssignedResources({ row: verifier.content, spawnKey: "reader", readOnly: true, resources: [] }, context)).toBeUndefined();
+			expect(
+				admitAssignedResources(
+					{ row: verifier.content, spawnKey: "reader", readOnly: true, resources: [] },
+					context,
+				),
+			).toBeUndefined();
 			expect(verifier.schedule.resources).toEqual(artifacts);
 			expect(verifier.schedule.ownerReadOnly).toEqual({ owner: "reader", readOnly: true });
 			expect(verifier.schedule.readOnly).toBeUndefined();
-			expect(admitAssignedResources({ row: writer.content, spawnKey: "writer", readOnly: false, resources: [artifacts[1]] }, context)).toBeUndefined();
+			expect(
+				admitAssignedResources(
+					{ row: writer.content, spawnKey: "writer", readOnly: false, resources: [artifacts[1]] },
+					context,
+				),
+			).toBeUndefined();
 			expect(writer.schedule.resources).toEqual([artifacts[1]]);
 			expect(readOnlyClaim(writer)).toBe(false);
-			expect(admitAssignedResources({ row: collision.content, spawnKey: "collision", resources: [artifacts[0]] }, context)).toContain("holder");
+			expect(
+				admitAssignedResources(
+					{ row: collision.content, spawnKey: "collision", resources: [artifacts[0]] },
+					context,
+				),
+			).toContain("holder");
 			expect(collision.schedule.resources).toEqual(artifacts);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
@@ -155,7 +185,9 @@ describe("agent router", () => {
 		});
 		expect(admitAssignedResources({ row: row.content, spawnKey: "worker", readOnly: true }, context)).toBeUndefined();
 		expect(readOnlyClaim(row)).toBe(true);
-		expect(admitAssignedResources({ row: row.content, spawnKey: "worker", readOnly: false }, context)).toBeUndefined();
+		expect(
+			admitAssignedResources({ row: row.content, spawnKey: "worker", readOnly: false }, context),
+		).toBeUndefined();
 		expect(readOnlyClaim(row)).toBe(false);
 	});
 
@@ -168,7 +200,9 @@ describe("agent router", () => {
 				return true;
 			},
 		});
-		expect(admitAssignedResources({ row: row.content, spawnKey: "writer", readOnly: false }, context)).toBeUndefined();
+		expect(
+			admitAssignedResources({ row: row.content, spawnKey: "writer", readOnly: false }, context),
+		).toBeUndefined();
 		expect(row.schedule.readOnly).toBe(true);
 		expect(row.schedule.ownerReadOnly).toEqual({ owner: "writer", readOnly: true });
 	});
@@ -221,6 +255,60 @@ describe("agent router", () => {
 					{ stateFile: file },
 				),
 			).toBeUndefined();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("legacy verified record keeps a narrow scheduled claim beside an unrelated root writer", () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const lead = join(dir, "lead");
+			const foreign = join(dir, "foreign");
+			for (const repo of [lead, foreign]) {
+				mkdirSync(repo);
+				execFileSync("git", ["init", "-q", repo]);
+			}
+			const narrow = join(foreign, "module.ts");
+			const row = { content: "Legacy", status: "pending", schedule: { resources: [narrow] } };
+			const state = createRouterState();
+			const context = ctx({
+				cwd: lead,
+				getTodoPhases: () => [{ name: "Work", tasks: [row] }],
+				updateTodoSchedule: (_title, patch) => {
+					Object.assign(row.schedule, patch);
+					return true;
+				},
+				getAsyncJobSnapshot: () => ({ running: [{ id: "root", agentId: "root" }], recent: [], delivery: {} }),
+			});
+			expect(
+				routeSubagentSpawn({ agent: "coder", spawnKey: "root", resources: [lead] }, context, state, {
+					stateFile: file,
+				}),
+			).toBeUndefined();
+			const options = { stateFile: file, latestTodo: () => [{ name: "Work", tasks: [row] }] };
+			expect(
+				routeSubagentSpawn(
+					{
+						agent: "coder",
+						spawnKey: "legacy",
+						row: "Legacy",
+						cwd: lead,
+						verifiedWorkspace: { cwd: lead, resources: [narrow] },
+					},
+					context,
+					state,
+					options,
+				),
+			).toBeUndefined();
+			expect(
+				routeSubagentSpawn(
+					{ agent: "coder", spawnKey: "collision", verifiedWorkspace: { cwd: foreign, resources: [lead] } },
+					context,
+					state,
+					options,
+				),
+			).toMatchObject({ block: true });
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -451,11 +539,7 @@ describe("agent router", () => {
 			rmSync(dir, { recursive: true, force: true });
 		}
 	});
-	test("lanePathsFromText drops HTTP routes whose top-level directory does not exist", () => {
-		const paths = lanePathsFromText("POST /bundle/message/photo then /ACK and /v1/cards; edit /tmp/some/dir");
-		expect(paths).toEqual(["/tmp/some/dir"]);
-	});
-	test("unowned batch coders scope from spawn row title and lane path", async () => {
+	test("unowned task prose and row titles cannot select another checkout", async () => {
 		const { dir, file } = tempStateFile();
 		try {
 			const laneA = join(dir, "lane-a");
@@ -492,7 +576,7 @@ describe("agent router", () => {
 			expect(first?.block).toBeUndefined();
 			running = [{ id: "batch-unowned-1", type: "task", status: "running" }];
 			const second = await spawn("batch-unowned-2", `# Row: Fix beta lane\nLane: ${laneB}\nDo the work.`);
-			expect(second?.block).toBeUndefined();
+			expect(second?.block).toBe(true);
 			const controlState = createRouterState();
 			let controlRunning: Array<Record<string, string>> = [];
 			const controlContext = ctx({
@@ -534,6 +618,28 @@ describe("agent router", () => {
 			expect(controlSecond?.reason).toContain("control-1");
 			expect(controlSecond?.reason).toContain("coder targets");
 			expect(controlSecond?.reason).toContain(laneA);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("an isolated flag cannot bypass overlap for a verified existing checkout", () => {
+		const { dir, file } = tempStateFile();
+		try {
+			const repo = join(dir, "repo");
+			mkdirSync(repo);
+			execFileSync("git", ["init", "-q", repo]);
+			let running = [];
+			const context = ctx({ cwd: repo, getAsyncJobSnapshot: () => ({ running, recent: [], delivery: {} }) });
+			const state = createRouterState();
+			const event = { agent: "coder", isolated: true, verifiedWorkspace: { cwd: repo } };
+			expect(
+				routeSubagentSpawn({ ...event, spawnKey: "first" }, context, state, { stateFile: file }),
+			).toBeUndefined();
+			running = [{ id: "first", type: "task", status: "running" }];
+			expect(routeSubagentSpawn({ ...event, spawnKey: "second" }, context, state, { stateFile: file })?.block).toBe(
+				true,
+			);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

@@ -10,7 +10,7 @@
  */
 
 import { type IrcDeliveryReceipt, type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
-import { logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { logger, Snowflake, withTimeout } from "@oh-my-pi/pi-utils";
 import { PeerSessionError, sendPeerMessage, writeShellReply } from "../collab/registry";
 import { type AgentLifecycleApi, AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
@@ -130,7 +130,11 @@ export class IrcBus implements IrcBusApi {
 	/** Last {@link SendMark.seq} handed out, taken when a send starts. */
 	#sendSeq = 0;
 
-	constructor(registry: AgentRegistryApi = AgentRegistry.global(), lifecycle?: AgentLifecycleApi) {
+	constructor(
+		registry: AgentRegistryApi = AgentRegistry.global(),
+		lifecycle?: AgentLifecycleApi,
+		private readonly recipientReadyTimeoutMs = 30_000,
+	) {
 		this.#registry = registry;
 		// Lazy: the lifecycle global self-constructs against the global registry,
 		// so only touch it when a parked recipient actually needs reviving.
@@ -288,6 +292,19 @@ export class IrcBus implements IrcBusApi {
 	}
 
 	async #deliver(message: IrcMessage): Promise<IrcDeliveryReceipt> {
+		// Bound only preparation, before injection can have any delivery side effect.
+		// Shared revival may finish later; this delivery must not resume with it.
+		const readyDeadline = performance.now() + this.recipientReadyTimeoutMs;
+		const awaitReady = <T>(prepare: () => Promise<T>): Promise<T> => {
+			const remaining = readyDeadline - performance.now();
+			const error = new Error(
+				`Agent "${message.to}" did not become ready within ${this.recipientReadyTimeoutMs} ms; message not delivered. Check its status before retrying.`,
+			);
+			// A resolved promise beats a zero-ms timer; refuse an exhausted budget
+			// before starting another lifecycle operation instead of racing it.
+			if (remaining <= 0) return Promise.reject(error);
+			return withTimeout(prepare(), remaining, error);
+		};
 		let ref = this.#registry.get(message.to);
 		if (ref?.starting && !ref.session) {
 			const expected = ref;
@@ -300,7 +317,9 @@ export class IrcBus implements IrcBusApi {
 			const stop = this.#registry.onChange(check);
 			try {
 				check();
-				await ready.promise;
+				await awaitReady(() => ready.promise);
+			} catch (error) {
+				return { to: message.to, outcome: "failed", error: error instanceof Error ? error.message : String(error) };
 			} finally {
 				stop();
 			}
@@ -348,7 +367,7 @@ export class IrcBus implements IrcBusApi {
 		let revived = false;
 		if (needsLifecycleGate) {
 			try {
-				const liveSession = await lifecycle.ensureLive(message.to);
+				const liveSession = await awaitReady(() => lifecycle.ensureLive(message.to));
 				// Revival = we did not keep the same live instance (parked start, or
 				// park completed and a fresh session was rebuilt).
 				revived = !priorSession || liveSession !== priorSession;

@@ -678,10 +678,11 @@ export async function ensureIsolation(
 	baseCwd: string,
 	id: string,
 	preferred?: IsoBackendKind,
+	baseCommit?: string,
 ): Promise<IsolationHandle> {
 	const repoRoot = await getRepoRoot(baseCwd);
 	const repo = vcs.requireGit(repoRoot);
-	const headSha = await repo.headSha();
+	const headSha = baseCommit ?? (await repo.headSha());
 	if (!headSha) {
 		throw new Error("Isolated task execution requires a committed Git HEAD.");
 	}
