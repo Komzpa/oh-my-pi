@@ -18,9 +18,10 @@ import { selectBranchEntries, selectBranchNewestFirst, selectLatestBranchEntry, 
 import { prompt } from "@oh-my-pi/pi-utils";
 import { truncateMiddleToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext, ToolResultEvent } from "@oh-my-pi/pi-coding-agent";
-import { todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
+import { findTodoExecutorTarget, taskPacketRow, todoMatchesObservedWorker } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
 import { readTodoArchiveState, getLiveTodoBranchEntries, getTodoActionRows, withTodoArchive } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { getTodoPlanCalibrationStore } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-calibration";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -1188,8 +1189,8 @@ export function readPersistedSprintState(branch: unknown[]): SprintState {
       ...(typeof data.deliveryCheckpointAt === "number" ? { deliveryCheckpointAt: data.deliveryCheckpointAt } : {}),
       ...(typeof data.deliveryCheckpointPublished === "boolean" ? { deliveryCheckpointPublished: data.deliveryCheckpointPublished } : {}),
       ...(typeof data.deliveryCheckpointActive === "boolean" ? { deliveryCheckpointActive: data.deliveryCheckpointActive } : {}),
-      receiptReadKeys: Array.isArray(data.receiptReadKeys) ? data.receiptReadKeys.filter((item): item is string => typeof item === "string") : [],
-      receiptReconciledKeys: Array.isArray(data.receiptReconciledKeys) ? data.receiptReconciledKeys.filter((item): item is string => typeof item === "string") : [],
+      ...(Array.isArray(data.receiptReadKeys) ? { receiptReadKeys: data.receiptReadKeys.filter((item): item is string => typeof item === "string") } : {}),
+      ...(Array.isArray(data.receiptReconciledKeys) ? { receiptReconciledKeys: data.receiptReconciledKeys.filter((item): item is string => typeof item === "string") } : {}),
     };
   }
   return blankSprintState();
@@ -1775,6 +1776,17 @@ export function speculativeTaskRows(item: Record<string, unknown>, phases: Dispa
   if (typeof item.row === "string") return rows.filter(row => row.content === item.row);
   const preview = item.previewIntegration as { task?: string } | undefined;
   if (typeof preview?.task === "string") return rows.filter((row) => row.content === preview.task);
+  const taskText = typeof item.task === "string" ? item.task : undefined;
+  // Packet Row wins over a worker name previously bound to another row. Same resolver TaskTool uses.
+  if (taskPacketRow(taskText, rows.map(row => String(row.content ?? ""))) !== undefined) {
+    const target = findTodoExecutorTarget(phases as TodoPhase[], {
+      workerId: typeof item.name === "string" ? item.name : "",
+      taskText,
+      agentProfile: typeof item.agent === "string" ? item.agent : undefined,
+      startedAt: 0,
+    });
+    return target ? [target] : [];
+  }
   if (typeof item.name === "string") {
     const owned = rows.filter((row) => todoMatchesObservedWorker(row, { workerId: item.name }));
     if (owned.length) return owned;
@@ -5937,19 +5949,22 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       const refused = escalatedIds.flatMap(id => {
         const rows = affectedRows(id);
         if (id === "todo-replan" && !rows.length && unresolvedForGate.length) return [];
-        const spawn = items.length > 0 && (rows.length
-          ? spawnTouches(rows) || (id === "unread-receipts" && items.some(item => rows.some(row => {
+        const gatedItems = id === "todo-plan-doctor" ? items.filter(item => item.agent !== "plan-doctor") : items;
+        if (id === "todo-plan-doctor" && items.length > 0 && gatedItems.length === 0) return [];
+        const gatedMatched = gatedItems.map(item => speculativeTaskRows(item, phasesForGate));
+        const releasedKnown = id === "missed-eta" && overdueForMissedEta.length > 0 && rows.length === 0;
+        const spawn = gatedItems.length > 0 && (rows.length
+          ? gatedMatched.some(matches => matches.some(row => rows.some(held => held.content === row.content))) || (id === "unread-receipts" && gatedItems.some(item => rows.some(row => {
             const job = receiptJobForRow(ctx, row);
             return job && typeof item.name === "string" && liveJobMatchesOwner(job, item.name);
           })))
-          : id === "unread-receipts" ? !forecastRows.some(row => receiptJobForRow(ctx, row)) : true);
+          : id === "unread-receipts" ? !forecastRows.some(row => receiptJobForRow(ctx, row)) : releasedKnown ? false : true);
         const work = event.toolName === "todo" && PLAN_WORK_OPS[todoOpOf(call) ?? ""] && rows.some(row => targets.includes(row.content));
         if (!spawn && !work) return [];
         const remedy = id === "unread-receipts" ? UNREAD_REMEDY(rows.map(row => row.owner).filter(Boolean))
           : id === "todo-link" ? "Use todo schedule to link the running worker to its actual assignment row, or todo append to create that row."
           : id === "todo-plan-doctor" ? "Use task with agent plan-doctor to inspect the plan, then todo schedule to record the repair."
           : ESCALATION_REMEDY;
-        if (id === "todo-plan-doctor" && isPlanDoctorTaskInput(event.input)) return [];
         return [`${id}: ${rows.length ? named(rows) : "affected rows unknown (new task spawns only)"}. ${remedy}`];
       });
       if (refused.length) {
@@ -6513,7 +6528,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     }
     if (!event.isError && isMain(ctx)) {
       if (event.toolName === "read") {
-        const job = ctx.getAsyncJobSnapshot()?.recent.find(job => job.type === "task" && job.status === "completed" &&
+        const details = event.details as ReadToolDetails | undefined;
+        // Exact root path is not a full receipt when ReadTool truncated it. No second pagination protocol:
+        // a truncated result has no complete existing-tool release beyond the root read the chief already made.
+        const truncated = details?.truncation !== undefined || details?.meta?.truncation !== undefined;
+        const job = !truncated && ctx.getAsyncJobSnapshot()?.recent.find(job => job.type === "task" && job.status === "completed" &&
           [job.id, job.agentId].some(owner => owner && (event.input?.path === `agent://${owner}` || event.input?.path === `agent://${owner}:raw`)));
         if (job) {
           sprintState.receiptReadKeys = [...new Set([...(sprintState.receiptReadKeys ?? []), receiptKey(job)])].slice(-MAX_NOTICE_KEYS);

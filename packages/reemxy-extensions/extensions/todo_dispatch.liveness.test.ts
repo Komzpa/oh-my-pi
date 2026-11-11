@@ -430,9 +430,12 @@ test("union decision (missed-eta escalation): refused state still admits the uni
   const u = await armMissedEtaEscalation(repos ??= { clean: makeRepo("clean"), resolvedStale: makeRepo("clean") });
   try {
     const bash = await u.call("bash", { command: "bun test" });
-    expect(bash.admitted, "escalated missed-eta refuses the unrelated call").toBe(false);
-    expect(bash.reason ?? "", "refusal names the plan demand").toContain("missed-eta");
-    expect((await u.call("task", { tasks: [{ agent: "plan-doctor", name: "Doc", task: "x" }] })).admitted, "plan-doctor spawn does not lift it").toBe(false);
+    expect(bash.admitted, "row-local missed-eta admits unrelated bash").toBe(true);
+    const held = await u.call("task", { tasks: [{ name: "w-A", agent: "coder", task: "Row A" }] });
+    expect(held.admitted, "overdue row stays refused").toBe(false);
+    expect(held.reason ?? "", "refusal names the plan demand").toContain("missed-eta");
+    expect((await u.call("task", { tasks: [{ agent: "plan-doctor", name: "Doc", task: "inspect the plan" }] })).admitted, "doctor-only remedy admitted").toBe(true);
+    expect((await u.call("task", { tasks: [{ name: "w-A", agent: "coder", task: "Row A" }] })).admitted, "doctor spawn does not release the overdue row").toBe(false);
     const verdict = decideGateCall({ name: "bash", arguments: { command: "bun test" } }, [
       { id: "missed-eta", remedy: "re-estimate with a todo call", satisfies: (c) => c.name === "todo" },
     ]);
@@ -449,14 +452,14 @@ test("union decision (missed-eta escalation): refused state still admits the uni
 test("override (missed-eta escalation): a todo.override alone does not lift it; the next clean plan check does", async () => {
   const u = await armMissedEtaEscalation(repos ??= { clean: makeRepo("clean"), resolvedStale: makeRepo("clean") });
   try {
-    expect((await u.call("bash", { command: "bun test" })).admitted, "escalation armed").toBe(false);
+    expect((await u.call("task", { tasks: [{ name: "w-A", agent: "coder", task: "Row A" }] })).admitted, "escalation armed").toBe(false);
     const over = await u.call("todo", { op: "schedule", updates: [], override: "missed-eta: chief accepts responsibility" });
     expect(over.admitted, "override todo admitted").toBe(true);
-    expect((await u.call("bash", { command: "bun test" })).admitted, "override does not suppress the escalation").toBe(false);
+    expect((await u.call("task", { tasks: [{ name: "w-A", agent: "coder", task: "Row A" }] })).admitted, "override does not suppress the escalation").toBe(false);
     u.fresh();
     await u.tick();
-    const after = await u.call("bash", { command: "bun test" });
-    expect(after.admitted, `a plan check without the problem clears it (got: ${after.reason})`).toBe(true);
+    const after = await u.call("task", { tasks: [{ name: "w-A", agent: "coder", task: "Row A" }] });
+    expect(after.admitted, `a plan check without the problem clears the overdue row (got: ${after.reason})`).toBe(true);
   } finally {
     u.shutdown();
   }

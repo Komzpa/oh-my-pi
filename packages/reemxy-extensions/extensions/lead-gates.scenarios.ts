@@ -15,6 +15,7 @@ import backoff from "../../coding-agent/src/prompts/steering/compaction-backoff.
 import todoDispatch, { SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
 import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { getLatestTodoPhasesFromEntries, TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { findTodoExecutorTarget } from "@oh-my-pi/pi-coding-agent/tools/todo-executor";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
@@ -107,6 +108,86 @@ export async function gateLocalityScenarios(only?: string) {
 			}
 		} finally { await hooks.get("session_shutdown")?.({} as never, ctx as never); }
 	}
+	return receipts;
+}
+
+export const reviewFindingIds = ["canonical-target", "doctor-item", "truncated-receipt", "released-eta"] as const;
+
+/** One registered-hook contract per review finding. `only` selects one; omit it to run all four. */
+export async function gateReviewFinding(only?: (typeof reviewFindingIds)[number]) {
+	const receipts: Array<{ label: string; allowed: boolean; reason?: string }> = [];
+	const run = async (id: (typeof reviewFindingIds)[number]) => {
+		if (only && only !== id) return;
+		const now = Date.now();
+		const estimate = { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium" as const, basis: "Measured fixture", updatedAt: now };
+		const demand = id === "canonical-target" ? "todo-replan" : id === "doctor-item" ? "todo-plan-doctor" : id === "truncated-receipt" ? "unread-receipts" : "missed-eta";
+		let phases: TodoPhase[] = [{ name: "Work", tasks: ["Locality X", "Locality Y", "Locality Z"].map(content => ({ content, status: "pending" as const, schedule: { dependencies: [], ...(id === "canonical-target" && content === "Locality X" ? {} : { estimate }), ...(content === "Locality X" ? { owner: "OwnerX" } : {}), ...(id === "canonical-target" && content === "Locality Z" ? { owner: "PriorWorker" } : {}) } })) }];
+		if (id === "doctor-item") phases[0]!.tasks[0]!.schedule!.estimate = { ...estimate, pessimisticSeconds: 7200 };
+		if (id === "released-eta") {
+			phases[0]!.tasks[0]!.status = "in_progress";
+			Object.assign(phases[0]!.tasks[0]!.schedule!, { startedAt: now - 3_600_000, estimate: { ...estimate, updatedAt: now - 3_600_000 } });
+		}
+		const journal: Array<Record<string, unknown>> = [{ type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: { [demand]: 9 } } }];
+		const hooks = new Map<string, (event: never, ctx: never) => unknown>();
+		const api = { on: (name: string, hook: (event: never, ctx: never) => unknown) => hooks.set(name, hook), getActiveTools: () => ["todo", "task", "read"], appendEntry: (customType: string, data: unknown) => journal.push({ type: "custom", customType, data }), sendMessage: () => {}, registerSoftToolRequirementProvider: () => {}, pi: { ...schedule, getLatestTodoPhasesFromEntries, agentPauseGate: { paused: false } } } as unknown as ExtensionAPI;
+		await todoDispatch(api);
+		const jobs = { running: [{ id: "Independent", agentId: "Independent", label: "Independent work", type: "task", status: "running", startTime: now }], recent: id === "truncated-receipt" ? [{ id: "OwnerX", agentId: "OwnerX", type: "task", status: "completed", startTime: now - 1000, endTime: now }] : [], nonJobAgents: [] };
+		const ctx = { cwd: "/tmp", agent: { kind: "main" }, getTodoPhases: () => phases, sessionManager: { getHeader: () => ({ id: `review-${id}` }), getBranch: () => journal, getBranchMatching: (predicate: (entry: unknown) => boolean) => journal.filter(predicate), getLatestBranchMatching: (predicate: (entry: unknown) => boolean) => journal.findLast(predicate), getSessionFile: () => undefined }, getAsyncJobSnapshot: () => jobs, getTaskMaxConcurrency: () => 1, isIdle: () => false, hasPendingMessages: () => false, setTimeout: () => ({}), setInterval: () => ({}), clearTimer: () => {}, getTodoPreviewConfig: () => ({ enabled: false }) } as unknown as ExtensionContext;
+		await hooks.get("session_branch")!({} as never, ctx as never);
+		const probe = async (label: string, name: string, args: Record<string, unknown>, allowed: boolean, remedy?: string) => {
+			const result = await hooks.get("tool_call")!({ toolName: name, toolCallId: label, input: args } as never, ctx as never) as { block?: boolean; reason?: string } | undefined;
+			const receipt = { label: `${id}: ${label}`, allowed: !result?.block, reason: result?.reason };
+			receipts.push(receipt);
+			if (receipt.allowed !== allowed || (remedy && !receipt.reason?.includes(remedy))) throw new Error(JSON.stringify(receipt));
+		};
+		const coder = (row: string, name = row === "Locality X" ? "OwnerX" : "ReadyZ") => ({ tasks: [{ name, agent: "coder", task: row }] });
+		try {
+			if (id === "canonical-target") {
+				const x = phases[0]!.tasks[0]!.content;
+				const packet = { name: "PriorWorker", agent: "coder", task: `# Target\nRow: ${x}\n\n# Instructions\nImplement this row only.` };
+				if (findTodoExecutorTarget(phases, { workerId: packet.name, taskText: packet.task, startedAt: 0 })?.content !== x) throw new Error("native resolver did not select X");
+				await probe("packet targets unestimated X", "task", { tasks: [packet] }, false, "Locality X");
+				await probe("ready Z without packet", "task", coder("Locality Z", "PriorWorker"), true);
+			}
+			if (id === "doctor-item") {
+				const doctor = { agent: "plan-doctor", name: "Doc", task: "inspect the plan" };
+				await probe("coder on affected X", "task", coder("Locality X"), false, "Locality X");
+				await probe("doctor-only remedy", "task", { tasks: [doctor] }, true);
+				await probe("mixed doctor and coder X", "task", { tasks: [doctor, ...coder("Locality X").tasks] }, false, "Locality X");
+				await probe("mixed doctor and independent Z", "task", { tasks: [doctor, ...coder("Locality Z").tasks] }, true);
+			}
+			if (id === "truncated-receipt") {
+				const args = { op: "schedule" as const, updates: [{ task: "Locality X", estimate, evidence: "Receipt reviewed; continue only the recorded missing output" }] };
+				const tool = new TodoTool({ cwd: "/tmp", settings: Settings.isolated(), getSessionFile: () => null, getTodoPhases: () => phases, setTodoPhases: (next: TodoPhase[]) => { phases = next; } } as unknown as ToolSession);
+				const truncated = { truncation: { truncated: true, truncatedBy: "bytes" as const, totalLines: 40, totalBytes: 80_000, outputLines: 10, outputBytes: 4_000 } };
+				await hooks.get("tool_result")!({ toolName: "read", toolCallId: "truncated-root", input: { path: "agent://OwnerX" }, isError: false, content: [{ type: "text", text: "partial" }], details: truncated } as never, ctx as never);
+				const early = await tool.execute("truncated-reconcile", args);
+				if (early.isError) throw new Error(JSON.stringify(early));
+				await hooks.get("tool_result")!({ toolName: "todo", toolCallId: "truncated-reconcile", input: args, ...early } as never, ctx as never);
+				await probe("truncated root read does not release", "task", coder("Locality X"), false, "OwnerX");
+				await hooks.get("tool_result")!({ toolName: "read", toolCallId: "truncated-meta", input: { path: "agent://OwnerX:raw" }, isError: false, content: [{ type: "text", text: "partial" }], details: { meta: { truncation: truncated.truncation } } } as never, ctx as never);
+				await probe("truncated raw root read does not release", "task", coder("Locality X"), false);
+				await hooks.get("tool_result")!({ toolName: "read", toolCallId: "complete-root", input: { path: "agent://OwnerX" }, isError: false, content: [{ type: "text", text: "complete receipt" }], details: {} } as never, ctx as never);
+				const result = await tool.execute("complete-reconcile", args);
+				if (result.isError) throw new Error(JSON.stringify(result));
+				await hooks.get("tool_result")!({ toolName: "todo", toolCallId: "complete-reconcile", input: args, ...result } as never, ctx as never);
+				await probe("complete root read releases", "task", coder("Locality X"), true);
+			}
+			if (id === "released-eta") {
+				await probe("overdue X before reconciliation", "task", coder("Locality X"), false, "missed-eta");
+				await probe("independent Z before reconciliation", "task", coder("Locality Z"), true);
+				const args = { op: "schedule" as const, updates: [{ task: "Locality X", evidence: "The owner has finished part of the output; remaining work recorded." }] };
+				await probe("evidence schedule admitted", "todo", args, true);
+				const tool = new TodoTool({ cwd: "/tmp", settings: Settings.isolated(), getSessionFile: () => null, getTodoPhases: () => phases, setTodoPhases: (next: TodoPhase[]) => { phases = next; } } as unknown as ToolSession);
+				const result = await tool.execute("evidence-only", args);
+				if (result.isError) throw new Error(JSON.stringify(result));
+				await hooks.get("tool_result")!({ toolName: "todo", toolCallId: "evidence-only", input: args, ...result } as never, ctx as never);
+				await probe("repaired X after evidence", "task", coder("Locality X"), true);
+				await probe("independent Z after evidence", "task", coder("Locality Z"), true);
+			}
+		} finally { await hooks.get("session_shutdown")?.({} as never, ctx as never); }
+	};
+	for (const id of reviewFindingIds) await run(id);
 	return receipts;
 }
 

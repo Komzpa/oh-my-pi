@@ -31,11 +31,15 @@ import {
 } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import todoDispatch, { decideGateCall, decideTodoDispatch, parseTodoOverride, SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
 import * as dispatchModule from "./todo_dispatch";
-import { gateLocalityScenarios } from "./lead-gates.scenarios";
+import { gateLocalityScenarios, gateReviewFinding, reviewFindingIds } from "./lead-gates.scenarios";
 
 test("row-local plan gates preserve independent tools and executable remedies", async () => {
   const receipts = await gateLocalityScenarios();
   expect(receipts.find(row => row.label === "forecast: repaired X while Y missing")?.allowed).toBe(true);
+});
+
+test("review findings cover canonical target, doctor item, truncated receipt, and released eta", async () => {
+  for (const id of reviewFindingIds) await gateReviewFinding(id);
 });
 
 const todoDispatchStateDir = process.env.OMP_TODO_DISPATCH_STATE_DIR ?? join(homedir(), ".local", "state", "omp-todo-dispatch");

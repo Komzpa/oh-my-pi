@@ -11,6 +11,7 @@ import { getLatestTodoPhasesFromEntries } from "@oh-my-pi/pi-coding-agent/tools/
 import { readGoalDeadline } from "./deadlines";
 
 const now = Date.now();
+const validEstimate = { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium" as const, basis: "Measured fixture", updatedAt: now };
 
 test("a newly assigned worker is not blamed for an earlier plan miss", () => {
   expect(workerPastForecast(now - 60_000, now - 5_000, now)).toBe(false);
@@ -175,6 +176,7 @@ function reviewPlan() {
 						firstDeliveredAt: now,
 						reviewSummary: "UI delivered",
 						dependencies: [],
+						estimate: validEstimate,
 						executor: {
 							workerId: "Coder",
 							startedAt: now,
@@ -194,9 +196,9 @@ function reviewPlan() {
 				{
 					content: "Verify UI",
 					status: "pending" as const,
-					schedule: { owner: "Verifier", dependencies: ["Delivered UI"] },
+					schedule: { owner: "Verifier", dependencies: ["Delivered UI"], estimate: validEstimate },
 				},
-				{ content: "Independent docs", status: "pending" as const, schedule: { owner: "Docs", dependencies: [] } },
+				{ content: "Independent docs", status: "pending" as const, schedule: { owner: "Docs", dependencies: [], estimate: validEstimate } },
 			],
 		},
 	];
@@ -240,7 +242,7 @@ test("attempt two dispatches speculatively with a queued handoff, then honors co
   const phases = [{ name: "Work", tasks: [{
     content: "Implement header navigation",
     status: "pending",
-    schedule: { decision: "owner", owner: "NavWorker", dependencies: [], attemptHistory: [{ attemptId: "1", terminalStatus: "completed", finalReportParagraph: "Navigation delivered; await owner review" }] },
+    schedule: { decision: "owner", owner: "NavWorker", dependencies: [], estimate: validEstimate, attemptHistory: [{ attemptId: "1", terminalStatus: "completed", finalReportParagraph: "Navigation delivered; await owner review" }] },
   }] }];
   const harness = await reviewHookHarness(phases, { running: [], recent: [], nonJobAgents: [] });
   const beforeHandoff = { tasks: [{ agent: "Coder", task: "Implement header navigation" }] };
@@ -713,8 +715,10 @@ test("DC audit dispatch survives all five refused calls and the intervening reme
 				startTime: now,
 			}));
 		const phases = structuredClone(capture.phases);
-        for (const row of phases.flatMap(phase => phase.tasks))
-          if (targets.has(row.content)) row.schedule = { ...row.schedule, progress: { evidence: "Replay fixture: previous delivery needs verification" } };
+        for (const row of phases.flatMap(phase => phase.tasks)) {
+          row.schedule = { ...row.schedule, dependencies: row.schedule?.dependencies ?? [], estimate: row.schedule?.estimate ?? validEstimate };
+          if (targets.has(row.content)) row.schedule.progress = { evidence: "Replay fixture: previous delivery needs verification" };
+        }
         const harness = await reviewHookHarness(phases, { running, recent: [], nonJobAgents: [] });
 		const result = await harness.handlers.get("tool_call")(
 			{ toolName: "task", input: structuredClone(capture.input) },
@@ -737,7 +741,7 @@ test("coder marks each bound row speculative automatically", async () => {
 		nonJobAgents: [],
 	});
 	const dispatch = () =>
-		harness.handlers.get("tool_call")({ toolName: "task", input: { tasks: [structuredClone(call)] } }, harness.ctx);
+		harness.handlers.get("tool_call")({ toolName: "task", input: { tasks: [{ name: "Verifier", agent: "coder", task: "Verify UI" }] } }, harness.ctx);
 	expect((await dispatch())?.block).not.toBe(true);
 	expect(harness.phases()[0].tasks[1].schedule.speculativeOn).toBe("Delivered UI");
 	expect((await dispatch())?.block).not.toBe(true);
@@ -777,7 +781,7 @@ test("DC handoff refusals admit product workers without a review-page round trip
 test("aborted and failed workers need receipt findings before retry, without demanding handoff", async () => {
   for (const terminalStatus of ["aborted", "failed"]) {
     const row = { content: "Move closer frames a single rack large enough (12)", status: "pending", schedule: {
-      dependencies: [], attemptHistory: [{ attemptId: "FrameSingleRackOnMoveCloser:1793895220647", terminalStatus,
+      dependencies: [], estimate: validEstimate, attemptHistory: [{ attemptId: "FrameSingleRackOnMoveCloser:1793895220647", terminalStatus,
         deliverablePaths: ["/home/kom/.omp/agent/sessions/dc/FrameSingleRackOnMoveCloser.md"] }],
     } };
     const harness = await reviewHookHarness([{ name: "Work", tasks: [row] }], { running: [], recent: [], nonJobAgents: [] });
@@ -795,8 +799,8 @@ test("renamed rack work retains its predecessor's handoff and does not taint ind
     resources: ["/dc/tmp/do-12-rack-zoom"], review: "user", reviewPagePending: true, firstDeliveredAt: now - 16 * 60_000,
     attemptHistory: [{ attemptId: "one", terminalStatus: "completed" }],
   } };
-  const renamed = { content: "Rack close-up: Move closer fills 40% of view (12)", status: "pending", schedule: { resources: [...old.schedule.resources] } };
-  const independent = { content: "Site posture moves to Inputs", status: "pending", schedule: { resources: ["/dc/tmp/site-posture"] } };
+  const renamed = { content: "Rack close-up: Move closer fills 40% of view (12)", status: "pending", schedule: { dependencies: [], estimate: validEstimate, resources: [...old.schedule.resources] } };
+  const independent = { content: "Site posture moves to Inputs", status: "pending", schedule: { dependencies: [], estimate: validEstimate, resources: ["/dc/tmp/site-posture"] } };
   const harness = await reviewHookHarness([{ name: "Work", tasks: [old, renamed, independent] }], { running: [], recent: [], nonJobAgents: [] });
   const input = { tasks: [{ agent: "ui-coder", task: renamed.content }, { agent: "ui-coder", task: independent.content }] };
   expect((await harness.handlers.get("tool_call")({ toolName: "task", input }, harness.ctx))?.block).not.toBe(true);
@@ -811,7 +815,7 @@ test("renamed rack work retains its predecessor's handoff and does not taint ind
 });
 
 test("published user-review row dispatches a speculative redo", async () => {
-  const row = { content: "Delivered UI", status: "pending", schedule: { review: "user", reviewPage: "http://127.0.0.1:8767/review/batch/", dependencies: [] } };
+  const row = { content: "Delivered UI", status: "pending", schedule: { review: "user", reviewPage: "http://127.0.0.1:8767/review/batch/", dependencies: [], estimate: validEstimate } };
   const harness = await reviewHookHarness([{ name: "Work", tasks: [row] }], { running: [], recent: [], nonJobAgents: [] });
   harness.ctx.getTodoPreviewConfig = () => ({ enabled: false, paths: [], thresholdMinutes: 15, openReviewPages: false });
   const input = { tasks: [{ agent: "coder", task: row.content }] };

@@ -126,7 +126,8 @@ test("read-only audits leave frozen review metadata and task arguments untouched
 
 test("registered dispatch refuses a retry without findings and attaches the previous same-row receipt", async () => {
 	const row = { content: "PushFitCamera", status: "pending", schedule: {
-		dependencies: [], executor: { workerId: "PushFitCamera-10", finishedAt: 20, outcome: "failed" },
+		dependencies: [], estimate: { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium", basis: "Measured fixture", updatedAt: Date.now() },
+		executor: { workerId: "PushFitCamera-10", finishedAt: 20, outcome: "failed" },
 	} };
 	const h = await harness([row]);
 	const input = { agent: "task", row: row.content, task: "Fix and oracle are missing" };
