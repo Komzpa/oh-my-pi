@@ -4193,6 +4193,8 @@ export async function finalizeSubagentLifecycle(args: {
 	reviveSession: AgentReviver | null;
 	cleanupDeadlineAt?: number;
 	onCleanupDeferred?: (completion: Promise<void>) => void;
+	/** Retain a terminal one-shot registry fence until its result is published. */
+	deferPublicationCleanup?: (cleanup: (published: boolean) => Promise<void>) => void;
 	onRelease?: () => Promise<void>;
 }): Promise<void> {
 	// Bound the turn drain, then await the broker fence outside the soft disposal
@@ -4289,10 +4291,20 @@ export async function finalizeSubagentLifecycle(args: {
 		}
 
 		if (!args.keepAlive) {
-			// One-shot helper: dispose and unregister. No IRC, no revival.
+			const retainPublication = args.deferPublicationCleanup && ref && ownsRef;
+			if (retainPublication) {
+				// SDK disposal preserves parked, detached refs. Keep only the
+				// publication fence, never a disposed session available for reuse.
+				registry.setStatus(args.id, "parked", ref);
+				registry.detachSession(args.id, ref);
+			}
 			await disposeSession();
-			if (ref && ownsRef) registry.unregister(args.id, ref);
 			await releaseOwnedResources();
+			if (retainPublication) {
+				args.deferPublicationCleanup!(async published => {
+					if (published) registry.unregister(args.id, ref);
+				});
+			} else if (ref && ownsRef) registry.unregister(args.id, ref);
 			return;
 		}
 
@@ -5420,6 +5432,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 	};
 
 	let startingRef: AgentRef | undefined;
+	let publicationCleanup: ((published: boolean) => Promise<void>) | undefined;
 	const runSubagent = async (): Promise<{
 		exitCode: number;
 		error?: string;
@@ -6340,6 +6353,11 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 						reviveSession,
 						cleanupDeadlineAt,
 						onRelease: options.onRelease,
+						deferPublicationCleanup: monitor.yieldCalled()
+							? cleanup => {
+									publicationCleanup = cleanup;
+								}
+							: undefined,
 						onCleanupDeferred: completion => {
 							deferredSessionShutdown = completion;
 							deferCleanup(completion);
@@ -6510,9 +6528,15 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 		});
 		acceptPublishedResult(monitor, result, options.artifactsDir, structured);
 		AgentRegistry.global().setHistory(id, { outputPath: result.outputPath });
+		if (publicationCleanup) {
+			const cleanup = publicationCleanup;
+			publicationCleanup = undefined;
+			await cleanup(!options.artifactsDir || result.outputPath !== undefined);
+		}
 		return result;
 	} finally {
 		failUnpublishedResult(monitor);
+		if (publicationCleanup) await publicationCleanup(false);
 		if (startingRef && AgentRegistry.global().get(id)?.starting) {
 			AgentRegistry.global().setStatus(id, "aborted", startingRef);
 		}

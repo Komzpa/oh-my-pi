@@ -322,6 +322,7 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 	async reclaimDeadCorpse(id: string, expected: AgentRef): Promise<boolean> {
 		const ref = this.#registry.get(id);
 		if (ref !== expected || ref.status !== "parked" || ref.session) return false;
+		if (ref.lifecycle?.resultPublication === "pending" || ref.lifecycle?.resultPublication === "failed") return false;
 		if (this.#adopted.has(id) || this.#parks.has(id) || this.#revivals.has(id)) return false;
 
 		const persistedFactory = ref.sessionFile ? this.#persistedReviverFactory : undefined;
@@ -490,6 +491,9 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 			throw new Error(
 				`Unknown agent "${id}" — it was never registered or has been released. If a transcript exists, read history://${id}.`,
 			);
+		}
+		if (!ref.session && ref.lifecycle?.resultPublication === "pending") {
+			throw new Error(`Agent "${id}" is still publishing its terminal result; retry after publication settles.`);
 		}
 		if (ref.status === "aborted") ref = await this.#reopen(id, ref);
 		// A revive attaches its session before it finishes initializing it: join the revive rather
