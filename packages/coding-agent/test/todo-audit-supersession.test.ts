@@ -24,7 +24,9 @@ test("legacy replay pins the parent delivery rather than losing its lineage", ()
 			],
 		},
 	];
-	const result = patchTodoSchedule(phases, "Deliver", { auditFollowUps: ["Check doc/product.md"] }, 1, { legacyFollowUps: true })!;
+	const result = patchTodoSchedule(phases, "Deliver", { auditFollowUps: ["Check doc/product.md"] }, 1, {
+		legacyFollowUps: true,
+	})!;
 	const row = result.flatMap(phase => phase.tasks).find(task => task.content.startsWith("Audit follow-up:"))!;
 	expect(row.schedule?.auditOrigin).toMatchObject({ parent: "Deliver", commit: "a1".repeat(20), repoPath: "/repo" });
 });
