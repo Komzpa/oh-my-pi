@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { patchTodoSchedule } from "../src/session/todo-schedule-patch";
 
-test("generated follow-up pins the parent delivery rather than losing its lineage", () => {
+test("legacy replay pins the parent delivery rather than losing its lineage", () => {
 	const phases: TodoPhase[] = [
 		{
 			name: "Ship",
@@ -24,7 +24,7 @@ test("generated follow-up pins the parent delivery rather than losing its lineag
 			],
 		},
 	];
-	const result = patchTodoSchedule(phases, "Deliver", { auditFollowUps: ["Check doc/product.md"] })!;
+	const result = patchTodoSchedule(phases, "Deliver", { auditFollowUps: ["Check doc/product.md"] }, 1, { legacyFollowUps: true })!;
 	const row = result.flatMap(phase => phase.tasks).find(task => task.content.startsWith("Audit follow-up:"))!;
 	expect(row.schedule?.auditOrigin).toMatchObject({ parent: "Deliver", commit: "a1".repeat(20), repoPath: "/repo" });
 });
@@ -106,7 +106,7 @@ test("model superseded drop accepts delivered rows and archives the finding and 
 	expect(archived.notes).toEqual(["Original finding", reason]);
 });
 
-test("a new delivery reopens its superseded follow-up while the old delivery stays closed", () => {
+test("new delivery advice stays on the origin while legacy follow-up history stays closed", () => {
 	const oldCommit = "a1".repeat(20);
 	let phases: TodoPhase[] = [
 		{
@@ -122,7 +122,7 @@ test("a new delivery reopens its superseded follow-up while the old delivery sta
 			],
 		},
 	];
-	phases = patchTodoSchedule(phases, "Deliver", { auditFollowUps: ["old finding"] })!;
+	phases = patchTodoSchedule(phases, "Deliver", { auditFollowUps: ["old finding"] }, 1, { legacyFollowUps: true })!;
 	const follow = phases.flatMap(phase => phase.tasks).find(row => row.content === "Audit follow-up: Deliver")!;
 	follow.status = "abandoned";
 	follow.schedule!.auditOrigin = { ...follow.schedule!.auditOrigin!, supersededAt: 2, resolution: "accept" };
@@ -133,11 +133,12 @@ test("a new delivery reopens its superseded follow-up while the old delivery sta
 	})!;
 	phases = patchTodoSchedule(phases, "Deliver", { auditFollowUps: ["new unresolved finding"] })!;
 	const next = phases.flatMap(phase => phase.tasks).find(row => row.content === follow.content)!;
-	expect(next.status).toBe("pending");
-	expect(next.notes).toContain("new unresolved finding");
+	expect(next.status).toBe("abandoned");
+	expect(next.notes).not.toContain("new unresolved finding");
+	expect(phases[0]!.tasks[0]!.notes).toContain("new unresolved finding");
 	expect(next.notes).toContain("old finding");
-	expect(next.schedule?.auditOrigin?.commit).toBe("b2".repeat(20));
-	expect(next.schedule?.auditOrigin?.supersededAt).toBeUndefined();
+	expect(next.schedule?.auditOrigin?.commit).toBe(oldCommit);
+	expect(next.schedule?.auditOrigin?.supersededAt).toBe(2);
 	const recursive = patchTodoSchedule(phases, next.content, { auditFollowUps: ["check again"] })!;
 	expect(recursive.flatMap(phase => phase.tasks)).toHaveLength(2);
 });

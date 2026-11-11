@@ -463,6 +463,7 @@ function isTodoPersistedEdit(value: unknown): value is TodoPersistedEdit {
 	if (value.kind === "schedule_patch")
 		return (
 			typeof value.task === "string" &&
+			(value.adviceOnly === undefined || value.adviceOnly === true) &&
 			isRecord(value.patch) &&
 			(value.cleared === undefined ||
 				(Array.isArray(value.cleared) && value.cleared.every(key => typeof key === "string")))
@@ -533,6 +534,7 @@ function replayTodoEdit(
 			edit.task,
 			{ ...edit.patch, ...Object.fromEntries((edit.cleared ?? []).map(key => [key, undefined])) },
 			edit.at,
+			{ legacyFollowUps: !edit.adviceOnly },
 		);
 		return updated ? { phases: updated, mutable: true } : undefined;
 	}

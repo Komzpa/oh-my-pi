@@ -1,7 +1,7 @@
 import type { TodoSchedulePatchPersistedEdit, TodoPhase, TodoItem } from "@oh-my-pi/pi-tui/tools/todo";
 import {
-	todoAuditOrigin,
 	retainTodoDependencyReviews,
+	todoAuditOrigin,
 	todoSupersededReason,
 	todoNeedsOwnerDecision,
 	todoAuditResourcesKey,
@@ -56,6 +56,7 @@ export function patchTodoSchedule(
 	task: string,
 	patch: Partial<TodoSchedule>,
 	at = Date.now(),
+	options: { legacyFollowUps?: boolean } = {},
 ): TodoPhase[] | undefined {
 	const matches = phases.flatMap(phase => phase.tasks).filter(row => row.content === task);
 	if (matches.length !== 1) return undefined;
@@ -110,6 +111,24 @@ export function patchTodoSchedule(
 		delete row.schedule.reviewPagePending;
 		row.schedule.handoffPending = false;
 	}
+	if (!options.legacyFollowUps) {
+		const changedFollowUps =
+			patch.auditFollowUps &&
+			JSON.stringify(patch.auditFollowUps) !== JSON.stringify(previous.schedule?.auditFollowUps);
+		if (changedFollowUps) {
+			// Advice is evidence on this delivery, not authority for more mandatory work.
+			// Keep legacy follow-up rows and their histories intact; only an explicit
+			// blocking verdict above can reopen the row being patched.
+			row.notes = [...new Set([...(row.notes ?? []), ...row.schedule.auditFollowUps!])];
+		}
+		const result = phases.map(phase =>
+			phase.tasks.includes(previous)
+				? { ...phase, tasks: phase.tasks.map(candidate => (candidate === previous ? row : candidate)) }
+				: phase,
+		);
+		return result;
+	}
+	// Old deltas implicitly created rows; replay them without losing later row history.
 	const followUp = `Audit follow-up: ${task}`;
 	const changedFollowUps =
 		patch.auditFollowUps &&
@@ -193,6 +212,7 @@ export function buildTodoSchedulePatchEdit(
 	return {
 		v: 1,
 		kind: "schedule_patch",
+		adviceOnly: true,
 		at,
 		task,
 		patch: structuredClone(patch),

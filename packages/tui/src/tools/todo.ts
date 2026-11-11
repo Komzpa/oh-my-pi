@@ -131,6 +131,8 @@ export interface TodoExecutorPersistedEdit {
 export interface TodoSchedulePatchPersistedEdit {
 	v: 1;
 	kind: "schedule_patch";
+	/** New advice stays on the original row; absent on legacy row-generating deltas. */
+	adviceOnly?: true;
 	/** Undefined assignments need an explicit wire representation across JSON persistence. */
 	cleared?: Array<keyof TodoSchedule>;
 	at: number;
