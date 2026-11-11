@@ -8,6 +8,8 @@
 {{asyncGuidance}}
 {{/if}}
 
+{{#if projectAgentsMd}}Workers receive their own repository's AGENTS.md chain; do not repeat that repository's rules in assignments.{{else}}Workers have NO AGENTS.md; include relevant repository rules in each assignment.{{/if}} Per-agent policy is listed below and overrides this default.
+
 # Delegation
 Use most specific agent.{{#if scoutAvailable}} Read-only research MUST use `scout` only when files unknown.{{/if}} Prefer one agent to investigate + edit. Omit `agent` only for default (`{{defaultAgent}}`); NEVER specify it.
 {{#if batchEnabled}}Specialist `agent` selectors belong inside each `tasks[]` item; NEVER put `agent` at the top level.
@@ -35,5 +37,5 @@ Shared edits need one integration owner; give each task its files. Set interface
 # Available Agents
 {{#if spawningDisabled}}Agent spawning is currently disabled.
 {{else}}{{#if hasModelMentions}}`m<N>` = user-tagged model (`<model agent="m<N>" name="…"/>`), not specialist; spawn only when user names it.
-{{/if}}{{#list agents join=""}}- `{{name}}`{{#if readOnly}} (READ-ONLY; investigation only, no edits){{/if}}{{#if blocking}} (BLOCKING; inline result){{/if}}{{#if structured}} (STRUCTURED; schema result){{/if}}: {{description}}
+{{/if}}{{#list agents join=""}}- `{{name}}`{{#if readOnly}} (READ-ONLY; investigation only, no edits){{/if}}{{#if blocking}} (BLOCKING; inline result){{/if}}{{#if structured}} (STRUCTURED; schema result){{/if}}: {{description}} ({{#if projectAgentsMd}}project AGENTS.md; do not repeat its rules{{else}}NO AGENTS.md; supply relevant rules{{/if}})
 {{/list}}{{/if}}

@@ -96,6 +96,7 @@ import "./discovery";
 import { LiveImageUrlService } from "./blob-broker/service";
 import { wrapStreamFnWithBlobUrlFallback } from "./blob-broker/stream-fallback";
 import { initializeWithSettings } from "./discovery";
+import { loadProjectAgentsMd } from "./discovery/project-agents-md";
 import { setInvocationConfiguredExtensions, withOmpExtensionRootScope } from "./discovery/omp-extension-roots";
 import { disposeVmContextsByOwner } from "./eval/js/context-manager";
 import { getEnabledEvalPreludes, type EvalPreludeDefinition } from "./eval/preludes";
@@ -823,8 +824,10 @@ export interface CreateAgentSessionOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Discover no context files: not from cwd (on start or a cwd change), not for additional workspace roots, and no nested AGENTS.md list. Explicit `contextFiles` still load. Inherited by subagents. */
 	noContextFiles?: boolean;
-	/** Drop every context file named `AGENTS.md`: from `contextFiles`, cwd discovery, and additional workspace roots. Set for task subagents. */
+	/** Drop every context file named `AGENTS.md`: from `contextFiles`, cwd discovery, and additional workspace roots. Set for task subagents whose AGENTS.md policy is strip. */
 	excludeAgentsMd?: boolean;
+	/** Use only the worker cwd repository AGENTS.md chain; ignore pinned and additional-root context. */
+	projectAgentsMd?: boolean;
 	/** Pre-built workspace tree (skips re-scanning; passed by parents to subagents). */
 	workspaceTree?: WorkspaceTree;
 	/** Prompt templates. Default: discovered from cwd/.omp/prompts/ + agentDir/prompts/ */
@@ -2075,14 +2078,20 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	const excludeAgentsMd = options.excludeAgentsMd === true;
 	const contextFileFilter = <T extends { path: string }>(files: T[]): T[] =>
 		excludeAgentsMd ? withoutAgentsMd(files) : files;
-	const pinnedContextFiles = options.contextFiles
-		? contextFileFilter(options.contextFiles)
-		: options.noContextFiles
-			? []
-			: undefined;
-	const contextFilesPromise = pinnedContextFiles
-		? Promise.resolve(pinnedContextFiles)
-		: logger.time("discoverContextFiles", discoverContextFiles, cwd, agentDir).then(contextFileFilter);
+	const pinnedContextFiles =
+		options.projectAgentsMd && !options.noContextFiles
+			? undefined
+			: options.contextFiles
+				? contextFileFilter(options.contextFiles)
+				: options.noContextFiles
+					? []
+					: undefined;
+	const contextFilesPromise =
+		options.projectAgentsMd && !options.noContextFiles
+			? loadProjectAgentsMd(cwd)
+			: pinnedContextFiles
+				? Promise.resolve(pinnedContextFiles)
+				: logger.time("discoverContextFiles", discoverContextFiles, cwd, agentDir).then(contextFileFilter);
 	contextFilesPromise.catch(() => {});
 	const resolveRepoContext = async (repoCwd: string) => {
 		try {
@@ -4243,11 +4252,13 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				// the first refresh after session_start hooks have edited those files.
 				const [repoContext, refreshedContextFiles, ruleItems] = await Promise.all([
 					logger.time("resolveActiveRepoContext", resolveRepoContext, promptCwd),
-					pinnedContextFiles === undefined
-						? logger.time("discoverContextFiles", discoverContextFiles, promptCwd, agentDir, [
-								...cfgDisabledExtensions.get(settings),
-							])
-						: undefined,
+					options.projectAgentsMd && !options.noContextFiles
+						? loadProjectAgentsMd(promptCwd)
+						: pinnedContextFiles === undefined
+							? logger.time("discoverContextFiles", discoverContextFiles, promptCwd, agentDir, [
+									...cfgDisabledExtensions.get(settings),
+								])
+							: undefined,
 					options.rules ??
 						logger
 							.time("rediscoverRules", () =>
@@ -4395,6 +4406,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				additionalWorkspaceRoots: sessionManager.getAdditionalDirectories(),
 				noContextFiles: options.noContextFiles,
 				excludeAgentsMd,
+				projectAgentsMd: options.projectAgentsMd,
 				xdevTools: xdev ? xdevEntries(xdev) : [],
 				xdevDocs: xdevPromptDocs ? renderXdevPromptDocs(xdevPromptDocs, routedCatalogNames) : "",
 				resolvedCustomPrompt: options.customSystemPrompt,

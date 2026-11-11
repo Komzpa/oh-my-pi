@@ -295,6 +295,24 @@ export const cfgTaskFile = register({
 	},
 });
 
+export const cfgTaskAgentsMd = register({
+	id: "task.agentsMd",
+	type: "enum",
+	values: ["strip", "project"] as const,
+	default: "strip",
+	ui: {
+		tab: "tasks",
+		group: "Subagents",
+		label: "Subagent AGENTS.md",
+		description:
+			"Strip AGENTS.md or load only the worker repository instructions. Agent frontmatter agentsMd overrides this setting.",
+		options: [
+			{ value: "strip", label: "Strip", description: "Give relevant repository rules in the assignment" },
+			{ value: "project", label: "Project", description: "Include repository instructions in child context" },
+		],
+	},
+});
+
 export const cfgTaskStructured = register({
 	id: "task.structured",
 	type: "boolean",

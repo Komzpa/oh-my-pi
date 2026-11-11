@@ -102,6 +102,7 @@ import {
 	cfgTaskMaxRuntimeMs,
 	cfgTaskSpeculativeLaunch,
 	cfgTaskStructured,
+	cfgTaskAgentsMd,
 	perCallModelEnabled,
 } from "./settings";
 
@@ -178,6 +179,7 @@ interface TaskDescriptionOptions {
 	planMode: boolean;
 	asyncGuidance: string;
 	parentSpawns: string;
+	agentsMd: "strip" | "project";
 }
 
 /** Plan mode hides seance; a `spawns` list led by it defaults to the next permitted agent. */
@@ -207,6 +209,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 		description: agent.description,
 		readOnly: isReadOnlyAgent(agent),
 		blocking: agent.blocking === true,
+		projectAgentsMd: (agent.agentsMd ?? options.agentsMd) === "project",
 		// Marked only while `task.structured` is off; with it on, every agent's result is structured.
 		structured: !options.structured && agent.structured === true,
 	}));
@@ -232,6 +235,7 @@ function renderDescription(options: TaskDescriptionOptions): string {
 		hasModelMentions: options.sessionAgents.length > 0,
 		seanceGuidance: seanceAgent && isBundledSeance(seanceAgent) ? seanceTaskGuidance : "",
 		ircEnabled: options.ircEnabled,
+		projectAgentsMd: options.agentsMd === "project",
 		asyncGuidance: options.asyncGuidance,
 	});
 }
@@ -986,6 +990,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			planMode,
 			asyncGuidance: this.delegationGuidance,
 			parentSpawns: this.session.getSessionSpawns() ?? "*",
+			agentsMd: cfgTaskAgentsMd.get(this.session.settings),
 		});
 	}
 	private constructor(
