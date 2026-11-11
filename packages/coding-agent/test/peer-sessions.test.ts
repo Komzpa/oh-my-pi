@@ -67,6 +67,7 @@ async function tempDir(): Promise<string> {
 
 function fakeSession(outcome: "injected" | "woken", seen: IrcMessage[]): AgentSession {
 	return {
+		executePeerSlashCommand: AgentSession.prototype.executePeerSlashCommand,
 		customCommands: [],
 		slashCommands: [],
 		promptTemplates: [],

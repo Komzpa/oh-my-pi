@@ -32,8 +32,6 @@ import { getBaseConfigRoot, isEnoent, isFsError } from "@oh-my-pi/pi-utils";
 import type { IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/irc";
 import type { IrcBusApi } from "../irc/bus";
 import { type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
-import { executePeerSlashCommand } from "./peer-commands";
-import { isLocalAgentSession } from "../session/agent-session-handle";
 
 /** Discovery metadata / IPC protocol version. Mixed omp versions fail safely. */
 export const COLLAB_REGISTRY_VERSION = 1;
@@ -1118,9 +1116,7 @@ export async function publishPeerSession(options: PeerSessionPublishOptions): Pr
 					const session = options.registry.get(to)?.session;
 					if (session && request.text.startsWith("/")) {
 						try {
-							const command = await (isLocalAgentSession(session)
-								? executePeerSlashCommand(session, request.text)
-								: session.executePeerSlashCommand(request.text));
+							const command = await session.executePeerSlashCommand(request.text);
 							if (command) {
 								accepted = true;
 								return {

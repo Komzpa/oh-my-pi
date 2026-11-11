@@ -1,8 +1,7 @@
 import type { AgentSession } from "../session/agent-session";
-import { executeAcpBuiltinSlashCommand } from "../slash-commands/acp-builtins";
 import { lookupBuiltinSlashCommand } from "../slash-commands/builtin-registry";
 import { parseSlashCommand, parseSubcommand } from "../slash-commands/helpers/parse";
-import { resolveRpcSkillInvocation, runRpcSkillCommand } from "../modes/rpc/rpc-mode";
+import { resolveRpcSkillInvocation, runRpcSkillCommand } from "../modes/rpc/rpc-skill-command";
 
 export interface PeerCommandReceipt {
 	outcome: "executed" | "queued";
@@ -45,7 +44,7 @@ export async function executePeerSlashCommand(session: AgentSession, text: strin
 		}
 		if (!builtin.handle) throw new Error(`/${builtin.name} requires interactive user input`);
 		if (parsed.args && !builtin.allowArgs) throw new Error(`/${builtin.name} does not accept arguments`);
-		const result = await executeAcpBuiltinSlashCommand(text, {
+		const result = (await builtin.handle(parsed, {
 			session,
 			sessionManager: session.sessionManager,
 			settings: session.settings,
@@ -58,8 +57,7 @@ export async function executePeerSlashCommand(session: AgentSession, text: strin
 			reloadPlugins: async () => {
 				throw new Error("Plugin reload requires the target session's host command context");
 			},
-		});
-		if (result === false) throw new Error(`/${builtin.name} could not be dispatched`);
+		})) ?? { consumed: true };
 		if (!("prompt" in result))
 			return { outcome: "executed", ...(output.length ? { reason: output.join("\n") } : {}) };
 		prompt = result.prompt;
