@@ -6304,6 +6304,12 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				if (err instanceof ProviderUnavailableError) failureKind = "infrastructure";
 			}
 		} finally {
+			// A reserved generation that never acquired a session cannot receive
+			// messages. Retire it before any asynchronous cleanup or publication:
+			// those may stall independently of the already failed startup.
+			if (startingRef?.starting && !startingRef.session) {
+				AgentRegistry.global().setStatus(id, "aborted", startingRef);
+			}
 			const cleanupDeadlineAt = Date.now() + cleanupGraceMs;
 			const cleanupChangeStatus =
 				worktree === undefined
