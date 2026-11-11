@@ -3365,7 +3365,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!cfgGoalContinuationModes.get(this.session.settings).includes("interactive")) return;
 		if (this.planModeEnabled || this.planModePaused) return;
 		if (!this.goalModeEnabled || this.goalModePaused) return;
-		if (this.#goalSuppressNextContinuation) return;
+		if (this.session.goalContinuationInterrupted || this.#goalSuppressNextContinuation) return;
 		if (this.#goalOpenWorkAllBlocked()) return;
 		if (this.#pendingSubmittedInput) return;
 		if (this.editor.getText().trim().length > 0) return;
@@ -3377,7 +3377,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#goalContinuationTimer = setTimeout(() => {
 			this.#goalContinuationTimer = undefined;
 			try {
-				if (!this.onInputCallback) return;
+				if (!this.onInputCallback || this.session.goalContinuationInterrupted) return;
 				if (!this.goalModeEnabled || this.goalModePaused) return;
 				// The 800ms timer can outlive the idle window that scheduled it: a
 				// `/goal set` taken via the streaming branch (or any extension/hook
@@ -5747,7 +5747,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#notifyModeChanged();
 	}
 
-	#resetGoalContinuationSuppression(): void {
+	#resetGoalContinuationSuppression(rearm = true): void {
+		if (rearm) this.session.resumeGoalContinuation();
 		this.#goalSuppressNextContinuation = false;
 		this.#previousGoalContinuationActivity = undefined;
 	}
@@ -5798,7 +5799,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				activity.length === 0 || activity === this.#previousGoalContinuationActivity;
 			this.#previousGoalContinuationActivity = activity;
 		} else {
-			this.#resetGoalContinuationSuppression();
+			this.#resetGoalContinuationSuppression(false);
 		}
 		if (this.session.getGoalModeState()?.mode === "exiting") {
 			await this.#exitGoalMode({ reason: "completed", silent: true });
@@ -7618,6 +7619,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async #resumeGoalAction(): Promise<void> {
+		if (this.session.getGoalModeState()?.enabled) {
+			this.#resetGoalContinuationSuppression();
+			this.#scheduleGoalContinuation();
+			return;
+		}
 		if (!this.#getPausedGoalState()) {
 			this.showWarning("No paused goal to resume.");
 			return;
