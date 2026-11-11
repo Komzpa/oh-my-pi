@@ -12,9 +12,16 @@
 
 ### Fixed
 
+- Fixed every keypress in a long session rescanning the whole retained transcript: `TranscriptContainer` now tracks writes to the child array it owns and skips retained-history reconciliation on stable renders, and still reconciles when the children array is replaced from outside ([#16542](https://github.com/can1357/oh-my-pi/pull/16542) by [@Komzpa](https://github.com/Komzpa))
+- Fixed typing stalls when frequent background updates repeatedly postponed the pending keypress repaint.
+- Keep the working-row animation moving without keyboard input when synchronized output is unavailable ([#16542](https://github.com/can1357/oh-my-pi/pull/16542) by [@Komzpa](https://github.com/Komzpa)).
 - Ask form textareas edited from Tern now restart the inactivity timeout instead of submitting mid-edit
 - Fixed a picture in an `ask` form staying painted on screen after the form closed ([#18693](https://github.com/can1357/oh-my-pi/pull/18693) by [@jaredlyon](https://github.com/jaredlyon))
 - Fixed terminal Device Attributes replies (such as `^[[?64;1;2;4;6;17;18;21;22c`) leaking into the shell prompt on exit ([#18662](https://github.com/can1357/oh-my-pi/pull/18662) by [@asuffield](https://github.com/asuffield))
+
+### Added
+
+- Render gaps longer than two seconds now log a bounded pipeline timeline for diagnosis.
 
 ## [18.18.7] - 2026-11-10
 
@@ -90,10 +97,6 @@
 
 - Simplified Bash previews for redirection to /dev/null by showing a single icon in the Nerd Font symbol preset.
 
-### Added
-
-- Render gaps longer than two seconds now log a bounded pipeline timeline for diagnosis.
-
 ### Fixed
 
 - Fixed streaming and scrolling display issues in terminals without synchronized output, including duplicated rows and blank screens or status lines.
@@ -132,12 +135,9 @@
 ### Fixed
 
 - Fixed terminal Device Attributes replies (such as `^[[?64;1;2;4;6;17;18;21;22c`) leaking into the shell prompt on exit ([#18662](https://github.com/can1357/oh-my-pi/pull/18662) by [@asuffield](https://github.com/asuffield))
-- Keep the working-row animation moving without keyboard input when synchronized output is unavailable ([#16542](https://github.com/can1357/oh-my-pi/pull/16542) by [@Komzpa](https://github.com/Komzpa)).
 - Ctrl+J from a win32-input-mode record with `VK_J` and `Uc=LF` now decodes as `ctrl+j`, so Windows Terminal / mini-term insert a newline instead of submitting ([#18253](https://github.com/can1357/oh-my-pi/pull/18253) by [@Clannad47](https://github.com/Clannad47))
 - The BTW history page (`f` on a side answer) scrolls its reader and history list with the mouse wheel, matching the other scrolling sheets ([#18303](https://github.com/can1357/oh-my-pi/pull/18303) by [@ImAlexBlock](https://github.com/ImAlexBlock))
 - The BTW history list shows the date for questions asked before today (and the year for ones from an earlier year), instead of a bare time that read as today's; a follow-up asked on a later day than its topic shows its date too ([#18210](https://github.com/can1357/oh-my-pi/pull/18210) by [@a-glapinski](https://github.com/a-glapinski))
-- Fixed every keypress in a long session rescanning the whole retained transcript: `TranscriptContainer` now tracks writes to the child array it owns and skips retained-history reconciliation on stable renders, and still reconciles when the children array is replaced from outside ([#16542](https://github.com/can1357/oh-my-pi/pull/16542) by [@Komzpa](https://github.com/Komzpa))
-- Fixed typing stalls when frequent background updates repeatedly postponed the pending keypress repaint.
 
 ## [18.17.0] - 2026-11-06
 
