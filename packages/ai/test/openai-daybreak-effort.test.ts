@@ -40,12 +40,12 @@ describe("OpenAI GPT-5.6 Responses reasoning payload", () => {
 	}
 });
 
-describe("OpenAI GPT-6.1 Terra Responses reasoning payload", () => {
-	test("disabling Terra reasoning sends none without changing neighboring GPT-6.1 Sol", () => {
-		for (const [id, disabledEffort] of [
-			["gpt-6.1-terra", "none"],
-			["gpt-6.1-sol", "low"],
-		] as const) {
+describe("OpenAI GPT-6.1 Responses reasoning payload", () => {
+	for (const [id, disabledEffort] of [
+		["gpt-6.1-terra", "none"],
+		["gpt-6.1-sol", "low"],
+	] as const) {
+		test(`${id} sends the expected disabled reasoning effort`, () => {
 			// Exercise rule resolution independently of the generated bundle, then
 			// prove the bundled consumer sends the same provider-visible payload.
 			const discovered = buildModel({
@@ -69,6 +69,6 @@ describe("OpenAI GPT-6.1 Terra Responses reasoning payload", () => {
 					expect(enabled.params.reasoning?.effort).toBe(effort);
 				}
 			}
-		}
-	});
+		});
+	}
 });
