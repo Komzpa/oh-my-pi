@@ -83,6 +83,12 @@ describe("omp read skill resources", () => {
 		expect(local.output).toContain("# Standalone Skill");
 		expect(await Bun.file(marker).exists()).toBe(false);
 
+		const missingLocal = await runReadProbe("skill://standalone-skill;skill://standalone-skill/missing.md");
+		expect(missingLocal.exitCode).toBe(0);
+		expect(missingLocal.output).toContain("# Standalone Skill");
+		expect(missingLocal.output).toContain("Could not read skill://standalone-skill/missing.md: File not found:");
+		expect(await Bun.file(marker).exists()).toBe(false);
+
 		const unknown = await runReadProbe("skill://nope");
 		expect(unknown.exitCode).toBe(1);
 		expect(unknown.error).toContain("Unknown skill: nope");

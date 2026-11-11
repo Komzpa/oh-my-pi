@@ -51,6 +51,28 @@ function createSession(tools: AgentTool[]): ToolSession {
 }
 
 describe("callSessionTool", () => {
+	it.each([
+		{ agent: "qa-auditor", requirementIds: ["R1"] },
+		{ agent: "qa-auditor", name: "bound-owner" },
+		{ tasks: [{ agent: "qa-auditor", requirementIds: ["R1"] }] },
+		{ agent: "reviewer", requirementIds: ["R1"] },
+	])("refuses a bridged audit before execution and directs it through ledger admission: %j", async args => {
+		const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "unauthenticated pass" }] });
+		const session = createSession([createTool("task", execute)]);
+		await expect(callSessionTool("task", args, { session })).rejects.toThrow("call the direct `task` tool");
+		expect(execute).not.toHaveBeenCalled();
+	});
+
+	it("keeps an ordinary bridged task callable", async () => {
+		const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "worker result" }] });
+		const task = createTool("task", execute);
+		task.parameters = type({ agent: "string", task: "string" });
+		expect(
+			await callSessionTool("task", { agent: "worker", task: "inspect" }, { session: createSession([task]) }),
+		).toBe("worker result");
+		expect(execute).toHaveBeenCalledTimes(1);
+	});
+
 	it("summarizes text results into the bridge value and status event", async () => {
 		const execute = vi.fn().mockResolvedValue({
 			content: [{ type: "text", text: "hello" }],
@@ -698,27 +720,29 @@ describe("callSessionTool", () => {
 		);
 
 		expect(result).not.toEqual(expect.objectContaining({ hasError: true }));
-		expect(phases).toEqual([
-			{ name: "Recovered", tasks: [{ content: "From malformed JSON", status: "in_progress" }] },
-		]);
+		expect(phases).toHaveLength(1);
+		expect(phases[0]?.name).toBe("Recovered");
+		expect(phases[0]?.tasks[0]).toMatchObject({ content: "From malformed JSON", status: "in_progress" });
 	});
 
 	it("persists bridged todo mutations to the branch, which a direct toolResult would carry", async () => {
 		let phases: TodoPhase[] = [{ name: "Ship", tasks: [{ content: "Persist", status: "in_progress" }] }];
-		const persisted: TodoPhase[][] = [];
+		const persisted: Array<{ phases: TodoPhase[]; edit?: unknown }> = [];
 		const session: ToolSession = {
 			...createSession([]),
 			getTodoPhases: () => phases,
 			setTodoPhases: next => {
 				phases = next;
 			},
-			commitTodoPhases: next => persisted.push(next),
+			persistTodoPhases: (next, edit) => persisted.push({ phases: next, edit }),
 			getToolByName: name => (name === "todo" ? (todoTool as unknown as AgentTool) : undefined),
 		};
 		const todoTool = new TodoTool(session);
 
 		await callSessionTool("todo", { op: "done", task: "Persist" }, { session });
-		expect(persisted).toEqual([[{ name: "Ship", tasks: [{ content: "Persist", status: "completed" }] }]]);
+		expect(persisted).toHaveLength(1);
+		expect(persisted[0]?.phases[0]?.tasks[0]).toMatchObject({ content: "Persist", status: "completed" });
+		expect(persisted[0]?.edit).toMatchObject({ v: 1, kind: "op", op: "done" });
 
 		// Reads and rejected batches leave the branch untouched.
 		await callSessionTool("todo", { op: "view" }, { session });
@@ -737,7 +761,7 @@ describe("callSessionTool", () => {
 			setTodoPhases: next => {
 				phases = next;
 			},
-			commitTodoPhases: next => persisted.push(next),
+			persistTodoPhases: next => persisted.push(next),
 			getToolForEvalBridge: lookup,
 		};
 		const todoTool = Object.assign(new TodoTool(session), { customWireName: "checklist" });
@@ -749,7 +773,14 @@ describe("callSessionTool", () => {
 		);
 
 		expect(lookup).toHaveBeenCalledTimes(1);
-		expect(persisted).toEqual([[{ name: "Ship", tasks: [{ content: "Persist alias", status: "completed" }] }]]);
+		expect(persisted).toEqual([
+			[
+				{
+					name: "Ship",
+					tasks: [{ content: "Persist alias", status: "completed", schedule: { finishedAt: expect.any(Number) } }],
+				},
+			],
+		]);
 		expect(statuses).toEqual([expect.objectContaining({ op: "todo", committed: true })]);
 		await callSessionTool("checklist", { op: "view" }, { session });
 		await callSessionTool("checklist", { op: "done", task: "No such task" }, { session });

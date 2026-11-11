@@ -1,0 +1,23 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/coding-agent/test/task/executor-worker-ask.test.ts:
+162 | 	await Bun.sleep(1100);
+163 | 	expect(h.abortCalls()).toBe(1);
+164 | 	expect(h.prompts).toEqual(["Fix camera"]);
+165 | 	h.answer();
+166 | 	const result = await h.result;
+167 | 	expect(result.aborted).toBe(false);
+                              ^
+error: expect(received).toBe(expected)
+
+Expected: false
+Received: true
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-workerask-20261107/oh-my-pi/packages/coding-agent/test/task/executor-worker-ask.test.ts:167:25)
+(fail) unanswered worker ask survives runtime deadline and resumes the same assignment after lead answer [1111.45ms]
+
+ 0 pass
+ 6 filtered out
+ 1 fail
+ 3 expect() calls
+Ran 1 test across 1 file. [1.63s]

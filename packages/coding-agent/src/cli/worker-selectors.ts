@@ -5,6 +5,8 @@
  * recognize a worker before importing protocol/runtime graphs whose top-level
  * evaluation is unnecessary in an ordinary interactive process.
  */
+/** Isolation copies that must outlive replacement of the interactive runtime. */
+export const RESTART_SNAPSHOT_WORKER_ARG = "__omp_worker_restart_snapshot";
 /** Background self-update selector shared by the CLI dispatcher and `cli/auto-update.ts`. */
 export const AUTO_UPDATE_WORKER_ARG = "__omp_worker_auto_update";
 /** Blob-broker selector shared by the CLI dispatcher and worker launcher. */
@@ -29,3 +31,5 @@ export const STATS_ACTIVITY_WORKER_ARG = "__omp_worker_stats_activity";
 export const TEXT_PREDICT_WORKER_ARG = "__omp_worker_text_predict";
 /** Terminal-output selector shared by the CLI dispatcher and worker launcher. */
 export const TERMINAL_OUTPUT_WORKER_ARG = "__omp_worker_terminal_output";
+
+export const PERSISTED_HISTORY_WORKER_ARG = "__omp_worker_persisted_history";

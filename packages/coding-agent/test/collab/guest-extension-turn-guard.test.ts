@@ -8,12 +8,15 @@
  * `ExtensionRunner`, extension actions bound by `ExtensionUiController`, and
  * the guest's `GuestLifecycleEmitter` feeding a mirrored `agent_end`.
  */
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import { Agent } from "@oh-my-pi/pi-agent-core";
+import { Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import type { CollabGuestLink } from "@oh-my-pi/pi-coding-agent/collab/guest";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { applyModelPreset, getSessionModelPreset } from "@oh-my-pi/pi-coding-agent/config/model-presets";
+import { cfgModelPresets } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionAPI, ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { GuestLifecycleEmitter } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/lifecycle-mirror";
@@ -39,6 +42,7 @@ describe("collab guest extension turn guard", () => {
 	});
 
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		await session?.dispose();
 		session = undefined;
 		authStorage.close();
@@ -52,10 +56,12 @@ describe("collab guest extension turn guard", () => {
 
 		// One-shot reaction per mirrored settle: the extension's own local turn
 		// (after leaving) emits an agent_end too and must not re-trigger.
+		let api: ExtensionAPI;
 		let onAgentEnd: ((pi: ExtensionAPI) => void) | undefined;
 		let handled = Promise.withResolvers<void>();
 		const extension = await loadExtensionFromFactory(
 			pi => {
+				api = pi;
 				pi.on("agent_end", () => {
 					const react = onAgentEnd;
 					onAgentEnd = undefined;
@@ -78,6 +84,11 @@ describe("collab guest extension turn guard", () => {
 			convertToLlm,
 			streamFn: mock.stream,
 		});
+		authStorage.keys.setRuntime("openai", "test-key");
+		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([mock.model]);
+		vi.spyOn(modelRegistry, "find").mockImplementation((provider, id) =>
+			provider === mock.model.provider && id === mock.model.id ? mock.model : undefined,
+		);
 		const settings = Settings.isolated({ "compaction.enabled": false, "todo.enabled": false });
 		settings.setModelRole("default", `${mock.model.provider}/${mock.model.id}`);
 		const agentSession = new AgentSession({
@@ -132,6 +143,22 @@ describe("collab guest extension turn guard", () => {
 		expect(statuses).toHaveLength(3);
 		for (const status of statuses) expect(status).toContain("host-only during a collab session");
 
+		cfgModelPresets.setEntry(settings, "baseline", { modelRoles: { default: "openai/gpt-test" } });
+		cfgModelPresets.setEntry(settings, "next", {
+			modelRoles: { default: "openai/gpt-test" },
+			defaultThinkingLevel: Effort.Low,
+		});
+		await applyModelPreset(settings, agentSession, "baseline", { scope: "session" });
+		const before = sessionManager.getEntries().length;
+		expect((await api!.applySessionModelPreset("next")).kind).toBe("unavailable");
+		expect(api!.clearSessionModelPreset()).toBeUndefined();
+		expect(await api!.setModel(mock.model)).toBe(false);
+		const thinking = agentSession.thinkingLevel;
+		api!.setThinkingLevel(ThinkingLevel.High);
+		expect(agentSession.thinkingLevel).toBe(thinking);
+		expect(getSessionModelPreset(settings)).toBe("baseline");
+		expect(sessionManager.getEntries().length).toBe(before);
+
 		// Left the session: the same reaction now owns a real local turn.
 		Object.assign(ctx, { collabGuest: undefined });
 		handled = Promise.withResolvers<void>();
@@ -139,6 +166,10 @@ describe("collab guest extension turn guard", () => {
 			pi.sendMessage({ customType: "plan-execute", content: "EXECUTE_PLAN", display: true }, { triggerTurn: true });
 		};
 		await mirrorHostRun();
+
+		expect((await api!.applySessionModelPreset("next")).kind).toBe("switched");
+		expect(getSessionModelPreset(settings)).toBe("next");
+		expect(api!.clearSessionModelPreset()).toBe("next");
 
 		expect(mock.calls).toHaveLength(1);
 		expect(JSON.stringify(mock.calls[0].context.messages)).toContain("EXECUTE_PLAN");

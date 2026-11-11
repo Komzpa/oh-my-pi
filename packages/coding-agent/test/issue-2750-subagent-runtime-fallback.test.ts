@@ -8,6 +8,7 @@ import { unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { createMockModel, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { closeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
+import { resolveAgentModelSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
@@ -20,7 +21,8 @@ import { TurnRecovery, type TurnRecoveryHost } from "@oh-my-pi/pi-coding-agent/s
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
-import { __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import * as dirs from "@oh-my-pi/pi-utils";
+import { TempDir, __resetDirsFromEnvForTests, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 import { createSessionDefaults } from "./helpers/session-defaults";
 
@@ -66,7 +68,7 @@ function createYieldingSession(
 		model: model("primary", "bad-runtime-model"),
 		servingModel: { selector: "primary/bad-runtime-model", isFallback: false } as ServingModel | undefined,
 		extensionRunner: undefined,
-		sessionManager: { appendSessionInit: () => {} },
+		sessionManager: { appendSessionInit: () => {}, getBranch: () => [] },
 		getActiveToolNames: () => ["yield"],
 		getEnabledToolNames: () => ["yield"],
 		subscribe: (listener: (event: { type: string; [key: string]: unknown }) => void) => {
@@ -116,6 +118,7 @@ describe("subagent runtime model resolution", () => {
 		{ level: undefined, collide: true },
 	]) {
 		it(`keeps literal suffix attribution distinct from thinking (${collide ? "colliding selector" : (level ?? "unset")})`, async () => {
+			const id = `literal-model-${level ?? "unset"}-${collide ? "collision" : "distinct"}`;
 			const literal = model("custom", "coding-router:max");
 			const snapshots: AgentProgress[] = [];
 			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
@@ -125,7 +128,7 @@ describe("subagent runtime model resolution", () => {
 				const recovery = new TurnRecovery({
 					model: () => activeModel,
 					thinkingLevel: () => activeLevel,
-					sessionManager: { getSessionId: () => "literal-model" },
+					sessionManager: { getSessionId: () => id },
 					settings: Settings.isolated({}),
 					modelRegistry: {},
 					configWarnings: [],
@@ -156,7 +159,7 @@ describe("subagent runtime model resolution", () => {
 				agent: { name: "task", description: "test", systemPrompt: "test", source: "bundled" },
 				task: "work",
 				index: 0,
-				id: "literal-model",
+				id,
 				modelOverride: level ? `custom/coding-router:max:${level}` : "custom/coding-router:max",
 				settings,
 				modelRegistry: {
@@ -231,7 +234,7 @@ describe("subagent runtime model resolution", () => {
 		expect(candidates).toEqual(["fallback/working-model"]);
 	});
 
-	it("passes ordered subagent candidates as a child retry fallback chain", async () => {
+	it("keeps remaining pool members before the role fallback chain", async () => {
 		const primary = model("primary", "bad-runtime-model");
 		const fallback = model("fallback", "working-model");
 		let childFallbackChains: Record<string, string[]> | undefined;
@@ -245,6 +248,7 @@ describe("subagent runtime model resolution", () => {
 
 		const agent: AgentDefinition = { name: "task", description: "test", systemPrompt: "test", source: "bundled" };
 		const settings = Settings.isolated({
+			modelRolePools: { task: { "primary/bad-runtime-model": 1, "fallback/working-model": 1 } },
 			"retry.fallbackChains": {
 				default: ["global/inherited-model"],
 			},
@@ -257,6 +261,7 @@ describe("subagent runtime model resolution", () => {
 			index: 0,
 			id: "issue-2750",
 			modelOverride: ["primary/bad-runtime-model", "fallback/working-model"],
+			modelRole: "task",
 			settings,
 			modelRegistry: {
 				refresh: async () => {},
@@ -282,11 +287,50 @@ describe("subagent runtime model resolution", () => {
 			}
 		}
 		expect(firstFallbackRole).toBe("subagent:issue-2750");
-		expect(subagentFallbackChain).toEqual(["fallback/working-model"]);
+		expect(subagentFallbackChain).toEqual(["fallback/working-model", "global/inherited-model"]);
 		expect(inheritedFallbackChain).toEqual(["global/inherited-model"]);
 		expect(result.modelOverride).toEqual(["primary/bad-runtime-model", "fallback/working-model"]);
 		expect(result.resolvedModel).toBe("fallback/working-model");
 		expect(result.resolvedModelIsFallback).toBe(true);
+	});
+
+	it("installs the pool-drawn order's tail as the child's fallback chain", async () => {
+		const models = ["a", "b", "c"].map(id => model("pool", id));
+		let childFallbackChains: Record<string, string[]> | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			if (!options) throw new Error("Expected createAgentSession options");
+			childFallbackChains = (options.settings ? cfgRetryFallbackChains.get(options.settings) : undefined) as
+				| Record<string, string[]>
+				| undefined;
+			return { session: createYieldingSession(), extensionsResult: {}, setToolUIContext: () => {} } as never;
+		});
+		const settings = Settings.isolated({
+			modelRoles: { pool: "pool/a, pool/b, pool/c" },
+			modelRolePools: { pool: { "pool/a": 1, "pool/b": 1, "pool/c": 1 } },
+		});
+		// Find a seed whose draw differs from the configured order.
+		let drawn: string[] = [];
+		for (let seed = 0; seed < 100; seed++) {
+			drawn = resolveAgentModelSelection({ agentModel: "@pool", settings, seed: `s${seed}` }).patterns;
+			if (drawn.join() !== "pool/a,pool/b,pool/c") break;
+		}
+		expect(drawn.join()).not.toBe("pool/a,pool/b,pool/c");
+		await runSubprocess({
+			cwd: "/tmp",
+			agent: { name: "task", description: "test", systemPrompt: "test", source: "bundled" },
+			task: "work",
+			index: 0,
+			id: "pool-spawn",
+			modelOverride: drawn,
+			settings,
+			modelRegistry: {
+				refresh: async () => {},
+				getAvailable: () => models,
+				getApiKey: async () => "test-key",
+			} as never,
+			enableLsp: false,
+		});
+		expect(childFallbackChains?.["subagent:pool-spawn"]).toEqual(drawn.slice(1));
 	});
 
 	it("persists the installed subagent fallback role for cold revival (#13789)", async () => {
@@ -357,6 +401,51 @@ describe("subagent runtime model resolution", () => {
 		expect(result.resolvedModel).toBe("primary/bad-runtime-model");
 		expect(result.resolvedModelIsFallback).toBeFalsy();
 	});
+
+	for (const inherited of [false, true]) {
+		it(`omits banned subagent fallbacks from ${inherited ? "inherited chains" : "model patterns"}`, async () => {
+			using root = TempDir.createSync("@omp-subagent-blacklist-");
+			vi.spyOn(dirs, "getBaseConfigRoot").mockReturnValue(root.path());
+			await Bun.write(
+				path.join(root.path(), "model-blacklist.json"),
+				JSON.stringify({ "denied/model": "fixture ban" }),
+			);
+			const primary = model("primary", "bad-runtime-model");
+			const fallback = model("fallback", "working-model");
+			let childChain: string[] | undefined;
+			vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+				childChain = options?.settings
+					? cfgRetryFallbackChains.get(options.settings)?.["subagent:banned-fallback"]
+					: undefined;
+				return {
+					session: createYieldingSession("none"),
+					extensionsResult: {},
+					setToolUIContext: () => {},
+				} as never;
+			});
+			const result = await runSubprocess({
+				cwd: root.path(),
+				agent: { name: "task", description: "test", systemPrompt: "test", source: "bundled" },
+				task: "work",
+				index: 0,
+				id: "banned-fallback",
+				modelOverride: inherited
+					? "primary/bad-runtime-model"
+					: ["primary/bad-runtime-model", "denied/model", "fallback/working-model"],
+				settings: Settings.isolated({
+					"retry.fallbackChains": { default: ["denied/model", "fallback/working-model"] },
+				}),
+				modelRegistry: {
+					refresh: async () => {},
+					getAvailable: () => [primary, fallback],
+					getApiKey: async () => "test-key",
+				} as never,
+				enableLsp: false,
+			});
+			expect(result.resolvedModel).toBe("primary/bad-runtime-model");
+			expect(childChain).toEqual(["fallback/working-model"]);
+		});
+	}
 
 	it("inherits an explicitly configured default fallback chain for a single subagent model", async () => {
 		const primary = model("lm-studio", "local-reviewer");

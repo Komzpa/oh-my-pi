@@ -10,3 +10,5 @@ This task declares an output schema: the terminal `data` MUST be the full object
 Pass `type: "result"` to finalize; when `data` is omitted, your last assistant turn becomes the raw final result.
 {{/if}}
 {{/unless}}
+
+When the worker continuation gate is enabled, terminal mutation workers also supply `requirements: [{requirement, done, evidence}]` and optionally `blocker: {kind, evidence}`. Evidence is exactly one of `{commit: sha}`, `{path}`, or `{command}`; these are checked against the worker checkout and successful command history. Keep the caller output in `data`.

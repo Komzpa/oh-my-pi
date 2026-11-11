@@ -672,9 +672,11 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 			}
 			const scopedPaths = toPathList(rawPath);
 			const effectivePaths = scopedPaths.length > 0 ? scopedPaths : ["."];
+			const resolveContext = sessionResolveContext(this.session, { signal });
 			const expandedEntries = await expandDelimitedPathEntries(effectivePaths, this.session.cwd, {
 				exclusionParts: true,
 				mixedLocalPaths: true,
+				context: resolveContext,
 			});
 			// `!glob` entries exclude; the rest are what to search (all of cwd when only exclusions were given).
 			// A file or folder whose name really starts with `!` is still searched.
@@ -686,7 +688,6 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 			}
 			const rawEntries = searchEntries.length > 0 ? searchEntries : ["."];
 			const pathSpecs = await parsePathSpecs(rawEntries, this.session.cwd);
-			const resolveContext = sessionResolveContext(this.session, { signal });
 			// Internal URLs resolve inside the native search, bounded by the tier this call was approved at.
 			const urlFilesystem = new InternalUrlFilesystem({
 				context: resolveContext,
@@ -737,6 +738,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					rawPaths: resolvedPaths,
 					cwd: this.session.cwd,
 					internalUrlAction: "search",
+					context: resolveContext,
 					filesystem: urlFilesystem,
 					resolveExternalUrl: materializeExternalUrlForSearch,
 					trackImmutableSources: true,

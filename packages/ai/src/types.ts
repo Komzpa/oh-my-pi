@@ -681,6 +681,10 @@ export interface StreamOptions {
 	 * generation. Its headers are not per-generation cache/request metadata.
 	 */
 	onResponse?: (response: ProviderResponseMetadata, model?: Model<Api>, signal?: AbortSignal) => void | Promise<void>;
+	/** Called only after a completed, non-error provider response, with the resolved credential identity. */
+	onProviderCallSucceeded?: (message: AssistantMessage) => void;
+	/** Called once for a final provider failure after retries; never for aborts. */
+	onProviderCallFailed?: (error: unknown) => void;
 	/**
 	 * Optional callback for raw Server-Sent Events as they arrive from HTTP streaming providers,
 	 * plus synthesized SSE-shaped frames for the Codex WebSocket transport (one synthetic frame
@@ -904,6 +908,8 @@ export interface TextSignatureV1 {
 }
 
 export interface TextContent {
+	/** Trusted harness-authored fragment, never inferred from tool text. */
+	harnessNotice?: true | "record";
 	type: "text";
 	text: string;
 	textSignature?: string; // e.g., for OpenAI responses, message metadata (legacy id string or TextSignatureV1 JSON)
@@ -1370,6 +1376,10 @@ export interface AssistantMessage {
 	toolCallAbortMessages?: Record<string, string>;
 	/** HTTP status surfaced by the provider when the request failed. Populated by every provider's catch block alongside `errorMessage` so consumers (auth retry, telemetry, UI) can branch without regex-scraping the message. */
 	errorStatus?: number;
+	/** Machine fields retained independently of display diagnostics. */
+	errorType?: string;
+	errorCode?: string;
+	errorResetAt?: number;
 	/** Structured machine-readable error classifier; see `utils/error-id.ts` for bit layout and helpers. */
 	errorId?: number;
 	/**
@@ -1399,6 +1409,8 @@ export interface AssistantMessage {
 }
 
 export interface ToolResultMessage<TDetails = unknown> {
+	/** Explicit refusal instruction supplied by the runtime, separate from external output. */
+	harnessNotice?: string;
 	role: "toolResult";
 	toolCallId: string;
 	toolName: string;

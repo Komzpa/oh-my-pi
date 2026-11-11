@@ -841,6 +841,19 @@ const costSegment: StatusLineSegment = {
 	},
 };
 
+const fpsSegment: StatusLineSegment = {
+	id: "fps",
+	render(ctx) {
+		const text = ctx.fpsText;
+		if (!text) return { content: "", visible: false };
+		return { content: theme.fg("muted", text), visible: true };
+	},
+	describe(ctx) {
+		const text = ctx.fpsText;
+		return text ? segView([span(text, "muted")]) : null;
+	},
+};
+
 const contextPctSegment: StatusLineSegment = {
 	id: "context_pct",
 	render(ctx) {
@@ -1058,11 +1071,28 @@ const cacheSegment: StatusLineSegment = {
 	},
 };
 
+const currentWorkSnapshotTitles = new WeakMap<object, string>();
+
+/** Display current structured work without rewriting the persisted session name. */
+export function currentWorkTitle(session: StatusLineSession): string | undefined {
+	const snapshot = session.getTodoSnapshot?.();
+	let activeName = snapshot ? currentWorkSnapshotTitles.get(snapshot) : undefined;
+	if (activeName === undefined) {
+		const phases = snapshot ?? session.getTodoPhases?.() ?? [];
+		const active = phases.find(phase => phase.tasks.some(task => task.status === "in_progress"));
+		activeName = active ? sanitizeStatusText(active.name) : "";
+		if (snapshot) currentWorkSnapshotTitles.set(snapshot, activeName);
+	}
+	if (activeName) return activeName;
+	const goal = session.getGoalModeState?.()?.goal;
+	if (goal?.status === "active" && goal.objective) return goal.objective;
+	return session.sessionManager?.getSessionName();
+}
+
 const sessionNameSegment: StatusLineSegment = {
 	id: "session_name",
 	render(ctx) {
-		const sessionManager = ctx.session.sessionManager;
-		const name = sessionManager?.getSessionName() || ctx.previewTitle;
+		const name = currentWorkTitle(ctx.session) || ctx.previewTitle;
 		if (!name) return { content: "", visible: false };
 
 		const styledTitle = accentFg(ctx, "accent", sanitizeStatusText(name));
@@ -1071,7 +1101,7 @@ const sessionNameSegment: StatusLineSegment = {
 		return { content, visible: true };
 	},
 	describe(ctx) {
-		const name = ctx.session.sessionManager?.getSessionName() || ctx.previewTitle;
+		const name = currentWorkTitle(ctx.session) || ctx.previewTitle;
 		const content = name ? sanitizeStatusText(name) : "";
 		// Plain: the terminal styles the title by its role.
 		return content ? segView([span(content)], ctx.isPinned ? "pin" : undefined) : null;
@@ -1342,6 +1372,7 @@ export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	token_total: tokenTotalSegment,
 	token_rate: tokenRateSegment,
 	cost: costSegment,
+	fps: fpsSegment,
 	context_pct: contextPctSegment,
 	context_total: contextTotalSegment,
 	time_spent: timeSpentSegment,

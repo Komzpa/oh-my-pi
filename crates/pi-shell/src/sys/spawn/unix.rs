@@ -557,13 +557,21 @@ struct Program<'a> {
 /// its pid, so let the engine open the redirections and attempt the real
 /// exec itself instead. This is only a routing hint: the actual exec still
 /// decides whether the file is executable and whether fallback is needed.
-fn may_need_script_fallback(path: &[u8], cwd: &[u8]) -> bool {
+pub(super) fn may_need_script_fallback(path: &[u8], cwd: &[u8]) -> bool {
 	let path = Path::new(OsStr::from_bytes(path));
 	let path = if path.is_absolute() {
 		path.to_path_buf()
 	} else {
 		Path::new(OsStr::from_bytes(cwd)).join(path)
 	};
+	let Ok(c_path) = CString::new(path.as_os_str().as_bytes()) else {
+		return false;
+	};
+	// A readable text file without execute permission must still fail exec.
+	// SAFETY: c_path is an owned, NUL-terminated path.
+	if unsafe { libc::access(c_path.as_ptr(), libc::X_OK) } != 0 {
+		return false;
+	}
 	let Ok(mut file) = fs::OpenOptions::new()
 		.read(true)
 		.custom_flags(libc::O_NONBLOCK)
@@ -588,6 +596,12 @@ fn may_need_script_fallback(path: &[u8], cwd: &[u8]) -> bool {
 }
 
 pub(super) fn spawn(shared: &Arc<Shared>, spec: SpawnSpec<'_>) -> io::Result<Box<dyn ExtProc>> {
+	if spec.redirs.is_some()
+		&& super::NativeSpawner::script_fallback_error(spec.path, spec.cwd).is_some()
+	{
+		// The engine retries with its own asynchronous redirection opens.
+		return Err(io::Error::other("script requires engine redirection"));
+	}
 	let SpawnSpec {
 		path,
 		argv,
@@ -604,10 +618,6 @@ pub(super) fn spawn(shared: &Arc<Shared>, spec: SpawnSpec<'_>) -> io::Result<Box
 		ctty,
 		..
 	} = spec;
-	if redirs.is_some() && may_need_script_fallback(path, cwd) {
-		// The engine retries with its own asynchronous redirection opens.
-		return Err(io::Error::other("script requires engine redirection"));
-	}
 	// A process of a `zpty` session leads a session of its own, without a
 	// controlling terminal (it cannot reach the user's terminal through
 	// `/dev/tty`; taking the pty as its controlling terminal would hang

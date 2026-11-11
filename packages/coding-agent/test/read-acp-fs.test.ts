@@ -43,6 +43,29 @@ describe("read tool ACP fs routing", () => {
 		await removeWithRetries(tmpDir);
 	});
 
+	it("records the editor instruction bytes and skips unbounded disk snapshots", async () => {
+		const file = path.join(tmpDir, "AGENTS.md");
+		await Bun.write(file, "disk rule");
+		const bridge: ClientBridge = {
+			capabilities: { readTextFile: true },
+			readTextFile: async () => "editor rule",
+		};
+		const session = createSession(tmpDir, bridge);
+		const recorded: string[] = [];
+		session.recordInstructionFile = async (_file, body) => {
+			recorded.push(body ?? "missing");
+		};
+		const result = await new ReadTool(session).execute("editor", { path: file });
+		expect(textOutput(result)).toContain("editor rule");
+		expect(recorded.at(-1)).toBe("editor rule");
+		recorded.length = 0;
+		const diskSession = createSession(tmpDir);
+		diskSession.recordInstructionFile = session.recordInstructionFile;
+		await fs.truncate(file, 5 * 1024 * 1024);
+		await new ReadTool(diskSession).execute("large", { path: `${file}:1-1` });
+		expect(recorded).toEqual([]);
+	});
+
 	it("routes plain text reads through the bridge and does not call Bun.file().text()", async () => {
 		// .ts file so summarize would normally run (read.summarize.enabled defaults to true)
 		const filePath = path.join(tmpDir, "example.ts");

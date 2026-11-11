@@ -60,8 +60,15 @@ export type DaemonOperation =
 			/** Stop only this generation (`DaemonSnapshot.id`); another one is left running. Legacy brokers ignore it. */
 			id?: string;
 	  }
+	| { op: "release"; timeoutMs: number }
 	| { op: "restart"; name: string }
 	| { op: "mode"; name: string; mode: "persist" | "session" | "detached" }
+	/**
+	 * The owner session is about to restart in place: keep its session-scoped daemons (and this
+	 * broker) alive for `graceMs`, or until the owner subscribes again. Not a mode change: a
+	 * daemon that is never reclaimed by its owner falls back to normal session lifetime.
+	 */
+	| { op: "hold"; owner: string; graceMs: number }
 	| { op: "describe"; name: string }
 	/** Abort this connection's in-flight `wait`/follow-`logs` request `requestId`. Legacy brokers reject it. */
 	| { op: "cancel"; requestId: string }
@@ -87,8 +94,10 @@ export type DaemonRpcResult =
 	| { op: "wait"; daemon: DaemonSnapshot; matched?: string; timedOut: boolean }
 	| { op: "send"; daemon: DaemonSnapshot }
 	| { op: "stop"; daemon: DaemonSnapshot }
+	| { op: "release" }
 	| { op: "restart"; daemon: DaemonSnapshot }
 	| { op: "mode"; daemon: DaemonSnapshot }
+	| { op: "hold"; held: number }
 	| { op: "describe"; daemon: DaemonSnapshot; spec: DaemonSpec }
 	| { op: "cancel"; cancelled: boolean }
 	| { op: "shutdown" };
@@ -366,6 +375,8 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs"),
 				id: optionalString(source.id, "operation.id"),
 			};
+		case "release":
+			return { op, timeoutMs: numberValue(source.timeoutMs, "operation.timeoutMs") };
 		case "restart":
 		case "describe":
 			return { op, name: stringValue(source.name, "operation.name") };
@@ -377,6 +388,12 @@ function parseDaemonOperation(value: unknown): DaemonOperation {
 				throw new Error("operation.mode must be persist, session, or detached");
 			return { op, name: stringValue(source.name, "operation.name"), mode };
 		}
+		case "hold":
+			return {
+				op,
+				owner: stringValue(source.owner, "operation.owner"),
+				graceMs: numberValue(source.graceMs, "operation.graceMs"),
+			};
 		default:
 			throw new Error(`Unknown daemon operation: ${op}`);
 	}
@@ -426,6 +443,8 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 			return { op: "restart", daemon: parseDaemonSnapshot(source.daemon) };
 		case "mode":
 			return { op: "mode", daemon: parseDaemonSnapshot(source.daemon) };
+		case "hold":
+			return { op: "hold", held: numberValue(source.held, "result.held") };
 		case "describe":
 			return {
 				op: "describe",
@@ -436,5 +455,7 @@ export function parseDaemonRpcResult(operation: DaemonOperation, value: unknown)
 			return { op: "cancel", cancelled: booleanValue(source.cancelled, "result.cancelled") };
 		case "shutdown":
 			return { op: "shutdown" };
+		case "release":
+			return { op: "release" };
 	}
 }

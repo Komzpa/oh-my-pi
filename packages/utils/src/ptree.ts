@@ -10,6 +10,7 @@
 import * as os from "node:os";
 import { Process, type ProcessTerminateOptions } from "@oh-my-pi/pi-natives";
 import type { Spawn, Subprocess } from "bun";
+import { backgroundCommand } from "./background-priority";
 
 type InMask = "pipe" | "ignore" | Buffer | Uint8Array | null;
 
@@ -556,13 +557,14 @@ export class ChildProcess<In extends InMask = InMask> {
 		return out + tail;
 	}
 
-	async #readBytes(): Promise<Uint8Array<ArrayBuffer>> {
+	async #readBytes(maxBytes?: number): Promise<Uint8Array<ArrayBuffer>> {
 		const reader = this.proc.stdout.getReader();
 		this.#openPipeReaders++;
 		this.#pipeReaders.add(reader);
 		this.#syncAbortListeners();
 		const chunks: Uint8Array[] = [];
 		let length = 0;
+		let exceeded = false;
 		try {
 			for (;;) {
 				if (this.#cutoff) {
@@ -571,6 +573,11 @@ export class ChildProcess<In extends InMask = InMask> {
 				}
 				const r = await reader.read();
 				if (r.done) break;
+				if (maxBytes !== undefined && r.value.byteLength > maxBytes - length) {
+					exceeded = true;
+					await reader.cancel().catch(() => {});
+					break;
+				}
 				chunks.push(r.value);
 				length += r.value.byteLength;
 			}
@@ -582,6 +589,7 @@ export class ChildProcess<In extends InMask = InMask> {
 			reader.releaseLock();
 			this.#syncAbortListeners();
 		}
+		if (exceeded) throw new Error(`Subprocess output exceeds the ${maxBytes} byte limit`);
 		const bytes = new Uint8Array(length);
 		let offset = 0;
 		for (const chunk of chunks) {
@@ -591,8 +599,8 @@ export class ChildProcess<In extends InMask = InMask> {
 		return bytes;
 	}
 
-	async #readOutputBytes(waitForCleanExit = false): Promise<Uint8Array<ArrayBuffer>> {
-		const p = this.#readBytes();
+	async #readOutputBytes(waitForCleanExit = false, maxBytes?: number): Promise<Uint8Array<ArrayBuffer>> {
+		const p = this.#readBytes(maxBytes);
 		if (this.#nothrow) return p;
 		const bytes = waitForCleanExit ? (await Promise.all([p, this.exitedCleanly]))[0] : await p;
 		await this.#throwIfAborted();
@@ -611,8 +619,14 @@ export class ChildProcess<In extends InMask = InMask> {
 		return (await this.#readOutputBytes()).buffer;
 	}
 
-	async bytes(): Promise<Uint8Array> {
-		return this.#readOutputBytes();
+	async bytes(options?: { maxBytes?: number }): Promise<Uint8Array> {
+		const maxBytes = options?.maxBytes;
+		if (maxBytes !== undefined && (!Number.isSafeInteger(maxBytes) || maxBytes < 0))
+			throw new RangeError("maxBytes must be a nonnegative safe integer");
+		// A bounded read may reject before exit; disposal still owns termination,
+		// and callers observing the read must not leak a second rejection.
+		if (maxBytes !== undefined) this.#exited.catch(() => {});
+		return this.#readOutputBytes(false, maxBytes);
 	}
 
 	// ── Wait ─────────────────────────────────────────────────────────────
@@ -766,7 +780,7 @@ function spawnInternal<In extends InMask = InMask>(
 	const { timeout = -1, signal, stderr, detached, subreaper = false, ...rest } = opts ?? {};
 	const useSubreaper = subreaper && process.platform === "linux";
 	const commandEnv = rest.env ?? Bun.env;
-	const child = Bun.spawn(useSubreaper ? [process.execPath, "-e", LINUX_SUBREAPER_SCRIPT] : cmd, {
+	const child = Bun.spawn(backgroundCommand(useSubreaper ? [process.execPath, "-e", LINUX_SUBREAPER_SCRIPT] : cmd), {
 		stdin: "ignore",
 		stdout: "pipe",
 		stderr: "pipe",

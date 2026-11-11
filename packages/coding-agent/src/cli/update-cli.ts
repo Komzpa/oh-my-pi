@@ -23,6 +23,7 @@ import {
 	WhichCachePolicy,
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { backgroundShellPrefix } from "@oh-my-pi/pi-utils/background-priority";
 import { type FileLockHandle, tryAcquireFileLock, withFileLock } from "@oh-my-pi/pi-utils/file-lock";
 import { $ } from "bun";
 import { Settings, settings } from "../config/settings";
@@ -312,7 +313,7 @@ export function parseUpdateArgs(
 async function getBunGlobalBinDir(): Promise<string | undefined> {
 	if (!$which("bun")) return undefined;
 	try {
-		const result = await $`bun pm bin -g`.quiet().nothrow();
+		const result = await $`${backgroundShellPrefix} bun pm bin -g`.quiet().nothrow();
 		if (result.exitCode !== 0) return undefined;
 		const output = result.text().trim();
 		return output.length > 0 ? output : undefined;
@@ -324,7 +325,7 @@ async function getBunGlobalBinDir(): Promise<string | undefined> {
 async function getNpmGlobalBinDir(): Promise<string | undefined> {
 	if (!$which("npm")) return undefined;
 	try {
-		const result = await $`npm prefix -g`.quiet().nothrow();
+		const result = await $`${backgroundShellPrefix} npm prefix -g`.quiet().nothrow();
 		if (result.exitCode !== 0) return undefined;
 		const prefix = result.text().trim();
 		if (prefix.length === 0) return undefined;
@@ -338,7 +339,7 @@ async function getHomebrewFormulaPrefix(): Promise<string | undefined> {
 	if (!$which("brew")) return undefined;
 	for (const formula of [HOMEBREW_FORMULA, APP_NAME]) {
 		try {
-			const result = await $`brew --prefix ${formula}`.quiet().nothrow();
+			const result = await $`${backgroundShellPrefix} brew --prefix ${formula}`.quiet().nothrow();
 			if (result.exitCode !== 0) continue;
 			const output = result.text().trim();
 			if (output.length > 0) return output;
@@ -350,7 +351,7 @@ async function getHomebrewFormulaPrefix(): Promise<string | undefined> {
 async function getMiseBinDirs(): Promise<string[]> {
 	if (!$which("mise")) return [];
 	try {
-		const result = await $`mise bin-paths ${MISE_TOOL}`.quiet().nothrow();
+		const result = await $`${backgroundShellPrefix} mise bin-paths ${MISE_TOOL}`.quiet().nothrow();
 		if (result.exitCode !== 0) return [];
 		return result
 			.text()
@@ -1011,7 +1012,7 @@ export async function pruneBunInstallCache(
 
 async function resolveBunInstallCacheDir(): Promise<string | undefined> {
 	try {
-		const result = await $`bun pm cache`.quiet().nothrow();
+		const result = await $`${backgroundShellPrefix} bun pm cache`.quiet().nothrow();
 		if (result.exitCode !== 0) return undefined;
 		const output = result.text().trim();
 		return output.length > 0 ? output : undefined;
@@ -1044,7 +1045,7 @@ export function resolveBunGlobalNodeModulesDirFromLocations({
 
 async function resolveBunGlobalNodeModulesDir(cacheDir: string): Promise<string | undefined> {
 	try {
-		const result = await $`bun pm bin -g`.quiet().nothrow();
+		const result = await $`${backgroundShellPrefix} bun pm bin -g`.quiet().nothrow();
 		const globalBinDir = result.exitCode === 0 ? result.text().trim() : undefined;
 		return resolveBunGlobalNodeModulesDirFromLocations({
 			globalDir: process.env.BUN_INSTALL_GLOBAL_DIR,
@@ -1107,7 +1108,7 @@ export function parseReportedVersion(output: string): string | undefined {
 
 async function reportedVersionAtPath(binaryPath: string): Promise<string | undefined> {
 	try {
-		const result = await $`${binaryPath} --version`.quiet().nothrow();
+		const result = await $`${backgroundShellPrefix} ${binaryPath} --version`.quiet().nothrow();
 		if (result.exitCode !== 0) return undefined;
 		return parseReportedVersion(result.text().trim());
 	} catch {

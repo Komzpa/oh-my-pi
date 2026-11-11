@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, test, vi } from "bun:test";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext, RenderSessionContextOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
@@ -49,6 +49,8 @@ function createInitialRenderHarness(): { ctx: InteractiveModeContext; helpers: U
 		addMessageToChat: (message: AgentMessage) => helpers.addMessageToChat(message),
 		settings: { get: () => false },
 		session: {
+			agent: new Agent(),
+			isStreaming: false,
 			retryAttempt: 0,
 			getToolByName: () => undefined,
 			buildTranscriptSessionContext: () => buildSessionContext([]),

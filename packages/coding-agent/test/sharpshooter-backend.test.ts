@@ -50,7 +50,8 @@ describe("sharpshooter memory backend", () => {
 			Bun.write(path.join(bankDir, "style.md"), "- Keep output concise.\n"),
 		]);
 
-		const instructions = await sharpshooterBackend.buildDeveloperInstructions(agentDir, cwd, settings);
+		const session = { settings, sessionManager: { getCwd: () => cwd } } as AgentSession;
+		const instructions = await sharpshooterBackend.buildConversationContext!(session, undefined, agentDir);
 		expect(instructions).toContain("## architecture");
 		expect(instructions).toContain("## product");
 		expect(instructions).toContain("## style");

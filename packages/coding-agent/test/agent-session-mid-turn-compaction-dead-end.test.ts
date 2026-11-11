@@ -185,12 +185,11 @@ describe("AgentSession mid-turn compaction dead-end", () => {
 		expect(state.notices.filter(message => message.includes(DEAD_END_WARNING))).toEqual([]);
 	});
 
-	it("attempts and warns once per oversized tool-loop turn when no cut point ever appears", async () => {
+	it("backs off across user turns when no cut point or meaningful context growth appears", async () => {
 		// The genuinely-unrecoverable shape: prepareCompaction can never find a cut
 		// point (the whole oversized region is the most recent turn). Re-running the
 		// rescue and re-emitting the warning on every following tool boundary is
-		// wasted work, so it must fire exactly once per turn — and re-arm cleanly
-		// for the next user turn.
+		// wasted work. A new user turn alone must not rearm the breaker.
 		vi.spyOn(compactionModule, "prepareCompaction").mockReturnValue(undefined);
 		const state = await createSession({
 			responses: [
@@ -208,14 +207,12 @@ describe("AgentSession mid-turn compaction dead-end", () => {
 		expect(state.compactionStarts).toHaveLength(1);
 
 		await session.prompt("Run two more tools before answering");
-		expect(state.notices).toEqual([
-			expect.stringContaining(DEAD_END_WARNING),
-			expect.stringContaining(DEAD_END_WARNING),
-		]);
-		expect(state.compactionStarts).toHaveLength(2);
+		expect(state.notices).toEqual([expect.stringContaining(DEAD_END_WARNING)]);
+		expect(state.compactionStarts).toHaveLength(1);
 	});
 
-	it("re-attempts after the new tool boundary finishes persisting", async () => {
+	it("re-attempts after meaningful context growth and the new tool boundary finishes persisting", async () => {
+		// Growth beyond the breaker delta rearms maintenance.
 		// Reviewer regression (#7153): message_end persistence is fire-and-forget,
 		// so the live loop can reach onTurnEnd while the branch still lacks the
 		// just-finished assistant/toolResult pair. The re-arm probe must wait for
@@ -246,7 +243,17 @@ describe("AgentSession mid-turn compaction dead-end", () => {
 		});
 
 		const state = await createSession({
-			responses: [toolTurn("noop-1"), toolTurn("noop-2"), { content: ["done"] }],
+			responses: [
+				toolTurn("noop-1"),
+				{
+					content: [
+						{ type: "text", text: "growth ".repeat(15000) },
+						{ type: "toolCall", id: "noop-2", name: "noop", arguments: {} },
+					],
+					usage: { input: 190000 },
+				},
+				{ content: ["done"] },
+			],
 			shortCircuitCompaction: true,
 			delayMessageEndPersistence: true,
 		});

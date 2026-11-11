@@ -58,7 +58,11 @@ export function transcriptEntryMessage(entry: TranscriptEntryLike): AgentMessage
 /** Identify user-authored requests among transcript and metadata entries. */
 export function isUserRequestEntry(entry: TranscriptEntryLike | { type: string }): boolean {
 	if (entry.type === "message" && "message" in entry) {
-		if (entry.message.role === "user") return true;
+		if (entry.message.role === "user") {
+			return (
+				!entry.message.synthetic && (entry.message.parentIrc !== undefined || entry.message.attribution !== "agent")
+			);
+		}
 		return entry.message.role === "custom" && isUserTurnInitiator(entry.message);
 	}
 	if (entry.type === "custom_message" && "content" in entry) {

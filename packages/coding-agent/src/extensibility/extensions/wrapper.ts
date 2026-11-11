@@ -7,10 +7,11 @@ import {
 	type AgentToolResult,
 	type AgentToolUpdateCallback,
 	isNonBlankContext,
+	ToolCallBlockedError,
 	type ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
 import type { ComputerSafetyCheck, ImageContent, Static, TextContent, TSchema } from "@oh-my-pi/pi-ai";
-import { prompt, sanitizeText, untilAborted, toError } from "@oh-my-pi/pi-utils";
+import { prompt, sanitizeText, toError, untilAborted, withLoopPhase } from "@oh-my-pi/pi-utils";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import nativeDelegationTemplate from "../../prompts/tools/native-delegation.md" with { type: "text" };
 import {
@@ -28,7 +29,7 @@ import { withToolApprovalScope } from "../../tools/approval-scope";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import { withFileMutationSession } from "../../tools/file-write-fallback";
 import { normalizeToolEventInput, resolveToolEventInput } from "../tool-event-input";
-import { applyToolProxy } from "../tool-proxy";
+import { applyToolProxy, withDeferredToolResultAcceptance } from "../tool-proxy";
 import type { ExtensionRunner } from "./runner";
 import type { ExtensionAgentIdentity, RegisteredTool, ToolCallEventResult } from "./types";
 
@@ -239,7 +240,11 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		onUpdate?: AgentToolUpdateCallback<TDetails, TParameters>,
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<TDetails, TParameters>> {
-		return withToolApprovalScope(() => this.#execute(toolCallId, params, signal, onUpdate, context));
+		return withToolApprovalScope(() =>
+			withDeferredToolResultAcceptance(this.tool, toolCallId, () =>
+				this.#execute(toolCallId, params, signal, onUpdate, context),
+			),
+		);
 	}
 
 	async #execute(
@@ -287,7 +292,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			context,
 		);
 		if (preResolved.policy === "deny") {
-			throw denyError(preResolved, this.tool.name);
+			throw new ToolCallBlockedError(denyError(preResolved, this.tool.name).message);
 		}
 
 		// 1. Emit tool_call event first - extensions can block execution or revise the input the tool
@@ -305,23 +310,25 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		};
 		if (!loopEmittedToolCall && this.runner.hasHandlers("tool_call")) {
 			try {
-				const callResult = (await this.runner.emitToolCall(
-					{
-						type: "tool_call",
-						toolName: this.tool.name,
-						toolCallId,
-						input: normalizeToolEventInput(
-							this.tool.name,
-							resolveToolEventInput(this.tool, toolEventArgs(params, context)),
-						),
-					},
-					signal,
-					this.#agent,
+				const callResult = (await withLoopPhase(`extension.tool_call:${this.tool.name}`, () =>
+					this.runner.emitToolCall(
+						{
+							type: "tool_call",
+							toolName: this.tool.name,
+							toolCallId,
+							input: normalizeToolEventInput(
+								this.tool.name,
+								resolveToolEventInput(this.tool, toolEventArgs(params, context)),
+							),
+						},
+						signal,
+						this.#agent,
+					),
 				)) as ToolCallEventResult | undefined;
 
 				if (callResult?.block) {
 					const reason = callResult.reason || "Tool execution was blocked by an extension";
-					throw new Error(reason);
+					throw new ToolCallBlockedError(reason);
 				}
 				if (isNonBlankContext(callResult?.additionalContext)) {
 					pendingAdditionalContext = callResult.additionalContext;
@@ -348,7 +355,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				context,
 			);
 			if (preflight?.block) {
-				throw new Error(preflight.reason || "Tool execution was blocked by a preflight rule");
+				throw new ToolCallBlockedError(preflight.reason || "Tool execution was blocked by a preflight rule");
 			}
 		}
 
@@ -370,7 +377,7 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 		context?.xdevTierResolved?.(resolved.tier);
 		if (resolved.policy === "deny") {
 			cancelPreflight();
-			throw denyError(resolved, this.tool.name);
+			throw new ToolCallBlockedError(denyError(resolved, this.tool.name).message);
 		}
 		const pendingSafetyChecks = computerSafetyChecks(context);
 		// Outer approvals only cover the original input. `xd://` approval skips
@@ -450,18 +457,18 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 				await emitApprovalResolved(false, reason);
 				cancelPreflight();
 				if (pendingSafetyChecks.length > 0) {
-					throw new Error(
+					throw new ToolCallBlockedError(
 						`Tool "${this.tool.name}" has pending provider safety checks but no interactive UI is available.`,
 					);
 				}
 				if (resolved.source === "restriction") {
-					throw new Error(
+					throw new ToolCallBlockedError(
 						`Tool "${this.tool.name}" requires approval but no interactive UI available.\n` +
 							`Reason: ${resolved.reason}\n` +
 							`A restricted folder (tools.restrictedFolders) asks in every approval mode.`,
 					);
 				}
-				throw new Error(
+				throw new ToolCallBlockedError(
 					`Tool "${this.tool.name}" requires approval but no interactive UI available.\n` +
 						`Options:\n` +
 						`  1. Set tools.approvalMode: yolo in /settings\n` +
@@ -494,12 +501,12 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 			await emitApprovalResolved(approved, approved ? undefined : "denied by user");
 			if (!approved) {
 				cancelPreflight();
-				throw new Error(`Tool call denied by user: ${this.tool.name}`);
+				throw new ToolCallBlockedError(`Tool call denied by user: ${this.tool.name}`);
 			}
 			if (pendingSafetyChecks.length > 0) {
 				if (!context) {
 					cancelPreflight();
-					throw new Error("Provider safety approval context is unavailable");
+					throw new ToolCallBlockedError("Provider safety approval context is unavailable");
 				}
 				context.providerSafetyApproved = true;
 			}
@@ -533,20 +540,22 @@ export class ExtensionToolWrapper<TParameters extends TSchema = TSchema, TDetail
 
 		// Emit tool_result event - extensions can modify the result and error status
 		if (this.runner.hasHandlers("tool_result")) {
-			const resultResult = await this.runner.emitToolResult(
-				{
-					type: "tool_result",
-					toolName: this.tool.name,
-					toolCallId,
-					input: normalizeToolEventInput(
-						this.tool.name,
-						resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
-					),
-					content: result.content,
-					details: result.details,
-					isError: !!executionError || result.isError === true,
-				},
-				this.#agent,
+			const resultResult = await withLoopPhase(`extension.tool_result:${this.tool.name}`, () =>
+				this.runner.emitToolResult(
+					{
+						type: "tool_result",
+						toolName: this.tool.name,
+						toolCallId,
+						input: normalizeToolEventInput(
+							this.tool.name,
+							resolveToolEventInput(this.tool, toolEventArgs(effectiveParams, context)),
+						),
+						content: result.content,
+						details: result.details,
+						isError: !!executionError || result.isError === true,
+					},
+					this.#agent,
+				),
 			);
 
 			// Handler context reports into this call's sink like tool-authored

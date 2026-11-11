@@ -2092,7 +2092,7 @@ describe("Coding Agent Tools", () => {
 			const metadataResult = await textOnlyTool.execute("test-call-img-guidance", { path: testFile });
 			const output = getTextOutput(metadataResult);
 
-			expect(output).toContain("Image metadata:");
+			expect(output).toContain("Image metadata");
 			expect(output).toContain("MIME: image/png");
 			expect(output).toContain("Bytes:");
 			expect(output).toContain("Dimensions:");

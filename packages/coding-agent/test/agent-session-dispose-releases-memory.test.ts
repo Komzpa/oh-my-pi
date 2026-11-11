@@ -12,7 +12,7 @@ import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensi
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
+import { FileSessionStorage, type SessionStorageWriter } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
@@ -46,7 +46,54 @@ describe("AgentSession dispose releases retained memory", () => {
 		tempDir.removeSync();
 	});
 
-	function createSession(): AgentSession {
+	it("persists dispose and cleanup tail entries before releasing a restart journal", async () => {
+		const manager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "sessions"));
+		const current = createSession(manager);
+		manager.appendMessage({ role: "user", content: "before restart", timestamp: 1 });
+		await manager.ensureOnDisk();
+		const file = manager.getSessionFile()!;
+		const childManager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "child-sessions"));
+		const child = createSession(childManager);
+		session = current;
+		childManager.appendMessage({ role: "user", content: "worker input", timestamp: 1 });
+		await childManager.ensureOnDisk();
+		const childFile = childManager.getSessionFile()!;
+		current.beginRestartHandoff?.([child]);
+		await child.dispose();
+		await current.dispose();
+		childManager.appendCustomEntry("worker-exit-tail", { completed: true });
+		// These are the three entry types in the live post-release warnings.
+		manager.appendCustomEntry("worker-exit", { completed: true });
+		manager.appendCustomMessageEntry("job-completion", "tail message", false);
+		manager.appendMessage({ role: "user", content: "tail input", timestamp: 2 });
+		await current.finishRestartHandoff?.();
+		const revivedChild = await SessionManager.open(childFile);
+		try {
+			expect(
+				revivedChild.getEntries().some(entry => entry.type === "custom" && entry.customType === "worker-exit-tail"),
+			).toBe(true);
+		} finally {
+			await revivedChild.close();
+		}
+		const revived = await SessionManager.open(file);
+		try {
+			const entries = revived.getEntries();
+			expect(entries.some(entry => entry.type === "custom" && entry.customType === "worker-exit")).toBe(true);
+			expect(entries.some(entry => entry.type === "custom_message" && entry.customType === "job-completion")).toBe(
+				true,
+			);
+			expect(
+				entries.some(
+					entry =>
+						entry.type === "message" && entry.message.role === "user" && entry.message.content === "tail input",
+				),
+			).toBe(true);
+		} finally {
+			await revived.close();
+		}
+	});
+
+	function createSession(manager?: SessionManager): AgentSession {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("expected bundled model");
 		const mock = createMockModel({ handler: () => ({ content: ["ok"] }) });
@@ -57,7 +104,7 @@ describe("AgentSession dispose releases retained memory", () => {
 		});
 		session = new AgentSession({
 			agent,
-			sessionManager: SessionManager.inMemory(tempDir.path()),
+			sessionManager: manager ?? SessionManager.inMemory(tempDir.path()),
 			settings: Settings.isolated(),
 			modelRegistry: new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml")),
 			agentId: "Main",
@@ -497,12 +544,33 @@ describe("AgentSession dispose releases retained memory", () => {
 		let armed = false;
 		let atomicWrites = 0;
 		class FailingAtomicStorage extends FileSessionStorage {
-			override async writeTextAtomic(
+			override openWriter(
 				filePath: string,
-				body: string,
+				options?: { flags?: "a" | "w"; onError?: (err: Error) => void },
+			): SessionStorageWriter {
+				const writer = super.openWriter(filePath, options);
+				return {
+					append: line =>
+						armed && line.includes("batch-entry")
+							? Promise.reject(new Error("injected batch append failure"))
+							: writer.append(line),
+					appendSync: line => {
+						if (armed && line.includes("batch-entry")) throw new Error("injected batch append failure");
+						writer.appendSync?.(line);
+					},
+					flush: () => writer.flush(),
+					flushSync: () => writer.flushSync?.(),
+					isOpen: () => writer.isOpen(),
+					close: () => writer.close(),
+					getError: () => writer.getError(),
+				};
+			}
+			override async writeLinesAtomic(
+				filePath: string,
+				lines: readonly string[],
 				options?: { commitGuard?: () => boolean },
 			): Promise<void> {
-				if (!armed) return super.writeTextAtomic(filePath, body, options);
+				if (!armed) return super.writeLinesAtomic(filePath, lines, options);
 				atomicWrites++;
 				reachedAtomic.resolve();
 				await gate.promise;
@@ -528,9 +596,10 @@ describe("AgentSession dispose releases retained memory", () => {
 		sessionManager.releaseRetainedEntries();
 		gate.resolve();
 
-		// The batch surfaces the injected failure; the sealed repair path must
-		// not attempt a second atomic publish of the emptied entry list.
-		expect(String(await settled)).toContain("injected atomic write failure");
+		// The batch surfaces its indeterminate persistence failure with the
+		// original append error; the sealed repair path must not retry a publish.
+		expect(String(await settled)).toContain("SessionPersistenceIndeterminateError");
+		expect(String(await settled)).toContain("injected batch append failure");
 		expect(atomicWrites).toBe(1);
 		expect(await Bun.file(sessionFile).text()).toBe(bytesBeforeBatch);
 

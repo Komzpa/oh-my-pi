@@ -4,6 +4,7 @@
  */
 import { register, type SettingValueOf } from "./registry";
 import type { AuthAccountPolicies } from "@oh-my-pi/pi-ai/auth-storage";
+import type { ModelRolePool } from "./model-role-pools";
 import type { cfgDefaultThinkingLevel } from "../session/settings";
 
 /** Display metadata for one model tag. */
@@ -25,6 +26,11 @@ export interface ModelPreset {
 	modelRoles: Record<string, string>;
 	/** `defaultThinkingLevel` at save time; absent in hand-written presets that leave it alone. */
 	defaultThinkingLevel?: SettingValueOf<typeof cfgDefaultThinkingLevel>;
+	/**
+	 * Extra settings (registered setting id → value, e.g. `tier.openai: priority`) that a
+	 * session-scoped switch applies as runtime overrides. A global switch does not apply them.
+	 */
+	settings?: Record<string, unknown>;
 }
 
 const EMPTY_STRING_ARRAY: string[] = [];
@@ -119,6 +125,17 @@ export const cfgJudgmentAttemptTimeoutMs = register({
 			throw new Error("judgment.attemptTimeoutMs must be a positive safe integer");
 		}
 	},
+});
+
+/**
+ * Weighted pools (`modelRolePools.<role>.<selector> = weight`). A role listed here is a pool: when it
+ * expands for a seeded caller (subagent spawn), its members are reordered by a weighted random draw.
+ * No settings-panel UI.
+ */
+export const cfgModelRolePools = register({
+	id: "modelRolePools",
+	type: "record",
+	default: {} as Record<string, ModelRolePool>,
 });
 
 /** Named model presets; no settings-panel UI — managed by `/modelpreset` and the model hub. */

@@ -217,6 +217,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 				: await expandDelimitedPathEntries(effectivePaths, this.session.cwd, {
 						splitter: parseFindPattern,
 						mixedLocalPaths: true,
+						context: sessionResolveContext(this.session, { signal }),
 					});
 			const rawPatterns = rawPatternInputs.map(input => normalizePathLikeInput(input).replace(/\\/g, "/"));
 			const aliasResolvedPatterns = this.#rootPathAlias

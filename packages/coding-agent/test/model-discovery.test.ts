@@ -3409,6 +3409,88 @@ describe("ModelRegistry runtime discovery", () => {
 		expect(rosterFor("image")).toEqual(["image-generator"]);
 	});
 
+	test("native catalog URL and hidden opt-in do not reuse another roster offline", async () => {
+		const configure = (modelsUrl: string, includeHidden: boolean) =>
+			writeRawModelsJson({
+				"cache-native": {
+					baseUrl: "https://gateway.invalid/v1",
+					api: "openai-responses",
+					auth: "none",
+					discovery: { type: "openai-models-list", modelsUrl, includeHidden },
+				},
+			});
+		configure("https://gateway.invalid/catalog-a", true);
+		const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: async () =>
+				Response.json({ models: [{ slug: "cached-hidden", visibility: "hide", supported_in_api: true }] }),
+		});
+		await registry.refresh();
+		expect(registry.find("cache-native", "cached-hidden")?.id).toBe("cached-hidden");
+		const sameCatalog = new ModelRegistry(authStorage, modelsJsonPath, {
+			fetch: async () => {
+				throw new Error("Offline discovery must not fetch");
+			},
+		});
+		await sameCatalog.refresh("offline");
+		expect(sameCatalog.find("cache-native", "cached-hidden")?.id).toBe("cached-hidden");
+		for (const [url, hidden] of [
+			["https://gateway.invalid/catalog-a", false],
+			["https://gateway.invalid/catalog-b", true],
+		] as const) {
+			configure(url, hidden);
+			const offline = new ModelRegistry(authStorage, modelsJsonPath, {
+				fetch: async () => {
+					throw new Error("Offline discovery must not fetch");
+				},
+			});
+			await offline.refresh("offline");
+			expect(offline.find("cache-native", "cached-hidden")).toBeUndefined();
+		}
+	});
+
+	test("native catalogs discover slugs and require opt-in for hidden API models", async () => {
+		for (const includeHidden of [false, true]) {
+			writeRawModelsJson({
+				"native-test": {
+					baseUrl: "https://gateway.invalid/v1",
+					api: "openai-responses",
+					auth: "apiKey",
+					apiKey: "fixture-secret",
+					discovery: {
+						type: "openai-models-list",
+						modelsUrl: "https://gateway.invalid/backend-api/codex/models",
+						includeHidden,
+					},
+				},
+			});
+			const fetchMock: FetchImpl = async (input, init) => {
+				expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer fixture-secret");
+				expect(String(input)).toBe("https://gateway.invalid/backend-api/codex/models");
+				return Response.json({
+					models: [
+						{
+							slug: "canary-visible",
+							display_name: "Canary",
+							context_window: 64000,
+							supported_in_api: true,
+							supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }],
+						},
+						{ slug: "canary-hidden", visibility: "hide", supported_in_api: true },
+						{ slug: "canary-unsupported", visibility: "hide", supported_in_api: false },
+					],
+				});
+			};
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+			await registry.refresh();
+			expect(registry.find("native-test", "canary-visible")?.baseUrl).toBe("https://gateway.invalid/v1");
+			expect(registry.find("native-test", "canary-visible")?.contextWindow).toBe(64000);
+			expect(registry.find("native-test", "canary-visible")?.name).toBe("Canary");
+			expect(registry.find("native-test", "canary-visible")?.thinking?.efforts).toEqual([Effort.Low, Effort.High]);
+			expect(Boolean(registry.find("native-test", "canary-hidden"))).toBe(includeHidden);
+			expect(registry.find("native-test", "canary-unsupported")).toBeUndefined();
+		}
+	});
+
 	test("openai-models-list with injectV1: false hits {baseUrl}/models verbatim", async () => {
 		// Gateways like opper.ai root their OpenAI-compatible surface at a
 		// versioned path (`https://api.opper.ai/v3/compat`); the default

@@ -171,7 +171,7 @@ describe("SessionManager + SqlSessionStorage (SQLite)", () => {
 		second.appendMessage({ role: "user", content: "durable SQL peer turn", timestamp: Date.now() });
 		await second.close();
 
-		await expect(first.rewriteEntries()).rejects.toBeInstanceOf(SessionWriteConflictError);
+		await expect(first.rewriteEntries({ forceFullRewrite: true })).rejects.toBeInstanceOf(SessionWriteConflictError);
 		expect(await secondStorage.readText(sessionFile)).toContain("durable SQL peer turn");
 		await client.end();
 	});
@@ -202,7 +202,7 @@ describe("SessionManager + SqlSessionStorage (SQLite)", () => {
 		turn.message.content = "pruned before rewrite";
 
 		heldClient.holdNextReplace = true;
-		const rewritePublished = manager.rewriteEntries();
+		const rewritePublished = manager.rewriteEntries({ forceFullRewrite: true });
 		await heldClient.replaceStarted.promise;
 		manager.appendMessage({ role: "user", content: "fenced append", timestamp: Date.now() });
 		heldClient.allowReplace.resolve();

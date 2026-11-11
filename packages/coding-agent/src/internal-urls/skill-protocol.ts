@@ -31,7 +31,7 @@ import {
 	UrlContainmentError,
 	validateRelativePath,
 } from "./filesystem-resource";
-import { readMcpResource } from "./mcp-protocol";
+import { MCP_RESOURCE_DISCOVERY_WAIT_MS, readMcpResource } from "./mcp-protocol";
 import type {
 	InternalResource,
 	InternalUrl,
@@ -47,11 +47,13 @@ import type {
 class UnknownSkillError extends Error {}
 
 /**
- * Most an unknown `skill://` name waits for MCP (deferred startup included) to advertise it: long
- * enough for a healthy handshake, short enough that a hung server or its reconnect ladder cannot
- * hold a read of a typo'd or disabled skill name for the rest of the turn.
+ * Most an unknown `skill://` name waits for MCP (deferred startup included) to advertise it, shared
+ * with exact MCP resource discovery ({@link MCP_RESOURCE_DISCOVERY_WAIT_MS}): long enough for a
+ * healthy handshake, short enough that a hung server or its reconnect ladder cannot hold a read of
+ * a typo'd or disabled skill name for the rest of the turn. Referenced at call time only — this
+ * module and mcp-protocol import each other's managers, so a module-level alias would read the
+ * binding before initialization.
  */
-const UNKNOWN_SKILL_MCP_WAIT_MS = 5_000;
 
 /** A skill:// URL's target path and the loaded skill that owns it. */
 interface SkillTarget {
@@ -225,6 +227,18 @@ async function findUrlSkillAnew(
 	return findUrlSkill(url, (await host.rediscoverForUnknownName?.()) ?? skills);
 }
 
+/** Whether a loaded or rediscovered local skill owns this URL, even when its target file is missing. */
+export async function isLocallyOwnedSkillUrl(url: InternalUrl, context?: ResolveContext): Promise<boolean> {
+	const skills = context?.skills ?? getActiveSkills();
+	try {
+		await findUrlSkillAnew(url, skills, contextRediscoveryHost(skills, context));
+		return true;
+	} catch (error) {
+		if (error instanceof UnknownSkillError) return false;
+		throw error;
+	}
+}
+
 /**
  * {@link skillTargetPath}, resolved once more when the skill that owns the target is stale. Its
  * stand-in is the same skill of the same plugin ({@link findStaleSkillStandIn}), which a collision
@@ -303,6 +317,7 @@ export class SkillProtocolHandler implements ProtocolHandler {
 		immutable: true,
 		unbounded: true,
 		linkable: true,
+		compactTranscript: true,
 	};
 
 	/** Advertised only when loaded skills are readable through an active tool. */
@@ -321,12 +336,12 @@ export class SkillProtocolHandler implements ProtocolHandler {
 			// A deferred MCP startup that fails cannot change the diagnosis: the skill is still unknown.
 			// Most such names are not MCP resources at all, so one budget caps deferred startup (which
 			// never returns while a handshake hangs and the startup window is 0) plus the catalog wait.
-			const deadline = Date.now() + UNKNOWN_SKILL_MCP_WAIT_MS;
+			const deadline = Date.now() + MCP_RESOURCE_DISCOVERY_WAIT_MS;
 			let mcpManager: MCPManagerApi | undefined;
 			try {
 				mcpManager = await withTimeout(
 					MCPManager.load(),
-					UNKNOWN_SKILL_MCP_WAIT_MS,
+					MCP_RESOURCE_DISCOVERY_WAIT_MS,
 					"MCP startup outlasted the unknown-skill wait",
 					context?.signal,
 				);

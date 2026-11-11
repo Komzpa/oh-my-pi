@@ -847,7 +847,9 @@ async fn persistent_shell_reaps_early_exiting_background_pipeline_stage() {
 	assert_eq!(started.exit_code, Some(0));
 	let recorded = |pidfile: &std::path::Path| {
 		let pidfile = pidfile.to_path_buf();
-		time::timeout(Duration::from_secs(2), async move {
+		// Manager setup may finish after the foreground call.
+		// The reaping deadline starts after PID readiness.
+		time::timeout(Duration::from_secs(10), async move {
 			loop {
 				if let Ok(pid) = fs::read_to_string(&pidfile)
 					.unwrap_or_default()

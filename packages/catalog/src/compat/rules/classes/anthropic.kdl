@@ -24,6 +24,8 @@
 // https://platform.claude.com/docs/en/build-with-claude/context-windows#the-context-window-with-thinking
 // https://platform.claude.com/docs/en/build-with-claude/preserved-thinking#switching-models
 class "anthropic" {
+	// Implementation tasks keep expensive reasoning bounded on every host.
+	thinking-implementation-worker-max-effort "high"
 	prompt-cache-lookback 20
 	// Claude's input classifier refuses requests that quote earlier reasoning
 	// back as text (`reasoning_extraction`, issue #6093).

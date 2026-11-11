@@ -14,6 +14,8 @@ import { getAgentTombstonePath } from "../registry/agent-tombstone";
 import { resolveSessionLeafId, type SessionEntry, type SessionHeader } from "./session-entries";
 import { loadSessionFile, parseSessionContent, type SessionLoadResult } from "./session-loader";
 
+import { loadSessionRestoreSummary } from "./session-restore-summary";
+
 const utf8Decoder = new TextDecoder();
 
 /** Persisted child transcript (subagent or opted-in advisor), keyed by slash-joined path. */
@@ -36,6 +38,8 @@ export type UnreadableSubSessionHandler = (key: string) => void;
 
 /** Read-only discovery scope and malformed-transcript reporting for child collectors. */
 export interface CollectSubSessionsOptions {
+	/** Restore uses a compact incremental projection; exports must request full history. */
+	purpose?: "export";
 	onUnreadable?: UnreadableSubSessionHandler;
 	/** Include advisor transcripts for read-only exports, never task restoration. */
 	includeAdvisors?: boolean;
@@ -108,7 +112,9 @@ async function collectSubSessionsFromDir(
 		if (compressed && fileNames.has(transcriptName)) continue;
 		const agentId = transcriptName.slice(0, -6);
 		const key = parentKey ? `${parentKey}/${agentId}` : agentId;
-		const loaded = await loadCollectedSession(path.join(dir, name));
+		const loaded = await (options.purpose !== "export" && !options.includeAdvisors && !options.includeCompressed
+			? loadSessionRestoreSummary(path.join(dir, name))
+			: loadCollectedSession(path.join(dir, name)));
 		if (!loaded) continue;
 		const { entries: fileEntries, malformedRecords, invalidHeader } = loaded;
 		// Empty files load as [] and are skipped; a corrupt or missing header is reported so exports do
@@ -121,7 +127,10 @@ async function collectSubSessionsFromDir(
 				parent: parentKey,
 				header,
 				entries,
-				leafId: resolveSessionLeafId(entries),
+				leafId:
+					"restoreLeafId" in loaded && (typeof loaded.restoreLeafId === "string" || loaded.restoreLeafId === null)
+						? loaded.restoreLeafId
+						: resolveSessionLeafId(entries),
 				aborted:
 					fileNames.has(getAgentTombstonePath(transcriptName)) ||
 					(compressed && fileNames.has(getAgentTombstonePath(name))),

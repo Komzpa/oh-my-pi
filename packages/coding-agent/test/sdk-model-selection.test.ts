@@ -159,6 +159,43 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		};
 	}
 
+	test("applies a worker ceiling to the deferred role model instead of its recorded fallback", async () => {
+		const claude = getBundledModel("anthropic", "claude-opus-4-6");
+		if (!claude) throw new Error("Expected the Claude fixture");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", "deferred-claude/claude-opus-4-6:max");
+		const { session } = await createAgentSession({
+			...buildSessionOptions("task"),
+			settings,
+			modelPatternAuthFallback: "openai-codex/gpt-5.6-sol:max",
+			cacheWarming: false,
+			extensions: [
+				pi =>
+					pi.registerProvider("deferred-claude", {
+						baseUrl: "https://deferred.example.com",
+						apiKey: "DEFERRED_TEST_KEY",
+						api: "anthropic-messages",
+						models: [
+							{
+								...claude,
+								contextWindow: claude.contextWindow ?? 200_000,
+								maxTokens: claude.maxTokens ?? 32_000,
+							},
+						],
+					}),
+			],
+			thinkingLevelCeiling: model =>
+				executorModule.capImplementationWorkerEffortCeiling("sonic", model, undefined, {}),
+		});
+		try {
+			expect(session.model?.provider).toBe("deferred-claude");
+			expect(session.thinkingLevel).toBe(Effort.High);
+			expect(session.agent.state.thinkingLevel).toBe(Effort.High);
+		} finally {
+			await session.dispose();
+		}
+	});
+
 	test("resolves explicit modelPattern after extension providers register", async () => {
 		const { session, modelFallbackMessage } = await createAgentSession(
 			buildSessionOptions("runtime-provider/runtime-model"),
@@ -655,13 +692,14 @@ describe("createAgentSession deferred model pattern resolution", () => {
 	});
 
 	test("does not silently fallback when explicit modelPattern is unresolved", async () => {
-		const { session, modelFallbackMessage } = await createAgentSession(
+		const { session, modelFallbackMessage, modelPatternResolutionFailed } = await createAgentSession(
 			buildSessionOptions("missing-provider/missing-model"),
 		);
 
 		try {
 			expect(session.model).toBeUndefined();
 			expect(modelFallbackMessage).toBe('Model "missing-provider/missing-model" not found');
+			expect(modelPatternResolutionFailed).toBe(true);
 		} finally {
 			await session.dispose();
 		}
@@ -683,7 +721,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 
 	test("does not resolve a disabled provider through deferred subagent model selection", async () => {
 		const settings = Settings.isolated({ disabledProviders: ["runtime-provider"] });
-		const { session, modelFallbackMessage } = await createAgentSession({
+		const { session, modelFallbackMessage, modelPatternResolutionFailed } = await createAgentSession({
 			...buildSessionOptions("runtime-provider/runtime-model"),
 			settings,
 			modelPatternAuthFallback: "runtime-provider/runtime-fallback-model",
@@ -692,6 +730,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		try {
 			expect(session.model).toBeUndefined();
 			expect(modelFallbackMessage).toBe('Model "runtime-provider/runtime-model" not found');
+			expect(modelPatternResolutionFailed).toBe(true);
 		} finally {
 			await session.dispose();
 		}
@@ -2720,5 +2759,64 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		// silently escape the scope the user just asked for.
 		expect(cliOptions.model?.provider).toBe(scopedTarget.provider);
 		expect(cliOptions.model?.id).toBe(scopedTarget.id);
+	});
+	test("checks only one historical configuration payload per kind during resume", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected bundled model");
+		const sessionManager = SessionManager.inMemory();
+		sessionManager.appendModelChange(`${model.provider}/${model.id}`);
+		for (let i = 0; i < 100; i++) {
+			sessionManager.appendThinkingLevelChange(Effort.High);
+			sessionManager.appendServiceTierChange({ openai: "priority" });
+		}
+		const iterate = sessionManager.iterateBranch.bind(sessionManager);
+		const latest = sessionManager.getLatestBranchMatching.bind(sessionManager);
+		const decoded = { thinking_level_change: 0, service_tier_change: 0 };
+		let unfilteredReads = 0;
+		vi.spyOn(sessionManager, "getLatestBranchMatching").mockImplementation(predicate => {
+			const entry = latest(predicate);
+			if (entry?.type === "thinking_level_change" || entry?.type === "service_tier_change") decoded[entry.type]++;
+			return entry;
+		});
+		vi.spyOn(sessionManager, "iterateBranch").mockImplementation(function* (type) {
+			for (const entry of iterate(type)) {
+				if (!type) unfilteredReads++;
+				yield entry;
+			}
+		});
+		const { session } = await createAgentSession({
+			cwd: tempDir,
+			agentDir: tempDir,
+			model,
+			authStorage: fixtureAuthStorage,
+			modelRegistry: fixtureModelRegistry,
+			sessionManager,
+			settings: Settings.isolated(),
+			disableExtensionDiscovery: true,
+			skills: [],
+			contextFiles: [],
+			promptTemplates: [],
+			slashCommands: [],
+			enableMCP: false,
+			enableLsp: false,
+			skipPythonPreflight: true,
+			rules: [],
+			preloadedCustomToolPaths: [],
+			toolNames: ["read"],
+		});
+		try {
+			const startupDecoded = { ...decoded, unfiltered: unfilteredReads };
+			expect(session.thinkingLevel).toBe(Effort.High);
+			expect(sessionManager.buildSessionContext().serviceTier).toEqual({ openai: "priority" });
+			expect(startupDecoded).toEqual({
+				thinking_level_change: 1,
+				service_tier_change: 1,
+				// Startup now uses metadata-selected latest records, with no
+				// unfiltered historical payload scan even for an in-memory journal.
+				unfiltered: 0,
+			});
+		} finally {
+			await session.dispose();
+		}
 	});
 });

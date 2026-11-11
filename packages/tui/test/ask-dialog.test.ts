@@ -58,6 +58,23 @@ describe("AskDialogComponent", () => {
 		expect(footer).toContain("cancel");
 	});
 
+	it("footer says edit instead of note while Other is highlighted", () => {
+		const questions: ExtensionAskDialogQuestion[] = [
+			{ id: "q1", question: "Choose one?", options: [{ label: "A1" }, { label: "A2" }] },
+		];
+		const component = new AskDialogComponent(questions, {
+			onSubmit: vi.fn(),
+			onCancel: vi.fn(),
+			onPrompt: vi.fn(),
+		});
+		expect(render(component)).toContain("n note");
+		component.handleInput(DOWN);
+		component.handleInput(DOWN);
+		const output = render(component);
+		expect(output).toContain("n edit");
+		expect(output).not.toContain("n note");
+	});
+
 	it("single-question, single-select: Enter on option submits immediately", () => {
 		const onSubmit = vi.fn();
 		const onCancel = vi.fn();
@@ -95,6 +112,24 @@ describe("AskDialogComponent", () => {
 				},
 			],
 		});
+	});
+
+	it("advertises the note hint in the footer frame (async and interactive share it)", () => {
+		const questions: ExtensionAskDialogQuestion[] = [
+			{
+				id: "q1",
+				question: "Choose one?",
+				options: [{ label: "Option A" }, { label: "Option B" }],
+			},
+		];
+
+		const component = new AskDialogComponent(questions, {
+			onSubmit: vi.fn(),
+			onCancel: vi.fn(),
+			onPrompt: vi.fn(),
+		});
+
+		expect(render(component)).toContain("note");
 	});
 
 	it("single-question, single-select: Space does not submit the highlighted answer", () => {
@@ -492,7 +527,7 @@ describe("AskDialogComponent", () => {
 		expect(submitted.noteImages).toBeUndefined();
 	});
 
-	it("drops note images with a note on Other when no custom answer was given", async () => {
+	it.each(["n", "N", ENTER])("%j on Other preserves the custom answer and images", async key => {
 		const image: ImageContent = { type: "image", data: "image-data", mimeType: "image/png" };
 		const onSubmit = vi.fn();
 		const component = new AskDialogComponent(
@@ -506,13 +541,14 @@ describe("AskDialogComponent", () => {
 		);
 
 		component.handleInput(DOWN); // Other
-		component.handleInput("n");
+		component.handleInput(key);
 		await Promise.resolve();
 		await Promise.resolve();
-		component.handleInput(TAB);
 		component.handleInput(ENTER);
 
 		const submitted = onSubmit.mock.calls[0][0].results[0];
+		expect(submitted.customInput).toBe("[Image #1]");
+		expect(submitted.customInputImages).toEqual([image]);
 		expect(submitted.note).toBeUndefined();
 		expect(submitted.noteImages).toBeUndefined();
 	});

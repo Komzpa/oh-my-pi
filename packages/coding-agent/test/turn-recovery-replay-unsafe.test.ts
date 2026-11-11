@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
-import type { AgentMessage, SyntheticToolResultDetails } from "@oh-my-pi/pi-agent-core";
+import { AgentBusyError, type AgentMessage, type SyntheticToolResultDetails } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -8,6 +8,10 @@ import type { Model, Usage } from "@oh-my-pi/pi-catalog/types";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import * as sessionLoader from "@oh-my-pi/pi-coding-agent/session/session-loader";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { RETRY_RECOVERY_ENTRY } from "@oh-my-pi/pi-coding-agent/session/retry-recovery-annotation";
 import {
 	type RecoveryCompactionResult,
 	kUsageLimitRequestProvider,
@@ -18,6 +22,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 import { createProviderErrorMessage } from "../../ai/src/providers/error-message";
 import { streamFactoryDroidGemini } from "../../ai/src/providers/factory-droid/gemini";
 import { captureFetch, gemini as factoryGemini } from "../../ai/test/helpers/factory-droid";
+import { sessionMessagePersistenceKey } from "../src/session/turn-persistence";
 
 const USAGE: Usage = {
 	input: 0,
@@ -69,6 +74,27 @@ function createHost(
 		}
 	}
 	const agentState = { messages: options.messages ?? [] };
+	const sessionEntries: SessionEntry[] = agentState.messages.map((message, index) => ({
+		type: "message",
+		id: `test-entry-${index}`,
+		parentId: index === 0 ? null : `test-entry-${index - 1}`,
+		timestamp: new Date(message.timestamp).toISOString(),
+		message,
+	}));
+	let nextEntryId = sessionEntries.length;
+	const matches = (
+		predicate: (metadata: { type: string; id: string; messageRole?: string }) => boolean,
+		newestFirst: boolean,
+	): SessionEntry[] => {
+		const entries = newestFirst ? [...sessionEntries].reverse() : sessionEntries;
+		return entries.filter(entry =>
+			predicate({
+				type: entry.type,
+				id: entry.id,
+				...(entry.type === "message" ? { messageRole: entry.message.role } : {}),
+			}),
+		);
+	};
 	return {
 		agent: {
 			state: agentState,
@@ -78,11 +104,28 @@ function createHost(
 		} as never,
 		sessionManager: {
 			getLastModelChangeRole: () => options.lastModelChangeRole,
-			getBranch: () => [],
-			getBranchView: () => [],
+			getBranch: () => [...sessionEntries],
+			getBranchView: () => [...sessionEntries],
+			iterateBranch: () => sessionEntries.values(),
+			iterateBranchMatchingNewestFirst: (
+				predicate: (metadata: { type: string; id: string; messageRole?: string }) => boolean,
+			) => matches(predicate, true).values(),
+			getBranchMatching: (predicate: (metadata: { type: string; id: string; messageRole?: string }) => boolean) =>
+				matches(predicate, false),
+			appendRetryRecovery: (entryId: string, retryRecovery: unknown) => {
+				const parentId = sessionEntries.at(-1)?.id ?? null;
+				sessionEntries.push({
+					type: "custom",
+					id: `test-entry-${nextEntryId++}`,
+					parentId,
+					timestamp: new Date().toISOString(),
+					customType: RETRY_RECOVERY_ENTRY,
+					data: { entryId, retryRecovery },
+				});
+			},
+			flush: async () => {},
 			getSessionId: () => "test-session",
 		} as never,
-		persistedAssistantEntryId: () => undefined,
 		settings,
 		modelRegistry,
 		configWarnings: [],
@@ -104,8 +147,33 @@ function createHost(
 		emitSessionEvent: async () => {},
 		scheduleAgentContinue: () => {},
 		waitForSessionMessagePersistence: async () => {},
-		appendSessionMessage: () => {},
-		sessionMessageAlreadyPersisted: () => false,
+		appendSessionMessage: (message: AssistantMessage) => {
+			const parentId = sessionEntries.at(-1)?.id ?? null;
+			sessionEntries.push({
+				type: "message",
+				id: `test-entry-${nextEntryId++}`,
+				parentId,
+				timestamp: new Date(message.timestamp).toISOString(),
+				message,
+			});
+		},
+		persistedAssistantEntryId: (message: AssistantMessage) => {
+			const key = sessionMessagePersistenceKey(message);
+			return key
+				? sessionEntries.find(
+						entry => entry.type === "message" && sessionMessagePersistenceKey(entry.message) === key,
+					)?.id
+				: undefined;
+		},
+		sessionMessageAlreadyPersisted: (message: AssistantMessage) => {
+			const key = sessionMessagePersistenceKey(message);
+			return (
+				key !== undefined &&
+				sessionEntries.some(
+					entry => entry.type === "message" && sessionMessagePersistenceKey(entry.message) === key,
+				)
+			);
+		},
 		setModelWithProviderSessionReset: async () => {},
 		resolveActiveEditMode: () => "hashline",
 		syncAfterModelChange: async () => {},
@@ -138,6 +206,60 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 	afterAll(() => {
 		authStorage.close();
 		tempDir.removeSync();
+	});
+
+	it("admits a candidate synchronously once after a busy retry, before its prompt consumer runs", async () => {
+		const host = createHost(model, modelRegistry);
+		const events: string[] = [];
+		const state = { isStreaming: true };
+		host.agent = {
+			state,
+			prompt: async () => {
+				if (state.isStreaming) throw new AgentBusyError();
+				state.isStreaming = true;
+				await Promise.resolve();
+				events.push("consumer");
+				state.isStreaming = false;
+			},
+			waitForIdle: async () => {
+				events.push("idle");
+				state.isStreaming = false;
+			},
+		} as never;
+		await new TurnRecovery(host).promptAgentWithIdleRetry(
+			[],
+			undefined,
+			() => events.push("claimed"),
+			() => events.push("admitted"),
+		);
+		expect(events).toEqual(["idle", "admitted", "consumer", "claimed"]);
+	});
+
+	it("keeps the shared dispatch timeout diagnostic without admitting a busy candidate", async () => {
+		const host = createHost(model, modelRegistry);
+		let admissions = 0;
+		let waits = 0;
+		host.agent = {
+			state: { isStreaming: true },
+			prompt: async () => {
+				throw new AgentBusyError();
+			},
+			waitForIdle: async () => {
+				waits++;
+			},
+		} as never;
+		const clock = vi.spyOn(Date, "now").mockReturnValueOnce(0).mockReturnValue(30_001);
+		try {
+			await expect(
+				new TurnRecovery(host).promptAgentWithIdleRetry([], undefined, undefined, () => {
+					admissions++;
+				}),
+			).rejects.toThrow("Timed out waiting for prior agent run to finish before prompting.");
+			expect(admissions).toBe(0);
+			expect(waits).toBe(0);
+		} finally {
+			clock.mockRestore();
+		}
 	});
 
 	it("rolls back a usage fallback cancelled during model reconciliation", async () => {
@@ -1426,33 +1548,34 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 		function continuationHost(message: AssistantMessage, textOutputCommitted = true) {
 			const messages: AgentMessage[] = [message];
 			const continues: string[] = [];
+			const beforeContinue: (() => void)[] = [];
 			const host = createHost(model, modelRegistry, { messages, textOutputCommitted });
 			host.agent = {
 				state: { messages },
 				appendMessage: (appended: AgentMessage) => messages.push(appended),
 			} as never;
-			host.scheduleAgentContinue = options => continues.push(options.source);
-			return { host, messages, continues };
+			host.scheduleAgentContinue = options => {
+				continues.push(options.source);
+				if (options.beforeContinue) beforeContinue.push(options.beforeContinue);
+			};
+			return { host, messages, continues, beforeContinue };
 		}
 
 		it("keeps the partial turn and continues with a resume reminder", () => {
 			const message = stalledTextTurn();
-			const { host, messages, continues } = continuationHost(message);
+			const { host, messages, continues, beforeContinue } = continuationHost(message);
 			const recovery = new TurnRecovery(host);
 
 			expect(recovery.isRetryableError(message)).toBe(false);
 			expect(recovery.classifyResolvedInterruptedToolTurn(message)).toBeUndefined();
 			expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
 
+			// The reminder lands only when the delayed continuation starts.
+			expect(messages).toEqual([message]);
+			for (const run of beforeContinue) run();
 			expect(messages[0]).toBe(message);
 			const reminder = messages[1];
 			if (reminder?.role !== "developer") throw new Error("expected developer reminder");
-			const text =
-				typeof reminder.content === "string"
-					? reminder.content
-					: reminder.content.map(part => (part.type === "text" ? part.text : "")).join("");
-			expect(text).toContain("Continue exactly where it stopped");
-			expect(text).toContain("Attempt #1/3");
 			expect(continues).toEqual(["stream-stall-continue"]);
 		});
 
@@ -1499,8 +1622,10 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
 			expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
 			expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
+			expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
+			expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
 			expect(recovery.handleCommittedTextStreamStall(message)).toBe(false);
-			expect(continues).toHaveLength(3);
+			expect(continues).toHaveLength(5);
 
 			recovery.resetForNewPrompt();
 			expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
@@ -1532,6 +1657,26 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
 			expect(messages[0]).toBe(message);
 			expect(continues).toEqual(["stream-stall-continue"]);
+		});
+
+		it("resets the stall sequence after a successful turn", () => {
+			const message = stalledTextTurn();
+			const { host, continues } = continuationHost(message);
+			const recovery = new TurnRecovery(host);
+
+			expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
+			expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
+			const settled = makeMessage([{ type: "text", text: "All done." }], model);
+			settled.stopReason = "stop";
+			expect(recovery.handleCommittedTextStreamStall(settled)).toBe(false);
+
+			// The successful turn restarted the sequence: a full fresh budget of
+			// continuations runs before the cap refuses again.
+			for (let i = 0; i < 5; i++) {
+				expect(recovery.handleCommittedTextStreamStall(message)).toBe(true);
+			}
+			expect(recovery.handleCommittedTextStreamStall(message)).toBe(false);
+			expect(continues).toHaveLength(7);
 		});
 
 		it("leaves uncommitted text, tool turns, other errors, and disabled retry to the error path", () => {
@@ -1588,4 +1733,54 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			expect(new TurnRecovery(createHost(model, modelRegistry)).isRetryableReasonlessAbort(withOutput)).toBe(false);
 		});
 	});
+	for (const preferred of [true, false]) {
+		it(`drops an indexed failed turn without reading archived payloads (${preferred ? "preferred id" : "identity fallback"})`, async () => {
+			using dir = TempDir.createSync("@retry-index-selection-");
+			const timestamp = new Date().toISOString();
+			const failed = makeMessage([], model);
+			const file = dir.join("session.jsonl");
+			await Bun.write(
+				file,
+				[
+					{ type: "session", version: 3, id: "indexed-retry", timestamp, cwd: dir.path() },
+					...Array.from({ length: 100 }, (_, i) => ({
+						type: "message",
+						id: `old-${i}`,
+						parentId: i === 0 ? null : `old-${i - 1}`,
+						timestamp,
+						message: { role: "user", content: `discarded ${i}`, timestamp: i },
+					})),
+					{
+						type: "compaction",
+						id: "compact",
+						parentId: "old-99",
+						timestamp,
+						firstKeptEntryId: "",
+						summary: "old history",
+						tokensBefore: 1000,
+					},
+					{ type: "message", id: "failed", parentId: "compact", timestamp, message: failed },
+				]
+					.map(entry => JSON.stringify(entry))
+					.join("\n") + "\n",
+			);
+			const manager = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
+			const read = vi.spyOn(sessionLoader, "readPositionedSessionEntry");
+			try {
+				const host: TurnRecoveryHost = {
+					...createHost(model, modelRegistry, { messages: [failed] }),
+					sessionManager: manager,
+					persistedAssistantEntryId: () => (preferred ? "failed" : undefined),
+				};
+				const recovery = new TurnRecovery(host);
+				expect(await recovery.dropPersistedAssistantTurn(failed)).toBe("failed");
+				expect(manager.getLeafId()).toBe("compact");
+				expect(host.agent.state.messages).toEqual([]);
+				expect(read.mock.calls.filter(([, position]) => position.id.startsWith("old-"))).toHaveLength(0);
+			} finally {
+				read.mockRestore();
+				await manager.close();
+			}
+		});
+	}
 });

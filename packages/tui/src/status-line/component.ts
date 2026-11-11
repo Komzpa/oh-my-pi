@@ -42,7 +42,7 @@ import {
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { summarizeUsageResetCredits } from "../overlays/usage-display";
 import { getPreset } from "./presets";
-import { describeSegment, renderSegment, type SegmentContext } from "./segments";
+import { currentWorkTitle, describeSegment, renderSegment, type SegmentContext } from "./segments";
 import { promptCacheBrief } from "./prompt-cache";
 import type { TspMeterMark, TspProps } from "@oh-my-pi/pi-wire";
 import type { NativeNode, NativeUiEvent } from "../native/node";
@@ -796,6 +796,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	#collabStatus: CollabStatus | null = null;
 	#streamStatus: { viewers: number } | null = null;
 	#recording = false;
+	#fpsText = "";
 	#focusedAgentId: string | undefined;
 	#activeRepoCache: ActiveRepoCache | undefined;
 
@@ -1024,6 +1025,12 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	setAutoCompactEnabled(enabled: boolean): void {
 		if (this.#autoCompactEnabled === enabled) return;
 		this.#autoCompactEnabled = enabled;
+		this.#invalidateStatusLineRenderCache();
+	}
+
+	setFpsText(text: string): void {
+		if (this.#fpsText === text) return;
+		this.#fpsText = text;
 		this.#invalidateStatusLineRenderCache();
 	}
 
@@ -2726,6 +2733,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			collab: this.#collabStatus,
 			stream: this.#streamStatus,
 			recording: this.#recording,
+			fpsText: this.#fpsText,
 			usageStats,
 			contextPercent,
 			contextTokens,
@@ -2777,12 +2785,20 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 			};
 		}
 
-		const leftSegments = useCustomSegments
+		const baseLeftSegments = useCustomSegments
 			? (this.#settings.leftSegments ?? presetDef.leftSegments)
 			: presetDef.leftSegments;
-		const rightSegments = useCustomSegments
+		const baseRightSegments = useCustomSegments
 			? (this.#settings.rightSegments ?? presetDef.rightSegments)
 			: presetDef.rightSegments;
+		const leftSegments =
+			this.#settings.showFpsMeter === false
+				? baseLeftSegments.filter(segment => segment !== "fps")
+				: baseLeftSegments;
+		const rightSegments =
+			this.#settings.showFpsMeter === false
+				? baseRightSegments.filter(segment => segment !== "fps")
+				: baseRightSegments;
 
 		return {
 			...this.#settings,
@@ -2805,7 +2821,42 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	 * usage aggregation, VCS probing, or segment getters run on a cache hit.
 	 * Fills `target` in place so the per-frame probe allocates nothing.
 	 */
+	#externalProbeFrame = false;
+	#externalProbeRead = false;
+	#externalProbeMemo = new StatusLineExternalInputs();
+
+	/** Share the external snapshot only within one synchronous compositor paint. */
+	beginFrame(): void {
+		this.#externalProbeFrame = true;
+		this.#externalProbeRead = false;
+	}
+
+	endFrame(): void {
+		this.#externalProbeFrame = false;
+		this.#externalProbeRead = false;
+	}
+
 	#readStatusLineExternalInputs(target: StatusLineExternalInputs): void {
+		const memo = this.#externalProbeMemo;
+		if (this.#externalProbeFrame && this.#externalProbeRead && memo.sessionRef === this.session) {
+			Object.assign(target, memo);
+		} else {
+			this.#readSessionExternalInputs(target);
+			if (this.#externalProbeFrame) {
+				Object.assign(memo, target);
+				this.#externalProbeRead = true;
+			}
+		}
+		// Settings, workspace and theme have independent owners and remain live.
+		target.themeRef = theme;
+		target.themeEpoch = getThemeEpoch();
+		target.projectDir = getProjectDir();
+		target.sessionSettingsRef = this.host.getSessionSettingsIdentity(this.session);
+		target.sessionSettingsRevision = this.host.getSessionSettingsRevision(this.session);
+		target.globalSettingsRevision = this.host.getSettingsRevision();
+	}
+
+	#readSessionExternalInputs(target: StatusLineExternalInputs): void {
 		const state = this.session.state;
 		const stateMessages = state.messages ?? EMPTY_MESSAGES;
 		const stateLastMessage = stateMessages[stateMessages.length - 1];
@@ -2857,14 +2908,8 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		}
 		const tools = this.session.agent?.state?.tools;
 		const skills = this.session.skills;
-		target.themeRef = theme;
-		target.themeEpoch = getThemeEpoch();
-		target.projectDir = getProjectDir();
 		target.sessionRef = this.session;
 		target.sessionFile = this.session.sessionFile;
-		target.sessionSettingsRef = this.host.getSessionSettingsIdentity(this.session);
-		target.sessionSettingsRevision = this.host.getSessionSettingsRevision(this.session);
-		target.globalSettingsRevision = this.host.getSettingsRevision();
 		target.stateRef = state;
 		target.stateMessagesRef = stateMessages;
 		target.stateMessagesLength = stateMessages.length;
@@ -2900,7 +2945,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		target.tokenizerRef = this.session.agent?.tokenizer;
 		target.skillsRef = skills;
 		target.skillsLength = skills?.length ?? 0;
-		target.sessionName = this.session.sessionManager?.getSessionName?.();
+		target.sessionName = currentWorkTitle(this.session);
 		target.sessionId = this.session.sessionManager?.getSessionId?.();
 		target.isStreaming = this.session.isStreaming;
 		target.isAutoThinking = this.session.isAutoThinking;

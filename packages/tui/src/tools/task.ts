@@ -2236,8 +2236,43 @@ export interface StructuredSubagentOutput {
 /** Display cap for a normalized one-line label (roster line, registry `displayName`, prompt field). */
 export const LABEL_MAX = 80;
 
+/**
+ * One image attachment forwarded to a child's first prompt as a real image
+ * content part. `data` is base64; the sha256/rn/index metadata mirrors the
+ * requirements-ledger `RequirementImage` so an auditor can tie the part back to
+ * its `Rn` requirement row without rehashing.
+ *
+ * Bytes travel by reference: ledger-produced images carry `artifactPath` and/or
+ * `sourcePath` with no `data`. The executor resolves the reference to bytes
+ * exactly at the child's first-prompt boundary (verifying `sha256` when
+ * supplied) and never threads bytes through task args. Inline `data` remains
+ * accepted for callers that already hold bytes.
+ */
+interface TaskImageBase {
+	type: "image";
+	/** Base64 image bytes; absent for path/artifact references. */
+	data?: string;
+	mimeType: string;
+	/** sha256 hex of the decoded bytes, when known. */
+	sha256?: string;
+	/** Requirement id (e.g. "R1") this image was cited by, when known. */
+	rn?: string;
+	/** One-based `[Image #N]` marker position, when known. */
+	index?: number;
+	/** Attachment source file path when the image is file-backed. */
+	sourcePath?: string;
+	/** Durable session artifact holding the bytes when no source file exists. */
+	artifactPath?: string;
+}
+/**
+ * At least one byte source is required: inline `data`, `artifactPath`, or
+ * `sourcePath`. Combinations (e.g. `data` plus its `artifactPath`) are allowed.
+ */
+export type TaskImage = TaskImageBase & ({ data: string } | { artifactPath: string } | { sourcePath: string });
+
 /** Single task item. Fields are optional defensively: args stream in token by token. */
 export interface TaskItem {
+	requirementIds?: string[];
 	/** Stable agent name; becomes the registry/IRC id. Default = generated AdjectiveNoun. */
 	name?: string;
 	/** Agent type to run this item (e.g. "scout"). Defaults to the spawn policy's default agent. */
@@ -2249,18 +2284,31 @@ export interface TaskItem {
 	/** Inline instructions; exactly one of task or taskFile is required. */
 	task?: string;
 	taskFile?: string;
+	/** Exact open todo content. */
+	row?: string;
+	/** Restrict this dispatch to read tools. */
+	readOnly?: boolean;
+	previewIntegration?: { task: string; kind: "refresh" | "integration" };
 	/** How open-ended the work is; required by the schema and the child's sole `auto` thinking classification input. */
 	solutionSpace?: string;
+	/** Chief's one-line rejection reason for redispatching a completed row. */
+	rework?: string;
 	/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */
 	effort?: "lo" | "med" | "hi";
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
 	schemaMode?: "permissive" | "strict";
+	/** Declared resource ownership; paths are relative to root. */
+	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
 	/** Eval-defined tool names exposed to this child. */
 	tools?: string[];
+	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	/** Run this spawn in an isolated worktree (batch form; flat form carries it top-level). */
 	isolated?: boolean;
+	/** Image attachments delivered as real image content parts in the child's first prompt. */
+	images?: TaskImage[];
 }
 
 /**
@@ -2270,6 +2318,7 @@ export interface TaskItem {
  * transcripts using the flat form keep working under either setting.
  */
 export interface TaskParams {
+	requirementIds?: string[];
 	/** Stable agent name (flat form). */
 	name?: string;
 	/** Agent type to spawn (flat form); omitted values resolve from the session spawn policy. */
@@ -2282,22 +2331,34 @@ export interface TaskParams {
 	task?: string;
 	/** Absolute path or local:// URL to a UTF-8 file (flat form), mutually exclusive with task. */
 	taskFile?: string;
+	/** Exact open todo content. */
+	row?: string;
+	/** Restrict this dispatch to read tools. */
+	readOnly?: boolean;
 	/** How open-ended the work is (flat form); see {@link TaskItem.solutionSpace}. */
 	solutionSpace?: string;
+	/** Chief's one-line rejection reason for redispatching a completed row. */
+	rework?: string;
 	/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */
 	effort?: "lo" | "med" | "hi";
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
 	schemaMode?: "permissive" | "strict";
+	/** Declared resource ownership; paths are relative to root. */
+	scope?: { root?: string; branch?: string; paths?: string[]; resources?: string[]; ports?: number[] };
 	/** Eval-defined tool names exposed to the flat-form child. */
 	tools?: string[];
+	/** Declared exclusive checkout paths for the flat-form child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
 	/** Batch form (`task.batch`): one subagent per item. */
 	tasks?: TaskItem[];
 	/** Batch form: shared background prepended to every assignment; required by the batch schema. */
 	context?: string;
-	/** Run in an isolated worktree (flat form; per-item in batch form). */
+	/** Run this spawn in an isolated worktree (flat form; per-item in batch form). */
 	isolated?: boolean;
+	/** Image attachments (flat form) delivered as real image content parts in the child's first prompt. */
+	images?: TaskImage[];
 }
 
 /**
@@ -2342,6 +2403,15 @@ export interface ReviewData {
 	summary?: ReviewSummary;
 }
 
+/** Worker-owned processes still running when a warned terminal yield was accepted. */
+export interface AbandonedJob {
+	id: string;
+	type: "bash" | "task" | "eval" | "service";
+	command: string;
+	startedAt: number;
+	elapsedMs: number;
+}
+
 /** Details extracted from a subagent `yield` tool call for final-result assembly and task rendering. */
 export interface YieldItem {
 	data?: unknown;
@@ -2359,6 +2429,7 @@ export interface YieldItem {
 	 * during post-mortem validation.
 	 */
 	schemaOverridden?: boolean;
+	abandonedJobs?: AbandonedJob[];
 }
 
 /** Progress tracking for a single agent */
@@ -2419,6 +2490,8 @@ export interface AgentProgress {
 	resolvedThinkingLevel?: ConfiguredThinkingLevel;
 	/** True when {@link resolvedModel} is the target of an active retry fallback (not the originally configured model). Lets observer-only UIs (collab guests, Agent Hub rows with no live session) flag the fallback and keep the provider. */
 	resolvedModelIsFallback?: boolean;
+	firstTurnModel?: string;
+	fallbacks?: TaskModelFallback[];
 	/** Extension routing note (e.g. model-pools) explaining why {@link resolvedModel} was chosen. */
 	resolvedModelRoute?: string;
 	/** True when a live advisor was attached to this run's session, not merely enabled in settings. */
@@ -2473,8 +2546,24 @@ export interface AgentProgress {
 	inflightTaskDetails?: TaskToolDetails;
 }
 
+export interface TaskFallbackReason {
+	class: "quota" | "auth" | "other";
+	status?: number;
+	message: string;
+	source: "provider-error" | "usage-preflight";
+}
+
+export interface TaskModelFallback {
+	from: string;
+	to: string;
+	at: string;
+	reason?: TaskFallbackReason;
+}
+
 /** Result from a single agent execution */
 export interface SingleResult {
+	/** Provider availability is infrastructure, never a model quality verdict. */
+	failureKind?: "infrastructure";
 	index: number;
 	id: string;
 	agent: string;
@@ -2487,6 +2576,7 @@ export interface SingleResult {
 	lastIntent?: string;
 	exitCode: number;
 	output: string;
+	deconfliction?: unknown[];
 	stderr: string;
 	truncated: boolean;
 	/**
@@ -2494,6 +2584,8 @@ export interface SingleResult {
 	 * selected an output schema or strict schema mode.
 	 */
 	structuredOutput?: StructuredSubagentOutput;
+	/** Explicit abandonment at terminal acceptance; teardown still cancels owner jobs. */
+	abandonedJobs?: AbandonedJob[];
 	durationMs: number;
 	/** Cumulative input + output + cacheWrite tokens across all turns. Excludes cacheRead (re-reads cached context every turn, making cumulative sum misleading). */
 	tokens: number;
@@ -2514,6 +2606,10 @@ export interface SingleResult {
 	resolvedThinkingLevel?: ConfiguredThinkingLevel;
 	/** True when {@link resolvedModel} is the target of an active retry fallback. Mirrors {@link AgentProgress.resolvedModelIsFallback} onto the settled result. */
 	resolvedModelIsFallback?: boolean;
+	/** Model on the first assistant attempt, including a failed request. */
+	firstTurnModel?: string;
+	/** Retry switches with their durable triggering provider error or usage preflight. */
+	fallbacks?: TaskModelFallback[];
 	/** Mirrors {@link AgentProgress.resolvedModelRoute} onto the settled result. */
 	resolvedModelRoute?: string;
 	/** Retains {@link AgentProgress.advisor} after the advised session is disposed. */
@@ -2531,6 +2627,11 @@ export interface SingleResult {
 	 * messageable after the run — summaries must not suggest otherwise.
 	 */
 	isolated?: boolean;
+	/**
+	 * Checkout a non-isolated run executed in, set by the task runner (never by
+	 * model output) so a finished auditor's row binding survives its disposal.
+	 */
+	checkoutCwd?: string;
 	/** Patch path for isolated worktree output */
 	patchPath?: string;
 	/**
@@ -2567,6 +2668,19 @@ export interface SingleResult {
 		attempt: number;
 		errorMessage: string;
 	};
+	/**
+	 * Background jobs that still belonged to the worker when it failed or was
+	 * aborted. Preserved so the parent can see follow-on processes the worker
+	 * started before a terminal provider/runtime failure.
+	 */
+	retainedBackgroundJobs?: Array<{
+		id: string;
+		type: "bash" | "task" | "eval";
+		status: "running" | "completed" | "failed" | "cancelled";
+		label?: string;
+		agentId?: string;
+		pid?: number;
+	}>;
 	/** Output metadata for agent:// URL integration */
 	outputMeta?: { lineCount: number; charCount: number };
 }

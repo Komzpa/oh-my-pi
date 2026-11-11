@@ -22,6 +22,7 @@ use napi::{
 use napi_derive::napi;
 use parking_lot::Mutex;
 use pi_shell::output_decode::OutputDecoder;
+use pi_vcs::process_limit::{ScopeEnvironment, ToolProcessLimit};
 use portable_pty::{CommandBuilder, ExitStatus, PtySize, native_pty_system};
 
 use crate::{
@@ -324,8 +325,10 @@ fn run_pty_sync(
 	ct: task::CancelToken,
 ) -> Result<PtyRunResult> {
 	let pty_system = native_pty_system();
-	ct.heartbeat()
-		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before openpty: {err}")))?;
+	if let Err(error) = ct.heartbeat() {
+		let timed_out = error.to_string().contains("Timeout");
+		return Ok(PtyRunResult { exit_code: None, cancelled: !timed_out, timed_out });
+	}
 
 	const PTY_STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 	let pair = if cfg!(windows) {
@@ -395,13 +398,35 @@ fn run_pty_sync(
 	for name in pi_shell::shell::GIT_REPO_LOCATION_ENV_VARS {
 		cmd.env_remove(name);
 	}
+	// The filtered overlay omits IPC markers, but omission does not remove
+	// `CommandBuilder`'s inherited values. Reuse the shell's platform casing
+	// rule.
+	for (key, _) in std::env::vars_os() {
+		if key
+			.to_str()
+			.is_some_and(pi_shell::shell::is_node_ipc_channel_var)
+		{
+			cmd.env_remove(key);
+		}
+	}
 	if let Some(env) = config.env.as_ref() {
 		for (key, value) in env {
 			cmd.env(key, value);
 		}
 	}
-	ct.heartbeat()
-		.map_err(|err| Error::from_reason(format!("PTY setup cancelled before spawn: {err}")))?;
+	let payload_env =
+		ScopeEnvironment::from_lookup(|name| cmd.get_env(name).map(|value| value.to_os_string()));
+	let process_scope = ToolProcessLimit::default();
+	let scoped_argv = process_scope
+		.wrap_scope_command(cmd.get_argv(), &payload_env)
+		.map_err(|err| {
+			Error::from_reason(format!("Failed to enforce PTY process boundary: {err}"))
+		})?;
+	*cmd.get_argv_mut() = scoped_argv;
+	if let Err(error) = ct.heartbeat() {
+		let timed_out = error.to_string().contains("Timeout");
+		return Ok(PtyRunResult { exit_code: None, cancelled: !timed_out, timed_out });
+	}
 
 	let mut child = pair
 		.slave

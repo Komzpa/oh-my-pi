@@ -1,5 +1,6 @@
 import { type AgentMessage, ASIDE_MESSAGE_COMMIT, ASIDE_MESSAGE_DISCARD } from "@oh-my-pi/pi-agent-core";
 import { logger, toError } from "@oh-my-pi/pi-utils";
+import { launchScope } from "@oh-my-pi/pi-utils/launch-trace";
 
 export interface YieldDispatcher<P> {
 	/** Drop entries already delivered through another path. Called per-entry at flush time. */
@@ -70,6 +71,7 @@ export class YieldQueue {
 	}
 
 	enqueueWithReceipt<P>(kind: string, entry: P): Promise<void> {
+		using _phase = launchScope(`async-result.enqueue:${kind.slice(0, 96)}`);
 		const { promise, resolve, reject } = Promise.withResolvers<void>();
 		if (!this.#enqueue(kind, { value: entry, resolve, reject })) {
 			reject(new Error(`Yield queue entry ignored for unregistered kind: ${kind}`));

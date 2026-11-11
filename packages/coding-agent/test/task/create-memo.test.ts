@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import { parseAgent } from "../../src/task/agents";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { refreshAgentDiscovery, TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
@@ -54,7 +55,7 @@ describe("TaskTool.create discovery memo", () => {
 		const second = await TaskTool.create(createSession("/tmp"));
 
 		expect(spy).toHaveBeenCalledTimes(1);
-		expect(first.description).toBe(second.description);
+		expect(first.projectInstructions).toBe(second.projectInstructions);
 	});
 
 	it("rescans for a different cwd", async () => {
@@ -78,8 +79,8 @@ describe("TaskTool.create discovery memo", () => {
 		const second = await TaskTool.create(createSession("/tmp/omp-memo-shared", ["/extensions/second"]));
 
 		expect(spy).toHaveBeenCalledTimes(2);
-		expect(first.description).toContain("General-purpose task agent");
-		expect(second.description).toContain("Refreshed task agent");
+		expect(first.projectInstructions).toContain("General-purpose task agent");
+		expect(second.projectInstructions).toContain("Refreshed task agent");
 	});
 
 	it("does not cache a rejected discovery", async () => {
@@ -91,7 +92,7 @@ describe("TaskTool.create discovery memo", () => {
 		await expect(TaskTool.create(createSession("/tmp"))).rejects.toThrow("boom");
 		const tool = await TaskTool.create(createSession("/tmp"));
 
-		expect(tool.description).toContain("task");
+		expect(tool.projectInstructions).toContain("task");
 		expect(spy).toHaveBeenCalledTimes(2);
 	});
 
@@ -117,11 +118,11 @@ describe("TaskTool.create discovery memo", () => {
 		} as unknown as ToolSession;
 
 		const before = await TaskTool.create(session);
-		expect(before.description).toContain("General-purpose task agent");
+		expect(before.projectInstructions).toContain("General-purpose task agent");
 
 		cfgExtensions.override(settings, ["/extensions/live"]);
 		const after = await TaskTool.create(session);
-		expect(after.description).toContain("Refreshed task agent");
+		expect(after.projectInstructions).toContain("Refreshed task agent");
 		expect(spy).toHaveBeenCalledTimes(2);
 	});
 
@@ -133,13 +134,30 @@ describe("TaskTool.create discovery memo", () => {
 		const session = createSession("/tmp/omp-memo-refresh");
 		const existing = await TaskTool.create(session);
 
-		expect(existing.description).toContain("General-purpose task agent");
+		expect(existing.projectInstructions).toContain("General-purpose task agent");
 		await refreshAgentDiscovery(session.cwd, session.effectiveExtensionRoots?.());
 
-		expect(existing.description).toContain("Refreshed task agent");
-		expect(existing.description).not.toContain("General-purpose task agent");
+		expect(existing.projectInstructions).toContain("Refreshed task agent");
+		expect(existing.projectInstructions).not.toContain("General-purpose task agent");
 		const future = await TaskTool.create(session);
-		expect(future.description).toContain("Refreshed task agent");
+		expect(future.projectInstructions).toContain("Refreshed task agent");
 		expect(spy).toHaveBeenCalledTimes(2);
 	});
+});
+
+it("staffing advertises ui-coder publication limits before the lead writes a brief", async () => {
+	const profile = new URL("../../../reemxy-extensions/extensions/agents/ui-coder.md", import.meta.url);
+	const agent = parseAgent(profile.pathname, await Bun.file(profile).text(), "project");
+	const spy = vi
+		.spyOn(discoveryModule, "discoverAgents")
+		.mockResolvedValue({ agents: [agent], projectAgentsDir: null });
+	try {
+		const tool = await TaskTool.create(createSession("/tmp/ui-coder-staffing-contract"));
+		const advertised = tool.description.split("# Available Agents")[1]!;
+		expect(advertised).toContain("no push or merge");
+		expect(advertised).toContain("git-pr-owner");
+		expect(advertised).toContain("isolated");
+	} finally {
+		spy.mockRestore();
+	}
 });

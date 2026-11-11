@@ -18,6 +18,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { InteractiveSessionConnection } from "@oh-my-pi/pi-coding-agent/modes/interactive-session";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -461,4 +462,79 @@ describe("EventController — terminal title across a non-terminal agent_end", (
 		expect(stateSpy).toHaveBeenCalledWith("idle");
 		expect(markActivityEnd).toHaveBeenCalledTimes(1);
 	});
+});
+
+describe("EventController owner settlement connection", () => {
+	it("waits for the supplied owner and ignores stale local streaming/work/queue state", async () => {
+		const idle = vi.fn(async () => {
+			throw new Error("frontend must not settle work");
+		});
+		const ctx = createInteractiveModeContext({
+			session: {
+				isStreaming: true,
+				hasPendingAsyncWork: () => true,
+				queuedMessageCount: 99,
+				hasPostPromptWork: true,
+				waitForIdle: idle,
+				settleAsyncWork: idle,
+			},
+			viewSession: { isStreaming: false },
+		});
+		const settled = Promise.withResolvers<void>();
+		const wait = vi.fn(() => settled.promise);
+		const connection: InteractiveSessionConnection = {
+			promptCustomMessage: async () => true,
+			prompt: async () => true,
+			abort: async () => {},
+			subscribe: () => () => {},
+			isStreaming: false,
+			isCompacting: false,
+			hasPostPromptWork: false,
+			queuedMessageCount: 0,
+			hasPendingAsyncWork: () => false,
+			beginDispose: () => {},
+			disposeSession: async () => {},
+			checkpoint: async () => {},
+			saveDraft: async () => {},
+			consumeDraft: async () => null,
+			waitForSettled: wait,
+		};
+		const end = vi.spyOn(ctx.statusLine, "markActivityEnd");
+		const controller = new EventController(ctx, connection);
+		await controller.handleEvent(asyncWaitEnd());
+		expect(wait).toHaveBeenCalledTimes(1);
+		expect(end).not.toHaveBeenCalled();
+		settled.resolve();
+		await nextMacrotask();
+		expect(end).toHaveBeenCalledTimes(1);
+		expect(idle).not.toHaveBeenCalled();
+	});
+
+	it.each(["queue", "background", "post-prompt"])(
+		"keeps the run open for owner %s work even when the frontend is idle",
+		async work => {
+			const ctx = createInteractiveModeContext();
+			const connection: InteractiveSessionConnection = {
+				promptCustomMessage: async () => true,
+				prompt: async () => true,
+				abort: async () => {},
+				subscribe: () => () => {},
+				isStreaming: false,
+				isCompacting: false,
+				hasPostPromptWork: work === "post-prompt",
+				queuedMessageCount: work === "queue" ? 1 : 0,
+				hasPendingAsyncWork: () => work === "background",
+				beginDispose: () => {},
+				disposeSession: async () => {},
+				checkpoint: async () => {},
+				saveDraft: async () => {},
+				consumeDraft: async () => null,
+				waitForSettled: async () => {},
+			};
+			const end = vi.spyOn(ctx.statusLine, "markActivityEnd");
+			await new EventController(ctx, connection).handleEvent(asyncWaitEnd());
+			await nextMacrotask();
+			expect(end).not.toHaveBeenCalled();
+		},
+	);
 });

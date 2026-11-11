@@ -2032,4 +2032,51 @@ describe("AgentSession auto-compaction progress guard", () => {
 		expect(noProgress.length).toBe(1);
 		expect(noProgress[0].level).toBe("warning");
 	});
+	it("backs off across new turns after an ineffective compaction and rearms on a larger model", async () => {
+		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
+		vi.spyOn(session.agent, "continue").mockResolvedValue();
+		const usage = vi
+			.spyOn(session, "getContextUsage")
+			.mockReturnValue({ tokens: 190000, contextWindow: 200000, percent: 95 });
+		const starts = countCompactionStarts();
+		const notices = collectNotices();
+		const allEntries = vi.spyOn(sessionManager, "getEntries");
+		for (let turn = 0; turn < 4; turn++) {
+			const message = { ...highUsageAssistant(), timestamp: Date.now() + turn };
+			session.agent.emitExternalEvent({ type: "message_end", message });
+			session.agent.emitExternalEvent({ type: "agent_end", messages: [message] });
+			await session.waitForIdle();
+		}
+		expect(starts()).toBe(1);
+		expect(allEntries).not.toHaveBeenCalled();
+		allEntries.mockRestore();
+		const warnings = notices.filter(n => n.message.startsWith("Harness (not Darafei):"));
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0].message).toContain("anthropic/claude-sonnet-4-5");
+		expect(warnings[0].message).toContain("200000");
+		expect(session.agent.state.messages.some(m => m.role === "custom" && m.customType === "compaction-backoff")).toBe(
+			true,
+		);
+		await session.setModel({ ...session.model!, id: "larger-test", contextWindow: 400000 });
+		usage.mockReturnValue({ tokens: 390000, contextWindow: 400000, percent: 97.5 });
+		await session.prompt("new ".repeat(500000));
+		await session.waitForIdle();
+		expect(starts()).toBe(2);
+	});
+
+	it("warns immediately on a too-small model and never compacts an oversized system prompt", async () => {
+		session.agent.setSystemPrompt(["resident ".repeat(8000)]);
+		const starts = countCompactionStarts();
+		const notices = collectNotices();
+		await session.setModel({ ...session.model!, id: "small-test", contextWindow: 1024 });
+		expect(notices.filter(n => n.message.startsWith("Harness (not Darafei):"))).toHaveLength(1);
+		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined as never);
+		await session.prompt("continue");
+		await session.prompt("continue again");
+		expect(starts()).toBe(0);
+		expect(notices.filter(n => n.message.startsWith("Harness (not Darafei):"))).toHaveLength(1);
+		await session.setModel({ ...session.model!, id: "large-test", contextWindow: 400000 });
+		await session.prompt("continue on larger model");
+		expect(starts()).toBe(0);
+	});
 });

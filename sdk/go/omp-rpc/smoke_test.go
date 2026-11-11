@@ -119,7 +119,7 @@ func TestSmoke(t *testing.T) {
 	defer cancel()
 	client, log, finish := startServer(t, root, t.TempDir(), nil)
 
-	state, err := client.GetState(ctx)
+	state, err := client.GetState(ctx, GetStateCommand{})
 	if err != nil {
 		t.Fatalf("get_state: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestSmokeModel(t *testing.T) {
 	}
 	t.Logf("large prompt: %d bytes, user message_end carried the full text, assistant=%q, frames reassembled from rpc_chunk=%d", len(big), *turn.AssistantText, client.reassembled.Load())
 
-	state, err := client.GetState(ctx)
+	state, err := client.GetState(ctx, GetStateCommand{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,3 +1,8 @@
+import {
+	recordThinkingPrefixDispatch,
+	snapshotThinkingPrefix,
+	thinkingPrefixDiagnostic,
+} from "./thinking-prefix-diagnostics";
 /**
  * Amazon Bedrock chat transport.
  *
@@ -40,6 +45,8 @@ import { isRecord, normalizeSystemPrompts, normalizeToolCallId, resolveCacheRete
 import { resolveAwsAmbientRegion } from "../utils/aws-profile";
 import {
 	clearStreamingPartialJson,
+	copyPerCallContextMessage,
+	isPerCallContextMessage,
 	kStreamingBlockIndex,
 	kStreamingLastParseLen,
 	kStreamingPartialJson,
@@ -882,6 +889,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 						: undefined,
 				...(prefixMismatchBehavior ? { additionalModelResponseFieldPaths: ["/input_transformations"] } : {}),
 			};
+			const beforePayloadHook = options?.onPayload ? snapshotThinkingPrefix(commandInput) : undefined;
 			const replacementInput = await options?.onPayload?.(commandInput, model);
 			if (replacementInput !== undefined) commandInput = replacementInput as ConverseStreamRequest;
 			// After the hook so extension-injected tags are validated too, and before the
@@ -899,6 +907,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 					url: resolveBedrockRequestUrl(model, base, "converse-stream").url,
 					body: commandInput,
 				};
+				recordThinkingPrefixDispatch(commandInput, options, `bedrock:${base}:${model.id}`, beforePayloadHook);
 				({ response } = await sendBedrockRequest(model, options, region, base, commandInput, "converse-stream"));
 				if (response.ok) break;
 				if (!bearerToken && (response.status === 401 || response.status === 403)) {
@@ -1017,6 +1026,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 								transformations
 									.filter(transformation => transformation.reason === "prefix_binding_mismatch")
 									.map(transformation => transformation.path),
+								thinkingPrefixDiagnostic(commandInput),
 							);
 						}
 						// A sentinel-only request must never surface a tool-use stop:
@@ -1094,6 +1104,9 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 			const result = await AIError.finalize(error, { api: model.api, signal: options.signal, rawRequestDump });
 			output.stopReason = result.stopReason;
 			output.errorStatus = result.status;
+			output.errorType = result.errorType;
+			output.errorCode = result.errorCode;
+			output.errorResetAt = result.errorResetAt;
 			output.errorId = result.id;
 			output.errorMessage = result.message + diagnostics;
 			output.duration = performance.now() - startTime;
@@ -1372,6 +1385,7 @@ function convertMessages(
 
 	for (let i = 0; i < transformedMessages.length; i++) {
 		const m = transformedMessages[i];
+		const resultStart = result.length;
 
 		switch (m.role) {
 			case "developer":
@@ -1479,13 +1493,16 @@ function convertMessages(
 			default:
 				throw new AIError.ValidationError("Unknown message role");
 		}
+		for (let index = resultStart; index < result.length; index++) {
+			copyPerCallContextMessage(result[index], m);
+		}
 	}
 
 	// Prioritize the final user checkpoint; buildSystemPrompt consumes any
 	// remaining configured capacity afterward.
 	if (result.length > 0) {
-		const lastMessage = result[result.length - 1];
-		if (lastMessage.role === "user" && lastMessage.content) {
+		const lastMessage = result.findLast(message => !isPerCallContextMessage(message));
+		if (lastMessage?.role === "user" && lastMessage.content) {
 			const cachePoint = takeCachePoint(promptCachePolicy);
 			if (cachePoint) (lastMessage.content as UserContent[]).push(cachePoint);
 		}

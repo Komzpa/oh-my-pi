@@ -1,4 +1,7 @@
+import type { AssistantProviderReplayState } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { ToolResultPruneEntry, ToolResultPruneTarget } from "@oh-my-pi/pi-agent-core/compaction/entries";
+export type { ToolResultPruneEntry, ToolResultPruneTarget };
 import type {
 	ImageContent,
 	MessageAttribution,
@@ -7,9 +10,10 @@ import type {
 	TextContent,
 	Usage,
 } from "@oh-my-pi/pi-ai";
-import type { StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { StructuredSubagentSchemaMode, TaskFallbackReason } from "@oh-my-pi/pi-tui/tools/task";
 import type { CompactionMethod } from "./compaction-methods";
+import type { PeerCoordinationState } from "../task/peer-coordination";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import type { RetryFallbackRole } from "./retry-fallback-chains";
 import type { RuntimeIdentity } from "./runtime-identity";
@@ -113,6 +117,8 @@ export interface SessionEntryBase {
 export interface SessionMessageEntry extends SessionEntryBase {
 	type: "message";
 	message: AgentMessage;
+	/** Local provider continuation state, excluded from the published message. */
+	assistantProviderReplay?: AssistantProviderReplayState;
 }
 
 /** Usage from a model call that does not belong in the conversation transcript. */
@@ -146,6 +152,8 @@ export interface ThinkingLevelChangeEntry extends SessionEntryBase {
 }
 
 export interface ModelChangeEntry extends SessionEntryBase {
+	/** Why the model was selected, when the switch has an explicit cause. */
+	reason?: string;
 	type: "model_change";
 	/** Model in "provider/modelId" format */
 	model: string;
@@ -153,6 +161,8 @@ export interface ModelChangeEntry extends SessionEntryBase {
 	role?: string;
 	/** True when this transition selected a retry-fallback model rather than the configured model. */
 	resolvedModelIsFallback?: boolean;
+	/** Causal trigger; persisted at the switch even when error persistence completes later. */
+	fallback?: { from: string; reason?: TaskFallbackReason };
 }
 
 export interface ServiceTierChangeEntry extends SessionEntryBase {
@@ -275,15 +285,24 @@ export interface CredentialPinEntry extends SessionEntryBase {
 
 /** Session init entry - captures initial context for subagent sessions (debugging/replay). */
 export interface SessionInitEntry extends SessionEntryBase {
+	peerCoordination?: PeerCoordinationState;
 	type: "session_init";
 	/** System prompt blocks exactly as sent to the model; files written before blocks were kept store one joined string. */
 	systemPrompt: string[] | string;
 	/** Initial task/user message */
 	task: string;
+	/** Original assignment start time in epoch milliseconds; absent on legacy sessions. */
+	assignmentStartedAt?: number;
+	/** Keep the root context-file opt-out across cold revival and descendant spawns. */
+	noContextFiles?: boolean;
+	/** Start time of the current worker attempt; lifecycle revival keeps this clock. */
+	attemptStartedAt?: number;
 	/** Tools available to the agent */
 	tools: string[];
 	/** Names in `tools` presented as `xd://` devices instead of top-level tools (absent from older files). */
 	mountedTools?: string[];
+	/** Exact parent todo row, when explicitly linked. */
+	row?: string;
 	/** Agent definition name (for example `scout` or `reviewer`). */
 	agent?: string;
 	/** Semantic model role declared by the agent, retained even after concrete model resolution. */
@@ -368,7 +387,8 @@ export type SessionEntry =
 	| SessionInitEntry
 	| ModeChangeEntry
 	| CredentialPinEntry
-	| ResetBoundaryEntry;
+	| ResetBoundaryEntry
+	| ToolResultPruneEntry;
 
 /** Leaf selected when replaying one entry; an off-branch entry restores the active leaf captured at append time. */
 export function sessionEntryLeafId(entry: SessionEntry): string | null {
@@ -423,4 +443,28 @@ export interface UsageStatistics {
 	cost: number;
 	/** Portion of {@link cost} carried by completed `task` results (direct children's spend). */
 	subagentCost: number;
+}
+/**
+ * True when a raw JSONL line is a complete `message` record carrying an
+ * assistant role. Parses the line, so valid JSON whitespace (`"role" :
+ * "assistant"`, tabs, newlines-in-string excluded by line framing) classifies
+ * correctly — unlike substring checks for exact serializations. Malformed or
+ * partial lines (mid-write truncation) return false.
+ */
+export function isAssistantMessageLine(line: string): boolean {
+	if (line.length === 0 || line.charCodeAt(0) !== 123) return false;
+	let record: { type?: unknown; message?: { role?: unknown } };
+	try {
+		record = JSON.parse(line) as { type?: unknown; message?: { role?: unknown } };
+	} catch {
+		return false;
+	}
+	return record.type === "message" && record.message?.role === "assistant";
+}
+
+/** Omit local provider continuation metadata from every exported session entry. */
+export function sessionEntryForExport(entry: SessionEntry): SessionEntry {
+	if (entry.type !== "message" || !entry.assistantProviderReplay) return entry;
+	const { assistantProviderReplay: _replay, ...published } = entry;
+	return published;
 }

@@ -1,0 +1,2 @@
+{{#if escalation}}ESCALATED{{else}}REQUIRED{{/if}} DISPATCH ACTION ({{misses}} ignored turns): {{action}}
+This is the current internal dispatcher snapshot. For the affected row, consume its returned worker feedback before deciding on another attempt, then take its concrete next action. Keep other reports queued while independent ready work runs. Do not repeat unchanged status or dispatch solely to clear this notice. Keep actual missing acceptance open with its exact blocker.

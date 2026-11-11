@@ -302,7 +302,7 @@ describe("taskFile approval binding", () => {
 		const digest = Buffer.from(await crypto.subtle.digest("SHA-256", bytes)).toString("hex");
 
 		expect(result.isError).not.toBe(true);
-		expect(executions.map(item => item.assignment)).toEqual(["Updated after approval began."]);
+		expect(executions.map(item => item.assignment)).toEqual([new TextDecoder().decode(bytes)]);
 		expect(result.details?.results[0]).toMatchObject({ taskFile, taskFileSha256: digest });
 	});
 

@@ -346,6 +346,34 @@ describe("AgentSession queued steer delivery", () => {
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 	});
 
+	it("parks an unconsumed aborted continuation until new input changes the queue", async () => {
+		const { session, mock } = await createSession([{ content: ["initial"] }, { content: ["delivered"] }]);
+		await session.prompt("hello");
+		session.agent.appendMessage({ role: "user", content: "resumable tail", timestamp: Date.now() });
+		let attempts = 0;
+		session.setIrcWakeTurnObserver(() => {
+			attempts++;
+			return () => {};
+		});
+		// A rejected queued preparation aborts the core loop but resolves continue().
+		// Keep the real restore/settle path; only the preparation decision is controlled.
+		session.agent.prepareQueuedMessages = async () => {
+			await Bun.sleep(1);
+			return { commit: () => undefined };
+		};
+		await session.steer("pending request");
+		await Bun.sleep(80);
+		expect(attempts).toBe(1);
+		expect(session.agent.peekSteeringQueue()).toHaveLength(1);
+		expect(mock.calls).toHaveLength(1);
+		session.agent.prepareQueuedMessages = undefined;
+		await session.steer("new input");
+		await session.waitForIdle();
+		expect(attempts).toBe(2);
+		expect(session.agent.hasQueuedMessages()).toBe(false);
+		expect(mock.calls).toHaveLength(3);
+	});
+
 	it("drains steering left after aborting an auto-continued queued turn", async () => {
 		const { session, mock } = await createSession([
 			{ content: ["initial response"] },

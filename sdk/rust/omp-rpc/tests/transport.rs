@@ -153,7 +153,7 @@ fn next_event(events: &Receiver<Event>) -> Event {
 /// Waits until the reader stops, then returns the error a call reports.
 fn fatal_error(client: &Client, events: &Receiver<Event>) -> String {
 	while events.recv_timeout(Duration::from_secs(5)).is_ok() {}
-	match client.call(&GetStateCommand {}) {
+	match client.call(&GetStateCommand { view: None }) {
 		Err(Error::Protocol(message)) => message,
 		other => panic!("expected a protocol error, got {other:?}"),
 	}
@@ -275,7 +275,7 @@ fn fatal_error_fails_a_pending_call() {
 		server.send(&json!({"type": "rpc_chunk"}));
 		server
 	});
-	let error = client.call(&GetStateCommand {}).unwrap_err();
+	let error = client.call(&GetStateCommand { view: None }).unwrap_err();
 	assert!(
 		matches!(&error, Error::Protocol(message) if message == "Invalid RPC chunk metadata"),
 		"{error:?}"
@@ -328,9 +328,10 @@ fn failed_negotiation_fails_startup() {
 
 fn prompt(message: &str) -> PromptCommand {
 	PromptCommand {
-		message:            message.to_owned(),
-		images:             None,
-		streaming_behavior: None,
+		message:              message.to_owned(),
+		raw_requirement_text: None,
+		images:               None,
+		streaming_behavior:   None,
 	}
 }
 
@@ -960,7 +961,7 @@ fn call_deadline_covers_a_blocked_write() {
 	client.set_default_timeout(Duration::from_millis(300));
 	let error = within(Duration::from_secs(5), move || {
 		client.send(&big_ui_response()).unwrap();
-		client.call(&GetStateCommand {}).unwrap_err()
+		client.call(&GetStateCommand { view: None }).unwrap_err()
 	});
 	assert!(matches!(&error, Error::Timeout { command } if command == "get_state"), "{error:?}");
 }
@@ -1020,7 +1021,7 @@ fn fatal_error_closes_the_write_side() {
 		matches!(&error, Error::Protocol(message) if message.starts_with("Failed to decode RPC output")),
 		"{error:?}"
 	);
-	assert!(matches!(client.call(&GetStateCommand {}), Err(Error::Protocol(_))));
+	assert!(matches!(client.call(&GetStateCommand { view: None }), Err(Error::Protocol(_))));
 	let mut line = String::new();
 	assert_eq!(server.input.read_line(&mut line).unwrap(), 0, "{line}");
 }

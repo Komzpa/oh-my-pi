@@ -27,6 +27,7 @@ import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { createSessionDefaults } from "../helpers/session-defaults";
 import { manyToolName } from "../fixtures/many-tools-mcp";
@@ -124,7 +125,51 @@ function createModelRegistry(
 
 describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 	afterEach(() => {
+		AgentRegistry.resetGlobalForTests();
 		vi.restoreAllMocks();
+	});
+
+	it("fails a read-only shell worker that changes a tracked file even after successful yield", async () => {
+		const cwd = await fs.promises.mkdtemp(path.join(os.tmpdir(), "readonly-shell-"));
+		try {
+			await Bun.$`git init -q ${cwd}`.quiet();
+			await Bun.write(path.join(cwd, "tracked.txt"), "original");
+			await Bun.$`git -C ${cwd} add tracked.txt`.quiet();
+			const session = createMockSession(async ({ emit }) => {
+				await Bun.$`printf changed > ${path.join(cwd, "tracked.txt")}`.quiet();
+				emitYield(emit);
+			});
+			vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+			const failed = await runSubprocess({
+				...baseOptions,
+				cwd,
+				id: "read-only-mutation",
+				agent: { ...baseAgent, readOnly: true, tools: ["bash", "yield"] },
+			});
+			expect(failed.exitCode).toBe(1);
+			expect(failed.error).toContain("Read-only worker failed: tracked checkout changed");
+			expect(failed.error).toContain("inspect git diff/status");
+		} finally {
+			await fs.promises.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("records an explicit read-only shell dispatch as read-only for cold revival", async () => {
+		const session = yieldEmittingSession();
+		const inits: Array<boolean | undefined> = [];
+		vi.spyOn(session.sessionManager, "appendSessionInit").mockImplementation(init => {
+			inits.push(init.readOnly);
+			return "session-init";
+		});
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "read-only-shell-init",
+			agent: { ...baseAgent, readOnly: true, tools: ["bash", "yield"] },
+		});
+		expect(result.exitCode).toBe(0);
+		expect(inits.length).toBeGreaterThan(0);
+		expect(inits[0]).toBe(true);
 	});
 
 	it("forwards rules, extension-root policy, prepared extensions, and preloaded source paths to createAgentSession", async () => {
@@ -218,7 +263,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(spy.mock.calls[1]?.[0]?.toolNames).toBeUndefined();
 	});
 
-	it("grants wait only to unrestricted subagents that can start background work, and requires write for peers", async () => {
+	it("grants wait only to unrestricted subagents that can start background work, and grants peers to write holders and read-only agents (agent://-only write)", async () => {
 		const session = yieldEmittingSession();
 		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
 
@@ -261,9 +306,13 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		const readOnlyPrompt = promptText(0);
 		const writablePrompt = promptText(1);
 		const spawningPrompt = promptText(2);
-		expect(readOnlyPrompt.includes("# Peers")).toBe(false);
+		// Read-only agents get the agent://-only write (createTools), so they need
+		// their own ID and the peer roster to address the lead.
+		expect(readOnlyPrompt.includes("# Peers")).toBe(true);
 		expect(writablePrompt.includes("# Peers")).toBe(true);
 		expect(spawningPrompt.includes("# Peers")).toBe(false);
+		// Restricted sessions own their exact list: no synthetic write, no peers.
+		expect(promptText(3).includes("# Peers")).toBe(false);
 	});
 
 	it("records the spawning agent as parentAgentId, distinct from the child's own id and prefix", async () => {
@@ -452,7 +501,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Low);
 		// The ceiling itself rides into the session so retry-fallback recovery
 		// can re-clamp to it after model swaps.
-		expect(spy.mock.calls[0]?.[0]?.thinkingLevelCeiling).toBe(Effort.Low);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.Low);
 	});
 
 	it("rejects a spawn when task.maxEffort is below the model floor", async () => {
@@ -484,7 +533,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(spy).not.toHaveBeenCalled();
 	});
 
-	it("preserves the model's full effort range by default", async () => {
+	it("preserves the model's full effort range for a judgment role by default", async () => {
 		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
 		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
 		const settings = Settings.isolated();
@@ -494,7 +543,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 
 		const result = await runSubprocess({
 			...baseOptions,
-			agent: { ...baseAgent, model: ["@task"] },
+			agent: { ...baseAgent, name: "reviewer", model: ["@task"] },
 			id: "subagent-default-effort-ceiling",
 			effort: "hi",
 			settings,
@@ -503,6 +552,288 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 
 		expect(result.exitCode).toBe(0);
 		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Max);
+	});
+
+	it("caps an implementation worker on a Claude model at high effort", async () => {
+		const model = getBundledModel("anthropic", "claude-opus-4-6");
+		if (!model) throw new Error("Expected claude-opus-4-6 model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "ui-coder-strong", model: ["@task"] },
+			id: "subagent-impl-worker-effort-cap",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.High);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.High);
+	});
+
+	it("keeps task.maxEffort opt-in: no caller effort means only the implementation high cap", async () => {
+		const model = getBundledModel("anthropic", "claude-opus-4-6");
+		if (!model) throw new Error("Expected claude-opus-4-6 model to exist");
+		const settings = Settings.isolated({ "task.maxEffort": "low" });
+		settings.setModelRole("task", `${model.provider}/${model.id}:max`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "coder", model: ["@task"] },
+			id: "subagent-impl-worker-max-effort-optin",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.High);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.High);
+	});
+
+	it("caps a hosted Claude model identified by catalog class rather than provider", async () => {
+		const base = getBundledModel("anthropic", "claude-opus-4-6");
+		if (!base) throw new Error("Expected claude-opus-4-6 model to exist");
+		const model = { ...base, provider: "amazon-bedrock", id: "anthropic.claude-opus-4-6-v1" } as Model;
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "coder", model: ["@task"] },
+			id: "subagent-impl-worker-hosted-claude",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.High);
+	});
+
+	it("leaves a review role on a Claude model unclamped", async () => {
+		const model = getBundledModel("anthropic", "claude-opus-4-6");
+		if (!model) throw new Error("Expected claude-opus-4-6 model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "reviewer", model: ["@task"] },
+			id: "subagent-reviewer-effort-uncapped",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Max);
+	});
+
+	it("caps an implementation worker on a non-Claude model at high by default", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "coder", model: ["@task"] },
+			id: "subagent-coder-non-claude-effort",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.High);
+	});
+
+	it("task.agentMaxEffort default resolves a scout spawned with hi on Sol to low", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "scout", model: ["@task"] },
+			id: "subagent-agent-max-effort-scout",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Low);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.Low);
+	});
+
+	it("task.agentMaxEffort default caps a coder spawned with hi on Sol at high", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "coder", model: ["@task"] },
+			id: "subagent-agent-max-effort-coder",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.High);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.High);
+	});
+
+	it("task.agentMaxEffort default caps a minor-coder spawned with hi on Sol at low", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "minor-coder", model: ["@task"] },
+			id: "subagent-agent-max-effort-minor-coder",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Low);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.Low);
+	});
+
+	it("task.agentMaxEffort default leaves an architect spawned with hi on Sol at max", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "architect", model: ["@task"] },
+			id: "subagent-agent-max-effort-architect",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Max);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.Max);
+	});
+
+	it("task.agentMaxEffort user override replaces the default map", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated({ "task.agentMaxEffort": { reviewer: "low" } });
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "scout", model: ["@task"] },
+			id: "subagent-agent-max-effort-scout",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Max);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.Max);
+	});
+
+	it("task.agentMaxEffort user override can raise a mechanical role to medium", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated({ "task.agentMaxEffort": { scout: "medium" } });
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "scout", model: ["@task"] },
+			id: "subagent-agent-max-effort-scout",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Medium);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.Medium);
+	});
+
+	it("task.maxEffort below the agent cap still wins (min of both)", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated({ "task.maxEffort": "low", "task.agentMaxEffort": { scout: "high" } });
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "scout", model: ["@task"] },
+			id: "subagent-agent-max-effort-scout",
+			effort: "hi",
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.thinkingLevel).toBe(ThinkingLevel.Low);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.Low);
+	});
+
+	it("task.agentMaxEffort applies without a caller effort hint (clamps the agent default)", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected gpt-5.6-sol model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, name: "scout", model: ["@task"] },
+			id: "subagent-agent-max-effort-scout",
+			effort: undefined,
+			settings,
+			modelRegistry: createModelRegistry(model),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(effectiveCeiling(spy.mock.calls[0]?.[0])).toBe(Effort.Low);
 	});
 
 	it("resolves an explicit task-role effort suffix over the agent-definition default", async () => {
@@ -575,6 +906,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 
 describe("runSubprocess per-agent compaction threshold overrides", () => {
 	afterEach(() => {
+		AgentRegistry.resetGlobalForTests();
 		vi.restoreAllMocks();
 	});
 
@@ -616,6 +948,7 @@ describe("runSubprocess per-agent compaction threshold overrides", () => {
 
 describe("runSubprocess per-agent service-tier overrides", () => {
 	afterEach(() => {
+		AgentRegistry.resetGlobalForTests();
 		vi.restoreAllMocks();
 	});
 
@@ -914,3 +1247,8 @@ describe("runSubprocess follows the parent's MCP manager", () => {
 		expect(child.refreshed.at(-1)).not.toContain(toolOf("alpha"));
 	}, 20_000);
 });
+
+function effectiveCeiling(options: CreateAgentSessionOptions | undefined): Effort | undefined {
+	const ceiling = options?.thinkingLevelCeiling;
+	return typeof ceiling === "function" ? ceiling(options?.model) : ceiling;
+}

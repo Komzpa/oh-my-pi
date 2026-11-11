@@ -5,7 +5,10 @@
  * model it resolves to, and when the hand-off is skipped (override off,
  * target identical to the starting model).
  */
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as dirs from "@oh-my-pi/pi-utils";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -138,6 +141,30 @@ describe("runSubprocess per-agent prewalk", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("spawns the permitted primary without a banned optional prewalk target", async () => {
+		using root = TempDir.createSync("@prewalk-blacklist-");
+		vi.spyOn(dirs, "getBaseConfigRoot").mockReturnValue(root.path());
+		await Bun.write(
+			root.join("model-blacklist.json"),
+			JSON.stringify({ [`${target.provider}/${target.id}`]: "fixture ban" }),
+		);
+		const spy = vi
+			.spyOn(sdkModule, "createAgentSession")
+			.mockResolvedValue(createSessionResult(yieldEmittingSession()));
+		const result = await runSubprocess({
+			...baseOptions("banned-prewalk", Settings.isolated()),
+			cwd: root.path(),
+			agent: {
+				...baseAgent,
+				model: [`${primary.provider}/${primary.id}`],
+				prewalk: `${target.provider}/${target.id}`,
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		expect(spy.mock.calls[0]?.[0]?.model?.id).toBe(primary.id);
+		expect(spy.mock.calls[0]?.[0]?.prewalk).toBeUndefined();
+	});
+
 	it("resolves a frontmatter prewalk pattern to a target for the spawned session", async () => {
 		const spy = vi
 			.spyOn(sdkModule, "createAgentSession")
@@ -156,6 +183,87 @@ describe("runSubprocess per-agent prewalk", () => {
 		const forwarded = spy.mock.calls[0]?.[0];
 		expect(forwarded?.prewalk?.target.id).toBe(target.id);
 		expect(forwarded?.prewalk?.target.provider).toBe(target.provider);
+	});
+
+	it("skips prewalk when the Claude implementation cap makes the target equal to the starting state", async () => {
+		const opus = modelOrThrow("claude-opus-4-6");
+		const spy = vi
+			.spyOn(sdkModule, "createAgentSession")
+			.mockResolvedValue(createSessionResult(yieldEmittingSession()));
+
+		const result = await runSubprocess({
+			...baseOptions("subagent-prewalk-capped-noop", Settings.isolated()),
+			modelRegistry: createModelRegistry([opus]),
+			agent: {
+				...baseAgent,
+				name: "coder",
+				model: [`${opus.provider}/${opus.id}:max`],
+				prewalk: `${opus.provider}/${opus.id}:high`,
+			},
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		expect(forwarded?.thinkingLevel).toBe(ThinkingLevel.High);
+		expect(forwarded?.prewalk).toBeUndefined();
+	});
+
+	it.each([
+		["low", false],
+		["high", true],
+	] as const)("arms prewalk only when its target can honor a %s worker ceiling", async (ceiling, armed) => {
+		const start = getBundledModel("openai-codex", "gpt-5.6-sol");
+		const mini = getBundledModel("azure", "gpt-5.1-codex-mini");
+		if (!start || !mini) throw new Error("Expected bundled prewalk fixtures");
+		const settings = Settings.isolated({ "task.agentMaxEffort": { workhorse: ceiling } });
+		const session = yieldEmittingSession(["read", "todo", "yield"]);
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const result = await runSubprocess({
+			...baseOptions(`subagent-prewalk-floor-${ceiling}`, settings),
+			modelRegistry: createModelRegistry([start, mini]),
+			agent: {
+				...baseAgent,
+				name: "workhorse",
+				model: [`${start.provider}/${start.id}`],
+				prewalk: `${mini.provider}/${mini.id}`,
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		if (armed) {
+			expect(spy.mock.calls[0]?.[0]?.prewalk?.target.id).toBe(mini.id);
+			expect(session.getActiveToolNames()).toContain("todo");
+		} else {
+			expect(spy.mock.calls[0]?.[0]?.prewalk).toBeUndefined();
+			expect(session.getActiveToolNames()).not.toContain("todo");
+		}
+	});
+
+	it.each([true, false])("compares and stores capped prewalk effort when same model is %s", async sameModel => {
+		const start = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!start) throw new Error("Expected bundled Sol fixture");
+		const next = sameModel ? start : target;
+		const settings = Settings.isolated();
+		const session = yieldEmittingSession(["read", "todo", "yield"]);
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const result = await runSubprocess({
+			...baseOptions(`subagent-prewalk-effective-${sameModel}`, settings),
+			modelRegistry: createModelRegistry([start, target]),
+			agent: {
+				...baseAgent,
+				name: "workhorse",
+				model: [`${start.provider}/${start.id}:high`],
+				prewalk: `${next.provider}/${next.id}:high`,
+			},
+		});
+		expect(result.exitCode).toBe(0);
+		if (sameModel) {
+			expect(spy.mock.calls[0]?.[0]?.prewalk).toBeUndefined();
+			expect(session.getActiveToolNames()).not.toContain("todo");
+		} else {
+			expect(spy.mock.calls[0]?.[0]?.prewalk?.target.id).toBe(next.id);
+			expect(spy.mock.calls[0]?.[0]?.prewalk?.thinkingLevel).toBe(ThinkingLevel.Low);
+			expect(session.getActiveToolNames()).toContain("todo");
+		}
 	});
 
 	it("waits for background discovery before resolving a configured prewalk target", async () => {

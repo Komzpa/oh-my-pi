@@ -2,6 +2,8 @@ import { classifyModel } from "@oh-my-pi/pi-catalog/compat/taxonomy";
 import { isAnthropicOAuthToken, toNumber } from "@oh-my-pi/pi-catalog/utils";
 import { slugify } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
+import { raceSignal } from "../auth/abort";
+import { usageCacheIdentity } from "../auth/usage-cache";
 import {
 	type CredentialRankingContext,
 	type CredentialRankingStrategy,
@@ -303,6 +305,7 @@ interface ClaudeUsagePayloadResult {
 	payload: ClaudeUsageResponse | null;
 	/** The host answered, but does not serve subscription usage at this path. */
 	endpointAbsent: boolean;
+	retryAfter?: string;
 }
 
 /**
@@ -347,7 +350,12 @@ async function fetchUsagePayload(
 					attempt,
 					willRetry: retryable && attempt < MAX_ATTEMPTS - 1,
 				});
-				if (!retryable) return { payload: null, endpointAbsent: absent };
+				if (!retryable)
+					return {
+						payload: null,
+						endpointAbsent: absent,
+						...(response.status === 429 ? { retryAfter: response.headers.get("retry-after") ?? "" } : {}),
+					};
 				const retryAfter = response.headers.get("retry-after");
 				if (!(await waitBeforeRetry(attempt, retryAfter, signal, ctx.retryWait))) break;
 				continue;
@@ -673,8 +681,13 @@ function claudeUsageToken(credential: UsageCredential): string | undefined {
 	return apiKey && isAnthropicOAuthToken(apiKey) ? apiKey : undefined;
 }
 
-async function fetchClaudeUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null> {
+async function fetchClaudeUsage(
+	params: UsageFetchParams,
+	ctx: UsageFetchContext,
+	state: ClaudeUsageState,
+): Promise<UsageReport | null> {
 	if (params.provider !== "anthropic") return null;
+	const generation = state.generation;
 	const credential = params.credential;
 	const accessToken = claudeUsageToken(params.credential);
 	if (!accessToken) return null;
@@ -685,6 +698,10 @@ async function fetchClaudeUsage(params: UsageFetchParams, ctx: UsageFetchContext
 	let payload: ClaudeUsageResponse | null = null;
 	for (const candidate of claudeOAuthBaseUrls(params.baseUrl)) {
 		const result = await fetchUsagePayload(`${candidate}/usage`, headers, ctx, params.signal);
+		if (result.retryAfter !== undefined && generation === state.generation) {
+			const exponential = FAILURE_BACKOFF_MS * 2 ** Math.min(state.failures, 4);
+			state.retryAt = Date.now() + Math.max(exponential, retryDelayMs(0, result.retryAfter));
+		}
 		if (result.payload && hasUsageData(result.payload)) {
 			baseUrl = candidate;
 			payload = result.payload;
@@ -837,6 +854,98 @@ export function parseClaudeUsagePayload(
 	};
 }
 
+/** All session-local auth stores converge here, including health probes and SDK callers. */
+interface ClaudeUsageState {
+	report?: UsageReport;
+	refreshAt: number;
+	retryAt: number;
+	failures: number;
+	generation: number;
+	inFlight?: Promise<UsageReport | null>;
+}
+
+const sharedClaudeUsage = new Map<string, ClaudeUsageState>();
+const REFRESH_INTERVAL_MS = 5 * 60_000;
+const LAST_GOOD_RETENTION_MS = 24 * 60 * 60_000;
+
+function sharedReport(state: ClaudeUsageState): UsageReport | null {
+	if (!state.report || Date.now() - state.report.fetchedAt >= LAST_GOOD_RETENTION_MS) return null;
+	const report = structuredClone(state.report);
+	if (state.failures > 0 || Date.now() >= state.refreshAt) {
+		report.metadata = { ...report.metadata, stale: true, retryAt: state.retryAt };
+		report.notes = [...(report.notes ?? []), "Claude usage is stale; refresh is backing off."];
+	}
+	return report;
+}
+
+function sharedClaudeUsageKey(params: UsageFetchParams): string {
+	return JSON.stringify([
+		claudeOAuthBaseUrls(params.baseUrl),
+		params.accountKey ?? usageCacheIdentity(params.credential),
+	]);
+}
+
+async function fetchSharedClaudeUsage(params: UsageFetchParams, ctx: UsageFetchContext): Promise<UsageReport | null> {
+	if (params.provider !== "anthropic" || !claudeUsageToken(params.credential) || params.signal?.aborted) return null;
+	const now = Date.now();
+	// Expired accounts must not accumulate forever in a long-running lead.
+	for (const [key, entry] of sharedClaudeUsage) {
+		if (
+			!entry.inFlight &&
+			Math.max(entry.refreshAt, entry.retryAt, entry.report?.fetchedAt ?? 0) + LAST_GOOD_RETENTION_MS < now
+		) {
+			sharedClaudeUsage.delete(key);
+		}
+	}
+	const key = sharedClaudeUsageKey(params);
+	let state = sharedClaudeUsage.get(key);
+	if (!state) {
+		state = { refreshAt: 0, retryAt: 0, failures: 0, generation: 0 };
+		sharedClaudeUsage.set(key, state);
+	}
+	const current = state;
+	if (now < current.retryAt || now < current.refreshAt) return sharedReport(current);
+	if (!current.inFlight) {
+		const generation = current.generation;
+		current.inFlight = (async () => {
+			try {
+				// A session may leave without cancelling the account's shared request.
+				const report = await fetchClaudeUsage(
+					{ ...params, signal: AbortSignal.timeout(10_000) },
+					{
+						...ctx,
+						previousReport: current.report ?? ctx.previousReport,
+					},
+					current,
+				);
+				if (generation !== current.generation) return null;
+				if (report) {
+					current.report = structuredClone(report);
+					current.refreshAt = Date.now() + REFRESH_INTERVAL_MS;
+					current.retryAt = 0;
+					current.failures = 0;
+				} else {
+					current.retryAt = Math.max(
+						current.retryAt,
+						Date.now() + FAILURE_BACKOFF_MS * 2 ** Math.min(current.failures, 4),
+					);
+					current.failures++;
+					current.report ??= ctx.previousReport ? structuredClone(ctx.previousReport) : undefined;
+				}
+				return sharedReport(current);
+			} finally {
+				current.inFlight = undefined;
+			}
+		})();
+	}
+	try {
+		return structuredClone(await raceSignal(current.inFlight, params.signal, "Claude usage poll aborted"));
+	} catch (error) {
+		if (params.signal?.aborted) return null;
+		throw error;
+	}
+}
+
 export const claudeUsageProvider: UsageProvider = {
 	id: "anthropic",
 	// v2: cache identity gained an `org:` component so two subscriptions on one
@@ -845,7 +954,16 @@ export const claudeUsageProvider: UsageProvider = {
 	// renewing those incomplete reports throughout the 24h last-good retention.
 	cacheVersion: 3,
 	failureBackoffMs: FAILURE_BACKOFF_MS,
-	fetchUsage: fetchClaudeUsage,
+	fetchUsage: fetchSharedClaudeUsage,
+	onReset(params) {
+		const state = sharedClaudeUsage.get(sharedClaudeUsageKey(params));
+		if (!state) return;
+		state.generation++;
+		state.report = undefined;
+		state.refreshAt = 0;
+		state.retryAt = 0;
+		state.failures = 0;
+	},
 	parseRateLimitHeaders: parseClaudeRateLimitHeaders,
 	supports: params => params.provider === "anthropic" && !!claudeUsageToken(params.credential),
 };

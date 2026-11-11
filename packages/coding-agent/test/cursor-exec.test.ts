@@ -1436,7 +1436,18 @@ describe("CursorExecHandlers argument validation", () => {
 			__rawJson: "metadata",
 		});
 		expect(result.isError).toBe(false);
-		expect(phases()).toEqual([{ name: "Recovered", tasks: [{ content: "From Cursor", status: "in_progress" }] }]);
+		expect(phases()).toEqual([
+			{
+				name: "Recovered",
+				tasks: [
+					expect.objectContaining({
+						content: "From Cursor",
+						status: "in_progress",
+						schedule: expect.objectContaining({ startedAt: expect.any(Number) }),
+					}),
+				],
+			},
+		]);
 	});
 
 	it("refuses parse-error metadata instead of executing even a lenient Cursor tool", async () => {

@@ -37,6 +37,24 @@ export function formatResultOutputFallback(result: Pick<SingleResult, "output" |
 }
 
 /**
+ * Authored task failure check shared by the task writer and the requirements
+ * ledger: a missing result, a tool-level error, an abort, a non-zero exit, or
+ * a runner error all mean the work needs recovery, never "completed".
+ */
+export function isFailedTaskSingleResult(
+	result: { isError?: boolean },
+	singleResult?: { aborted?: boolean; exitCode?: number; error?: unknown },
+): boolean {
+	return (
+		result.isError === true ||
+		!singleResult ||
+		(singleResult.aborted ?? false) ||
+		singleResult.exitCode !== 0 ||
+		singleResult.error !== undefined
+	);
+}
+
+/**
  * Head of `output` that fits the inline budget. Prefers a line boundary so a
  * markdown preview does not end mid-row, but falls back to a hard cut when the
  * only boundary is near the start (pretty-printed JSON whose second line is
@@ -46,6 +64,14 @@ function previewHead(output: string): string {
 	const slice = output.slice(0, PREVIEW_CHARS);
 	const lastNewline = slice.lastIndexOf("\n");
 	return lastNewline >= PREVIEW_CHARS / 2 ? slice.slice(0, lastNewline) : slice;
+}
+
+function formatRetainedBackgroundJob(job: NonNullable<SingleResult["retainedBackgroundJobs"]>[number]): string {
+	const details = [`type=${job.type}`, `status=${job.status}`];
+	if (job.pid !== undefined) details.push(`pid=${job.pid}`);
+	if (job.label) details.push(`label=${job.label}`);
+	if (job.agentId) details.push(`agent=${job.agentId}`);
+	return `- ${job.id} (${details.join(", ")})`;
 }
 
 /** Render the `<task-result>` envelope for a settled run. */
@@ -71,8 +97,12 @@ export function formatTaskResultSummary(
 	// irc instead of redoing the work. Isolated runs are parked without a
 	// reviver (their worktree is gone), so they must not read as resumable.
 	const resumable = result.aborted && !result.isolated && isResumable(AgentRegistry.global().get(result.id));
+	// Abandonment must be visible on a successful run too: `stderr` is not
+	// shown for completed results, so it rides in the envelope itself.
+	const abandonedJobIds = result.abandonedJobs?.map(job => escapeHarnessTags(job.id)).join(", ");
 	const render = (truncated: boolean): string =>
 		prompt.render(taskSummaryTemplate, {
+			abandonedJobIds,
 			agentName: result.agent,
 			id: result.id,
 			status,
@@ -80,6 +110,9 @@ export function formatTaskResultSummary(
 			abortReason: result.aborted ? escapeHarnessTags(result.abortReason ?? "") || undefined : undefined,
 			error: error === undefined ? undefined : escapeHarnessTags(error),
 			resumable,
+			deconfliction: result.deconfliction?.length
+				? escapeHarnessTags(JSON.stringify(result.deconfliction))
+				: undefined,
 			preview: escapeHarnessTags(truncated ? previewHead(output) : output),
 			truncated,
 			meta: result.outputMeta
@@ -87,6 +120,9 @@ export function formatTaskResultSummary(
 						lineCount: result.outputMeta.lineCount,
 						charSize: formatBytes(result.outputMeta.charCount),
 					}
+				: undefined,
+			retainedBackgroundJobs: result.retainedBackgroundJobs?.length
+				? escapeHarnessTags(result.retainedBackgroundJobs.map(formatRetainedBackgroundJob).join("\n"))
 				: undefined,
 			mergeSummary: options.mergeSummary === undefined ? "" : escapeHarnessTags(options.mergeSummary),
 		});

@@ -1,3 +1,4 @@
+import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 /**
  * Extension loader - loads TypeScript extension modules using native Bun import.
  */
@@ -21,6 +22,7 @@ import { hasFsCode, isEacces, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { type ExtensionModule, extensionModuleCapability } from "../../capability/extension-module";
 import { type Hook, hookCapability } from "../../capability/hook";
 import { isServiceTierFamily, isServiceTierForFamily } from "../../config/service-tier";
+import type { ModelPresetSwitchResult } from "../../config/model-presets";
 import { loadCapability } from "../../discovery";
 import { getExtensionNameFromPath } from "../../discovery/helpers";
 import type { ExecOptions } from "../../exec/exec";
@@ -189,6 +191,18 @@ export class ExtensionRuntime implements IExtensionRuntime {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
 
+	applySessionModelPreset(): Promise<never> {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
+	clearSessionModelPreset(): string | undefined {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
+	getSessionModelPreset(): string | undefined {
+		throw new ExtensionRuntimeNotInitializedError();
+	}
+
 	getSessionName(): string | undefined {
 		throw new ExtensionRuntimeNotInitializedError();
 	}
@@ -241,6 +255,13 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		const list = this.extension.handlers.get(event) ?? [];
 		list.push(handler);
 		this.extension.handlers.set(event, list);
+	}
+
+	registerSoftToolRequirementProvider(provider: NonNullable<Extension["softToolRequirementProvider"]>): void {
+		if (this.extension.softToolRequirementProvider !== undefined) {
+			throw new Error(`Extension "${this.extension.path}" already registered a soft tool requirement provider`);
+		}
+		this.extension.softToolRequirementProvider = provider;
 	}
 
 	registerTool<TParams extends TSchema = TSchema, TDetails = unknown>(tool: ToolDefinition<TParams, TDetails>): void {
@@ -427,6 +448,18 @@ class ConcreteExtensionAPI implements ExtensionAPI, IExtensionRuntime {
 		this.runtime.setServiceTier(family, tier);
 	}
 
+	applySessionModelPreset(name: string): Promise<ModelPresetSwitchResult> {
+		return this.runtime.applySessionModelPreset(name);
+	}
+
+	clearSessionModelPreset(): string | undefined {
+		return this.runtime.clearSessionModelPreset();
+	}
+
+	getSessionModelPreset(): string | undefined {
+		return this.runtime.getSessionModelPreset();
+	}
+
 	getSessionName(): string | undefined {
 		return this.runtime.getSessionName();
 	}
@@ -497,7 +530,12 @@ async function runExtensionFactory(
 export async function importExtensionModule(extensionPath: string, cwd: string): Promise<PreparedExtension> {
 	const resolvedPath = resolvePath(extensionPath, cwd);
 	try {
-		const module = (await withHostGuard(() => loadLegacyPiModule(resolvedPath))) as LoadedExtensionModule;
+		const sourceBytes = await Bun.file(resolvedPath).arrayBuffer();
+		const sourceHash = new Bun.CryptoHasher("sha256").update(sourceBytes).digest("hex");
+		const entrySource = new TextDecoder().decode(sourceBytes);
+		const module = (await launchStep(`extension.load:${extensionPath}`, () =>
+			withHostGuard(() => loadLegacyPiModule(resolvedPath, { entrySource })),
+		)) as LoadedExtensionModule;
 		const factory = getExtensionFactory(module);
 
 		if (typeof factory !== "function") {
@@ -509,7 +547,7 @@ export async function importExtensionModule(extensionPath: string, cwd: string):
 			};
 		}
 
-		return { path: extensionPath, factory, resolvedPath, error: null };
+		return { path: extensionPath, factory, resolvedPath, sourceHash, error: null };
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return { path: extensionPath, factory: null, resolvedPath, error: `Failed to load extension: ${message}` };
@@ -529,8 +567,11 @@ async function bindExtension(
 	}
 	try {
 		const extension = createExtension(extensionPath, imported.resolvedPath);
+		extension.sourceHash = imported.sourceHash;
 		const api = new ConcreteExtensionAPI(extension, runtime, cwd, eventBus);
-		await withHostGuard(() => runExtensionFactory(factory, api, runtime));
+		await launchStep(`extension.init:${extensionPath}`, () =>
+			withHostGuard(() => runExtensionFactory(factory, api, runtime)),
+		);
 
 		return { extension, error: null };
 	} catch (err) {
@@ -551,7 +592,7 @@ export async function loadExtensionFromFactory(
 ): Promise<Extension> {
 	const extension = createExtension(name, name);
 	const api = new ConcreteExtensionAPI(extension, runtime, cwd, eventBus);
-	await runExtensionFactory(factory, api, runtime);
+	await launchStep(`extension.init:${name}`, () => runExtensionFactory(factory, api, runtime));
 	return extension;
 }
 

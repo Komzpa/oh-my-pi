@@ -11,8 +11,10 @@ import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { parseJsonlLenient } from "@oh-my-pi/pi-utils/stream";
 import { toError } from "@oh-my-pi/pi-utils/type-guards";
 import { EVAL_STATE_CONTEXT_TYPE } from "../eval/state";
+import { HEADER_REVISION, headerRevision } from "./journal-records";
+import type { FileEntry } from "./session-entries";
 import { visitEntriesFromFile } from "./session-loader";
-import { computeDefaultSessionDir } from "./session-paths";
+import { computeDefaultSessionDir, sessionDirForCwd } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
 import { listSessionTitles, lookupSessionTitle, recordSessionTitle, recordSessionTitles } from "./session-index";
 
@@ -455,12 +457,41 @@ async function scanSessionFile(
 		);
 		const { size, mtime } = stat;
 		const entries = parseJsonlLenient<Record<string, unknown>>(content);
-		const header = parseSessionListHeader(content, entries);
+		let header = parseSessionListHeader(content, entries);
 		if (!header) {
 			// Cache the negative result too: an unparseable file stays unparseable
 			// until its stat identity changes.
 			cache.set(cacheKey, { mtimeMs: stat.mtimeMs, size: stat.size, info: undefined });
 			return undefined;
+		}
+		// Relocation appends a header revision rather than replacing the first
+		// physical line. A session outside its original cwd bucket (including a
+		// custom session directory) needs the latest revision even when later
+		// messages have pushed it out of both bounded windows. Keep ordinary
+		// sessions on the bounded path and cache the relocated scan by file stat.
+		const originalHeader = header;
+		const applyHeaderRevision = (record: Record<string, unknown>) => {
+			if (record.type !== "custom" || record.customType !== HEADER_REVISION) return;
+			const revised = headerRevision(record as unknown as FileEntry);
+			if (revised?.id === originalHeader.id) header = sessionListHeaderFromRecord({ ...revised }) ?? header;
+		};
+		if (
+			originalHeader.cwd &&
+			path.dirname(file) !== sessionDirForCwd(originalHeader.cwd, path.dirname(path.dirname(file)))
+		) {
+			if (storage.scanLines) {
+				await storage.scanLines(file, line => {
+					if (line.includes(HEADER_REVISION)) {
+						for (const record of parseJsonlLenient<Record<string, unknown>>(line)) applyHeaderRevision(record);
+					}
+					return false;
+				});
+			} else {
+				for (const record of parseJsonlLenient<Record<string, unknown>>(await storage.readText(file)))
+					applyHeaderRevision(record);
+			}
+		} else {
+			for (const record of entries) applyHeaderRevision(record);
 		}
 
 		let parsedMessageCount = 0;
@@ -503,22 +534,25 @@ async function scanSessionFile(
 		let needTurn = assistantTurns === 0;
 		if ((needPrompt || needTurn) && size > SESSION_LIST_PREFIX_BYTES && storage.scanLines) {
 			try {
-				await storage.scanLines(file, line => {
-					const message = parseTurnLine(line);
-					if (message?.role === "assistant" && needTurn) {
-						assistantTurns = 1;
-						needTurn = false;
-					} else if (message?.role === "user" && needPrompt) {
-						// Cap at what a prompt read from the prefix could hold.
-						const text = textContent(message.content, " ").slice(0, SESSION_LIST_PREFIX_BYTES);
-						if (text) {
-							firstMessage = text;
-							allMessages.unshift(text);
-							needPrompt = false;
+				if (!needPrompt && needTurn && storage.scanAssistantTurn) {
+					if (await storage.scanAssistantTurn(file)) assistantTurns = 1;
+				} else
+					await storage.scanLines(file, line => {
+						const message = parseTurnLine(line);
+						if (message?.role === "assistant" && needTurn) {
+							assistantTurns = 1;
+							needTurn = false;
+						} else if (message?.role === "user" && needPrompt) {
+							// Cap at what a prompt read from the prefix could hold.
+							const text = textContent(message.content, " ").slice(0, SESSION_LIST_PREFIX_BYTES);
+							if (text) {
+								firstMessage = text;
+								allMessages.unshift(text);
+								needPrompt = false;
+							}
 						}
-					}
-					return !needPrompt && !needTurn;
-				});
+						return !needPrompt && !needTurn;
+					});
 			} catch {
 				// Backend unreadable: keep the bounded-window evidence.
 			}
