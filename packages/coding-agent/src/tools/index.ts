@@ -248,6 +248,7 @@ export interface ToolSession {
 	skipPythonPreflight?: boolean;
 	/** Pre-loaded context files (AGENTS.md, etc) */
 	contextFiles?: ContextFileEntry[];
+	recordInstructionFile?: (path: string, body?: string) => Promise<void>;
 	/** No context files beyond `contextFiles`, not even for additional workspace roots (forwarded to subagents) */
 	noContextFiles?: boolean;
 	/** Pre-loaded workspace tree (forwarded to subagents to skip re-scanning) */

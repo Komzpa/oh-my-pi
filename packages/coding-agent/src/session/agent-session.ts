@@ -296,6 +296,12 @@ import {
 import { generateSessionTitle, nerdGlyphsActive } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
 import type { VibeModeState } from "../vibe/state";
+import type { InstructionFiles } from "./instruction-files";
+import {
+	cfgInstructionRefreshEnabled,
+	cfgInstructionRefreshMaxBytes,
+	cfgInstructionRefreshSubagentMinAgeMs,
+} from "./context-settings";
 import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session-events";
 import { type AgentViewSession, isLocalAgentSession } from "./agent-session-handle";
 import {
@@ -1240,6 +1246,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Registry recording this agent blocked on the user while a {@link waitForUser} dialog is open. */
 	readonly #agentRegistry: AgentRegistryApi | undefined;
 	#agentKind: "main" | "sub" = "main";
+	#instructionFiles?: InstructionFiles;
+	#instructionNoticeBlocks = new Set<string>();
 	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
@@ -2774,6 +2782,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
 		});
+		// Keep loaded instructions current before every request, including tool continuations.
+		this.#instructionFiles = config.instructionFiles;
+		this.agent.addBeforeModelCallHook(() => this.#refreshInstructionFiles());
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
 		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
 		// Pre-scheduling tool_call wiring: extension handlers run at arg-prep
@@ -11428,6 +11439,35 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#tools.promptSkills;
 	}
 
+	async #refreshInstructionFiles(): Promise<void> {
+		if (!this.#instructionFiles) return;
+		const enabled = cfgInstructionRefreshEnabled.get(this.settings);
+		const started = Date.parse(this.sessionManager.getHeader()?.timestamp ?? "");
+		if (
+			enabled &&
+			(this.#agentKind === "main" ||
+				Date.now() - started >= cfgInstructionRefreshSubagentMinAgeMs.get(this.settings))
+		) {
+			await this.#instructionFiles.refresh(cfgInstructionRefreshMaxBytes.get(this.settings));
+		}
+		const blocks = enabled ? this.#instructionFiles.systemNotices() : [];
+		this.agent.setSystemPrompt([
+			...this.agent.state.systemPrompt.filter(block => !this.#instructionNoticeBlocks.has(block)),
+			...blocks,
+		]);
+		this.#instructionNoticeBlocks = new Set(blocks);
+	}
+
+	/** Records a skill body read by an invocation or tool. */
+	async recordInstructionFile(filePath: string, body?: string): Promise<void> {
+		if (cfgInstructionRefreshEnabled.get(this.settings))
+			await this.#instructionFiles?.loadedInstruction(
+				filePath,
+				body,
+				cfgInstructionRefreshMaxBytes.get(this.settings),
+			);
+	}
+
 	/**
 	 * Load a user-invoked skill and authorize model tags in its arguments. A stale skill (its plugin
 	 * install was replaced or deleted) is read from this session's rediscovered same-named skill.
@@ -13710,6 +13750,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		);
 		const llmMessages = await this.convertMessagesToLlm(snapshot, args.signal);
 		assertEphemeralTurnReady();
+		await this.#refreshInstructionFiles();
 		const sideContext = await this.agent.buildSideRequestContext(llmMessages);
 		const toolHistory = sideContext.messages.some(
 			message =>
