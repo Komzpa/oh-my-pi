@@ -34,8 +34,10 @@ const follow: TodoItem = {
 	schedule: { dependencies: [], resources: ["doc/product.md"] },
 };
 
-test("created follow-up retains the delivery target; legacy rows recover it from their parent", () => {
-	const phases = patchTodoSchedule([{ name: "Ship", tasks: [parent] }], "Deliver", { auditFollowUps: follow.notes })!;
+test("legacy follow-up retains the delivery target and recovers it from its parent", () => {
+	const phases = patchTodoSchedule([{ name: "Ship", tasks: [parent] }], "Deliver", { auditFollowUps: follow.notes }, 1, {
+		legacyFollowUps: true,
+	})!;
 	const created = phases.flatMap(phase => phase.tasks).find(row => row.content === follow.content)!;
 	expect(created.schedule?.auditOrigin?.commit).toBe(sha);
 	expect(created.schedule?.auditOrigin?.parent).toBe("Deliver");
