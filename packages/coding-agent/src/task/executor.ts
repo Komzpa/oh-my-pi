@@ -1490,6 +1490,7 @@ interface SubagentRunMonitor {
 	markFinalYieldForced(forced: boolean): void;
 	/** Epoch ms when the run's terminal `yield` was recorded; undefined while none is latched. */
 	yieldAcceptedAt(): number | undefined;
+	publicationRef(): AgentRef | undefined;
 	runtimeLimitExceeded(): boolean;
 	/** True once the soft-budget stop fired: the free-running turn was aborted and the run is being driven to a forced final yield. */
 	budgetStopRequested(): boolean;
@@ -1582,6 +1583,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	const abortController = new AbortController();
 	const abortSignal = abortController.signal;
 	let activeSession: AgentSession | null = null;
+	let publicationRef: AgentRef | undefined;
 	let completionProbeStarted = false;
 	let yieldCalled = false;
 	let yieldCallPending = false;
@@ -1987,6 +1989,12 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			yieldCallPending = false;
 			if (yieldCalled) {
 				yieldAcceptedAt = Date.now();
+				AgentRegistry.global().setResultPublication(
+					args.id,
+					"pending",
+					activeSession ?? undefined,
+					yieldAcceptedAt,
+				);
 				// Submitted: the remaining work is finalization, so stop showing
 				// the last stale self-estimate.
 				if (completionProbe) progress.completionPercent = 99;
@@ -2444,6 +2452,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 	};
 
 	const attach = (session: AgentSession): (() => void) => {
+		publicationRef = AgentRegistry.global().get(id);
 		const attributedFallbackEntries = new Set<string>();
 		// The session owns attribution: it knows which model produced its output
 		// and withholds an armed-but-unproven fallback. Re-deriving that here from
@@ -2589,6 +2598,7 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 			setYieldFinalResultForced(activeSession?.getToolByName?.("yield"), forced);
 		},
 		yieldAcceptedAt: () => yieldAcceptedAt,
+		publicationRef: () => publicationRef,
 		runtimeLimitExceeded: () => runtimeLimitExceeded,
 		terminalError: () => terminalError,
 		hasExplicitAbortReason: () =>
@@ -2672,14 +2682,37 @@ interface DriveOutcome {
 	failureKind?: "infrastructure";
 }
 
-/**
- * Whether a settled drive handed over its final result — an accepted `yield`,
- * or for a message-result run a clean finish on a non-empty report turn — so
- * the caller can mark the registry ref accepted.
- */
-function resultDelivered(outcome: DriveOutcome, monitor: SubagentRunMonitor, structured: boolean): boolean {
-	if (structured) return monitor.yieldCalled();
-	return outcome.exitCode === 0 && !outcome.aborted && monitor.lastReportTurnText() !== undefined;
+/** Complete the terminal publication fence only after the caller owns the finalized result. */
+function acceptPublishedResult(
+	monitor: SubagentRunMonitor,
+	result: SingleResult,
+	artifactsDir?: string,
+	structured = true,
+): void {
+	const ref = monitor.publicationRef();
+	if (!ref) return;
+	const registry = AgentRegistry.global();
+	const hasYield = monitor.yieldCalled();
+	const published = !artifactsDir || result.outputPath !== undefined;
+	if (
+		hasYield &&
+		!registry.setResultPublication(result.id, published ? "published" : "failed", ref, monitor.yieldAcceptedAt())
+	)
+		return;
+	if (
+		published &&
+		(hasYield ||
+			(!structured && result.exitCode === 0 && !result.aborted && monitor.lastReportTurnText() !== undefined))
+	) {
+		registry.markResultAccepted(result.id, ref, monitor.yieldAcceptedAt());
+	}
+}
+
+/** A thrown cleanup/finalizer is a failed receipt, not a publication still in flight. */
+function failUnpublishedResult(monitor: SubagentRunMonitor): void {
+	const ref = monitor.publicationRef();
+	if (!ref || !monitor.yieldCalled()) return;
+	AgentRegistry.global().setResultPublication(ref.id, "failed", ref, monitor.yieldAcceptedAt());
 }
 
 const MAX_YIELD_RETRIES = 3;
@@ -4016,7 +4049,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 			let finalizeError: unknown;
 			try {
 				await session.releaseTaskResources();
-				if (yielded) AgentRegistry.global().markResultAccepted(id, session, turnMonitor.yieldAcceptedAt());
+
 				result = await finalizeRunResult({
 					checkReadOnly,
 					monitor: turnMonitor,
@@ -4108,6 +4141,8 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					if (wakeTurnFailed(outcome)) wakeJob.outcome.reject(new Error(text));
 					else wakeJob.outcome.resolve({ text, agentOutputPublished: outputPublished });
 				}
+				if (result) acceptPublishedResult(turnMonitor, result, options.artifactsDir);
+				else failUnpublishedResult(turnMonitor);
 				// Unconditional: a failed, cancelled, empty, or even un-finalized
 				// wake turn must still tell whoever woke it, or a `send await:true`
 				// waiter mistakes a dead peer for a healthy-but-silent one.
@@ -4158,6 +4193,8 @@ export async function finalizeSubagentLifecycle(args: {
 	reviveSession: AgentReviver | null;
 	cleanupDeadlineAt?: number;
 	onCleanupDeferred?: (completion: Promise<void>) => void;
+	/** Retain a terminal one-shot registry fence until its result is published. */
+	deferPublicationCleanup?: (cleanup: (published: boolean) => Promise<void>) => void;
 	onRelease?: () => Promise<void>;
 }): Promise<void> {
 	// Bound the turn drain, then await the broker fence outside the soft disposal
@@ -4219,9 +4256,20 @@ export async function finalizeSubagentLifecycle(args: {
 			const shutdownDispose = args.abortKind === "shutdown" ? { reason: postmortem.Reason.EXIT } : undefined;
 			if (ref && ownsRef) {
 				if (shutdownDispose) {
+					const retainPublication = Boolean(
+						args.deferPublicationCleanup && ref.lifecycle?.resultPublication === "pending",
+					);
+					if (retainPublication) {
+						args.deferPublicationCleanup!(async published => {
+							if (published && ref.status !== "aborted") registry.unregister(args.id, ref);
+						});
+					}
 					try {
 						await waitForSessionShutdown(
-							AgentLifecycleManager.global().release(args.id, ref, { dispose: shutdownDispose }),
+							AgentLifecycleManager.global().release(args.id, ref, {
+								dispose: shutdownDispose,
+								retainPendingPublication: retainPublication,
+							}),
 						);
 					} catch (error) {
 						logger.warn("runSubagent: failed to release session during manager shutdown", {
@@ -4229,7 +4277,7 @@ export async function finalizeSubagentLifecycle(args: {
 							error: String(error),
 						});
 						await disposeSession(shutdownDispose);
-						registry.unregister(args.id, ref);
+						if (!retainPublication) registry.unregister(args.id, ref);
 					}
 				} else {
 					// Route hard kills through the lifecycle owner so the terminal
@@ -4254,10 +4302,20 @@ export async function finalizeSubagentLifecycle(args: {
 		}
 
 		if (!args.keepAlive) {
-			// One-shot helper: dispose and unregister. No IRC, no revival.
+			const retainPublication = args.deferPublicationCleanup && ref && ownsRef;
+			if (retainPublication) {
+				// SDK disposal preserves parked, detached refs. Keep only the
+				// publication fence, never a disposed session available for reuse.
+				registry.setStatus(args.id, "parked", ref);
+				registry.detachSession(args.id, ref);
+			}
 			await disposeSession();
-			if (ref && ownsRef) registry.unregister(args.id, ref);
 			await releaseOwnedResources();
+			if (retainPublication) {
+				args.deferPublicationCleanup!(async published => {
+					if (published && ref.status !== "aborted") registry.unregister(args.id, ref);
+				});
+			} else if (ref && ownsRef) registry.unregister(args.id, ref);
 			return;
 		}
 
@@ -4527,11 +4585,16 @@ async function driveFollowUpTurn(
 					attemptUnsubscribe = monitor.attach(session);
 				},
 			});
-			if (resultDelivered(outcome, monitor, structured)) {
-				// A follow-up turn's accepted result is the run's final result too:
-				// terminalize the ref here, not just on the initial run (#11079).
-				AgentRegistry.global().markResultAccepted(id, session, monitor.yieldAcceptedAt());
-			}
+			// Message-result turns retain their existing handoff boundary; this
+			// publication fence applies only to terminal yield submissions.
+			if (
+				!structured &&
+				!monitor.yieldCalled() &&
+				outcome.exitCode === 0 &&
+				!outcome.aborted &&
+				monitor.lastReportTurnText() !== undefined
+			)
+				AgentRegistry.global().markResultAccepted(id, session);
 		} finally {
 			const cleanupDeadlineAt = Date.now() + 5000;
 			try {
@@ -4559,7 +4622,7 @@ async function driveFollowUpTurn(
 			await session.releaseTaskResources();
 		}
 
-		return await finalizeRunResult({
+		const result = await finalizeRunResult({
 			checkReadOnly,
 			monitor,
 			done: { ...outcome, abortReason: outcome.abortReasonText, durationMs: Date.now() - startTime },
@@ -4583,7 +4646,10 @@ async function driveFollowUpTurn(
 			sessionFile,
 			startTime,
 		});
+		acceptPublishedResult(monitor, result, options.artifactsDir, structured);
+		return result;
 	} finally {
+		failUnpublishedResult(monitor);
 		releaseIrcWakes();
 	}
 }
@@ -5377,6 +5443,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 	};
 
 	let startingRef: AgentRef | undefined;
+	let publicationCleanup: ((published: boolean) => Promise<void>) | undefined;
 	const runSubagent = async (): Promise<{
 		exitCode: number;
 		error?: string;
@@ -6177,12 +6244,15 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				...(options.images?.length ? { images: options.images } : {}),
 				structured,
 			});
-			// Acceptance boundary (#11079): the run's final result is settled, so
-			// stamp the lifecycle and terminalize a ref the run-state mirror left
-			// `running` before the (possibly slow) cleanup below.
-			if (resultDelivered(outcome, monitor, structured)) {
-				AgentRegistry.global().markResultAccepted(id, session, monitor.yieldAcceptedAt());
-			}
+
+			if (
+				!structured &&
+				!monitor.yieldCalled() &&
+				outcome.exitCode === 0 &&
+				!outcome.aborted &&
+				monitor.lastReportTurnText() !== undefined
+			)
+				AgentRegistry.global().markResultAccepted(id, session);
 			exitCode = outcome.exitCode;
 			error = outcome.error;
 			aborted = outcome.aborted;
@@ -6294,6 +6364,11 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 						reviveSession,
 						cleanupDeadlineAt,
 						onRelease: options.onRelease,
+						deferPublicationCleanup: monitor.yieldCalled()
+							? cleanup => {
+									publicationCleanup = cleanup;
+								}
+							: undefined,
 						onCleanupDeferred: completion => {
 							deferredSessionShutdown = completion;
 							deferCleanup(completion);
@@ -6307,9 +6382,6 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 						cleanupError instanceof Error ? cleanupError.stack || cleanupError.message : String(cleanupError);
 					const failure = `Subagent teardown failed: ${detail}`;
 					error = error ? `${error}\n${failure}` : failure;
-				}
-				if (monitor.yieldCalled()) {
-					AgentRegistry.global().markResultAccepted(id, session, monitor.yieldAcceptedAt());
 				}
 			}
 			if (jobManager) {
@@ -6465,9 +6537,17 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 			sessionFile: subtaskSessionFile,
 			startTime,
 		});
+		acceptPublishedResult(monitor, result, options.artifactsDir, structured);
 		AgentRegistry.global().setHistory(id, { outputPath: result.outputPath });
+		if (publicationCleanup) {
+			const cleanup = publicationCleanup;
+			publicationCleanup = undefined;
+			await cleanup(!options.artifactsDir || result.outputPath !== undefined);
+		}
 		return result;
 	} finally {
+		failUnpublishedResult(monitor);
+		if (publicationCleanup) await publicationCleanup(false);
 		if (startingRef && AgentRegistry.global().get(id)?.starting) {
 			AgentRegistry.global().setStatus(id, "aborted", startingRef);
 		}

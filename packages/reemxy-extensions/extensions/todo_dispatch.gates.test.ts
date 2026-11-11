@@ -6,6 +6,8 @@
 // legal move: the gate demanded task, then git commit, and skipped the todo call that admission
 // needed first. Every reachable state below must leave the demanded action executable.
 import { expect, spyOn, test } from "bun:test";
+import { Type } from "@sinclair/typebox";
+import { prepareRequirementBrief } from "./requirement_quotes";
 import { execFileSync, spawn } from "node:child_process";
 import * as childProcess from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -3206,4 +3208,73 @@ test("a worker that works in its own checkout cannot write a relative path into 
   expect(refuse(seen, "other", "write", { path: "x.md" }, lead)).toBeUndefined();
   expect(refuse(local, "v", "read", { path: "~/.omp/agent/skills/x/SKILL.md" }, lead)).toBeUndefined();
   expect(refuse(local, "v", "write", { path: "y.md" }, lead)).toBeUndefined();
+});
+
+test("replan admits registered conflict remediation while unrelated user permission remains blocked", async () => {
+  const cwd = repo("clean");
+  const now = Date.now();
+  const handlers = new Map<string, Function>();
+  const tools = new Map<string, { execute: Function; approval: string }>();
+  const branch = plan("ready", now);
+  const phases = branch[0].message.details.phases;
+  phases[0].tasks.splice(2);
+  const [docs, permission] = phases[0].tasks;
+  docs.content = "Edit PRD from R37 source";
+  docs.status = "blocked";
+  docs.blocker = "BLOCKED_BY_CONFLICTING_PRODUCT_CONTRACT: source image interpretation";
+  delete docs.schedule.owner;
+  permission.content = "Land/drop 11 branches";
+  permission.status = "blocked";
+  permission.blocker = "requires user approval for branch landing or deletion";
+  permission.schedule.missionCritical = "Branch landing is public and deletion needs explicit permission";
+  const permissionBefore = structuredClone(permission);
+  branch.push({ type: "custom", customType: "requirements_ledger", data: { requirements: [{
+    id: "R37", rows: [docs.content], rawText: "Use the supplied image as the documentation source."
+  }] } });
+  const api = {
+    on: (event, handler) => handlers.set(event, handler),
+    typebox: { Type },
+    registerTool: tool => tools.set(tool.name, tool),
+    getActiveTools: () => ["todo", "task", "read", "write", "resolve_requirement_conflict"],
+    pi: { ...sdk, readGoalDeadline: () => ({ goalId: "test", deadlineAt: now + 3_600_000 }) },
+    registerSoftToolRequirementProvider: () => undefined,
+    appendEntry: (customType, data) => branch.push({ type: "custom", customType, data }),
+    sendMessage: () => undefined,
+  };
+  await todoDispatch(api);
+  const ctx = {
+    cwd,
+    sessionManager: { getHeader: () => ({ id: "replan-remediation" }), ...branchMock(() => branch), getSessionFile: () => undefined },
+    getTodoSnapshot: () => phases,
+    getAsyncJobSnapshot: () => ({ running: [], recent: [], nonJobAgents: [] }),
+    getTaskMaxConcurrency: () => 20,
+    isIdle: () => false, hasPendingMessages: () => false,
+    setTimeout: () => ({}), clearTimer: () => undefined,
+  };
+  try {
+    await handlers.get("session_start")({}, ctx);
+    const call = (toolName, input) => handlers.get("tool_call")({ toolName, toolCallId: "remedy", input }, ctx);
+    // Usable batch estimates do not manufacture approval for the permission-held row.
+    expect((await call("todo", { op: "schedule", updates: phases[0].tasks.map(row => ({
+      task: row.content, estimate: row.schedule.estimate,
+    })) }))?.block).not.toBe(true);
+    const write = () => call("write", { path: join(cwd, "unauthorized.txt"), content: "change" });
+    expect((await write())?.reason).toContain("todo-replan");
+    expect(prepareRequirementBrief(docs, ctx, "Edit docs").refusal).toContain("unresolved product contract conflict");
+    const params = { row: docs.content, quoteIds: ["R37"], resolution: "Use the existing image; do not wait for another upload." };
+    expect((await call("resolve_requirement_conflict", params))?.block).not.toBe(true);
+    const tool = tools.get("resolve_requirement_conflict");
+    expect(tool.approval).toBe("write");
+    await expect(tool.execute("bad", { ...params, quoteIds: ["invented"] }, undefined, undefined, ctx)).rejects.toThrow("exact linked quote IDs");
+    const worker = { ...ctx, sessionManager: { ...ctx.sessionManager, getHeader: () => ({ parentSession: "lead" }) } };
+    await expect(tool.execute("worker", params, undefined, undefined, worker)).rejects.toThrow("Only the lead");
+    await tool.execute("resolve", params, undefined, undefined, ctx);
+    expect(prepareRequirementBrief(docs, ctx, "Edit docs").refusal).toBeUndefined();
+    expect(permission).toEqual(permissionBefore);
+    expect((await write())?.reason).toContain("todo-replan");
+    expect(branch.filter(entry => entry.customType === "requirement-contract-resolution")).toHaveLength(1);
+  } finally {
+    await handlers.get("session_shutdown")?.({}, ctx);
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

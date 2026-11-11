@@ -1,4 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { reserveRestoringAgents } from "@oh-my-pi/pi-coding-agent/registry/restoring-agents";
+import { asyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/async-job-views";
 import type { ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import {
 	checkRowAudits,
@@ -185,4 +189,76 @@ test("criterion mutation during target lookup cannot launch the old input snapsh
 	h.options.readTarget = async () => ({});
 	expect(await checkRowAudits(h.ctx, h.options)).toBe(1);
 	expect(delivered.schedule!.audit!.materialInputs!.criterion).toBe("criterion:v2");
+});
+
+for (const presence of ["job-id", "job-agent-id", "restoring", "absent"] as const) {
+	test(`pending audit retains its restored owner before relaunch: ${presence}`, async () => {
+		const h = harness(); // restart has no process-local inFlight reservation
+		const delivered = row("restored");
+		delivered.schedule!.audit = {
+			workerId: "Auditor-10",
+			verdict: "pending",
+			delivery: "old-run",
+			repoPath: "/fixture/restored",
+			head,
+			startedAt: 10,
+		};
+		h.replace([delivered]);
+		const auditBefore = structuredClone(delivered.schedule!.audit);
+		h.ctx.getAsyncJobSnapshot = () => ({
+			running:
+				presence === "job-id" || presence === "job-agent-id"
+					? [
+							{
+								id: presence === "job-id" ? "Auditor-10" : "Auditor-10-2",
+								agentId: presence === "job-agent-id" ? "Auditor-10" : undefined,
+								type: "task",
+								status: "running",
+								label: "audit",
+								startTime: 10,
+							},
+						]
+					: [],
+			recent: [],
+			delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+			nonJobAgents: [{ id: "Auditor-10", live: presence === "restoring" }],
+		});
+		if (presence === "absent") {
+			expect(await checkRowAudits(h.ctx, h.options)).toBe(1);
+			expect(h.launches).toHaveLength(1);
+		} else {
+			expect(await checkRowAudits(h.ctx, h.options)).toBe(0);
+			expect(h.launches).toHaveLength(0);
+			expect(delivered.schedule!.audit).toEqual(auditBefore);
+		}
+	});
+}
+
+test("restart reservation fences pending audit before a restored job registers", async () => {
+	const h = harness();
+	const delivered = row("reserved");
+	delivered.schedule!.audit = {
+		workerId: "ReservedAuditor",
+		verdict: "pending",
+		delivery: "old-run",
+		repoPath: "/fixture/reserved",
+		head,
+		startedAt: 10,
+	};
+	h.replace([delivered]);
+	const manager = new AsyncJobManager({});
+	const release = reserveRestoringAgents(AgentRegistry.global(), [
+		{ id: "ReservedAuditor", parentId: "FixtureParent" },
+	]);
+	h.ctx.getAsyncJobSnapshot = () => asyncJobSnapshot(manager, "FixtureParent");
+	try {
+		expect(h.ctx.getAsyncJobSnapshot()?.running).toHaveLength(0);
+		expect(await checkRowAudits(h.ctx, h.options)).toBe(0);
+		expect(h.launches).toHaveLength(0);
+		release("ReservedAuditor");
+		expect(await checkRowAudits(h.ctx, h.options)).toBe(1);
+	} finally {
+		release("ReservedAuditor");
+		await manager.dispose();
+	}
 });

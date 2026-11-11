@@ -333,7 +333,7 @@ export interface RowAuditOptions {
 	}) => void;
 }
 
-/** In-flight batches survive extension reloads in this process; a new process relaunches each once. */
+/** In-flight batches survive reloads; restored owners are checked before a new process relaunches. */
 const inFlight = new Map<string, Set<string>>();
 const failedAt = new Map<string, number>();
 
@@ -359,10 +359,17 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	const batchKey = (batch: RowAuditBatch) =>
 		JSON.stringify([session, batch.repoPath, batch.head, batch.rows.map(rowKey).sort()]);
 	const rows = (ctx.getTodoPhases() ?? []).flatMap(phase => phase.tasks) as RowAuditRow[];
-	const jobs = ctx.getAsyncJobSnapshot?.()?.running ?? [];
-	const liveIds = new Set(jobs.flatMap(job => [job.id, job.agentId].filter((id): id is string => !!id)));
+	const snapshot = ctx.getAsyncJobSnapshot?.();
+	const jobs = snapshot?.running ?? [];
+	const liveIds = new Set([
+		...jobs.flatMap(job => [job.id, job.agentId].filter((id): id is string => !!id)),
+		// The canonical snapshot includes restart reservations before their jobs exist.
+		...(snapshot?.nonJobAgents ?? []).filter(agent => agent.live).map(agent => agent.id),
+	]);
 	const isLive = (row: RowAuditRow) =>
-		[row.schedule?.owner, row.schedule?.executor?.workerId].some(id => typeof id === "string" && liveIds.has(id));
+		[row.schedule?.owner, row.schedule?.executor?.workerId,
+			row.schedule?.audit?.verdict === "pending" ? row.schedule.audit.workerId : undefined,
+		].some(id => typeof id === "string" && liveIds.has(id));
 	for (const row of rows) {
 		const audit = row.schedule?.audit;
 		const owned = [...inFlight.values()].some(keys => keys.has(rowKey(row)));

@@ -1056,6 +1056,32 @@ describe("goal_deadline resolves wall-clock times and rejects arithmetic slips",
 		expect(first.details.state?.userConstraint?.messageId).toBe("u1");
 	});
 
+	test("operator off-switch releases missed-deadline session stops", async () => {
+		setSystemTime(NOW);
+		const h = harness("Ship by 19:00");
+		await h.set({ local_time: "19:00" }, "Ship by 19:00");
+		h.todoPhases.push({ name: "Requested", tasks: [{ content: "Ship", status: "pending" }] });
+		setSystemTime(Date.parse("2026-10-21T15:01:00Z"));
+		h.ctx.sessionManager.getHeader = () => ({ id: "deadline-switch" });
+		const dir = mkdtempSync(join(tmpdir(), "deadline-stop-switch-"));
+		const previous = process.env.OMP_TODO_DISPATCH_STATE_DIR;
+		process.env.OMP_TODO_DISPATCH_STATE_DIR = dir;
+		try {
+			const stop = () => h.handlers.get("session_stop")({}, h.ctx);
+			expect(stop()?.decision).toBe("block");
+			writeFileSync(join(dir, "deadline-switch.off"), "");
+			expect(stop()).toBeUndefined();
+			rmSync(join(dir, "deadline-switch.off"));
+			expect(stop()?.decision).toBe("block");
+			writeFileSync(join(dir, "off"), "");
+			expect(stop()).toBeUndefined();
+		} finally {
+			if (previous === undefined) delete process.env.OMP_TODO_DISPATCH_STATE_DIR;
+			else process.env.OMP_TODO_DISPATCH_STATE_DIR = previous;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	test("a missed deadline allows waiting for a running owned task", async () => {
 		setSystemTime(NOW);
 		const h = harness("Ship by 19:00");
