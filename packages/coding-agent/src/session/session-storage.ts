@@ -1469,6 +1469,15 @@ export class FileSessionStorage implements SessionStorage {
 		return withFileLockSync(sessionPath, operation);
 	}
 
+	/** Serialize a durable sidecar mutation with transcript appends and publishes. */
+	withSidecarAppendLockSync<T>(fpath: string, operation: () => T): T {
+		let result!: T;
+		this.#withPublishLock(fpath, () => {
+			result = operation();
+		});
+		return result;
+	}
+
 	/**
 	 * Rename `replacement` over the session file `fpath` under the
 	 * cross-process publish lock that serializes appends and rewrites, when
