@@ -208,57 +208,6 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 		tempDir.removeSync();
 	});
 
-	for (const preferred of [true, false]) {
-		it(`drops an indexed failed turn without reading archived payloads (${preferred ? "preferred id" : "identity fallback"})`, async () => {
-			using dir = TempDir.createSync("@retry-index-selection-");
-			const timestamp = new Date().toISOString();
-			const failed = makeMessage([], model);
-			const file = dir.join("session.jsonl");
-			await Bun.write(
-				file,
-				[
-					{ type: "session", version: 3, id: "indexed-retry", timestamp, cwd: dir.path() },
-					...Array.from({ length: 100 }, (_, i) => ({
-						type: "message",
-						id: `old-${i}`,
-						parentId: i === 0 ? null : `old-${i - 1}`,
-						timestamp,
-						message: { role: "user", content: `discarded ${i}`, timestamp: i },
-					})),
-					{
-						type: "compaction",
-						id: "compact",
-						parentId: "old-99",
-						timestamp,
-						firstKeptEntryId: "",
-						summary: "old history",
-						tokensBefore: 1000,
-					},
-					{ type: "message", id: "failed", parentId: "compact", timestamp, message: failed },
-				]
-					.map(entry => JSON.stringify(entry))
-					.join("\n") + "\n",
-			);
-			const manager = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
-			const read = vi.spyOn(sessionLoader, "readPositionedSessionEntry");
-			try {
-				const host: TurnRecoveryHost = {
-					...createHost(model, modelRegistry, { messages: [failed] }),
-					sessionManager: manager,
-					persistedAssistantEntryId: () => (preferred ? "failed" : undefined),
-				};
-				const recovery = new TurnRecovery(host);
-				expect(await recovery.dropPersistedAssistantTurn(failed)).toBe("failed");
-				expect(manager.getLeafId()).toBe("compact");
-				expect(host.agent.state.messages).toEqual([]);
-				expect(read.mock.calls.filter(([, position]) => position.id.startsWith("old-"))).toHaveLength(0);
-			} finally {
-				read.mockRestore();
-				await manager.close();
-			}
-		});
-	}
-
 	it("rolls back a usage fallback cancelled during model reconciliation", async () => {
 		const fallback = getBundledModel("openai", "gpt-4o-mini");
 		if (!fallback) throw new Error("Expected bundled fallback model");
@@ -1707,4 +1656,54 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			expect(new TurnRecovery(createHost(model, modelRegistry)).isRetryableReasonlessAbort(withOutput)).toBe(false);
 		});
 	});
+	for (const preferred of [true, false]) {
+		it(`drops an indexed failed turn without reading archived payloads (${preferred ? "preferred id" : "identity fallback"})`, async () => {
+			using dir = TempDir.createSync("@retry-index-selection-");
+			const timestamp = new Date().toISOString();
+			const failed = makeMessage([], model);
+			const file = dir.join("session.jsonl");
+			await Bun.write(
+				file,
+				[
+					{ type: "session", version: 3, id: "indexed-retry", timestamp, cwd: dir.path() },
+					...Array.from({ length: 100 }, (_, i) => ({
+						type: "message",
+						id: `old-${i}`,
+						parentId: i === 0 ? null : `old-${i - 1}`,
+						timestamp,
+						message: { role: "user", content: `discarded ${i}`, timestamp: i },
+					})),
+					{
+						type: "compaction",
+						id: "compact",
+						parentId: "old-99",
+						timestamp,
+						firstKeptEntryId: "",
+						summary: "old history",
+						tokensBefore: 1000,
+					},
+					{ type: "message", id: "failed", parentId: "compact", timestamp, message: failed },
+				]
+					.map(entry => JSON.stringify(entry))
+					.join("\n") + "\n",
+			);
+			const manager = await SessionManager.open(file, dir.path(), undefined, { suppressBreadcrumb: true });
+			const read = vi.spyOn(sessionLoader, "readPositionedSessionEntry");
+			try {
+				const host: TurnRecoveryHost = {
+					...createHost(model, modelRegistry, { messages: [failed] }),
+					sessionManager: manager,
+					persistedAssistantEntryId: () => (preferred ? "failed" : undefined),
+				};
+				const recovery = new TurnRecovery(host);
+				expect(await recovery.dropPersistedAssistantTurn(failed)).toBe("failed");
+				expect(manager.getLeafId()).toBe("compact");
+				expect(host.agent.state.messages).toEqual([]);
+				expect(read.mock.calls.filter(([, position]) => position.id.startsWith("old-"))).toHaveLength(0);
+			} finally {
+				read.mockRestore();
+				await manager.close();
+			}
+		});
+	}
 });
