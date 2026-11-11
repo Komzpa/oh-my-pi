@@ -7,6 +7,7 @@ import type {
 	AttemptJournalState,
 	JsonValue,
 } from "./attempt-journal-types";
+import { buildOutputValidator } from "../tools/output-schema-validator";
 import { yieldSectionShapes } from "./yield-assembly";
 
 /** A frozen, already-read legacy snapshot. The importer performs no I/O. */
@@ -43,12 +44,52 @@ const hash = (value: unknown): string =>
 const json = (value: unknown): JsonValue => JSON.parse(stableStringifyJson(value)) as JsonValue;
 const sourceId = (entry: unknown): string => text(record(entry).id) ?? `fingerprint:${hash(entry)}`;
 const derivedId = (lead: string, id: string): string => `legacy:${hash([lead, id])}`;
+const AUDIT_AGENT_PROFILES: Record<string, true> = { reviewer: true, "qa-auditor": true };
+/** Distinct children that share a value. A repeated id is the same child, not a collision. */
+function sharedAmongDistinct(
+	children: readonly { id: string; toolCallId?: string; sessionId?: string }[],
+	pick: (child: { id: string; toolCallId?: string; sessionId?: string }) => string | undefined,
+): Set<string> {
+	const owner = new Map<string, string>();
+	const shared = new Set<string>();
+	for (const child of children) {
+		const value = pick(child);
+		if (!value) continue;
+		const previous = owner.get(value);
+		if (previous === undefined) owner.set(value, child.id);
+		else if (previous !== child.id) shared.add(value);
+	}
+	return shared;
+}
+/**
+ * Explicit task ids stay. A tool call is identity only when one child owns it;
+ * a shared batch call falls back to that child's session, then its id, then lead+entry.
+ */
+function legacyChildTaskId(
+	child: { id: string; taskId?: string; toolCallId?: string; sessionId?: string },
+	sharedToolCalls: ReadonlySet<string>,
+	sharedSessions: ReadonlySet<string>,
+	lead: string,
+): string {
+	if (child.taskId) return child.taskId;
+	if (child.toolCallId && !sharedToolCalls.has(child.toolCallId)) return child.toolCallId;
+	if (child.sessionId && !sharedSessions.has(child.sessionId)) return child.sessionId;
+	return child.id || derivedId(lead, sourceId(child));
+}
+/** False when the saved schema rejects the payload or cannot be validated. Absent validator with no error means unconstrained. */
+function savedSchemaAccepts(schema: unknown, data: unknown): boolean {
+	const { validator, error } = buildOutputValidator(schema);
+	if (error) return false;
+	if (!validator) return true;
+	return validator.validate(data).success;
+}
 
 interface Evidence {
 	id: string;
 	originalId?: string;
 	workerId?: string;
 	rowId?: string;
+	purpose?: "work" | "audit";
 	entries: unknown[];
 	checkpoint?: string;
 	state: AttemptJournalState;
@@ -60,7 +101,7 @@ interface Evidence {
 }
 
 /** Reuse the same assembly used by the executor, only for a saved terminal tool result. */
-function savedYield(entries: readonly unknown[]): { data: JsonValue; status: "success" | "aborted" } | undefined {
+function savedYield(entries: readonly unknown[]): { data: JsonValue; status: "success" | "aborted" | "invalid" } | undefined {
 	let schema: unknown;
 	let lastText: string | undefined;
 	const calls = new Set<string>();
@@ -100,7 +141,9 @@ function savedYield(entries: readonly unknown[]): { data: JsonValue; status: "su
 		return { data: json({ aborted: true, error: last.error ?? null }), status: "aborted" };
 	const assembled = assembleYieldResult(items, lastText, yieldSectionShapes(schema));
 	if (!assembled || assembled.missingData) return undefined;
-	return { data: json(assembled.data), status: "success" };
+	const data = json(assembled.data);
+	if (schema !== undefined && !savedSchemaAccepts(schema, assembled.data)) return { data, status: "invalid" };
+	return { data, status: "success" };
 }
 
 /** Map a frozen legacy snapshot into idempotent journal commands without changing its sources. */
@@ -190,12 +233,16 @@ export function importLegacyAttemptJournal(snapshot: LegacyAttemptJournalSnapsho
 				if (outcome === "failed") value.state = "failed";
 				else if (outcome === "completed") value.state = "unknown";
 				else if (outcome === "aborted") value.state = "aborted";
+				if (AUDIT_AGENT_PROFILES[text(obs.agentProfile) ?? ""]) value.purpose = "audit";
 			}
 		}
 	}
-	for (const child of snapshot.children ?? []) {
+	const children = snapshot.children ?? [];
+	const sharedToolCalls = sharedAmongDistinct(children, child => child.toolCallId);
+	const sharedSessions = sharedAmongDistinct(children, child => child.sessionId);
+	for (const child of children) {
 		const value = group(child.id, child.id);
-		value.originalId = child.taskId ?? child.toolCallId ?? child.sessionId;
+		value.originalId = legacyChildTaskId(child, sharedToolCalls, sharedSessions, leadSessionId);
 		value.entries.push(child);
 		value.checkpoint = child.sessionFile ?? value.checkpoint;
 		const saved = savedYield(child.entries);
@@ -203,7 +250,7 @@ export function importLegacyAttemptJournal(snapshot: LegacyAttemptJournalSnapsho
 			value.savedPayload = saved.data;
 			if (saved.status === "aborted") {
 				value.state = "aborted";
-			} else {
+			} else if (saved.status === "success") {
 				const bytes = stableStringifyJson(saved.data);
 				const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 				value.reassembled = {
@@ -274,7 +321,7 @@ export function importLegacyAttemptJournal(snapshot: LegacyAttemptJournalSnapsho
 			generation: 0,
 			state,
 			owner: null,
-			...(!value.ambiguous && value.rowId ? { rowId: value.rowId, purpose: "work" as const } : {}),
+			...(!value.ambiguous && value.rowId ? { rowId: value.rowId, purpose: value.purpose ?? "work" } : {}),
 			...(result ? { result } : {}),
 			...(value.checkpoint ? { checkpoint: value.checkpoint } : {}),
 			source: {
