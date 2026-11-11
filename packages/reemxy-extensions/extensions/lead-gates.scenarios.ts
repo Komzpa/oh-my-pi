@@ -12,6 +12,103 @@ import { formatSpawnRefusal } from "../../coding-agent/src/task/spawn-refusal";
 import { chiefFixNow } from "./fix_now";
 import { prompt } from "@oh-my-pi/pi-utils";
 import backoff from "../../coding-agent/src/prompts/steering/compaction-backoff.md" with { type: "text" };
+import todoDispatch, { SPRINT_STATE_ENTRY_TYPE } from "./todo_dispatch";
+import * as schedule from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import { getLatestTodoPhasesFromEntries, TodoTool } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+
+/** Registered-hook oracle: no shell or worker is executed by these probes. */
+export async function gateLocalityScenarios(only?: string) {
+	const receipts: Array<{ label: string; allowed: boolean; reason?: string }> = [];
+	for (const variant of ["forecast", "forecast:escalated", "missed-eta", "todo-plan-doctor", "todo-replan", "todo-link", "unread-receipts", "unread-receipts:rebind", "unread-receipts:reconcile", "unread-receipts:reconcile:raw", "todo-plan-doctor:known", "todo-replan:known", "todo-link:known"]) {
+		if (only && only !== variant) continue;
+		const demand = variant.split(":")[0]!;
+		const known = variant.endsWith(":known");
+		const now = Date.now();
+		const estimate = { optimisticSeconds: 600, likelySeconds: 1200, pessimisticSeconds: 2400, confidence: "medium" as const, basis: "Measured fixture", updatedAt: now };
+		let phases: TodoPhase[] = [{ name: "Work", tasks: ["Locality X", "Locality Y", "Locality Z"].map(content => ({ content, status: "pending", schedule: { dependencies: [], ...(demand !== "forecast" || content === "Locality Z" ? { estimate } : {}), ...(content === "Locality X" ? { owner: "OwnerX" } : {}) } })) }];
+		if (demand === "missed-eta") {
+			phases[0]!.tasks[0]!.status = "in_progress";
+			Object.assign(phases[0]!.tasks[0]!.schedule, { startedAt: now - 3_600_000, estimate: { ...estimate, updatedAt: now - 3_600_000 } });
+		}
+		if (known && demand !== "todo-link") phases[0]!.tasks[0]!.schedule!.estimate = { ...estimate, pessimisticSeconds: 7200 };
+		if (demand === "unread-receipts") phases[0]!.tasks[1]!.schedule!.owner = "OwnerXExtra";
+		if (variant.startsWith("unread-receipts:reconcile")) phases[0]!.tasks.push({ content: "Independent work", status: "in_progress", schedule: { dependencies: [], estimate, owner: "Independent" } });
+		const journal: Array<Record<string, unknown>> = [{ type: "custom", customType: SPRINT_STATE_ENTRY_TYPE, data: { version: 1, ignoredDemands: demand === "forecast" ? (variant.endsWith(":escalated") ? { "todo-replan": 9 } : {}) : { [demand]: 9 } } }];
+		const hooks = new Map<string, (event: never, ctx: never) => unknown>();
+		const api = { on: (name: string, hook: (event: never, ctx: never) => unknown) => hooks.set(name, hook), getActiveTools: () => ["todo", "task", "read"], appendEntry: (customType: string, data: unknown) => journal.push({ type: "custom", customType, data }), sendMessage: () => {}, registerSoftToolRequirementProvider: () => {}, pi: { ...schedule, getLatestTodoPhasesFromEntries, agentPauseGate: { paused: false } } } as unknown as ExtensionAPI;
+		await todoDispatch(api);
+		// An independent worker fills the one available slot; chief staffing policy is not under test.
+		const jobs = { running: [{ id: "Independent", agentId: "Independent", label: known && demand === "todo-link" ? "Locality X" : "Independent work", type: "task", status: "running", startTime: now }], recent: demand === "unread-receipts" ? [{ id: "OwnerX", agentId: "OwnerX", type: "task", status: "completed" }] : [], nonJobAgents: [] };
+		const ctx = { cwd: "/tmp", agent: { kind: "main" }, getTodoPhases: () => phases, sessionManager: { getHeader: () => ({ id: `locality-${variant}` }), getBranch: () => journal, getBranchMatching: (predicate: (entry: unknown) => boolean) => journal.filter(predicate), getLatestBranchMatching: (predicate: (entry: unknown) => boolean) => journal.findLast(predicate), getSessionFile: () => undefined }, getAsyncJobSnapshot: () => jobs, getTaskMaxConcurrency: () => 1, isIdle: () => false, hasPendingMessages: () => false, setTimeout: () => ({}), setInterval: () => ({}), clearTimer: () => {}, getTodoPreviewConfig: () => ({ enabled: false }) } as unknown as ExtensionContext;
+		await hooks.get("session_branch")!({} as never, ctx as never);
+		const probe = async (label: string, name: string, args: Record<string, unknown>, allowed: boolean, remedy?: string) => {
+			const result = await hooks.get("tool_call")!({ toolName: name, toolCallId: label, input: args } as never, ctx as never) as { block?: boolean; reason?: string } | undefined;
+			const receipt = { label: `${variant}: ${label}`, allowed: !result?.block, reason: result?.reason };
+			receipts.push(receipt);
+			if (receipt.allowed !== allowed || (remedy && !receipt.reason?.includes(remedy))) throw new Error(JSON.stringify(receipt));
+		};
+		const task = (row: string) => ({ tasks: [{ name: row === "Locality X" ? "OwnerX" : "ReadyZ", agent: "coder", task: row }] });
+		try {
+			await probe("compound shell", "bash", { command: "git -C R fetch && git -C R worktree add W SHA && git -C W rev-parse HEAD" }, true);
+			await probe("file write", "write", { path: "/tmp/locality-result", content: "result" }, true);
+			await probe("ready task", "task", task("Locality Z"), known || demand === "forecast" || demand === "missed-eta" || demand === "unread-receipts");
+			await probe("held task", "task", task("Locality X"), false, demand === "forecast" ? "estimate" : "todo");
+			await probe("ordinary todo", "todo", { op: "start", task: "Locality X" }, demand === "forecast" || (!known && ["todo-plan-doctor", "todo-replan", "todo-link"].includes(demand)));
+			await probe("independent todo", "todo", { op: "start", task: "Locality Z" }, true);
+			await probe("schedule remedy", "todo", { op: "schedule", updates: [{ task: "Locality X", estimate, evidence: "Measured remaining work" }] }, true);
+			if (demand !== "forecast") await probe("mixed batch", "task", { tasks: [...task("Locality Z").tasks, ...task("Locality X").tasks] }, false);
+			if (demand === "unread-receipts") await probe("different exact owner", "task", task("Locality Y"), true);
+			for (const [name, args] of [["read", { path: "agent://OwnerX" }], ["write", { path: "agent://OwnerX", content: "receipt" }], ["write", { path: "proc://123/kill" }], ["goal_deadline", { action: "view" }]] as Array<[string, Record<string, unknown>]>) await probe(`exempt ${name} ${args.path ?? ""}`, name, args, true);
+			if (variant === "unread-receipts:rebind") await probe("explicit unread owner rebound", "task", { tasks: [{ name: "OwnerX", row: "Locality Z", task: "Locality Z", agent: "coder" }] }, false, "OwnerX");
+			if (variant.startsWith("unread-receipts:reconcile")) {
+				const read = { toolName: "read", toolCallId: "receipt-read", input: { path: `agent://OwnerX${variant.endsWith(":raw") ? ":raw" : ""}` }, content: [{ type: "text", text: "Worker returned a partial result; remaining work is recorded on Locality X." }] };
+				await probe("receipt read admitted", "read", read.input, true);
+				await hooks.get("tool_result")!({ ...read, isError: true } as never, ctx as never);
+				await probe("failed read does not release owner", "task", task("Locality X"), false);
+				const args = { op: "schedule", updates: [{ task: "Locality X", estimate, evidence: "Receipt reviewed; continue only the recorded missing output" }] };
+				const tool = new TodoTool({ cwd: "/tmp", settings: Settings.isolated(), getSessionFile: () => null, getTodoPhases: () => phases, setTodoPhases: (next: TodoPhase[]) => { phases = next; } } as unknown as ToolSession);
+				const beforeRead = await tool.execute("too-early-reconcile", args);
+				await hooks.get("tool_result")!({ toolName: "todo", toolCallId: "too-early-reconcile", input: args, ...beforeRead } as never, ctx as never);
+				await probe("todo without read does not release owner", "task", task("Locality X"), false);
+				for (const path of ["agent://OwnerX/data", "agent://OwnerX:1-5", "agent://OwnerX:1-5:raw"]) {
+					await probe(`partial receipt read admitted ${path}`, "read", { path }, true);
+					await hooks.get("tool_result")!({ ...read, input: { path }, isError: false } as never, ctx as never);
+					const partial = await tool.execute("partial-reconcile", args);
+					if (partial.isError) throw new Error(JSON.stringify(partial));
+					await hooks.get("tool_result")!({ toolName: "todo", toolCallId: "partial-reconcile", input: args, ...partial } as never, ctx as never);
+					await probe(`partial read and reconciliation do not release owner ${path}`, "task", task("Locality X"), false);
+				}
+				await hooks.get("tool_result")!({ ...read, isError: false } as never, ctx as never);
+				await probe("read alone does not release owner", "task", task("Locality X"), false);
+				await hooks.get("tool_result")!({ toolName: "todo", toolCallId: "failed-reconcile", input: args, isError: true, content: [] } as never, ctx as never);
+				await probe("failed reconciliation does not release owner", "task", task("Locality X"), false);
+				await probe("receipt reconciliation admitted", "todo", args, true);
+				const result = await tool.execute("receipt-reconcile", args);
+				if (result.isError) throw new Error(JSON.stringify(result));
+				await hooks.get("tool_result")!({ toolName: "todo", toolCallId: "receipt-reconcile", input: args, ...result } as never, ctx as never);
+				await probe("read and reconciled owner restaff", "task", task("Locality X"), true);
+				await hooks.get("session_branch")!({} as never, ctx as never);
+				await probe("reconciled receipt survives reload", "task", task("Locality X"), true);
+			}
+			if (demand === "forecast") {
+				await probe("mixed batch", "task", { tasks: [...task("Locality Z").tasks, ...task("Locality X").tasks] }, false, "Locality X");
+				await probe("plan completion", "todo", { op: "done", phase: "Work" }, false, "estimate");
+				await probe("independent completion", "todo", { op: "done", task: "Locality Z" }, true);
+				const args = { op: "schedule", updates: [{ task: "Locality X", estimate }] };
+				await probe("estimate remedy", "todo", args, true);
+				const tool = new TodoTool({ cwd: "/tmp", settings: Settings.isolated(), getSessionFile: () => null, getTodoPhases: () => phases, setTodoPhases: (next: TodoPhase[]) => { phases = next; } } as unknown as ToolSession);
+				const result = await tool.execute("estimate-remedy", args);
+				if (result.isError) throw new Error(JSON.stringify(result));
+				await probe("repaired X while Y missing", "task", task("Locality X"), true);
+				await probe("Y still held", "task", task("Locality Y"), false, "estimate");
+			}
+		} finally { await hooks.get("session_shutdown")?.({} as never, ctx as never); }
+	}
+	return receipts;
+}
 
 export const gateScenarioIds = [
 	"rootclaim",
