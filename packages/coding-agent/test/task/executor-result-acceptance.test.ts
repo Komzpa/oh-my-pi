@@ -265,6 +265,183 @@ describe("runSubprocess result acceptance", () => {
 		expect(settled?.createdAt).toBe(ref.createdAt);
 	});
 
+	it("keeps a one-shot terminal publication visible to restart capture until its artifact is durable", async () => {
+		const dir = TempDir.createSync("one-shot-publication-");
+		const harness = createHarness();
+		const rootFile = path.join(dir.path(), "root.jsonl");
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			AgentRegistry.global().attachSession(
+				options.agentId!,
+				harness.session,
+				path.join(dir.path(), "root", "child.jsonl"),
+				options.expectedAgentRef ?? undefined,
+			);
+			AgentRegistry.global().setStatus(options.agentId!, "running", harness.session);
+			return {
+				session: harness.session,
+				extensionsResult: {} as LoadExtensionsResult,
+				setToolUIContext: () => {},
+				eventBus: new EventBus(),
+			} as CreateAgentSessionResult;
+		});
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const write = artifactModule.writeArtifact;
+		vi.spyOn(artifactModule, "writeArtifact").mockImplementation(async (file, content) => {
+			if (file.endsWith(AGENT_ID + ".md")) {
+				entered.resolve();
+				await release.promise;
+			}
+			return write(file, content);
+		});
+		const result = runSubprocess({
+			cwd: dir.path(),
+			id: AGENT_ID,
+			agent: baseAgent,
+			task: "finish once",
+			index: 0,
+			keepAlive: false,
+			artifactsDir: dir.path(),
+		});
+		await entered.promise;
+		expect(AgentRegistry.global().get(AGENT_ID)?.session).toBeNull();
+		await expect(AgentLifecycleManager.global().ensureLive(AGENT_ID)).rejects.toThrow("still publishing");
+		const reclaimed = await AgentLifecycleManager.global().reclaimDeadCorpse(
+			AGENT_ID,
+			AgentRegistry.global().get(AGENT_ID)!,
+		);
+		const root = {
+			sessionManager: {
+				getSessionFile: () => rootFile,
+				getSessionId: () => "root",
+				ensureOnDisk: async () => {},
+				appendCustomEntry: () => {},
+				flush: async () => {},
+			},
+		} as unknown as AgentSession;
+		let captured = false;
+		const capture = captureSubagentsForRestart(root).then(() => {
+			captured = true;
+		});
+		try {
+			expect(reclaimed).toBe(false);
+			await flushMicrotasks();
+			expect(await Bun.file(path.join(dir.path(), AGENT_ID + ".md")).exists()).toBe(false);
+			expect(captured).toBe(false);
+		} finally {
+			release.resolve();
+			const completed = await result;
+			await capture;
+			expect(completed.outputPath).toBe(path.join(dir.path(), AGENT_ID + ".md"));
+			expect(AgentRegistry.global().get(AGENT_ID)).toBeUndefined();
+			dir.removeSync();
+		}
+	});
+
+	it("does not omit a replacement generation when an old publication completes during capture", async () => {
+		const harness = createHarness();
+		const registry = AgentRegistry.global();
+		const ref = registerRunning(harness.session);
+		ref.parentId = MAIN_AGENT_ID;
+		registry.setResultPublication(AGENT_ID, "pending", ref, 123);
+		const root = {
+			sessionManager: {
+				getSessionFile: () => "/fixture/root.jsonl",
+				getSessionId: () => "root",
+			},
+		} as unknown as AgentSession;
+		const capture = captureSubagentsForRestart(root);
+		await flushMicrotasks();
+		registry.setResultPublication(AGENT_ID, "published", ref, 123);
+		registry.markResultAccepted(AGENT_ID, ref, 123);
+		const replacement = registerRunning(createHarness().session);
+		await expect(capture).rejects.toThrow("changed during result publication");
+		expect(registry.get(AGENT_ID)).toBe(replacement);
+		expect(replacement.lifecycle?.acceptedAt).toBeUndefined();
+	});
+
+	it("preserves deferred one-shot disposal tracking", async () => {
+		const harness = createHarness();
+		const disposed = Promise.withResolvers<void>();
+		harness.session.dispose = () => disposed.promise;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			AgentRegistry.global().attachSession(
+				options.agentId!,
+				harness.session,
+				undefined,
+				options.expectedAgentRef ?? undefined,
+			);
+			AgentRegistry.global().setStatus(options.agentId!, "running", harness.session);
+			return {
+				session: harness.session,
+				extensionsResult: {} as LoadExtensionsResult,
+				setToolUIContext: () => {},
+				eventBus: new EventBus(),
+			} as CreateAgentSessionResult;
+		});
+		let deferred: Promise<void> | undefined;
+		try {
+			await runSubprocess({
+				cwd: "/tmp",
+				id: AGENT_ID,
+				agent: baseAgent,
+				task: "finish once",
+				index: 0,
+				keepAlive: false,
+				cleanupGraceMs: 20,
+				onCleanupDeferred: completion => {
+					deferred = completion;
+				},
+			});
+			expect(deferred).toBeDefined();
+		} finally {
+			disposed.resolve();
+			await deferred;
+		}
+	});
+
+	it("retains the published one-shot artifact after destructive resource release", async () => {
+		const dir = TempDir.createSync("one-shot-release-");
+		const artifactsDir = path.join(dir.path(), "artifacts");
+		const harness = createHarness();
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+			AgentRegistry.global().attachSession(
+				options.agentId!,
+				harness.session,
+				undefined,
+				options.expectedAgentRef ?? undefined,
+			);
+			AgentRegistry.global().setStatus(options.agentId!, "running", harness.session);
+			return {
+				session: harness.session,
+				extensionsResult: {} as LoadExtensionsResult,
+				setToolUIContext: () => {},
+				eventBus: new EventBus(),
+			} as CreateAgentSessionResult;
+		});
+		let released = false;
+		try {
+			const result = await runSubprocess({
+				cwd: dir.path(),
+				id: AGENT_ID,
+				agent: baseAgent,
+				task: "finish once",
+				index: 0,
+				keepAlive: false,
+				artifactsDir,
+				onRelease: async () => {
+					await fs.rm(artifactsDir, { recursive: true, force: true });
+					released = true;
+				},
+			});
+			expect(released).toBe(true);
+			expect(result.outputPath).toBeDefined();
+			expect(await Bun.file(result.outputPath!).text()).toContain("finish once");
+		} finally {
+			dir.removeSync();
+		}
+	});
+
 	it("settles the owning task job when Agent Hub tombstones a running subagent", async () => {
 		const harness = createHarness({ hangPrompt: true });
 		let ref = undefined as unknown as import("@oh-my-pi/pi-coding-agent/registry/agent-registry").AgentRef;
@@ -445,16 +622,16 @@ describe("runSubprocess result acceptance", () => {
 		expect(ref.lifecycle?.resultPublication).toBeUndefined();
 	});
 
-	for (const mode of ["initial", "followup", "wake"] as const) {
+	for (const mode of ["initial", "one-shot", "followup", "wake"] as const) {
 		it(`does not accept a yield whose artifact publication failed: ${mode}`, async () => {
 			const dir = TempDir.createSync("result-publication-failure-");
 			const blockedPath = path.join(dir.path(), "not-a-directory");
-			if (mode === "initial") await fs.mkdir(blockedPath);
+			if (mode === "initial" || mode === "one-shot") await fs.mkdir(blockedPath);
 			else await Bun.write(blockedPath, "file blocks artifact directory");
 			const harness = createHarness();
-			if (mode !== "initial") registerRunning(harness.session);
+			if (mode !== "initial" && mode !== "one-shot") registerRunning(harness.session);
 			try {
-				if (mode === "initial") {
+				if (mode === "initial" || mode === "one-shot") {
 					let blocked = false;
 					harness.session.releaseTaskResources = async () => {
 						if (blocked) return;
@@ -483,6 +660,7 @@ describe("runSubprocess result acceptance", () => {
 						agent: baseAgent,
 						task: "work",
 						index: 0,
+						keepAlive: mode !== "one-shot",
 						artifactsDir: blockedPath,
 					});
 					expect(result.outputPath).toBeUndefined();
@@ -504,6 +682,11 @@ describe("runSubprocess result acceptance", () => {
 				const ref = AgentRegistry.global().get(AGENT_ID)!;
 				expect(ref.lifecycle?.acceptedAt).toBeUndefined();
 				expect(ref.lifecycle?.resultPublication).toBe("failed");
+				if (mode === "one-shot") {
+					expect(ref.status).toBe("parked");
+					expect(ref.session).toBeNull();
+					expect(await AgentLifecycleManager.global().reclaimDeadCorpse(AGENT_ID, ref)).toBe(false);
+				}
 				ref.parentId = MAIN_AGENT_ID;
 				ref.sessionFile = null;
 				const root = {

@@ -662,11 +662,12 @@ export async function captureSubagentsForRestart(
 	// omit it as accepted, or replay it as unfinished, until publication settles.
 	const deadlineAt = options?.deadlineAt ?? Date.now() + 5_000;
 	for (const ref of candidates) {
+		const publicationSucceeded = () => ref.lifecycle?.resultPublication === "published";
 		while (ref.lifecycle?.resultPublication === "pending") {
 			if (Date.now() >= deadlineAt)
 				throw new Error(`Cannot restart safely: subagent ${ref.id} result publication is still pending.`);
 			await Bun.sleep(Math.min(10, Math.max(1, deadlineAt - Date.now())));
-			if (registry.get(ref.id) !== ref)
+			if (registry.get(ref.id) !== ref && (registry.get(ref.id) !== undefined || !publicationSucceeded()))
 				throw new Error(`Cannot restart safely: subagent ${ref.id} changed during result publication.`);
 		}
 		if (ref.lifecycle?.resultPublication === "failed")
@@ -675,6 +676,11 @@ export async function captureSubagentsForRestart(
 
 	const resumable: AgentRef[] = [];
 	for (const ref of candidates) {
+		// A one-shot may unregister only after its publication fence settled.
+		if (ref.lifecycle?.resultPublication === "published" && registry.get(ref.id) !== ref) {
+			if (registry.get(ref.id) === undefined) continue;
+			throw new Error(`Cannot restart safely: subagent ${ref.id} changed during result publication.`);
+		}
 		// A drain may have disposed the session already. Its original running
 		// identity still owns a handoff slot; unrelated parked history does not.
 		const wasRunning = options?.runningAgentIds?.has(ref.id) === true;
