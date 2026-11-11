@@ -103,7 +103,7 @@ async function restartIsolationCwd(sessionFile: string, id: string, cwd: string)
  */
 export interface PersistedSubagentReviveContext {
 	session: AgentSession;
-	getSubagentDiscoveryOptions?: (restrictToolNames: boolean) => SubagentDiscoveryOptions;
+	getSubagentDiscoveryOptions?: (restrictToolNames: boolean, cwd?: string) => SubagentDiscoveryOptions;
 	authStorage: AuthStorage;
 	modelRegistry: ModelRegistry;
 	settings: Settings;
@@ -256,6 +256,8 @@ export function createPersistedSubagentReviverFactory(
 			parentId = registry.get(parentId)?.parentId;
 		}
 		return async expectedRef => {
+			const workspace = await readTaskWorkspace(sessionFile);
+			const discoveryCwd = workspace?.cwd ?? isolatedCwd ?? restoredSeance?.cwd ?? peek.cwd;
 			// Live root state is read per revive, so a later `/new` or cwd move is followed.
 			const spec: PersistedReviveSpec = {
 				id: ref.id,
@@ -272,8 +274,10 @@ export function createPersistedSubagentReviverFactory(
 				artifactManager: ctx.session.sessionManager.getArtifactManager() ?? undefined,
 				discoveryOptions: ctx.getSubagentDiscoveryOptions?.(
 					restoredSeance !== undefined || peek.init?.restrictToolNames === true,
+					discoveryCwd,
 				),
-				preparedExtensions: ctx.session.preparedExtensions,
+				preparedExtensions:
+					discoveryCwd === ctx.session.sessionManager.getCwd() ? ctx.session.preparedExtensions : undefined,
 				authStorage: ctx.authStorage,
 				modelRegistry: ctx.modelRegistry,
 				settings: ctx.settings,

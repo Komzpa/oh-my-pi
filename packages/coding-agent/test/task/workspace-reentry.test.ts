@@ -182,7 +182,9 @@ it.each([false, true])("scopes executor discovery to the actual workspace (forei
 	const cwd = foreign ? path.join(root, "foreign") : repo;
 	if (foreign) await vcs.clone(repo, cwd);
 	vi.spyOn(discovery, "discoverAgents").mockResolvedValue({
-		agents: [{ name: "task", description: "task", systemPrompt: "", source: "bundled" }],
+		agents: [
+			{ name: "task", description: "task", systemPrompt: "", source: "bundled", autoloadSkills: ["child-declared"] },
+		],
 		projectAgentsDir: null,
 	});
 	const run = vi.spyOn(executor, "runSubprocess").mockImplementation(async options => ({
@@ -220,6 +222,7 @@ it.each([false, true])("scopes executor discovery to the actual workspace (forei
 	});
 	const options = run.mock.calls[0]![0];
 	expect(options.cwd).toBe(cwd);
+	expect(options.autoloadSkillNames).toEqual(foreign ? ["child-declared"] : undefined);
 	expect(options.workspaceTree).toEqual(foreign ? undefined : tree);
 	expect(options.preloadedExtensionPaths).toEqual(foreign ? undefined : ["/parent-extension.ts"]);
 	expect(options.rules).toEqual(foreign ? undefined : []);

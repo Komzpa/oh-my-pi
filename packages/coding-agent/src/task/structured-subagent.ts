@@ -1017,6 +1017,7 @@ function buildExecutorOptions(
 		noContextFiles: session.noContextFiles,
 		// Autoload runs after session start, outside the seance isolation options.
 		autoloadSkills: preparedSession || !sameWorkspace ? undefined : autoloadSkills,
+		autoloadSkillNames: !preparedSession && !sameWorkspace ? policy.agent.autoloadSkills : undefined,
 		// Root policy and module paths have separate jobs: the live policy drives
 		// recursive sub-discovery; preloaded paths only avoid re-scanning/reusing
 		// parent-bound extension instances while constructing the child.

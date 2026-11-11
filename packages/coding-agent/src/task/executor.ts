@@ -765,6 +765,8 @@ export interface ExecutorOptions {
 	parentTelemetry?: AgentTelemetryConfig;
 	/** Skills to autoload via sendCustomMessage before the first prompt */
 	autoloadSkills?: Skill[];
+	/** Resolve declarations after child-local skill discovery. */
+	autoloadSkillNames?: readonly string[];
 	/**
 	 * Registry id of the spawning agent, recorded as this subagent's parent.
 	 * Forwarded verbatim to the SDK; the executor never derives it (the spawner
@@ -6237,8 +6239,11 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 
 			checkAbort();
 			// Autoload skills via sendCustomMessage (same mechanic as /skill:<name>)
-			if (options.autoloadSkills?.length) {
-				for (const skill of options.autoloadSkills) {
+			const autoloadSkills = options.autoloadSkillNames
+				? options.autoloadSkillNames.flatMap(name => session.skills.filter(skill => skill.name === name))
+				: options.autoloadSkills;
+			if (autoloadSkills?.length) {
+				for (const skill of autoloadSkills) {
 					const { message, details } = await buildSkillPromptMessage(skill, { args: "" }, "autoload", session);
 					await session.sendCustomMessage(
 						{
