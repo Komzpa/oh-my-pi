@@ -786,6 +786,19 @@ class RestartQueueControllerImpl implements RestartQueueController {
 						restoreSubagentsAfterRestart(this.#session, {
 							requestId: record?.requestId,
 							onProgress: this.#onChildProgress,
+							beforeChildResume:
+								record && ["completed", "cancelled", "failed"].includes(record.state)
+									? child =>
+											child
+												.sendRestartNotice({
+													customType: RESTART_QUEUED_NOTICE_TYPE,
+													content: restartNoticeContent(record!),
+													display: true,
+													attribution: "agent",
+													details: { requestId: record!.requestId, state: record!.state },
+												})
+												.then(() => undefined)
+									: undefined,
 						}),
 					);
 				}

@@ -8578,6 +8578,29 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			await this.sendCustomMessage(message, { deliverAs: "nextTurn", triggerTurn: false });
 			return;
 		}
+		const requestId = isRecord(message.details) ? message.details.requestId : undefined;
+		const latestNotice =
+			typeof requestId === "string"
+				? selectRestartBranchEntries(
+						this.sessionManager,
+						entry => entry.type === "custom_message" && entry.customType === message.customType,
+					).findLast(
+						entry =>
+							entry.type === "custom_message" &&
+							isRecord(entry.details) &&
+							entry.details.requestId === requestId,
+					)
+				: undefined;
+		if (
+			latestNotice?.type === "custom_message" &&
+			isRecord(latestNotice.details) &&
+			latestNotice.details.state === state
+		) {
+			await this.reconcileRestartNotices();
+			await this.sessionManager.ensureOnDisk();
+			await this.sessionManager.flush();
+			return;
+		}
 		// A text-only steering loop never polls nextTurn/asides. Persist terminal
 		// state now; the provider boundary also covers an already-captured snapshot.
 		this.agent.appendMessage({ ...message, role: "custom", timestamp: Date.now() });
@@ -8915,7 +8938,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				this.sessionManager,
 				metadata =>
 					(metadata.type === "custom" && metadata.customType === "restart_request_transition") ||
-					(metadata.type === "custom_message" && metadata.customType === "restart-root-continuation"),
+					(metadata.type === "custom_message" &&
+						(metadata.customType === "restart-root-continuation" || metadata.customType === "restart-queued")),
 			),
 		);
 		const keepMessage = (message: AgentMessage): boolean => message.role !== "custom" || keepRestartNotice(message);

@@ -770,7 +770,11 @@ export async function captureSubagentsForRestart(
  */
 export async function restoreSubagentsAfterRestart(
 	rootSession: AgentSession,
-	options?: { requestId?: string; onProgress?: (id: string, completed: number, total: number) => void },
+	options?: {
+		requestId?: string;
+		onProgress?: (id: string, completed: number, total: number) => void;
+		beforeChildResume?: (session: AgentSessionHandle) => Promise<void>;
+	},
 ): Promise<RestartRecoveryReport> {
 	const report: RestartRecoveryReport = {
 		resumed: [],
@@ -925,6 +929,7 @@ export async function restoreSubagentsAfterRestart(
 				) {
 					try {
 						const live = await AgentLifecycleManager.global().ensureLive(child.id);
+						await options?.beforeChildResume?.(live);
 						const current = registry.get(child.id);
 						if (!current || current.session !== live) throw new Error("child session changed during restoration");
 						if (current.status === "running") report.resumed.push(child.id);
@@ -950,12 +955,24 @@ export async function restoreSubagentsAfterRestart(
 				return;
 			}
 			const lifecycle = AgentLifecycleManager.global();
+			let live: AgentSessionHandle;
 			try {
-				await lifecycle.ensureLive(child.id);
+				live = await lifecycle.ensureLive(child.id);
 			} catch (error) {
 				const reason = error instanceof Error ? error.message : String(error);
 				await recordReceipt(rootSession, identity, entryId, child, "revival-failed", { reason });
 				report.failures.push({ id: child.id, reason });
+				return;
+			}
+			try {
+				await options?.beforeChildResume?.(live);
+			} catch (error) {
+				// Notice delivery is idempotent and has not claimed a continuation.
+				// Leave no terminal receipt so a later restore can retry delivery.
+				report.failures.push({
+					id: child.id,
+					reason: `restart notice delivery failed: ${error instanceof Error ? error.message : String(error)}`,
+				});
 				return;
 			}
 			if ((child.status === "idle" || child.settled || completedDuringRestart) && pending.length === 0) {

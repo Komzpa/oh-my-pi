@@ -1358,6 +1358,71 @@ describe("AgentSession restart queue round trip", () => {
 		expect(unchangedMs).toBeLessThan(50);
 	});
 
+	it("a repeated authoritative terminal notice supersedes a later queued notice of the same request", async () => {
+		const manager = currentManager();
+		appendPriorAssistant(manager);
+		const inputs: string[] = [];
+		session = createSession(manager, [{ content: ["checked"], stopReason: "stop" }], inputs);
+		const terminal = {
+			customType: "restart-queued",
+			content: "terminal-repeat",
+			display: true,
+			details: { requestId: "same", state: "completed" },
+		};
+		await session.sendRestartNotice(terminal);
+		manager.appendCustomMessageEntry("restart-queued", "newer-restriction", true, {
+			requestId: "same",
+			state: "queued",
+		});
+		await session.sendRestartNotice(terminal);
+		await session.prompt("Check current restart state");
+		expect(inputs[0]).not.toContain("newer-restriction");
+		expect(
+			manager
+				.buildSessionContext()
+				.messages.some(message => message.role === "custom" && message.content === "newer-restriction"),
+		).toBe(false);
+	});
+
+	it.each(["completed", "cancelled", "failed"])(
+		"retires child-local pending notices idempotently after %s without auto waking",
+		async state => {
+			const manager = currentManager();
+			appendPriorAssistant(manager);
+			const inputs: string[] = [];
+			session = createSession(manager, [{ content: ["checked"], stopReason: "stop" }], inputs);
+			for (const requestId of ["old", "new"])
+				await session.sendRestartNotice({
+					customType: "restart-queued",
+					content: `restriction-${requestId}`,
+					display: true,
+					details: { requestId, state: "queued" },
+				});
+			for (let repeat = 0; repeat < 2; repeat++)
+				await session.sendRestartNotice({
+					customType: "restart-queued",
+					content: `terminal-old-${state}`,
+					display: true,
+					details: { requestId: "old", state },
+				});
+			expect(inputs).toHaveLength(0);
+			expect(
+				manager
+					.getBranch()
+					.filter(
+						entry =>
+							entry.type === "custom_message" &&
+							entry.customType === "restart-queued" &&
+							entry.content === `terminal-old-${state}`,
+					),
+			).toHaveLength(1);
+			await session.prompt("Inspect current state");
+			expect(inputs[0]).not.toContain("restriction-old");
+			expect(inputs[0]).toContain("restriction-new");
+			expect(inputs[0]).toContain(`terminal-old-${state}`);
+		},
+	);
+
 	it.each(["completed", "cancelled", "failed"])(
 		"delivers a live %s notice on the next text-only steering request",
 		async state => {
