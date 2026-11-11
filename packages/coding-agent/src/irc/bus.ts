@@ -295,12 +295,16 @@ export class IrcBus implements IrcBusApi {
 		// Bound only preparation, before injection can have any delivery side effect.
 		// Shared revival may finish later; this delivery must not resume with it.
 		const readyDeadline = performance.now() + this.recipientReadyTimeoutMs;
-		const awaitReady = <T>(pending: Promise<T>): Promise<T> =>
-			withTimeout(
-				pending,
-				Math.max(0, readyDeadline - performance.now()),
+		const awaitReady = <T>(prepare: () => Promise<T>): Promise<T> => {
+			const remaining = readyDeadline - performance.now();
+			const error = new Error(
 				`Agent "${message.to}" did not become ready within ${this.recipientReadyTimeoutMs} ms; message not delivered. Check its status before retrying.`,
 			);
+			// A resolved promise beats a zero-ms timer; refuse an exhausted budget
+			// before starting another lifecycle operation instead of racing it.
+			if (remaining <= 0) return Promise.reject(error);
+			return withTimeout(prepare(), remaining, error);
+		};
 		let ref = this.#registry.get(message.to);
 		if (ref?.starting && !ref.session) {
 			const expected = ref;
@@ -313,7 +317,7 @@ export class IrcBus implements IrcBusApi {
 			const stop = this.#registry.onChange(check);
 			try {
 				check();
-				await awaitReady(ready.promise);
+				await awaitReady(() => ready.promise);
 			} catch (error) {
 				return { to: message.to, outcome: "failed", error: error instanceof Error ? error.message : String(error) };
 			} finally {
@@ -363,7 +367,7 @@ export class IrcBus implements IrcBusApi {
 		let revived = false;
 		if (needsLifecycleGate) {
 			try {
-				const liveSession = await awaitReady(lifecycle.ensureLive(message.to));
+				const liveSession = await awaitReady(() => lifecycle.ensureLive(message.to));
 				// Revival = we did not keep the same live instance (parked start, or
 				// park completed and a fresh session was rebuilt).
 				revived = !priorSession || liveSession !== priorSession;

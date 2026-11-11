@@ -4,7 +4,7 @@ import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { IrcBus, type IrcBusApi } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { executeSend } from "@oh-my-pi/pi-coding-agent/irc/messaging";
-import { type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
+import { type IrcDeliveryReceipt, type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, type AgentRegistryApi } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { ensurePersistedRoster } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
@@ -134,7 +134,7 @@ describe("IRC", () => {
 				});
 			}
 			const bounded = new IrcBus(registry, lifecycle, 5);
-			let receipt: Awaited<ReturnType<IrcBus["send"]>> | undefined;
+			let receipt: IrcDeliveryReceipt | undefined;
 			const pending = bounded.send({ from: "Main", to: "Slow", body: "do not deliver late" }).then(value => {
 				receipt = value;
 			});
@@ -169,6 +169,29 @@ describe("IRC", () => {
 			expect((await pending).outcome).toBe("injected");
 			expect(recipient.delivered.map(message => message.body)).toEqual(["one instruction"]);
 			expect(bounded.sentSince("Main", "Ready", 0)).toBe(true);
+		});
+
+		it("does not enter revival after startup consumes the shared preparation budget", async () => {
+			const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+			const recipient = makeFakeSession();
+			const ref = registry.register({
+				id: "Budget",
+				displayName: "task",
+				kind: "sub",
+				session: null,
+				starting: true,
+			});
+			const lifecycle = AgentLifecycleManager.global();
+			lifecycle.adopt("Budget", { idleTtlMs: 0, revive: async () => recipient.session });
+			const ensureLive = vi.spyOn(lifecycle, "ensureLive");
+			const bounded = new IrcBus(registry, lifecycle, 50);
+			const pending = bounded.send({ from: "Main", to: "Budget", body: "expired" });
+			clock.mockReturnValue(51);
+			registry.attachSession("Budget", recipient.session, undefined, ref);
+			expect((await pending).outcome).toBe("failed");
+			expect(ensureLive).not.toHaveBeenCalled();
+			expect(recipient.delivered).toEqual([]);
+			expect(bounded.sentSince("Main", "Budget", 0)).toBe(false);
 		});
 
 		it("fails a startup steer when that generation is killed or replaced", async () => {
