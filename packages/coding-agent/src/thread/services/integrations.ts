@@ -126,10 +126,14 @@ export function toWorkerCustomTool<TParams extends TSchema, TDetails>(
  * classes (`mcpManager`, `localProtocolOptions`, `preloadedPreparedExtensions`, tool contexts);
  * `perCallModelGrants` crosses intact (its `settings` becomes the worker's live mirror).
  */
-export function bridgeIntegrationOptions(options: ExecutorOptions): ExecutorOptions {
-	const bridged: ExecutorOptions = { ...options };
+/** Preserve synchronous root reads when discovery policy crosses to a worker. */
+export function bridgeExtensionRootOptions<T extends Pick<ExecutorOptions, "extensionRoots">>(options: T): T {
 	const extensionRoots = options.extensionRoots;
-	if (extensionRoots) bridged.extensionRoots = rpcSync(() => extensionRoots());
+	return extensionRoots ? { ...options, extensionRoots: rpcSync(() => extensionRoots()) } : { ...options };
+}
+
+export function bridgeIntegrationOptions(options: ExecutorOptions): ExecutorOptions {
+	const bridged = bridgeExtensionRootOptions(options);
 	const seance = options.preparedSession;
 	if (seance) {
 		const promptSuffix = seance.promptSuffix;
