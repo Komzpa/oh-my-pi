@@ -1,4 +1,5 @@
 // @ts-nocheck -- copied Reemxy extension runtime is covered by package behavior tests.
+import { gateSwitchedOff } from "./dispatch-off-switch";
 import { selectBranchNewestFirst, selectLatestBranchEntry } from "@oh-my-pi/pi-coding-agent/session/branch-selection";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -588,6 +589,7 @@ export default function goalDeadlines(pi: ExtensionAPI): void {
 		if (reason) pi.sendMessage?.({ customType: "goal-deadline-continue", content: reason, display: false, attribution: "agent" }, { deliverAs: "nextTurn", triggerTurn: true });
 	});
 	pi.on("session_stop", (_event, ctx) => {
+		if (gateSwitchedOff(ctx)) return;
 		const reason = missedWorkDemand(ctx);
 		if (reason) return { decision: "block", reason };
 	});
