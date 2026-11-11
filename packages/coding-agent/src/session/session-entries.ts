@@ -280,6 +280,12 @@ export interface SessionInitEntry extends SessionEntryBase {
 	systemPrompt: string[] | string;
 	/** Initial task/user message */
 	task: string;
+	/** Original assignment start time in epoch milliseconds; absent on legacy sessions. */
+	assignmentStartedAt?: number;
+	/** Keep the root context-file opt-out across cold revival and descendant spawns. */
+	noContextFiles?: boolean;
+	/** Start time of the current worker attempt; lifecycle revival keeps this clock. */
+	attemptStartedAt?: number;
 	/** Tools available to the agent */
 	tools: string[];
 	/** Names in `tools` presented as `xd://` devices instead of top-level tools (absent from older files). */

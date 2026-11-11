@@ -98,7 +98,7 @@ import type { AuthStorage } from "../session/auth-storage";
 import { type CostCapRefusal, CostCapError, type CostGateApi } from "../session/cost-gate";
 import { INTERRUPTED_TURN_ERROR } from "../session/exit-diagnostics";
 import { SKILL_PROMPT_MESSAGE_TYPE } from "../session/messages";
-import { hasConversationalHistory, SessionManager } from "../session/session-manager";
+import { extractSessionInit, hasConversationalHistory, SessionManager } from "../session/session-manager";
 import { truncateTail } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import {
 	AUTO_THINKING,
@@ -186,6 +186,7 @@ import {
 	cfgCompactionThresholdPercent,
 	cfgCompactionThresholdTokens,
 } from "../session/context-settings";
+import { findLastPersistedSubagentElapsedNoteAt, SubagentElapsedSignal } from "./subagent-elapsed-signal";
 
 export type { YieldItem } from "@oh-my-pi/pi-tui/tools/task";
 
@@ -4214,6 +4215,26 @@ function trackSubagentIrcRoster(session: AgentSession, inputs: SubagentPromptInp
 	});
 }
 
+function createSessionElapsedSignal(
+	session: AgentSession,
+	attemptStartedAt: number,
+	lastNoteAt?: number,
+): SubagentElapsedSignal {
+	const canAppend =
+		typeof session.agent.appendMessage === "function" && typeof session.sessionManager.appendMessage === "function";
+	const signal = new SubagentElapsedSignal({
+		attemptStartedAt,
+		lastNoteAt,
+		appendMessage: message => {
+			if (!canAppend) return;
+			session.agent.appendMessage(message);
+			session.sessionManager.appendMessage(message);
+		},
+	});
+	if (canAppend) signal.attach(session.agent);
+	return signal;
+}
+
 /** Re-resolves the IRC roster root a subagent's prompt scopes its peer rows to. */
 async function refreshSubagentIrcRoot(
 	inputs: SubagentPromptInputs,
@@ -4337,6 +4358,13 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 			? followMCPTools(mcpManager, { scope: reopened.getSessionId() }, explicitSubagentToolNames(capture.spec))
 			: undefined;
 		let revived: AgentSession;
+		const savedAttemptStart = extractSessionInit(reopened.getEntries())?.attemptStartedAt;
+		const attemptStartedAt =
+			typeof savedAttemptStart === "number" && Number.isFinite(savedAttemptStart) ? savedAttemptStart : Date.now();
+		const messages = reopened
+			.getBranch()
+			.flatMap(entry => (entry.type === "message" && entry.message.role === "developer" ? [entry.message] : []));
+		const lastNoteAt = findLastPersistedSubagentElapsedNoteAt(messages, attemptStartedAt);
 		// Account pools are owner policy: take the live exact-name entry, as
 		// dispatch and persisted revival do, never the spawn-time copy.
 		const agentAccountPools = validateAgentAccountPools(cfgTaskAgentAccountPools.get(capture.settings.parent));
@@ -4394,6 +4422,7 @@ function createWarmSubagentReviver(capture: WarmReviveCapture): AgentReviver {
 			// Strip what the spawn stripped, before extensions start: the rebuilt session enables its defaults again.
 			const revivedToolNames = revived.getEnabledToolNames();
 			const subagentToolNames = withoutParentOwnedTools(revivedToolNames);
+			createSessionElapsedSignal(revived, attemptStartedAt, lastNoteAt);
 			if (subagentToolNames.length !== revivedToolNames.length) {
 				await revived.setActiveToolsByName(subagentToolNames);
 			}
@@ -4473,6 +4502,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 	const cleanupGraceMs = options.cleanupGraceMs ?? TASK_ABORT_CLEANUP_GRACE_MS;
 	const structured = options.structured !== false;
 	const startTime = Date.now();
+	const assignmentStartedAt = options.invokedAt ?? startTime;
 	// Set by the session's onFirstChatDispatch hook the first time the agent
 	// loop dispatches a chat request to the provider — the launch-complete boundary.
 	let firstChatDispatchAt: number | undefined;
@@ -5231,11 +5261,15 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				outputSchema,
 				outputSchemaMode: options.outputSchemaMode,
 				restrictToolNames: restrictToolNames || undefined,
+				assignmentStartedAt,
+				noContextFiles: options.noContextFiles,
+				attemptStartedAt: startTime,
 				// Isolated runs are never revivable (worktree merged + cleaned):
 				// stamp the contract so cold revival leaves them transcript-only
 				// even when the workspace was retained for recovery.
 				isolated: worktree !== undefined || undefined,
 			});
+			createSessionElapsedSignal(session, startTime).start();
 
 			abortSignal.addEventListener(
 				"abort",

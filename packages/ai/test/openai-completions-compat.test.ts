@@ -22,6 +22,7 @@ import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-ca
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { ResolvedOpenAICompat } from "@oh-my-pi/pi-catalog/types";
 import { serializeAlibabaTokenPlanCredential } from "@oh-my-pi/pi-catalog/wire/alibaba-token-plan";
+import { markPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 
 const gpt4oMiniSpec: ModelSpec<"openai-completions"> = (() => {
 	const {
@@ -122,16 +123,22 @@ async function captureOpenAICompletionsPayload(
 		cacheRetention?: "none" | "short" | "long";
 	},
 ): Promise<unknown> {
-	const { promise, resolve } = Promise.withResolvers<unknown>();
+	let capturedPayload: unknown;
 	const fetchMock = createMockFetch(["[DONE]"]);
-	streamOpenAICompletions(model, context, {
+	const stream = streamOpenAICompletions(model, context, {
 		apiKey: "test-key",
 		fetch: fetchMock,
 		signal: createAbortedSignal(),
-		onPayload: payload => resolve(payload),
+		onPayload: payload => {
+			capturedPayload = payload;
+		},
 		...options,
 	});
-	return promise;
+	for await (const _event of stream) {
+	}
+	const result = await stream.result();
+	if (capturedPayload === undefined) throw new Error(result.errorMessage ?? "provider produced no payload");
+	return capturedPayload;
 }
 
 function getPayloadMessages(payload: unknown): Record<string, unknown>[] {
@@ -2468,6 +2475,27 @@ describe("anthropic cache control for OpenAI-compatible chat completions", () =>
 		const textPart = getLastTextPart(content);
 
 		expect(textPart?.cache_control).toEqual({ type: "ephemeral" });
+	});
+
+	it("caches stable OpenRouter history before the per-call elapsed note", async () => {
+		const model = getBundledModel("openrouter", "anthropic/claude-sonnet-4") as Model<"openai-completions">;
+		const note = {
+			role: "developer" as const,
+			content:
+				"elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+			synthetic: true,
+			timestamp: 4,
+		};
+		markPerCallContextMessage(note);
+		const context = cacheContext();
+		const payload = await captureOpenAICompletionsPayload(model, {
+			...context,
+			messages: [...context.messages, note],
+		});
+		const messages = getPayloadMessages(payload);
+		expect(getLastTextPart(messages.at(-2)!.content)?.cache_control).toEqual({ type: "ephemeral" });
+		expect(getLastTextPart(messages.at(-2)!.content)?.text).toBe("cache me");
+		expect(getLastTextPart(messages.at(-1)!.content)?.cache_control).toBeUndefined();
 	});
 
 	it("anchors Anthropic cache_control on the trailing tool result during a tool loop", async () => {
