@@ -357,3 +357,102 @@ return { calls, nextProbeAt, unchanged, recovered: !state.isProviderExhausted("a
 		expect(result).toEqual({ calls: 1, nextProbeAt: 901000, unchanged: true, recovered: true });
 	});
 });
+
+describe("provider quota retry hint", () => {
+	const quota = { status: 429, code: "usage_limit_reached" };
+	const body = (message: string) => JSON.stringify({ error: { code: "usage_limit_reached", message } });
+
+	it("waits for the hint in the structured message, the Retry-After value, or an explicit reset; five minutes without one", async () => {
+		const result = await run(
+			fixture(),
+			`
+const untils = {};
+const take = (name, provider, evidence, at = 10000) => {
+	state.recordProviderFailure(provider, evidence, at);
+	untils[name] = state.listProviderCooldowns().find(row => row.provider === provider).until - at;
+};
+take("message", "a", { status: 429, body: ${JSON.stringify(body("Rate limit exceeded. Try again in 300s"))} });
+take("seconds", "b", { status: 429, body: ${JSON.stringify(body("Rate limit exceeded. Try again in 45 seconds"))} });
+take("retryAfter", "c", { ...${JSON.stringify(quota)}, retryAfterMs: 90000 });
+take("none", "d", { ...${JSON.stringify(quota)} });
+take("capped", "e", { ...${JSON.stringify(quota)}, retryAfterMs: 3 * 3600 * 1000 });
+take("explicit", "f", { ...${JSON.stringify(quota)}, retryAfterMs: 90000, resetAt: 10000 + 120000 });
+return untils;`,
+		);
+		expect(result).toEqual({
+			message: 300_000,
+			seconds: 45_000,
+			retryAfter: 90_000,
+			none: 300_000,
+			capped: 3_600_000,
+			explicit: 120_000,
+		});
+	});
+
+	it("a quota record is gone exactly when its until has passed, and exclusion reports that until", async () => {
+		const result = await run(
+			fixture(),
+			`
+state.recordProviderFailure("a", { status: 429, code: "usage_limit_reached", retryAfterMs: 300000 }, 1000);
+const before = state.providerExhaustionRecord("a", 300999)?.until;
+const at = state.providerExhaustionRecord("a", 301000);
+const after = state.listProviderCooldowns().length;
+return { before, at: at?.until ?? null, after };`,
+		);
+		expect(result).toEqual({ before: 301000, at: null, after: 0 });
+	});
+
+	it("a probe that moved until earlier is honored by expiry", async () => {
+		const result = await run(
+			fixture(),
+			`
+state.recordProviderFailure("a", { status: 429, code: "usage_limit_reached" }, 1000);
+await state.probeUnavailableProviders(async () => ({ available: false }), { now: 301000 });
+const record = state.listProviderCooldowns()[0];
+return { until: record.until, gone: state.providerExhaustionRecord("a", record.until) === undefined };`,
+		);
+		expect(result).toEqual({ until: 301000 + 600000, gone: true });
+	});
+
+	it("the session turn path passes the hint of the error message and a later successful call clears it", async () => {
+		const directory = fixture();
+		const result = await run(
+			directory,
+			`
+const recovery = new TurnRecovery({ modelRegistry: { providerCredentialVersion: () => undefined, find: () => undefined }, model: () => undefined }, { deferFallbackChainValidation: true });
+const before = Date.now();
+await recovery.recordProviderAvailabilityOutcome({ provider: "proxy", model: "m", stopReason: "error", errorStatus: 429, errorCode: "usage_limit_reached", errorMessage: "Rate limit exceeded. Try again in 300s" });
+const record = state.listProviderCooldowns()[0];
+const wait = record.until - record.recordedAt;
+await recovery.recordProviderAvailabilityOutcome({ provider: "proxy", model: "m", stopReason: "stop" });
+return { wait, cleared: state.listProviderCooldowns().length === 0 };`,
+		);
+		expect(result).toEqual({ wait: 300_000, cleared: true });
+	});
+
+	it("keeps balance, entitlement and auth recovery rules", async () => {
+		const result = await run(
+			fixture(),
+			`
+state.recordProviderFailure("bal", { status: 402, retryAfterMs: 1000 }, 1000);
+state.recordProviderFailure("ent", { code: "billing_not_configured", retryAfterMs: 1000 }, 1000);
+state.recordProviderFailure("auth", { status: 401, retryAfterMs: 1000 }, 1000);
+const rows = Object.fromEntries(state.listProviderCooldowns().map(row => [row.provider, row.until - 1000]));
+const alive = ["bal", "ent", "auth"].map(name => state.providerExhaustionRecord(name, 99999999) !== undefined);
+let probes = 0;
+await state.probeUnavailableProviders(async () => { probes++; return { available: false }; }, { now: 301000 });
+const afterFailedProbe = state.listProviderCooldowns().map(row => [row.provider, row.failedCallCount]);
+return { rows, alive, probes, afterFailedProbe };`,
+		);
+		expect(result).toMatchObject({
+			rows: { bal: 300_000, ent: 300_000 },
+			alive: [true, true, true],
+			probes: 2,
+			afterFailedProbe: [
+				["bal", 1],
+				["ent", 1],
+				["auth", 1],
+			],
+		});
+	});
+});

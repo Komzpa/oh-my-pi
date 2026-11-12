@@ -1182,6 +1182,7 @@ export class TurnRecovery {
 				type: message.errorType,
 				code: message.errorCode,
 				resetAt: message.errorResetAt,
+				retryAfterMs: message.errorMessage ? this.#parseRetryAfterMsFromError(message.errorMessage) : undefined,
 				body: message.errorMessage,
 				credentialVersion: this.#host.modelRegistry.providerCredentialVersion(message.provider),
 				catalogModel: this.#host.modelRegistry.find(message.provider, message.model) !== undefined,

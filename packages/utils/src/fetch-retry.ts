@@ -8,8 +8,8 @@ const PLEASE_RETRY_PATTERN = /Please retry in ([0-9.]+)(ms|s)/i;
 const RETRY_DELAY_FIELD_PATTERN = /"retryDelay":\s*"([0-9.]+)(ms|s)"/i;
 // "try again in 250ms" / "try again in 12s" / "try again in 12sec" /
 // "try again in 5 min" / "try again in ~158 min." / "try again in 2h" /
-// "try again in 90 minutes" / "try again in 1 hour"
-const TRY_AGAIN_PATTERN = /try again in\s+~?\s*([0-9.]+)\s*(ms|sec|s|minutes?|mins?|m|hours?|hrs?|h)\b/i;
+// "try again in 90 minutes" / "try again in 1 hour" / "try again in 45 seconds"
+const TRY_AGAIN_PATTERN = /try again in\s+~?\s*([0-9.]+)\s*(ms|seconds?|secs?|s|minutes?|mins?|m|hours?|hrs?|h)\b/i;
 // "Your limit will reset in 13 minutes" / "reset in 13 minutes" / "will reset in 2h"
 // OpenCode Go quota errors use "Resets in …" with day units and compound
 // remainders ("Resets in 3 days", "Resets in 2hr 15min", "Resets in 45min").
@@ -252,6 +252,9 @@ function unitToMs(unit: string): number | undefined {
 			return 1;
 		case "s":
 		case "sec":
+		case "secs":
+		case "second":
+		case "seconds":
 			return 1000;
 		case "m":
 		case "min":

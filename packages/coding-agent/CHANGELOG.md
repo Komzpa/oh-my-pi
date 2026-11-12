@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A quota failure now makes its provider unavailable until the retry hint in the error (explicit reset, Retry-After, or "try again in N seconds"), or five minutes without one, instead of an hour; the cooldown expires exactly at its own `until`.
 - Failed subagent startup now releases waiting message senders before artifact publication or cleanup finishes.
 - Messages waiting for a subagent to start or revive now fail after a bounded readiness deadline without being delivered later.
 
