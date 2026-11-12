@@ -56,3 +56,5 @@ Use agent:"task" for the supplied assignment; its worker receives the role brief
 {{row}} is owned by {{owner}} (running or restoring). Do not re-dispatch it. To replace a stalled owner, use the existing reestimate/recovery path, kill that exact owner and read its stop receipt before dispatching the replacement.{{/if}}
 
 {{#if scopeRequest}}Harness (not Darafei): write scope request from {{worker}}. READY LEAD ACTION: inspect conflicts and approve with todo {{action}}, or tell the worker why refused. Assigned paths already auto-grant; these paths extend the current row.{{/if}}
+
+{{#if rowDelta}}{{#if count}}{{count}} unchanged row{{#if multiple}}s{{/if}} since the last note: WAIT.{{else}}Row {{jsonStringify row}} unchanged since the last note: {{#if waiting}}WAIT.{{else}}its instruction still needs attention.{{/if}}{{/if}}{{/if}}

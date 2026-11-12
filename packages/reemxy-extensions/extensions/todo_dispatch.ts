@@ -6831,7 +6831,9 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const modelContext = dispatchModelContext(ctx);
     const deliveredWindow = deliveredNoteWindow(modelContext.messages, "todo-dispatch-time-note");
     if (deliveredWindow && !timedNoteDue(ctx, "todo-dispatch-time-note", semanticKey, workOpen, now)) return;
-    const projected = projectRowBlocks(blocks, deliveredWindow, kind => prompt.render(gateNoticeInstructions, { rowInstruction: true, bare: true, scopeParagraph: kind === "scope", staffingParagraph: kind === "staffing" }).trim());
+    const projected = projectRowBlocks(blocks, deliveredWindow,
+      kind => prompt.render(gateNoticeInstructions, { rowInstruction: true, bare: true, scopeParagraph: kind === "scope", staffingParagraph: kind === "staffing" }).trim(),
+      delta => prompt.render(gateNoticeInstructions, { rowDelta: true, ...delta, multiple: "count" in delta && delta.count !== 1 }).trim());
     // The summary's explanatory paragraph never changes; the status line is the only per-note part.
     const summary = chief ? prompt.render(leadTimeSummary, {
       open: decision.forecast?.rows.filter(row => row.status !== "completed" && row.status !== "abandoned").length ?? 0,

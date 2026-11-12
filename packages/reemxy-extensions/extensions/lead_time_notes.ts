@@ -102,7 +102,7 @@ export function deliveredNoteWindow(messages: readonly NoteContextMessage[], cus
  * collapse to one count (all WAIT) or one short line (NEXT ACTION still open). Paragraphs shared by
  * rows are written once per window.
  */
-export function projectRowBlocks(blocks: RowBlock[], previous: NoteWindow | undefined, sharedText: (kind: string) => string): { text: string; rows: Record<string, string>; shared: string[] } {
+export function projectRowBlocks(blocks: RowBlock[], previous: NoteWindow | undefined, sharedText: (kind: string) => string, deltaText: (data: { row: string; waiting: boolean } | { count: number }) => string): { text: string; rows: Record<string, string>; shared: string[] } {
 	const delivered = new Set(previous?.shared ?? []);
 	const changed = blocks.filter(block => previous?.rows[block.row] !== block.sig);
 	const unchanged = blocks.filter(block => previous?.rows[block.row] === block.sig);
@@ -112,8 +112,8 @@ export function projectRowBlocks(blocks: RowBlock[], previous: NoteWindow | unde
 	const lines = [
 		...fresh.map(sharedText),
 		...changed.map(block => block.text),
-		...open.map(block => `Row ${JSON.stringify(block.row)} unchanged since the last note: its instruction still needs attention.`),
-		...(open.length ? waiting.map(block => `Row ${JSON.stringify(block.row)} unchanged since the last note: WAIT.`) : waiting.length ? [`${waiting.length} unchanged row${waiting.length === 1 ? "" : "s"} since the last note: WAIT.`] : []),
+		...open.map(block => deltaText({ row: block.row, waiting: false })),
+		...(open.length ? waiting.map(block => deltaText({ row: block.row, waiting: true })) : waiting.length ? [deltaText({ count: waiting.length })] : []),
 	];
 	return {
 		text: lines.join("\n"),
