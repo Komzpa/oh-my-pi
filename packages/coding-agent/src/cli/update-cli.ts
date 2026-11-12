@@ -34,6 +34,7 @@ import {
 	unsupportedProxyMessage,
 	withTimeoutSignal,
 } from "../utils/fetch-timeout";
+import { sha256File } from "../utils/file-hash";
 import { type BuildAnswer, type BuildPatch, type Fetch, fetchBuild, type UpdateChannel } from "./build-service";
 import {
 	DEFAULT_NPM_REGISTRY,
@@ -421,6 +422,52 @@ export async function managedInstallName(binaryPath: string): Promise<string | u
 	return typeof name === "string" && name ? name : undefined;
 }
 
+/** Provenance a local source build records beside its binary. */
+export interface SourceBuildInfo {
+	version: string;
+	sourceTree: string;
+	candidateSha256: string;
+}
+
+/**
+ * Provenance of the source build `binaryPath` belongs to, or undefined when it is not one.
+ *
+ * A local builder writes `build.json` (`{"status": "built", "source_tree", "candidate_sha256",
+ * "version"}`) beside the binary it produces, and installing that binary carries the file
+ * beside the installed target. Such a build is owned by whoever built it, so no updater may
+ * replace it. A missing, unreadable, partial, or stale record does not identify a source build,
+ * which keeps release and package-manager installs updating as before.
+ */
+export async function sourceBuildInfo(binaryPath: string): Promise<SourceBuildInfo | undefined> {
+	const resolved = tryRealpath(binaryPath);
+	if (!resolved) return undefined;
+	let record: unknown;
+	try {
+		record = await Bun.file(path.join(path.dirname(resolved), "build.json")).json();
+	} catch {
+		return undefined;
+	}
+	if (!isRecord(record) || record.status !== "built") return undefined;
+	const { version, source_tree: sourceTree, candidate_sha256: candidateSha256 } = record;
+	for (const field of [version, sourceTree, candidateSha256]) {
+		if (typeof field !== "string" || !field) return undefined;
+	}
+	try {
+		if ((await sha256File(resolved)) !== candidateSha256) return undefined;
+	} catch {
+		return undefined;
+	}
+	return { version: version as string, sourceTree: sourceTree as string, candidateSha256: candidateSha256 as string };
+}
+
+/**
+ * Whether the omp at `binaryPath` is built from source and so updated by its builder, not by
+ * `omp update`: a source checkout or a binary with a source-build record beside it.
+ */
+export async function isSourceOwned(binaryPath: string): Promise<boolean> {
+	return isSourceCheckout() || (await sourceBuildInfo(binaryPath)) !== undefined;
+}
+
 /**
  * Whether the running omp may install its own updates: not a source checkout
  * (git updates it), not kept by a managing app (Tern updates its omp itself),
@@ -428,8 +475,8 @@ export async function managedInstallName(binaryPath: string): Promise<string | u
  * package-manager probes `omp update` runs.
  */
 export async function canSelfUpdate(): Promise<boolean> {
-	if (isSourceCheckout()) return false;
 	if (isPathInDirectory(isCompiledBinary() ? process.execPath : import.meta.dir, NIX_STORE_DIR)) return false;
+	if (await isSourceOwned(process.execPath)) return false;
 	return (await managedInstallName(process.execPath)) === undefined;
 }
 
@@ -2391,6 +2438,12 @@ export async function runUpdateCommand(opts: UpdateOptions): Promise<UpdateOutco
 	const manager = ompPath ? await managedInstallName(ompPath) : undefined;
 	if (manager) {
 		const reason = `${ompPath} is installed and kept up to date by ${manager}; update it from ${manager}.`;
+		console.log(chalk.yellow(reason));
+		return { kind: "unsupported", reason };
+	}
+	const sourceBuild = ompPath ? await sourceBuildInfo(ompPath) : undefined;
+	if (sourceBuild) {
+		const reason = `${ompPath} is a source build (${sourceBuild.version}, tree ${sourceBuild.sourceTree}); rebuild it from source instead.`;
 		console.log(chalk.yellow(reason));
 		return { kind: "unsupported", reason };
 	}
