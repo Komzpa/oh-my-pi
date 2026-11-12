@@ -128,7 +128,7 @@ async function mutatedSource(control: VolumeControl): Promise<string> {
 			source = source.replace(original, "");
 		}
 		if (file === `${EXTENSIONS}todo_dispatch.ts` && control === "ignore-compaction") {
-			const original = "const modelContext = ctx.sessionManager.buildSessionContext?.() ?? buildSessionContext(ctx.sessionManager.getBranch());";
+			const original = "const modelContext = dispatchModelContext(ctx);";
 			if (!source.includes(original)) throw new Error("Update the compaction mutation target after the context implementation changes");
 			source = source.replace(original, 'const modelContext = buildSessionContext(ctx.sessionManager.getBranch().filter(entry => entry.type !== "compaction"));');
 		}
