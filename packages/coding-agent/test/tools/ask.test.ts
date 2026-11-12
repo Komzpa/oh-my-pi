@@ -209,7 +209,7 @@ describe("AskTool form dialog", () => {
 
 	it("surfaces a failed form dialog as a tool error without aborting the turn", async () => {
 		const abort = vi.fn();
-		const outcome = new AskTool(createSession()).execute(
+		const outcome = new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-failed",
 			{ html: DB_FORM },
 			undefined,
@@ -414,7 +414,7 @@ describe("AskTool without a form surface", () => {
 	it("titles each prompt with the form text around its field", async () => {
 		const select = vi.fn<Select>(async () => "Share it");
 		const input = vi.fn<Input>(async () => "4");
-		await new AskTool(createSession()).execute(
+		await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-context",
 			{
 				html: `<form>
@@ -459,7 +459,7 @@ describe("AskTool without a form surface", () => {
 			titles.push(title);
 			return label(options[0]);
 		};
-		await new AskTool(createSession()).execute(
+		await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 			"call-intervening",
 			{
 				html: `<form>
