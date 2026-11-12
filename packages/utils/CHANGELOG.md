@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Retry-hint parsing now understands "try again in N seconds" spelled out.
+
 ## [18.18.8] - 2026-11-11
 
 ### Removed

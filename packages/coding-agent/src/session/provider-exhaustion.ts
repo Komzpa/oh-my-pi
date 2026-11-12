@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getProviderCooldownsPath, isEnoent, logger } from "@oh-my-pi/pi-utils";
+import { extractRetryHint, getProviderCooldownsPath, isEnoent, logger } from "@oh-my-pi/pi-utils";
 import { withFileLockSync } from "@oh-my-pi/pi-utils/file-lock";
 
 export const PROVIDER_EXHAUSTION_COOLDOWN_MS = 60 * 60 * 1_000;
@@ -18,6 +18,8 @@ export interface ProviderFailureEvidence {
 	/** Only a catalog-confirmed model miss is an account entitlement failure. */
 	catalogModel?: boolean;
 	resetAt?: number;
+	/** Relative wait the provider asked for (Retry-After or "try again in N s"); capped at the cooldown limit. */
+	retryAfterMs?: number;
 	credentialVersion?: string;
 }
 
@@ -114,6 +116,20 @@ function structuredEvidence(evidence: ProviderFailureEvidence): ProviderFailureE
 			evidence.code ??
 			(typeof error?.code === "string" ? error.code : typeof error?.param === "string" ? error.param : undefined),
 	};
+}
+
+/** Retry hint from the structured error message of a JSON body; prose elsewhere never counts. */
+function structuredRetryHint(body: unknown): number | undefined {
+	if (typeof body === "string") {
+		try {
+			body = JSON.parse(body);
+		} catch {
+			return undefined;
+		}
+	}
+	const envelope = asRecord(body);
+	const message = asRecord(envelope?.error)?.message ?? envelope?.message;
+	return typeof message === "string" ? extractRetryHint(undefined, message) : undefined;
 }
 
 /** Billing and auth decisions use machine fields; prose never changes availability. */
@@ -294,6 +310,14 @@ function persistProviderFailure(provider: string, evidence: ProviderFailureEvide
 	const normalized = structuredEvidence(evidence);
 	const classification = classifyProviderFailure(normalized);
 	if (!classification) return false;
+	// An explicit reset is authoritative; a relative hint is bounded; no hint waits one probe interval.
+	const hintMs = normalized.retryAfterMs ?? structuredRetryHint(evidence.body);
+	const quotaUntil =
+		normalized.resetAt ??
+		now +
+			(hintMs !== undefined && Number.isFinite(hintMs) && hintMs > 0
+				? Math.min(hintMs, PROVIDER_EXHAUSTION_COOLDOWN_MS)
+				: PROBE_MIN_MS);
 	const transition = mutate(records => {
 		const key = provider.toLowerCase();
 		const previous = records.get(key);
@@ -315,12 +339,14 @@ function persistProviderFailure(provider: string, evidence: ProviderFailureEvide
 					: undefined,
 			credentialVersion: normalized.credentialVersion ?? previous?.credentialVersion,
 			revision: crypto.randomUUID(),
-			nextProbeAt: classification === "quota" ? (normalized.resetAt ?? now + PROBE_MIN_MS) : now + PROBE_MIN_MS,
+			nextProbeAt: classification === "quota" ? quotaUntil : now + PROBE_MIN_MS,
 			probeAttempts: 0,
 			until:
 				classification === "balance" || classification === "entitlement"
 					? now + PROBE_MIN_MS
-					: (normalized.resetAt ?? now + PROVIDER_EXHAUSTION_COOLDOWN_MS),
+					: classification === "quota"
+						? quotaUntil
+						: (normalized.resetAt ?? now + PROVIDER_EXHAUSTION_COOLDOWN_MS),
 		};
 		records.set(key, record);
 		return changed ? record : undefined;
@@ -344,9 +370,9 @@ export function coolDownExhaustedProvider(
 export function providerExhaustionRecord(provider: string, now = Date.now()): ProviderExhaustionRecord | undefined {
 	const record = readPersisted().get(provider.toLowerCase());
 	// Billing/entitlement timers schedule probes; elapsed time is no evidence
-	// that the account can serve work again. Only quota has a timed reset.
+	// that the account can serve work again. Only quota expires, exactly at `until`.
 	if (!record || record.class !== "quota") return record;
-	if ((record.resetAt ?? record.recordedAt + PROVIDER_EXHAUSTION_COOLDOWN_MS) > now) return record;
+	if (record.until > now) return record;
 	const cleared = mutate(records => {
 		const current = records.get(provider.toLowerCase());
 		if (current?.revision !== record.revision) return undefined;
