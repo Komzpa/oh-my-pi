@@ -412,9 +412,6 @@ export class TodoTracker {
 			.flatMap(phase => phase.tasks)
 			.filter(task => task.status !== "completed" && task.status !== "abandoned");
 		if (incomplete.length === 0) return null;
-		this.#planningNudgeSent = true;
-		this.#mutationsSinceLastTouch = 0;
-		this.#midRunNudgeCount++;
 		const { toolRefs } = this.#buildEagerPreludeContext();
 		const reminder = prompt.render(midRunTodoNudgePrompt, {
 			toolRefs,
@@ -423,6 +420,18 @@ export class TodoTracker {
 			planningIssues: planningIssues.map(issue => `- ${issue.task}: ${issue.message}`).join("\n"),
 			hasPlanningDebt: planningIssues.length > 0,
 		});
+		// Dedup against the active branch, not a cache: a context boundary or a tree switch
+		// that drops the earlier nudge from the path must let identical content be delivered again.
+		const latest = this.#host.sessionManager.getLatestBranchMatching(
+			metadata =>
+				metadata.type === "compaction" ||
+				metadata.type === "reset_boundary" ||
+				(metadata.type === "custom_message" && metadata.customType === MID_RUN_NUDGE_MESSAGE_TYPE),
+		);
+		if (latest?.type === "custom_message" && latest.content === reminder) return null;
+		this.#planningNudgeSent = true;
+		this.#mutationsSinceLastTouch = 0;
+		this.#midRunNudgeCount++;
 		logger.debug("Mid-run todo nudge fired", {
 			incomplete: incomplete.length,
 			planningIssues: planningIssues.length,

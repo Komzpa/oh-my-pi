@@ -35,7 +35,7 @@ import { cfgTaskAgentModelOverrides, cfgTaskMaxEffort } from "@oh-my-pi/pi-codin
 import { cfgDefaultThinkingLevel } from "@oh-my-pi/pi-coding-agent/session/settings";
 import { clampThinkingLevelToCeiling, resolveThinkingLevelForModel } from "@oh-my-pi/pi-tui/thinking";
 import { readTodoDisplayLedger } from "@oh-my-pi/pi-coding-agent/tools/todo-plan-display";
-import { refuseProofReview, renderLeadRowInstructions } from "./lead-row-instructions";
+import { refuseProofReview, renderLeadRowBlocks } from "./lead-row-instructions";
 import { checkRowAudits } from "./row_audit";
 import { todoNeedsOwnerDecision, classifyTodoDisplayRow, todoRowAfterWorker, todoRowHasDeliverable, isTodoAwaitingReview, getTodoPlanningIssues, parseUserWait, type TodoPlanPrediction, type TodoPlanForecast, type TodoPlanningIssue, type TodoScheduleInput, type TodoTaskForecast, type RowRiskOptions } from "@oh-my-pi/pi-tui/tools/todo-schedule";
 import { execFile, spawnSync } from "node:child_process";
@@ -60,7 +60,7 @@ import { assignedResourceRefusals, countLiveWorkerModels } from "./agent_router"
 import { currentRowOwner } from "./dispatch_preflight";
 import { checkoutKeyFromResources, displayCheckoutKey, normalizeCheckoutKey, readOnlyClaim } from "./checkout_scope";
 import { derivePresence, latestPresenceEntries, latestGoalLifecycleEntries, latestDeadlineStateEntries, type Presence } from "./goal_deadlines";
-import { planChurnRows, unfinishedDependencyChains, appendTimedNote, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
+import { planChurnRows, unfinishedDependencyChains, appendTimedNote, timedNoteDue, noteContextBoundary, deliveredNoteWindow, projectRowBlocks, type RowBlock, renderPlanFactNote, renderCurrentSetForecast, waitChainDemands, waitChainAction, waitChainRejection, type WaitChainDemand } from "./lead_time_notes";
 import leadTimeSummary from "./lead-time-summary.md" with { type: "text" };
 import oneShotInstructions from "./one-shot.md" with { type: "text" };
 import { calibrationHints, readDurationHistory } from "./todo_calibration";
@@ -293,12 +293,22 @@ export function autoGoalDeadlineState(input: {
     baselineDeadlineAt: deadlineAt,
   };
 }
+function dispatchModelContext(ctx: ExtensionContext) {
+  const options = { maxFrameDataBytes: 0 };
+  return ctx.sessionManager.buildSessionContext?.(options) ?? buildSessionContext(ctx.sessionManager.getBranch(), undefined, undefined, options);
+}
 // Canonical surviving model context for the compact guard: use the shared
 // SessionManager.buildSessionContext producer and check whether that customType still reaches the model.
 // Never re-derive retained ranges or compaction boundaries here. Canonical builder errors must surface.
 function survivingCompactionCustomType(ctx: ExtensionContext, customType: string): boolean {
-  const context = ctx.sessionManager.buildSessionContext?.() ?? buildSessionContext(ctx.sessionManager.getBranch());
+  const context = dispatchModelContext(ctx);
   return context.messages.some((message) => message.role === "custom" && message.customType === customType);
+}
+function deliveredDispatchAction(ctx: ExtensionContext, content: string): boolean {
+  const context = dispatchModelContext(ctx);
+  const previous = context.messages.findLast(message => message.role === "custom" && message.customType === "todo-dispatch-action-required");
+  const prefix = /^(?:REQUIRED|ESCALATED) DISPATCH ACTION \(\d+ ignored turns\): /;
+  return typeof previous?.content === "string" && previous.content.replace(prefix, "") === content.replace(prefix, "");
 }
 // A merge whose conflicts are all resolved is one `git commit` away. Seen live: a planner kept a
 // resolved merge open for hours behind feature rows and gates while main moved on, and spawned a
@@ -3050,7 +3060,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       if (demand) {
         const wake = prepareWake(ctx);
         // Advice must not enqueue another turn; the existing wake scheduler owns retries.
-        pi.sendMessage({ customType: "todo-dispatch-action-required", content: wake.actionDemand, display: false, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
+        if (wake.actionDemand && !deliveredDispatchAction(ctx, wake.actionDemand)) pi.sendMessage({ customType: "todo-dispatch-action-required", content: wake.actionDemand, display: false, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
       }
     }
     sprintState.lastNotices = Object.fromEntries(Object.entries(sprintState.lastNotices).filter(([key]) => !key.startsWith("todo-gate-staffing\0")));
@@ -6788,7 +6798,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       return wait && userUnblockWasAsked(ctx, row.content, wait.question);
     }).map(row => row.content));
     const displayContext = leadDisplayContext(ctx, phases, decision);
-    const rowInstructions = chief ? renderLeadRowInstructions(phases, displayContext, { now, forecast: decision.forecast, reviewAnswers, userBlockAsked, dispatchRefusals: assignedResourceRefusals(phases, ctx) }) : "";
+    const blocks: RowBlock[] = chief ? renderLeadRowBlocks(phases, displayContext, { now, forecast: decision.forecast, reviewAnswers, userBlockAsked, dispatchRefusals: assignedResourceRefusals(phases, ctx), compact: true }).map(block => {
+      const record = phases.flatMap(phase => phase.tasks).find(row => row.content === block.row);
+      return { ...block, sig: Bun.hash(JSON.stringify([block.text, record?.status, record?.schedule?.owner, record?.blocker])).toString(16) };
+    }) : [];
+    const rowInstructions = blocks.map(block => block.text).join("\n");
     const visibleRows = chief ? phases.flatMap(phase => phase.tasks).filter(row => isNonClosedRowStatus(row.status) || isTodoAwaitingReview(row)).map(row => classifyTodoDisplayRow(row, phases, displayContext)) : [];
     const questions = phases.flatMap(phase => phase.tasks).filter(row => row.status === "blocked" && row.schedule?.owner && row.blocker && !parseUserWait(row.blocker))
       .map(row => ({ worker: row.schedule.owner, question: row.blocker }));
@@ -6798,22 +6812,6 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     const planFact = renderPlanFactNote(phases, now, slipDeadline, questions,
       decision.forecast?.expectedResourceFinish);
     if (onlyPlanFact && (!planFact || questions.length === 0)) return;
-    const content = [
-      ...(planFact ? [planFact] : []),
-      ...(decision.forecast ? [renderCurrentSetForecast(decision.forecast, rehydrateDeadlineState(dispatchStateEntries(ctx)), now)] : []),
-      ...(notice && !notice.shown ? [notice.text] : []),
-      ...(chief ? [prompt.render(leadTimeSummary, {
-        open: decision.forecast?.rows.filter(row => row.status !== "completed" && row.status !== "abandoned").length ?? 0,
-        running: decision.activeTaskCount ?? 0,
-        ready: visibleRows.filter(row => row.state === "needs worker").length,
-        lost: visibleRows.filter(row => row.state === "needs worker" && row.reason === "lost").length,
-        forecast: null,
-      }).trim()] : []),
-      ...(rowInstructions ? [rowInstructions] : []),
-      ...(facts ? [facts] : []),
-      ...(chief && lastTaskDispatchRefused ? ["The last task dispatch was refused; bounded work is open to you until the ready row can be dispatched."] : []),
-      ...(chief && activeDemand ? [`NEXT STEP (advice; no call is skipped or refused for it): ${activeDemand}`] : []),
-    ].join("\n");
     const workOpen = Boolean(decision.prompt || phases.some((phase) => phase.tasks.some((task) => task.status === "pending" || task.status === "in_progress")));
     const semanticKey = JSON.stringify({
       notice: notice && !notice.shown ? notice.text : null,
@@ -6828,6 +6826,32 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       deadline: decision.deadline ?? null,
       attemptedIdleOwners,
     });
+    // Retained deltas can refer to full instructions lost during compaction.
+    // Only a note delivered against the current canonical boundary can be the baseline.
+    const modelContext = dispatchModelContext(ctx);
+    const deliveredWindow = deliveredNoteWindow(modelContext.messages, "todo-dispatch-time-note");
+    if (deliveredWindow && !timedNoteDue(ctx, "todo-dispatch-time-note", semanticKey, workOpen, now)) return;
+    const projected = projectRowBlocks(blocks, deliveredWindow,
+      kind => prompt.render(gateNoticeInstructions, { rowInstruction: true, bare: true, scopeParagraph: kind === "scope", staffingParagraph: kind === "staffing" }).trim(),
+      delta => prompt.render(gateNoticeInstructions, { rowDelta: true, ...delta, multiple: "count" in delta && delta.count !== 1 }).trim());
+    // The summary's explanatory paragraph never changes; the status line is the only per-note part.
+    const summary = chief ? prompt.render(leadTimeSummary, {
+      open: decision.forecast?.rows.filter(row => row.status !== "completed" && row.status !== "abandoned").length ?? 0,
+      running: decision.activeTaskCount ?? 0,
+      ready: visibleRows.filter(row => row.state === "needs worker").length,
+      lost: visibleRows.filter(row => row.state === "needs worker" && row.reason === "lost").length,
+      forecast: null,
+    }).trim() : "";
+    const content = [
+      ...(planFact ? [planFact] : []),
+      ...(decision.forecast ? [renderCurrentSetForecast(decision.forecast, rehydrateDeadlineState(dispatchStateEntries(ctx)), now)] : []),
+      ...(notice && !notice.shown ? [notice.text] : []),
+      ...(summary ? [deliveredWindow ? summary.split("\n")[0]! : summary] : []),
+      ...(projected.text ? [projected.text] : []),
+      ...(facts ? [facts] : []),
+      ...(chief && lastTaskDispatchRefused ? ["The last task dispatch was refused; bounded work is open to you until the ready row can be dispatched."] : []),
+      ...(chief && activeDemand ? [`NEXT STEP (advice; no call is skipped or refused for it): ${activeDemand}`] : []),
+    ].join("\n");
     const appended = await appendTimedNote(
       pi,
       ctx,
@@ -6838,7 +6862,8 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
       workOpen,
       now,
       { membershipFingerprint: decision.forecast?.membershipFingerprint, predictionVersion: decision.forecast?.predictionVersion,
-        anchorId: rehydrateDeadlineState(dispatchStateEntries(ctx))?.autoAnchorId },
+        anchorId: rehydrateDeadlineState(dispatchStateEntries(ctx))?.autoAnchorId, rows: projected.rows, shared: projected.shared, contextBoundary: noteContextBoundary(modelContext.messages) },
+      !deliveredWindow,
     );
     if (appended && notice) notice.shown = true;
   };
@@ -6861,7 +6886,11 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
             pi.sendMessage({ customType: "todo-dispatch-ignored", content: prompt.render(dispatchIgnoredInstructions, demand).trim(), display: true, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false });
           }
         }
-        pi.sendMessage({ customType: "todo-dispatch-action-required", content: prompt.render(dispatchWakeInstructions, { ...receipt, escalation: misses > 1 }).trim(), display: false, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
+        // An identical demand still in the model context adds only a counter. Repeat it at the escalation
+        // steps (label change at 2, ignored-turn threshold at 5) and whenever compaction dropped the earlier message.
+        const escalationDue = misses === 2 || misses === 5;
+        const content = prompt.render(dispatchWakeInstructions, { ...receipt, escalation: misses > 1 }).trim();
+        if (escalationDue || !deliveredDispatchAction(ctx, content)) pi.sendMessage({ customType: "todo-dispatch-action-required", content, display: false, attribution: "agent" }, { deliverAs: "aside", triggerTurn: false, interruptWait: false, supersedes: "todo-dispatch-action-required" });
       }
       if (wakeTurn.rejection) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: wakeTurn.chain.key, action: wakeTurn.chain.action, edges: wakeTurn.chain?.edges, rejection: wakeTurn.rejection, misses: 0, noToolMisses: 0, retryAt: undefined, resetAt: Math.max(Date.now(), (recoveryReceipt(ctx)?.resetAt ?? 0) + 1), toolCalls: wakeTurn.toolCalls, mutations: 0 });
       if (wakeTurn.mutations > 0) pi.appendEntry("todo-dispatch-action-demand", { recovery: structuredClone(recovery), key: demand?.key ?? "resolved", action: demand?.action ?? "", misses: 0, noToolMisses: 0, retryAt: undefined, resetAt: Math.max(Date.now(), (recoveryReceipt(ctx)?.resetAt ?? 0) + 1), toolCalls: wakeTurn.toolCalls, mutations: wakeTurn.mutations });

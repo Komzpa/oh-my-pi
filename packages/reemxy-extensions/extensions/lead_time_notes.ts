@@ -51,16 +51,18 @@ export async function appendTimedNote(
 	localClock: string,
 	workOpen: boolean,
 	now = Date.now(),
-	forecastIdentity?: { membershipFingerprint?: string; predictionVersion?: string; anchorId?: string },
+	forecastIdentity?: { membershipFingerprint?: string; predictionVersion?: string; anchorId?: string; rows?: Record<string, string>; shared?: string[]; contextBoundary?: string },
+	/** The model no longer holds an earlier note (compaction), so deliver regardless of the journal identity. */
+	force = false,
 ): Promise<boolean> {
 	if (!content.trim()) return false;
 	const identity = Bun.hash(semanticKey).toString(16);
-	if (!shouldAppendTimedNote(latestIdentity(ctx, customType), identity, now, workOpen)) return false;
+	if (!force && !shouldAppendTimedNote(latestIdentity(ctx, customType), identity, now, workOpen)) return false;
 	const delivery = { deliverAs: "aside" as const, triggerTurn: false, interruptWait: false, supersedes: customType };
 	await pi.sendMessage(
 		{
 			customType,
-			content: `${localClock} · ${content}`.slice(0, LEAD_NOTE_MAX_CHARS),
+			content: customType === "todo-dispatch-time-note" ? `${localClock} · ${content}` : `${localClock} · ${content}`.slice(0, LEAD_NOTE_MAX_CHARS),
 			display: false,
 			details: { semanticKey: identity, emittedAt: now, ...forecastIdentity },
 			attribution: "agent",
@@ -68,6 +70,56 @@ export async function appendTimedNote(
 		delivery,
 	);
 	return true;
+}
+
+/** True when the note would be delivered; lets the caller skip building its body otherwise. */
+export function timedNoteDue(ctx: TimedNoteContext, customType: string, semanticKey: string, workOpen: boolean, now = Date.now()): boolean {
+	return shouldAppendTimedNote(latestIdentity(ctx, customType), Bun.hash(semanticKey).toString(16), now, workOpen);
+}
+
+/** What a delivered note already told the model: a row signature per row and the shared paragraphs it carried. */
+export type NoteWindow = { rows: Record<string, string>; shared: string[] };
+export type RowBlock = { row: string; text: string; sig: string; shared: string[] };
+
+type NoteContextMessage = { role: string; customType?: string; details?: unknown; timestamp?: number; summary?: string };
+
+/** The canonical context producer identifies the active compaction, including retained pre-compaction notes. */
+export function noteContextBoundary(messages: readonly NoteContextMessage[]): string | undefined {
+	const boundary = messages.findLast(item => item.role === "compactionSummary");
+	return boundary ? Bun.hash(JSON.stringify([boundary.timestamp, boundary.summary])).toString(16) : undefined;
+}
+
+/** Only notes delivered in this context window can suppress full instructions. */
+export function deliveredNoteWindow(messages: readonly NoteContextMessage[], customType: string): NoteWindow | undefined {
+	const message = messages.findLast(item => item.role === "custom" && item.customType === customType);
+	const details = message?.details as { rows?: unknown; shared?: unknown; contextBoundary?: string } | undefined;
+	if (!details || details.contextBoundary !== noteContextBoundary(messages) || typeof details.rows !== "object" || details.rows === null) return undefined;
+	return { rows: details.rows as Record<string, string>, shared: Array.isArray(details.shared) ? details.shared.filter((item): item is string => typeof item === "string") : [] };
+}
+
+/**
+ * Full instructions only for rows whose signature differs from the delivered window; unchanged rows
+ * collapse to one count (all WAIT) or one short line (NEXT ACTION still open). Paragraphs shared by
+ * rows are written once per window.
+ */
+export function projectRowBlocks(blocks: RowBlock[], previous: NoteWindow | undefined, sharedText: (kind: string) => string, deltaText: (data: { row: string; waiting: boolean } | { count: number }) => string): { text: string; rows: Record<string, string>; shared: string[] } {
+	const delivered = new Set(previous?.shared ?? []);
+	const changed = blocks.filter(block => previous?.rows[block.row] !== block.sig);
+	const unchanged = blocks.filter(block => previous?.rows[block.row] === block.sig);
+	const fresh = [...new Set(changed.flatMap(block => block.shared))].filter(kind => !delivered.has(kind));
+	const waiting = unchanged.filter(block => /^WAIT:/m.test(block.text) && !/^NEXT ACTION:/m.test(block.text));
+	const open = unchanged.filter(block => !waiting.includes(block));
+	const lines = [
+		...fresh.map(sharedText),
+		...changed.map(block => block.text),
+		...open.map(block => deltaText({ row: block.row, waiting: false })),
+		...(open.length ? waiting.map(block => deltaText({ row: block.row, waiting: true })) : waiting.length ? [deltaText({ count: waiting.length })] : []),
+	];
+	return {
+		text: lines.join("\n"),
+		rows: Object.fromEntries(blocks.map(block => [block.row, block.sig])),
+		shared: [...delivered, ...fresh],
+	};
 }
 
 /** Elapsed lateness against the original anchor, shared by notes and FIX NOW. */
