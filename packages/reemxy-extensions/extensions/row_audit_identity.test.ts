@@ -250,10 +250,10 @@ test("current head must contain every recorded delivery commit before an audit c
 			await checkRowAudits(ctx, { readHead: async () => currentHead, resolveAuditor: async () => undefined }),
 		).toBe(0);
 		expect(launches).toBe(0);
-		expect(row.schedule?.audit?.verdict).toBe(accepted ? "unavailable" : "inconclusive");
+		expect(row.schedule?.audit?.verdict).toBe(accepted ? "unavailable" : commit === missingHead ? "inconclusive" : "awaiting-integration");
 		if (!accepted)
 			expect(row.schedule?.audit?.findings).toContain(
-				commit === missingHead ? "Cannot verify delivery commit" : "is not contained",
+				commit === missingHead ? "Cannot verify delivery commit" : "awaits integration",
 			);
 	}
 });

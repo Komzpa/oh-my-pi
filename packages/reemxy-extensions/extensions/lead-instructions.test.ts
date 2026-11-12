@@ -14,12 +14,16 @@ beforeAll(async () => {
 	scenarios = await leadInstructionScenarios();
 });
 
-const contracts: Record<string, { tool?: string; operation?: string; wait?: boolean; handoff?: boolean }> = {
+const contracts: Record<
+	string,
+	{ tool?: string; operation?: string; wait?: boolean; handoff?: boolean; command?: string }
+> = {
 	"unseen-product-decision": { handoff: true },
 	working: { wait: true },
 	waiting: { wait: true },
 	verifying: { wait: true },
 	"audit-queued": { wait: true },
+	"awaiting-integration": { command: `git -C '/fixture' merge --no-edit ${"a".repeat(40)}` },
 	"handoff-pending": { handoff: true },
 	auditing: { wait: true },
 	"ready-to-close": { tool: "todo", operation: "done" },
@@ -74,7 +78,12 @@ for (const id of Object.keys(contracts)) {
 			expect(notice).toContain("all worker slots are busy");
 			expect(notice).not.toContain("undefined");
 		}
-		if (contract.tool) {
+		if (contract.command) {
+			expect(notice).toContain(`NEXT ACTION: run \`${contract.command}\``);
+			expect(notice).not.toContain("git-pr-owner");
+			expect(notice).not.toContain("tasks:");
+			expect(notice).toContain(JSON.stringify(scenario.row));
+		} else if (contract.tool) {
 			expect(notice).toContain(contract.tool);
 			expect(notice).toContain(JSON.stringify(scenario.row));
 			if (contract.operation) expect(notice).toContain(contract.operation);
