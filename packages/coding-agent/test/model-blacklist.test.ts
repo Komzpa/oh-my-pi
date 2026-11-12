@@ -8,7 +8,7 @@ import { resolveSmolModel } from "../src/commit/model-selection";
 import * as sdkModule from "../src/sdk";
 import { TurnRecovery, type TurnRecoveryHost } from "../src/session/turn-recovery";
 import { createAgentSession } from "../src/sdk";
-import { resolveWidgetModel } from "../src/job-widgets/author";
+import { roleCandidatePool } from "../src/config/model-roles";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import {
 	findInitialModel,
@@ -345,9 +345,9 @@ test("automatic widget selection keeps an authenticated role when built-in smol 
 		getAvailable: () => candidates.slice(1),
 		getApiKey: async () => "fixture",
 	} as unknown as ModelRegistry;
-	expect((await resolveWidgetModel(settings, registry, undefined, new AbortController().signal))?.id).toBe(
-		candidates[1].id,
-	);
+	// Widget requests walk this chain in order, skipping candidates without a credential.
+	const chain = resolveRoleChain("widget", settings, roleCandidatePool("widget", settings, registry));
+	expect(chain[0]?.model.id).toBe(candidates[1].id);
 });
 
 test("automatic commit selection skips banned built-in smol models and keeps its primary fallback", async () => {

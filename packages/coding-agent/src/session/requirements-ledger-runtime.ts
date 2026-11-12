@@ -620,14 +620,14 @@ export class RequirementsLedgerRuntime {
 			items.some(
 				item =>
 					isRecord(item) &&
-					typeof item.taskFile === "string" &&
+					item.steps !== undefined &&
 					((typeof item.agent === "string" && item.agent.trim() === "qa-auditor") ||
 						(Array.isArray(item.requirementIds) && item.requirementIds.length > 0)),
 			)
 		)
 			throw new Error(
 				formatRequirementActionRefusal(
-					"Read the task file, then retry qa-auditor with inline task text instead of taskFile.",
+					"Retry qa-auditor with one inline task text instead of steps.",
 					"Requirement audit admission and image enrichment require inline task text before dispatch.",
 				),
 			);
