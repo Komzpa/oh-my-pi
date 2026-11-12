@@ -3,9 +3,12 @@ import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as evalIndex from "@oh-my-pi/pi-coding-agent/eval";
+import { resetVmContext } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
+import { namespaceSessionId } from "@oh-my-pi/pi-coding-agent/eval/js/index";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { EvalTool } from "@oh-my-pi/pi-coding-agent/tools/eval";
+import { YieldTool, type YieldDetails } from "@oh-my-pi/pi-coding-agent/tools/yield";
 
 function makeSession(settings: Settings, asyncJobManager: AsyncJobManager): ToolSession {
 	return {
@@ -86,6 +89,62 @@ describe("EvalTool auto-background", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
+
+	for (const otherJob of [false, true]) {
+		it(`excludes only the submitting JS cell from terminal checks (other job: ${otherJob})`, async () => {
+			const manager = new AsyncJobManager({});
+			const sessionId = `managed-yield-${crypto.randomUUID()}`;
+			const gate = Promise.withResolvers<void>();
+			let accepted: YieldDetails | undefined;
+			const session: ToolSession = {
+				...makeSession(
+					Settings.isolated({
+						"eval.autoBackground.enabled": true,
+						"eval.autoBackground.thresholdMs": 60_000,
+					}),
+					manager,
+				),
+				cwd: process.cwd(),
+				requireYieldTool: true,
+				getAgentId: () => sessionId,
+				getEvalSessionId: () => sessionId,
+				getToolByName: name => (name === "yield" ? yieldTool : undefined),
+			};
+			const yieldTool = new YieldTool(session);
+			yieldTool.subscribeAcceptedResult((_id, details) => {
+				accepted = details;
+			});
+			if (otherJob)
+				manager.register(
+					"eval",
+					"another cell",
+					async () => {
+						await gate.promise;
+						return "other cell finished";
+					},
+					{ ownerId: sessionId },
+				);
+			try {
+				const result = await new EvalTool(session).execute("managed-yield", {
+					language: "js",
+					code: 'try { await tool.yield({data:"cell answer"}); print("ACCEPTED"); } catch { print("REFUSED"); }',
+				});
+				expect(result.isError).not.toBe(true);
+				expect(result.details?.cells?.[0]?.status).toBe("complete");
+				const output = result.content
+					.filter(c => c.type === "text")
+					.map(c => c.text)
+					.join("\n");
+				expect(output).toContain(otherJob ? "REFUSED" : "ACCEPTED");
+				if (otherJob) expect(accepted).toBeUndefined();
+				else expect(accepted).toMatchObject({ status: "success", data: "cell answer" });
+			} finally {
+				gate.resolve();
+				await resetVmContext(namespaceSessionId(sessionId));
+				await manager.dispose();
+			}
+		}, 15_000);
+	}
 
 	it("keeps fast cells inline without a job row or delivery", async () => {
 		const deliveries: string[] = [];

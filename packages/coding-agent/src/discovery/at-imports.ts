@@ -24,9 +24,11 @@
  *
  * @see https://docs.claude.com/en/docs/claude-code/memory#import-additional-files
  */
+import { AsyncLocalStorage } from "node:async_hooks";
+import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, pathIsWithin } from "@oh-my-pi/pi-utils";
 import { readFile } from "../capability/fs";
 
 /** Maximum number of recursive `@`-import hops. Matches Claude Code's documented cap. */
@@ -54,8 +56,17 @@ const TRAILING_PUNCT = /[.,;:!?)\]}"']+$/;
 export interface ExpandAtImportsOptions {
 	/** Maximum hop depth (default: {@link MAX_AT_IMPORT_DEPTH}). */
 	maxDepth?: number;
+	/** Receives original source bytes of imports actually expanded. */
+	loadedFiles?: Map<string, string>;
 	/** Override the home directory used to resolve `~/...` (default: `os.homedir()`). */
 	home?: string;
+}
+
+const importRoot = new AsyncLocalStorage<string>();
+
+/** Expand repository instructions without following includes outside that repository. */
+export async function expandProjectAtImports(content: string, filePath: string, root: string): Promise<string> {
+	return importRoot.run(root, () => expandAtImports(content, filePath));
 }
 
 /**
@@ -73,7 +84,8 @@ export async function expandAtImports(
 	const home = options.home ?? os.homedir();
 	const absoluteSource = path.resolve(filePath);
 	const visited = new Set<string>([absoluteSource]);
-	return await expand(content, path.dirname(absoluteSource), 0, maxDepth, home, visited);
+	const loadedFiles = options.loadedFiles;
+	return await expand(content, path.dirname(absoluteSource), 0, maxDepth, home, visited, loadedFiles);
 }
 
 async function expand(
@@ -83,6 +95,7 @@ async function expand(
 	maxDepth: number,
 	home: string,
 	visited: Set<string>,
+	loadedFiles?: Map<string, string>,
 ): Promise<string> {
 	if (depth >= maxDepth) return content;
 
@@ -93,7 +106,7 @@ async function expand(
 			out.push(segment.text);
 			continue;
 		}
-		out.push(await expandTextSegment(segment.text, baseDir, depth, maxDepth, home, visited));
+		out.push(await expandTextSegment(segment.text, baseDir, depth, maxDepth, home, visited, loadedFiles));
 	}
 	return out.join("");
 }
@@ -105,10 +118,11 @@ async function expandTextSegment(
 	maxDepth: number,
 	home: string,
 	visited: Set<string>,
+	loadedFiles?: Map<string, string>,
 ): Promise<string> {
 	const lines = text.split("\n");
 	for (let i = 0; i < lines.length; i++) {
-		lines[i] = await expandLine(lines[i], baseDir, depth, maxDepth, home, visited);
+		lines[i] = await expandLine(lines[i], baseDir, depth, maxDepth, home, visited, loadedFiles);
 	}
 	return lines.join("\n");
 }
@@ -120,6 +134,7 @@ async function expandLine(
 	maxDepth: number,
 	home: string,
 	visited: Set<string>,
+	loadedFiles?: Map<string, string>,
 ): Promise<string> {
 	if (!line.includes("@")) return line;
 
@@ -147,7 +162,7 @@ async function expandLine(
 	let cursor = 0;
 	for (const m of matches) {
 		parts.push(line.slice(cursor, m.start));
-		const expanded = await resolveAndExpand(m.importPath, baseDir, depth, maxDepth, home, visited);
+		const expanded = await resolveAndExpand(m.importPath, baseDir, depth, maxDepth, home, visited, loadedFiles);
 		parts.push(expanded ?? line.slice(m.start, m.end));
 		cursor = m.end;
 	}
@@ -162,8 +177,17 @@ async function resolveAndExpand(
 	maxDepth: number,
 	home: string,
 	visited: Set<string>,
+	loadedFiles?: Map<string, string>,
 ): Promise<string | null> {
 	const resolved = resolveImportPath(importPath, baseDir, home);
+	const root = importRoot.getStore();
+	if (root) {
+		try {
+			if (!pathIsWithin(await fs.realpath(root), await fs.realpath(resolved))) return null;
+		} catch {
+			return null;
+		}
+	}
 	if (visited.has(resolved)) {
 		logger.debug("@-import: skipping cyclic include", { path: resolved });
 		return null;
@@ -177,8 +201,9 @@ async function resolveAndExpand(
 
 	// Visited is shared across the whole expansion tree to break cycles,
 	// even cycles that span multiple importing files.
+	loadedFiles?.set(resolved, content);
 	visited.add(resolved);
-	return await expand(content, path.dirname(resolved), depth + 1, maxDepth, home, visited);
+	return await expand(content, path.dirname(resolved), depth + 1, maxDepth, home, visited, loadedFiles);
 }
 
 function resolveImportPath(importPath: string, baseDir: string, home: string): string {

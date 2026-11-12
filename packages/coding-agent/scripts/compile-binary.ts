@@ -46,6 +46,11 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 		Bun.env.BUN_NO_CODESIGN_MACHO_BINARY = "1";
 	}
 	try {
+		// Bun 1.4.4 bytecode reports <name not materialized> to GDB; identifier
+		// minification reports short generated names even with keepNames. Linux
+		// diagnostic builds must retain parsed source names for hung-loop stacks.
+		const retainJitNames =
+			(options.native?.platform ?? options.target?.split("-")[1] ?? process.platform) === "linux";
 		const output = await Bun.build({
 			entrypoints: [options.entrypoint],
 			root: options.repoRoot,
@@ -55,16 +60,14 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				"process.env.PI_COMPILED": JSON.stringify("true"),
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
 			},
-			// Precompiled bytecode skips parsing the ~20 MB bundle at boot:
-			// `omp --version` 256 ms -> 30 ms on M4 Max (+52 MB binary).
-			// Keep import.meta.resolve in bundled dependencies valid under bytecode.
+			// Other platforms retain the bytecode startup optimization.
 			format: "esm",
-			bytecode: true,
+			bytecode: !retainJitNames,
 			splitting: true,
-			// Discovery entry chunks can share a hash; include their source names to avoid collisions.
-			naming: { chunk: "chunks/[name]-[hash].[ext]" },
+			// Identical discovery modules can share both basename and hash; retain their source directories.
+			naming: { chunk: "chunks/[dir]/[name]-[hash].[ext]" },
 			minify: {
-				identifiers: options.minifyIdentifiers ?? false,
+				identifiers: retainJitNames ? false : (options.minifyIdentifiers ?? false),
 				keepNames: true,
 			},
 			plugins: [createJsonParsePlugin(), await createLegacyPiVirtualModulePlugin()],

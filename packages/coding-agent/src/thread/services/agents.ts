@@ -228,17 +228,24 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 		entries: (bridge, key, delta) => bridge.session(key)?.applyEntries(delta),
 		closed: (bridge, key) => bridge.closed(key),
 		read: (_bridge, session, fields) => readSessionFields(session, fields),
+		readTodoPhases: (_bridge, session) => toWireData([...(session.getTodoSnapshot?.() ?? session.getTodoPhases())]),
 		readMessages: (_bridge, session) => toWireData(session.messages),
 		hasQueuedIrcFrom: (_bridge, session, from) => session.hasQueuedIrcFrom(from),
 		subscribe: (bridge, session, listener) =>
 			bridge.forward(listener, forward => session.subscribe(event => forward(toWireData(event)))),
 		subscribeRunState: (bridge, session, listener) =>
 			bridge.forward(listener, forward => session.subscribeRunState(forward)),
+		executePeerSlashCommand: (_bridge, session, text) => session.executePeerSlashCommand(text),
 		prompt: (_bridge, session, text, options) => session.prompt(text, options),
 		steer: (_bridge, session, text, images, options) => session.steer(text, images, options),
 		abort: (_bridge, session, options) => session.abort(options),
 		dispose: (_bridge, session, options) => session.dispose(options),
+		setFastMode: (_bridge, session, enabled) => session.setFastMode(enabled),
 		deliverIrcMessage: (_bridge, session, msg) => session.deliverIrcMessage(msg),
+		beginRestartDrain: (_bridge, session) => session.beginRestartDrain(),
+		getRestartBranchEntries: (_bridge, session) => session.getRestartBranchEntries(),
+		sendRestartNotice: (_bridge, session, message) => session.sendRestartNotice(message),
+		flushRestartJournal: (_bridge, session, options) => session.flushRestartJournal(options),
 		waitForIrcReplies: (_bridge, session) => session.waitForIrcReplies(),
 		setWorkPoolYieldItems: (_bridge, session, items) => session.setWorkPoolYieldItems(items),
 		emitIrcRelayObservation: (_bridge, session, record) => session.emitIrcRelayObservation(record),
@@ -247,12 +254,17 @@ function serveBridge(): RpcServe<MainSessionBridge, SessionBridgeProtocol> {
 
 function serveRegistry(bridge: MainSessionBridge): RpcServe<AgentRegistry, AgentRegistryProtocol> {
 	return {
+		setSubagentFastMode: (registry, parentId, id, enabled) => registry.setSubagentFastMode(parentId, id, enabled),
 		register: (registry, input) => registry.register(input),
 		registerIfAvailable: (registry, input, expected) => registry.registerIfAvailable(input, expected),
 		reopen: (registry, id, expected) => registry.reopen(id, expected),
+		restoreIdentity: (registry, id, expected, identity) => registry.restoreIdentity(id, expected, identity),
 		setHistory: (registry, id, history, expectedSessionFile) => registry.setHistory(id, history, expectedSessionFile),
 		setStatus: (registry, id, status, expected) => registry.setStatus(id, status, expected),
+		setResultPublication: (registry, id, state, expected, responseAt) =>
+			registry.setResultPublication(id, state, expected, responseAt),
 		markResultAccepted: (registry, id, expected, responseAt) => registry.markResultAccepted(id, expected, responseAt),
+		clearInitialPromptPending: (registry, id, session) => registry.clearInitialPromptPending(id, session),
 		staleAcceptedRuns: registry => registry.staleAcceptedRuns(),
 		setActivity: (registry, id, activity) => registry.setActivity(id, activity),
 		attachSession: (registry, id, session, sessionFile, expected) =>
@@ -287,8 +299,11 @@ function serveLifecycle(bridge: MainSessionBridge): RpcServe<AgentLifecycleManag
 function serveBus(bridge: MainSessionBridge): RpcServe<IrcBus, IrcBusProtocol> {
 	return {
 		send: (bus, msg) => bus.send(msg),
+		resolveShellReplyTarget: (bus, recipient) => bus.resolveShellReplyTarget(recipient),
 		sentSince: (bus, from, to, sinceTs) => bus.sentSince(from, to, sinceTs),
 		unansweredSends: (bus, from, sinceTs) => bus.unansweredSends(from, sinceTs),
+		exchangeCursor: bus => bus.exchangeCursor(),
+		exchangedSince: (bus, from, to, sinceTs) => bus.exchangedSince(from, to, sinceTs),
 		// A wait parked by a dead worker must not swallow the next message for its agent.
 		wait: (bus, agentId, filter, timeoutMs, signal, options) =>
 			bus.wait(

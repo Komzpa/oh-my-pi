@@ -7,6 +7,7 @@ import { all, type AnySetting, Setting } from "./registry";
 import * as modesSettings from "../modes/settings";
 import * as sessionSettings from "../session/settings";
 import * as advisorSettings from "../advisor/settings";
+import * as harnessNoticeSettings from "./harness-notices";
 import * as configModelSettings from "./model-settings";
 import * as sessionContextSettings from "../session/context-settings";
 import * as memoryBackendSettings from "../memory-backend/settings";
@@ -45,6 +46,7 @@ import * as spotlightSettings from "../spotlight/settings";
 
 const DOMAINS: readonly Readonly<Record<string, unknown>>[] = [
 	configModelSettings,
+	harnessNoticeSettings,
 	modesSettings,
 	sessionSettings,
 	telemetrySettings,

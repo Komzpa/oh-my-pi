@@ -58,6 +58,7 @@ export class DownloadManager {
 	 */
 	readonly #pageEvents: boolean;
 	#directory?: string;
+	#saveDirectory?: string;
 	#arming?: Promise<void>;
 	#session?: CDPSession;
 	readonly #pageSessions = new Set<CDPSession>();
@@ -86,7 +87,7 @@ export class DownloadManager {
 	}
 
 	/**
-	 * Start a new tab's downloads: point them at `directory` when the tab was opened with one. Page events change no
+	 * Start a new tab's downloads, retaining `directory` as its final destination. Page events change no
 	 * browser setting, so the relay tracks them from here and a download clicked before any wait is listed.
 	 */
 	async start(directory?: string): Promise<void> {
@@ -95,7 +96,7 @@ export class DownloadManager {
 	}
 
 	/**
-	 * Point the browser's one download folder at this tab's folder. Per tab, files are saved under their download GUID
+	 * Point the browser's one download folder at shared staging. Per tab, files are saved under their download GUID
 	 * so tabs never overwrite each other's, and each tab moves its own into its folder under the suggested name. The
 	 * relay cannot point Chrome anywhere (the tab supervisor refuses a folder for it), so there this only listens.
 	 */
@@ -105,16 +106,23 @@ export class DownloadManager {
 			return;
 		}
 		const resolved = path.resolve(directory ?? this.#defaultDirectory);
+		// The browser/context setting is shared by every tab and connected worker.
+		// Stage GUIDs away from final folders so another tab cannot leave its files there.
+		const saveDirectory = this.#perTab
+			? path.join(os.tmpdir(), `omp-download-staging-${Bun.hash(this.#browser.wsEndpoint()).toString(16)}`)
+			: resolved;
 		await fs.mkdir(resolved, { recursive: true });
+		if (saveDirectory !== resolved) await fs.mkdir(saveDirectory, { recursive: true });
 		if (!this.#session) await this.#attach();
 		const context = this.#page.browserContext() as { id?: string };
 		await this.#session!.send("Browser.setDownloadBehavior", {
 			behavior: this.#perTab ? "allowAndName" : "allow",
-			downloadPath: resolved,
+			downloadPath: saveDirectory,
 			eventsEnabled: true,
 			...(context.id ? { browserContextId: context.id } : {}),
 		});
 		this.#directory = resolved;
+		this.#saveDirectory = saveDirectory;
 	}
 
 	/** Enabling started by a `wait()` that has not yet applied; settles once downloads are tracked. */
@@ -127,7 +135,7 @@ export class DownloadManager {
 		if (this.#unclaimed.length === 0) {
 			// A rejected `arming` nobody awaits would surface as an unhandled rejection.
 			if (signal?.aborted) throw signal.reason;
-			// The tab that pointed Chromium last resets it to the browser's default folder when it closes, so re-point it.
+			// Reassert tracking if another connection changed the browser-wide behavior.
 			const arming = (this.#arming ??= this.enable(this.#directory).finally(() => {
 				this.#arming = undefined;
 			}));
@@ -257,7 +265,9 @@ export class DownloadManager {
 
 	async #complete(pending: PendingDownload, filePath: string | undefined): Promise<void> {
 		const directory = this.#directory ?? this.#defaultDirectory;
-		let source = filePath ?? path.join(directory, this.#perTab ? pending.guid : pending.suggestedFilename);
+		let source =
+			filePath ??
+			path.join(this.#saveDirectory ?? directory, this.#perTab ? pending.guid : pending.suggestedFilename);
 		if (filePath === undefined && this.#pageEvents) {
 			try {
 				source = await this.#savedPath(pending.guid);

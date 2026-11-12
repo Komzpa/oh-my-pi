@@ -68,6 +68,7 @@ function makeBridge(streaming: boolean) {
 		isStreaming: () => streaming,
 		planModeEnabled: () => false,
 		emitSessionEvent: async () => {},
+		isRestartDraining: () => false,
 		wakeForIrc: (records: AgentMessage[]) => woken.push(records),
 	} as unknown as IrcBridgeHost;
 	return { bridge: new IrcBridge(host), woken, steered };

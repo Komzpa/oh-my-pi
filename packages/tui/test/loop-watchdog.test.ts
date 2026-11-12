@@ -1,19 +1,21 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
+import { launchStep, runLaunchTrace, takeLaunchPhaseCandidates } from "@oh-my-pi/pi-utils/launch-trace";
 import { LoopWatchdog } from "@oh-my-pi/pi-tui/loop-watchdog";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import {
 	currentLoopPhase,
-	logger,
 	popLoopPhase,
 	pushLoopPhase,
 	resetLoopPhaseWindow,
 	takeLoopPhaseAttribution,
-} from "@oh-my-pi/pi-utils";
+	withLoopPhase,
+} from "@oh-my-pi/pi-utils/loop-phase";
 
 /**
  * Contract: LoopWatchdog turns event-loop lag into exactly one
  * `logger.warn("ui.loop-blocked", { blockedMs, cpuMs, phase, phaseMs? })` line
- * per block. A tick more than `thresholdMs` past its deadline logs only on the
- * rising edge. Its phase must outweigh unlabeled time after that deadline;
+ * per delayed probe window. A tick more than `thresholdMs` past its deadline logs.
+ * Its phase must outweigh unlabeled time after that deadline;
  * only named phases include `phaseMs`. A stopped watchdog emits nothing.
  *
  * Time and the timer are injected so the test drives elapsed time deterministically
@@ -44,6 +46,7 @@ function harness(options: Partial<{ intervalMs: number; thresholdMs: number; sle
 }
 
 function drain(): void {
+	takeLaunchPhaseCandidates(Number.NEGATIVE_INFINITY, Number.POSITIVE_INFINITY);
 	resetLoopPhaseWindow();
 	while (currentLoopPhase() !== undefined) popLoopPhase();
 }
@@ -68,8 +71,53 @@ describe("LoopWatchdog", () => {
 		expect(warnSpy).toHaveBeenCalledTimes(1);
 		expect(warnSpy.mock.calls[0]).toEqual([
 			"ui.loop-blocked",
-			{ blockedMs: 310, cpuMs: expect.any(Number), phase: "render", phaseMs: 310 },
+			{ cause: "macrotask-delay", blockedMs: 310, cpuMs: expect.any(Number), phase: "render", phaseMs: 310 },
 		]);
+	});
+
+	test("reports each microtask-starved timer window with the journal phase", async () => {
+		let tick = Promise.withResolvers<void>();
+		const warnings: unknown[] = [];
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation((message, data) => {
+			if (message === "ui.loop-blocked") warnings.push(data);
+		});
+		const wd = new LoopWatchdog({
+			intervalMs: 1,
+			thresholdMs: 5,
+			schedule: (callback, ms) => {
+				const timer = setTimeout(() => {
+					callback();
+					tick.resolve();
+				}, ms);
+				return { cancel: () => clearTimeout(timer) };
+			},
+		});
+		wd.start();
+		try {
+			for (let window = 0; window < 2; window++) {
+				const end = performance.now() + 40;
+				while (performance.now() < end) {
+					withLoopPhase("session.journal-replay", () => {
+						const chunkEnd = performance.now() + 1;
+						while (performance.now() < chunkEnd) Math.sqrt(chunkEnd);
+					});
+					// Already-resolved awaits never service the watchdog's timer.
+					await Promise.resolve();
+				}
+				await tick.promise;
+				tick = Promise.withResolvers<void>();
+			}
+			expect(warnings).toHaveLength(2);
+			for (const warning of warnings) {
+				expect(warning).toMatchObject({
+					cause: "macrotask-delay",
+					phase: "session.journal-replay",
+				});
+			}
+			expect(warnSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			wd.stop();
+		}
 	});
 
 	test("stays silent when a tick fires on its deadline", () => {
@@ -83,7 +131,7 @@ describe("LoopWatchdog", () => {
 		expect(warnSpy).not.toHaveBeenCalled();
 	});
 
-	test("dedupes a sustained block: two consecutive late ticks log only once", () => {
+	test("reports consecutive late windows even when no on-time tick separates them", () => {
 		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
 		const { wd, setNow, fireTick } = harness();
 
@@ -95,11 +143,11 @@ describe("LoopWatchdog", () => {
 		fireTick();
 		setNow(850);
 		pushLoopPhase("render");
-		setNow(1200); // blockedMs = 350 again, but still blocked → no second log
+		setNow(1200); // A fresh timer deadline was missed: report this stall too.
 		popLoopPhase();
 		fireTick();
 
-		expect(warnSpy).toHaveBeenCalledTimes(1);
+		expect(warnSpy).toHaveBeenCalledTimes(2);
 	});
 
 	test("treats a long missed interval as system sleep, not an event-loop block", () => {
@@ -161,6 +209,7 @@ describe("LoopWatchdog", () => {
 
 		expect(warnSpy).toHaveBeenCalledTimes(1);
 		expect(warnSpy.mock.calls[0]![1]).toEqual({
+			cause: "macrotask-delay",
 			blockedMs: 350,
 			cpuMs: expect.any(Number),
 			phase: "ui.select-filter",
@@ -186,6 +235,7 @@ describe("LoopWatchdog", () => {
 
 		expect(warnSpy).toHaveBeenCalledTimes(1);
 		expect(warnSpy.mock.calls[0]![1]).toEqual({
+			cause: "macrotask-delay",
 			blockedMs: 350,
 			cpuMs: expect.any(Number),
 			phase: "unknown",
@@ -210,6 +260,7 @@ describe("LoopWatchdog", () => {
 
 		expect(warnSpy).toHaveBeenCalledTimes(1);
 		expect(warnSpy.mock.calls[0]![1]).toEqual({
+			cause: "macrotask-delay",
 			blockedMs: 350,
 			cpuMs: expect.any(Number),
 			phase: "ui.select-filter",
@@ -244,7 +295,7 @@ describe("LoopWatchdog", () => {
 		setNow(600); // block #1 (350) → logs; re-arm 850
 		popLoopPhase();
 		fireTick();
-		setNow(850); // on-time → falling edge resets #wasBlocked; re-arm 1100
+		setNow(850); // on-time → recovered; re-arm 1100
 		fireTick();
 		setNow(1100);
 		pushLoopPhase("render");
@@ -255,7 +306,7 @@ describe("LoopWatchdog", () => {
 		expect(warnSpy).toHaveBeenCalledTimes(2);
 	});
 
-	test("consumes different phases on deduped and recovery ticks before a phase-less block", () => {
+	test("reports different late phases without leaking them into a later phase-less block", () => {
 		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
 		const { wd, setNow, fireTick } = harness();
 
@@ -270,7 +321,7 @@ describe("LoopWatchdog", () => {
 		pushLoopPhase("B");
 		setNow(1200);
 		popLoopPhase();
-		fireTick(); // B consumed without a warning; next deadline 1450
+		fireTick(); // B reports; next deadline 1450
 
 		setNow(1450);
 		pushLoopPhase("C");
@@ -282,8 +333,15 @@ describe("LoopWatchdog", () => {
 		fireTick();
 
 		expect(warnSpy.mock.calls).toEqual([
-			["ui.loop-blocked", { blockedMs: 350, cpuMs: expect.any(Number), phase: "A", phaseMs: 350 }],
-			["ui.loop-blocked", { blockedMs: 350, cpuMs: expect.any(Number), phase: "unknown" }],
+			[
+				"ui.loop-blocked",
+				{ cause: "macrotask-delay", blockedMs: 350, cpuMs: expect.any(Number), phase: "A", phaseMs: 350 },
+			],
+			[
+				"ui.loop-blocked",
+				{ cause: "macrotask-delay", blockedMs: 350, cpuMs: expect.any(Number), phase: "B", phaseMs: 350 },
+			],
+			["ui.loop-blocked", { cause: "macrotask-delay", blockedMs: 350, cpuMs: expect.any(Number), phase: "unknown" }],
 		]);
 	});
 
@@ -299,7 +357,7 @@ describe("LoopWatchdog", () => {
 		fireTick();
 
 		expect(warnSpy.mock.calls).toEqual([
-			["ui.loop-blocked", { blockedMs: 350, cpuMs: expect.any(Number), phase: "unknown" }],
+			["ui.loop-blocked", { cause: "macrotask-delay", blockedMs: 350, cpuMs: expect.any(Number), phase: "unknown" }],
 		]);
 	});
 
@@ -317,7 +375,10 @@ describe("LoopWatchdog", () => {
 		fireTick();
 
 		expect(warnSpy.mock.calls).toEqual([
-			["ui.loop-blocked", { blockedMs: 350, cpuMs: expect.any(Number), phase: "A", phaseMs: 350 }],
+			[
+				"ui.loop-blocked",
+				{ cause: "macrotask-delay", blockedMs: 350, cpuMs: expect.any(Number), phase: "A", phaseMs: 350 },
+			],
 		]);
 	});
 
@@ -484,4 +545,40 @@ describe("LoopWatchdog long-block classification", () => {
 		h.fireTick();
 		expect(h.wd.isStalled()).toBe(false);
 	});
+});
+
+test("a post-await launch block reports its pending extension and distinguishes wall overlap from CPU attribution", async () => {
+	const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+	vi.spyOn(logger, "debug").mockImplementation(() => {});
+	let now = 0;
+	vi.spyOn(performance, "now").mockImplementation(() => now);
+	const { wd, setNow, fireTick } = harness();
+	wd.start();
+	try {
+		await runLaunchTrace({ id: "watchdog" }, () =>
+			launchStep("extension.init:delayed", async () => {
+				await Promise.resolve();
+				now = 600;
+				setNow(600);
+				fireTick();
+			}),
+		);
+		expect(warnSpy.mock.calls[0]).toEqual([
+			"ui.loop-blocked",
+			{
+				blockedMs: 350,
+				cause: "macrotask-delay",
+				cpuMs: expect.any(Number),
+				phase: "launch-overlap:extension.init:delayed",
+				phaseMs: 0,
+			},
+		]);
+		setNow(850);
+		fireTick();
+		setNow(1450);
+		fireTick();
+		expect(warnSpy.mock.calls.at(-1)?.[1]).toMatchObject({ phase: "unknown" });
+	} finally {
+		wd.stop();
+	}
 });

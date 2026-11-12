@@ -520,17 +520,19 @@ function sliceFlat(lines: readonly string[], start: number, end: number): string
 }
 
 /**
- * Common prefix and non-overlapping common suffix of `before.join("\n")` and `after.join("\n")` —
- * the split a flat char scan gives — without joining either buffer. Lines an edit left alone keep
- * their string identity, so they are skipped whole and a keystroke costs O(lines), not O(chars).
+ * Common prefix and non-overlapping common suffix of `before.join("\n")` and `after.join("\n")`,
+ * bounded by the edit cursors so repeated text cannot slide an edit away from its actual position.
+ * Unchanged lines are skipped whole, so a keystroke costs O(lines), not O(chars).
  */
 function diffFlatLines(
 	before: readonly string[],
 	after: readonly string[],
 	beforeLength: number,
 	afterLength: number,
+	beforeCursor: number,
+	afterCursor: number,
 ): { prefix: number; suffix: number } {
-	const prefixMax = Math.min(beforeLength, afterLength);
+	const prefixMax = Math.min(beforeCursor, afterCursor);
 	let prefix = 0;
 	let bl = 0;
 	let bc = 0;
@@ -571,7 +573,10 @@ function diffFlatLines(
 		}
 	}
 
-	const suffixMax = Math.min(beforeLength - prefix, afterLength - prefix);
+	const suffixMax = Math.min(
+		beforeLength - Math.max(prefix, beforeCursor),
+		afterLength - Math.max(prefix, afterCursor),
+	);
 	let suffix = 0;
 	bl = before.length - 1;
 	al = after.length - 1;
@@ -748,6 +753,14 @@ type AutocompleteRequest = { kind: "regular"; explicitTab: boolean } | { kind: "
 export interface PasteOptions {
 	/** A submit keypress arrived in the same input burst and will be dispatched right after the paste. */
 	submitAfterPaste?: boolean;
+}
+
+/** Editor state a plain-text draft loses: cursor position and collapsed paste/atom payloads. */
+export interface EditorDraftState {
+	cursor: { line: number; col: number };
+	pastes: [number, string][];
+	atoms: [string, string][];
+	pasteCounter: number;
 }
 
 export class Editor implements Component, Focusable {
@@ -2017,7 +2030,7 @@ export class Editor implements Component, Focusable {
 				linesBefore !== undefined &&
 				this.#textRevision !== revision
 			) {
-				this.#trackVimSessionEdit(session, linesBefore);
+				this.#trackVimSessionEdit(session, linesBefore, line, col);
 			}
 		}
 	}
@@ -2027,11 +2040,22 @@ export class Editor implements Component, Focusable {
 	 * `deleteBefore`/`deleteAfter` exact even when typed text coincides with what was deleted
 	 * (Backspace then retyping the same grapheme), which a final-text diff cannot recover.
 	 */
-	#trackVimSessionEdit(session: VimSessionState, linesBefore: readonly string[]): void {
+	#trackVimSessionEdit(session: VimSessionState, linesBefore: readonly string[], line: number, col: number): void {
 		const linesAfter = this.#state.lines;
 		const beforeLength = flatLength(linesBefore);
 		const afterLength = flatLength(linesAfter);
-		const { prefix: p, suffix: q } = diffFlatLines(linesBefore, linesAfter, beforeLength, afterLength);
+		let beforeCursor = col;
+		for (let i = 0; i < line; i++) beforeCursor += linesBefore[i]!.length + 1;
+		let afterCursor = this.#state.cursorCol;
+		for (let i = 0; i < this.#state.cursorLine; i++) afterCursor += linesAfter[i]!.length + 1;
+		const { prefix: p, suffix: q } = diffFlatLines(
+			linesBefore,
+			linesAfter,
+			beforeLength,
+			afterLength,
+			beforeCursor,
+			afterCursor,
+		);
 		const removedEnd = beforeLength - q;
 		const insLen = afterLength - p - q;
 		const leftCut = Math.max(0, Math.min(removedEnd, session.leftEnd) - p);
@@ -3320,6 +3344,35 @@ export class Editor implements Component, Focusable {
 			if (paste) return this.#pastes.get(Number(paste[1])) ?? match;
 			return this.#atoms.get(match) ?? match;
 		});
+	}
+
+	/** Cursor and collapsed-content payloads that the buffer text alone cannot recover. */
+	snapshotDraftState(): EditorDraftState {
+		const text = this.getText();
+		const pastes: [number, string][] = [];
+		for (const match of text.matchAll(/\[Paste #(\d+)(?:, (?:\+\d+ lines|\d+ chars))?\]/g)) {
+			const id = Number(match[1]);
+			const value = this.#pastes.get(id);
+			if (value !== undefined && !pastes.some(([known]) => known === id)) pastes.push([id, value]);
+		}
+		const atoms = [...this.#atoms].filter(([label]) => text.includes(label));
+		return {
+			cursor: this.getCursor(),
+			pastes,
+			atoms,
+			pasteCounter: this.#pasteCounter,
+		};
+	}
+
+	/** Re-register payloads and place the cursor after the host restored the text with {@link setText}. */
+	restoreDraftState(state: EditorDraftState): void {
+		const text = this.getText();
+		for (const [id, value] of state.pastes) this.#pastes.set(id, value);
+		this.#pasteCounter = Math.max(this.#pasteCounter, state.pasteCounter);
+		for (const [label, expansion] of state.atoms) if (text.includes(label)) this.registerAtom(label, expansion);
+		const line = Math.min(Math.max(state.cursor.line, 0), this.#state.lines.length - 1);
+		this.#state.cursorLine = line;
+		this.#setCursorCol(Math.min(Math.max(state.cursor.col, 0), this.#state.lines[line]?.length ?? 0));
 	}
 
 	/** Register `label` as a collapsed atom expanding to `expansion` on submit, without inserting

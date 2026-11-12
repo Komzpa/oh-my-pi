@@ -12,12 +12,13 @@ import { buildOutputValidator } from "@oh-my-pi/pi-coding-agent/tools/output-sch
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 describe("bundled agent parsing", () => {
-	it("defaults the task agent to the auto thinking selector", () => {
+	it("defaults the task agent to fixed medium thinking (no auto judge)", () => {
 		const task = getBundledAgent("task");
 
 		expect(task).toBeDefined();
 		expect(task?.model).toEqual(["@task"]);
-		expect(task?.thinkingLevel).toBe(AUTO_THINKING);
+		expect(task?.thinkingLevel).toBe(Effort.Medium);
+		expect(task?.thinkingLevel).not.toBe(AUTO_THINKING);
 	});
 
 	it("accepts security-reviewer findings with optional remediation metadata", () => {
@@ -102,7 +103,18 @@ describe("bundled agent parsing", () => {
 			expect(resolveAgentModelSelection({ agentModel: agent?.model, settings })).toEqual({
 				patterns: [model],
 				role,
+				explicit: true,
 			});
 		}
+	});
+
+	it("opens a requirement image before a qa-auditor verdict", () => {
+		const auditor = getBundledAgent("qa-auditor");
+		expect(auditor?.systemPrompt).toContain(
+			"When the QA AUDIT INPUT requirement carries an image, open that image before any verdict.",
+		);
+		expect(auditor?.systemPrompt).toContain(
+			"A terse word like `fix` alone never justifies `unverifiable` while an image exists.",
+		);
 	});
 });

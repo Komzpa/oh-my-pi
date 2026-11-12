@@ -115,6 +115,8 @@ export const PREVIEW_LIMITS = {
 	DIFF_COLLAPSED_HUNKS: 8,
 	/** Max diff lines shown when collapsed (edit tool) */
 	DIFF_COLLAPSED_LINES: 40,
+	/** Display cells for a running command in terminal-yield refusal details. */
+	RUNNING_COMMAND_WIDTH: 120,
 } as const;
 
 /** Default number of terminal output rows shown before expansion. */

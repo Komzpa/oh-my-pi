@@ -1,0 +1,3 @@
+DECISION: No—the requested $1 run is not approved under the stated constraints.
+
+The brief allows local dependency setup in the lane’s worktree, but forbids installs; linking another lane’s dependency tree and building does not clearly fit that allowance. Copying auth or model settings from a private agent directory also risks writing to a prohibited location. The code change and local tests can proceed without those steps; leave the $1 run unverified.

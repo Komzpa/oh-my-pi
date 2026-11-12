@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import * as artifacts from "@oh-my-pi/pi-coding-agent/session/artifacts";
+import type { IrcDeliveryReceipt } from "@oh-my-pi/pi-tui/tools/irc";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
@@ -13,8 +16,11 @@ import {
 	PromptDroppedError,
 	type PromptOptions,
 } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import * as availability from "@oh-my-pi/pi-coding-agent/session/provider-exhaustion";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { YieldTool, type YieldDetails } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { drive } from "../helpers/fake-clock";
@@ -114,13 +120,26 @@ function createMockSession(
 	};
 }
 
+const registeredMockSessions = new Map<string, AgentSession>();
+
 function mockCreateAgentSession(session: AgentSession) {
-	return vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
-		session,
-		extensionsResult: {} as unknown as LoadExtensionsResult,
-		setToolUIContext: () => {},
-		eventBus: new EventBus(),
-	} satisfies CreateAgentSessionResult);
+	return vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async (options = {}) => {
+		// The executor reserves the generation; the SDK attaches that exact ref.
+		session = registeredMockSessions.get(options.agentId!) ?? session;
+		AgentRegistry.global().attachSession(
+			options.agentId!,
+			session,
+			options.sessionManager?.getSessionFile(),
+			options.expectedAgentRef ?? undefined,
+		);
+		AgentRegistry.global().setStatus(options.agentId!, "running", options.expectedAgentRef ?? undefined);
+		return {
+			session,
+			extensionsResult: {} as unknown as LoadExtensionsResult,
+			setToolUIContext: () => {},
+			eventBus: new EventBus(),
+		} satisfies CreateAgentSessionResult;
+	});
 }
 
 const baseAgent: AgentDefinition = {
@@ -144,6 +163,7 @@ describe("runSubprocess incremental yield loops", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+		registeredMockSessions.clear();
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 		AsyncJobManager.resetForTests();
@@ -165,13 +185,147 @@ describe("runSubprocess incremental yield loops", () => {
 	}
 
 	function registerRunning(id: string, session: AgentSession) {
-		AgentRegistry.global().register({
-			id,
-			displayName: id,
-			kind: "sub",
-			session,
-			sessionFile: null,
-			status: "running",
+		// Registration belongs to the SDK after the executor reserves its ref.
+		registeredMockSessions.set(id, session);
+	}
+
+	it("reports a cold unavailable provider as infrastructure before catalog resolution or child dispatch", async () => {
+		const create = vi.spyOn(sdkModule, "createAgentSession");
+		vi.spyOn(availability, "providerExhaustionExclusion").mockReturnValue({
+			provider: "codex-lb",
+			reason: "provider unavailable (discovery)",
+			until: Date.now() + 300_000,
+		});
+		vi.spyOn(availability, "providerExhaustionRecord").mockReturnValue(undefined);
+		const result = await drive(
+			runSubprocess({
+				...baseOptions("cold-provider", 10),
+				modelOverride: "codex-lb/gpt-6.1-sol",
+			}),
+		);
+		expect(result.exitCode).toBe(1);
+		expect(result.failureKind).toBe("infrastructure");
+		expect(JSON.parse(result.error!)).toMatchObject({
+			code: "provider_chain_unavailable",
+			providers: [{ provider: "codex-lb", reason: "provider unavailable (discovery)" }],
+		});
+		expect(create).not.toHaveBeenCalled();
+	});
+
+	for (const publicationFails of [false, true]) {
+		it(`terminates failed startup before artifact publication (fails=${publicationFails}) and releases its waiting sender`, async () => {
+			const registry = AgentRegistry.global();
+			const bus = new IrcBus(registry);
+			const id = "failed-startup-publication";
+			const reached = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			let reassigned = false;
+			const write = artifacts.writeArtifact;
+			vi.spyOn(artifacts, "writeArtifact").mockImplementation(async (file, text) => {
+				if (file.endsWith(`${id}.md`) && !reassigned) {
+					reached.resolve();
+					await release.promise;
+					if (publicationFails) throw new Error("artifact publication failed");
+				}
+				return write(file, text);
+			});
+			vi.spyOn(availability, "providerExhaustionExclusion").mockReturnValue({
+				provider: "codex-lb",
+				reason: "provider unavailable (discovery)",
+				until: Date.now() + 300_000,
+			});
+			vi.spyOn(availability, "providerExhaustionRecord").mockReturnValue(undefined);
+			const create = vi.spyOn(sdkModule, "createAgentSession");
+			let receipt: Promise<IrcDeliveryReceipt> | undefined;
+			const stop = registry.onChange(() => {
+				if (!receipt && registry.get(id)?.starting) receipt = bus.send({ from: "Main", to: id, body: "continue" });
+			});
+			const run = runSubprocess({ ...baseOptions(id, 10), modelOverride: "codex-lb/gpt-6.1-sol" });
+			try {
+				await drive(reached.promise);
+				expect(create).not.toHaveBeenCalled();
+				expect(registry.get(id)?.status).toBe("aborted");
+				expect(registry.isRunning(registry.get(id)!)).toBe(false);
+				expect(receipt).toBeDefined();
+				expect(await drive(receipt!)).toMatchObject({
+					outcome: "failed",
+					error: expect.stringContaining("stopped during startup"),
+				});
+				const old = registry.get(id)!;
+				registry.unregister(id, old);
+				stop();
+				reassigned = true;
+				const delivered = vi.fn(async () => "injected" as const);
+				const handle = createMockSession(({ emit, pushMessage }) =>
+					emitTerminalYieldTurn("reassigned", emit, pushMessage),
+				);
+				handle.session.deliverIrcMessage = delivered;
+				create.mockImplementation(async (options = {}) => {
+					Object.assign(handle.session, { sessionManager: options.sessionManager });
+					registry.attachSession(id, handle.session, undefined, options.expectedAgentRef ?? undefined);
+					return {
+						session: handle.session,
+						extensionsResult: {} as LoadExtensionsResult,
+						setToolUIContext: () => {},
+						eventBus: new EventBus(),
+					};
+				});
+				const next = await drive(
+					runSubprocess({
+						...baseOptions(id, 10),
+						modelRegistry: {
+							refresh: async () => {},
+							getAvailable: () => [],
+							getAll: () => [],
+						} as unknown as ModelRegistry,
+					}),
+				);
+				expect({ code: next.exitCode, error: next.error }).toEqual({ code: 0, error: undefined });
+				const replacement = registry.get(id)!;
+				expect(replacement).not.toBe(old);
+				expect(await bus.send({ from: "Main", to: id, body: "new assignment" })).toMatchObject({
+					outcome: "injected",
+				});
+				expect(delivered).toHaveBeenCalledTimes(1);
+				release.resolve();
+				const result = await drive(run);
+				expect(result.exitCode).toBe(1);
+				expect(result.failureKind).toBe("infrastructure");
+				expect(result.aborted).not.toBe(true);
+				expect(JSON.parse(result.error!).code).toBe("provider_chain_unavailable");
+				expect(registry.get(id)).toBe(replacement);
+				expect(replacement.status).toBe("idle");
+			} finally {
+				stop();
+				release.resolve();
+				await drive(run);
+			}
+		});
+	}
+
+	for (const [status, errorType, expectedClass] of [
+		[402, "billing_error", "entitlement"],
+		[500, "server_error", undefined],
+	] as const) {
+		it(`classifies terminal ${status} as ${expectedClass ? "infrastructure" : "ordinary"} failure`, async () => {
+			const handle = createMockSession(({ pushMessage }) => {
+				pushMessage({
+					role: "assistant",
+					content: [],
+					stopReason: "error",
+					provider: "muse",
+					model: "test",
+					errorStatus: status,
+					errorType,
+					errorMessage: "opaque provider response",
+				});
+			});
+			mockCreateAgentSession(handle.session);
+			const result = await drive(runSubprocess(baseOptions(`terminal-${status}`, 10)));
+			expect(result.exitCode).toBe(1);
+			expect(result.failureKind).toBe(expectedClass ? "infrastructure" : undefined);
+			if (expectedClass) expect(result.error).toBe(`provider unavailable (${expectedClass})`);
+			else expect(result.error).toContain("opaque provider response");
 		});
 	}
 
@@ -241,6 +395,110 @@ describe("runSubprocess incremental yield loops", () => {
 			isError: false,
 		} as AgentSessionEvent);
 	}
+
+	async function emitYieldCall(
+		tool: YieldTool,
+		callId: string,
+		args: unknown,
+		emit: (event: AgentSessionEvent) => void,
+	): Promise<boolean> {
+		try {
+			const result = await tool.execute(callId, args);
+			emit({ type: "tool_execution_end", toolCallId: callId, toolName: "yield", result, isError: false });
+			return true;
+		} catch (error) {
+			emit({
+				type: "tool_execution_end",
+				toolCallId: callId,
+				toolName: "yield",
+				result: { content: [{ type: "text", text: String(error) }], details: {} },
+				isError: true,
+			});
+			return false;
+		}
+	}
+
+	function createYieldTool(): YieldTool {
+		return new YieldTool({ cwd: "/tmp", hasUI: false, settings: Settings.isolated() } as ToolSession);
+	}
+
+	it("accepted terminal A keeps the first result after 18 refused yields", async () => {
+		const id = "AcceptedThenRefused";
+		const tool = createYieldTool();
+		const accepted: boolean[] = [];
+		const handle = createMockSession(async ({ promptIndex, emit }) => {
+			if (promptIndex !== 1) return;
+			accepted.push(await emitYieldCall(tool, "first", { data: { report: "FIRST" } }, emit));
+			for (let index = 0; index < 18; index++) {
+				accepted.push(await emitYieldCall(tool, `later-${index}`, { data: { report: "LATER" } }, emit));
+			}
+		});
+		handle.asyncPending.value = true;
+		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
+
+		const result = await runSubprocess(baseOptions(id, 0));
+
+		expect(result.exitCode).toBe(0);
+		expect(result.aborted).toBe(false);
+		expect(result.error).toBeUndefined();
+		expect(JSON.parse(result.output)).toEqual({ report: "FIRST" });
+		expect(result.extractedToolData?.yield).toHaveLength(1);
+		expect(accepted).toEqual([true, ...Array(18).fill(false)]);
+		expect(handle.prompts).toHaveLength(1);
+		expect(handle.abortCalls()).toBe(1);
+	});
+
+	it("accepted terminal B refuses incremental and terminal follow-ups without appending", async () => {
+		const id = "AcceptedThenIncremental";
+		const tool = createYieldTool();
+		const accepted: boolean[] = [];
+		const handle = createMockSession(async ({ promptIndex, emit }) => {
+			if (promptIndex !== 1) return;
+			accepted.push(await emitYieldCall(tool, "first", { data: { report: "FIRST" } }, emit));
+			// A late async delivery must not reopen the accepted terminal state.
+			emit({
+				type: "message_start",
+				message: {
+					role: "custom",
+					customType: "async-result",
+					content: "late result",
+					display: true,
+					timestamp: Date.now(),
+				},
+			} as AgentSessionEvent);
+			accepted.push(await emitYieldCall(tool, "section", { type: ["closure"], data: "APPENDED" }, emit));
+			accepted.push(await emitYieldCall(tool, "last", { data: { report: "REPLACEMENT" } }, emit));
+		});
+		handle.asyncPending.value = true;
+		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
+
+		const result = await runSubprocess(baseOptions(id, 0));
+
+		expect(result.exitCode).toBe(0);
+		expect(result.aborted).toBe(false);
+		expect(JSON.parse(result.output)).toEqual({ report: "FIRST" });
+		expect(result.extractedToolData?.yield).toHaveLength(1);
+		expect(accepted).toEqual([true, false, false]);
+		expect(handle.prompts).toHaveLength(1);
+		expect(handle.abortCalls()).toBe(1);
+	});
+
+	it("fails a worker whose only yield is invalid", async () => {
+		const id = "InvalidOnly";
+		const tool = createYieldTool();
+		const handle = createMockSession(async ({ promptIndex, emit }) => {
+			if (promptIndex === 1) expect(await emitYieldCall(tool, "invalid", {}, emit)).toBe(false);
+		});
+		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
+
+		const result = await runSubprocess(baseOptions(id, 0));
+
+		expect(result.exitCode).toBe(1);
+		expect(result.extractedToolData?.yield).toBeUndefined();
+	});
 
 	it("retries a dropped assignment before sending any yield reminder", async () => {
 		const id = "DroppedScout";
@@ -438,8 +696,39 @@ describe("runSubprocess incremental yield loops", () => {
 		expect(JSON.parse(result.output)).toMatchObject({ progress: { section: "cleanup-1" } });
 	});
 
-	it("does not finalize a section submitted after the forced yield parked", async () => {
-		const id = "ParkedScout";
+	it("latches a real forced-final incremental yield before accepting another call", async () => {
+		const id = "RealPinnedScout";
+		let first: YieldDetails | undefined;
+		const tool = new YieldTool({
+			cwd: "/tmp",
+			hasUI: false,
+			getSessionFile: () => null,
+			getSessionSpawns: () => null,
+			settings: Settings.isolated(),
+		} as ToolSession);
+		const handle = createMockSession(async ({ promptIndex, emit, pushMessage }) => {
+			if (promptIndex <= 3) {
+				const message = { role: "assistant", content: [{ type: "text", text: "working" }], stopReason: "stop" };
+				pushMessage(message);
+				emit({ type: "message_end", message } as AgentSessionEvent);
+				return;
+			}
+			first = (await tool.execute("forced-section", { type: ["progress"], data: { section: "final" } })).details;
+		});
+		handle.session.getToolByName = name => (name === "yield" ? tool : undefined);
+		mockCreateAgentSession(handle.session);
+		registerRunning(id, handle.session);
+		const result = await runSubprocess(baseOptions(id, 0));
+		expect(result.exitCode).toBe(0);
+		expect(handle.prompts).toHaveLength(4);
+		expect(first).toMatchObject({ status: "success", complete: true });
+		await expect(tool.execute("replacement", { data: "changed" })).rejects.toThrow("already submitted");
+		tool.resetTurnState();
+		expect((await tool.execute("next-run", { data: "new result" })).details?.status).toBe("success");
+	});
+
+	it("completes the forced terminal yield even with owner work pending", async () => {
+		const id = "PendingScout";
 		const handle = createMockSession(({ promptIndex, emit, pushMessage }) => {
 			if (promptIndex <= 3) {
 				const message = {
@@ -452,39 +741,27 @@ describe("runSubprocess incremental yield loops", () => {
 				return;
 			}
 			if (promptIndex === 4) {
-				// Owner work starts on the forced final reminder. Its terminal
-				// yield parks behind the quiescence barrier.
+				// Acceptance ends the run; pending owner work is reaped at teardown.
 				handle.asyncPending.value = true;
-				emitTerminalYieldTurn("PARKED", emit, pushMessage);
+				emitTerminalYieldTurn("FIRST", emit, pushMessage);
 				return;
 			}
-			if (promptIndex === 5) return "dropped";
-			if (promptIndex === 6) {
-				// The retried notice can make progress without satisfying the
-				// terminal yield parked behind the quiescence barrier.
-				handle.asyncPending.value = false;
-				emitIncrementalYieldTurn(1, emit, pushMessage);
-				return;
-			}
-			emitTerminalYieldTurn("FRESH", emit, pushMessage);
 		});
 		mockCreateAgentSession(handle.session);
 		registerRunning(id, handle.session);
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 
-		// The notice turn's section did not end the run: the ladder ran again
-		// and the run completed on the fresh terminal yield.
-		expect(handle.prompts[4]?.text).toBe(handle.prompts[5]?.text);
+		expect(handle.prompts).toHaveLength(4);
 		expect(result.exitCode).toBe(0);
-		expect(result.output).toContain("FRESH");
+		expect(result.output).toContain("FIRST");
 	});
 
-	it("fails when every async-pending notice dispatch is dropped", async () => {
-		const id = "LostNoticeScout";
+	it("never dispatches an async-pending notice after terminal acceptance", async () => {
+		const id = "NoPostAcceptanceNotice";
 		const handle = createMockSession(({ promptIndex, emit, pushMessage }) => {
 			if (promptIndex > 1) return "dropped";
-			emitTerminalYieldTurn("PARKED", emit, pushMessage);
+			emitTerminalYieldTurn("FIRST", emit, pushMessage);
 		});
 		handle.asyncPending.value = true;
 		mockCreateAgentSession(handle.session);
@@ -492,9 +769,9 @@ describe("runSubprocess incremental yield loops", () => {
 
 		const result = await drive(runSubprocess(baseOptions(id, 0)));
 
-		expect(handle.prompts).toHaveLength(5);
-		expect(handle.prompts.slice(1).map(({ text }) => text)).toEqual(Array(4).fill(handle.prompts[1]?.text));
-		expect(result.exitCode).toBe(1);
-		expect(result.error).toContain("async-pending notice dropped before provider dispatch after 4 attempts");
+		expect(handle.prompts).toHaveLength(1);
+		expect(result.exitCode).toBe(0);
+		expect(result.error).toBeUndefined();
+		expect(result.output).toContain("FIRST");
 	});
 });

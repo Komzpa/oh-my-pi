@@ -1,3 +1,4 @@
+import { selectBranchEntries } from "./branch-selection";
 /**
  * AgentSession - Core abstraction for agent lifecycle and session management.
  *
@@ -14,17 +15,23 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
+import { launchScope } from "@oh-my-pi/pi-utils/launch-trace";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { scheduler } from "node:timers/promises";
 import { isPromise } from "node:util/types";
+import { currentRequirementInput } from "./requirement-input";
+import { invalidateStatus } from "@oh-my-pi/pi-natives/vcs";
 
 import {
 	type AfterToolCallContext,
 	type AfterToolCallResult,
 	type Agent,
 	AgentBusyError,
+	TOOL_INTERRUPT_ABORT_REASON,
+	agentPauseGate,
 	type AgentEvent,
 	type AgentMessage,
 	type AgentPreModelCallStop,
@@ -47,6 +54,12 @@ import {
 	type ToolChoiceDirective,
 	wireToolsFingerprint,
 } from "@oh-my-pi/pi-agent-core";
+import {
+	getAssistantPublicationGate,
+	isAssistantPublicationSettled,
+	markAssistantPublicationSettled,
+	setAssistantPublicationGate,
+} from "@oh-my-pi/pi-agent-core/assistant-publication";
 import {
 	type CompactionPreparation,
 	type CompactionResult,
@@ -137,6 +150,8 @@ import {
 import { expandPromptTemplate, type PromptTemplate } from "../config/prompt-templates";
 import { buildServiceTierByFamily, isServiceTierForFamily, serviceTierSettingToTier } from "../config/service-tier";
 import { combine, type SettingsScope } from "../config/registry";
+import { executePeerSlashCommand, type PeerCommandReceipt } from "../collab/peer-commands";
+import type { MCPLoadResult } from "../mcp/manager";
 import { type Settings, withActiveSettings } from "../config/settings";
 import { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
 import { getEditStore } from "../edit/store";
@@ -147,6 +162,7 @@ import type { PythonResult } from "../eval/py/executor";
 import { EVAL_STATE_CONTEXT_TYPE, formatEvalStateContext, isEvalStateContext } from "../eval/state";
 import { WorkPoolRegistry } from "../task/workpool";
 import { type BashResult, drainAbortedShells, releaseShellSessions } from "../exec/bash-executor";
+import { SessionSliceLifecycle } from "../exec/session-slice-lifecycle";
 import type { TtsrManager } from "../export/ttsr";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { CustomTool } from "../extensibility/custom-tools/types";
@@ -166,7 +182,11 @@ import { emitSessionShutdownEvent, TOP_LEVEL_AGENT, UNAVAILABLE_ANNOTATIONS } fr
 import { extensionEventFromSessionEvent } from "../extensibility/extensions/lifecycle-mirror";
 import { ManagedTimers } from "../extensibility/extensions/managed-timers";
 import { createExtensionModelQuery } from "../extensibility/extensions/model-api";
-import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
+import type {
+	BeforeAssistantMessageEventResult,
+	CompactOptions,
+	ContextUsage,
+} from "../extensibility/extensions/types";
 import type { CustomCommandContext } from "../extensibility/custom-commands/types";
 import { SkillDescriptionCatalog } from "../extensibility/skill-descriptions";
 import {
@@ -182,10 +202,12 @@ import { expandSlashCommand, type FileSlashCommand, loadSlashCommands } from "..
 import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility/tool-event-input";
 import { GoalRuntime } from "../goals/runtime";
 import type { GoalModeState, GoalTokenUsage } from "../goals/state";
+import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { HindsightSessionState } from "../hindsight/state";
 import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
 import { type ChainJudge, hasNativeJudge, journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "../judgment";
 import type { IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
+import { releaseDaemonClientsForSession } from "../launch/client";
 import type { JobWidgetEntry } from "@oh-my-pi/pi-tui/tools/job-widget";
 import type { DaemonCompletionNotification } from "../launch/protocol";
 import { MEMORY_RECALL_CHANGES_MESSAGE_TYPE } from "../memory-backend/recall-entry";
@@ -239,9 +261,11 @@ import {
 } from "@oh-my-pi/pi-tui/thinking";
 import { isAttachmentOnlyTitleInput, isLowSignalTitleInput } from "../tiny/text";
 import type { ImageAttachmentEntry, ToolSession } from "../tools";
-import { resolveApproval } from "../tools/approval";
+import { resolveApproval, resolveToolTier } from "../tools/approval";
 import { type AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
-import { recoverAskHtml } from "../tools/ask";
+import { AskTool, recoverAskHtml } from "../tools/ask";
+import { formAnswers } from "@oh-my-pi/pi-tui/html-form/data";
+import { parseHtmlForm } from "@oh-my-pi/pi-tui/html-form/parse";
 import {
 	armIdleCloseForOwner,
 	cancelIdleCloseForOwner,
@@ -258,6 +282,7 @@ import {
 	resumeComputerUseForOwner,
 	revokeComputerControlForOwner,
 } from "../tools/computer/supervisor";
+import { ToolAbortError } from "../tools/tool-errors";
 import { isAutoQaEnabled } from "../tools/report-tool-issue";
 import {
 	buildResolveReminderMessage,
@@ -268,8 +293,12 @@ import {
 } from "../tools/resolve";
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";
 import { supportsExternalThinking } from "../tools/think";
-import { USER_TODO_EDIT_CUSTOM_TYPE } from "../tools/todo";
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import {
+	USER_TODO_EDIT_CUSTOM_TYPE,
+	getTodoArchiveSummaryFromEntries,
+	isTodoSelectionEntryMetadata,
+} from "../tools/todo";
+import { formatTodoArchiveSummary, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { currentThreadId, isMainThread } from "../thread/identity";
 import { registerLocalSession } from "../thread/session-directory";
@@ -284,6 +313,7 @@ import type { EditModeSetting } from "../edit/settings";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { extractFileMentions, generateFileMentionMessages } from "../utils/file-mentions";
 import { normalizeModelContextImages } from "../utils/image-loading";
+import { trackLateCleanup } from "../utils/late-cleanup";
 import { TokenRateMeter } from "../utils/token-rate";
 import { resumeCommand } from "../utils/resume-command";
 import {
@@ -296,6 +326,12 @@ import {
 import { generateSessionTitle, nerdGlyphsActive } from "../utils/title-generator";
 import { buildNamedToolChoice, isToolChoiceActive } from "../utils/tool-choice";
 import type { VibeModeState } from "../vibe/state";
+import type { InstructionFiles } from "./instruction-files";
+import {
+	cfgInstructionRefreshEnabled,
+	cfgInstructionRefreshMaxBytes,
+	cfgInstructionRefreshSubagentMinAgeMs,
+} from "./context-settings";
 import type { AgentSessionEvent, AgentSessionEventListener } from "./agent-session-events";
 import { type AgentViewSession, isLocalAgentSession } from "./agent-session-handle";
 import {
@@ -333,6 +369,7 @@ import type {
 	SessionOAuthAccountList,
 	SessionStats,
 	SteerOptions,
+	RestartDrainLease,
 	UsageFallbackConfirmer,
 } from "./agent-session-types";
 import { writeArtifact } from "./artifacts";
@@ -349,8 +386,15 @@ import {
 	buildAsyncResultBatchMessage,
 } from "./async-job-delivery";
 import { type BashExecuteOptions, BashRunner, type BashRunnerHost } from "./bash-runner";
+import { cfgRequirementAuditors } from "../task/settings";
 import {
-	checkpointStartedAtFromEntry,
+	RequirementsLedgerRuntime,
+	type PreparedRequirementCandidate,
+	type RequirementCandidateCommit,
+	type RequirementPublicationGate,
+} from "./requirements-ledger-runtime";
+import {
+	readCheckpointRewindState,
 	completedRewindFromEntry,
 	isSuccessfulCheckpointEntry,
 	semanticToolResult,
@@ -388,8 +432,11 @@ import {
 	collectPendingToolCalls,
 	createInterruptedToolResults,
 	createInterruptedTurnAbortMessage,
+	createSessionInterruptedTurnAbortMessage,
 	hasRestorableTurn,
 	INTERRUPTED_TURN_ERROR,
+	isInterruptedTurnAbort,
+	isInterruptedToolResult,
 	SESSION_EXIT_CUSTOM_TYPE,
 	type SessionExitData,
 	summarizeToolArguments,
@@ -461,8 +508,13 @@ import {
 	SessionAdvisors,
 	type SessionAdvisorsHost,
 } from "./session-advisors";
-import type { SessionContext, TranscriptSessionContextOptions } from "./session-context";
-import { buildSessionContext, getRestorableSessionModels, isTranscriptEntry } from "./session-context";
+import type { BuildSessionContextOptions, SessionContext, TranscriptSessionContextOptions } from "./session-context";
+import {
+	buildSessionContext,
+	createRestartNoticeFilter,
+	getRestorableSessionModels,
+	isTranscriptEntry,
+} from "./session-context";
 import {
 	type CacheRefreshOutcome,
 	type CacheWarmer,
@@ -502,14 +554,21 @@ import {
 	type PersistedSessionInit,
 	type SessionManager,
 } from "./session-manager";
+import { selectLatestRestartBranchEntry, selectRestartBranchEntries } from "../task/restart-branch-selection";
 import { SessionMemory, type SessionMemoryHost } from "./session-memory";
 import { buildSessionMetadata } from "./session-metadata";
 import { SessionProviderBoundary, type SessionProviderBoundaryHost } from "./session-provider-boundary";
 import { SessionStatsTracker, type SessionStatsTrackerHost } from "./session-stats";
-import { promptDigestOfEntry, SessionTools, type SessionToolsHost } from "./session-tools";
+import {
+	promptDigestOfEntry,
+	SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE,
+	SessionTools,
+	type SessionToolsHost,
+} from "./session-tools";
 import { resolveWebsocketPreference } from "./settings-stream-fn";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
+import { shrinkOversizedToolHistory } from "./tool-history-shrink";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
 import { TurnRecovery, type TurnRecoveryHost } from "./turn-recovery";
 import { YieldQueue } from "./yield-queue";
@@ -526,6 +585,7 @@ const TITLE_FORK_TIMEOUT_MS = 15_000;
 /** Cap on the judgment that decides whether a `title.refreshAfterPrompts` check regenerates the title. */
 const TITLE_DRIFT_JUDGE_TIMEOUT_MS = 15_000;
 
+import { bindProviderAvailabilityNotices } from "./provider-availability-notice";
 import { LoopGuards, type StreamGuardsHost, StreamingEditGuard } from "./stream-guards";
 import { AutoParallelCoordinator } from "./auto-parallel";
 import { EAGER_TODO_PRELUDE_MESSAGE_TYPE, TodoTracker, type TodoTrackerHost } from "./todo-tracker";
@@ -574,7 +634,7 @@ import {
 	cfgThemeLight,
 } from "../modes/settings";
 import type { PerCallModelAdvertisement } from "../task/model-approval";
-import { cfgTaskBatch, cfgTaskDisabledAgents, perCallModelEnabled } from "../task/settings";
+import { cfgTaskBatch, cfgTaskDisabledAgents, cfgTaskMaxConcurrency, perCallModelEnabled } from "../task/settings";
 import {
 	cfgBranchSummaryReserveTokens,
 	cfgCompactionModelThresholds,
@@ -793,22 +853,20 @@ interface BranchPromptCacheObservation {
 }
 
 /**
- * A branch view folded up to `scanned`. The session manager extends its
- * memoized view in place on append and hands out a new array otherwise, so a
- * later read of the same array folds only the appended entries.
+ * A prompt-cache observation folded through one journal leaf. Keep only the
+ * latest cached reply and digest, never a strong reference to branch payloads.
  */
 interface BranchPromptCacheScan {
-	branch: readonly SessionEntry[];
-	scanned: number;
+	leafId: string | null;
+	sessionId: string;
 	/** Newest system prompt digest recorded in the scanned entries. */
 	digest: string | undefined;
 	observation: BranchPromptCacheObservation | undefined;
 }
 
-/** Folds `scan.branch`'s unscanned entries into what the newest reply that read or wrote the prompt cache left. */
-function scanBranchPromptCache(scan: BranchPromptCacheScan): void {
-	const { branch } = scan;
-	for (let index = scan.scanned; index < branch.length; index++) {
+/** Fold selected entries into the latest prompt-cache observation. */
+function scanBranchPromptCache(scan: BranchPromptCacheScan, branch: readonly SessionEntry[]): void {
+	for (let index = 0; index < branch.length; index++) {
 		const entry = branch[index]!;
 		const digest = promptDigestOfEntry(entry);
 		if (digest !== null) {
@@ -840,7 +898,6 @@ function scanBranchPromptCache(scan: BranchPromptCacheScan): void {
 		if (reply.stopReason === "error" || reply.usage.cacheRead + reply.usage.cacheWrite <= 0) continue;
 		scan.observation = { reply, warmedAt: 0, refreshMissed: false, compacted: false, promptDigest: scan.digest };
 	}
-	scan.scanned = branch.length;
 }
 
 type AgentContinueSkipReason =
@@ -854,6 +911,8 @@ type ScheduledAgentContinueOptions = {
 	delayMs?: number;
 	generation?: number;
 	shouldContinue?: () => boolean;
+	/** Runs once, right before `agent.continue()`; skipped requests never run it. */
+	beforeContinue?: () => void;
 	onSkip?: (reason: AgentContinueSkipReason) => void;
 	onError?: (error: unknown) => void;
 	/** Messages the continued turn answers, handed to the turn observer (see `#startTurnObservation`). */
@@ -886,6 +945,97 @@ type TurnObservation = {
 	turnEnded: boolean;
 	closed: boolean;
 	turnError: unknown;
+};
+
+const RESTART_PENDING_QUEUES_CUSTOM_TYPE = "omp:restart-pending-queues";
+
+interface RestartPendingQueues {
+	steering: AgentMessage[];
+	followUp: AgentMessage[];
+	pendingNextTurn: CustomMessage[];
+}
+
+function isRestartPendingQueues(value: unknown): value is RestartPendingQueues {
+	if (!isRecord(value)) return false;
+	return (
+		Array.isArray(value.steering) &&
+		value.steering.every(
+			(message): message is AgentMessage =>
+				isRecord(message) && typeof message.role === "string" && typeof message.timestamp === "number",
+		) &&
+		Array.isArray(value.followUp) &&
+		value.followUp.every(
+			(message): message is AgentMessage =>
+				isRecord(message) && typeof message.role === "string" && typeof message.timestamp === "number",
+		) &&
+		Array.isArray(value.pendingNextTurn) &&
+		value.pendingNextTurn.every(
+			(message): message is CustomMessage =>
+				isRecord(message) && message.role === "custom" && typeof message.timestamp === "number",
+		)
+	);
+}
+
+// Cache content hashes for admitted queue entries so unchanged checkpoints never
+// re-serialize their (potentially megabyte-sized) message contents.
+const restartQueueMessageIds = new WeakMap<AgentMessage, string>();
+function restartQueueMessageId(message: AgentMessage): string {
+	let id = restartQueueMessageIds.get(message);
+	if (id !== undefined) return id;
+	if (
+		message.role === "custom" &&
+		(message.customType === "goal-continuation" ||
+			message.customType === "restart-queued" ||
+			customMessageSupersedes(message) !== undefined)
+	) {
+		const normalized = { ...(message as unknown as Record<string, unknown>) };
+		delete normalized.timestamp;
+		id = `notice:${Bun.hash(JSON.stringify(normalized))}`;
+	} else {
+		id = `message:${Bun.hash(JSON.stringify(message))}`;
+	}
+	restartQueueMessageIds.set(message, id);
+	return id;
+}
+
+function restartPendingQueuesSignature(queues: RestartPendingQueues): string {
+	return [queues.steering, queues.followUp, queues.pendingNextTurn]
+		.map(queue => queue.map(restartQueueMessageId).join(","))
+		.join(";");
+}
+
+function customMessageSupersedes(message: CustomMessage): string | undefined {
+	return (message as CustomMessage & { supersedes?: string }).supersedes;
+}
+
+/** Keep recent hidden machine context bounded even when no prompt consumes it.
+ * User-authored and visible messages remain lossless. Only recent hidden runtime
+ * context accompanies the next provider request. */
+function boundHiddenNextTurnMessages(
+	messages: CustomMessage[],
+	preserved?: ReadonlySet<AgentMessage>,
+): CustomMessage[] {
+	let remaining = 32;
+	return messages
+		.toReversed()
+		.filter(
+			message =>
+				preserved?.has(message) ||
+				message.display !== false ||
+				message.attribution === "user" ||
+				isUserAuthoredMessage(message) ||
+				remaining-- > 0,
+		)
+		.reverse();
+}
+
+type PendingNextTurnDelivery = {
+	boundary: CustomMessage;
+	messages: CustomMessage[];
+	promptGeneration: number;
+	sessionId: string;
+	inputMessageSeen: boolean;
+	settled: boolean;
 };
 
 type ActiveAgentContinue = {
@@ -1001,6 +1151,169 @@ function isEvalActivity(message: AgentMessage): boolean {
 	);
 }
 
+/** A retry supersedes a failed operation only when its intent matches, allowing a missing append phase to be supplied. */
+function todoRetryMatches(failed: Record<string, unknown>, retry: Record<string, unknown>): boolean {
+	if (Bun.deepEquals(failed, retry)) return true;
+	if (failed.op !== "append" || Object.hasOwn(failed, "phase") || typeof retry.phase !== "string") return false;
+	for (const key in failed) {
+		if (!Object.hasOwn(retry, key) || !Bun.deepEquals(failed[key], retry[key])) return false;
+	}
+	for (const key in retry) {
+		if (key !== "phase" && !Object.hasOwn(failed, key)) return false;
+	}
+	return true;
+}
+
+type RestorableAsyncAsk = { toolCallId: string; html: string; unansweredNames: string[] };
+
+/** Convert persisted question-list calls only at resume; new Ask calls still require HTML. */
+function recoverRestoredAskHtml(input: unknown): string | undefined {
+	const html = recoverAskHtml(input);
+	if (html !== undefined) return html;
+	if (!isRecord(input) || !Array.isArray(input.questions) || input.questions.length === 0) return undefined;
+	const fields: string[] = [];
+	for (const question of input.questions) {
+		if (
+			!isRecord(question) ||
+			typeof question.id !== "string" ||
+			typeof question.question !== "string" ||
+			(question.options !== undefined && !Array.isArray(question.options))
+		)
+			return undefined;
+		const options = question.options ?? [];
+		const name = Bun.escapeHTML(question.id);
+		const choices: string[] = [];
+		for (const [index, option] of options.entries()) {
+			if (!isRecord(option) || typeof option.label !== "string") return undefined;
+			const label = Bun.escapeHTML(option.label);
+			const description =
+				typeof option.description === "string" ? `<p>${Bun.escapeHTML(option.description)}</p>` : "";
+			const preview = typeof option.preview === "string" ? `<pre>${Bun.escapeHTML(option.preview)}</pre>` : "";
+			choices.push(
+				`<label><input type="${question.multi === true ? "checkbox" : "radio"}" name="${name}" value="${label}"${question.recommended === index ? " checked" : ""}>${label}</label>${description}${preview}`,
+			);
+		}
+		const header = typeof question.header === "string" ? `<legend>${Bun.escapeHTML(question.header)}</legend>` : "";
+		const controls =
+			choices.length === 1
+				? `<label>${Bun.escapeHTML(question.question)}<input name="${name}" value="${Bun.escapeHTML(options[0].label)}"></label>`
+				: choices.length > 1
+					? choices.join("")
+					: `<textarea name="${name}"></textarea>`;
+		fields.push(`<fieldset>${header}<p>${Bun.escapeHTML(question.question)}</p>${controls}</fieldset>`);
+	}
+	return `<form>${fields.join("")}</form>`;
+}
+
+function findUnansweredAsyncAsks(
+	branch: readonly SessionEntry[],
+): { requestId: string; calls: RestorableAsyncAsk[] } | undefined {
+	const latestRestart = branch.findLast(
+		entry => entry.type === "custom" && entry.customType === "restart_request_transition",
+	);
+	if (latestRestart?.type !== "custom" || !isRecord(latestRestart.data)) return undefined;
+	const record = latestRestart.data.record;
+	if (!isRecord(record) || typeof record.requestId !== "string") return undefined;
+	const requestId = record.requestId;
+	if (
+		branch.some(
+			entry =>
+				entry.type === "custom" &&
+				entry.customType === "restart_asks_presented" &&
+				isRecord(entry.data) &&
+				entry.data.requestId === requestId,
+		)
+	)
+		return undefined;
+	const queuedIndex = branch.findIndex(
+		entry =>
+			entry.type === "custom" &&
+			entry.customType === "restart_request_transition" &&
+			isRecord(entry.data) &&
+			isRecord(entry.data.record) &&
+			entry.data.record.requestId === requestId &&
+			entry.data.record.state === "queued",
+	);
+	if (queuedIndex < 0) return undefined;
+	let askWindowEnd: number | undefined;
+	for (const state of ["checkpointed", "restarting", "completed"]) {
+		const index = branch.findIndex(
+			(entry, entryIndex) =>
+				entryIndex > queuedIndex &&
+				entry.type === "custom" &&
+				entry.customType === "restart_request_transition" &&
+				isRecord(entry.data) &&
+				isRecord(entry.data.record) &&
+				entry.data.record.requestId === requestId &&
+				entry.data.record.state === state,
+		);
+		if (index >= 0) {
+			askWindowEnd = index;
+			break;
+		}
+	}
+	if (askWindowEnd === undefined) return undefined;
+	const previousCompleted = branch
+		.slice(0, queuedIndex)
+		.findLastIndex(
+			entry =>
+				entry.type === "custom" &&
+				entry.customType === "restart_request_transition" &&
+				isRecord(entry.data) &&
+				isRecord(entry.data.record) &&
+				entry.data.record.state === "completed",
+		);
+	const pendingAsks: RestorableAsyncAsk[] = [];
+	const seenCallIds = new Set<string>();
+	for (let resultIndex = previousCompleted + 1; resultIndex < askWindowEnd; resultIndex++) {
+		const entry = branch[resultIndex]!;
+		if (entry.type !== "message" || entry.message.role !== "toolResult") continue;
+		const result = entry.message;
+		if (
+			result.toolName !== "ask" ||
+			result.isError ||
+			seenCallIds.has(result.toolCallId) ||
+			!isRecord(result.details) ||
+			!isRecord(result.details.pending)
+		)
+			continue;
+		const stored = result.details.pending;
+		if (stored.id !== result.toolCallId) continue;
+		const html = recoverRestoredAskHtml(stored);
+		if (html === undefined) continue;
+		const laterEntries = branch.slice(resultIndex + 1);
+		const hasTerminalResult = laterEntries.some(
+			later =>
+				later.type === "message" &&
+				later.message.role === "toolResult" &&
+				later.message.toolCallId === result.toolCallId,
+		);
+		if (hasTerminalResult) continue;
+		const unansweredNames = parseHtmlForm(html)
+			.fields.filter(field => field.name)
+			.map(field => field.name)
+			.filter(name => {
+				const answerPrefix = `Answer to ${result.toolCallId} [${name}]:`;
+				return !laterEntries.some(later => {
+					if (later.type !== "message" || later.message.role !== "user") return false;
+					const content = later.message.content;
+					const text =
+						typeof content === "string"
+							? content
+							: content
+									.filter((part): part is TextContent => part.type === "text")
+									.map(part => part.text)
+									.join("\n");
+					return text.includes(answerPrefix);
+				});
+			});
+		if (unansweredNames.length === 0) continue;
+		seenCallIds.add(result.toolCallId);
+		pendingAsks.push({ toolCallId: result.toolCallId, html, unansweredNames });
+	}
+	return { requestId, calls: pendingAsks };
+}
+
 export class AgentSession implements SettingsScope, AgentViewSession {
 	/**
 	 * Cross-thread identity token (`${homeThreadId}:${snowflake}`), unique per
@@ -1083,6 +1396,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * command.
 	 */
 	readonly #queuedMessageRawText = new WeakMap<AgentMessage, string>();
+	readonly #queuedRequirementCandidates = new WeakMap<AgentMessage, { sessionId: string; ids: string[] }>();
 
 	// Event subscription state
 	#unsubscribeAgent?: () => void;
@@ -1092,6 +1406,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#cancelExitRecorder?: () => void;
 	#cancelFatalRecoveryHint?: () => void;
 	#exitRecorded = false;
+	#restoringPendingAsk = false;
 	/** Last observed `workspace.additionalDirectories`, diffed on change to add/remove only settings-seeded roots. */
 	#settingsWorkspaceDirectories: readonly string[] = [];
 	/** Last observed auto-QA gate; the system prompt advertises `xd://report_issue` only while it holds. */
@@ -1119,6 +1434,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	#pendingNextTurnMessages: CustomMessage[] = [];
+	#pendingNextTurnDeliveryByMessage = new Map<CustomMessage, PendingNextTurnDelivery>();
 	#scheduledHiddenNextTurnGeneration: number | undefined = undefined;
 	/** Queued messages a session path took out of the agent queues to put back later (follow-ups
 	 *  parked behind an IRC wake turn, a session switch's rollback snapshot), in queue order. */
@@ -1166,6 +1482,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#planModeReminderCount = 0;
 	#planModeReminderAwaitingProgress = false;
 	readonly #todo: TodoTracker;
+
+	/** Requirement capture, QA receipts, and completion gates for the main session. */
+	readonly #requirementsLedger: RequirementsLedgerRuntime;
+	#requirementsPublicationGate: RequirementPublicationGate | undefined;
 	readonly #autoParallel: AutoParallelCoordinator;
 	readonly #modelMentions: ModelMentionRegistry;
 	#workPoolYieldItems: readonly WorkPoolYieldItem[] = [];
@@ -1223,8 +1543,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * across a `/new` or `/resume` is dropped regardless of job-id reuse.
 	 */
 	#asyncDeliveryEpoch = 0;
+	#asyncReceiptDeliveries = new Map<string, Promise<void>>();
 
 	readonly #irc: IrcBridge;
+	#peerInboxDrainer: (() => Promise<void>) | undefined;
+	#peerInboxDrain: Promise<void> | undefined;
 	#ircWakeTurnObserver:
 		| ((records: AgentMessage[]) => ((error?: unknown) => void | Promise<void>) | undefined)
 		| undefined;
@@ -1240,9 +1563,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#openTurnObservation: TurnObservation | undefined;
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
-	/** Registry recording this agent blocked on the user while a {@link waitForUser} dialog is open. */
-	readonly #agentRegistry: AgentRegistryApi | undefined;
+	#agentRegistry: AgentRegistryApi;
 	#agentKind: "main" | "sub" = "main";
+	#instructionFiles?: InstructionFiles;
+	#instructionNoticeBlocks = new Set<string>();
 	#scoutAllowedBySpawnPolicy = true;
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
@@ -1274,6 +1598,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#turnIndex = 0;
 	#messageEndPersistenceTail: Promise<void> = Promise.resolve();
 	#pendingMessageEndPersistence = new Map<string, Promise<void>>();
+	#restartPendingQueuesCheckpointActive = false;
+	#restoredRestartInputs = new Set<AgentMessage>();
+	#restartRestoreWarning: string | undefined;
+	#lastRestartPendingQueuesSignature: string | undefined;
+	#lastRestartPendingQueuesEntryId: string | undefined;
+	#restartCheckpointTimer: NodeJS.Timeout | undefined;
 	#persistedMessageKeys: { anchor: string; keys: Set<string> } | undefined;
 
 	// Custom commands (TypeScript slash commands)
@@ -1298,6 +1628,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#imageDescriptionAbortControllers = new Set<AbortController>();
 	#queuedMessageDrainBlocked = false;
 	#modeExitDrainSuppressionDepth = 0;
+	#restartDrainLeaseCount = 0;
+	#restartWaitAbort = new AbortController();
+	#restartDrainGeneration = 0;
+	#restartDrainQuiescence: Promise<void> | undefined;
+	#restartDrainStoppedRun = false;
+	#restartDrainNeedsResume = false;
+	#restartDrainReleaseWaiters = new Set<(outcome: "released" | "disposed") => void>();
 	#usagePreflightReadyForNextModelCall = false;
 	#usagePreflightReadyModel: Model | undefined;
 	#detachUsageBeforeQueueDequeue: (() => void) | undefined;
@@ -1306,6 +1643,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#anthropicSlowModeLane: string | undefined;
 	/** `<lane>#<window>` of the wrap-up window this session already told the model about. */
 	#anthropicWrapUpHinted: string | undefined;
+	#detachRestartDrainBeforeModelCall: (() => void) | undefined;
 
 	#transformContext: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	#onPayload: SimpleStreamOptions["onPayload"] | undefined;
@@ -1321,6 +1659,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#sideStreamFn: StreamFn;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#disconnectOwnedMcpManager: (() => Promise<void>) | undefined;
+	#reloadOwnedMcpManager: (() => Promise<MCPLoadResult>) | undefined;
+	#mcpReloadInFlight: Promise<MCPLoadResult> | undefined;
 
 	readonly #ttsr: TtsrCoordinator;
 	readonly #stats: SessionStatsTracker;
@@ -1385,6 +1725,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#abortInProgress = false;
 	/** Forced sends still unwinding, including while their pending agent_end is flushed. */
 	#forcedQueuedMessageDeliveryCount = 0;
+	#goalInterruptedSessionId: string | undefined;
 	/** In-flight {@link abort} calls (and {@link resume} interrupt handoffs); each settles after scheduling the turn that follows, which {@link waitForIdle} must observe. */
 	#abortUnwinds = new Set<Promise<void>>();
 	/** Submissions accepted by prompt()/promptCustomMessage()/sendCustomMessage() that have not
@@ -1647,12 +1988,21 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#resumeStrandedIrcAsides();
 	}
 
+	/** Extension asides whose explicit triggerTurn:false survives a turn settling or aborting. */
+	readonly #nonWakingAsides = new WeakSet<AgentMessage>();
+
 	/** IRC records that arrive after the loop's final aside poll — or while an abort skipped that
 	 *  poll — land in pending IRC queues with no loop left to drain them; the queued-message drain's
 	 *  gate (agent.hasQueuedMessages()) does not count peer IRC interrupts. Once idle, wake a turn so
 	 *  the agent responds to the peer. Skip only when a queued steer/follow-up will itself drive a
 	 *  resume turn whose aside poll already consumes these (no double-wake). */
 	#resumeStrandedIrcAsides(): void {
+		if (this.#restartDrainLeaseCount > 0) {
+			if (this.#isDisposed || this.isStreaming || !this.#irc.hasPending()) return;
+			const records = [...this.#irc.drainDeferredWakes(), ...this.#irc.drainPending()];
+			for (const record of records) this.agent.followUp(record);
+			return;
+		}
 		if (this.#modeExitDrainSuppressionDepth > 0 || this.#isDisposed || this.isStreaming || !this.#irc.hasPending()) {
 			return;
 		}
@@ -1673,9 +2023,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// Parked wake records resume alongside ordinary stranded asides; they were
 		// already decided wake-intended at deferral time.
 		const records = [...this.#irc.drainDeferredWakes(), ...this.#irc.drainPending()];
-		if (this.#planModeState?.enabled) {
-			// Plan mode: fold stranded IRC asides into context without waking an
-			// autonomous turn. Convergence to ask/resolve stays user-driven.
+		if (records.every(record => this.#nonWakingAsides.has(record)) || this.#planModeState?.enabled) {
+			// Passive notices and plan-mode asides remain recorded without waking a turn.
 			this.#recordWithoutTurn(records);
 			return;
 		}
@@ -1736,6 +2085,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 *  because #canAutoContinueForFollowUp suppresses follow-up auto-resume while a user interrupt is
 	 *  in effect, even though the wake left a provider-valid tail. */
 	#wakeForIrc(wakeRecords: AgentMessage[]): void {
+		if (this.#restartDrainLeaseCount > 0) {
+			for (const record of wakeRecords) this.agent.followUp(record);
+			return;
+		}
 		if (this.#modeExitDrainSuppressionDepth > 0) {
 			this.#irc.queueAside(wakeRecords);
 			return;
@@ -2038,7 +2391,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 *  settle step replays it once idle — never appended into a live streamMessage. */
 	#preserveAdvisorCard(card: CustomMessage): void {
 		if (this.#abortInProgress && this.isStreaming) {
-			this.#pendingNextTurnMessages.push(card);
+			this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(
+				[...this.#pendingNextTurnMessages, card],
+				this.#restoredRestartInputs,
+			);
 			return;
 		}
 		this.#recordWithoutTurn([card]);
@@ -2159,14 +2515,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	/** Live generation tok/s for the working row; fed by this session's own streamed deltas. */
 	readonly tokenRate: TokenRateMeter;
+	#sessionSlices = new Map<string, SessionSliceLifecycle>();
 
 	constructor(config: AgentSessionConfig) {
+		using _constructionPhase = launchScope("session.construct");
 		this.agent = config.agent;
+		this.agent.requireQueuedMessagePersistenceAcknowledgement();
+		this.#detachRestartDrainBeforeModelCall = this.agent.addBeforeModelCall(
+			() => {
+				if (this.#restartDrainLeaseCount === 0) return;
+				this.#restartDrainStoppedRun = true;
+				return { stop: true, reason: "Session restart drain" };
+			},
+			// Dormant outside a drain, so an aborted run still ends with the provider's aborted message.
+			() => this.#restartDrainLeaseCount > 0,
+		);
 		this.tokenRate = new TokenRateMeter(text => this.agent.tokenizer.countTokens(text));
 		this.#reseedTokenRate();
 		this.agent.setQueuedMessageGrouping(
 			(previous, next) =>
-				isHiddenUserCompanion(previous) && (isHiddenUserCompanion(next) || isUserQueuedMessage(next)),
+				(isHiddenUserCompanion(previous) || (previous.role === "custom" && !isUserAuthoredMessage(previous))) &&
+				(isHiddenUserCompanion(next) || next.role === "custom" || isUserQueuedMessage(next)),
 		);
 		this.sessionManager = config.sessionManager;
 		// Only a recorded approval may turn a draft file into an execution reference.
@@ -2179,6 +2548,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				break;
 			}
 		}
+		this.#restorePendingRestartMessages();
 		this.settings = config.settings;
 		this.#ownsCostGate = config.costGate === undefined;
 		this.#costGate = config.costGate ?? this.#createCostGate();
@@ -2224,6 +2594,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			kernelOwnerId: config.evalKernelOwnerId ?? `agent-session:${Snowflake.next()}`,
 		});
 		this.#evalToolSession = config.evalToolSession;
+		if (this.#evalToolSession) this.#evalToolSession.getRestartDrainSignal = () => this.#restartWaitAbort.signal;
 		const initialEvalStateContext = this.#buildEvalStateContextMessage(this.agent.state.messages);
 		if (initialEvalStateContext) {
 			// Persist the startup snapshot at the slot this process sends it from, so
@@ -2236,6 +2607,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			sessionManager: this.sessionManager,
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
+			isRestartDraining: () => this.isRestartDraining,
+			queueForRestart: record => this.#queueRestartMessage(record),
 			planModeEnabled: () => this.#planModeState?.enabled === true,
 			emitSessionEvent: event => this.#emitSessionEvent(event),
 			wakeForIrc: records => this.#wakeForIrc(records),
@@ -2377,6 +2750,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#setMcpServerInstructionsSource = config.setMcpServerInstructionsSource;
 		this.#customCommands = config.customCommands ?? [];
 		const recoveryHost: TurnRecoveryHost = {
+			isSubagent: () => this.#agentKind === "sub",
 			agent: this.agent,
 			sessionManager: this.sessionManager,
 			settings: this.settings,
@@ -2385,10 +2759,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			model: () => this.model,
 			contextFitsModel: (model, excludedMessage) => this.#maintenance.contextFitsModel(model, excludedMessage),
 			textOutputCommitted: () => this.#textOutputCommitted,
+			refreshModelSelection: () => this.refreshModelSelection?.() ?? Promise.resolve(false),
 			thinkingLevel: () => this.thinkingLevel,
 			configuredThinkingLevel: () => this.configuredThinkingLevel(),
 			setThinkingLevel: level => this.#models.setThinkingLevel(level),
-			thinkingLevelCeiling: () => this.#models.thinkingLevelCeiling,
+			thinkingLevelCeiling: model => this.#models.getThinkingLevelCeiling(model),
 			modelFallbackDisabled: () => this.#disableModelFallback,
 			isDisposed: () => this.#isDisposed,
 			isStreaming: () => this.isStreaming,
@@ -2436,6 +2811,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		});
 		this.agent.prepareQueuedMessages = this.#prepareQueuedUserMessages;
 		this.#detachUsageBeforeModelCall = this.agent.addBeforeModelCallHook(async signal => {
+			await this.refreshModelSelection?.();
 			if (!cfgRetryUsageAwareFallback.get(this.settings)) return;
 			if (this.#usagePreflightReadyForNextModelCall) {
 				const checkedModel = this.#usagePreflightReadyModel;
@@ -2448,6 +2824,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				throw new DOMException("Usage preflight cancelled", "AbortError");
 			}
 		});
+		const detachUsagePreflight = this.#detachUsageBeforeModelCall;
+		const detachProviderAvailability = this.agent.addBeforeModelCallHook(signal =>
+			this.#recovery.awaitProviderAvailability(signal),
+		);
+		this.#detachUsageBeforeModelCall = () => {
+			detachProviderAvailability();
+			detachUsagePreflight();
+		};
 		const statsHost: SessionStatsTrackerHost = {
 			session: this,
 			agent: this.agent,
@@ -2534,6 +2918,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			await this.#prewalk.advanceAtTurnEnd(messages, context);
 			if (context?.willContinue) this.#steerAnthropicWrapUp();
 			await this.#advisors.onPrimaryTurnEnd(messages, context?.willContinue, signal);
+			// A worker can keep calling tools for an entire task without admitting
+			// another prompt. Restore at this boundary once a fallback has served;
+			// never restart a primary while its retry saga is still in flight.
+			if (context?.willContinue && this.#recovery.attempt === 0 && !signal?.aborted) {
+				await this.#recovery.maybeRestoreRetryFallbackPrimary({ requireContextFit: true });
+			}
 			await this.#maintenance.maintainContextMidRun(messages, signal, context);
 		});
 		this.yieldQueue = new YieldQueue({
@@ -2622,7 +3012,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// Passive asides (`deliverAs: "aside"`) also end an interruptible `wait`
 		// instead of sitting behind it. Deferred wakes are not peeked: no
 		// boundary injection would drain them. Foreground tools are unaffected.
-		this.agent.hasQueuedAsides = () => this.#irc.hasAsides();
+		this.agent.hasQueuedAsides = () => this.#irc.hasInterruptingAsides();
 		this.agent.setAsideMessageProvider(boundary => {
 			// A subagent whose messages get turns of their own (its run holds them,
 			// or its wake observer answers them) never extends a finished turn with
@@ -2649,7 +3039,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 			return thunks;
 		});
-		this.#convertToLlm = config.convertToLlm ?? convertToLlm;
+		const configuredConvertToLlm = config.convertToLlm ?? convertToLlm;
+		this.#convertToLlm = messages => configuredConvertToLlm(this.prepareToolHistoryForProvider(messages));
 		this.getXdevToolEntries = config.getXdevToolEntries ?? (() => []);
 		const sessionToolsHost: SessionToolsHost = {
 			agent: this.agent,
@@ -2668,6 +3059,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			steeringArrivalRelease: seq => this.#steeringArrivalRelease(seq),
 			queuedMessageCount: () => this.queuedMessageCount,
 			planModeEnabled: () => this.#planModeState?.enabled === true,
+			planningRepairMessage: () => this.#todo.planningRepairMessage,
 			model: () => this.model,
 			memoryBackendSession: () => this,
 			clearInheritedProviderPromptCacheKey: () => this.#clearInheritedProviderPromptCacheKey(),
@@ -2681,6 +3073,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			waitForUser: dialog => this.waitForUser(dialog),
 		};
 		this.#tools = new SessionTools(sessionToolsHost, {
+			getStartupContext: config.getStartupContext,
+			memoryAgentDir: config.memoryAgentDir,
 			autoApprove: config.autoApprove,
 			toolRegistry: config.toolRegistry,
 			createVibeTools: config.createVibeTools,
@@ -2690,6 +3084,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			presentationPinnedToolNames: config.presentationPinnedToolNames,
 			ensureWriteRegistered: config.ensureWriteRegistered,
 			isDeviceOnlyWrite: config.isDeviceOnlyWrite,
+			isAgentOnlyWrite: config.isAgentOnlyWrite,
 			setDeviceOnlyWrite: config.setDeviceOnlyWrite,
 			setPendingFullWriteDescription: config.setPendingFullWriteDescription,
 			ensureGoalRegistered: config.ensureGoalRegistered,
@@ -2706,6 +3101,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			skillsReloadable: config.skillsReloadable,
 		});
 		this.#disconnectOwnedMcpManager = config.disconnectOwnedMcpManager;
+		this.#reloadOwnedMcpManager = config.reloadOwnedMcpManager;
 		const ttsrHost: TtsrCoordinatorHost = {
 			agent: this.agent,
 			sessionManager: this.sessionManager,
@@ -2739,7 +3135,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			sessionId: () => this.sessionId,
 			costGate: () => this.#costGate,
 			localProtocolOptions: () => this.#localProtocolOptions(),
-			transformContext: (messages, signal) => this.#transformContext(messages, signal),
+			transformContext: async (messages, signal) =>
+				this.filterRestartNotices(await this.#transformContext(messages, signal)),
 			convertToLlm: messages => this.#convertToLlm(messages),
 			onPayload: this.#onPayload,
 			onResponse: this.#onResponse,
@@ -2763,8 +3160,49 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#streamingEditGuard = new StreamingEditGuard(streamGuardsHost);
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
-		this.#agentRegistry = config.agentRegistry;
+		this.#agentRegistry = config.agentRegistry ?? AgentRegistry.global();
 		this.#agentKind = config.agentKind ?? "main";
+		this.#requirementsLedger = new RequirementsLedgerRuntime({
+			maxRequirementAuditors: () => cfgRequirementAuditors.get(this.settings),
+			runningWorkerIds: () => {
+				const registry = this.#agentRegistry ?? AgentRegistry.global();
+				const ids = registry
+					.list()
+					.filter(ref => ref.kind === "sub" && registry.isRunning(ref))
+					.map(ref => ref.id);
+				for (const job of this.#asyncJobManager?.getRunningJobs() ?? []) {
+					if (job.type === "task") ids.push(job.agentId ?? job.id);
+				}
+				return ids;
+			},
+			agent: this.agent,
+			agentKind: () => this.#agentKind,
+			cwd: () => this.sessionManager.getCwd(),
+			sessionManager: this.sessionManager,
+			onSettledAssistantMessage: message => markAssistantPublicationSettled(message),
+			queueModelNotice: async content => {
+				const delivery = {
+					deliverAs: "nextTurn" as const,
+					triggerTurn: false,
+					supersedes: "requirements-gate-notice",
+				};
+				await this.sendCustomMessage(
+					{ customType: "requirements-gate-notice", content, display: false, attribution: "agent" },
+					delivery,
+				);
+			},
+			setAuditStatus: text => this.#extensionRunner?.getUIContext().setStatus("requirements-audit", text),
+			setTodoPhases: phases => this.setTodoPhases(phases),
+			setPublicationGate: gate => {
+				this.#requirementsPublicationGate = gate;
+				this.#syncAssistantPublicationGate();
+			},
+		});
+		if (this.#evalToolSession) {
+			this.#evalToolSession.onTaskWorkerLaunched = (toolCallId, index, workerId, agent) =>
+				this.#requirementsLedger.registerAuditorWorker(toolCallId, index, workerId, agent);
+		}
+		this.#syncAssistantPublicationGate();
 		// A subagent's streamed text reaches no output sink until the run settles
 		// (the parent sees only the yield), so a failed turn's partial prose is
 		// replay-safe and transient provider errors after it stay retryable —
@@ -2784,18 +3222,41 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (this.#asyncJobManager && this.#agentId) {
 			const manager = this.#asyncJobManager;
 			this.#unregisterAsyncDeliverySink = manager.registerDeliverySink(this.#agentId, (jobId, text, job) =>
-				this.#inLogContext(() => this.#deliverAsyncJobResult(manager, jobId, text, job)),
+				this.#inLogContext(() =>
+					withLoopPhase("async-result.deliver", () => this.#deliverAsyncJobResult(manager, jobId, text, job)),
+				),
 			);
 			this.yieldQueue.register<AsyncResultEntry>("async-result", {
 				isStale: entry => entry.epoch !== this.#asyncDeliveryEpoch || manager.isDeliverySuppressed(entry.jobId),
-				build: buildAsyncResultBatchMessage,
+				build: entries => withLoopPhase("async-result.build", () => buildAsyncResultBatchMessage(entries)),
 			});
 		}
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			this.#loopGuards.onAssistantEvent(message, assistantMessageEvent);
+			if (this.#runAssistantPublicationGateActive ?? Boolean(getAssistantPublicationGate(this.agent))) {
+				if (assistantMessageEvent.type === "start") {
+					this.#ttsr.onAssistantMessageStart();
+					this.tokenRate.begin(message.timestamp);
+				} else if (
+					assistantMessageEvent.type === "text_delta" ||
+					assistantMessageEvent.type === "thinking_delta" ||
+					assistantMessageEvent.type === "toolcall_delta"
+				) {
+					this.tokenRate.push(assistantMessageEvent.delta);
+				}
+				void this.#ttsr
+					.checkMessageUpdate({ type: "message_update", message, assistantMessageEvent })
+					.catch(error => logger.warn("TTSR raw stream check failed", { error }));
+			}
 		});
+		// Keep loaded instructions current before every request, including tool continuations.
+		this.#instructionFiles = config.instructionFiles;
+		this.agent.addBeforeModelCallHook(() => this.#refreshInstructionFiles());
 		// Tool-result hook owns synchronous post-tool actions that must affect the current loop.
-		this.agent.afterToolCall = ctx => this.#afterToolCall(ctx);
+		this.agent.afterToolCall = async ctx => {
+			await this.#drainPeerInbox();
+			return this.#afterToolCall(ctx);
+		};
 		// Pre-scheduling tool_call wiring: extension handlers run at arg-prep
 		// time so a block/revision lands before concurrency resolution,
 		// tool_execution_start, and the wrapper's approval gate.
@@ -2970,6 +3431,18 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				if (this.#isDisposed) return;
 				this.#experimentalContextNotesReminder = { prompt, generation: this.#promptGeneration };
 			},
+			emitCompactionBackoffNotice: content => {
+				const message: CustomMessage = {
+					role: "custom",
+					customType: "compaction-backoff",
+					content,
+					display: false,
+					timestamp: Date.now(),
+				};
+				this.agent.appendMessage(message);
+				this.sessionManager.appendMessage(message);
+				this.emitNotice("warning", content, "compaction");
+			},
 			memoryBackendSession: () => this,
 			emitSessionEvent: (event, options) => this.#emitSessionEvent(event, options),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
@@ -3041,6 +3514,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			removeAssistantMessageFromActiveContext: message =>
 				this.#recovery.removeAssistantMessageFromActiveContext(message),
 			dropPersistedAssistantTurn: message => this.#recovery.dropPersistedAssistantTurn(message),
+			routeOversizedHistoryOverflow: message => this.#recovery.routeOversizedHistoryOverflow(message),
 			retainTerminalFailure: message => {
 				this.#prunedTerminalFailure = message;
 			},
@@ -3150,7 +3624,21 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#watchSessionSettings();
 		this.#watchModelAvailabilitySettings();
 		// Last: makes the session addressable by its instance key (and, on a worker, published to main).
+		if (this.#agentKind === "main") this.addDisposer(bindProviderAvailabilityNotices(this));
 		registerLocalSession(this);
+		// Queue installation precedes all listeners. Restored idle roots need the same
+		// wake as enqueue; defer through the ordinary scheduler after construction.
+		if (this.agent.hasQueuedMessages() || this.#restoredRestartInputs.size > 0 || this.#restartRestoreWarning) {
+			this.#schedulePostPromptTask(
+				async () => {
+					if (this.#restartRestoreWarning)
+						this.emitNotice("warning", this.#restartRestoreWarning, "restart-restore");
+
+					this.#scheduleIdleQueueDrain();
+				},
+				{ delayMs: 1 },
+			);
+		}
 	}
 
 	/** Registers teardown to run when this session is disposed (e.g. handle listeners bound to it). */
@@ -3360,6 +3848,23 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#agentId;
 	}
 
+	/** Registry shared by this session's tool and extension peer-messaging routes. */
+	get agentRegistry(): AgentRegistryApi {
+		return this.#agentRegistry;
+	}
+
+	get enableIrc(): boolean | undefined {
+		return this.#evalToolSession?.enableIrc;
+	}
+
+	get taskDepth(): number {
+		return this.#evalToolSession?.taskDepth ?? 0;
+	}
+
+	getSessionFile(): string | undefined {
+		return this.sessionFile;
+	}
+
 	/** Dequeue the next HARD forced tool choice for the upcoming LLM call, dropping
 	 *  (and rejecting) one whose named tool is no longer active. */
 	#nextHardToolChoice(): ToolChoice | undefined {
@@ -3375,12 +3880,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * The per-turn tool-choice directive for the agent loop's `getToolChoice`. Priority:
 	 *   1. a HARD forced choice from the queue (genuine forces: user-force, eager-todo, …) —
 	 *      consuming (advances the queue generator);
-	 *   2. else, when a non-forcing preview is pending, a {@link SoftToolRequirement} — a
-	 *      PEEK (advances/pops nothing), so the agent-loop injects the reminder once per head
-	 *      and escalates to a forced `write` only if the model declines to
-	 *      resolve via `xd://resolve` or `xd://reject`. A compliant turn
-	 *      pays ZERO tool_choice change (no prompt-cache messages-cache invalidation);
-	 *   3. else undefined.
+	 *   2. else, a pending preview's non-forcing {@link SoftToolRequirement}, which keeps
+	 *      the existing `write` resolution priority and does not consume the queue;
+	 *   3. else, a fresh extension-provided native soft requirement. If its required tool is
+	 *      not active, fail closed before the model request rather than dropping the gate;
+	 *   4. else undefined.
 	 */
 	nextToolChoiceDirective(): ToolChoiceDirective | undefined {
 		const hard = this.#nextHardToolChoice();
@@ -3398,7 +3902,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				reminder: [buildResolveReminderMessage(head.sourceToolName)],
 			};
 		}
-		return undefined;
+		const requirement = this.#extensionRunner?.getSoftToolRequirement();
+		if (requirement === undefined) return undefined;
+		if (!this.agent.state.tools.some(tool => tool.name === requirement.toolName)) {
+			throw new Error(
+				`Required ${requirement.toolName} tool unavailable: extension soft tool requirement "${requirement.id}" cannot be enforced.`,
+			);
+		}
+		return requirement;
 	}
 
 	/** Peek the head non-forcing pending preview invoker, for the preview-resolution dispatch. */
@@ -3636,6 +4147,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// generation, then drop any async-result follow-up already queued, so a
 		// prior session's background result cannot inject into the next transcript.
 		this.#asyncDeliveryEpoch += 1;
+		this.#asyncReceiptDeliveries.clear();
 		this.yieldQueue.clear("async-result");
 	}
 
@@ -3655,7 +4167,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (!manager) return false;
 		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
 		return (
-			manager.getRunningJobs(ownerFilter).some(job => !manager.isDeliverySuppressed(job.id)) ||
+			manager
+				.getRunningJobs(ownerFilter, { includeForeground: true })
+				.some(job => job.foreground === true || !manager.isDeliverySuppressed(job.id)) ||
 			manager.hasPendingDeliveries(ownerFilter) ||
 			// Delivered but not yet injected: the sink has enqueued the
 			// async-result follow-up on the yield queue, and the manager no
@@ -3671,8 +4185,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Public view of the pending-async-wake state for run drivers: true while
 	 * owner-scoped async work can still re-wake this session's run (a running
 	 * background job with an unsuppressed delivery, or a queued / in-flight
-	 * delivery). The task executor's quiescence barrier polls this to
-	 * distinguish a scheduling pause from terminal completion.
+	 * delivery). The task executor waits on this before yield reminders, but
+	 * an accepted terminal yield ends the run regardless of pending work.
 	 */
 	hasPendingAsyncWork(): boolean {
 		return this.#hasPendingAsyncWake();
@@ -3707,9 +4221,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return { stop: true, reason: refusal.message };
 	}
 
-	/** A gate seeded with this session file's recorded spend. */
-	#createCostGate(): CostGate {
-		return new CostGate(this.settings, this.sessionManager.getUsageStatistics().cost, message =>
+	/** A gate seeded with this session file's recorded main and advisor spend. */
+	#createCostGate(advisorCost = 0): CostGate {
+		return new CostGate(this.settings, this.sessionManager.getUsageStatistics().cost + advisorCost, message =>
 			this.emitNotice("warning", message, COST_GATE_NOTICE_SOURCE),
 		);
 	}
@@ -3722,9 +4236,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * the tree's gate they were given.
 	 */
 	#reseedCostGate(): void {
-		if (this.#ownsCostGate) this.#costGate = this.#createCostGate();
+		if (!this.#ownsCostGate) return;
+		this.#costGate = this.#createCostGate(this.#advisors.getAdvisorCost());
 	}
-
 	/** Resolves once every currently admitted submission has dispatched, queued, or bailed. */
 	waitForAdmittedSubmissions(): Promise<void> {
 		if (this.#admittedSubmissionCount === 0) return Promise.resolve();
@@ -3737,7 +4251,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.agent.logContext ? logger.withContext(this.agent.logContext, work) : work();
 	}
 
-	async #admitSubmission<T>(work: () => Promise<T>): Promise<T> {
+	async #admitSubmission<T>(work: () => Promise<T>, options: { allowDuringRestartDrain?: boolean } = {}): Promise<T> {
+		// Check and count synchronously so a drain cannot slip between the guard and admission.
+		if (this.#restartDrainLeaseCount > 0 && options.allowDuringRestartDrain !== true) throw new AgentBusyError();
 		this.#admittedSubmissionCount++;
 		try {
 			if (this.hasPendingDeferredExtensions) await this.loadDeferredExtensions();
@@ -3781,23 +4297,38 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	): Promise<void> {
 		if (this.#isDisposed) return;
 		if (manager.isDeliverySuppressed(jobId)) return;
-		// Snapshot the generation before the async format step: a `/new` during it
-		// bumps the epoch, so this delivery belongs to the replaced session and
-		// must not enqueue — the suppression marker alone is unreliable because
-		// job-id reuse clears it.
-		const epoch = this.#asyncDeliveryEpoch;
-		const formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);
-		if (this.#isDisposed) return;
-		if (epoch !== this.#asyncDeliveryEpoch) return;
-		if (manager.isDeliverySuppressed(jobId)) return;
-		const durationMs = job ? Math.max(0, (job.endTime ?? Date.now()) - job.startTime) : undefined;
-		await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
-			jobId,
-			result: formatted,
-			job,
-			durationMs,
-			epoch,
-		});
+		const receiptKey = `${job?.agentId ?? jobId}:${Bun.hash(text).toString(16)}`;
+		const existingDelivery = this.#asyncReceiptDeliveries.get(receiptKey);
+		if (existingDelivery) return existingDelivery;
+
+		const delivery = (async () => {
+			// Snapshot the generation before the async format step: a `/new` during it
+			// bumps the epoch, so this delivery belongs to the replaced session and
+			// must not enqueue — the suppression marker alone is unreliable because
+			// job-id reuse clears it.
+			const epoch = this.#asyncDeliveryEpoch;
+			const formatted = await this.#formatAsyncResultForFollowUp(text, job?.latestDetails?.meta);
+			if (this.#isDisposed) return;
+			if (epoch !== this.#asyncDeliveryEpoch) return;
+			if (manager.isDeliverySuppressed(jobId)) return;
+			const durationMs = job ? Math.max(0, (job.endTime ?? Date.now()) - job.startTime) : undefined;
+			await this.yieldQueue.enqueueWithReceipt<AsyncResultEntry>("async-result", {
+				jobId,
+				result: formatted,
+				job,
+				durationMs,
+				epoch,
+			});
+		})();
+		this.#asyncReceiptDeliveries.set(receiptKey, delivery);
+		try {
+			await delivery;
+		} catch (error) {
+			if (this.#asyncReceiptDeliveries.get(receiptKey) === delivery) {
+				this.#asyncReceiptDeliveries.delete(receiptKey);
+			}
+			throw error;
+		}
 	}
 
 	/**
@@ -3893,13 +4424,56 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	// Event Subscription
 	// =========================================================================
 
+	/** Dispatcher-only turns may perform work without narrating unchanged state. */
+	silentAssistantTurn = false;
+
+	refreshAssistantVisibility(): void {
+		let actionDemand = false;
+		// User prompts are appended before streaming and need not emit message_start.
+		for (let index = this.agent.state.messages.length - 1; index >= 0; index--) {
+			const input = this.agent.state.messages[index];
+			if (input.role === "user") {
+				this.silentAssistantTurn = false;
+				break;
+			}
+			if (input.role !== "custom") continue;
+			const details = input.details as { silentAssistant?: boolean; actionDemand?: unknown } | undefined;
+			if (typeof details?.silentAssistant === "boolean") {
+				this.silentAssistantTurn = details.silentAssistant;
+				actionDemand = typeof details.actionDemand === "string" && details.actionDemand.trim().length > 0;
+				break;
+			}
+			if (!input.customType.startsWith("todo-")) {
+				this.silentAssistantTurn = false;
+				break;
+			}
+		}
+		// Hiding unchanged narration must not waive an explicit dispatcher action.
+		// Idle wakes may stop silently; demanded work uses bounded empty-stop recovery.
+		if (this.silentAssistantTurn) this.#recovery.setAcceptTerminalEmptyStop(!actionDemand);
+	}
+
 	/** Emit an event to all listeners */
 	#emit(event: AgentSessionEvent): void {
+		if (this.silentAssistantTurn) {
+			if (event.type === "message_update" && event.message.role === "assistant") return;
+			if ((event.type === "message_start" || event.type === "message_end") && event.message.role === "assistant") {
+				event = {
+					...event,
+					message: {
+						...event.message,
+						content: event.message.content.map(block => (block.type === "text" ? { ...block, text: "" } : block)),
+					},
+				};
+			}
+		}
 		// Listener array is copy-on-write (see `subscribe`), so iterating the
 		// current array is safe against (un)subscribes made by a listener.
 		for (const l of this.#eventListeners) {
 			try {
-				const result = l(event) as unknown;
+				const result = withLoopPhase(`session.listener:${event.type}:${l.name.slice(0, 80) || "anonymous"}`, () =>
+					l(event),
+				) as unknown;
 				// Listener may be an async function whose returned Promise we don't await;
 				// attach a catch so a rejection does not become an unhandled rejection.
 				if (isPromise(result)) {
@@ -3950,6 +4524,23 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			toolName: event.toolName,
 			startedAt: new Date().toISOString(),
 		};
+		const seen = new Set<string>();
+		for (
+			let entry = this.sessionManager.getLeafEntry();
+			entry && !seen.has(entry.id);
+			entry = entry.parentId ? this.sessionManager.getEntry(entry.parentId) : undefined
+		) {
+			seen.add(entry.id);
+			if (entry.type !== "message") continue;
+			if (entry.message.role === "user") break;
+			if (entry.message.role !== "assistant") continue;
+			const original = entry.message.content.find(
+				block => block.type === "toolCall" && block.id === event.toolCallId,
+			);
+			if (original?.type === "toolCall" && JSON.stringify(original.arguments) !== JSON.stringify(event.args))
+				data.effectiveArguments = event.args;
+			break;
+		}
 		// The assistant message already persists the full arguments; store only
 		// the command/path projection the resume warning renders.
 		const args = summarizeToolArguments(event.args);
@@ -3961,12 +4552,25 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#recordSessionExit(reason: postmortem.Reason | "dispose"): void {
 		if (this.#exitRecorded) return;
 		this.#exitRecorded = true;
-		const pendingToolCalls = collectPendingToolCalls(this.sessionManager.getBranch());
-		if (
-			pendingToolCalls.length === 0 &&
-			!this.sessionManager.getEntries().some(entry => entry.type === "message" && entry.message.role === "assistant")
-		) {
-			return;
+		// Each assistant message replaces the pending-call set. Earlier history
+		// cannot affect the exit diagnostic, including compacted tool payloads.
+		const pendingEntries: SessionEntry[] = [];
+		for (const entry of this.sessionManager.iterateBranchMatchingNewestFirst(
+			metadata => metadata.type === "message" || metadata.customType === "tool_execution_start",
+		)) {
+			pendingEntries.push(entry);
+			if (entry.type === "message" && entry.message.role === "assistant") break;
+		}
+		const pendingToolCalls = collectPendingToolCalls(pendingEntries.reverse());
+		if (pendingToolCalls.length === 0) {
+			let hasAssistant = false;
+			for (const entry of this.sessionManager.getContextBranch()) {
+				if (entry.type === "message" && entry.message.role === "assistant") {
+					hasAssistant = true;
+					break;
+				}
+			}
+			if (!hasAssistant) return;
 		}
 		const kind: SessionExitData["kind"] =
 			reason === "dispose" || reason === postmortem.Reason.MANUAL
@@ -4074,6 +4678,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	// Track last assistant message for auto-compaction check
 	#lastAssistantMessage: AssistantMessage | undefined = undefined;
+	#runAssistantPublicationGateActive: boolean | undefined;
 	/**
 	 * Tool calls emitted by assistant turns of the current agent run. A mid-turn
 	 * transcript rebuild keeps only these unpaired calls live; calls left unpaired
@@ -4119,7 +4724,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * event/persistence pipeline during teardown.
 	 */
 	#handleAgentEvent = (event: AgentEvent): Promise<void> => {
-		const processing = this.#dispatchAgentEvent(event);
+		const processing = withLoopPhase(`session.dispatch:${event.type}`, () => this.#dispatchAgentEvent(event));
 		this.#inFlightEventHandlers.add(processing);
 		void processing.finally(() => this.#inFlightEventHandlers.delete(processing)).catch(() => {});
 		return processing;
@@ -4171,6 +4776,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * the recovery wait always sees the in-flight handler and blocks until it — and
 	 * everything it schedules — settles. */
 	#dispatchAgentEvent = async (event: AgentEvent): Promise<void> => {
+		if (event.type === "message_start" && event.message.role === "assistant") this.refreshAssistantVisibility();
+		if (event.type === "message_start") {
+			if (event.message.role === "user") this.silentAssistantTurn = false;
+			if (event.message.role === "custom") {
+				const details = event.message.details as { silentAssistant?: boolean } | undefined;
+				if (typeof details?.silentAssistant === "boolean") this.silentAssistantTurn = details.silentAssistant;
+				else if (!event.message.customType.startsWith("todo-")) this.silentAssistantTurn = false;
+			}
+		}
 		// Revoke before the first await: delayed end-of-turn maintenance must
 		// never revoke a foreground-control grant acquired by a later prompt.
 		const computerControlRevocation =
@@ -4224,9 +4838,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	/** Commit messages in emission order without waiting for notification listeners. */
 	#queueMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
+		if (message.role === "custom") {
+			const delivery = this.#pendingNextTurnDeliveryByMessage.get(message);
+			if (delivery) delivery.inputMessageSeen = true;
+		}
 		const key = sessionMessagePersistenceKey(message);
+		const queuedDelivery = this.agent.queuedMessageDeliveryQueue(message);
 		const pending = this.#messageEndPersistenceTail
-			.then(() => this.#persistMessageEnd(message, promptGeneration))
+			.then(() => this.#persistMessageEnd(message, promptGeneration, queuedDelivery))
 			.finally(() => {
 				if (key !== undefined && this.#pendingMessageEndPersistence.get(key) === pending) {
 					this.#pendingMessageEndPersistence.delete(key);
@@ -4235,6 +4854,59 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (key !== undefined) this.#pendingMessageEndPersistence.set(key, pending);
 		this.#messageEndPersistenceTail = pending.catch(() => {});
 		return pending;
+	}
+
+	#reservePendingNextTurnMessages(consumed?: CustomMessage[]): CustomMessage[] {
+		if (!consumed) {
+			const pending = this.#pendingNextTurnMessages;
+			this.#pendingNextTurnMessages = [];
+			return pending;
+		}
+
+		const remaining = [...this.#pendingNextTurnMessages];
+		for (const message of consumed) {
+			const index = remaining.indexOf(message);
+			if (index !== -1) remaining.splice(index, 1);
+		}
+		this.#pendingNextTurnMessages = [];
+		return [...consumed, ...remaining];
+	}
+
+	#registerPendingNextTurnDelivery(
+		messages: CustomMessage[],
+		promptGeneration: number,
+	): PendingNextTurnDelivery | undefined {
+		const boundary = messages[messages.length - 1];
+		if (!boundary) return;
+		const delivery: PendingNextTurnDelivery = {
+			boundary,
+			messages,
+			promptGeneration,
+			sessionId: this.sessionManager.getSessionId(),
+			inputMessageSeen: false,
+			settled: false,
+		};
+		for (const message of messages) this.#pendingNextTurnDeliveryByMessage.set(message, delivery);
+		return delivery;
+	}
+
+	#settlePendingNextTurnDelivery(delivery: PendingNextTurnDelivery, committed: boolean): void {
+		if (delivery.settled) return;
+		delivery.settled = true;
+		if (committed) {
+			for (const message of delivery.messages) this.#acknowledgeRestoredRestartInput(message);
+		}
+		for (const message of delivery.messages) {
+			if (this.#pendingNextTurnDeliveryByMessage.get(message) === delivery) {
+				this.#pendingNextTurnDeliveryByMessage.delete(message);
+			}
+		}
+		if (!committed && this.sessionManager.getSessionId() === delivery.sessionId) {
+			this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(
+				[...delivery.messages, ...this.#pendingNextTurnMessages],
+				this.#restoredRestartInputs,
+			);
+		}
 	}
 
 	async #waitForSessionMessagePersistence(message: AgentMessage): Promise<void> {
@@ -4286,7 +4958,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	#buildPersistedMessageKeySet(): Set<string> {
 		const keys = new Set<string>();
-		for (const entry of this.sessionManager.getBranchView()) {
+		for (const entry of this.sessionManager.getContextBranch()) {
 			if (entry.type !== "message") continue;
 			const key = sessionMessagePersistenceKey(entry.message);
 			if (key !== undefined) keys.add(key);
@@ -4315,9 +4987,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (key === undefined) return false;
 		const keys = this.#ensurePersistedMessageKeys();
 		if (!keys.has(key)) return false;
-		const branch = this.sessionManager.getBranchView();
-		for (let index = branch.length - 1; index >= 0; index--) {
-			const entry = branch[index];
+		for (const entry of this.sessionManager.getContextBranch()) {
 			if (entry.type !== "message") continue;
 			if (sessionMessagePersistenceKey(entry.message) !== key) continue;
 			if (!sameMessageContent(entry.message, message)) continue;
@@ -4450,12 +5120,171 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		};
 	}
 
-	#persistMessageEnd(message: AgentMessage, promptGeneration: number): void {
+	#acknowledgeRestoredRestartInput(message: AgentMessage): void {
+		if (!this.#restoredRestartInputs.delete(message)) return;
+		logger.info("Delivered restored restart input", {
+			role: message.role,
+			messageId: restartQueueMessageId(message),
+		});
+	}
+
+	#persistMessageEnd(
+		message: AgentMessage,
+		promptGeneration: number,
+		queuedDelivery: "steering" | "followUp" | undefined,
+	): void | Promise<void> {
+		const nextTurnDelivery =
+			message.role === "custom" ? this.#pendingNextTurnDeliveryByMessage.get(message) : undefined;
+		if (nextTurnDelivery && nextTurnDelivery.promptGeneration !== promptGeneration) {
+			if (message.role === "custom" && message === nextTurnDelivery.boundary) {
+				this.#settlePendingNextTurnDelivery(nextTurnDelivery, false);
+			}
+			return;
+		}
+		if (message.role === "custom" && nextTurnDelivery && message !== nextTurnDelivery.boundary) return;
+
+		if (this.#promptGeneration !== promptGeneration) {
+			if (message.role === "custom" && nextTurnDelivery) {
+				this.#settlePendingNextTurnDelivery(nextTurnDelivery, false);
+			}
+			if (queuedDelivery === undefined) return;
+			// Only a drain (or an already-active checkpoint) owns queue state. An ordinary abort
+			// must not write a checkpoint that a later resume would replay; the live-queue
+			// restore path already handles that delivery.
+			if (this.#restartDrainLeaseCount === 0 && !this.#restartPendingQueuesCheckpointActive) return;
+
+			// The message_end belongs to a superseded turn, so its transcript
+			// entry must not be appended. Persist the unacknowledged delivery
+			// with the queue checkpoint; only a transcript commit may ack it.
+			return this.sessionManager.appendEntriesAtomically(() => {
+				const queues = this.agent.snapshotPendingQueues();
+				this.#appendRestartCheckpoint({
+					...queues,
+					pendingNextTurn: [...this.#pendingNextTurnMessages],
+				});
+			});
+		}
+
+		if (message.role === "custom" && nextTurnDelivery) {
+			return this.#persistPendingNextTurnDelivery(message, nextTurnDelivery, promptGeneration, queuedDelivery);
+		}
+
+		if (queuedDelivery === undefined || !this.#restartPendingQueuesCheckpointActive) {
+			const afterCommit = this.#persistMessageEndEntry(message, promptGeneration);
+			if (queuedDelivery !== undefined) {
+				this.agent.acknowledgeQueuedMessagePersistence(message);
+				this.#acknowledgeRestoredRestartInput(message);
+			}
+			afterCommit?.();
+			return;
+		}
+
+		return this.sessionManager
+			.appendEntriesAtomically(() => {
+				const afterCommit = this.#persistMessageEndEntry(message, promptGeneration);
+				const queues = this.agent.snapshotPendingQueues(message, queuedDelivery);
+				this.#appendRestartCheckpoint({
+					...queues,
+					pendingNextTurn: [...this.#pendingNextTurnMessages],
+				});
+				return afterCommit;
+			})
+			.then(afterCommit => {
+				this.agent.acknowledgeQueuedMessagePersistence(message);
+				this.#acknowledgeRestoredRestartInput(message);
+				afterCommit?.();
+			});
+	}
+
+	/** Persist hidden input as one batch at the last message, together with
+	 * the remaining queue checkpoint. */
+	#persistPendingNextTurnDelivery(
+		message: CustomMessage,
+		delivery: PendingNextTurnDelivery,
+		promptGeneration: number,
+		queuedDelivery: "steering" | "followUp" | undefined,
+	): void | Promise<void> {
+		const appendDeliveredMessages = (): (() => void) | undefined => {
+			let afterCommit: (() => void) | undefined;
+			for (const pendingMessage of delivery.messages) {
+				const effect = this.#persistMessageEndEntry(pendingMessage, promptGeneration);
+				if (effect) {
+					const previous = afterCommit;
+					if (previous) {
+						afterCommit = () => {
+							previous();
+							effect();
+						};
+					} else {
+						afterCommit = effect;
+					}
+				}
+			}
+			return afterCommit;
+		};
+		const acknowledgeQueuedMessage = (): void => {
+			if (queuedDelivery !== undefined) {
+				this.agent.acknowledgeQueuedMessagePersistence(message);
+				this.#acknowledgeRestoredRestartInput(message);
+			}
+		};
+
+		if (!this.#restartPendingQueuesCheckpointActive) {
+			let afterCommit: (() => void) | undefined;
+			try {
+				afterCommit = appendDeliveredMessages();
+			} catch (error) {
+				this.#settlePendingNextTurnDelivery(delivery, false);
+				throw error;
+			}
+			acknowledgeQueuedMessage();
+			this.#settlePendingNextTurnDelivery(delivery, true);
+			afterCommit?.();
+			return;
+		}
+
+		let committed = false;
+		return this.sessionManager
+			.appendEntriesAtomically(() => {
+				if (
+					this.#promptGeneration !== promptGeneration ||
+					this.sessionManager.getSessionId() !== delivery.sessionId
+				) {
+					return;
+				}
+				const afterCommit = appendDeliveredMessages();
+				const queues =
+					queuedDelivery === undefined
+						? this.agent.snapshotPendingQueues()
+						: this.agent.snapshotPendingQueues(message, queuedDelivery);
+				this.#appendRestartCheckpoint({
+					...queues,
+					pendingNextTurn: [...this.#pendingNextTurnMessages],
+				});
+				committed = true;
+				return afterCommit;
+			})
+			.then(
+				afterCommit => {
+					if (!committed) {
+						this.#settlePendingNextTurnDelivery(delivery, false);
+						return;
+					}
+					acknowledgeQueuedMessage();
+					this.#settlePendingNextTurnDelivery(delivery, true);
+					afterCommit?.();
+				},
+				error => {
+					this.#settlePendingNextTurnDelivery(delivery, false);
+					throw error;
+				},
+			);
+	}
+
+	#persistMessageEndEntry(message: AgentMessage, promptGeneration: number): (() => void) | undefined {
 		// Session transitions may replace the transcript before a queued commit
 		// runs. Never append the previous conversation to the replacement session.
 		if (this.#promptGeneration !== promptGeneration) {
-			// The message has already left the agent queue. If it was a deferred TTSR
-			// delivery, queue cleanup cannot clear its reservation.
 			if (message.role === "custom" && message.customType === "ttsr-injection") {
 				this.#ttsr.releaseDeferredReservationFromDetails(message.details);
 			}
@@ -4478,7 +5307,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				);
 			}
 			if (message.role === "custom" && message.customType === "ttsr-injection") {
-				this.#ttsr.markInjectedFromDetails(message.details);
+				return () => this.#ttsr.markInjectedFromDetails(message.details);
 			}
 			return;
 		}
@@ -4633,6 +5462,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.
 		if (event.type === "agent_start") {
+			this.#runAssistantPublicationGateActive = Boolean(getAssistantPublicationGate(this.agent));
 			this.#activeAgentPromptGeneration = eventPromptGeneration;
 			// A run resumed from an unpaired assistant tail (retry of a failed tool
 			// batch) executes that turn's calls without a new message_end.
@@ -4783,7 +5613,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// extension notifications must not own or delay the persistence work.
 		const messageEndPersistence =
 			event.type === "message_end"
-				? this.#queueMessageEndPersistence(event.message, eventPromptGeneration)
+				? this.#queueRequirementMessageEndPersistence(event.message, eventPromptGeneration)
 				: undefined;
 
 		// Deobfuscate assistant message content for display emission — the LLM echoes back
@@ -4814,14 +5644,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// concurrently and message_update skips the await, so a reset placed after
 		// it could land behind the new message's first deltas and clear them.
 		if (event.type === "turn_start") this.#ttsr.onTurnStart();
-		if (event.type === "message_start" && event.message.role === "assistant") this.#ttsr.onAssistantMessageStart();
+		if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_start" &&
+			event.message.role === "assistant"
+		)
+			this.#ttsr.onAssistantMessageStart();
 
 		// Meter generation per session: each session tracks its own stream, so a
 		// background subagent holds a live reading by the time it is focused and
 		// the main session's reading survives focus round-trips.
-		if (event.type === "message_start" && event.message.role === "assistant") {
+		if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_start" &&
+			event.message.role === "assistant"
+		) {
 			this.tokenRate.begin(event.message.timestamp);
-		} else if (event.type === "message_update" && event.message.role === "assistant") {
+		} else if (
+			!getAssistantPublicationGate(this.agent) &&
+			event.type === "message_update" &&
+			event.message.role === "assistant"
+		) {
 			const delta = event.assistantMessageEvent;
 			if (delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") {
 				this.tokenRate.push(delta.delta);
@@ -4851,7 +5694,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 		}
 
-		if (event.type === "turn_end") this.#ttsr.onTurnEnd();
+		if (event.type === "turn_end") {
+			await this.#drainPeerInbox();
+			this.#ttsr.onTurnEnd();
+		}
 		// Finalize the tool-choice queue's in-flight yield after tools have executed.
 		// This must happen at turn_end (not message_end) because onInvoked handlers
 		// run during tool execution, which happens between message_end and turn_end.
@@ -4872,6 +5718,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			void this.#settleOwnedBrowserTabs();
 		}
 		if (event.type === "tool_execution_end") {
+			// Actual tool progress starts a fresh bounded stop-hook sequence.
+			this.#sessionStopContinuationCount = 0;
 			if (event.toolName === "goal") {
 				await this.#goalRuntime.onGoalToolCompleted();
 			} else {
@@ -4889,11 +5737,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		if (event.type === "tool_stream_update") this.#streamingEditGuard.maybeAbort(event);
 
-		if (await this.#ttsr.checkMessageUpdate(event)) return;
+		if (!getAssistantPublicationGate(this.agent) && (await this.#ttsr.checkMessageUpdate(event))) return;
 
 		// Handle session persistence
 		if (event.type === "message_end") {
-			await messageEndPersistence;
+			try {
+				await messageEndPersistence;
+			} catch (error) {
+				// Persistence is fire-and-forget from agent-core. A rejected append
+				// must remain visible, but it must not skip assistant settle work:
+				// retry recovery closes its saga there and resolves the prompt waiter.
+				const failure = toError(error);
+				logger.error("Failed to persist session message; continuing event completion", {
+					role: event.message.role,
+					error: failure.message,
+				});
+				this.emitNotice(
+					"error",
+					"Session persistence failed; the transcript may be incomplete.",
+					"session-persistence",
+				);
+			}
 			if (this.#promptGeneration !== eventPromptGeneration) return;
 			if (interruptedThinkingMessage) {
 				this.sessionManager.appendCustomMessageEntry(
@@ -4908,6 +5772,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 			if (event.message.role === "assistant") {
 				const assistantMsg = event.message as AssistantMessage;
+				if (assistantMsg.stopReason !== "error")
+					await this.#recovery.recordProviderAvailabilityOutcome(assistantMsg);
 				// Fold this turn's timing into per-model perf aggregates (drives the
 				// /models TPS/TTFT display). Errored turns measure nothing; aborted
 				// turns with reported usage are still valid throughput samples.
@@ -4993,6 +5859,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 						"Fix the todo payload and call todo again before continuing.",
 						"</system-reminder>",
 					].join("\n");
+					const reminderDelivery = {
+						deliverAs: "nextTurn" as const,
+						triggerTurn: false,
+					};
 					await this.sendCustomMessage(
 						{
 							customType: "todo-error-reminder",
@@ -5007,7 +5877,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 									(attemptedArgs && stringProperty(attemptedArgs, "op")),
 							},
 						},
-						{ deliverAs: "nextTurn" },
+						reminderDelivery,
 					);
 				}
 				if (semanticResult?.toolName === "checkpoint" && !isError) {
@@ -5017,14 +5887,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					// checkpoint; locate the toolResult's own entry by identity since the
 					// transient reminder entry follows it (last-entry would branch-cut the
 					// reminder instead of leaving it on the active path).
-					const entries = this.sessionManager.getEntries();
 					let checkpointEntryId: string | null = null;
-					for (let i = entries.length - 1; i >= 0; i--) {
-						const entry = entries[i];
-						if (entry.type === "message" && entry.message === event.message) {
-							checkpointEntryId = entry.id;
-							break;
-						}
+					for (const entry of this.sessionManager.iterateEntries("message")) {
+						if (entry.type === "message" && entry.message === event.message) checkpointEntryId = entry.id;
 					}
 					if (this.#checkpointState) {
 						this.#checkpointState.checkpointEntryId = checkpointEntryId;
@@ -5043,6 +5908,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		// Check auto-retry and auto-compaction after agent completes
 		if (event.type === "agent_end") {
+			this.#runAssistantPublicationGateActive = undefined;
 			const settledMessages = event.messages;
 			const activeMessages = this.agent.state.messages;
 			// TTSR retry work runs concurrently and clears the live flag before
@@ -5206,6 +6072,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// replayed. Visible/side-effecting output then remains terminal while its
 			// credential is still blocked or rotated exactly once.
 			await this.#recovery.recordUsageLimitOutcome(msg);
+			if (await this.#recovery.handleUnavailableProvider(msg)) {
+				await emitAgentEndNotification({ willContinue: true });
+				return;
+			}
 
 			let compactionResult = COMPACTION_CHECK_NONE;
 			let checkedCompaction = false;
@@ -5241,6 +6111,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					);
 					return;
 				}
+			}
+
+			// Drain owns continuation until restart completes or its lease is released.
+			// Retrying an interrupted provider here waits on a run that drain forbids.
+			if (this.isRestartDraining && msg.stopReason === "aborted") {
+				this.#restartDrainNeedsResume = true;
+				this.#recovery.resolveRetry();
+				await emitAgentEndNotification();
+				return;
 			}
 
 			if (await this.#recovery.handleUnexpectedAssistantStop(msg)) {
@@ -5325,6 +6204,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					return;
 				}
 			}
+			await this.#recovery.recordProviderAvailabilityOutcome(msg);
 			// Classifier refusals are persisted-skipped above; also prune the trailing
 			// stub from active context so the next turn's prompt does not replay it.
 			// Keep a reference for post-settle readers (print mode, task executor via
@@ -5389,7 +6269,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					return;
 				}
 				const todoContinuationScheduled =
-					this.#stopTimeTodoRemindersEnabled && (await this.#todo.checkCompletion(msg));
+					this.#stopTimeTodoRemindersEnabled &&
+					!isAssistantPublicationSettled(msg) &&
+					(await this.#todo.checkCompletion(msg));
 				if (todoContinuationScheduled) {
 					await emitAgentEndNotification({ willContinue: true });
 					return;
@@ -5518,10 +6400,31 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			if (signal.aborted || this.#isDisposed || this.#abortInProgress) {
 				return { status: "skipped", reason: "session-unavailable" };
 			}
+			request.options.beforeContinue?.();
 			for (;;) {
 				try {
 					if (!this.agent.state.isStreaming) onStart?.();
+					const steering = [...this.agent.peekSteeringQueue()];
+					const followUp = [...this.agent.peekFollowUpQueue()];
 					await this.agent.continue(signal);
+					// The core loop can resolve after aborting a queued preparation and
+					// restoring its claim. Settling is not delivery: retrying the same
+					// queue here re-arms itself through #endInFlight forever. New input
+					// or an explicit resume releases the existing drain latch.
+					if (request.options.source === "queued-message-drain") {
+						const remainingSteering = this.agent.peekSteeringQueue();
+						const remainingFollowUp = this.agent.peekFollowUpQueue();
+						if (
+							steering.length + followUp.length > 0 &&
+							steering.length === remainingSteering.length &&
+							followUp.length === remainingFollowUp.length &&
+							steering.every((message, index) => message === remainingSteering[index]) &&
+							followUp.every((message, index) => message === remainingFollowUp[index])
+						) {
+							this.#queuedMessageDrainBlocked = true;
+							return { status: "skipped", reason: "should-continue-false" };
+						}
+					}
 					return { status: "completed" };
 				} catch (error) {
 					if (!(error instanceof AgentBusyError)) throw error;
@@ -5575,6 +6478,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		});
 		this.#schedulePostPromptTask(
 			async signal => {
+				if (this.#restartDrainLeaseCount > 0) {
+					this.#restartDrainNeedsResume = true;
+					this.#skipAgentContinue("session-unavailable", request);
+					return;
+				}
 				// Defense in depth: if compaction/handoff slipped onto the post-prompt queue
 				// alongside us (e.g. via a scheduler we don't own), refuse to start a fresh
 				// streaming turn — agent.continue() here would race the handoff's session
@@ -5719,6 +6627,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#schedulePostPromptTask(
 			async signal => {
 				await Promise.resolve();
+				if (this.#restartDrainLeaseCount > 0) {
+					this.#restartDrainNeedsResume = true;
+					return;
+				}
 				if (signal.aborted) return;
 				if (this.agent.hasQueuedMessages()) {
 					this.#scheduleAgentContinue({
@@ -5737,9 +6649,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	/** Cancel scheduled continuations; `reason` labels a continuation already running, as `agent.abort(reason)` does. */
 	async #cancelPostPromptTasks(reason?: string): Promise<void> {
-		this.#postPromptTasksAbortController.abort(reason);
+		withLoopPhase("resource-release.cancel-post-prompt", () => this.#postPromptTasksAbortController.abort(reason));
 		this.#postPromptTasksAbortController = new AbortController();
-		this.#ttsr.resolveResume();
+		withLoopPhase("resource-release.resume", () => this.#ttsr.resolveResume());
 
 		const pendingTasks = Array.from(this.#postPromptTasks);
 		if (pendingTasks.length === 0) {
@@ -5790,7 +6702,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
-	#afterToolCall(ctx: AfterToolCallContext): AfterToolCallResult | undefined {
+	async #afterToolCall(ctx: AfterToolCallContext): Promise<AfterToolCallResult | undefined> {
+		const tool = this.agent.state.tools.find(tool => tool.name === ctx.toolCall.name);
+		if (!tool || resolveToolTier(tool, ctx.args) !== "read") invalidateStatus();
 		if (
 			this.#isTerminalYieldToolResult({
 				toolName: ctx.toolCall.name,
@@ -5803,7 +6717,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#synchronouslyTerminatedYieldToolCallIds.add(ctx.toolCall.id);
 			this.agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
 		}
-		return this.#ttsr.afterToolCall(ctx);
+		const receipt = await this.#requirementsLedger.afterToolCall(ctx);
+		const ttsrResult = this.#ttsr.afterToolCall(ctx);
+		if (!receipt) return ttsrResult;
+		if (!ttsrResult) return receipt;
+		return {
+			...ttsrResult,
+			...receipt,
+			...(receipt.content && ttsrResult.content ? { content: [...ttsrResult.content, ...receipt.content] } : {}),
+		};
 	}
 	/**
 	 * Emits the extension `tool_call` event for a loop-dispatched call at
@@ -5816,14 +6738,48 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * execution still emit there).
 	 */
 	async #beforeToolCall(ctx: BeforeToolCallContext, signal?: AbortSignal): Promise<BeforeToolCallResult | undefined> {
+		const result = await this.#beforeToolCallCore(ctx, signal);
+		if (result?.block) return result;
+		if (this.#agentKind === "main" && ctx.tool.name === "todo") {
+			await this.#requirementsLedger.beforeTodoCall(ctx.tool.name, result?.args ?? ctx.args, signal);
+		}
+		const reminder =
+			this.#agentKind === "main" && this.getActiveToolNames().includes("todo") && ctx.tool.name !== "todo"
+				? this.#requirementsLedger.remindUnclassifiedCandidates(ctx.tool.name, ctx.args)?.additionalContext
+				: undefined;
+		if (reminder === undefined) return result;
+		return {
+			...result,
+			additionalContext: result?.additionalContext ? `${result.additionalContext}\n\n${reminder}` : reminder,
+		};
+	}
+
+	async #beforeToolCallCore(
+		ctx: BeforeToolCallContext,
+		signal?: AbortSignal,
+	): Promise<BeforeToolCallResult | undefined> {
 		const runner = this.#extensionRunner;
 		runner?.markLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 		const ttsrResult = await this.#ttsr.beforeToolCall(ctx);
-		if (ttsrResult) {
+		if (ttsrResult?.block) {
 			runner?.clearLoopToolCall?.(ctx.toolCall.id, ctx.tool.name);
 			return ttsrResult;
 		}
-		if (!runner?.hasHandlers("tool_call")) return undefined;
+		let effectiveArgs = ttsrResult?.args ?? ctx.args;
+		let additionalContext = ttsrResult?.additionalContext;
+		if (!runner?.hasHandlers("tool_call")) {
+			if (this.#agentKind === "main" && ctx.tool.name === "task") {
+				effectiveArgs =
+					(await this.#requirementsLedger.prepareAuditorTaskCall(
+						ctx.tool.name,
+						ctx.toolCall.id,
+						effectiveArgs,
+						signal,
+					)) ?? effectiveArgs;
+			}
+			if (effectiveArgs === ctx.args && additionalContext === undefined) return undefined;
+			return { args: effectiveArgs, ...(additionalContext === undefined ? {} : { additionalContext }) };
+		}
 		const metadata = ctx.toolCall.providerMetadata;
 		const computer = metadata?.type === "computer" ? metadata : undefined;
 		// Parity with the wrapper's pre-emit short-circuit: an already-denied
@@ -5831,13 +6787,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// or user policy), so resolving under the most permissive mode is exact;
 		// the wrapper still enforces the mode-accurate gate before execution.
 		const userPolicies: Record<string, unknown> = cfgToolsApproval.get(this.settings);
-		const approvalArgs = computer ? { actions: computer.actions } : ctx.args;
+		const approvalArgs = computer ? { actions: computer.actions } : effectiveArgs;
 		if (resolveApproval(ctx.tool, approvalArgs, "yolo", userPolicies).policy === "deny") {
 			return undefined;
 		}
 		const eventArgs = computer
 			? { actions: computer.actions, pendingSafetyChecks: computer.pendingSafetyChecks }
-			: ctx.args;
+			: effectiveArgs;
 		runner.markToolCallEmitted(ctx.toolCall.id, ctx.tool.name);
 		let callResult: Awaited<ReturnType<ExtensionRunner["emitToolCall"]>>;
 		try {
@@ -5860,10 +6816,23 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		// A computer call's event input is a synthetic {actions, pendingSafetyChecks}
 		// view, not the execution params — a revision cannot map back onto them.
-		const args = callResult?.input !== undefined && !computer ? callResult.input : undefined;
-		const additionalContext = callResult?.additionalContext;
-		if (args === undefined && additionalContext === undefined) return undefined;
-		return { args, additionalContext };
+		if (callResult?.input !== undefined && !computer) effectiveArgs = callResult.input;
+		if (callResult?.additionalContext) {
+			additionalContext = additionalContext
+				? `${additionalContext}\n\n${callResult.additionalContext}`
+				: callResult.additionalContext;
+		}
+		if (this.#agentKind === "main" && ctx.tool.name === "task") {
+			effectiveArgs =
+				(await this.#requirementsLedger.prepareAuditorTaskCall(
+					ctx.tool.name,
+					ctx.toolCall.id,
+					effectiveArgs,
+					signal,
+				)) ?? effectiveArgs;
+		}
+		if (effectiveArgs === ctx.args && additionalContext === undefined) return undefined;
+		return { args: effectiveArgs, ...(additionalContext === undefined ? {} : { additionalContext }) };
 	}
 
 	/** Find the last assistant message in agent state (including aborted ones) */
@@ -5972,6 +6941,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (this.#agentKind === "sub" || !this.#extensionRunner?.hasHandlers("session_stop")) {
 			return false;
 		}
+		// Stop hooks must not turn a terminal provider failure into a fresh request.
+		// Retry policy belongs to recovery, not to extension stop enforcement.
+		if (lastAssistantMessage?.stopReason === "error") {
+			this.#resetSessionStopContinuationState();
+			return false;
+		}
 		const generation = this.#promptGeneration;
 		const result = await this.#extensionRunner.emitSessionStop({
 			messages,
@@ -5986,12 +6961,16 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
+		if (lastAssistantMessage && isAssistantPublicationSettled(lastAssistantMessage) && result?.decision !== "block") {
+			this.#resetSessionStopContinuationState();
+			return false;
+		}
 		const additionalContext = this.#sessionStopContinuationContext(result);
 		if (!additionalContext) {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
-		if (result?.decision !== "block" && this.#sessionStopContinuationCount >= SESSION_STOP_CONTINUATION_CAP) {
+		if (this.#sessionStopContinuationCount >= SESSION_STOP_CONTINUATION_CAP) {
 			logger.warn("session_stop continuation cap reached", {
 				providerSessionId: this.sessionId,
 				cap: SESSION_STOP_CONTINUATION_CAP,
@@ -5999,7 +6978,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#resetSessionStopContinuationState();
 			return false;
 		}
-		if (result?.decision !== "block") this.#sessionStopContinuationCount++;
+		this.#sessionStopContinuationCount++;
 		this.#sessionStopHookActive = true;
 		this.#queueHiddenNextTurnMessage(
 			{
@@ -6292,16 +7271,45 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/**
 	 * The branch's newest reply that used the prompt cache, with what followed it
 	 * (the latest warm refresh, a compaction) and the system prompt digest
-	 * recorded before it. Each entry is folded once per branch view.
+	 * recorded before it. Appends fold only the new relevant entries.
 	 */
 	#branchPromptCacheObservation(): BranchPromptCacheObservation | undefined {
-		const branch = this.sessionManager.getBranchView();
+		const leafId = this.sessionManager.getLeafId();
+		const sessionId = this.sessionManager.getSessionId();
 		let scan = this.#branchPromptCacheScan;
-		if (scan?.branch !== branch) {
-			scan = { branch, scanned: 0, digest: undefined, observation: undefined };
+		if (scan?.sessionId === sessionId && scan.leafId === leafId) return scan.observation;
+		let reachedPreviousLeaf = false;
+		let foundReply = false;
+		const entries: SessionEntry[] = [];
+		for (const entry of this.sessionManager.iterateBranchMatchingNewestFirst(metadata => {
+			if (scan?.sessionId === sessionId && metadata.id === scan.leafId) reachedPreviousLeaf = true;
+			return (
+				!reachedPreviousLeaf &&
+				(metadata.customType === SYSTEM_PROMPT_DIGEST_CUSTOM_TYPE ||
+					metadata.type === "reset_boundary" ||
+					(!foundReply &&
+						(metadata.type === "compaction" ||
+							metadata.type === "model_usage" ||
+							metadata.messageRole === "assistant")))
+			);
+		})) {
+			entries.push(entry);
+			if (entry.type === "reset_boundary" || (foundReply && promptDigestOfEntry(entry) !== null)) break;
+			if (
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				entry.message.stopReason !== "error" &&
+				entry.message.usage.cacheRead + entry.message.usage.cacheWrite > 0
+			)
+				foundReply = true;
+		}
+		entries.reverse();
+		if (!scan || scan.sessionId !== sessionId || !reachedPreviousLeaf) {
+			scan = { leafId, sessionId, digest: undefined, observation: undefined };
 			this.#branchPromptCacheScan = scan;
 		}
-		if (scan.scanned < branch.length) scanBranchPromptCache(scan);
+		scanBranchPromptCache(scan, entries);
+		scan.leafId = leafId;
 		return scan.observation;
 	}
 
@@ -6523,6 +7531,80 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
+	/** Serialize QA receipts after the corresponding transcript commit. */
+	#queueRequirementMessageEndPersistence(message: AgentMessage, promptGeneration: number): Promise<void> {
+		const persistence = this.#queueMessageEndPersistence(message, promptGeneration);
+		if (message.role !== "custom" || message.customType !== ASYNC_RESULT_MESSAGE_TYPE) return persistence;
+		const pending = persistence.then(async () => {
+			if (this.#promptGeneration !== promptGeneration) return;
+			await this.#requirementsLedger
+				.consumeAsyncResult(message)
+				.catch(error => logger.warn("Requirements ledger async consume failed", { error }));
+		});
+		this.#messageEndPersistenceTail = pending.catch(() => {});
+		return pending;
+	}
+
+	/** Compose extension revisions with the requirements gate on the actual published text. */
+	#syncAssistantPublicationGate(): void {
+		const runner = this.#extensionRunner;
+		const requirementsGate = this.#agentKind === "main" ? this.#requirementsPublicationGate : undefined;
+		const hasExtensionGate =
+			this.#agentKind === "main" && runner?.hasLoadedHandlers("before_assistant_message") === true;
+		if (!hasExtensionGate && !requirementsGate) {
+			setAssistantPublicationGate(this.agent, undefined);
+			return;
+		}
+		setAssistantPublicationGate(this.agent, async (message, signal) => {
+			let extensionResult: BeforeAssistantMessageEventResult | undefined;
+			if (runner?.hasHandlers("before_assistant_message")) {
+				extensionResult = await runner.emitBeforeAssistantMessage({
+					type: "before_assistant_message",
+					message,
+					signal,
+				});
+				if (
+					extensionResult?.settled === true &&
+					!signal.aborted &&
+					message.stopReason !== "aborted" &&
+					!message.content.some(block => block.type === "toolCall")
+				) {
+					markAssistantPublicationSettled(message);
+				}
+			}
+			if (requirementsGate) {
+				let gatedMessage = message;
+				if (extensionResult?.replacementText !== undefined) {
+					const content: AssistantMessage["content"] = [];
+					const keepProviderThinking = message.content.some(block => block.type === "toolCall");
+					let addedReplacement = false;
+					for (const block of message.content) {
+						if (
+							block.type === "toolCall" ||
+							block.type === "fallback" ||
+							block.type === "anthropicServerTool" ||
+							(keepProviderThinking && (block.type === "thinking" || block.type === "redactedThinking"))
+						) {
+							content.push(block);
+						} else if (extensionResult.replacementText && !addedReplacement) {
+							content.push({ type: "text", text: extensionResult.replacementText });
+							addedReplacement = true;
+						}
+					}
+					if (extensionResult.replacementText && !addedReplacement)
+						content.push({ type: "text", text: extensionResult.replacementText });
+					gatedMessage = { ...message, content };
+				}
+				const requirementsResult = await requirementsGate(gatedMessage, signal);
+				if (requirementsResult !== undefined)
+					return extensionResult?.replacementText === undefined
+						? requirementsResult
+						: { ...requirementsResult, preserveImages: undefined };
+			}
+			return extensionResult;
+		});
+	}
+
 	/**
 	 * Set agent.sessionId from the session manager and install a dynamic
 	 * metadata resolver so every Anthropic API request carries
@@ -6536,6 +7618,33 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	#syncAgentSessionId(sessionId?: string, notifyChange = true): void {
 		const currentSessionId = this.sessionManager.getSessionId();
+		// Non-broker tool processes retain their slice ownership until dispose.
+		// Switching pauses old slice sampling; committed transitions release the
+		// previous transcript's broker daemons independently.
+		for (const [id, lifecycle] of this.#sessionSlices) {
+			if (id === currentSessionId) lifecycle.resume();
+			else lifecycle.release();
+		}
+		if (!this.#isDisposed && !this.#sessionSlices.has(currentSessionId)) {
+			this.#sessionSlices.set(
+				currentSessionId,
+				new SessionSliceLifecycle({
+					sessionId: currentSessionId,
+					isIdleOrWaiting: () => !this.isStreaming || this.agent.state.pendingToolCalls.size > 0,
+					sendNotice: async content => {
+						if (this.#isDisposed || this.sessionManager.getSessionId() !== currentSessionId) return;
+						await this.sendCustomMessage(
+							{ customType: "session-owned-cpu", content, display: false, attribution: "agent" },
+							{ deliverAs: "nextTurn" },
+						);
+					},
+					sendUserLine: line => {
+						if (this.#isDisposed || this.sessionManager.getSessionId() !== currentSessionId) return;
+						this.emitNotice("warning", line, "session-slice");
+					},
+				}),
+			);
+		}
 		if (this.#observedSessionId === undefined) {
 			this.#observedSessionId = currentSessionId;
 		} else if (this.#observedSessionId !== currentSessionId) {
@@ -6649,7 +7758,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * gap slips past the disposal guards.
 	 */
 	beginDispose(): void {
+		this.#flushRestartCheckpoint();
 		this.#isDisposed = true;
+		setAssistantPublicationGate(this.agent, undefined);
 		for (const dispose of this.#disposers.splice(0)) dispose();
 		this.#modelDiscoveryAbortController.abort();
 		this.#queuedMessageDrainBlocked = false;
@@ -6658,6 +7769,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#detachUsageBeforeQueueDequeue = undefined;
 		this.#detachUsageBeforeModelCall?.();
 		this.#detachUsageBeforeModelCall = undefined;
+		this.#detachRestartDrainBeforeModelCall?.();
+		this.#detachRestartDrainBeforeModelCall = undefined;
+		this.#restartDrainLeaseCount = 0;
+		this.#restartDrainGeneration++;
+		this.#restartDrainQuiescence = undefined;
+		this.#restartDrainStoppedRun = false;
+		this.#restartDrainNeedsResume = false;
+		this.#resolveRestartDrainReleaseWaiters("disposed");
 		if (this.agent.prepareQueuedMessages === this.#prepareQueuedUserMessages) {
 			this.agent.prepareQueuedMessages = undefined;
 		}
@@ -6686,8 +7805,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	#disposeCall?: Promise<void>;
 	dispose(options: AgentSessionDisposeOptions = {}): Promise<void> {
-		if (!this.#disposeCall) this.#disposeCall = this.#doDispose(options);
+		if (!this.#disposeCall)
+			this.#disposeCall = withLoopPhase("resource-release.dispose", () => this.#doDispose(options));
 		return this.#disposeCall;
+	}
+
+	/** Release a subagent lane's daemon resources after a bounded drain, without disposing its reusable session. */
+	async releaseTaskResources(): Promise<void> {
+		const sessionId = this.sessionManager.getSessionId();
+		const drain = (async () => {
+			await this.#cancelPostPromptTasks();
+			await this.agent.waitForIdle();
+		})();
+		try {
+			await withTimeout(drain, POST_PROMPT_DRAIN_TIMEOUT_MS, "Timed out draining subagent task resources");
+		} catch (error) {
+			// The timeout does not cancel the turn. Keep its drain owned while the
+			// broker fences the old sockets and stops already-admitted launches.
+			trackLateCleanup(drain, { sessionId, resource: "subagent-task-drain" });
+			logger.warn("Subagent task still draining at resource-release deadline", { sessionId, error: String(error) });
+		}
+		await this.#releaseOwnedDaemonClients(sessionId);
 	}
 
 	async #disposeOwnedAsyncJobs(): Promise<void> {
@@ -6790,6 +7928,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 	}
 
+	async #releaseOwnedDaemonClients(sessionId: string | undefined, preserveServices = false): Promise<void> {
+		if (!sessionId) return;
+		await releaseDaemonClientsForSession(sessionId, preserveServices);
+	}
+
 	async #disconnectOwnedMcp(): Promise<void> {
 		if (!this.#disconnectOwnedMcpManager) return;
 		try {
@@ -6841,8 +7984,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#fallbackExtensionTimers?.clearAll();
 		this.abortRetry();
 		this.abortCompaction();
-		// A process exit cuts a turn still in flight off instead of stopping it:
-		// label it as interrupted so `omp --restore` goes on with it.
+		this.agent.setProviderResponseInterceptor(undefined);
+		this.agent.setRawSseEventInterceptor(undefined);
+		const drainDeadlineAt = Date.now() + POST_PROMPT_DRAIN_TIMEOUT_MS;
 		const abortReason = options.reason === postmortem.Reason.EXIT ? INTERRUPTED_TURN_ERROR : undefined;
 		const postPromptDrain = this.#cancelPostPromptTasks(abortReason);
 		this.agent.abort(abortReason);
@@ -6855,8 +7999,28 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		} catch (error) {
 			logger.warn("Post-prompt tasks still draining at dispose deadline", { error: String(error) });
 		}
-		await this.#drainAutolearnCapture();
-		await this.#memory.transition;
+		// An uncooperative provider acquisition can hold waitForIdle past broker
+		// release. Spend only the remaining drain budget, then retain this same
+		// work in the terminal deferred finalization below.
+		const preReleaseDrain = (async () => {
+			await this.agent.waitForIdle();
+			await this.#drainAutolearnCapture();
+			await this.#memory.transition;
+		})();
+		const preReleaseTimeoutMs = drainDeadlineAt - Date.now();
+		if (preReleaseTimeoutMs > 0) {
+			try {
+				await withTimeout(
+					preReleaseDrain,
+					preReleaseTimeoutMs,
+					"Timed out waiting for the active agent run to settle before broker release during dispose",
+				);
+			} catch (error) {
+				logger.warn("Active agent run still settling before broker release at dispose deadline", {
+					error: String(error),
+				});
+			}
+		}
 
 		const hindsightState = this.getHindsightSessionState();
 		const mnemopiState = setMnemopiSessionState(this, undefined);
@@ -6870,11 +8034,19 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		const advisorRecorderClosed = this.#advisors.recorderClosed();
 		releaseShellSessions(this.sessionManager.getSessionId());
+		const daemonClientsReleased = this.#releaseOwnedDaemonClients(
+			this.sessionManager.getSessionId(),
+			options.preserveServices,
+		);
 		const results = await Promise.allSettled([
+			...Array.from(this.#sessionSlices.values(), lifecycle =>
+				daemonClientsReleased.finally(() => (options.preserveServices ? lifecycle.detach() : lifecycle.stop())),
+			),
 			this.#disposeOwnedAsyncJobs(),
 			this.#eval.disposeKernels(),
 			this.#releaseOwnedBrowserTabs(this.#eval.getKernelOwnerId()),
 			this.#releaseOwnedComputerSessions(this.#eval.getKernelOwnerId()),
+			daemonClientsReleased,
 			this.#disconnectOwnedMcp(),
 			advisorRecorderClosed,
 			hindsightState?.flushRetainQueue() ?? Promise.resolve(),
@@ -6900,27 +8072,34 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// A dispose triggered mid-turn (Ctrl-C / timeout / hard-killed subagent)
 		// only *signals* the agent loop via the earlier abort(); the loop and the
 		// session's fire-and-forget event handlers still unwind asynchronously.
-		// Detach the response/SSE interceptors so a late frame cannot re-record
-		// into rawSseDebugBuffer, then wait (bounded) for both the core run AND
-		// the in-flight event/persistence handlers to settle — the latter can
-		// still append the finished message/entries after agent.waitForIdle()
+		// The response/SSE interceptors are already detached; now wait (bounded)
+		// for both the core run AND the in-flight event/persistence handlers to
+		// settle — the latter can still append the finished message/entries after
+		// agent.waitForIdle()
 		// alone. Without this the release races the unwind and a disposed session
 		// is repopulated with exactly the state we are trying to drop.
-		this.agent.setProviderResponseInterceptor(undefined);
-		this.agent.setRawSseEventInterceptor(undefined);
+		const terminalDrain = (async () => {
+			await postPromptDrain;
+			await preReleaseDrain;
+			await this.agent.waitForIdle();
+			await this.#drainInFlightEventHandlers();
+		})();
 		let drained = false;
-		try {
-			await withTimeout(
-				(async () => {
-					await this.agent.waitForIdle();
-					await this.#drainInFlightEventHandlers();
-				})(),
-				options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS,
-				"Timed out waiting for the active agent run to settle during dispose",
-			);
-			drained = true;
-		} catch (error) {
-			logger.warn("Active agent run still settling at dispose deadline", { error: String(error) });
+		const terminalDrainTimeoutMs = Math.min(
+			options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS,
+			drainDeadlineAt - Date.now(),
+		);
+		if (terminalDrainTimeoutMs > 0) {
+			try {
+				await withTimeout(
+					terminalDrain,
+					terminalDrainTimeoutMs,
+					"Timed out waiting for the active agent run to settle during dispose",
+				);
+				drained = true;
+			} catch (error) {
+				logger.warn("Active agent run still settling at dispose deadline", { error: String(error) });
+			}
 		}
 		// The agent turn can finish before the native shell's delayed KILL wave.
 		// Keep that wave alive through this session's process teardown, including
@@ -6947,8 +8126,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// rewrites at their commit guard; hot-path appends drained above are
 		// already durable, and close() (scheduled post-seal) still flushes and
 		// closes the writer.
-		this.sessionManager.seal();
-		await this.sessionManager.close();
+		withLoopPhase("resource-release.journal-seal", () => this.sessionManager.seal());
+		await withLoopPhase("resource-release.journal-close", () => this.sessionManager.close());
 
 		// Release retained conversation memory. dispose() is terminal, and every
 		// revival path reopens the transcript from disk (AgentLifecycleManager
@@ -6970,21 +8149,47 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// SEALED the session manager (a revival may reopen the same JSONL
 		// through a new manager the moment dispose returns, and this manager
 		// must never race that writer) — so re-run only the in-memory reset,
-		// and lift the account pools, once the pipeline genuinely settles. The
-		// extension runner bounds hook runtime, so this deferred pass is not
-		// unbounded.
+		// and lift the account pools, once the pipeline genuinely settles. Keep
+		// the original drain reachable: a reset or revival is not its completion.
 		if (!drained) {
-			void (async () => {
-				await this.agent.waitForIdle();
-				await this.#drainInFlightEventHandlers();
-				this.#releaseRetainedSessionMemory();
-				this.#accountPoolScope?.release();
-			})().catch(error => logger.warn("Deferred dispose finalization failed", { error: String(error) }));
+			trackLateCleanup(
+				terminalDrain.then(() => {
+					this.#releaseRetainedSessionMemory();
+					this.#accountPoolScope?.release();
+				}),
+				{ sessionId: this.sessionManager.getSessionId(), resource: "dispose-finalization" },
+			);
 		}
+		// Parallel cleanup and socket closure always finish, but a failed broker
+		// release must not turn disposal into a successful completion receipt.
+		await daemonClientsReleased;
+	}
+
+	#restartHandoffSessions: AgentSession[] = [];
+
+	/** Retain local worker journals too: their shutdown hooks can append during root teardown. */
+	beginRestartHandoff(children: readonly AgentSession[] = []): void {
+		this.#restartHandoffSessions = [...new Set([...children, this])];
+		for (const session of this.#restartHandoffSessions) session.sessionManager.beginRestartHandoff();
+	}
+
+	/** Restart must not exec while a timed-out persistence handler is still unwinding. */
+	async finishRestartHandoff(): Promise<void> {
+		const sessions = this.#restartHandoffSessions.length ? this.#restartHandoffSessions : [this];
+		await Promise.all(
+			sessions.map(async session => {
+				await session.#disposeCall;
+				await session.agent.waitForIdle();
+				await session.#drainInFlightEventHandlers();
+			}),
+		);
+		for (const session of sessions) await session.sessionManager.finishRestartHandoff();
+		this.#restartHandoffSessions = [];
 	}
 
 	/** Drop the in-memory conversation state after the terminal dispose flush. */
 	#releaseRetainedSessionMemory(): void {
+		using _phase = launchScope("resource-release.memory");
 		this.#releaseQueuedTtsrReservations();
 		this.agent.reset();
 		this.#tools.releaseRestoredTranscript();
@@ -7007,6 +8212,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	#closeAllProviderSessions(reason: string): void {
+		using _phase = launchScope("resource-release.providers");
 		for (const [providerKey, state] of this.#providerSessionState) {
 			try {
 				state.close();
@@ -7243,6 +8449,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		} catch (error) {
 			if (!signal?.aborted && this.#promptGeneration === generation) {
 				this.#queuedMessageDrainBlocked = this.agent.hasQueuedMessages();
+				if (this.#restoredRestartInputs.size > 0) {
+					this.emitNotice(
+						"warning",
+						"Restored restart inputs could not be delivered. They remain queued; resume or retry to deliver them.",
+						"restart-restore",
+					);
+				}
 			}
 			throw error;
 		}
@@ -7337,8 +8550,485 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		void prewarmModelConnection(model);
 	}
 
+	/** User interruption holds autonomous goal turns until explicit host input. */
+	get goalContinuationInterrupted(): boolean {
+		return this.#goalInterruptedSessionId === this.sessionManager.getSessionId();
+	}
+
+	resumeGoalContinuation(): void {
+		this.#goalInterruptedSessionId = undefined;
+	}
+
 	get isAborting(): boolean {
 		return this.agent.isAborting;
+	}
+
+	/** True while one or more restart callers hold drain leases. */
+	get isRestartDraining(): boolean {
+		return this.#restartDrainLeaseCount > 0;
+	}
+
+	/** Settle when all drain leases release, or report terminal disposal without rejecting. */
+	waitForRestartDrainRelease(): Promise<"released" | "disposed"> {
+		if (this.#isDisposed) return Promise.resolve("disposed");
+		if (!this.isRestartDraining) return Promise.resolve("released");
+		const waiter = Promise.withResolvers<"released" | "disposed">();
+		this.#restartDrainReleaseWaiters.add(waiter.resolve);
+		return waiter.promise;
+	}
+
+	/**
+	 * Close prompt admission and stop this session after its current provider/tool
+	 * batch. Queued input and completed side effects are persisted before the
+	 * lease reports quiescence; other AgentSession instances remain independent.
+	 */
+
+	getRestartPendingInputCount(): number {
+		return this.agent.getPendingModelNewsCount();
+	}
+	async getRestartBranchEntries(): Promise<SessionEntry[]> {
+		return this.sessionManager.getBranchMatching(
+			metadata =>
+				metadata.type === "message" ||
+				(metadata.type === "custom" && metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE),
+		);
+	}
+	async sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void> {
+		const state = isRecord(message.details) ? message.details.state : undefined;
+		if (state !== "completed" && state !== "cancelled" && state !== "failed") {
+			await this.sendCustomMessage(message, { deliverAs: "nextTurn", triggerTurn: false });
+			return;
+		}
+		const requestId = isRecord(message.details) ? message.details.requestId : undefined;
+		const latestNotice =
+			typeof requestId === "string"
+				? selectRestartBranchEntries(
+						this.sessionManager,
+						entry => entry.type === "custom_message" && entry.customType === message.customType,
+					).findLast(
+						entry =>
+							entry.type === "custom_message" &&
+							isRecord(entry.details) &&
+							entry.details.requestId === requestId,
+					)
+				: undefined;
+		if (
+			latestNotice?.type === "custom_message" &&
+			isRecord(latestNotice.details) &&
+			latestNotice.details.state === state
+		) {
+			await this.reconcileRestartNotices();
+			await this.sessionManager.ensureOnDisk();
+			await this.sessionManager.flush();
+			return;
+		}
+		// A text-only steering loop never polls nextTurn/asides. Persist terminal
+		// state now; the provider boundary also covers an already-captured snapshot.
+		this.agent.appendMessage({ ...message, role: "custom", timestamp: Date.now() });
+		this.sessionManager.appendCustomMessageEntry(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+			message.attribution,
+		);
+		await this.reconcileRestartNotices();
+		await this.sessionManager.ensureOnDisk();
+		await this.sessionManager.flush();
+	}
+	async flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void> {
+		this.#flushRestartCheckpoint();
+		await this.sessionManager.ensureOnDisk();
+		await this.sessionManager.flush();
+		if (options?.handoffIndex) await this.sessionManager.writeIndexHandoff();
+	}
+
+	beginRestartDrain(options?: { interruptProvider?: boolean }): RestartDrainLease {
+		if (this.#isDisposed) throw new Error("Cannot drain a disposed session for restart");
+		if (this.#restartDrainLeaseCount === 0) {
+			this.#restartWaitAbort.abort(TOOL_INTERRUPT_ABORT_REASON);
+			this.#restartDrainGeneration++;
+			this.#restartDrainQuiescence = undefined;
+			this.#restartDrainStoppedRun = false;
+			this.#restartDrainNeedsResume = false;
+		}
+		const generation = this.#restartDrainGeneration;
+		const wasRunning = this.isStreaming;
+		this.#restartDrainLeaseCount++;
+		if (options?.interruptProvider !== false && this.agent.abortProviderRequest())
+			this.#restartDrainStoppedRun = true;
+		let released = false;
+		return {
+			wasRunning,
+			waitForQuiescence: () => {
+				if (released) return Promise.reject(new Error("Restart drain lease has already been released"));
+				if (this.#restartDrainQuiescence === undefined) {
+					const attempt = this.#waitForRestartDrainQuiescence(generation);
+					this.#restartDrainQuiescence = attempt;
+					// A rejected wait must not stay cached: the pause error tells the caller to retry on the same lease.
+					attempt.catch(() => {
+						if (this.#restartDrainQuiescence === attempt) this.#restartDrainQuiescence = undefined;
+					});
+				}
+				return this.#restartDrainQuiescence;
+			},
+			release: () => {
+				if (released) return;
+				released = true;
+				if (this.#isDisposed || generation !== this.#restartDrainGeneration) return;
+				if (--this.#restartDrainLeaseCount > 0) return;
+				this.#restartWaitAbort = new AbortController();
+				this.#restartDrainGeneration++;
+				this.#restartDrainQuiescence = undefined;
+				const resume = this.#restartDrainStoppedRun || this.#restartDrainNeedsResume;
+				this.#restartDrainStoppedRun = false;
+				this.#restartDrainNeedsResume = false;
+				if (this.#isDisposed) return;
+				// The restart was cancelled: a checkpoint written during the drain is stale once the
+				// live queues move on, so supersede it with the current state before they do.
+				this.#supersedeRestartCheckpoint();
+				if (resume) {
+					if (!this.#abortInProgress && !this.agent.isAborting && !this.#advisors.autoResumeSuppressed) {
+						if (!agentPauseGate.paused) this.#scheduleAgentContinue({ source: "restart-drain-cancelled" });
+					}
+					this.#resolveRestartDrainReleaseWaiters("released");
+					return;
+				}
+				this.#scheduleIdleQueueDrain();
+				this.#resumeStrandedIrcAsides();
+				this.#resolveRestartDrainReleaseWaiters("released");
+			},
+		};
+	}
+	#resolveRestartDrainReleaseWaiters(outcome: "released" | "disposed"): void {
+		for (const resolve of this.#restartDrainReleaseWaiters) resolve(outcome);
+		this.#restartDrainReleaseWaiters.clear();
+	}
+
+	async #waitForRestartDrainQuiescence(generation: number): Promise<void> {
+		const assertLease = (): void => {
+			if (this.#restartDrainLeaseCount === 0 || generation !== this.#restartDrainGeneration) {
+				throw new Error("Restart drain lease was released before quiescence completed");
+			}
+		};
+		const paused = Promise.withResolvers<never>();
+		const rejectForPause = (): void => {
+			paused.reject(
+				new Error(
+					"Restart drain blocked by the process-wide user pause; resume the existing pause and retry. The drain will not resume it.",
+				),
+			);
+		};
+		const detachPause = agentPauseGate.onChange(isPaused => {
+			if (isPaused && this.isStreaming) rejectForPause();
+		});
+		if (agentPauseGate.paused && this.isStreaming) rejectForPause();
+		try {
+			await Promise.race([
+				(async () => {
+					await this.waitForAdmittedSubmissions();
+					assertLease();
+					await this.waitForIdle();
+					assertLease();
+					await this.#settleRestartDrainEffects(generation);
+					assertLease();
+					await this.waitForIdle();
+					assertLease();
+					await this.#bash.flushPending();
+					this.#eval.flushPending();
+					this.#resumeStrandedIrcAsides();
+					await this.#persistPendingRestartMessages();
+					assertLease();
+					await this.yieldQueue.flush("idle");
+					if (this.yieldQueue.has()) {
+						throw new Error(
+							"Restart drain blocked: a yield receipt remains in memory because it cannot be delivered by the idle flush.",
+						);
+					}
+					await this.waitForIdle();
+					assertLease();
+					await this.#drainInFlightEventHandlers();
+					assertLease();
+					await this.settleInFlightMessagePersistence();
+					assertLease();
+					await this.sessionManager.flush();
+					assertLease();
+				})(),
+				paused.promise,
+			]);
+		} finally {
+			detachPause();
+		}
+	}
+
+	async #settleRestartDrainEffects(generation: number): Promise<void> {
+		const manager = this.#asyncJobManager;
+		if (!manager || !this.#agentId) return;
+		const filter = { ownerId: this.#agentId };
+		for (;;) {
+			if (this.#restartDrainLeaseCount === 0 || generation !== this.#restartDrainGeneration) {
+				throw new Error("Restart drain lease was released before side effects settled");
+			}
+			const effects = manager.getRunningJobs(filter).filter(job => job.type !== "task");
+			if (effects.length > 0) await Promise.all(effects.map(job => job.promise));
+			if (manager.hasPendingDeliveries(filter)) {
+				if (!(await manager.drainDeliveries({ filter }))) {
+					throw new Error("Restart drain blocked: an owner-scoped background-effect receipt did not settle");
+				}
+				continue;
+			}
+			if (manager.getRunningJobs(filter).some(job => job.type !== "task")) continue;
+			return;
+		}
+	}
+
+	#appendRestartCheckpoint(checkpoint: RestartPendingQueues): boolean {
+		const signature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(checkpoint)}`;
+		if (
+			signature === this.#lastRestartPendingQueuesSignature &&
+			this.#lastRestartPendingQueuesEntryId &&
+			this.sessionManager.getEntry(this.#lastRestartPendingQueuesEntryId)
+		)
+			return false;
+		const entryId = this.sessionManager.appendCustomEntry(RESTART_PENDING_QUEUES_CUSTOM_TYPE, checkpoint);
+		this.#lastRestartPendingQueuesSignature = signature;
+		this.#lastRestartPendingQueuesEntryId = entryId;
+		return true;
+	}
+
+	async #persistPendingRestartMessages(): Promise<void> {
+		this.#resumeStrandedIrcAsides();
+		const pendingNextTurn = [...this.#pendingNextTurnMessages];
+		const queues = this.agent.snapshotPendingQueues();
+		const checkpoint: RestartPendingQueues = {
+			...queues,
+			pendingNextTurn,
+		};
+		if (!this.#appendRestartCheckpoint(checkpoint)) return;
+		this.#restartPendingQueuesCheckpointActive = true;
+		if (pendingNextTurn.length > 0 || queues.steering.length > 0 || queues.followUp.length > 0) {
+			this.#restartDrainNeedsResume = true;
+		}
+		await this.sessionManager.ensureOnDisk();
+		if (
+			!this.sessionManager.isSessionOnDisk() &&
+			(queues.steering.length > 0 || queues.followUp.length > 0 || pendingNextTurn.length > 0)
+		) {
+			throw new Error("Restart drain blocked: the pending queue checkpoint is not resumable on disk.");
+		}
+	}
+
+	/** Coalesce live edits for at most five seconds. Restart drains bypass this window.
+	 * Delivery acknowledgements still commit the transcript and remaining queues atomically;
+	 * never checkpoint from the agent's dequeue callback before that commit. */
+	#supersedeRestartCheckpoint(): void {
+		this.#pendingNextTurnMessages = boundHiddenNextTurnMessages(
+			this.#pendingNextTurnMessages,
+			this.#restoredRestartInputs,
+		);
+		if (!this.#restartPendingQueuesCheckpointActive || this.#restartDrainLeaseCount > 0 || this.#isDisposed) return;
+		if (this.#restartCheckpointTimer) return;
+		const sessionId = this.sessionManager.getSessionId();
+		this.#restartCheckpointTimer = setTimeout(() => {
+			this.#restartCheckpointTimer = undefined;
+			if (this.#isDisposed || sessionId !== this.sessionManager.getSessionId()) return;
+			try {
+				this.#writeRestartCheckpoint();
+			} catch (error) {
+				logger.error("Failed to persist restart queue checkpoint", { error: String(error) });
+			}
+		}, 5_000);
+		this.#restartCheckpointTimer.unref();
+	}
+
+	#flushRestartCheckpoint(): void {
+		if (!this.#restartCheckpointTimer) return;
+		clearTimeout(this.#restartCheckpointTimer);
+		this.#restartCheckpointTimer = undefined;
+		this.#writeRestartCheckpoint();
+	}
+
+	#writeRestartCheckpoint(): void {
+		if (!this.#restartPendingQueuesCheckpointActive || this.#restartDrainLeaseCount > 0 || this.#isDisposed) return;
+		const checkpoint: RestartPendingQueues = {
+			...this.agent.snapshotPendingQueues(),
+			pendingNextTurn: [...this.#pendingNextTurnMessages],
+		};
+		this.#appendRestartCheckpoint(checkpoint);
+	}
+
+	async #queueRestartMessage(message: CustomMessage): Promise<void> {
+		this.agent.followUp(message);
+		await this.#persistPendingRestartMessages();
+		await this.sessionManager.flush();
+	}
+
+	/** Shared by the main SDK loop and side requests, after extension transforms. */
+	filterRestartNotices(messages: AgentMessage[]): AgentMessage[] {
+		const entries = selectRestartBranchEntries(
+			this.sessionManager,
+			entry =>
+				(entry.type === "custom" && entry.customType === "restart_request_transition") ||
+				(entry.type === "custom_message" &&
+					(entry.customType === "restart-root-continuation" || entry.customType === "restart-queued")),
+		);
+		const keep = createRestartNoticeFilter(entries);
+		const retained = messages.filter(message => message.role !== "custom" || keep(message));
+		const latest = entries.findLast(entry => entry.type === "custom");
+		const latestRecord = latest?.type === "custom" && isRecord(latest.data) ? latest.data.record : undefined;
+		const terminal = entries.findLast(
+			entry =>
+				entry.type === "custom_message" &&
+				(entry.customType === "restart-root-continuation" ||
+					(entry.customType === "restart-queued" &&
+						isRecord(entry.details) &&
+						["completed", "cancelled", "failed"].includes(String(entry.details.state)))),
+		);
+		if (
+			terminal?.type === "custom_message" &&
+			(!isRecord(latestRecord) ||
+				(isRecord(terminal.details) && terminal.details.requestId === latestRecord.requestId)) &&
+			keep(terminal) &&
+			!retained.some(
+				message =>
+					message.role === "custom" &&
+					message.customType === terminal.customType &&
+					message.content === terminal.content,
+			)
+		) {
+			retained.push({
+				role: "custom",
+				customType: terminal.customType,
+				content: terminal.content,
+				display: terminal.display,
+				details: terminal.details,
+				attribution: terminal.attribution,
+				timestamp: Date.parse(terminal.timestamp),
+			});
+		}
+		return retained;
+	}
+
+	/** Commit the wake to the transcript before acknowledging restart delivery. */
+	async deliverRestartContinuation(requestId: string, content: string): Promise<void> {
+		await this.reconcileRestartNotices();
+		const message: CustomMessage = {
+			role: "custom",
+			customType: "restart-root-continuation",
+			content,
+			display: true,
+			attribution: "agent",
+			details: { requestId, state: "completed" },
+			timestamp: Date.now(),
+		};
+		this.agent.appendMessage(message);
+		this.sessionManager.appendCustomMessageEntry(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+			message.attribution,
+		);
+		await this.sessionManager.ensureOnDisk();
+		await this.sessionManager.flush();
+		await this.reconcileRestartNotices();
+		const generation = this.#sessionGeneration;
+		this.#schedulePostPromptTask(async signal => {
+			await this.agent.waitForIdle();
+			await this.#drainInFlightEventHandlers();
+			if (signal.aborted || this.#isDisposed || generation !== this.#sessionGeneration) return;
+			// An active turn may finish after the append. Keep the durable wake at
+			// the tail so continue() can start even after that turn's assistant reply.
+			this.agent.replaceMessages(
+				this.agent.state.messages.filter(
+					candidate =>
+						candidate.role !== "custom" ||
+						candidate.customType !== message.customType ||
+						candidate.content !== content,
+				),
+			);
+			this.agent.appendMessage(message);
+			this.#scheduleAgentContinue({ source: "restart-root-continuation" });
+		});
+	}
+
+	/** Reconcile already-loaded model state after the restart journal reaches a terminal state. */
+	async reconcileRestartNotices(): Promise<void> {
+		const keepRestartNotice = createRestartNoticeFilter(
+			selectRestartBranchEntries(
+				this.sessionManager,
+				metadata =>
+					(metadata.type === "custom" && metadata.customType === "restart_request_transition") ||
+					(metadata.type === "custom_message" &&
+						(metadata.customType === "restart-root-continuation" || metadata.customType === "restart-queued")),
+			),
+		);
+		const keepMessage = (message: AgentMessage): boolean => message.role !== "custom" || keepRestartNotice(message);
+		const history = this.agent.state.messages;
+		const retainedHistory = history.filter(keepMessage);
+		if (retainedHistory.length !== history.length) this.agent.replaceMessages(retainedHistory);
+		const steering = this.agent.peekSteeringQueue();
+		const followUp = this.agent.peekFollowUpQueue();
+		const retainedSteering = steering.filter(keepMessage);
+		const retainedFollowUp = followUp.filter(keepMessage);
+		const pending = this.#pendingNextTurnMessages;
+		this.#pendingNextTurnMessages = pending.filter(keepRestartNotice);
+		const queuesChanged = retainedSteering.length !== steering.length || retainedFollowUp.length !== followUp.length;
+		if (queuesChanged) this.agent.replaceQueues(retainedSteering, retainedFollowUp);
+		if (queuesChanged || this.#pendingNextTurnMessages.length !== pending.length) {
+			this.#supersedeRestartCheckpoint();
+			this.#flushRestartCheckpoint();
+			await this.sessionManager.flush();
+		}
+	}
+
+	#restorePendingRestartMessages(): void {
+		const latest = selectLatestRestartBranchEntry(
+			this.sessionManager,
+			metadata => metadata.type === "custom" && metadata.customType === RESTART_PENDING_QUEUES_CUSTOM_TYPE,
+		);
+		const branch = latest ? [latest] : [];
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const entry = branch[index];
+			if (entry?.type !== "custom" || entry.customType !== RESTART_PENDING_QUEUES_CUSTOM_TYPE) continue;
+			if (!isRestartPendingQueues(entry.data)) {
+				this.#restartRestoreWarning = `Restart input snapshot ${entry.id} could not be restored: invalid queue data. The snapshot remains in the session journal.`;
+				logger.error("Restart input restore failed", { entryId: entry.id });
+				return;
+			}
+			const keepRestartNotice = createRestartNoticeFilter(
+				selectRestartBranchEntries(
+					this.sessionManager,
+					metadata =>
+						(metadata.type === "custom" && metadata.customType === "restart_request_transition") ||
+						(metadata.type === "custom_message" && metadata.customType === "restart-root-continuation"),
+				),
+			);
+			const keepMessage = (message: AgentMessage): boolean =>
+				message.role !== "custom" || keepRestartNotice(message);
+			this.agent.replaceQueues(entry.data.steering.filter(keepMessage), entry.data.followUp.filter(keepMessage));
+			this.#pendingNextTurnMessages = entry.data.pendingNextTurn.filter(keepRestartNotice);
+			for (const [queue, messages] of [
+				["steering", this.agent.peekSteeringQueue()],
+				["followUp", this.agent.peekFollowUpQueue()],
+				["pendingNextTurn", this.#pendingNextTurnMessages],
+			] as const) {
+				for (const [index, message] of messages.entries()) {
+					this.#restoredRestartInputs.add(message);
+					logger.info("Restored restart input", {
+						entryId: entry.id,
+						queue,
+						index,
+						role: message.role,
+						messageId: restartQueueMessageId(message),
+					});
+				}
+			}
+			this.#lastRestartPendingQueuesSignature = `${this.sessionManager.getSessionId()}:${restartPendingQueuesSignature(entry.data)}`;
+			this.#lastRestartPendingQueuesEntryId = entry.id;
+			this.#restartPendingQueuesCheckpointActive = true;
+			return;
+		}
 	}
 
 	/**
@@ -7443,7 +9133,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const sessionFile = this.sessionManager.getSessionFile();
 		let cached = this.#sessionInit;
 		if (!cached || cached.sessionFile !== sessionFile) {
-			cached = { sessionFile, init: extractSessionInit(this.sessionManager.getEntries()) };
+			cached = {
+				sessionFile,
+				init: extractSessionInit(
+					this.sessionManager.getBranchMatching(metadata => metadata.type === "session_init"),
+				),
+			};
 			this.#sessionInit = cached;
 		}
 		const { init } = cached;
@@ -7488,6 +9183,16 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Names of dynamic tools mounted under `xd://`. */
 	getMountedXdevToolNames(): string[] {
 		return this.#tools.getMountedXdevToolNames();
+	}
+
+	/** True when `write` is only the agent:// reply transport of a read-only agent. */
+	get isAgentOnlyWrite(): boolean {
+		return this.#tools.isAgentOnlyWrite;
+	}
+
+	/** True when `write` is currently transport-only (xd:// devices / agent:// reply). */
+	get isDeviceOnlyWrite(): boolean {
+		return this.#tools.isDeviceOnlyWrite;
 	}
 
 	/** Whether the edit tool is registered in this session. */
@@ -7741,6 +9446,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#tools.refreshBaseSystemPrompt(commitIf);
 	}
 
+	executePeerSlashCommand(text: string): Promise<PeerCommandReceipt | null> {
+		return executePeerSlashCommand(this, text);
+	}
+
+	/** Actual owned-runtime reload, never a command-metadata refresh or global lookup. */
+	reloadMCPRuntime(): Promise<MCPLoadResult> {
+		if (this.isDisposed) throw new Error("Cannot reload MCP on a disposed session");
+		if (this.isStreaming || this.isBashRunning || this.isEvalRunning)
+			throw new Error("MCP reload requires an idle session");
+		if (!this.#reloadOwnedMcpManager) throw new Error("This session does not own an MCP runtime");
+		if (this.#mcpReloadInFlight) return this.#mcpReloadInFlight;
+		const pending = this.#reloadOwnedMcpManager();
+		this.#mcpReloadInFlight = pending;
+		void pending
+			.finally(() => {
+				if (this.#mcpReloadInFlight === pending) this.#mcpReloadInFlight = undefined;
+			})
+			.catch(() => {});
+		return pending;
+	}
+
 	/** Replaces connected MCP tools, enabling new names without changing existing selections. */
 	refreshMCPTools(mcpTools: CustomTool[]): Promise<void> {
 		return this.#tools.refreshMCPTools(mcpTools);
@@ -7965,9 +9691,20 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	#buildEvalStateContextMessage(messages: AgentMessage[]): CustomMessage | undefined {
 		const session = this.#evalToolSession;
 		if (!session) return undefined;
-		const historyHasEval = this.sessionManager
-			.getBranch()
-			.some(entry => entry.type === "message" && isEvalActivity(entry.message));
+		let historyHasEval = false;
+		for (const entry of this.sessionManager.getContextBranch()) {
+			if (entry.type !== "message") continue;
+			const message = entry.message;
+			if (
+				message.role === "pythonExecution" ||
+				(message.role === "toolResult" && message.toolName === "eval") ||
+				(message.role === "assistant" &&
+					message.content.some(block => block.type === "toolCall" && block.name === "eval"))
+			) {
+				historyHasEval = true;
+				break;
+			}
+		}
 		const content = formatEvalStateContext(session, { historyHasEval });
 		if (!content) return undefined;
 		for (let index = messages.length - 1; index >= 0; index--) {
@@ -8016,6 +9753,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 	#convertToLlmForSideRequest(messages: AgentMessage[]): Message[] {
 		return this.#providerBoundary.convertToLlmForSideRequest(messages);
+	}
+
+	/** Prepare a send-only copy; tool execution and persisted history retain the original arguments. */
+	prepareToolHistoryForProvider(messages: AgentMessage[]): AgentMessage[] {
+		return this.#recovery.shrinkWholeToolHistory ? shrinkOversizedToolHistory(messages, true) : messages;
 	}
 
 	/**
@@ -8266,35 +10008,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	#rehydrateCheckpointRewindState(): void {
 		this.#clearCheckpointRuntimeState();
-		let completed: CompletedRewindState | undefined;
-		let pending: { entryId: string; startedAt: string; messageCount: number } | undefined;
-		let messageCount = 0;
-		for (const entry of this.sessionManager.getBranch()) {
-			if (entry.type === "message") messageCount++;
-			if (isSuccessfulCheckpointEntry(entry)) {
-				completed = undefined;
-				pending = {
-					entryId: entry.id,
-					startedAt: checkpointStartedAtFromEntry(entry) ?? entry.timestamp,
-					messageCount,
-				};
-				continue;
-			}
-			const completedFromEntry = completedRewindFromEntry(entry);
-			if (completedFromEntry) {
-				completed = completedFromEntry;
-				pending = undefined;
-			}
-		}
-		if (pending) {
-			this.#checkpointState = {
-				checkpointEntryId: pending.entryId,
-				startedAt: pending.startedAt,
-				checkpointMessageCount: pending.messageCount,
-			};
-			return;
-		}
-		this.#lastCompletedRewind = completed;
+		const state = readCheckpointRewindState(this.sessionManager);
+		this.#checkpointState = state.checkpoint;
+		this.#lastCompletedRewind = state.completed;
 	}
 
 	getCheckpointState(): CheckpointState | undefined {
@@ -8532,10 +10248,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const canCallTodoTool = this.getActiveToolNames().includes("todo");
 		if (!canCallTodoTool) return undefined;
 		const phases = this.getTodoPhases().filter(phase => phase.tasks.length > 0);
-		if (phases.length === 0) return undefined;
+		const archiveSummary = getTodoArchiveSummaryFromEntries(
+			selectBranchEntries(this.sessionManager, isTodoSelectionEntryMetadata),
+		);
+		if (phases.length === 0 && !archiveSummary) return undefined;
 
-		let total = 0;
-		let closed = 0;
+		let total = archiveSummary?.count ?? 0;
+		let closed = archiveSummary?.count ?? 0;
 		let open = 0;
 		const promptPhases = phases.map(phase => ({
 			name: this.#sanitizeGoalTodoText(phase.name),
@@ -8549,11 +10268,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				return { content: this.#sanitizeGoalTodoText(task.content), status: task.status };
 			}),
 		}));
+		const archiveSummaryLine = archiveSummary ? `\n${formatTodoArchiveSummary(archiveSummary)}` : "";
 
 		return prompt.render(goalTodoContextPrompt, {
 			canCallTodoTool,
 			closed: String(closed),
-			open: String(open),
+			open: `${open}${archiveSummaryLine}`,
 			phases: promptPhases,
 			total: String(total),
 		});
@@ -8681,7 +10401,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * {@link PromptDroppedError} instead.
 	 */
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
-		return this.#admitSubmission(() => this.#prompt(text, options));
+		return this.#admitSubmission(
+			async () => {
+				if (this.#restartDrainLeaseCount > 0) {
+					// Admission is acknowledged as soon as the message is queued, before the
+					// checkpoint persistence below. Registered extension commands are rejected by
+					// followUp() with "cannot be queued": they have no deferred form, so a drain
+					// refuses them rather than replaying them after the restart.
+					await this.followUp(text, options?.images, {
+						onPromptAdmitted: options?.onPromptAdmitted,
+						attribution: options?.attribution,
+						expandPromptTemplates: options?.expandPromptTemplates,
+						synthetic: options?.synthetic,
+					});
+					await this.#persistPendingRestartMessages();
+					await this.sessionManager.flush();
+					return true;
+				}
+				return this.#prompt(text, options);
+			},
+			{ allowDuringRestartDrain: true },
+		);
 	}
 
 	/**
@@ -8765,6 +10505,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	async #prompt(text: string, options?: PromptOptions): Promise<boolean> {
+		options = { ...options, rawRequirementText: options?.rawRequirementText ?? currentRequirementInput() };
 		// Stamp the operator's submission instant before ANY async preprocessing —
 		// command execution, image normalization, vision-model description — so the
 		// prompt→yield delta includes the whole wait, whatever path the prompt takes.
@@ -8837,7 +10578,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// Handle extension commands first (execute immediately, even during streaming)
 		if (expandPromptTemplates && text.startsWith("/")) {
 			if (options?.runCommands !== false) {
-				const command = await this.#tryExecuteExtensionCommand(text, options?.onPromptAdmitted);
+				const command = await this.#tryExecuteExtensionCommand(
+					text,
+					options?.onPromptAdmitted,
+					options?.throwOnCommandError,
+				);
 				if (command) {
 					// Queued only now, so whatever the command sent runs before them. A failed
 					// command hands them back with itself instead of letting them run without it.
@@ -8847,7 +10592,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				}
 
 				// Try custom commands (TypeScript slash commands)
-				const customResult = await this.#tryExecuteCustomCommand(text);
+				const customResult = await this.#tryExecuteCustomCommand(text, options?.throwOnCommandError);
 				if (customResult !== null) {
 					if (customResult === "") {
 						followUps?.release();
@@ -8903,7 +10648,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				timestamp: submittedAt,
 				attribution: promptAttribution,
 				prependMessages: prependNotices,
-				rawText: typedText,
+				rawText: options?.rawRequirementText ?? typedText,
 				onPromptQueued: options?.onPromptQueued,
 				onPromptAdmitted: onPromptQueuedAdmitted,
 				promptGeneration: queueGeneration,
@@ -8940,11 +10685,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (normalizedImages?.length) {
 			userContent.push(...normalizedImages);
 		}
-		// Text-only model + image attachment: describe via a vision model and inject the
-		// description as a hidden companion (the image stays in the visible user message).
-		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
-			: undefined;
 
 		// abort() bumps #promptGeneration and can land while normalization and the
 		// vision-description call above are still in flight. #promptWithMessage below
@@ -8977,10 +10717,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				timestamp: submittedAt,
 				attribution: promptAttribution,
 				prependMessages: prependNotices,
-				rawText: typedText,
+				rawText: options?.rawRequirementText ?? typedText,
 				preprocessed: {
 					images: normalizedImages,
-					descriptionNotice: imageDescriptionNotice,
 				},
 				onPromptAdmitted: onPromptQueuedAdmitted,
 				onPromptQueued: options?.onPromptQueued,
@@ -9037,18 +10776,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			dispatched = await this.#promptWithMessage(message, expandedText, {
 				...options,
 				followUpBatch: followUps,
+				rawRequirementText: options?.rawRequirementText ?? typedText,
 				images: normalizedImages,
 				prependMessages:
-					preludeMessages.length > 0 ||
-					keywordNotices.length > 0 ||
-					attachmentSourceNotices.length > 0 ||
-					imageDescriptionNotice
-						? [
-								...preludeMessages,
-								...keywordNotices,
-								...attachmentSourceNotices,
-								...(imageDescriptionNotice ? [imageDescriptionNotice] : []),
-							]
+					preludeMessages.length > 0 || keywordNotices.length > 0 || attachmentSourceNotices.length > 0
+						? [...preludeMessages, ...keywordNotices, ...attachmentSourceNotices]
 						: undefined,
 			});
 		} catch (error) {
@@ -9093,7 +10825,21 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			onPromptQueued?: PromptOptions["onPromptQueued"];
 		},
 	): Promise<boolean> {
-		return this.#admitSubmission(() => this.#promptCustomMessage(message, options));
+		return this.#admitSubmission(
+			async () => {
+				if (this.#restartDrainLeaseCount > 0) {
+					const normalized = await this.#normalizeAgentMessageImages({
+						role: "custom",
+						...message,
+						timestamp: Date.now(),
+					});
+					await this.#queueRestartMessage(normalized);
+					return true;
+				}
+				return this.#promptCustomMessage(message, options);
+			},
+			{ allowDuringRestartDrain: true },
+		);
 	}
 
 	async #promptCustomMessage<T = unknown>(
@@ -9423,6 +11169,28 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			};
 			if (!overrideIsCurrent()) continue;
 			const messages: AgentMessage[] = [];
+			if (basePreparation.startupContext) {
+				messages.push({
+					role: "custom",
+					customType: "startup-context",
+					content: basePreparation.startupContext.content,
+					details: basePreparation.startupContext.details,
+					display: false,
+					attribution: "agent",
+					timestamp: Date.now(),
+				});
+			}
+			if (basePreparation.memoryContext) {
+				messages.push({
+					role: "custom",
+					customType: "memory-context",
+					content: basePreparation.memoryContext.content,
+					details: basePreparation.memoryContext.details,
+					display: false,
+					attribution: "agent",
+					timestamp: Date.now(),
+				});
+			}
 			if (basePreparation.memoryNotice) {
 				messages.push({
 					role: "custom",
@@ -9489,7 +11257,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			PromptOptions,
 			"toolChoice" | "images" | "skipCompactionCheck" | "solutionSpace" | "onPromptAdmitted"
 		> & {
+			rawRequirementText?: string;
 			prependMessages?: AgentMessage[];
+			consumeNextTurnMessages?: CustomMessage[];
 			skipPostPromptRecoveryWait?: boolean;
 			acceptTerminalEmptyStop?: boolean;
 			/** Follow-ups held until this run goes live; queued behind it then. */
@@ -9500,6 +11270,19 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// every pre-dispatch bail (generation bump from abort, disposal, usage
 		// preflight denial) exits silently, and prompt() uses the outcome to hand
 		// the typed text back to the host instead of losing it.
+		if (this.refreshModelSelection) {
+			const modelSelectionGeneration = this.#promptGeneration;
+			await this.refreshModelSelection();
+			if (modelSelectionGeneration !== this.#promptGeneration || this.#isDisposed) return false;
+		}
+		const descriptionGeneration = this.#promptGeneration;
+		const imageDescriptionNotice = options?.images?.length
+			? await this.#buildImageDescriptionNotice(options.images)
+			: undefined;
+		if (descriptionGeneration !== this.#promptGeneration || this.#isDisposed) return false;
+		if (imageDescriptionNotice) {
+			options = { ...options, prependMessages: [...(options?.prependMessages ?? []), imageDescriptionNotice] };
+		}
 		const inFlightEpoch = this.#beginInFlight();
 		// Client ownership is reserved by #prompt before dispatch preprocessing
 		// and released when its bracket settles; callers that reach this
@@ -9509,8 +11292,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#promptSequence++;
 		const setupAbort = new AbortController();
 		this.#promptSetupAbortController = setupAbort;
+		let pendingNextTurnDelivery: PendingNextTurnDelivery | undefined;
 		try {
-			options?.onPromptAdmitted?.();
 			await this.#recovery.maybeRestoreRetryFallbackPrimary();
 			// Auto-prewalk: return from the previous task's handoff before the usage preflight checks the model,
 			// then judge this task alongside the rest of setup; the decision is applied right before dispatch.
@@ -9535,6 +11318,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#resetPromptMaintenanceState();
 			this.#recovery.setAcceptTerminalEmptyStop(options?.acceptTerminalEmptyStop === true);
 
+			// A cold discovery outage has no model metadata yet; recovery waits without inventing one.
+			if (!this.model) await this.#recovery.awaitProviderAvailability(setupAbort.signal);
 			// Validate model
 			const model = this.model;
 			if (!model) {
@@ -9605,12 +11390,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// promotion/summary can rebuild the base prompt and clear a roster delta
 			// it subsumes, avoiding a contradictory materialized notice.
 			const xdevMountNoticeIndex = messages.length;
+			// Keep restored hidden inputs reserved until their last message commits with
+			// the updated checkpoint.
+			const pendingNextTurnMessages = this.#reservePendingNextTurnMessages(options?.consumeNextTurnMessages);
+			pendingNextTurnDelivery = this.#registerPendingNextTurnDelivery(pendingNextTurnMessages, generation);
 			messages.push(message);
-			// Inject any pending "nextTurn" messages as context alongside the user message
-			for (const msg of this.#pendingNextTurnMessages) {
+			for (const msg of pendingNextTurnMessages.slice(options?.consumeNextTurnMessages?.length ?? 0)) {
 				messages.push(msg);
 			}
-			this.#pendingNextTurnMessages = [];
 
 			// Auto-read @filepath mentions
 			const fileMentions = extractFileMentions(expandedText);
@@ -9735,6 +11522,17 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 
 			const agentPromptOptions = options?.toolChoice ? { toolChoice: options.toolChoice } : undefined;
+			let preparedCandidate: PreparedRequirementCandidate | undefined;
+			if (
+				message.role === "user" &&
+				message.attribution === "user" &&
+				!this.#queuedMessageRawText.has(message) &&
+				this.getActiveToolNames().includes("todo")
+			) {
+				const rawText = options?.rawRequirementText ?? this.#queuedMessageRawText.get(message) ?? expandedText;
+				preparedCandidate = await this.#requirementsLedger.prepareCandidate(rawText, options?.images);
+				if (this.#promptGeneration !== generation) return false;
+			}
 			const nonMessageTokens = computeNonMessageTokens(this, this.agent.tokenizer, this.settings.revision);
 			const contextWindow = this.model?.contextWindow ?? 0;
 			const breakdown = this.getContextBreakdown({ contextWindow, pendingMessages: messages });
@@ -9760,16 +11558,27 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				this.#planReferenceSent = true;
 			}
 			try {
-				const run = this.#recovery.promptAgentWithIdleRetry(messages, agentPromptOptions, () => {
-					// `agent.prompt` claims streaming synchronously before its
-					// first await: this callback fires exactly when THIS
-					// client-owned run goes live (never on a busy-retry that
-					// waits behind an autonomous run) — wake steers parked on
-					// the dispatch so they admit into the run they targeted.
-					this.#wakeDispatchLiveWaiters();
-					options?.followUpBatch?.release();
-				});
-				await run;
+				await this.#recovery.promptAgentWithIdleRetry(
+					messages,
+					agentPromptOptions,
+					() => {
+						this.#wakeDispatchLiveWaiters();
+						options?.followUpBatch?.release();
+					},
+					() => {
+						if (preparedCandidate) {
+							const commit = this.#requirementsLedger.commitCandidate(preparedCandidate);
+							if (!commit.committed)
+								throw new Error("Requirement candidate session changed during prompt admission");
+							this.#announceCandidateCommit(commit);
+						}
+						try {
+							options?.onPromptAdmitted?.();
+						} catch (error) {
+							logger.warn("Prompt admission callback failed after dispatch", { error });
+						}
+					},
+				);
 			} finally {
 				this.#stats.setPendingSnapshot(undefined);
 			}
@@ -9779,6 +11588,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			return true;
 		} finally {
 			// The per-turn before_agent_start override lives only for this turn.
+			if (pendingNextTurnDelivery && !pendingNextTurnDelivery.inputMessageSeen) {
+				this.#settlePendingNextTurnDelivery(pendingNextTurnDelivery, false);
+			}
 			this.#tools.clearTurnSystemPromptOverride();
 			this.#usagePreflightReadyForNextModelCall = false;
 			// Client ownership is released by #prompt's bracket, which settles
@@ -9793,7 +11605,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Try to execute an extension command: undefined when no command matches, else whether its handler ran or threw.
 	 * `onRouted` fires once the command is found, before its handler runs.
 	 */
-	async #tryExecuteExtensionCommand(text: string, onRouted?: () => void): Promise<"ran" | "failed" | undefined> {
+	async #tryExecuteExtensionCommand(
+		text: string,
+		onRouted?: () => void,
+		throwOnError = false,
+	): Promise<"ran" | "failed" | undefined> {
 		if (!this.#extensionRunner) return undefined;
 
 		// Parse command name and args
@@ -9818,6 +11634,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				event: "command",
 				error: err instanceof Error ? err.message : String(err),
 			});
+			if (throwOnError) throw err;
 			return "failed";
 		}
 	}
@@ -9857,7 +11674,20 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			getPendingPlanReview: () => undefined,
 			openPlanReview: async () => false,
 			getContextUsage: () => this.getContextUsage(),
+			getTaskMaxConcurrency: () => cfgTaskMaxConcurrency.get(this.settings),
 			getAsyncJobSnapshot: () => this.getAsyncJobSnapshot(),
+			sendAgentMessage: (to, message) =>
+				sendAgentMessageFromSession(
+					{
+						agentRegistry: this.#agentRegistry,
+						settings: this.settings,
+						taskDepth: 0,
+						getAgentId: () => this.getAgentId(),
+						getSessionFile: () => this.sessionManager.getSessionFile(),
+					},
+					to,
+					message,
+				),
 			waitForIdle: () => this.waitForIdle(),
 			newSession: async options => {
 				const success = await this.newSession({ parentSession: options?.parentSession });
@@ -9913,7 +11743,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Try to execute a custom command. Returns the prompt string if found, null otherwise.
 	 * If the command returns void, returns empty string to indicate it was handled.
 	 */
-	async #tryExecuteCustomCommand(text: string): Promise<string | null> {
+	async #tryExecuteCustomCommand(text: string, throwOnError = false): Promise<string | null> {
 		if (this.#customCommands.length === 0 && this.#mcpPromptCommands.length === 0) return null;
 
 		// Parse command name and args
@@ -9954,6 +11784,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				const message = err instanceof Error ? err.message : String(err);
 				logger.error("Custom command failed", { commandName, error: message });
 			}
+			if (throwOnError) throw err;
 			return ""; // Command was handled (with error)
 		}
 	}
@@ -9967,13 +11798,25 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 
 		const expandedText = expandPromptTemplate(text, [...this.#promptTemplates]);
+		if (options?.passive) {
+			await this.sendCustomMessage(
+				{
+					customType: "session-notice",
+					content: images?.length ? [{ type: "text", text: expandedText }, ...images] : expandedText,
+					display: false,
+					attribution: options.attribution ?? "agent",
+				},
+				{ deliverAs: "aside", triggerTurn: false },
+			);
+			return;
+		}
 		// Stamp before image preprocessing so a queued image steer measures from
 		// the operator's submission, not after the vision-model description.
 		const submittedAt = Date.now();
 		await this.#queueUserMessage(expandedText, images, "steer", {
 			timestamp: submittedAt,
 			attribution: options?.attribution,
-			rawText: text,
+			rawText: options?.rawRequirementText ?? text,
 			onPromptQueued: options?.onPromptQueued,
 		});
 	}
@@ -9996,11 +11839,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// from the operator's submission, not after the vision-model description.
 		const submittedAt = Date.now();
 		if (!options?.synthetic) {
+			text = options?.rawRequirementText ?? currentRequirementInput() ?? text;
 			await this.#queueUserMessage(expandedText, images, "followUp", {
 				timestamp: submittedAt,
 				attribution: options?.attribution,
 				rawText: text,
 				onPromptQueued: options?.onPromptQueued,
+				onPromptAdmitted: options?.onPromptAdmitted,
 			});
 			return;
 		}
@@ -10030,6 +11875,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		};
 		this.agent.followUp(directive);
 		options.onPromptQueued?.(imageDescriptionNotice ? [imageDescriptionNotice, directive] : [directive]);
+		options.onPromptAdmitted?.();
 		this.#scheduleIdleQueueDrain();
 	}
 
@@ -10219,9 +12065,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// branch) until the next deliberate steer/follow-up/prompt, matching the
 		// sendCustomMessage aside path (queueAside), which never touches this flag.
 		if (mode !== "aside") this.#advisors.autoResumeSuppressed = false;
-		// The pre-dispatch re-check in prompt() arrives with normalization and the
-		// vision description already done — reuse them instead of paying a second
-		// vision-model request for the same attachment.
+		// The pre-dispatch re-check in prompt() arrives with normalization done.
+		// Reuse it and describe the images if the caller has not done so yet.
 		const attachmentSourceNotices = this.#createAttachmentSourceNotices(images, timestamp ?? Date.now());
 		const normalizedImages = preprocessed ? preprocessed.images : await this.#normalizeImagesForModel(images);
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
@@ -10230,14 +12075,22 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		// Text-only model + image attachment: describe via a vision model and enqueue the
 		// description as a hidden companion immediately before the user message.
-		const imageDescriptionNotice = preprocessed
-			? preprocessed.descriptionNotice
-			: normalizedImages?.length
-				? await this.#buildImageDescriptionNotice(normalizedImages)
-				: undefined;
+		const imageDescriptionNotice =
+			preprocessed?.descriptionNotice ??
+			(normalizedImages?.length ? await this.#buildImageDescriptionNotice(normalizedImages) : undefined);
 		if (options?.promptGeneration !== undefined && this.#promptGeneration !== options.promptGeneration) {
 			return false;
 		}
+		let preparedCandidate: PreparedRequirementCandidate | undefined;
+		if (attribution === "user" && this.getActiveToolNames().includes("todo")) {
+			preparedCandidate = await this.#requirementsLedger.prepareCandidate(rawText, images);
+		}
+		if (
+			(options?.promptGeneration !== undefined && this.#promptGeneration !== options.promptGeneration) ||
+			(await this.#sessionGenerationChanged(sessionGeneration))
+		)
+			return false;
+		if (options?.promptGeneration !== undefined && this.#promptGeneration !== options.promptGeneration) return false;
 		// `joinActiveTurn` admission: after every await above, the run that was
 		// live at call time may have settled — or `abort()` may have started
 		// (its `#abortInProgress` flag is raised synchronously at entry, while
@@ -10254,15 +12107,25 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		) {
 			return false;
 		}
+		const candidateCommit = preparedCandidate
+			? this.#requirementsLedger.commitCandidate(preparedCandidate)
+			: undefined;
+		if (preparedCandidate && !candidateCommit?.committed) return false;
 		if (mode === "aside") {
-			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
 			const records: AgentMessage[] = [...prependMessages, ...attachmentSourceNotices];
 			if (imageDescriptionNotice) records.push(imageDescriptionNotice);
 			const userMessage: AgentMessage = { role: "user", content, attribution, timestamp: timestamp ?? Date.now() };
 			this.#queuedMessageRawText.set(userMessage, rawText);
+			if (preparedCandidate && candidateCommit?.candidateIds?.length) {
+				this.#queuedRequirementCandidates.set(userMessage, {
+					sessionId: preparedCandidate.sessionId,
+					ids: candidateCommit.candidateIds,
+				});
+			}
 			records.push(userMessage);
 			this.#irc.queueAside(records);
 			options?.onPromptAdmitted?.();
+			this.#announceCandidateCommit(candidateCommit);
 			// The awaits above (image normalization / vision description) can span the run's
 			// settle, so the run may already be idle by the time the record lands in the aside
 			// queue with no loop left to drain it. Resuming here is a no-op while streaming and
@@ -10280,8 +12143,15 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			timestamp ?? Date.now(),
 			rawText,
 		);
+		if (preparedCandidate && candidateCommit?.candidateIds?.length) {
+			this.#queuedRequirementCandidates.set(queued[queued.length - 1], {
+				sessionId: preparedCandidate.sessionId,
+				ids: candidateCommit.candidateIds,
+			});
+		}
 		options?.onPromptQueued?.(queued);
 		options?.onPromptAdmitted?.();
+		this.#announceCandidateCommit(candidateCommit);
 		// joinActiveTurn admission must never start an autonomous turn: the
 		// live run owns delivery, and an idle queue stays put until the host
 		// decides what to do with its content.
@@ -10515,8 +12385,52 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	#scheduleQueuedMessageDrain(): void {
+		if (this.#restoredRestartInputs.size > 0) {
+			// Startup must publish the successor's continuation before saved input
+			// can start a provider call, including while interactive init awaits I/O.
+			const latest = selectLatestRestartBranchEntry(
+				this.sessionManager,
+				entry => entry.type === "custom" && entry.customType === "restart_request_transition",
+			);
+			const record = latest?.type === "custom" && isRecord(latest.data) ? latest.data.record : undefined;
+			if (isRecord(record) && (record.state === "checkpointed" || record.state === "restarting")) return;
+			if (isRecord(record) && record.state === "completed") {
+				const continuation = selectLatestRestartBranchEntry(
+					this.sessionManager,
+					entry => entry.type === "custom_message" && entry.customType === "restart-root-continuation",
+				);
+				if (
+					continuation?.type !== "custom_message" ||
+					!isRecord(continuation.details) ||
+					continuation.details.requestId !== record.requestId
+				)
+					return;
+			}
+		}
+		if (!this.isRestartDraining && !this.isStreaming && this.#restoredRestartInputs.size > 0) {
+			// A restored input is a new turn, even if restart status left a custom
+			// transcript tail. Put the saved queues ahead of newly arriving work;
+			// steering is polled before the first provider request on every tail.
+			const restored = (message: AgentMessage) => this.#restoredRestartInputs.has(message);
+			const pending = this.#pendingNextTurnMessages.filter(restored);
+			const followUp = this.agent.peekFollowUpQueue();
+			const savedFollowUp = followUp.filter(restored);
+			this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(message => !restored(message));
+			if (savedFollowUp.length > 0 || pending.length > 0) {
+				this.agent.replaceQueues(
+					[
+						...this.agent.peekSteeringQueue().filter(restored),
+						...savedFollowUp,
+						...pending,
+						...this.agent.peekSteeringQueue().filter(message => !restored(message)),
+					],
+					followUp.filter(message => !restored(message)),
+				);
+			}
+		}
 		if (
 			this.#queuedMessageDrainScheduled ||
+			this.#restartDrainLeaseCount > 0 ||
 			this.#modeExitDrainSuppressionDepth > 0 ||
 			this.#queuedMessageDrainBlocked ||
 			!this.#canAutoContinueForFollowUp() ||
@@ -10530,6 +12444,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			shouldContinue: () => {
 				this.#queuedMessageDrainScheduled = false;
 				return (
+					this.#restartDrainLeaseCount === 0 &&
 					this.#modeExitDrainSuppressionDepth === 0 &&
 					this.#canAutoContinueForFollowUp() &&
 					this.agent.hasQueuedMessages()
@@ -10541,6 +12456,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			onError: () => {
 				this.#queuedMessageDrainScheduled = false;
 				this.#queuedMessageDrainBlocked = this.agent.hasQueuedMessages();
+				if (this.#restoredRestartInputs.size > 0) {
+					this.emitNotice(
+						"warning",
+						"Restored restart inputs could not be delivered. They remain queued; resume or retry to deliver them.",
+						"restart-restore",
+					);
+				}
 			},
 		});
 	}
@@ -10549,7 +12471,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Gate for idle-path queued-message auto-continue (see `#scheduleQueuedMessageDrain`).
 	 */
 	#canAutoContinueForFollowUp(): boolean {
-		if (this.isRetrying) return false;
+		if (this.#isDisposed || this.isRetrying) return false;
 		// An ACP client that defers agent-initiated turns owns turn
 		// lifecycle, and a queued steer/follow-up may only resume while a
 		// CLIENT prompt owns the turn: `#clientPromptInFlightCount` covers
@@ -10591,6 +12513,20 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return last?.role === "assistant" || last?.role === "toolResult";
 	}
 
+	/** A caller-provided key also identifies legacy custom messages by customType. */
+	#supersedePendingCustomMessages(key: string): void {
+		const keep = (message: AgentMessage): boolean =>
+			message.role !== "custom" ||
+			isUserAuthoredMessage(message) ||
+			(customMessageSupersedes(message) ?? message.customType) !== key;
+		this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(keep);
+		for (const queue of ["steering", "followUp"] as const) {
+			const pending = queue === "steering" ? this.agent.peekSteeringQueue() : this.agent.peekFollowUpQueue();
+			const retained = pending.filter(keep);
+			if (retained.length !== pending.length) this.agent.replaceQueue(queue, retained);
+		}
+	}
+
 	queueDeferredMessage(message: CustomMessage): void {
 		this.#queueHiddenNextTurnMessage(message, true);
 	}
@@ -10606,7 +12542,16 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	}
 
 	#queueHiddenNextTurnMessage(message: CustomMessage, triggerTurn: boolean): void {
+		// A snapshot (`details.supersedesQueued`) replaces its queued predecessors of the same customType:
+		// next-turn messages wait for the next prompt, and stale copies of a regenerated notice or runbook
+		// piled up across compactions and restarts.
+		if (isSupersedingNextTurn(message)) {
+			this.#pendingNextTurnMessages = this.#pendingNextTurnMessages.filter(
+				queued => !(isSupersedingNextTurn(queued) && queued.customType === message.customType),
+			);
+		}
 		this.#pendingNextTurnMessages.push(message);
+		this.#supersedeRestartCheckpoint();
 		if (!triggerTurn) return;
 		const generation = this.#promptGeneration;
 		if (this.#scheduledHiddenNextTurnGeneration === generation) {
@@ -10615,6 +12560,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#scheduledHiddenNextTurnGeneration = generation;
 		this.#schedulePostPromptTask(
 			async () => {
+				if (this.#restartDrainLeaseCount > 0) {
+					if (this.#scheduledHiddenNextTurnGeneration === generation) {
+						this.#scheduledHiddenNextTurnGeneration = undefined;
+					}
+					this.#restartDrainNeedsResume = true;
+					return;
+				}
 				if (this.#scheduledHiddenNextTurnGeneration === generation) {
 					this.#scheduledHiddenNextTurnGeneration = undefined;
 				}
@@ -10644,7 +12596,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 
 		const queuedMessages = [...this.#pendingNextTurnMessages];
-		this.#pendingNextTurnMessages = [];
 		const message = queuedMessages[queuedMessages.length - 1];
 		if (!message) {
 			return;
@@ -10652,15 +12603,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 		const prependMessages = queuedMessages.slice(0, -1);
 		const textContent = this.#getCustomMessageTextContent(message);
-		try {
-			await this.#promptWithMessage(message, textContent, {
-				prependMessages,
-				skipPostPromptRecoveryWait: true,
-			});
-		} catch (error) {
-			this.#pendingNextTurnMessages = [...queuedMessages, ...this.#pendingNextTurnMessages];
-			throw error;
-		}
+		await this.#promptWithMessage(message, textContent, {
+			prependMessages,
+			consumeNextTurnMessages: queuedMessages,
+			skipPostPromptRecoveryWait: true,
+		});
 	}
 
 	#getCustomMessageTextContent(message: Pick<CustomMessage, "content">): string {
@@ -10852,11 +12799,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Send a custom message to the session. Creates a CustomMessageEntry.
 	 *
 	 * Handles three cases:
-	 * - Streaming: queue as steer/follow-up, aside (next step boundary), or store for next turn
+	 * - Streaming: queue as steer/follow-up, aside (next step boundary), or store for next turn.
+	 *   An aside with interruptWait:false preserves waits too; paired with triggerTurn:false,
+	 *   it appends without waking the model if the run has already become idle.
 	 * - Not streaming + triggerTurn: appends to state/session, starts new turn unless the client cannot own it
-	 * - Not streaming + no trigger: appends to state/session, no turn; with the default delivery
-	 *   (no deliverAs) a display:true message also paints to the interactive transcript
-	 *   immediately (message_start/message_end, no turn)
+	 * - Not streaming + no trigger: appends to state/session, no turn; a display:true message
+	 *   also paints to the interactive transcript immediately (message_start/message_end, no turn)
 	 *
 	 * @returns true iff this call synchronously started a new turn (awaited
 	 * `agent.prompt`); false when the message was queued/appended without a turn
@@ -10867,20 +12815,31 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	async sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
 		options?: {
+			/** False delivers an aside without starting an idle agent. */
+			wakeIdle?: boolean;
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+			/** False keeps an aside behind the whole tool batch, including interruptible waits. */
+			interruptWait?: boolean;
+			supersedes?: string;
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
 		},
 	): Promise<boolean> {
-		return this.#admitSubmission(() => this.#sendCustomMessage(message, options));
+		return this.#admitSubmission(() => this.#sendCustomMessage(message, options), {
+			allowDuringRestartDrain: true,
+		});
 	}
 
 	async #sendCustomMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
 		options?: {
+			wakeIdle?: boolean;
 			triggerTurn?: boolean;
 			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+			/** False keeps an aside behind the whole tool batch, including interruptible waits. */
+			interruptWait?: boolean;
+			supersedes?: string;
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
 		},
@@ -10905,8 +12864,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		message: CustomMessagePayload<T>,
 		options:
 			| {
+					wakeIdle?: boolean;
 					triggerTurn?: boolean;
 					deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+					/** False keeps an aside behind the whole tool batch, including interruptible waits. */
+					interruptWait?: boolean;
+					supersedes?: string;
 					queueChipText?: string;
 					acceptTerminalEmptyStop?: boolean;
 			  }
@@ -10960,21 +12923,31 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			timestamp: Date.now(),
 		};
 		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
+		if (options?.supersedes) {
+			Object.assign(normalizedAppMessage, { supersedes: options.supersedes });
+			this.#supersedePendingCustomMessages(options.supersedes);
+		}
+		if (this.#restartDrainLeaseCount > 0 && (options?.deliverAs !== "nextTurn" || options.triggerTurn === true)) {
+			await this.#queueRestartMessage(normalizedAppMessage);
+			return false;
+		}
+		if (options?.deliverAs === "aside" && (await this.#sessionGenerationChanged(sessionGeneration))) return false;
 		if (this.isStreaming) {
 			// Queued into a turn the agent owns: that turn holds the session. Busy only
 			// from another prompt's setup claims nothing (that prompt decides).
 			outcome.sessionClaimed = this.agent.state.isStreaming;
+			if (options?.deliverAs === "aside" && options.triggerTurn === false) {
+				this.#nonWakingAsides.add(normalizedAppMessage);
+			}
 			if (options?.deliverAs === "nextTurn") {
 				this.#queueHiddenNextTurnMessage(normalizedAppMessage, options?.triggerTurn ?? false);
 				return false;
 			}
 			if (options?.deliverAs === "aside") {
-				if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
-				// Non-interrupting: the agent loop's step-boundary poll (see the setAsideMessageProvider
-				// registration in the constructor) picks this up without interrupting the current tool
-				// batch. Not an agent-core queue entry, so no drain-retry latch and no idle-queue drain
-				// scheduling here.
-				this.#irc.queueAside([normalizedAppMessage]);
+				// Inject at the next step boundary. interruptWait:false also leaves interruptible
+				// waits alone; ordinary asides can end them early. This queue needs neither the
+				// steering drain-retry latch nor idle-queue drain scheduling.
+				this.#irc.queueAside([normalizedAppMessage], { interruptWait: options?.interruptWait });
 				return false;
 			}
 			this.#allowQueuedMessageDrainRetry();
@@ -10984,8 +12957,16 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			} else {
 				this.agent.steer(normalizedAppMessage);
 			}
+			this.#supersedeRestartCheckpoint();
 			this.#scheduleIdleQueueDrain();
 			return false;
+		}
+
+		// Explicitly passive asides join the next real turn, even when image normalization
+		// outlasts the running turn. Omitted triggerTurn retains the normal aside wake.
+		if (options?.deliverAs === "aside" && options.triggerTurn === false) {
+			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
+			options = { ...options, deliverAs: "nextTurn" };
 		}
 
 		if (options?.deliverAs === "nextTurn") {
@@ -10999,24 +12980,20 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				});
 				return outcome.sessionClaimed;
 			}
-			this.agent.appendMessage(normalizedAppMessage);
-			this.sessionManager.appendCustomMessageEntry(
-				normalizedAppMessage.customType,
-				normalizedAppMessage.content,
-				normalizedAppMessage.display,
-				normalizedAppMessage.details,
-				normalizedAppMessage.attribution,
-			);
-			return false;
+			// An idle non-triggering nextTurn message is already being appended now.
+			// Use the shared append path below so display:true also paints immediately.
 		}
 
-		if (options?.deliverAs === "aside") {
-			if (await this.#sessionGenerationChanged(sessionGeneration)) return false;
+		if (options?.deliverAs === "aside" && !(options.interruptWait === false && options.triggerTurn === false)) {
 			if (this.#planModeState?.enabled) {
 				// Plan mode stays user-driven: fold into context without an autonomous turn, same as
 				// IrcBridge.deliver()/#resumeStrandedIrcAsides do in plan mode. Routed through the
 				// event-emitting fold path (not a direct append) so a displayable aside that began
 				// streaming still gets the message_end its sender's rebuild-skip decision expects.
+				this.#recordWithoutTurn([normalizedAppMessage]);
+				return false;
+			}
+			if (options.wakeIdle === false) {
 				this.#recordWithoutTurn([normalizedAppMessage]);
 				return false;
 			}
@@ -11040,7 +13017,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// AgentBusyError; no await sits between this check and #beginInFlight below.
 			if (this.isStreaming) {
 				outcome.sessionClaimed = this.agent.state.isStreaming;
-				this.#irc.queueAside([normalizedAppMessage]);
+				this.#irc.queueAside([normalizedAppMessage], { interruptWait: options?.interruptWait });
 				return false;
 			}
 			outcome.sessionClaimed = await this.#promptAgentInitiatedMessage(normalizedAppMessage, {
@@ -11069,6 +13046,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// queued matches the entry to them by it.
 			normalizedAppMessage.timestamp,
 		);
+		if (options?.supersedes) this.#supersedeRestartCheckpoint();
 		if (normalizedAppMessage.display === true) {
 			// Idle display append with no turn: notify session listeners so the interactive
 			// transcript paints it now instead of on the next rebuild. The entry is persisted
@@ -11217,6 +13195,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 		this.agent.replaceQueues(steeringAll.filter(keep), followUpAll.filter(keep));
 		this.#reconcileQueuedMessageDrain();
+		this.#supersedeRestartCheckpoint();
 		return { steering, followUp };
 	}
 
@@ -11303,6 +13282,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.takeQueuedMessage(text, queue) !== undefined;
 	}
 
+	#withdrawQueuedRequirementCandidates(message: AgentMessage): void {
+		const captured = this.#queuedRequirementCandidates.get(message);
+		if (!captured) return;
+		this.#queuedRequirementCandidates.delete(message);
+		this.#requirementsLedger.withdrawQueuedCandidates(captured.sessionId, captured.ids);
+	}
+
 	/**
 	 * Remove exactly `messages` from the steering and follow-up queues; everything else queued
 	 * stays. A caller takes back what it queued (the groups reported by `onPromptQueued`) without
@@ -11327,8 +13313,10 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		if (index < 0) return undefined;
 
 		const removed = selected[index];
+		this.#withdrawQueuedRequirementCandidates(removed);
 		this.agent.replaceQueue(queue, this.#withoutQueuedUserMessage(selected, index));
 		this.#reconcileQueuedMessageDrain();
+		this.#supersedeRestartCheckpoint();
 		return toRestoredQueuedMessage(removed);
 	}
 
@@ -11354,6 +13342,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// single transition — never the group in both queues or in neither — and the
 		// agent's in-flight steering watchers wake.
 		this.agent.moveFollowUpsToSteering(this.#withoutQueuedUserMessage(followUp, index), promoted);
+		this.#supersedeRestartCheckpoint();
 		this.#allowQueuedMessageDrainRetry();
 		this.#scheduleIdleQueueDrain();
 		return true;
@@ -11406,15 +13395,19 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const fromSteer = lastUserIndex(steering);
 		if (fromSteer >= 0) {
 			const removed = steering[fromSteer];
+			this.#withdrawQueuedRequirementCandidates(removed);
 			this.agent.replaceQueues(this.#withoutQueuedUserMessage(steering, fromSteer), followUp.slice());
 			this.#reconcileQueuedMessageDrain();
+			this.#supersedeRestartCheckpoint();
 			return toRestoredQueuedMessage(removed);
 		}
 		const fromFollowUp = lastUserIndex(followUp);
 		if (fromFollowUp >= 0) {
 			const removed = followUp[fromFollowUp];
+			this.#withdrawQueuedRequirementCandidates(removed);
 			this.agent.replaceQueues(steering.slice(), this.#withoutQueuedUserMessage(followUp, fromFollowUp));
 			this.#reconcileQueuedMessageDrain();
+			this.#supersedeRestartCheckpoint();
 			return toRestoredQueuedMessage(removed);
 		}
 		return undefined;
@@ -11477,6 +13470,35 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Skills the system prompt lists; behind {@link skills} after {@link reloadSkills}. */
 	get promptSkills(): readonly Skill[] {
 		return this.#tools.promptSkills;
+	}
+
+	async #refreshInstructionFiles(): Promise<void> {
+		if (!this.#instructionFiles) return;
+		const enabled = cfgInstructionRefreshEnabled.get(this.settings);
+		const started = Date.parse(this.sessionManager.getHeader()?.timestamp ?? "");
+		if (
+			enabled &&
+			(this.#agentKind === "main" ||
+				Date.now() - started >= cfgInstructionRefreshSubagentMinAgeMs.get(this.settings))
+		) {
+			await this.#instructionFiles.refresh(cfgInstructionRefreshMaxBytes.get(this.settings));
+		}
+		const blocks = enabled ? this.#instructionFiles.systemNotices() : [];
+		this.agent.setSystemPrompt([
+			...this.agent.state.systemPrompt.filter(block => !this.#instructionNoticeBlocks.has(block)),
+			...blocks,
+		]);
+		this.#instructionNoticeBlocks = new Set(blocks);
+	}
+
+	/** Records a skill body read by an invocation or tool. */
+	async recordInstructionFile(filePath: string, body?: string): Promise<void> {
+		if (cfgInstructionRefreshEnabled.get(this.settings))
+			await this.#instructionFiles?.loadedInstruction(
+				filePath,
+				body,
+				cfgInstructionRefreshMaxBytes.get(this.settings),
+			);
 	}
 
 	/**
@@ -11542,12 +13564,19 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return this.#modelMentions.resolve(selector);
 	}
 
+	getTodoSnapshot(): readonly TodoPhase[] {
+		return this.#todo.snapshot;
+	}
+
 	getTodoPhases(): TodoPhase[] {
 		return this.#todo.phases;
 	}
 
 	setTodoPhases(phases: TodoPhase[]): void {
 		this.#todo.setPhases(phases);
+		// The terminal title is NOT touched here: the tab shows the session the UI
+		// displays, so InteractiveMode (which knows the focused session) derives the
+		// title's task half from the todo list it renders.
 	}
 
 	/** Replace the list from outside the `todo` tool: update the cache and record a `user_todo_edit` entry so reloads keep it. */
@@ -12170,7 +14199,17 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		deliverQueuedMessages?: boolean;
 		/** Internal `/compact` startup keeps the manual-compaction marker alive while aborting the active turn. */
 		preserveCompaction?: boolean;
+		/**
+		 * Also cancel this agent's running background effect jobs (async bash, eval, ...).
+		 * Restart quiescence waits for those jobs to settle, and a plain abort never
+		 * signals them, so a worker parked on a long background tool could not drain.
+		 * Subagent `task` jobs are left to their own session abort.
+		 */
+		cancelBackgroundJobs?: boolean;
 	}): Promise<void> {
+		if (options?.goalReason !== "internal" && this.getGoalModeState()?.enabled) {
+			this.#goalInterruptedSessionId = this.sessionManager.getSessionId();
+		}
 		const userInterrupt = options?.reason === USER_INTERRUPT_LABEL;
 		this.#pendingAbortErrorId = userInterrupt ? AIError.create(AIError.Flag.UserInterrupt) : undefined;
 		// Latch only when the interrupt stops something; an idle Esc would otherwise fold
@@ -12224,6 +14263,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 			this.abortBash();
 			this.abortEval();
+			if (options?.cancelBackgroundJobs && this.#asyncJobManager && this.#agentId) {
+				const manager = this.#asyncJobManager;
+				for (const job of manager.getRunningJobs({ ownerId: this.#agentId })) {
+					if (job.type !== "task") manager.cancel(job.id, { ownerId: this.#agentId });
+				}
+			}
 			const computerControlRevocation = revokeComputerControlForOwner(this.#eval.getKernelOwnerId());
 			const postPromptDrain = this.#cancelPostPromptTasks(options?.reason);
 			this.agent.abort(options?.reason);
@@ -12303,6 +14348,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		using _transition = this.#beginSessionTransition();
 		this.#assertVibeSessionTransitionAllowed("start a new session");
 		const previousSessionFile = this.sessionFile;
+		const previousDaemonSessionId = this.sessionManager.getSessionId();
 
 		// Emit session_before_switch event with reason "new" (can be cancelled)
 		if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
@@ -12340,6 +14386,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				} else {
 					await this.sessionManager.flush();
 				}
+				// Retire the outgoing backfill before clearing its ledger or publishing
+				// a new gate; a failed commit retains its fully restored spend.
+				await this.#advisorCostRestore;
 				await this.sessionManager.newSession({
 					...options,
 					additionalDirectories: cfgWorkspaceAdditionalDirectories.get(this.settings),
@@ -12349,6 +14398,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				// conversation's advisor spend is retired with it. Clearing at the commit
 				// point keeps the status line honest even if a later step below throws.
 				this.#advisors.clearCost();
+				this.#reseedCostGate();
 				sessionTransitioned = true;
 			} finally {
 				this.#bash.finishSessionTransition(bashTransition, sessionTransitioned);
@@ -12360,6 +14410,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			await this.#prewalk.resetForNewSession(this.#agentKind === "main" && cfgPrewalkEnabled.get(this.settings));
 			// Re-apply the configured selector so the new session does not inherit
 			// the previous session's auto-classified effort: auto stays auto but
@@ -12406,7 +14457,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			resetCapabilities();
 			await this.refreshBaseSystemPrompt();
 
-			this.#reseedCostGate();
 			// Emit session_switch event with reason "new" to hooks
 			if (this.#extensionRunner) {
 				await this.#extensionRunner.emit({
@@ -12415,12 +14465,26 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					previousSessionFile,
 				});
 			}
+			try {
+				await this.#sessionSwitchReconciler?.();
+			} catch (error) {
+				logger.warn("Failed to reconcile session mode after new session", {
+					sessionFile: this.sessionFile,
+					error: String(error),
+				});
+			}
 
 			return true;
 		} finally {
-			if (advisorRecordersDetached) {
-				if (sessionTransitioned) this.#advisors.resetSessionState();
-				else this.#advisors.reattachRecorderFeeds();
+			try {
+				if (previousDaemonSessionId && previousDaemonSessionId !== this.sessionManager.getSessionId()) {
+					await this.#releaseOwnedDaemonClients(previousDaemonSessionId);
+				}
+			} finally {
+				if (advisorRecordersDetached) {
+					if (sessionTransitioned) this.#advisors.resetSessionState();
+					else this.#advisors.reattachRecorderFeeds();
+				}
 			}
 		}
 	}
@@ -12526,6 +14590,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#freshProviderSessionId = undefined;
 			this.#adoptInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			this.#advisors.reattachRecorderFeeds();
 			advisorRecordersDetached = false;
@@ -12601,6 +14666,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	// Model Management
 	// =========================================================================
 
+	/** Refresh a role-resolved child at a model selection boundary. Returns whether it switched. */
+	refreshModelSelection?: () => Promise<boolean>;
+
 	/**
 	 * Set model directly.
 	 * Validates that a credential source is configured (synchronously, without
@@ -12617,6 +14685,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			selector?: string;
 			thinkingLevel?: ThinkingLevel;
 			persist?: boolean;
+			reason?: string;
+			beforeSwitch?: () => void;
 		},
 	): Promise<{ switched: boolean }> {
 		return this.#models.setModel(model, role, options);
@@ -12766,6 +14836,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	/** Enables or disables priority service for the active model family. */
 	setFastMode(enabled: boolean): boolean {
 		return this.#models.setFastMode(enabled);
+	}
+
+	/** Set fast mode on one of this session's live direct subagents. */
+	setSubagentFastMode(id: string, enabled: boolean): boolean | Promise<boolean> {
+		if (!this.#agentId) return false;
+		return this.#agentRegistry.setSubagentFastMode(this.#agentId, id, enabled);
 	}
 
 	/** Toggles priority service for the active model family. */
@@ -13089,6 +15165,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 		});
 
+		this.#requirementsLedger.syncPublicationGate();
 		const rewoundAt = new Date().toISOString();
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
 		this.sessionManager.appendCustomMessageEntry(
@@ -13279,6 +15356,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		}
 
 		await this.#reconcileModelDependentState(model);
+		if (isChanging || currentModel?.contextWindow !== model.contextWindow)
+			this.#maintenance.checkModelContextWindow();
 	}
 
 	async #reconcileModelDependentState(model: Model): Promise<void> {
@@ -13453,6 +15532,153 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		return didRetry;
 	}
 
+	/** Reopen unanswered HTML forms using the original call identity after resume. */
+	async restorePendingAsk(
+		uiContext: ExtensionUIContext,
+		onAnswered: (answered?: boolean) => void = answered => {
+			if (answered !== false) this.resumeAfterAskReanswer();
+		},
+		onPending: () => void = () => {},
+	): Promise<boolean> {
+		if (this.isStreaming || this.#restoringPendingAsk) return false;
+		const branch = this.sessionManager.getBranchMatching(
+			metadata =>
+				metadata.type === "message" ||
+				metadata.customType === "restart_request_transition" ||
+				metadata.customType === "restart_asks_presented" ||
+				metadata.customType === SESSION_EXIT_CUSTOM_TYPE ||
+				metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE,
+		);
+		const asyncPending = findUnansweredAsyncAsks(branch);
+		if (asyncPending && asyncPending.calls.length > 0) {
+			if (!uiContext.formDialog) return false;
+			this.#restoringPendingAsk = true;
+			onPending();
+			try {
+				let answered = false;
+				for (const call of asyncPending.calls) {
+					const answer = await uiContext.formDialog(call.html, {});
+					if (!answer || answer.timedOut) break;
+					const answers = formAnswers(parseHtmlForm(call.html), answer.data).filter(item =>
+						call.unansweredNames.includes(item.name),
+					);
+					this.sessionManager.appendMessage({
+						role: "user",
+						content: answers
+							.map(item => `Answer to ${call.toolCallId} [${item.name}]: ${item.answer}`)
+							.join("\n"),
+						timestamp: Date.now(),
+					});
+					answered = true;
+				}
+				// A returned dialog (including Escape) consumes presentation; an opening error leaves it retryable.
+				this.sessionManager.appendCustomEntry("restart_asks_presented", {
+					requestId: asyncPending.requestId,
+					toolCallIds: asyncPending.calls.map(call => call.toolCallId),
+				});
+				await this.sessionManager.flush();
+				this.agent.replaceMessages(this.buildDisplaySessionContext().messages);
+				onAnswered(answered);
+				return true;
+			} finally {
+				this.#restoringPendingAsk = false;
+			}
+		}
+		if (!hasRestorableTurn(branch)) return false;
+		const tail = branch.findLast(entry => entry.type === "message");
+		const recovered = tail?.type === "message" && isInterruptedTurnAbort(tail.message);
+		const anchorIndex = branch.findLastIndex(
+			entry =>
+				entry.type === "message" &&
+				entry.message.role === "assistant" &&
+				entry.message.content.some(block => block.type === "toolCall"),
+		);
+		if (anchorIndex < 0) return false;
+		const anchor = branch[anchorIndex]!;
+		if (anchor.type !== "message" || anchor.message.role !== "assistant") return false;
+		if (anchor.message.stopReason !== "toolUse" && anchor.message.stopReason !== "stop") return false;
+		const results = branch
+			.slice(anchorIndex + 1)
+			.flatMap(entry => (entry.type === "message" && entry.message.role === "toolResult" ? [entry.message] : []));
+		const completed = results.filter(result => !(recovered && isInterruptedToolResult(result)));
+		const pending = anchor.message.content.flatMap(block => {
+			if (
+				block.type !== "toolCall" ||
+				block.name !== "ask" ||
+				completed.some(result => result.toolCallId === block.id)
+			)
+				return [];
+			const args = this.#obfuscator?.hasSecrets()
+				? deobfuscateToolArguments(this.#obfuscator, block.arguments)
+				: block.arguments;
+			const html = recoverRestoredAskHtml(args);
+			return html === undefined ? [] : [{ toolCallId: block.id, html }];
+		});
+		if (pending.length === 0) return false;
+		this.#restoringPendingAsk = true;
+		onPending();
+		try {
+			const tool = new AskTool(
+				{
+					cwd: this.sessionManager.getCwd(),
+					hasUI: true,
+					settings: this.settings,
+					getSessionFile: () => this.sessionManager.getSessionFile() ?? null,
+					getSessionSpawns: () => null,
+					getPlanModeState: () => this.getPlanModeState(),
+				},
+				{ interactiveAnswer: true },
+			);
+			let cancelled = false;
+			for (const call of pending) {
+				let result: AgentToolResult<AskToolDetails>;
+				try {
+					result = await tool.execute(
+						call.toolCallId,
+						{ html: call.html },
+						undefined,
+						undefined,
+						this.buildAskReanswerContext(uiContext),
+					);
+				} catch (error) {
+					if (!(error instanceof ToolAbortError)) throw error;
+					cancelled = true;
+					result = { content: [{ type: "text", text: error.message }], details: {}, isError: true };
+				}
+				this.sessionManager.appendMessage({
+					role: "toolResult",
+					toolCallId: call.toolCallId,
+					toolName: "ask",
+					content: result.content,
+					details: result.details,
+					isError: result.isError === true,
+					timestamp: Date.now(),
+				});
+			}
+			// Close other unknown calls without re-executing their possible side effects.
+			let reachedAnchor = false;
+			for (const result of createInterruptedToolResults(
+				this.sessionManager
+					.getBranchMatching(metadata => {
+						if (metadata.id === anchor.id) reachedAnchor = true;
+						return (
+							reachedAnchor &&
+							(metadata.type === "message" || metadata.customType === TOOL_EXECUTION_START_CUSTOM_TYPE)
+						);
+					})
+					.filter(
+						entry => entry.id === anchor.id || entry.type !== "message" || entry.message.role !== "assistant",
+					),
+			))
+				this.sessionManager.appendMessage(result);
+			this.agent.replaceMessages(this.buildDisplaySessionContext().messages);
+			onAnswered(!cancelled);
+			return true;
+		} finally {
+			this.#restoringPendingAsk = false;
+		}
+	}
+
 	/**
 	 * Go on with the turn the previous process was in when it ended (`omp --restore`).
 	 *
@@ -13468,7 +15694,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * a model, or with nothing left unfinished.
 	 */
 	async restoreInterruptedTurn(): Promise<boolean> {
-		const branch = this.sessionManager.getBranch();
+		const branch = this.sessionManager.getContextBranch();
 		if (this.isStreaming || !hasRestorableTurn(branch)) return false;
 		const model = this.model;
 		if (!model) return false;
@@ -13583,6 +15809,26 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	// =========================================================================
 	// IRC Delivery
 	// =========================================================================
+
+	/** Installs the durable cross-process peer inbox owned by the active publication. */
+	setPeerInboxDrainer(drainer: (() => Promise<void>) | undefined): void {
+		this.#peerInboxDrainer = drainer;
+	}
+
+	async #drainPeerInbox(): Promise<void> {
+		const drainer = this.#peerInboxDrainer;
+		if (!drainer) return;
+		if (this.#peerInboxDrain) return this.#peerInboxDrain;
+		const pending = drainer()
+			.catch(error => {
+				logger.warn("Failed to drain durable peer inbox", { error: String(error) });
+			})
+			.finally(() => {
+				if (this.#peerInboxDrain === pending) this.#peerInboxDrain = undefined;
+			});
+		this.#peerInboxDrain = pending;
+		return pending;
+	}
 
 	/** Whether a queued IRC message ends a `wait` (see {@link IrcBridge.hasInterrupts}). */
 	hasIrcInterrupts(): boolean {
@@ -13761,6 +16007,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		);
 		const llmMessages = await this.convertMessagesToLlm(snapshot, args.signal);
 		assertEphemeralTurnReady();
+		await this.#refreshInstructionFiles();
 		const sideContext = await this.agent.buildSideRequestContext(llmMessages);
 		const toolHistory = sideContext.messages.some(
 			message =>
@@ -13978,8 +16225,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		// No breakpoint after it can be read by the next request.
 		let volatileSuffix = false;
 		if (history?.length) {
-			// Detach before the conversion pipeline can await or mutate caller-owned messages.
-			const detachedHistory = structuredClone(history);
+			// Detach the message and content-block containers without recursively
+			// cloning nested payloads; the conversion pipeline treats those as immutable.
+			const detachedHistory = history.map((message): AgentMessage => {
+				if (!("content" in message) || !Array.isArray(message.content)) return { ...message };
+				return { ...message, content: message.content.map(block => ({ ...block })) } as AgentMessage;
+			});
 			for (const message of detachedHistory) {
 				if (message.role === "custom" && message.customType === IMAGE_ATTACHMENT_DESCRIPTION_TYPE) {
 					volatileSuffix = true;
@@ -14120,6 +16371,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		const previousFreshProviderSessionId = this.#freshProviderSessionId;
 		const previousInheritedProviderPromptCacheKey = this.#inheritedProviderPromptCacheKey;
 		const previousTaskSiblingCandidate = this.sessionManager.getTaskSiblingCandidate();
+		const previousCostGate = this.#costGate;
+		let previousAdvisorCosts: ReadonlyMap<string, number> | undefined;
 
 		// Snapshot the full checkpoint runtime state: the success path calls
 		// #rehydrateCheckpointRewindState(), which clears and rebuilds all four
@@ -14150,6 +16403,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#usagePreflightReadyModel = undefined;
 
 		let cwdChangeTarget: string | undefined;
+		let sessionSwitchCommitted = false;
 		try {
 			if (switchingToDifferentSession) {
 				// Stop and settle in-flight advisors while the old-session feeds can
@@ -14235,6 +16489,21 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			// so jobs they start belong to the resumed session. Deliveries are held until now.
 			if (switchingToDifferentSession) this.#cancelOwnAsyncJobs();
 
+			// Hydrate the target before publishing its gate: hooks and reconcilers can
+			// start requests or children immediately, and must all capture the final gate.
+			// Keep the old ledger and gate available until the switch commits for rollback.
+			if (switchingToDifferentSession) {
+				const providersBySlug = new Map<string, Set<string>>();
+				const costs = await loadAdvisorTranscriptCosts(this.sessionFile, { providersBySlug });
+				// The startup scan still owns the outgoing ledger and gate. Settle it
+				// before replacing either, including when a later hook rolls back.
+				await this.#advisorCostRestore;
+				previousAdvisorCosts = this.#advisors.costSnapshot();
+				this.#advisors.restoreCost(costs, providersBySlug);
+			} else {
+				// A reload publishes a fresh gate too: seed it only after backfill.
+				await this.#advisorCostRestore;
+			}
 			this.#reseedCostGate();
 			// Emit session_switch event to hooks
 			if (this.#extensionRunner) {
@@ -14282,7 +16551,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 
 			const model = this.model;
 			if (model) {
-				const interruptedTurnAbort = createInterruptedTurnAbortMessage(this.sessionManager.getBranch(), {
+				const interruptedTurnAbort = createSessionInterruptedTurnAbortMessage(this.sessionManager, {
 					api: model.api,
 					provider: model.provider,
 					model: model.id,
@@ -14294,10 +16563,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				}
 			}
 
-			const hasThinkingEntry = this.sessionManager.getBranch().some(entry => entry.type === "thinking_level_change");
-			const hasServiceTierEntry = this.sessionManager
-				.getBranch()
-				.some(entry => entry.type === "service_tier_change");
+			const hasThinkingEntry =
+				this.sessionManager.getLatestBranchMatching(metadata => metadata.type === "thinking_level_change") !==
+				undefined;
+			const hasServiceTierEntry =
+				this.sessionManager.getLatestBranchMatching(metadata => metadata.type === "service_tier_change") !==
+				undefined;
 			const defaultThinkingLevel = parseConfiguredThinkingLevel(cfgDefaultThinkingLevel.get(this.settings));
 			const configuredServiceTierByFamily = buildServiceTierByFamily(
 				cfgTierOpenai.get(this.settings),
@@ -14340,6 +16611,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					error: String(error),
 				});
 			}
+			this.#requirementsLedger.syncPublicationGate();
 			// Refresh the workspace-roots block to match the resumed session's directory set.
 			// Wrapped so a rebuild failure (e.g. a gate that intentionally fails in tests)
 			// doesn't roll back an otherwise-successful session switch.
@@ -14351,16 +16623,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					error: String(refreshErr),
 				});
 			}
-			// Hand the ledger over to the session that just took over, and only once the
-			// switch has committed: an earlier swap would be lost work if any step above
-			// rolled it back. The target's own advisor transcripts are the record of what
-			// it already spent, so a session with history resumes with its total instead
-			// of restarting at zero.
-			if (switchingToDifferentSession) {
-				const providersBySlug = new Map<string, Set<string>>();
-				const costs = await loadAdvisorTranscriptCosts(this.sessionFile, { providersBySlug });
-				this.#advisors.restoreCost(costs, providersBySlug);
-			}
 			this.#bash.finishSessionTransition(bashTransition, true);
 			// Keep the old reservations during rollback; the target is committed now,
 			// so the snapshotted old queues can no longer be restored.
@@ -14370,6 +16632,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			if (previousSessionState.sessionId !== this.sessionManager.getSessionId()) {
 				this.#notifySessionChangeCallbacks();
 			}
+			sessionSwitchCommitted = true;
 			generationSettled.resolve();
 			this.#sessionGenerationSettled = previousSessionGenerationSettled;
 			if (modelFallbackWarning) {
@@ -14379,6 +16642,14 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
+			this.#costGate = previousCostGate;
+			if (previousAdvisorCosts) {
+				// The outgoing recorders were drained before the swap, so their transcripts
+				// retain the provider attribution needed to restore the snapshotted ledger.
+				const providersBySlug = new Map<string, Set<string>>();
+				await loadAdvisorTranscriptCosts(previousSessionFile, { providersBySlug });
+				this.#advisors.restoreCost(previousAdvisorCosts, providersBySlug);
+			}
 			this.#freshProviderSessionId = previousFreshProviderSessionId;
 			this.#syncAgentSessionId(previousSessionState.sessionId, false);
 			this.#memory.rekeyForCurrentSessionId();
@@ -14464,6 +16735,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#bash.finishSessionTransition(bashTransition, false);
 			if (error === SESSION_CWD_CHANGE_REJECTED) return false;
 			throw error;
+		} finally {
+			// Cleanup failure is surfaced after commit, never caught as a reason
+			// to restore an outgoing transcript whose clients have already closed.
+			if (sessionSwitchCommitted && switchingToDifferentSession && previousSessionState.sessionId) {
+				await this.#releaseOwnedDaemonClients(previousSessionState.sessionId);
+			}
 		}
 	}
 
@@ -14606,6 +16883,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			this.#freshProviderSessionId = undefined;
 			this.#clearInheritedProviderPromptCacheKey();
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 
@@ -14735,11 +17013,13 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				attribution: "user",
 				timestamp: Date.now(),
 			});
+			await this.#captureRawRequirementCandidate(question);
 			this.sessionManager.appendMessage(sanitizeAssistantForReparentedHistory(assistantMessage));
 			this.#todo.syncFromBranch();
 			this.#modelMentions.syncFromBranch();
 			this.#freshProviderSessionId = undefined;
 			this.#syncAgentSessionId();
+			this.#requirementsLedger.syncPublicationGate();
 			this.#memory.rekeyForCurrentSessionId();
 			await this.#memory.resetContextForNewTranscript();
 
@@ -15075,6 +17355,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#modelMentions.syncFromBranch();
 		this.#closeCodexProviderSessionsForHistoryRewrite();
 
+		this.#requirementsLedger.syncPublicationGate();
 		this.#branchSummaryAbortController = undefined;
 
 		// Report a committed `ask` re-answer so the interactive caller can resume
@@ -15203,10 +17484,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 * Get all user messages from session for branch selector.
 	 */
 	getUserMessagesForBranching(): Array<{ entryId: string; text: string }> {
-		const entries = this.sessionManager.getEntries();
 		const result: Array<{ entryId: string; text: string }> = [];
 
-		for (const entry of entries) {
+		for (const entry of this.sessionManager.iterateEntries("message")) {
 			if (entry.type !== "message") continue;
 			if (entry.message.role !== "user") continue;
 
@@ -16017,7 +18297,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		let subSessions: Record<string, SubSession> = {};
 		let subagentError: string | undefined;
 		try {
-			if (sessionFile) subSessions = await collectSubSessions(sessionFile);
+			if (sessionFile) subSessions = await collectSubSessions(sessionFile, { purpose: "export" });
 		} catch (error) {
 			subagentError = error instanceof Error ? error.message : String(error);
 			logger.warn("Failed to collect subagent transcripts for dump", { sessionFile, error: subagentError });
@@ -16377,7 +18657,12 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		costsAtSnapshot: ReadonlyMap<string, number> = new Map(),
 		providersBySlug?: ReadonlyMap<string, ReadonlySet<string>>,
 	): void {
+		const previousCost = this.#advisors.getAdvisorCost();
 		this.#advisors.restoreInitialCost(costs, costsAtSnapshot, providersBySlug);
+		// Live responses already pass the SDK's guarded stream. Only the historical
+		// increment introduced by this restore is missing from the shared gate.
+		const historicalCost = this.#advisors.getAdvisorCost() - previousCost;
+		if (this.#ownsCostGate && Number.isFinite(historicalCost)) this.#costGate.record(historicalCost);
 	}
 	/** Return whether any active or configured advisor is running on an OAuth/subscription model. */
 	isAdvisorUsingSubscription(): boolean {
@@ -16431,4 +18716,19 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	consumeActiveFallbackCreditRedemption(targetModel?: Model): AnthropicFallbackCreditHandle | undefined {
 		return this.#recovery.consumeActiveFallbackCreditRedemption(targetModel);
 	}
+	async #captureRawRequirementCandidate(rawText: string, images?: readonly ImageContent[]): Promise<void> {
+		if (this.getActiveToolNames().includes("todo")) await this.#requirementsLedger.captureCandidate(rawText, images);
+	}
+
+	#announceCandidateCommit(commit: RequirementCandidateCommit | undefined): void {
+		if (!commit?.committed || !commit.notice) return;
+		void this.#requirementsLedger.announceCandidateNotice(commit.notice).catch(error => {
+			logger.warn("Requirement candidate notice failed", { error });
+		});
+	}
+}
+
+function isSupersedingNextTurn(message: CustomMessage): boolean {
+	const details = message.details as { supersedesQueued?: unknown } | undefined;
+	return details?.supersedesQueued === true;
 }

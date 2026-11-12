@@ -1,3 +1,4 @@
+import type { PeerCommandReceipt } from "../collab/peer-commands";
 /**
  * Main-thread mirror of an agent session homed on a subagent worker.
  *
@@ -86,7 +87,7 @@ import {
 } from "../session/async-job-views";
 import { BlobStore, type BlobPutOptions, type BlobPutResult, lazyImageDataSync } from "../session/blob-store";
 import type { IdleMaintenanceOptions } from "../session/idle-maintenance";
-import type { CustomMessage } from "../session/messages";
+import type { CustomMessage, CustomMessagePayload } from "../session/messages";
 import { resolveRoleModelCycle, roleThinkingLevelForModel, serviceTierForModel } from "../session/model-controls";
 import type { ServingModel } from "../session/retry-fallback-chains";
 import {
@@ -95,7 +96,8 @@ import {
 	type TranscriptSessionContextOptions,
 } from "../session/session-context";
 import type { CustomEntry, SessionEntry } from "../session/session-entries";
-import { conversationTip, lastModelChangeRole, SessionEntryIndex } from "../session/session-manager";
+import { SessionEntryIndex } from "../session/session-manager";
+import type { RestartDrainLease } from "../session/agent-session-types";
 import type { AgentDefinition } from "../task/types";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../tools/todo";
@@ -123,6 +125,8 @@ export class SessionHostClient {
 /** State of a mirror that never received (or no longer has) data from its home. */
 export function emptyMirrorState(): SessionMirrorState {
 	return {
+		isDisposed: false,
+		restartPendingInputCount: 0,
 		isStreaming: false,
 		runStartedAt: undefined,
 		ircWakesPending: false,
@@ -257,6 +261,7 @@ export class RemoteAgentSession implements AgentViewSession {
 	readonly #asyncJobs: AsyncJobManagerApi | undefined;
 	#state: SessionMirrorState;
 	#pendingToolCalls: Set<string>;
+	#restartDrainRelease: Promise<void> | undefined;
 	readonly #messages: AgentMessage[];
 	#view: SessionViewState = emptyViewState();
 	/**
@@ -339,8 +344,14 @@ export class RemoteAgentSession implements AgentViewSession {
 			getSessionName: () => this.#view.sessionName,
 			getEntries: () => [...this.#entries],
 			getBranch: fromId => this.#entryIndex.pathTo(fromId),
+			*iterateBranchMatchingNewestFirst(predicate) {
+				const path = mirror.#entryIndex.metadataPath();
+				for (let i = path.length - 1; i >= 0; i--) {
+					if (predicate(path[i]!)) yield mirror.#entryIndex.get(path[i]!.id, false)!;
+				}
+			},
 			getLeafId: () => this.#entryIndex.leafId(),
-			getConversationTip: () => conversationTip(this.#entries, this.#entryIndex.branchView()),
+			getConversationTip: () => this.#entryIndex.conversationTip(),
 			getSeanceSourceArtifactsDir: () => this.#view.seanceSourceArtifactsDir,
 			appendCustomEntry: (customType, data) => this.#appendCustomEntry(customType, data),
 			flush: () => this.#command("flushSession"),
@@ -584,6 +595,17 @@ export class RemoteAgentSession implements AgentViewSession {
 		return roleThinkingLevelForModel(this.settings, this.modelRegistry.getAvailable(), model);
 	}
 
+	setFastMode(enabled: boolean): Promise<boolean> {
+		return this.#command("setFastMode", enabled);
+	}
+
+	sendCustomMessage(
+		message: CustomMessagePayload,
+		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+	): Promise<boolean> {
+		return this.#command("sendCustomMessage", message, options);
+	}
+
 	setModelTemporary(
 		model: Model,
 		thinkingLevel?: ConfiguredThinkingLevel,
@@ -592,12 +614,17 @@ export class RemoteAgentSession implements AgentViewSession {
 		return this.#command("setModelTemporary", toWireData(model), thinkingLevel, options);
 	}
 
+	#latestModelRole(): string | undefined {
+		const entry = this.#entryIndex.latestBranchMatching(metadata => metadata.type === "model_change");
+		return entry?.type === "model_change" ? (entry.role ?? "default") : undefined;
+	}
+
 	getRoleModelCycle(roleOrder: readonly string[]): RoleModelCycle | undefined {
 		return resolveRoleModelCycle(
 			this.settings,
 			this.modelRegistry.getAvailable(),
 			this.#state.model,
-			lastModelChangeRole(this.#entryIndex.branchView()),
+			this.#latestModelRole(),
 			roleOrder,
 		);
 	}
@@ -825,12 +852,43 @@ export class RemoteAgentSession implements AgentViewSession {
 		return this.#command("waitForIrcReplies");
 	}
 
+	executePeerSlashCommand(text: string): Promise<PeerCommandReceipt | null> {
+		return this.#command("executePeerSlashCommand", text);
+	}
+
 	prompt(text: string, options?: PromptOptions): Promise<boolean> {
 		return this.#command("prompt", text, options);
 	}
 
 	steer(text: string, images?: ImageContent[], options?: SteerOptions): Promise<void> {
 		return this.#command("steer", text, images, options);
+	}
+
+	get isDisposed(): boolean {
+		return this.#closed !== undefined || this.#state.isDisposed;
+	}
+	getRestartPendingInputCount(): number {
+		return this.#state.restartPendingInputCount;
+	}
+	beginRestartDrain(): RestartDrainLease {
+		const lease = this.#command("beginRestartDrain");
+		return {
+			wasRunning: this.isStreaming,
+			waitForQuiescence: async () => (await lease).waitForQuiescence(),
+			release: () => {
+				this.#restartDrainRelease = lease.then(lease => lease.release());
+				void this.#restartDrainRelease.catch(error => logger.warn("Restart drain release failed", { error }));
+			},
+		};
+	}
+	getRestartBranchEntries(): Promise<SessionEntry[]> {
+		return this.#command("getRestartBranchEntries");
+	}
+	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void> {
+		return this.#command("sendRestartNotice", message);
+	}
+	flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void> {
+		return this.#command("flushRestartJournal", options);
 	}
 
 	abort(options?: SessionAbortOptions): Promise<void> {
@@ -1126,6 +1184,7 @@ export class RemoteAgentSession implements AgentViewSession {
 		method: K,
 		...args: SessionHostProtocol[K]["args"]
 	): Promise<SessionHostProtocol[K]["result"]> {
+		if (this.#restartDrainRelease) await this.#restartDrainRelease;
 		if (this.#closed !== undefined || !this.#host) throw this.#goneError();
 		try {
 			return await this.#host.remote.call(method, ...args);

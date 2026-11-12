@@ -250,6 +250,13 @@ export type AuthStorageProtocol = {
 	"usage.removeProvider": RpcMethod<[provider: Provider], void>;
 	"usage.replaceConfiguredProviders": RpcMethod<[providers: [Provider, UsageProvider][]], void>;
 
+	"health.isProviderDepleted": RpcMethod<[provider: Provider], boolean>;
+	"health.markProviderDepleted": RpcMethod<
+		[provider: Provider, options?: { status?: number; message?: string; resetAtMs?: number }],
+		void
+	>;
+	"health.markProviderSucceeded": RpcMethod<[provider: Provider], void>;
+	"health.resetProviderDepletion": RpcMethod<[provider: Provider], void>;
 	"health.model": RpcMethod<[provider: Provider, options: ModelUsageHealthOptions], ModelUsageHealth>;
 	"health.check": RpcMethod<[options?: WireCheckCredentialsOptions], CredentialHealthResult[]>;
 

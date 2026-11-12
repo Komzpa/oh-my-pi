@@ -7,6 +7,7 @@ import { findFreeCdpPort, gracefulKillTreeOnce, waitForCdp } from "@oh-my-pi/pi-
 import { ensureChromiumExecutable, RENDERER_PRIORITY_ARGS } from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
 import {
 	acquireBrowser,
+	holdBrowser,
 	type PuppeteerBrowserHandle,
 	releaseBrowser,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
@@ -83,6 +84,8 @@ async function connectedBrowser(): Promise<PuppeteerBrowserHandle> {
 	await waitForCdp(cdpUrl, 15_000);
 	const handle = await acquireBrowser({ kind: "connected", cdpUrl }, { cwd: process.cwd() });
 	if (!("browser" in handle)) throw new Error("Expected a Puppeteer browser");
+	// Keep the observer connection alive through releaseTab so cleanup can be verified.
+	holdBrowser(handle);
 	cleanups.push(() => releaseBrowser(handle, { kill: false }));
 	return handle;
 }
@@ -99,14 +102,28 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser screenshots of background tabs", (
 		cleanups.push(async () => {
 			await releaseTab(name);
 		});
+		expect(await visibility(agentPage)).toBe("hidden");
+		await userPage.evaluate(() => {
+			const states: string[] = [];
+			Object.assign(globalThis, { visibilityChanges: states });
+			const observedDocument = document as typeof document & {
+				addEventListener(type: string, listener: () => void): void;
+			};
+			observedDocument.addEventListener("visibilitychange", () => states.push(observedDocument.visibilityState));
+		});
 		await acquireTab(name, handle, { target: "agent-tab", timeoutMs: 30_000 });
-		// Attaching emulates focus, which macOS Chromium reports as `visible` and Linux as `hidden`;
-		// either way the capture itself must leave it as it was.
-		const agentVisibility = await visibility(agentPage);
+		// Worker focus emulation keeps background input responsive; it does not select the tab.
+		expect(await visibility(agentPage)).toBe("visible");
 
 		expect(await repaintAndCapture(name, "#00ff00")).toEqual([0, 255, 0]);
 		expect(await visibility(userPage)).toBe("visible");
-		expect(await visibility(agentPage)).toBe(agentVisibility);
+		expect(await userPage.evaluate("globalThis.visibilityChanges")).toEqual([]);
+		await releaseTab(name);
+		// Focus emulation ends when the worker connection closes, a beat after release.
+		await agentPage.waitForFunction(() => document.visibilityState === "hidden", { polling: 50, timeout: 5_000 });
+		// The real selected tab stayed unchanged.
+		expect(await visibility(agentPage)).toBe("hidden");
+		expect(await visibility(userPage)).toBe("visible");
 	}, 45_000);
 
 	it("captures the adopted tab after the user switched away from it", async () => {

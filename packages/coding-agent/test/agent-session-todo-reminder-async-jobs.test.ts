@@ -128,6 +128,7 @@ describe("AgentSession todo reminder async-job deferral", () => {
 			}),
 			emitBeforeAgentStart: vi.fn().mockResolvedValue(undefined),
 			hasHandlers: vi.fn((eventType: string) => eventType === "session_stop"),
+			hasLoadedHandlers: vi.fn(() => false),
 			emitSessionStop: vi.fn().mockResolvedValue(undefined),
 		} as unknown as ExtensionRunner;
 

@@ -20,7 +20,7 @@ import { getTab, releaseAllTabs } from "@oh-my-pi/pi-coding-agent/tools/browser/
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { CLAUDE_TRACE_DEBUG_CERT, CLAUDE_TRACE_DEBUG_KEY } from "@oh-my-pi/pi-coding-agent/cli/claude-trace-cli";
-import type { Browser, Page } from "puppeteer-core";
+import type { Browser, CDPSession, Page } from "puppeteer-core";
 import { rejectionOf } from "../helpers/rejection";
 import { chromiumAvailable } from "./chromium-probe";
 
@@ -117,7 +117,10 @@ describe("browser open options CDP helpers", () => {
 			send,
 			detach: async () => undefined,
 		};
-		const browser = { target: () => ({ createCDPSession: async () => session }) } as unknown as Browser;
+		const browser = {
+			wsEndpoint: () => `ws://fixture/${directory}`,
+			target: () => ({ createCDPSession: async () => session }),
+		} as unknown as Browser;
 		const page = { frames: () => [{ _id: "frame" }], browserContext: () => ({}) } as unknown as Page;
 		const downloads = new DownloadManager(browser, page, "tab", { perTab, pageEvents: false });
 		const complete = async (
@@ -135,6 +138,30 @@ describe("browser open options CDP helpers", () => {
 		};
 		return { directory, elsewhere, downloads, complete };
 	}
+
+	it("keeps browser-wide in-flight GUIDs out of a tab's final download directory", async () => {
+		let saveDirectory = "";
+		const { directory, downloads, complete } = await fakeDownloads(async (method, params) => {
+			if (method === "Browser.setDownloadBehavior")
+				saveDirectory = (params as { downloadPath: string }).downloadPath;
+		});
+		await downloads.enable(directory);
+		if (saveDirectory !== directory) tempDirs.push(saveDirectory);
+		const foreign = path.join(saveDirectory, `${crypto.randomUUID()}.crdownload`);
+		await Bun.write(foreign, "other tab still downloading");
+		const foreignCompleted = path.join(saveDirectory, crypto.randomUUID());
+		await Bun.write(foreignCompleted, "other tab completed");
+		// A different tab/process can start here after this tab last configured the shared browser.
+		expect(await fs.readdir(directory)).toEqual([]);
+		const guid = crypto.randomUUID();
+		const saved = path.join(saveDirectory, guid);
+		await Bun.write(saved, "owned bytes");
+		expect(await complete(guid, undefined)).toBe(path.join(directory, "report.txt"));
+		expect(await Bun.file(path.join(directory, "report.txt")).text()).toBe("owned bytes");
+		expect(await fs.readdir(directory)).toEqual(["report.txt"]);
+		expect(await Bun.file(foreign).text()).toBe("other tab still downloading");
+		expect(await Bun.file(foreignCompleted).text()).toBe("other tab completed");
+	});
 
 	it("moves only a file saved under its download GUID, under the last segment of the suggested name", async () => {
 		const { directory, elsewhere, complete } = await fakeDownloads();
@@ -263,7 +290,7 @@ describe("browser open options CDP helpers", () => {
 
 	it("keeps real file names and leaves files in place in a browser the user drives", async () => {
 		const behaviors: unknown[] = [];
-		const { elsewhere, complete } = await fakeDownloads(async (method, params) => {
+		const { directory, elsewhere, complete } = await fakeDownloads(async (method, params) => {
 			if (method === "Browser.setDownloadBehavior") behaviors.push(params);
 		}, false);
 		const guid = crypto.randomUUID();
@@ -273,7 +300,7 @@ describe("browser open options CDP helpers", () => {
 		expect(await complete(guid, saved)).toBe(saved);
 		expect(await Bun.file(saved).text()).toBe("bytes");
 		expect(behaviors.length).toBeGreaterThan(0);
-		for (const params of behaviors) expect(params).toMatchObject({ behavior: "allow" });
+		for (const params of behaviors) expect(params).toMatchObject({ behavior: "allow", downloadPath: directory });
 	});
 
 	it("reports a download whose suggested name is not a string where Chromium saved it", async () => {
@@ -696,6 +723,7 @@ await Promise.withResolvers().promise;`;
 		const first = await fs.mkdtemp(path.join(os.tmpdir(), "omp-browser-download-test-"));
 		const second = await fs.mkdtemp(path.join(os.tmpdir(), "omp-browser-download-test-"));
 		tempDirs.push(first, second);
+		let competing: CDPSession | undefined;
 		try {
 			const invoke = browserHost();
 			const download = async (name: string, beforeClick = "") =>
@@ -714,13 +742,22 @@ await Promise.withResolvers().promise;`;
 			const firstTab = `download-${crypto.randomUUID()}`;
 			const secondTab = `download-${crypto.randomUUID()}`;
 			await invoke({ action: "open", name: firstTab, url: `${server.url.href}?tab=first`, downloads: first });
+			await invoke({ action: "open", name: secondTab, url: `${server.url.href}?tab=second`, downloads: second });
+			const secondSession = getTab(secondTab);
+			if (secondSession?.backend !== "worker" || !("browser" in secondSession.browser))
+				throw new Error("Expected a worker browser tab");
+			competing = await secondSession.browser.browser.target().createCDPSession();
 
-			// `tab.title()` waits until the first tab's wait has pointed the browser's download folder at its own; the
-			// second tab then opens and points it at its own before the first tab's download starts.
+			// Start both workers before the timed download wait. Once `tab.title()` confirms tracking is armed,
+			// another CDP client redirects the browser-wide folder before the first tab clicks its download.
 			const gate = JSON.stringify(`${server.url.href}gate`);
 			const firstDownload = download(firstTab, `await tab.title(); await fetch(${gate});`);
 			await gateReached.promise;
-			await invoke({ action: "open", name: secondTab, url: `${server.url.href}?tab=second`, downloads: second });
+			await competing.send("Browser.setDownloadBehavior", {
+				behavior: "allowAndName",
+				downloadPath: second,
+				eventsEnabled: true,
+			});
 			gateOpened.resolve();
 			expect((await firstDownload).path).toBe(path.join(first, "fixture.bin"));
 			expect(await Bun.file(path.join(first, "fixture.bin")).text()).toBe("tab first, download 1\n");
@@ -734,6 +771,7 @@ await Promise.withResolvers().promise;`;
 			expect(await Bun.file(path.join(first, "fixture.bin")).text()).toBe("tab first, download 3\n");
 		} finally {
 			gateOpened.resolve();
+			await competing?.detach();
 			server.stop(true);
 		}
 	}, 20_000);

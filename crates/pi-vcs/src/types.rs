@@ -49,6 +49,15 @@ pub struct GitRepoInfo {
 	pub is_reftable:    bool,
 }
 
+/// One exact entry in an immutable commit tree, without reading blob content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitTreeEntry {
+	/// Full object ID in the repository's object format.
+	pub oid:  String,
+	/// Raw Git tree mode (e.g. 0o100644), not filesystem permissions.
+	pub mode: u32,
+}
+
 /// HEAD resolution: on a ref (born or unborn) or detached at a commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HeadState {

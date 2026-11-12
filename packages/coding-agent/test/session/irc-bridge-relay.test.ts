@@ -21,6 +21,7 @@ function makeBridge() {
 		isStreaming: () => false,
 		planModeEnabled: () => false,
 		emitSessionEvent: async () => {},
+		isRestartDraining: () => false,
 		wakeForIrc: (records: AgentMessage[]) => {
 			woken.push(records);
 		},
@@ -67,13 +68,17 @@ describe("IrcBridge broadcast legs reaching a streaming recipient", () => {
 		const steered: AgentMessage[] = [];
 		const observed: AgentSessionEvent[] = [];
 		const host = {
-			agent: { steer: (message: AgentMessage) => steered.push(message) } as unknown as Agent,
+			agent: {
+				steer: (message: AgentMessage) => steered.push(message),
+				peekFollowUpQueue: () => [],
+			} as unknown as Agent,
 			isDisposed: () => false,
 			isStreaming: () => true,
 			planModeEnabled: () => false,
 			emitSessionEvent: async (event: AgentSessionEvent) => {
 				observed.push(event);
 			},
+			isRestartDraining: () => false,
 			wakeForIrc: () => {},
 		} as unknown as IrcBridgeHost;
 		AgentRegistry.global().register({
@@ -221,5 +226,32 @@ describe("IrcBridge broadcast legs reaching a streaming recipient", () => {
 		expect(bridge.hasQueuedFrom("Peer")).toBe(false);
 		await bridge.deliver({ id: "p2", from: "Peer", to: "Child", body: "question?", ts: 9 });
 		expect(bridge.hasQueuedFrom("Peer")).toBe(true);
+	});
+});
+
+describe("IrcBridge snapshot asides", () => {
+	const custom = (customType: string, content: string, supersedesQueued?: boolean): AgentMessage =>
+		({
+			role: "custom",
+			customType,
+			content,
+			display: false,
+			details: supersedesQueued ? { supersedesQueued } : {},
+			timestamp: Date.now(),
+		}) as unknown as AgentMessage;
+
+	it("a newer snapshot of the same type replaces the queued one; other asides stay", () => {
+		const { bridge } = makeBridge();
+		bridge.queueAside([custom("todo-plan-check", "old plan", true), custom("note", "keep me")]);
+		bridge.queueAside([custom("todo-plan-check", "new plan", true)]);
+		const contents = bridge.drainPending().map(record => (record as CustomMessage).content);
+		expect(contents).toEqual(["keep me", "new plan"]);
+	});
+
+	it("unflagged asides of the same type accumulate", () => {
+		const { bridge } = makeBridge();
+		bridge.queueAside([custom("note", "a")]);
+		bridge.queueAside([custom("note", "b")]);
+		expect(bridge.drainPending()).toHaveLength(2);
 	});
 });

@@ -1,0 +1,207 @@
+[
+  {
+    "name": "Recorded idle audit rows 18:55",
+    "tasks": [
+      {
+        "content": "Collateral for \"Integrate finished lanes onto consolidated branch\": The Power group header carries a three-line sentence \"Required: 1.07–1.11 MW · Supplied: 2 MW · Surplus: 0.89–0.93 MW\" that wraps between \"Supplied:\" and \"2 MW\", separating the label from its value",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "schedule": {
+          "executor": {
+            "workerId": "PowerHeaderWrap-2",
+            "agentProfile": "ui-coder",
+            "resolvedModel": "codex-lb/gpt-6.1-sol",
+            "thinkingLevel": "medium",
+            "startedAt": 1793949805543,
+            "finishedAt": 1793949810653,
+            "outcome": "completed"
+          },
+          "audit": {
+            "delivery": "[\"PowerHeaderWrap-2\",1793949805543,1793949810653]",
+            "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+            "head": "f73f78a6147e1e16d26619b39ab698769e66e461",
+            "startedAt": 1793975814861,
+            "verdict": "inconclusive",
+            "agent": "qa-auditor",
+            "attempts": 2,
+            "findings": "auditor returned no verdict for this row",
+            "at": 1793976480957
+          },
+          "progress": {
+            "at": 1793972086950,
+            "evidence": "audit fail at f73f78a6147e: Missing HEAD acceptance evidence. Read PowerHeaderWrap-2: header geometry passed at 1440/390 on isolated 545929902, not requested HEAD or 430px. Only command exercised here was git rev-parse HEAD in ROOT, exit 0, confirming f73f78a6147e1e16d26619b39ab698769e66e461. Next worker must verify integrated change and inspect 1440/430 renderings with passing scoped checks at this exact revision."
+          },
+          "dependencies": [
+            "Integrate finished lanes onto consolidated branch"
+          ],
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph/tmp/power-header-wrap-2026-11-06"
+          ]
+        }
+      },
+      {
+        "content": "PR 112: rebase onto main after PR 111 merge and fix",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "schedule": {
+          "executor": {
+            "workerId": "AuditPr112-2",
+            "agentProfile": "task",
+            "resolvedModel": "codex-lb/gpt-6.1-terra",
+            "thinkingLevel": "medium",
+            "startedAt": 1793974742069,
+            "finishedAt": 1793974742540,
+            "outcome": "completed"
+          },
+          "audit": {
+            "delivery": "[\"AuditPr112-2\",1793974742069,1793974742540]",
+            "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+            "head": "f73f78a6147e1e16d26619b39ab698769e66e461",
+            "startedAt": 1793976481950,
+            "verdict": "inconclusive",
+            "agent": "qa-auditor",
+            "attempts": 2,
+            "findings": "auditor returned no verdict for this row",
+            "at": 1793976998130
+          },
+          "progress": {
+            "at": 1793969719121,
+            "evidence": "pushed f73f78a61 (rebased 22 commits + 4 landed patches); ROOT detached at f73f78a61 served on :5173 (dcg-review-dev-5173)"
+          },
+          "dependencies": []
+        }
+      },
+      {
+        "content": "Mau standup transcript into plans, requirements, knowledgebase",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "schedule": {
+          "executor": {
+            "workerId": "FirmLobster",
+            "agentProfile": "qa-auditor",
+            "resolvedModel": "codex-lb/gpt-6.1-sol",
+            "thinkingLevel": "medium",
+            "startedAt": 1793976754820,
+            "finishedAt": 1793976759991,
+            "outcome": "completed"
+          },
+          "audit": {
+            "delivery": "[\"FirmLobster\",1793976754820,1793976759991]",
+            "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+            "head": "f73f78a6147e1e16d26619b39ab698769e66e461",
+            "startedAt": 1793976999176,
+            "verdict": "pending",
+            "agent": "qa-auditor",
+            "attempts": 1
+          },
+          "progress": {
+            "at": 1793964872903,
+            "evidence": "partial 70ddb5b94 (transcript, TODO, profiles); -2 dispatched 15:34 to finish disposition, PRD, lint exclusion"
+          },
+          "dependencies": []
+        }
+      },
+      {
+        "content": "Land focus, UX graph, standup patches on PR 112",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "schedule": {
+          "executor": {
+            "workerId": "Root112Switch-2",
+            "agentProfile": "task",
+            "resolvedModel": "anthropic/claude-opus-5-5",
+            "thinkingLevel": "medium",
+            "startedAt": 1793968852848,
+            "finishedAt": 1793969034408,
+            "outcome": "completed"
+          },
+          "audit": {
+            "delivery": "[\"Root112Switch-2\",1793968852848,1793969034408]",
+            "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+            "head": "f73f78a6147e1e16d26619b39ab698769e66e461",
+            "startedAt": 1793975814861,
+            "verdict": "inconclusive",
+            "agent": "qa-auditor",
+            "attempts": 2,
+            "findings": "auditor returned no verdict for this row",
+            "at": 1793976481139
+          },
+          "progress": {
+            "at": 1793972087269,
+            "evidence": "audit fail at f73f78a6147e: Root112Switch-2 confirms ROOT detached at requested f73f78a6 with review server PID 3617705, but explicitly reports no push; it does not supply PR 112 readback proving all three patch sets landed. Next worker must inspect commit inclusion and remote PR source identity for the complete patch sets."
+          },
+          "dependencies": [
+            "PR 112: rebase onto main after PR 111 merge and fix"
+          ]
+        }
+      },
+      {
+        "content": "UX graph: tab transitions and conflict Back modeled",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "schedule": {
+          "executor": {
+            "workerId": "UxGraphModel",
+            "agentProfile": "coder",
+            "resolvedModel": "codex-lb/gpt-6.1-sol",
+            "thinkingLevel": "medium",
+            "startedAt": 1793971146093,
+            "finishedAt": 1793971473406,
+            "outcome": "completed"
+          },
+          "audit": {
+            "delivery": "[\"UxGraphModel\",1793971146093,1793971473406]",
+            "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+            "head": "f73f78a6147e1e16d26619b39ab698769e66e461",
+            "startedAt": 1793975814861,
+            "verdict": "inconclusive",
+            "agent": "qa-auditor",
+            "attempts": 2,
+            "findings": "auditor returned no verdict for this row",
+            "at": 1793976481199
+          },
+          "progress": {
+            "at": 1793972087345,
+            "evidence": "audit fail at f73f78a6147e: UxGraphModel reports repair committed locally as 27545d7eb4c98209354170039b26f859407ebbbe with no integration or push. Its product journeys tested f73f78a6, but those do not prove analyzer repair exists at that revision. Next worker must integrate the analyzer repair, then verify tab edges, preserved conflict underlay and graph freshness on the resulting frozen revision."
+          },
+          "dependencies": [
+            "Land focus, UX graph, standup patches on PR 112"
+          ]
+        }
+      },
+      {
+        "content": "Integrate finished lanes onto consolidated branch",
+        "status": "in_progress",
+        "artifactCwd": "/home/kom/proj/sunbim/datacenter-decision-graph",
+        "schedule": {
+          "executor": {
+            "workerId": "AuditIntegrate-7",
+            "agentProfile": "qa-auditor",
+            "resolvedModel": "codex-lb/gpt-6.1-sol",
+            "thinkingLevel": "medium",
+            "startedAt": 1793961723732
+          },
+          "audit": {
+            "delivery": "[\"AuditIntegrate-7\",1793961723732,null]",
+            "repoPath": "/home/kom/proj/sunbim/datacenter-decision-graph",
+            "head": "f73f78a6147e1e16d26619b39ab698769e66e461",
+            "startedAt": 1793975814861,
+            "verdict": "inconclusive",
+            "agent": "qa-auditor",
+            "attempts": 2,
+            "findings": "auditor returned no verdict for this row",
+            "at": 1793976481264
+          },
+          "progress": {
+            "at": 1793972087422,
+            "evidence": "audit fail at f73f78a6147e: AuditIntegrate-7 evidence concerns older 54b0302 and unresolved newest-head acceptance. Requested HEAD identity was confirmed, but no consolidated final-head gate or complete visible acceptance evidence was available. BLOCKED: awaiting lead answer: Which single audit command/proof and exclusive resource am I authorized to run for this batch? Asked Main twice; wait reported Main cannot reply while awaiting this result. No source changed, no tests started, no processes started/stopped, no commits/pushes or verdict recording performed. Next worker needs a named authorized gate and frozen-head integration evidence."
+          },
+          "dependencies": [],
+          "resources": [
+            "/home/kom/proj/sunbim/datacenter-decision-graph"
+          ]
+        }
+      }
+    ]
+  }
+]

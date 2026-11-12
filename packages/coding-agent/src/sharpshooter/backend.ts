@@ -116,7 +116,13 @@ export const sharpshooterBackend: MemoryBackend = {
 		}
 	},
 
-	async buildDeveloperInstructions(agentDir, cwd, settings): Promise<string | undefined> {
+	async buildDeveloperInstructions(): Promise<string | undefined> {
+		return undefined;
+	},
+
+	async buildConversationContext(session, _recall, agentDir): Promise<string | undefined> {
+		const cwd = session.sessionManager.getCwd();
+		const settings = session.settings;
 		const files = await readMemoryFiles(agentDir, cwd);
 		const populated = files.filter(file => file.content.trim().length > 0);
 		if (populated.length === 0) return undefined;

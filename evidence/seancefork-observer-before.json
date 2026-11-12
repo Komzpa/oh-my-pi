@@ -1,0 +1,27 @@
+{
+  "mode": "before",
+  "file": "../repro/before-child.jsonl",
+  "observations": [
+    {
+      "turn": 0,
+      "wallMs": 7752.9327459999995,
+      "maxIntervalMs": 7763.125456,
+      "rcharBytes": 3715953146,
+      "at": 1794087706843
+    },
+    {
+      "turn": 1,
+      "wallMs": 0.050318999999944936,
+      "maxIntervalMs": 10.055629999998928,
+      "rcharBytes": 278,
+      "at": 1794087706843
+    },
+    {
+      "turn": 2,
+      "wallMs": 0.028809999999793945,
+      "maxIntervalMs": 10.055172000000312,
+      "rcharBytes": 278,
+      "at": 1794087706843
+    }
+  ]
+}

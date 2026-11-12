@@ -24,7 +24,12 @@ import { getEffectiveTokenCost, getModelPricingStatus } from "@oh-my-pi/pi-catal
 import { logger, prompt, toError } from "@oh-my-pi/pi-utils";
 import { extractTextContent } from "../commit/utils";
 import type { ModelRegistry } from "../config/model-registry";
-import { expandRoleAlias, getModelMatchPreferences, resolveModelFromString } from "../config/model-resolver";
+import {
+	expandRoleAlias,
+	getModelMatchPreferences,
+	resolveModelFromString,
+	modelSelectorBlacklistError,
+} from "../config/model-resolver";
 import type { Settings } from "../config/settings";
 import { type LocalProtocolOptions, resolveLocalRoot } from "../internal-urls";
 import { cfgImagesBlockImages } from "../modes/settings";
@@ -126,6 +131,7 @@ function resolveVisionModel(deps: DescribeAttachedImagesDeps): Model<Api> | unde
 	const resolvePattern = (pattern: string | undefined): Model<Api> | undefined => {
 		if (!pattern) return undefined;
 		const expanded = expandRoleAlias(pattern, deps.settings);
+		if (modelSelectorBlacklistError(expanded, available)) return undefined;
 		const model = resolveModelFromString(expanded, available, preferences);
 		return model && sendsImageInputOnWire(model) ? model : undefined;
 	};

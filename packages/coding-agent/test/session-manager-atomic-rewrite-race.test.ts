@@ -187,7 +187,7 @@ describe("SessionManager atomic rewrite race", () => {
 		await sessionManager.flush();
 		sessionManager.appendCompaction("newer summary", "newer", firstKeptEntryId, 80);
 		// Kick off a full-file rewrite that parks inside the fake storage until released.
-		const rewritePublished = sessionManager.rewriteEntries();
+		const rewritePublished = sessionManager.rewriteEntries({ forceFullRewrite: true });
 		await storage.rewriteStarted.promise;
 
 		sessionManager.appendMessage({ role: "user", content: "during rewrite prompt", timestamp: Date.now() });
@@ -303,7 +303,7 @@ describe("SessionManager atomic rewrite race", () => {
 		sessionManager.appendCompaction("newer summary", "newer", firstKeptEntryId, 80);
 		// Kick off a full-file rewrite that parks inside the fake storage until we
 		// release it.
-		const rewritePublished = sessionManager.rewriteEntries();
+		const rewritePublished = sessionManager.rewriteEntries({ forceFullRewrite: true });
 		await storage.rewriteStarted.promise;
 
 		// Simulate a Ctrl+C teardown: append a session_exit custom entry (fenced
@@ -357,7 +357,7 @@ describe("SessionManager cross-process rewrite freshness", () => {
 		{
 			path: "an atomic rewrite (compaction, branch, entry discard)",
 			tornTail: false,
-			rewrite: (ours: SessionManager) => ours.rewriteEntries(),
+			rewrite: (ours: SessionManager) => ours.rewriteEntries({ forceFullRewrite: true }),
 		},
 		{
 			path: "the synchronous rewrite an append runs on a session that needs repair",
@@ -455,7 +455,7 @@ describe("SessionManager cross-process rewrite freshness", () => {
 		ours.onPersistenceError(error => errors.push(error));
 		const fullRewrites = [vi.spyOn(storage, "writeTextSync"), vi.spyOn(storage, "writeTextAtomic")];
 		try {
-			await ours.rewriteEntries();
+			await ours.rewriteEntries({ forceFullRewrite: true });
 			for (const turn of ourTurnsAfter) ours.appendMessage(userTurn(turn));
 			// The first attempt and every read-back retry meet a fresh racing turn;
 			// one more publishes the sibling, and later appends go incremental.
@@ -500,7 +500,7 @@ describe("SessionManager cross-process rewrite freshness", () => {
 		manager.onPersistenceNotice(notice => notices.push(notice));
 
 		await storage.unlink(sessionFile);
-		await manager.rewriteEntries();
+		await manager.rewriteEntries({ forceFullRewrite: true });
 
 		expect(manager.getSessionFile()).toBe(sessionFile);
 		expect(notices).toEqual([]);
@@ -514,7 +514,11 @@ describe("SessionManager cross-process rewrite freshness", () => {
 			firstTurns: ["our first write"],
 			firstWrite: (ours: SessionManager) => ours.appendMessage(userTurn("our first write")),
 		},
-		{ path: "an atomic rewrite", firstTurns: [], firstWrite: (ours: SessionManager) => ours.rewriteEntries() },
+		{
+			path: "an atomic rewrite",
+			firstTurns: [],
+			firstWrite: (ours: SessionManager) => ours.rewriteEntries({ forceFullRewrite: true }),
+		},
 	])(
 		"moves to one sibling instead of writing a file another process owns, on $path",
 		async ({ firstTurns, firstWrite }) => {
@@ -627,7 +631,7 @@ describe("SessionManager atomic rewrite fence spans writer.close()", () => {
 		// Schedule an atomic rewrite; the task opens by closing the current
 		// writer, which parks on the fake's close gate. The fence must be active
 		// throughout the entire close-yield window so no fresh writer opens.
-		const rewrite = sessionManager.rewriteEntries();
+		const rewrite = sessionManager.rewriteEntries({ forceFullRewrite: true });
 		await storage.closeStarted.promise;
 
 		sessionManager.appendMessage({ role: "user", content: "during close", timestamp: Date.now() });
@@ -784,7 +788,7 @@ describe("SessionManager fence relaxes when flushSync supersedes the atomic rewr
 		await sessionManager.flush();
 
 		// Schedule an atomic rewrite that parks inside writeTextAtomic.
-		const rewrite = sessionManager.rewriteEntries();
+		const rewrite = sessionManager.rewriteEntries({ forceFullRewrite: true });
 		await storage.rewriteStarted.promise;
 
 		// (1) Append X1 while the fence epoch is still current: fenced into memory
@@ -930,7 +934,7 @@ describe("SessionManager fence handoff across superseded rewrites", () => {
 		expect(storage.writerOpens).toBeGreaterThan(0);
 
 		// Stale rewrite parks at pauses[0]. Fence epoch = 0.
-		const stale = sessionManager.rewriteEntries();
+		const stale = sessionManager.rewriteEntries({ forceFullRewrite: true });
 		while (storage.pauses.length < 1) await Promise.resolve();
 		await storage.pauses[0].started.promise;
 
@@ -940,7 +944,7 @@ describe("SessionManager fence handoff across superseded rewrites", () => {
 		sessionManager.flushSync();
 
 		// Newer rewrite scheduled at epoch=1. Parks at pauses[1]. Fence epoch = 1.
-		const newer = sessionManager.rewriteEntries();
+		const newer = sessionManager.rewriteEntries({ forceFullRewrite: true });
 		while (storage.pauses.length < 2) await Promise.resolve();
 		await storage.pauses[1].started.promise;
 
@@ -997,6 +1001,27 @@ class GatedAtomicFailureStorage extends MemorySessionStorage {
 		return { started: started.promise, release: release.resolve };
 	}
 
+	override openWriter(
+		path: string,
+		options?: { flags?: "a" | "w"; onError?: (err: Error) => void },
+	): SessionStorageWriter {
+		const writer = super.openWriter(path, options);
+		const appendSync = writer.appendSync!.bind(writer);
+		const append = async (line: string): Promise<void> => {
+			appendSync(line);
+		};
+		writer.appendSync = undefined;
+		writer.append = async line => {
+			const failure = this.#nextFailure;
+			if (!failure) return append(line);
+			this.#nextFailure = undefined;
+			failure.started.resolve();
+			await failure.release.promise;
+			throw failure.error;
+		};
+		return writer;
+	}
+
 	override async writeTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
 		const failure = this.#nextFailure;
 		if (!failure) {
@@ -1012,6 +1037,25 @@ class GatedAtomicFailureStorage extends MemorySessionStorage {
 
 class ScriptedAtomicFailureStorage extends MemorySessionStorage {
 	readonly behaviors: Array<{ commit: boolean; error: Error }> = [];
+
+	override openWriter(
+		path: string,
+		options?: { flags?: "a" | "w"; onError?: (err: Error) => void },
+	): SessionStorageWriter {
+		const writer = super.openWriter(path, options);
+		const appendSync = writer.appendSync!.bind(writer);
+		const append = async (line: string): Promise<void> => {
+			appendSync(line);
+		};
+		writer.appendSync = undefined;
+		writer.append = async line => {
+			const behavior = this.behaviors.shift();
+			if (!behavior) return append(line);
+			if (behavior.commit) await append(line);
+			throw behavior.error;
+		};
+		return writer;
+	}
 
 	override async writeTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void> {
 		const behavior = this.behaviors.shift();

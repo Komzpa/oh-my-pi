@@ -37,12 +37,16 @@ import { disambiguateDisplayLabels } from "@oh-my-pi/pi-tui/render/render-utils"
 import { theme } from "@oh-my-pi/pi-tui/theme";
 import type { AskToolDetails } from "@oh-my-pi/pi-tui/tools/ask";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import type { ExtensionUIContext, ExtensionUIDialogOptions, ExtensionUISelectItem } from "../extensibility/extensions";
 import { askTimeoutMs, cfgAskNotify } from "../modes/settings";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import askHeadlessForkMessage from "../prompts/tools/ask-headless-fork.md" with { type: "text" };
 import askResultTemplate from "../prompts/tools/ask-result.md" with { type: "text" };
+import askGateRefused from "../prompts/tools/ask-gate-refused.md" with { type: "text" };
+import askGateDefaults from "../prompts/tools/ask-gate-defaults.md" with { type: "text" };
+import askPending from "../prompts/tools/ask-pending.md" with { type: "text" };
+import { cfgAskGateEnabled, cfgAskGateAgent, cfgAskGateRecentSeconds } from "../modes/settings";
 import { cfgSpeechEnabled } from "../tts/settings";
 import { vocalizer } from "../tts/vocalizer";
 import type { ToolSession } from ".";
@@ -61,6 +65,10 @@ const TIMEOUT_DETECTION_TOLERANCE_MS = 1_000;
 
 const askSchema = arkType({
 	html: arkType("string").describe("one HTML <form>"),
+	"critical?": arkType({
+		kind: "'irreversible' | 'public' | 'hands' | 'credential'",
+		reason: arkType("string").narrow((reason, ctx) => reason.trim().length > 0 || ctx.mustBe("non-blank")),
+	}),
 });
 
 export type AskParams = typeof askSchema.infer;
@@ -357,15 +365,21 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 	readonly parameters = askSchema;
 	readonly strict = true;
 
-	// Run alone in its tool batch. The interactive dialog is a single shared UI
+	// Exclusive only with the interactive dialog: it is a single shared UI
 	// surface (`ExtensionUiController` has no queue and overwrites the active
-	// dialog on each call), so two concurrent `ask` calls would clobber each
-	// other: the second steals focus and orphans the first, whose promise then
-	// hangs until the user aborts the whole turn.
-	readonly concurrency = "exclusive";
+	// dialog on each call), so two concurrent interactive `ask` calls would
+	// clobber each other. A pending (non-interactive) ask returns immediately.
+	readonly concurrency: "shared" | "exclusive";
+	readonly #interactiveAnswer: boolean;
 	readonly loadMode = "discoverable";
 
-	constructor(private readonly session: ToolSession) {}
+	constructor(
+		private readonly session: ToolSession,
+		options: { interactiveAnswer?: boolean } = {},
+	) {
+		this.#interactiveAnswer = options.interactiveAnswer === true;
+		this.concurrency = this.#interactiveAnswer ? "exclusive" : "shared";
+	}
 
 	readonly description = prompt.render(askDescription);
 
@@ -387,8 +401,55 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		});
 	}
 
+	/** Read structured results on this branch only; prose and running jobs are never evidence. */
+	#hasRecentAgentResult(): boolean {
+		const agent = cfgAskGateAgent.get(this.session.settings).trim();
+		if (!agent) return false;
+		const entries = this.session.sessionManager?.getBranch() ?? [];
+		const windowMs = Math.max(0, cfgAskGateRecentSeconds.get(this.session.settings)) * 1000;
+		const now = Date.now();
+		let afterUser = true;
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const entry = entries[i]!;
+			if (entry.type !== "message") continue;
+			const message = entry.message;
+			if (message.role === "user") afterUser = false;
+			const time = Date.parse(entry.timestamp);
+			if (!afterUser && !(windowMs > 0 && time <= now && now - time <= windowMs)) continue;
+			if (message.role === "toolResult" && message.toolName === "task" && !message.isError) {
+				const details = message.details;
+				if (
+					isRecord(details) &&
+					Array.isArray(details.results) &&
+					details.results.some(
+						result =>
+							isRecord(result) &&
+							result.agent === agent &&
+							result.exitCode === 0 &&
+							!result.aborted &&
+							!result.error,
+					)
+				)
+					return true;
+			}
+			if (message.role === "custom" && message.customType === "async-result") {
+				const details = message.details;
+				if (
+					isRecord(details) &&
+					Array.isArray(details.jobs) &&
+					details.jobs.some(
+						job =>
+							isRecord(job) && job.type === "task" && job.status === "completed" && job.agentProfile === agent,
+					)
+				)
+					return true;
+			}
+		}
+		return false;
+	}
+
 	async execute(
-		_toolCallId: string,
+		toolCallId: string,
 		params: AskParams,
 		signal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<AskToolDetails>,
@@ -400,8 +461,10 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 			// prompt-cache prefix. Aborting would end its run with no final answer, and the
 			// parent would receive an empty result; let the model put the question there.
 			if (this.session.advertiseHeadlessAsk) throw new ToolError(HEADLESS_FORK_ASK_ERROR);
-			context?.abort();
-			throw new ToolAbortError("Ask tool requires interactive mode");
+			if (this.#interactiveAnswer) {
+				context?.abort();
+				throw new ToolAbortError("Ask tool requires interactive mode");
+			}
 		}
 
 		const form = parseHtmlForm(params.html);
@@ -410,6 +473,82 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		if (named.length === 0) {
 			return { content: [{ type: "text", text: NO_NAMED_CONTROLS_ERROR }], details: { answers: [] } };
 		}
+
+		const pendingQuestions = named.map(field => ({
+			id: field.name,
+			question: questions.get(field) ?? field.name,
+			options:
+				field.kind === "choice"
+					? field.options
+							.filter(option => !option.disabled)
+							.map(option => ({
+								label: spansText(option.label) || option.value,
+							}))
+					: [],
+			multi: field.kind === "choice" && field.multi,
+			recommended:
+				field.kind === "choice"
+					? field.options.filter(option => !option.disabled).findIndex(option => option.checked)
+					: undefined,
+		}));
+		const gated =
+			!this.#interactiveAnswer &&
+			!(this.session.taskDepth && this.session.taskDepth > 0) &&
+			cfgAskGateEnabled.get(this.session.settings) &&
+			pendingQuestions.some(question => question.options.length > 0);
+		if (
+			gated &&
+			!params.critical &&
+			(pendingQuestions.some(
+				question =>
+					question.recommended === undefined ||
+					question.recommended < 0 ||
+					question.recommended >= question.options.length,
+			) ||
+				!this.#hasRecentAgentResult())
+		) {
+			throw new ToolError(prompt.render(askGateRefused, { agent: cfgAskGateAgent.get(this.session.settings) }));
+		}
+		if (!this.#interactiveAnswer) {
+			if (signal?.aborted) throw new ToolAbortError("Ask input was cancelled");
+			const pending = {
+				id: toolCallId,
+				sessionId: this.session.getSessionId?.() ?? undefined,
+				html: params.html,
+				questions: pendingQuestions,
+			};
+			if (gated && !params.critical) {
+				const workingDefaults = pendingQuestions.map(question => ({
+					id: question.id,
+					option: question.options[question.recommended!]!.label,
+				}));
+				return {
+					content: [{ type: "text", text: prompt.render(askGateDefaults, { ...pending, workingDefaults }) }],
+					details: { pending, workingDefaults },
+				};
+			}
+			this.#sendAskNotification();
+			const formDialog = context?.ui?.formDialog?.bind(context.ui);
+			if (formDialog && this.session.submitUserReply) {
+				void formDialog(params.html, {})
+					.then(result => {
+						if (!result || result.timedOut) return;
+						if (signal?.aborted) return;
+						if (pending.sessionId !== undefined && this.session.getSessionId?.() !== pending.sessionId) return;
+						this.session.submitUserReply?.(
+							formAnswers(form, result.data)
+								.map(answer => `Answer to ${toolCallId} [${answer.name}]: ${answer.answer}`)
+								.join("\n"),
+						);
+					})
+					.catch(error => logger.warn("Ask pending form failed", { error: String(error), toolCallId }));
+			}
+			return {
+				content: [{ type: "text", text: prompt.render(askPending, pending) }],
+				details: { pending, ...(params.critical ? { critical: params.critical } : {}) },
+			};
+		}
+		if (!context?.hasUI || !context.ui) throw new ToolAbortError("Ask tool requires interactive mode");
 
 		const extensionUi = context.ui;
 

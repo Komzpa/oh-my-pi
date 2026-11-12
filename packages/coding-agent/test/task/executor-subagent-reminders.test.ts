@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { AgentBusyError, type AgentTelemetryConfig, type Tracer } from "@oh-my-pi/pi-agent-core";
 import { type AssistantMessage, Effort } from "@oh-my-pi/pi-ai";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionActions, LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
@@ -104,8 +105,11 @@ function mockCreateAgentSession(session: AgentSession) {
 }
 
 describe("runSubprocess yield reminders", () => {
-	afterEach(() => {
+	afterEach(async () => {
+		const manager = AsyncJobManager.instance();
+		if (manager) await manager.dispose({ timeoutMs: 200 });
 		vi.restoreAllMocks();
+		AsyncJobManager.resetForTests();
 	});
 
 	const baseAgent: AgentDefinition = {
@@ -127,6 +131,76 @@ describe("runSubprocess yield reminders", () => {
 		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry,
 		enableLsp: false,
 	};
+
+	it("retains owner jobs when missing-yield finalization turns a successful run into failure", async () => {
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+		const jobId = manager.register(
+			"bash",
+			"owned job",
+			async ({ signal }) => {
+				await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+				return "cancelled";
+			},
+			{ id: "missing-yield-owned-job", ownerId: "subagent-missing-yield" },
+		);
+		const session = createMockSession(({ emit, state }) => {
+			const assistant = createAssistantStopMessage("did work without yielding");
+			state.messages.push(assistant);
+			emit({ type: "message_end", message: assistant });
+		});
+		mockCreateAgentSession(session);
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "subagent-missing-yield",
+			asyncJobManager: manager,
+			outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+			outputSchemaMode: "strict",
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.stderr).toBe(SUBAGENT_WARNING_MISSING_YIELD);
+		expect(result.retainedBackgroundJobs).toMatchObject([{ id: jobId, label: "owned job", type: "bash" }]);
+	});
+
+	it("does not report owner jobs for a valid final yield", async () => {
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+		manager.register(
+			"bash",
+			"owned job",
+			async ({ signal }) => {
+				await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+				return "cancelled";
+			},
+			{ id: "valid-schema-owned-job", ownerId: "subagent-valid-schema" },
+		);
+		const session = createMockSession(({ emit }) => {
+			emit({
+				type: "tool_execution_end",
+				toolCallId: "tool-valid-schema-yield",
+				toolName: "yield",
+				result: {
+					content: [{ type: "text", text: "Result submitted." }],
+					details: { status: "success", data: { ok: true } },
+				},
+				isError: false,
+			});
+		});
+		mockCreateAgentSession(session);
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "subagent-valid-schema",
+			asyncJobManager: manager,
+			outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+			outputSchemaMode: "strict",
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(result.retainedBackgroundJobs).toBeUndefined();
+	});
 
 	it("waits for session_start extension user messages before prompting the subagent", async () => {
 		let extensionSendUserMessage: ExtensionActions["sendUserMessage"] | undefined;
@@ -208,7 +282,7 @@ describe("runSubprocess yield reminders", () => {
 		expect(createAgentSessionSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("appends the per-spawn subagent prompt after the default blocks so the static prefix stays shared", async () => {
+	it("separates the stable agent role from per-spawn conversation instructions", async () => {
 		let userPrompt = "";
 		const session = createMockSession(({ text, emit }) => {
 			userPrompt = text;
@@ -231,18 +305,15 @@ describe("runSubprocess yield reminders", () => {
 			task: "Your assignment is below.\nBe thorough and complete fully before yielding.\n\nDo the task.",
 		});
 
-		const systemPromptBuilder = createAgentSessionSpy.mock.calls[0]?.[0]?.systemPrompt;
-		expect(systemPromptBuilder).toBeFunction();
-		if (typeof systemPromptBuilder !== "function") throw new Error("Expected system prompt builder");
-		const systemPrompt = systemPromptBuilder(["system", "<project-context>\ncwd\n</project-context>"]);
-
-		expect(systemPrompt).toHaveLength(3);
-		expect(systemPrompt?.[0]).toBe("system");
-		expect(systemPrompt?.[1]).toBe("<project-context>\ncwd\n</project-context>");
-		expect(systemPrompt?.[2]).toContain(baseAgent.systemPrompt);
-		// The parent-conversation CONTEXT section is gone: subagents get their
-		// background inside the assignment (or a local:// file), never a dump.
-		expect(systemPrompt?.[2]).not.toMatch(/CONTEXT\n=+/);
+		const options = createAgentSessionSpy.mock.calls[0]?.[0];
+		expect(options?.agentRolePrompt).toBe(baseAgent.systemPrompt);
+		const defaults = ["system", "<project-context>cwd</project-context>"];
+		const callback = options?.systemPrompt;
+		const startup =
+			typeof callback === "function" ? [callback(defaults)].flat().slice(defaults.length).join("\n\n") : undefined;
+		expect(options?.systemPromptIsStartupContext).toBe(true);
+		expect(startup).not.toContain(baseAgent.systemPrompt);
+		expect(startup).toContain("§ Completion");
 		expect(userPrompt).not.toMatch(/CONTEXT\n=+/);
 	});
 	it("resets yield state after an intervening wake wins the follow-up prompt race", async () => {
@@ -596,7 +667,7 @@ describe("runSubprocess yield reminders", () => {
 		expect(sessionOptions?.toolNames).toEqual(["read"]);
 		const systemPromptBuilder = sessionOptions?.systemPrompt;
 		if (typeof systemPromptBuilder !== "function") throw new Error("Expected system prompt builder");
-		expect(systemPromptBuilder(["system"])?.at(-1)).toContain("your final message is your result");
+		expect([systemPromptBuilder(["system"])].flat().at(-1)).toContain("your final message is your result");
 		expect(prompts).toHaveLength(1);
 		expect(result.exitCode).toBe(0);
 		expect(result.output).toBe(report);
@@ -1125,6 +1196,7 @@ describe("runSubprocess yield reminders", () => {
 		const modelRegistry = {
 			refresh: async () => {},
 			getAvailable: () => [{ provider: "openai", id: "gpt-4o", name: "GPT-4o" }],
+			getApiKey: async () => undefined,
 		} as unknown as import("@oh-my-pi/pi-coding-agent/config/model-registry").ModelRegistry;
 
 		await runSubprocess({

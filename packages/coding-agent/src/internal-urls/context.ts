@@ -46,10 +46,16 @@ export function sessionResolveContext(
 		signal: options.signal,
 		sessionFile: session.getSessionFile() ?? undefined,
 		experimentalContextManagement: cfgCompactionExperimentalContextManagement.get(session.settings) === true,
+		// Invoked only for history://current/full: that export requires the uncompacted transcript.
+		// Keep this lazy so ordinary internal URL reads never materialize the branch.
 		getSessionBranch: () => getExperimentalContextSession(session).getBranch(),
 		sessionId: session.sessionManager?.getSessionId?.() ?? session.getSessionId?.() ?? undefined,
 		agentRegistry: session.agentRegistry,
 		localProtocolOptions: contextLocalProtocolOptions(session),
+		getSessionBranchView: () => {
+			const manager = getExperimentalContextSession(session);
+			return manager.getBranchView?.() ?? manager.getBranch();
+		},
 		skills: session.skills,
 		containSkillPaths: options.containSkillPaths,
 		rules: session.activeRules,

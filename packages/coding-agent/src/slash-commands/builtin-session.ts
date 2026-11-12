@@ -1,3 +1,5 @@
+import { providersCommand } from "../session/providers-command";
+import { replaceTabs } from "@oh-my-pi/pi-tui";
 import { clearSubmittedText } from "./helpers/draft";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import { journalJudgmentUsage, resolveJudge, sharedJudgmentCache } from "../judgment";
@@ -212,6 +214,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpInputHint: "<subcommand>",
 		subcommands: [
 			{ name: "edit", description: "Open todos in $EDITOR (Markdown round-trip)" },
+			{ name: "all", description: "Show every todo, closed ones included" },
 			{ name: "copy", description: "Copy todos as Markdown to clipboard" },
 			{ name: "expand", description: "Show every phase and task in the HUD" },
 			{ name: "collapse", description: "Restore the bounded HUD preview" },
@@ -446,6 +449,24 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 			runtime.ctx.showStatus("Usage: /usage [show|reset [provider/credential-id|provider/active]]");
 			clearSubmittedText(runtime);
+		},
+	},
+	{
+		name: "providers",
+		description: "List provider cooldowns or probe recovery now",
+		allowArgs: true,
+		inlineHint: "[probe [<provider>|--all]]",
+		handle: async (command, runtime) => {
+			const args = command.args.trim() ? command.args.trim().split(/\s+/) : [];
+			if (args[0] === "clear") return usage("Use omp providers clear <provider> for an explicit override.", runtime);
+			try {
+				await runtime.output(
+					replaceTabs(sanitizeText(await providersCommand(args, async () => runtime.session.modelRegistry))),
+				);
+			} catch (error) {
+				return usage(errorMessage(error), runtime);
+			}
+			return commandConsumed();
 		},
 	},
 	{

@@ -27,6 +27,7 @@ import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { ArtifactManager } from "../../session/artifacts";
 import type { BlobPutOptions, BlobPutResult } from "../../session/blob-store";
 import type { SessionEntry, SessionHeader, SessionTreeNode, UsageStatistics } from "../../session/session-entries";
+import type { SessionContextEntryMetadata } from "../../session/session-context";
 import type { ReadonlySessionManager } from "../../session/session-manager";
 import { isMainThread } from "../identity";
 import type { RpcCodec } from "../rpc";
@@ -163,6 +164,33 @@ export class ToolContextSessionView implements ReadonlySessionManager {
 
 	getEntries(): SessionEntry[] {
 		throw new CrossThreadSessionReadError("getEntries");
+	}
+
+	getContextBranch(): SessionEntry[] {
+		throw new CrossThreadSessionReadError("getContextBranch");
+	}
+	getEntryCount(_type?: SessionEntry["type"]): number {
+		throw new CrossThreadSessionReadError("getEntryCount");
+	}
+	hasEntryType(_type: SessionEntry["type"]): boolean {
+		throw new CrossThreadSessionReadError("hasEntryType");
+	}
+	iterateEntries(_type?: SessionEntry["type"]): IterableIterator<SessionEntry> {
+		throw new CrossThreadSessionReadError("iterateEntries");
+	}
+	iterateBranch(_type?: SessionEntry["type"]): IterableIterator<SessionEntry> {
+		throw new CrossThreadSessionReadError("iterateBranch");
+	}
+	getBranchMatching(_predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry[] {
+		throw new CrossThreadSessionReadError("getBranchMatching");
+	}
+	getLatestBranchMatching(_predicate: (metadata: SessionContextEntryMetadata) => boolean): SessionEntry | undefined {
+		throw new CrossThreadSessionReadError("getLatestBranchMatching");
+	}
+	iterateBranchMatchingNewestFirst(
+		_predicate: (metadata: SessionContextEntryMetadata) => boolean,
+	): IterableIterator<SessionEntry> {
+		throw new CrossThreadSessionReadError("iterateBranchMatchingNewestFirst");
 	}
 
 	getTree(): SessionTreeNode[] {

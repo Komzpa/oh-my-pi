@@ -495,6 +495,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 						) => Promise<void>
 					)(context, options, renderChunk),
 				viewSession: {
+					agent: { state: { streamMessage: null, pendingToolCalls: new Set() } },
 					isStreaming: false,
 					buildTranscriptSessionContext: () => ({
 						messages: [],
@@ -686,6 +687,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				// otherwise unregister the orphaned block.
 				renderSessionContextIncrementally: () => Promise.reject(new Error("staged rebuild boom")),
 				viewSession: {
+					agent: { state: { streamMessage: null, pendingToolCalls: new Set() } },
 					isStreaming: false,
 					buildTranscriptSessionContext: () => ({
 						messages: [],
@@ -879,6 +881,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 				// otherwise unregister the orphaned blocks.
 				renderSessionContextIncrementally: () => Promise.reject(new Error("staged rebuild boom")),
 				viewSession: {
+					agent: { state: { streamMessage: null, pendingToolCalls: new Set() } },
 					isStreaming: false,
 					buildTranscriptSessionContext: () => ({
 						messages: [],

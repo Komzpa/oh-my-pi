@@ -107,6 +107,7 @@ describe("prefixed tool rows", () => {
 						content: [],
 						details: {
 							storage: "memory",
+							op: "view",
 							phases: [
 								{
 									name: "Tasks",

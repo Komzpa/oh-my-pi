@@ -1,0 +1,38 @@
+@oh-my-pi/browser-relay:check:types             | ✓ No type errors in 5 files [14.34ms]
+@oh-my-pi/browser-relay:check:types             | Done in 18ms
+@oh-my-pi/collab-web:check:types                | ✓ No type errors in 131 files [34.55ms]
+@oh-my-pi/collab-web:check:types                | Done in 39ms
+@oh-my-pi/omp-stats:check:types                 | ✓ No type errors in 528 files [167.73ms]
+@oh-my-pi/omp-stats:check:types                 | ✓ No type errors in 88 files [33.08ms]
+@oh-my-pi/omp-stats:check:types                 | Done in 217ms
+@oh-my-pi/omptype:check:types                   | ✓ No type errors in 36 files [71.75ms]
+@oh-my-pi/omptype:check:types                   | Done in 79ms
+@oh-my-pi/pi-agent-core:check:types             | ✓ No type errors in 612 files [199.57ms]
+@oh-my-pi/pi-agent-core:check:types             | Done in 213ms
+@oh-my-pi/pi-ai:check:types                     | ✓ No type errors in 3,345 files [456.43ms]
+@oh-my-pi/pi-ai:check:types                     | Done in 489ms
+@oh-my-pi/pi-catalog:check:types                | ✓ No type errors in 2,945 files [516.52ms]
+@oh-my-pi/pi-catalog:check:types                | Done in 553ms
+@oh-my-pi/pi-coding-agent:check:types           | ✓ No type errors in 5,167 files [715.85ms]
+@oh-my-pi/pi-coding-agent:check:types           | Done in 760ms
+@oh-my-pi/pi-metaharness:check:types            | ✓ No type errors in 152 files [140.51ms]
+@oh-my-pi/pi-metaharness:check:types            | ✓ No type errors in 2,780 files [371.16ms]
+@oh-my-pi/pi-metaharness:check:types            | ✓ No type errors in 2,784 files [398.68ms]
+@oh-my-pi/pi-metaharness:check:types            | ✓ No type errors in 2,782 files [415.44ms]
+@oh-my-pi/pi-metaharness:check:types            | Done in 1.44s
+@oh-my-pi/pi-mnemopi:check:types                | ✓ No type errors in 647 files [209.03ms]
+@oh-my-pi/pi-mnemopi:check:types                | Done in 228ms
+@oh-my-pi/pi-natives:check:types                | ✓ No type errors in 85 files [26.91ms]
+@oh-my-pi/pi-natives:check:types                | Done in 31ms
+@oh-my-pi/pi-tui:check:types                    | ✓ No type errors in 1,435 files [325.88ms]
+@oh-my-pi/pi-tui:check:types                    | Done in 341ms
+@oh-my-pi/pi-utils:check:types                  | ✓ No type errors in 257 files [79.13ms]
+@oh-my-pi/pi-utils:check:types                  | Done in 87ms
+@oh-my-pi/pi-wire:check:types                   | ✓ No type errors in 6 files [10.17ms]
+@oh-my-pi/pi-wire:check:types                   | Done in 13ms
+@oh-my-pi/reemxy-extensions:check:types         | ✓ No type errors in 2,871 files [406.73ms]
+@oh-my-pi/reemxy-extensions:check:types         | Done in 433ms
+@oh-my-pi/snapcompact:check:types               | ✓ No type errors in 506 files [174.56ms]
+@oh-my-pi/snapcompact:check:types               | Done in 185ms
+@oh-my-pi/typescript-edit-benchmark:check:types | ✓ No type errors in 2,784 files [473.24ms]
+@oh-my-pi/typescript-edit-benchmark:check:types | Done in 505ms

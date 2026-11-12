@@ -40,7 +40,7 @@ describe("SYSTEM.md prompt assembly", () => {
 
 	afterEach(cleanupTempHome(() => ({ tempDir, tempHomeDir, originalHome })));
 
-	it("keeps per-request date/cwd out of the system prompt footer", async () => {
+	it("keeps the clock dynamic while recording the project cwd", async () => {
 		// The date/cwd line was moved out of the system prompt and onto the first
 		// user turn (#7404): any byte that changes per request at the tail of the
 		// system block invalidates the tool-schema prefix cache on open-weight
@@ -64,7 +64,7 @@ describe("SYSTEM.md prompt assembly", () => {
 
 		const promptText = systemPrompt.join("\n\n");
 		const normalizedProjectDir = projectDir.replace(/\\/g, "/");
-		expect(promptText).not.toContain(normalizedProjectDir);
+		expect(promptText).toContain(normalizedProjectDir);
 		expect(promptText).not.toContain("Today");
 		expect(promptText).not.toContain("current working directory");
 	});
@@ -142,7 +142,7 @@ describe("SYSTEM.md prompt assembly", () => {
 		fs.mkdirSync(path.join(projectDir, ".omp"), { recursive: true });
 		fs.writeFileSync(path.join(projectDir, ".omp", "SYSTEM.md"), "Discovered project SYSTEM prompt");
 
-		const { systemPrompt } = await buildSystemPrompt({
+		const { systemPrompt, conversationContext } = await buildSystemPrompt({
 			cwd: projectDir,
 			resolvedCustomPrompt: "CLI custom prompt",
 			resolvedAppendSystemPrompt: appendPrompt,
@@ -165,7 +165,8 @@ describe("SYSTEM.md prompt assembly", () => {
 		const appendMatches = promptText.match(new RegExp(escapeRegExp(appendPrompt), "g")) ?? [];
 		expect(systemPrompt).toHaveLength(2);
 		expect(promptText).toContain("CLI custom prompt");
-		expect(promptText).toContain("<workspace-tree>");
+		expect(promptText).not.toContain("<workspace-tree>");
+		expect(conversationContext).toContain("<workspace-tree>");
 		expect(promptText).toContain("<dir-context>");
 		// The project/environment footer survives even though the date/cwd line was
 		// relocated out of it; <workstation> is rendered only by that footer.
@@ -174,13 +175,19 @@ describe("SYSTEM.md prompt assembly", () => {
 		expect(promptText).not.toContain("Discovered project SYSTEM prompt");
 	});
 
-	it("renders active child repo context in the main system prompt", async () => {
+	it("renders active child repo context in the project system prompt", async () => {
 		const parentDir = path.join(tempDir, "parent-cwd");
 		fs.mkdirSync(path.join(parentDir, "active-project", ".git"), { recursive: true });
 		fs.writeFileSync(path.join(parentDir, "active-project", ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
 
 		const { systemPrompt } = await buildSystemPrompt({
 			cwd: parentDir,
+			activeRepoContext: {
+				cwd: parentDir,
+				repoRoot: path.join(parentDir, "active-project"),
+				relativeRepoRoot: "active-project",
+				source: "single-direct-child-repo",
+			},
 			contextFiles: [],
 			skills: [],
 			rules: [],

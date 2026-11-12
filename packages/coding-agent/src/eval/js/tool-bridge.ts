@@ -8,7 +8,7 @@ import { type ImageContent, toolWireSchema } from "@oh-my-pi/pi-ai";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import type { ToolSession } from "../../tools";
-import { committedTodoPhases } from "../../tools/todo";
+import { committedTodoEdit, committedTodoPhases } from "../../tools/todo";
 import { isReplyWrite, toolResultReplies } from "@oh-my-pi/pi-tui/chat/reply-write";
 import { parseMCPProgress } from "@oh-my-pi/pi-tui/tools/mcp";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
@@ -35,7 +35,7 @@ import {
 	runEvalWait,
 } from "../handle-bridge";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
-import { getActiveEvalShadowCell } from "../speculation/runtime-context";
+import { getActiveEvalShadowCell, runWithEvalJob } from "../speculation/runtime-context";
 import { isEvalBridgeToolCallable } from "../tool-bridge-policy";
 import { EVAL_WORKPOOL_BRIDGE_NAME, type EvalWorkpoolResult, runEvalWorkpool } from "../workpool-bridge";
 import type { RuntimeCallIdentity } from "./shared/runtime";
@@ -63,6 +63,7 @@ export interface ToolBridgeOptions {
 	 * would draw them, so such calls fail instead of reporting a reply nobody sees.
 	 */
 	onReply?: (text: string) => void;
+	evalJobId?: string;
 }
 
 type ToolValue =
@@ -290,9 +291,9 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 	const tool = getTool(options.session, name);
 	// Wire aliases share every guard, status and bookkeeping path with the canonical tool.
 	name = tool.name;
-	if (!isEvalBridgeToolCallable(tool)) {
-		// The session recognizes checkpoint/rewind only as direct toolResult
-		// messages; a bridged call would report success without taking effect.
+	if (!isEvalBridgeToolCallable(tool, args)) {
+		// Session changes and requirement audit admission/intake need direct
+		// agent-loop events; a bridged call cannot commit their canonical state.
 		throw new ToolError(`\`${name}\` cannot run through the eval bridge; call the direct \`${name}\` tool.`);
 	}
 	const toolCallId = `js-${name}-${crypto.randomUUID()}`;
@@ -352,12 +353,8 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			DELEGATED_WORK_TOOLS.has(name) ? options.emitStatus : undefined,
 			async () => {
 				try {
-					return await tool.execute(
-						toolCallId,
-						validatedArgs,
-						options.signal,
-						onUpdate,
-						options.session.getToolContext?.(),
+					return await runWithEvalJob(options.evalJobId, () =>
+						tool.execute(toolCallId, validatedArgs, options.signal, onUpdate, options.session.getToolContext?.()),
 					);
 				} finally {
 					settled = true;
@@ -369,7 +366,7 @@ export async function callSessionTool(name: string, args: unknown, options: Tool
 			// rehydration reads; without this the in-memory update is lost on the
 			// next resume/rewind/fork and stale todos trigger a false reminder.
 			const phases = committedTodoPhases(result);
-			if (phases) options.session.commitTodoPhases?.(phases);
+			if (phases) options.session.persistTodoPhases?.(phases, committedTodoEdit(result));
 		}
 		const replies = reply === undefined ? toolResultReplies(result.details) : [reply];
 		if (replies.length > 0) {

@@ -37,7 +37,12 @@ import type {
 } from "../types";
 import { normalizeSystemPrompts, normalizeToolCallId, resolveCacheRetention } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
-import { isDemotedThinking, kStreamingLastParseLen } from "../utils/block-symbols";
+import {
+	copyPerCallContextMessage,
+	isDemotedThinking,
+	isPerCallContextMessage,
+	kStreamingLastParseLen,
+} from "../utils/block-symbols";
 import { hasVisibleAssistantContent, withReplaySafeStreamRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
@@ -1881,6 +1886,9 @@ const streamOpenAICompletionsOnce = (
 			});
 			output.stopReason = result.stopReason;
 			output.errorStatus = result.status;
+			output.errorType = result.errorType;
+			output.errorCode = result.errorCode;
+			output.errorResetAt = result.errorResetAt;
 			output.errorId = result.id;
 			output.errorMessage = result.message;
 			// Some providers via OpenRouter include extra details here.
@@ -2372,6 +2380,7 @@ function maybeAddAnthropicCacheControl(compat: ResolvedOpenAICompat, messages: C
 	// would re-send every in-turn tool result uncached.
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
+		if (isPerCallContextMessage(msg)) continue;
 		if (msg.role !== "user" && msg.role !== "assistant" && msg.role !== "developer" && msg.role !== "tool") continue;
 
 		const content = msg.content;
@@ -2574,6 +2583,7 @@ export function convertMessages(
 					content,
 				});
 			}
+			copyPerCallContextMessage(params[params.length - 1], msg);
 		} else if (msg.role === "assistant") {
 			const assistantMsg: OpenAICompletionsAssistantMessageParam = {
 				role: "assistant",

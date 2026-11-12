@@ -1,4 +1,10 @@
-import type { AgentOptions, AgentTelemetryConfig, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import type {
+	AgentMessage,
+	AgentOptions,
+	AgentTelemetryConfig,
+	AgentTool,
+	AgentToolContext,
+} from "@oh-my-pi/pi-agent-core";
 import type { EditStore } from "@oh-my-pi/pi-natives";
 import type { FetchImpl, ImageContent, Message, Model, ServiceTierByFamily, ToolChoice } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -69,12 +75,13 @@ import { MemoryEditTool } from "./memory-edit";
 import { MemoryRecallTool } from "./memory-recall";
 import { MemoryReflectTool } from "./memory-reflect";
 import { MemoryRetainTool } from "./memory-retain";
+import { PeersTool } from "./peers";
 import { wrapToolWithMetaNotice } from "./output-meta";
 import { ReadTool } from "./read";
 import type { PlanProposalHandler } from "./resolve";
 import { SecurityScanTool } from "./security-scan";
 import { supportsExternalThinking, ThinkTool } from "./think";
-import { type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { type TodoPersistedEdit, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { TodoTool } from "./todo";
 import { WriteTool } from "./write";
 import { WaitTool } from "./wait";
@@ -106,6 +113,7 @@ import { cfgExternalThinking } from "../session/settings";
 import { cfgGoalEnabled } from "../goals/settings";
 import { cfgLspEnabled } from "../lsp/settings";
 import { cfgMemoryBackend } from "../memory-backend/settings";
+import { isReadOnlyToolNames } from "../task/read-only-policy";
 import { cfgTaskMaxRecursionDepth } from "../task/settings";
 
 export * from "../edit";
@@ -148,6 +156,7 @@ export * from "./memory-edit";
 export * from "./memory-recall";
 export * from "./memory-reflect";
 export * from "./memory-retain";
+export * from "./peers";
 export * from "./read";
 export * from "./report-tool-issue";
 export * from "./resolve";
@@ -211,6 +220,8 @@ export interface DeferredDiagnosticsEntry {
 
 /** Session context for tool factories */
 export interface ToolSession {
+	/** Task child handover gate, installed on its home thread. */
+	checkPeerHandover?: (entries: unknown) => Promise<string | undefined>;
 	/** Current working directory */
 	cwd: string;
 	/** Cost gate of the session tree, forwarded to subagents. */
@@ -223,6 +234,8 @@ export interface ToolSession {
 	canPromptUser?: boolean;
 	/** Keep `ask` in a headless fork's roster; execution still requires UI. */
 	advertiseHeadlessAsk?: boolean;
+	/** Submit an interactive ask answer as an ordinary queued user message. */
+	submitUserReply?: (text: string) => void;
 	/** The user approves `cfg://` writes for this session (top-level TUI session only). */
 	settingsApproval?: boolean;
 	/**
@@ -249,12 +262,15 @@ export interface ToolSession {
 	skipPythonPreflight?: boolean;
 	/** Pre-loaded context files (AGENTS.md, etc) */
 	contextFiles?: ContextFileEntry[];
+	recordInstructionFile?: (path: string, body?: string) => Promise<void>;
 	/** No context files beyond `contextFiles`, not even for additional workspace roots (forwarded to subagents) */
 	noContextFiles?: boolean;
 	/** Pre-loaded workspace tree (forwarded to subagents to skip re-scanning) */
 	workspaceTree?: WorkspaceTree;
 	/** Pre-loaded skills */
 	skills?: readonly Skill[];
+	/** Current post-compaction model context, used by tools that need to know what results are still visible. */
+	messages?: readonly AgentMessage[];
 	/**
 	 * Frozen skill-URI hint visibility: snapshot taken at the last system-prompt
 	 * rebuild. Tools with a provider-side `skill://` hint read this instead of
@@ -353,7 +369,12 @@ export interface ToolSession {
 	 * cost ledger (`appendModelUsage`) without changing advisor-local IDs.
 	 */
 	sessionManager?: Pick<SessionManager, "appendCustomEntry" | "ensureOnDisk" | "flush" | "getBranch" | "getEntries"> &
-		Partial<Pick<SessionManager, "getSessionId" | "getLeafId" | "appendModelUsage" | "getArtifactContent">>;
+		Partial<
+			Pick<
+				SessionManager,
+				"getSessionId" | "getLeafId" | "appendModelUsage" | "getArtifactContent" | "getBranchView"
+			>
+		>;
 	/** Get eval kernel owner ID for session-scoped retained-kernel cleanup. */
 	getEvalKernelOwnerId?: () => string | null;
 	/** Current enabled eval prelude definitions. */
@@ -378,6 +399,13 @@ export interface ToolSession {
 	getAgentId?: () => string | null;
 	/** Parent cache identity for sibling sharing; the child stores it independently of its initial model, and each request consumes it only when its own model opts in. */
 	getPromptCacheKey?: () => string | undefined;
+	/**
+	 * Which agent owns this tool session. `bash`/`eval` tool environments strip
+	 * the desktop-session bindings (`WAYLAND_DISPLAY`, `DISPLAY`,
+	 * `DBUS_SESSION_BUS_ADDRESS`, user `XDG_RUNTIME_DIR`) when this is `"sub"`;
+	 * the main interactive session keeps its environment unchanged.
+	 */
+	agentKind?: "main" | "sub";
 	/** Look up a registered tool by name (used by the eval js backend's tool bridge). */
 	getToolByName?: (name: string) => AgentTool | undefined;
 	/** Look up an enabled tool through the eval bridge's normal permission pipeline. */
@@ -409,6 +437,15 @@ export interface ToolSession {
 	 * remains restricted until the activation commits.
 	 */
 	pendingFullWriteDescription?: boolean;
+	/**
+	 * Set when this session's `write` tool was granted only as the `agent://`
+	 * message transport: peer messages and `agent://all` broadcasts proceed,
+	 * every other target is rejected (enforced by WriteTool before the
+	 * {@link deviceOnlyWrite} gate). Granted by {@link createTools} to read-only
+	 * agents (explicit tool list a non-empty subset of READ_ONLY_TOOL_NAMES) so
+	 * they can reply to the lead and peers without any other write capability.
+	 */
+	agentOnlyWrite?: boolean;
 	/** Agent registry for IRC routing across live sessions. */
 	agentRegistry?: AgentRegistryApi;
 	/** Idle→parked→revive lifecycle owner; lets explicit cancellation stop a non-job-backed agent registration. Default: AgentLifecycleManager.global(). */
@@ -454,12 +491,15 @@ export interface ToolSession {
 		event: BeforeSubagentSpawnEvent,
 		signal?: AbortSignal,
 	): Promise<BeforeSubagentSpawnEventResult | undefined>;
+	getRestartDrainSignal?: () => AbortSignal;
 	/** Auth storage for passing to subagents (avoids re-discovery) */
 	authStorage?: import("../session/auth-storage").AuthStorage;
 	/** Model registry for passing to subagents (avoids re-discovery) */
 	modelRegistry?: import("../config/model-registry").ModelRegistry;
 	/** Agent output manager for unique agent:// IDs across task invocations */
 	agentOutputManager?: AgentOutputManager;
+	/** Authenticated task identity, recorded before a later launch/result error can hide it. */
+	onTaskWorkerLaunched?(toolCallId: string, index: number, workerId: string, agent: string): void;
 	/** Manager of this session's root, shared only with that root's subagents. */
 	asyncJobManager?: AsyncJobManagerApi;
 	/** MCP manager visible to subagents without relying on the process-global singleton. */
@@ -488,6 +528,8 @@ export interface ToolSession {
 	getClientBridge?: () => ClientBridge | undefined;
 	/** Get cached todo phases for this session. */
 	getTodoPhases?: () => TodoPhase[];
+	/** Stable immutable view for read and copy-on-write lifecycle paths. */
+	getTodoSnapshot?: () => readonly TodoPhase[];
 	/** Replace cached todo phases for this session. */
 	setTodoPhases?: (phases: TodoPhase[]) => void;
 	/**
@@ -496,7 +538,7 @@ export interface ToolSession {
 	 * toolResult entry; callers that produce none (the eval bridge, Cursor sync)
 	 * use this so branch rehydration agrees with the in-memory list.
 	 */
-	commitTodoPhases?: (phases: TodoPhase[]) => void;
+	persistTodoPhases?: (phases: TodoPhase[], edit?: TodoPersistedEdit) => void;
 	/** Active workpool items whose incremental yields complete the current turn. */
 	getWorkPoolYieldItems?: () => readonly WorkPoolYieldItem[];
 	/**
@@ -617,6 +659,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	new_context: NewContextTool.createIf,
 	task: s => TaskTool.create(s),
 	wait: s => new WaitTool(s),
+	peers: s => new PeersTool(s),
 	todo: s => new TodoTool(s),
 	web_search: s => new WebSearchTool(s),
 	write: s => new WriteTool(s),
@@ -883,6 +926,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 	// device-only transport left by an earlier read-only call.
 	if (requestedTools === undefined || requestedTools.includes("write")) {
 		session.deviceOnlyWrite = undefined;
+		session.agentOnlyWrite = undefined;
 		session.pendingFullWriteDescription = undefined;
 	}
 	const allTools: Record<string, ToolFactory> = { ...BUILTIN_TOOLS, ...HIDDEN_TOOLS };
@@ -933,6 +977,37 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			builtInNames.add(wrapped.name);
 		} else {
 			session.deviceOnlyWrite = undefined;
+		}
+	}
+
+	// A read-only agent's explicit tool list (non-empty subset of
+	// READ_ONLY_TOOL_NAMES) gets `write` only as the agent:// message transport
+	// so it can reply to the lead and peers: `write agent://<id>` messages and
+	// `agent://all` broadcasts proceed (WriteTool's agent-only gate), every
+	// other write stays rejected. `deviceOnlyWrite` is set alongside so the
+	// shared restricted-transport bookkeeping (tool rebuilds, direct file
+	// mutation frames) treats the grant as synthetic.
+	// Classified on the caller's declared list (`toolNames`), not on
+	// `requestedTools`: resolveBuiltinToolPlan appends read-tier conveniences
+	// (e.g. `think` under externalThinking) that are not in READ_ONLY_TOOL_NAMES.
+	// Restricted sessions own an exact capability list and never get the grant.
+	if (requestedTools !== undefined && !restrictToolNames) {
+		const declaredTools = toolNames === undefined ? undefined : normalizeToolNames(toolNames);
+		// Without peer messaging `agent://` writes are rejected, so there is nothing to grant.
+		const messagingAvailable = session.enableIrc !== false && isIrcEnabled(session.settings, session.taskDepth ?? 0);
+		const agentOnly = !requestedTools.includes("write") && isReadOnlyToolNames(declaredTools) && messagingAvailable;
+		session.agentOnlyWrite = agentOnly ? true : undefined;
+		if (agentOnly) {
+			session.deviceOnlyWrite = true;
+			if (!tools.some(tool => tool.name === "write")) {
+				const writeTool = await logger.time("createTools:write:agent-transport", BUILTIN_TOOLS.write, session);
+				if (writeTool) {
+					const wrapped = wrapToolWithMetaNotice(writeTool);
+					tools.push(wrapped);
+					toolRegistry.set(wrapped.name, wrapped);
+					builtInNames.add(wrapped.name);
+				}
+			}
 		}
 	}
 

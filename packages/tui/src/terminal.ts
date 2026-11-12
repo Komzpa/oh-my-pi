@@ -507,6 +507,8 @@ export function emergencyTerminalRestore(): void {
 export type TerminalAppearance = "dark" | "light";
 /** Options for {@link Terminal.start}. */
 export interface TerminalStartOptions {
+	/** Repaint the whole UI after job-control foreground recovery. */
+	onResume?: () => void;
 	/**
 	 * Paint-only start: skip raw mode, stdin ownership, and every probe that
 	 * elicits a response on stdin. The host tty keeps cooked-mode line editing
@@ -854,6 +856,118 @@ export interface ProcessTerminalOptions {
  * Real terminal using process.stdin/stdout
  */
 export class ProcessTerminal implements Terminal {
+	#onResume?: () => void;
+	#foregroundProbe?: () => boolean;
+	#captureRaw?: () => void;
+	#restoreRaw?: () => void;
+	#foregroundTimer?: Timer;
+	#foreground = true;
+	#pendingForegroundStart?: () => void;
+	#resumeModes = new Set<number>();
+	#onContinue = () => this.#recoverForeground(true);
+	#onSuspend = () => {
+		if (this.#foregroundProbe?.() === false) {
+			process.kill(0, "SIGSTOP");
+			return;
+		}
+		process.stdin.pause();
+		this.#safeWrite("\x1b[?2004l\x1b[?5522l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?25h");
+		if (this.#kittyProtocolActive) this.#safeWrite("\x1b[=0;1u");
+		if (this.#modifyOtherKeysActive) this.#safeWrite("\x1b[>4;0m");
+		if (altScreenActive) this.#safeWrite("\x1b[?1049l");
+		this.#outputPump?.stop(1000);
+		this.#outputPump = undefined;
+		process.stdin.setRawMode?.(this.#wasRaw);
+		// SIGSTOP cannot be swallowed by another library's SIGTSTP handler.
+		process.kill(0, "SIGSTOP");
+	};
+
+	#startOutputPump(): void {
+		// Own the blocking write(2) on a pump thread (unix TTYs only). A stale
+		// prebuilt natives module without the export falls back to direct writes.
+		// Test suites spy on `process.stdout.write` with a faked isTTY, so the
+		// pump stays off under `bun test` — same philosophy as isTerminalHeadless.
+		if (process.platform !== "win32" && process.stdout.isTTY && !isBunTestRuntime() && !this.#outputPump) {
+			try {
+				this.#outputPump = new TtyWriter(1);
+				this.#pumpBacklogBound = 0;
+			} catch (err) {
+				logger.debug("tty output pump unavailable; using direct stdout writes", { err: String(err) });
+			}
+		}
+	}
+
+	#watchForeground(): void {
+		if (process.platform === "win32" || !process.stdin.isTTY || isBunTestRuntime()) return;
+		if (!this.#foregroundProbe) {
+			const libraries = process.platform === "darwin" ? ["/usr/lib/libSystem.B.dylib"] : ["libc.so.6", "libc.so"];
+			for (const library of libraries) {
+				try {
+					const { symbols } = dlopen(library, {
+						getpgrp: { args: [], returns: FFIType.i32 },
+						tcgetattr: { args: [FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
+						tcsetattr: { args: [FFIType.i32, FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
+						tcgetpgrp: { args: [FFIType.i32], returns: FFIType.i32 },
+					});
+					this.#foregroundProbe = () => symbols.tcgetpgrp(0) === symbols.getpgrp();
+					// Opaque storage avoids depending on platform-specific termios layouts.
+					const raw = Buffer.alloc(256);
+					this.#captureRaw = () => {
+						if (symbols.tcgetattr(0, ptr(raw)) !== 0) throw new Error("Could not capture raw terminal mode");
+						this.#restoreRaw = () => {
+							if (symbols.tcsetattr(0, 0, ptr(raw)) !== 0)
+								throw new Error("Could not restore raw terminal mode");
+						};
+					};
+					break;
+				} catch {}
+			}
+		}
+		if (this.#foregroundTimer) return;
+		process.on("SIGCONT", this.#onContinue);
+		process.on("SIGTSTP", this.#onSuspend);
+		this.#foregroundTimer = setInterval(() => this.#recoverForeground(false), 100);
+		this.#foregroundTimer.unref();
+	}
+
+	#recoverForeground(continued: boolean): void {
+		if (this.#dead) return;
+		const foreground = this.#foregroundProbe?.() ?? true;
+		const regained = foreground && !this.#foreground;
+		this.#foreground = foreground;
+		if (!foreground) return;
+		if (this.#pendingForegroundStart) {
+			const start = this.#pendingForegroundStart;
+			this.#pendingForegroundStart = undefined;
+			start();
+			if (!this.#active) {
+				this.#onResume?.();
+				return;
+			}
+		}
+		if (!this.#active || (!continued && !regained)) return;
+		// Bun/libuv caches isRaw: asking for true again can skip tcsetattr even
+		// after the parent shell restored cooked termios during fg.
+		try {
+			process.stdin.setRawMode?.(false);
+			process.stdin.setRawMode?.(true);
+			this.#restoreRaw?.();
+		} catch (err) {
+			this.#markTerminalDisconnected("stdin raw mode recovery failed", err);
+			return;
+		}
+		process.stdin.resume();
+		this.#startOutputPump();
+		this.#safeWrite("\x1b[?2004h\x1b[?1l\x1b>\x1b[?2031h");
+		if (altScreenActive) this.#safeWrite("\x1b[?1049h");
+		if (this.#kittyProtocolActive) this.#safeWrite(`\x1b[=${this.#kittyFlags};1u`);
+		if (this.#modifyOtherKeysActive) this.#safeWrite("\x1b[>4;2m");
+		if (this.#inBandResizeActive) this.#safeWrite("\x1b[?2048h");
+		for (const mode of this.#resumeModes) this.#safeWrite(`\x1b[?${mode}h`);
+		this.#cursorVisible = undefined;
+		this.#onResume?.();
+	}
+
 	#wasRaw = false;
 	// Set when raw input attaches over a cooked tty: the next read starts with
 	// whatever the kernel line-buffered meanwhile. See restoreCookedEnter.
@@ -1134,6 +1248,7 @@ export class ProcessTerminal implements Terminal {
 		this.#resizeHandler = onResize;
 		this.#disconnectHandler = onDisconnect;
 		this.#isLoopStalled = options?.isLoopStalled;
+		this.#onResume = options?.onResume;
 		// The host terminal's cursor visibility is unknown until we write it.
 		this.#cursorVisible = undefined;
 
@@ -1143,6 +1258,18 @@ export class ProcessTerminal implements Terminal {
 		// escapes never reach the developer's terminal during `bun test`.
 		this.#headless = isTerminalHeadless();
 		if (this.#headless) return;
+		this.#inputDeferred = options?.deferInput ?? false;
+		this.#watchForeground();
+		this.#foreground = this.#foregroundProbe?.() ?? true;
+		if (!this.#foreground) {
+			// Wait for the shell to foreground us; never call tcsetpgrp or change
+			// shell termios, protocols, stderr, or stdin from a background launch.
+			this.#foregroundTimer?.ref();
+			this.#pendingForegroundStart = () =>
+				this.start(onInput, onResize, onDisconnect, { ...options, deferInput: this.#inputDeferred });
+			return;
+		}
+		this.#foregroundTimer?.unref();
 		registerPostmortemTerminalRestore();
 
 		// Own stdout: out-of-band writers route through this terminal, and the
@@ -1151,18 +1278,7 @@ export class ProcessTerminal implements Terminal {
 		// RGB belongs to this ownership session, including deferred-input prepaint.
 		setTerminalBackgroundColor(undefined);
 		terminalEverStarted = true;
-		// Own the blocking write(2) on a pump thread (unix TTYs only). A stale
-		// prebuilt natives module without the export falls back to direct writes.
-		// Test suites spy on `process.stdout.write` with a faked isTTY, so the
-		// pump stays off under `bun test` — same philosophy as isTerminalHeadless.
-		if (process.platform !== "win32" && process.stdout.isTTY && !isBunTestRuntime() && !this.#outputPump) {
-			try {
-				this.#outputPump = new TtyWriter(1);
-				this.#pumpBacklogBound = 0;
-			} catch (err) {
-				logger.debug("tty output pump unavailable; using direct stdout writes", { err: String(err) });
-			}
-		}
+		this.#startOutputPump();
 
 		// Keep unmanaged native fd-2 writes off the viewport while we own the
 		// terminal; released in stop(). See stderr-guard in pi-utils.
@@ -1198,7 +1314,7 @@ export class ProcessTerminal implements Terminal {
 	enableInput(): void {
 		if (!this.#inputDeferred) return;
 		this.#inputDeferred = false;
-		if (this.#headless || this.#dead) return;
+		if (this.#headless || this.#dead || this.#pendingForegroundStart) return;
 		this.#attachInput();
 	}
 
@@ -1217,6 +1333,7 @@ export class ProcessTerminal implements Terminal {
 		if (process.stdin.setRawMode) {
 			try {
 				process.stdin.setRawMode(true);
+				this.#captureRaw?.();
 			} catch (err) {
 				this.#markTerminalDisconnected("stdin raw mode setup failed", err);
 				return;
@@ -2385,6 +2502,15 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	stop(): void {
+		if (this.#foregroundTimer) clearInterval(this.#foregroundTimer);
+		this.#foregroundTimer = undefined;
+		this.#resumeModes.clear();
+		process.removeListener("SIGCONT", this.#onContinue);
+		process.removeListener("SIGTSTP", this.#onSuspend);
+		if (this.#pendingForegroundStart) {
+			this.#pendingForegroundStart = undefined;
+			return;
+		}
 		// Suppress observer/timer callbacks before any teardown can yield or throw.
 		this.#active = false;
 		this.#inputDeferred = false;
@@ -2598,6 +2724,11 @@ export class ProcessTerminal implements Terminal {
 	}
 
 	write(data: string): void {
+		for (const match of data.matchAll(/\x1b\[\?(1000|1002|1003|1006|5522)([hl])/g)) {
+			const mode = Number(match[1]);
+			if (match[2] === "h") this.#resumeModes.add(mode);
+			else this.#resumeModes.delete(mode);
+		}
 		// Hosts can reset bracketed paste (e.g. iTerm2's Terminal State toggle).
 		// Reassert it with existing output, never on a timer while idle.
 		if (data && this.#active && this.#rearmBracketedPaste) data = `\x1b[?2004h${data}`;
@@ -2619,6 +2750,7 @@ export class ProcessTerminal implements Terminal {
 
 	#safeWrite(data: string): void {
 		if (this.#headless) return;
+		if (this.#pendingForegroundStart || this.#foregroundProbe?.() === false) return;
 		if (this.#dead) return;
 		// Skip control sequences when stdout isn't a TTY (piped output, tests, log
 		// files). They serve no purpose there and would surface as visible noise.

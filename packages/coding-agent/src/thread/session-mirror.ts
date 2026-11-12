@@ -1,3 +1,4 @@
+import type { PeerCommandReceipt } from "../collab/peer-commands";
 /**
  * Wire model of agent sessions homed on another thread.
  *
@@ -47,12 +48,13 @@ import type {
 	PromptOptions,
 	ResolvedRoleModel,
 	RestoredQueuedMessage,
+	RestartDrainLease,
 	RoleModelCycleResult,
 	SessionStats,
 	SteerOptions,
 } from "../session/agent-session-types";
 import type { IdleMaintenanceOptions } from "../session/idle-maintenance";
-import type { CustomMessage } from "../session/messages";
+import type { CustomMessage, CustomMessagePayload } from "../session/messages";
 import type { ServingModel } from "../session/retry-fallback-chains";
 import type { ModelUsageEntry, SessionEntry, UsageStatistics } from "../session/session-entries";
 import type { AgentDefinition } from "../task/types";
@@ -61,6 +63,8 @@ import type { RemoteObject, RpcMethod } from "./rpc";
 
 /** Data a session homed on another thread exposes synchronously. */
 export interface SessionMirrorState {
+	isDisposed: boolean;
+	restartPendingInputCount: number;
 	isStreaming: boolean;
 	runStartedAt: number | undefined;
 	ircWakesPending: boolean;
@@ -218,6 +222,7 @@ export interface SessionAbortOptions {
 	reason?: string;
 	preserveCompaction?: boolean;
 	deliverQueuedMessages?: boolean;
+	cancelBackgroundJobs?: boolean;
 }
 
 /**
@@ -226,6 +231,7 @@ export interface SessionAbortOptions {
  * event-stream watch toggle.
  */
 export type SessionHostProtocol = {
+	executePeerSlashCommand: RpcMethod<[text: string], PeerCommandReceipt | null>;
 	prompt: RpcMethod<[text: string, options?: PromptOptions], boolean>;
 	steer: RpcMethod<[text: string, images?: ImageContent[], options?: SteerOptions], void>;
 	abort: RpcMethod<[options?: SessionAbortOptions], void>;
@@ -244,6 +250,14 @@ export type SessionHostProtocol = {
 	 * never be delivered.
 	 */
 	popQueuedMessage: RpcMethod<[id: string], void>;
+	setFastMode: RpcMethod<[enabled: boolean], boolean>;
+	sendCustomMessage: RpcMethod<
+		[
+			message: CustomMessagePayload,
+			options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+		],
+		boolean
+	>;
 	setTodoPhases: RpcMethod<[phases: TodoPhase[]], void>;
 	appendCustomEntry: RpcMethod<[customType: string, data: unknown], void>;
 	appendModelUsage: RpcMethod<
@@ -256,6 +270,11 @@ export type SessionHostProtocol = {
 		],
 		void
 	>;
+	beginRestartDrain: RpcMethod<[], RestartDrainLease>;
+	getRestartBranchEntries: RpcMethod<[], SessionEntry[]>;
+	sendRestartNotice: RpcMethod<[message: Omit<CustomMessage, "role" | "timestamp">], void>;
+	flushRestartJournal: RpcMethod<[options?: { handoffIndex?: boolean }], void>;
+
 	flushSession: RpcMethod<[], void>;
 	ensureOnDisk: RpcMethod<[], void>;
 	getArtifactPath: RpcMethod<[id: string], string | null>;
@@ -288,6 +307,7 @@ export type SessionHostProtocol = {
  * local session or its mirror, and routes commands to the home thread).
  */
 export type SessionBridgeProtocol = {
+	setFastMode: RpcMethod<[session: AgentSessionHandle, enabled: boolean], boolean>;
 	opened: RpcMethod<[opened: SessionOpened], void>;
 	patch: RpcMethod<[key: string, patch: Partial<SessionMirrorState>], void>;
 	messages: RpcMethod<[key: string, delta: SessionMessagesDelta], void>;
@@ -308,14 +328,24 @@ export type SessionBridgeProtocol = {
 	entries: RpcMethod<[key: string, delta: SessionEntriesDelta], void>;
 	closed: RpcMethod<[key: string], void>;
 	read: RpcMethod<[session: AgentSessionHandle, fields: readonly PeerStateField[]], Partial<SessionMirrorState>>;
+	readTodoPhases: RpcMethod<[session: AgentSessionHandle], TodoPhase[]>;
 	readMessages: RpcMethod<[session: AgentSessionHandle], AgentMessage[]>;
 	hasQueuedIrcFrom: RpcMethod<[session: AgentSessionHandle, from: string], boolean>;
 	subscribe: RpcMethod<[session: AgentSessionHandle, listener: AgentSessionEventListener], () => void>;
 	subscribeRunState: RpcMethod<[session: AgentSessionHandle, listener: (state: SessionRunState) => void], () => void>;
+	executePeerSlashCommand: RpcMethod<[session: AgentSessionHandle, text: string], PeerCommandReceipt | null>;
 	prompt: RpcMethod<[session: AgentSessionHandle, text: string, options?: PromptOptions], boolean>;
 	steer: RpcMethod<[session: AgentSessionHandle, text: string, images?: ImageContent[], options?: SteerOptions], void>;
 	abort: RpcMethod<[session: AgentSessionHandle, options?: SessionAbortOptions], void>;
 	dispose: RpcMethod<[session: AgentSessionHandle, options?: AgentSessionDisposeOptions], void>;
+	beginRestartDrain: RpcMethod<[session: AgentSessionHandle], RestartDrainLease>;
+	getRestartBranchEntries: RpcMethod<[session: AgentSessionHandle], SessionEntry[]>;
+	sendRestartNotice: RpcMethod<
+		[session: AgentSessionHandle, message: Omit<CustomMessage, "role" | "timestamp">],
+		void
+	>;
+	flushRestartJournal: RpcMethod<[session: AgentSessionHandle, options?: { handoffIndex?: boolean }], void>;
+
 	deliverIrcMessage: RpcMethod<[session: AgentSessionHandle, msg: IrcMessage], "injected" | "woken">;
 	waitForIrcReplies: RpcMethod<[session: AgentSessionHandle], void>;
 	setWorkPoolYieldItems: RpcMethod<[session: AgentSessionHandle, items: readonly WorkPoolYieldItem[]], void>;
@@ -331,6 +361,8 @@ export class SessionBridgeClient {
 export const SESSION_STATE_READERS: {
 	readonly [K in PeerStateField]: (session: AgentSessionHandle) => SessionMirrorState[K];
 } = {
+	isDisposed: session => session.isDisposed,
+	restartPendingInputCount: session => session.getRestartPendingInputCount(),
 	isStreaming: session => session.isStreaming,
 	runStartedAt: session => session.runStartedAt,
 	ircWakesPending: session => session.ircWakesPending,

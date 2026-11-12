@@ -68,6 +68,83 @@ export function filterProcessEnv(env: Record<string, string | undefined>): Recor
 	return result;
 }
 /**
+ * Desktop-session variables that bind a shell to the user's live graphical
+ * session. A task worker that inherits them can open windows or notifications
+ * on the user's screen (grievance 608), so subagent tool environments must not
+ * carry them. The main interactive session keeps its own values untouched.
+ */
+export const DESKTOP_SESSION_ENV_KEYS = [
+	"WAYLAND_DISPLAY",
+	"WAYLAND_SOCKET",
+	"DISPLAY",
+	"XAUTHORITY",
+	"ICEAUTHORITY",
+	"DBUS_SESSION_BUS_ADDRESS",
+	"DBUS_SESSION_BUS_PID",
+	"DBUS_SESSION_BUS_WINDOWID",
+	"DBUS_STARTER_ADDRESS",
+	"DBUS_STARTER_BUS_TYPE",
+	"SESSION_MANAGER",
+	"SWAYSOCK",
+	"I3SOCK",
+] as const;
+
+/**
+ * Copy `env` with the desktop-session bindings removed. `XDG_RUNTIME_DIR` is
+ * replaced with a per-worker private directory when `runtimeDir` is supplied;
+ * otherwise it is dropped as well so the worker cannot reach the user's
+ * `/run/user/<uid>` sockets (Wayland, bus) through it.
+ */
+export function stripDesktopSessionEnv(env: Record<string, string>, runtimeDir?: string): Record<string, string> {
+	const result = { ...env };
+	for (const key of DESKTOP_SESSION_ENV_KEYS) {
+		delete result[key];
+	}
+	if (runtimeDir !== undefined) {
+		result.XDG_RUNTIME_DIR = runtimeDir;
+	} else {
+		delete result.XDG_RUNTIME_DIR;
+	}
+	return result;
+}
+/**
+ * Per-worker private replacement for `XDG_RUNTIME_DIR` (grievance 608). Sibling
+ * workers get distinct directories so one worker's sockets never leak into
+ * another's view; the directory is created 0700 like the shell-snapshot dir.
+ */
+export function ensureSubagentRuntimeDir(token: string): string {
+	const safe = token.replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 64) || "subagent";
+	const dir = path.join(os.tmpdir(), `omp-worker-runtime-${safe}-${process.getuid?.() ?? "u"}`);
+	fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+	try {
+		fs.chmodSync(dir, 0o700);
+	} catch {
+		// best-effort: pre-existing dir owned by this uid is already private.
+	}
+	return dir;
+}
+/**
+ * Mask the desktop-session bindings in the live environment and return a
+ * restore function that must be called synchronously on every exit path (also
+ * on throw). Env snapshots taken between enter and restore (e.g.
+ * `workerEnvFromParent()`) cannot leak the user's graphical session into
+ * worker children.
+ */
+export function enterMaskedDesktopSessionEnv(runtimeDir: string): () => void {
+	const saved: Record<string, string | undefined> = {};
+	for (const key of DESKTOP_SESSION_ENV_KEYS) saved[key] = $env[key];
+	saved.XDG_RUNTIME_DIR = $env.XDG_RUNTIME_DIR;
+	for (const key of DESKTOP_SESSION_ENV_KEYS) delete $env[key];
+	$env.XDG_RUNTIME_DIR = runtimeDir;
+	return () => {
+		for (const key in saved) {
+			const value = saved[key];
+			if (value === undefined) delete $env[key];
+			else $env[key] = value;
+		}
+	};
+}
+/**
  * Git variables that pin a repository location. They describe the checkout the
  * agent process itself was launched from (git hooks, `git --git-dir` wrappers),
  * so forwarding them to a child shell makes `git` ignore the command's `cwd`
@@ -109,6 +186,37 @@ export function stripGitRepoLocationEnv(
 	}
 }
 
+const NODE_IPC_CHANNEL_ENV_NAMES: Record<string, true> = {
+	NODE_CHANNEL_FD: true,
+	NODE_CHANNEL_SERIALIZATION_MODE: true,
+};
+
+function isNodeIpcChannelEnvName(name: string, platform: NodeJS.Platform): boolean {
+	return Object.hasOwn(NODE_IPC_CHANNEL_ENV_NAMES, platform === "win32" ? name.toUpperCase() : name);
+}
+
+/**
+ * Drop Node's IPC channel pointers from a copied environment. Windows resolves
+ * env names case-insensitively, so `node_channel_fd` binds there exactly like
+ * `NODE_CHANNEL_FD`; match case-insensitively on win32 and exactly elsewhere.
+ */
+export function stripNodeIpcChannelEnv(
+	env: Record<string, string>,
+	platform: NodeJS.Platform = process.platform,
+): void {
+	if (platform !== "win32") {
+		for (const name in NODE_IPC_CHANNEL_ENV_NAMES) {
+			delete env[name];
+		}
+		return;
+	}
+	for (const key of Object.keys(env)) {
+		if (isNodeIpcChannelEnvName(key, platform)) {
+			delete env[key];
+		}
+	}
+}
+
 // Bun autoloads the project's dotenv files into `process.env` before user code
 // runs — including inside `bun build --compile` binaries — so a snapshot of
 // `Bun.env` is only pre-dotenv when autoloading was explicitly disabled. Linux
@@ -136,16 +244,38 @@ function readLaunchEnv(): ReadonlyMap<string, string> | undefined {
 const launchEnvValues = readLaunchEnv();
 const projectEnvNamesLoadedByOmp = new Set<string>();
 
-function expandDotenvValues(values: Record<string, string>, env: Record<string, string>): Record<string, string> {
+function envValue(env: Record<string, string>, name: string, platform: NodeJS.Platform): string | undefined {
+	if (platform !== "win32") return env[name];
+	const key = Object.keys(env).find(candidate => candidate.toUpperCase() === name.toUpperCase());
+	return key === undefined ? undefined : env[key];
+}
+
+function expandDotenvValues(
+	values: Record<string, string>,
+	env: Record<string, string>,
+	platform: NodeJS.Platform,
+	hiddenIpcDerivedNames: Set<string>,
+): Record<string, string> {
 	const expanded: Record<string, string> = {};
 	for (const key in values) {
+		hiddenIpcDerivedNames.delete(platform === "win32" ? key.toUpperCase() : key);
 		expanded[key] = values[key].replace(
 			/(\\)?\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g,
 			(match, escaped: string | undefined, braced: string | undefined, bare: string | undefined) => {
 				if (escaped) return match.slice(1);
 				const name = braced ?? bare;
 				if (!name) return match;
-				return env[name] ?? expanded[name] ?? "";
+				const value = envValue(env, name, platform) ?? envValue(expanded, name, platform);
+				const referenceName = platform === "win32" ? name.toUpperCase() : name;
+				if (
+					(platform !== "linux" && value === undefined && isNodeIpcChannelEnvName(name, platform)) ||
+					hiddenIpcDerivedNames.has(referenceName)
+				) {
+					// Bun consumes its IPC keys before JS runs. Their derived dotenv
+					// values remain visible, even when we cannot reconstruct expansion.
+					hiddenIpcDerivedNames.add(platform === "win32" ? key.toUpperCase() : key);
+				}
+				return value ?? "";
 			},
 		);
 	}
@@ -156,6 +286,7 @@ function filterChildShellEnvInternal(
 	env: Record<string, string | undefined>,
 	cwd: string,
 	onDotenvValue?: (value: string) => void,
+	platform: NodeJS.Platform = process.platform,
 ): Record<string, string> {
 	const runtimeLaunchEnvValues = env === Bun.env || env === process.env ? launchEnvValues : undefined;
 	const result = filterProcessEnv(env);
@@ -166,11 +297,12 @@ function filterChildShellEnvInternal(
 	const localEnv = parseEnvFile(path.join(cwd, ".env.local"));
 	const modeLocalEnv = parseEnvFile(path.join(cwd, `${nodeEnvName}.local`));
 	const launchEnv = { ...projectEnv, ...modeEnv, ...localEnv, ...modeLocalEnv };
+	const hiddenIpcDerivedNames = new Set<string>();
 	const expandedLaunchEnv = {
-		...expandDotenvValues(projectEnv, result),
-		...expandDotenvValues(modeEnv, result),
-		...expandDotenvValues(localEnv, result),
-		...expandDotenvValues(modeLocalEnv, result),
+		...expandDotenvValues(projectEnv, result, platform, hiddenIpcDerivedNames),
+		...expandDotenvValues(modeEnv, result, platform, hiddenIpcDerivedNames),
+		...expandDotenvValues(localEnv, result, platform, hiddenIpcDerivedNames),
+		...expandDotenvValues(modeLocalEnv, result, platform, hiddenIpcDerivedNames),
 	};
 	let fallbackLaunchEnv: Record<string, string> | undefined;
 	let expandedFallbackLaunchEnv: Record<string, string> | undefined;
@@ -178,17 +310,23 @@ function filterChildShellEnvInternal(
 		const fallbackModeEnv = parseEnvFile(path.join(cwd, ".env.development"));
 		const fallbackModeLocalEnv = parseEnvFile(path.join(cwd, ".env.development.local"));
 		const candidate = { ...projectEnv, ...fallbackModeEnv, ...localEnv, ...fallbackModeLocalEnv };
+		const fallbackHiddenIpcDerivedNames = new Set<string>();
 		const expandedCandidate = {
-			...expandDotenvValues(projectEnv, result),
-			...expandDotenvValues(fallbackModeEnv, result),
-			...expandDotenvValues(localEnv, result),
-			...expandDotenvValues(fallbackModeLocalEnv, result),
+			...expandDotenvValues(projectEnv, result, platform, fallbackHiddenIpcDerivedNames),
+			...expandDotenvValues(fallbackModeEnv, result, platform, fallbackHiddenIpcDerivedNames),
+			...expandDotenvValues(localEnv, result, platform, fallbackHiddenIpcDerivedNames),
+			...expandDotenvValues(fallbackModeLocalEnv, result, platform, fallbackHiddenIpcDerivedNames),
 		};
 		if (candidate.NODE_ENV === env.NODE_ENV || expandedCandidate.NODE_ENV === env.NODE_ENV) {
 			// Without a launch snapshot, NODE_ENV may itself have come from dotenv.
 			// Bun chose the default mode before loading it, so retain both candidates.
 			fallbackLaunchEnv = candidate;
 			expandedFallbackLaunchEnv = expandedCandidate;
+			for (const key in candidate) {
+				const name = platform === "win32" ? key.toUpperCase() : key;
+				hiddenIpcDerivedNames.delete(name);
+				if (fallbackHiddenIpcDerivedNames.has(name)) hiddenIpcDerivedNames.add(name);
+			}
 		}
 	}
 	const allLaunchEnv = fallbackLaunchEnv ? { ...launchEnv, ...fallbackLaunchEnv } : launchEnv;
@@ -223,21 +361,30 @@ function filterChildShellEnvInternal(
 			if (value !== undefined) onDotenvValue?.(value);
 			delete result[key];
 		} else if (
+			hiddenIpcDerivedNames.has(platform === "win32" ? key.toUpperCase() : key) ||
 			result[key] === launchEnv[key] ||
 			result[key] === expandedLaunchEnv[key] ||
 			result[key] === fallbackLaunchEnv?.[key] ||
 			result[key] === expandedFallbackLaunchEnv?.[key]
 		) {
 			// No launch-env snapshot (dotenv autoloaded without procfs): best-effort
-			// value match against the Bun-parsed dotenv.
+			// value match against the Bun-parsed dotenv. Hidden reserved IPC
+			// references are stripped conservatively when their expansion is unknown.
 			const value = result[key];
 			if (value !== undefined) onDotenvValue?.(value);
 			delete result[key];
 		}
 	}
-	// Last, after dotenv merging: no source (inherited, launcher, or dotenv) may
-	// pin the child shell to the agent's own repository.
-	stripGitRepoLocationEnv(result);
+	// Node's IPC channel pointers (`NODE_CHANNEL_FD`, `NODE_CHANNEL_SERIALIZATION_MODE`)
+	// describe the agent's own worker channel. A tool-call child that inherits
+	// them misinterprets fd 3 as its control channel — `bun run` inside a bash
+	// tool call then dies with `EBADF: Bad file descriptor (posix_spawn())`.
+	// The IPC worker spawn that needs its channel sets these itself, so child
+	// shells must never carry them.
+	// Preserve these values during dotenv expansion so provenance stays accurate.
+	stripNodeIpcChannelEnv(result, platform);
+	// No source may pin the child shell to the agent's own repository.
+	stripGitRepoLocationEnv(result, platform);
 	return result;
 }
 
@@ -245,17 +392,19 @@ function filterChildShellEnvInternal(
 export function filterChildShellEnv(
 	env: Record<string, string | undefined>,
 	cwd: string = getProjectDir(),
+	platform: NodeJS.Platform = process.platform,
 ): Record<string, string> {
-	return filterChildShellEnvInternal(env, cwd);
+	return filterChildShellEnvInternal(env, cwd, undefined, platform);
 }
 
 /** Return every value defined by `cwd`'s dotenv files, plus environment values that came from them. */
 export function getDotenvEnvValues(
 	cwd: string = getProjectDir(),
 	env: Record<string, string | undefined> = process.env,
+	platform: NodeJS.Platform = process.platform,
 ): string[] {
 	const values = new Set<string>();
-	filterChildShellEnvInternal(env, cwd, value => values.add(value));
+	filterChildShellEnvInternal(env, cwd, value => values.add(value), platform);
 	return [...values];
 }
 

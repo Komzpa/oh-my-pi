@@ -231,7 +231,7 @@ async function collectSessionIds(sessionFile: string | undefined): Promise<Set<s
 	if (!sessionFile) return ids;
 	const ownId = await readSessionHeaderId(sessionFile).catch(() => undefined);
 	if (ownId) ids.add(ownId);
-	const subSessions = await collectSubSessions(sessionFile).catch(() => ({}));
+	const subSessions = await collectSubSessions(sessionFile, { purpose: "export" }).catch(() => ({}));
 	for (const sub of Object.values(subSessions)) if (sub.header) ids.add(sub.header.id);
 	return ids;
 }

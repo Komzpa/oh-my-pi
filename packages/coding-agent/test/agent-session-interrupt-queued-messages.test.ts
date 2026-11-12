@@ -7,6 +7,7 @@
  * to the model.
  */
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import {
@@ -110,6 +111,49 @@ describe("AgentSession editor-restoring interrupt", () => {
 		}
 		return out;
 	}
+
+	it("delivers an owned probe wait result before requirements classification reminders", async () => {
+		const waiting = Promise.withResolvers<void>();
+		const { session, mock } = await createSession([
+			{ content: [{ type: "toolCall", id: "probe-wait", name: "wait", arguments: {} }] },
+			() => {
+				waiting.resolve();
+				return { content: ["still working"], delayMs: 60_000 };
+			},
+		]);
+		let executed = false;
+		const parameters = type({});
+		session.agent.setTools([
+			{
+				name: "todo",
+				label: "Todo",
+				description: "Todo",
+				parameters,
+				async execute() {
+					return { content: [], details: {} };
+				},
+			},
+			{
+				name: "wait",
+				label: "Wait",
+				description: "Receive owned SpawnProbe",
+				parameters,
+				interruptible: true,
+				async execute() {
+					executed = true;
+					return { content: [{ type: "text", text: "/fixture\nabc1234" }], details: {} };
+				},
+			},
+		]);
+		const running = session.prompt("Wait for the already-spawned read-only SpawnProbe and print pwd and HEAD.");
+		await waiting.promise;
+		await session.abort();
+		await running;
+		expect(executed).toBe(true);
+		const results = mock.calls[1]!.context.messages.filter(message => message.role === "toolResult");
+		expect(results.some(message => JSON.stringify(message.content).includes("abc1234"))).toBe(true);
+		expect(results.some(message => message.isError)).toBe(false);
+	});
 
 	it("records queued extension messages in the transcript without resuming, and sends them with the next turn", async () => {
 		const { session, sessionManager, mock, streamStarted } = await createParkedSession([{ content: ["answered"] }]);

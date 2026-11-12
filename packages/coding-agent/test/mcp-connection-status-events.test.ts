@@ -80,7 +80,13 @@ describe("MCPManager connection status events", () => {
 			);
 
 			const message = result.errors.get("broken") ?? "";
-			expect(message).toMatch(/ENOENT|No such file|not found/i);
+			expect(message).toContain(missingCommand);
+			if (process.platform === "linux" && (Bun.which("nice") || Bun.which("ionice"))) {
+				expect(message).toMatch(/exited with code 127/);
+				expect(message).toMatch(/(?:ionice|nice):/);
+			} else {
+				expect(message).toMatch(/ENOENT|No such file|not found/i);
+			}
 			expect(events).toEqual([
 				{ type: "connecting", serverNames: ["broken"] },
 				{

@@ -1,3 +1,6 @@
+import type { TaskWorkspace, VerifiedTaskWorkspace } from "@oh-my-pi/pi-tui/tools/task";
+import type { ReviewPageAnswer } from "../../tools/todo";
+import type { AgentRegistryApi } from "../../registry/agent-registry";
 /**
  * Extension system types.
  *
@@ -38,15 +41,18 @@ import type {
 	AgentMessage,
 	AgentToolResult,
 	AgentToolUpdateCallback,
+	SoftToolRequirement,
 	ThinkingLevel,
 	ToolApproval,
 	ToolLoadMode,
 } from "@oh-my-pi/pi-agent-core";
-import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type { ContextUsage } from "@oh-my-pi/pi-tui/status-line/types";
 import type { LoopConditionConfig } from "@oh-my-pi/pi-tui/status-line/loop";
 import type { LivePhase } from "@oh-my-pi/pi-tui/apps/live-visualizer";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { RowRiskOptions, TodoSchedule } from "@oh-my-pi/pi-tui/tools/todo-schedule";
+import type { CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	Api,
 	AssistantMessage,
@@ -84,6 +90,7 @@ import type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer
 import type { CodeReviewAnnotation, TextReviewAnnotation } from "@oh-my-pi/pi-tui/overlays/annotation-types";
 export type { ComposerShapeDefinition } from "@oh-my-pi/pi-tui/overlays/composer-shape-registry";
 import type { ModelRegistry } from "../../config/model-registry";
+import type { ModelPresetSwitchResult } from "../../config/model-presets";
 import type { EditToolDetails } from "@oh-my-pi/pi-tui/tools/edit";
 import type { PythonResult } from "../../eval/py/executor";
 import type { BashResult } from "../../exec/bash-executor";
@@ -565,6 +572,7 @@ export interface CompactOptions {
  * into the mutable registry or re-implementing matching/family heuristics.
  */
 export interface ExtensionModelQuery {
+	rowRisk?(): Promise<RowRiskOptions | undefined>;
 	/** Authenticated models available this session (the same set `--model` selection sees). */
 	list(): Model[];
 	/** The current session model, if one is set. */
@@ -789,12 +797,61 @@ export interface ExtensionLiveSession {
 }
 
 export interface ExtensionContext {
+	/** Apply one verified owner decision through the native todo acceptance path. */
+	applyReviewPageAnswer?(answer: ReviewPageAnswer): Promise<boolean>;
+	/** Launch the delivery critic through the native task pool. */
+	runDeliveryCritic?(task: string, signal?: AbortSignal, subject?: string): Promise<AgentToolResult>;
+	/** Launch one batched audit of delivered TODO rows through the native task pool. */
+	runRowAudit?(
+		task: string,
+		agent: string,
+		signal?: AbortSignal,
+		onStarted?: (workerId: string) => void,
+		subject?: string,
+		rows?: readonly string[],
+		onResult?: (output: unknown) => void,
+	): Promise<AgentToolResult>;
+	getTodoPreviewConfig?(): { openReviewPages?: boolean; enabled: boolean; paths: string[]; thresholdMinutes: number };
+	/** Current hydrated plan, without replaying the session journal. Undefined before session initialization. */
+	getTodoPhases?(): TodoPhase[] | undefined;
+	/** Stable immutable plan view. Never mutate it; use updateTodoSchedule for edits. */
+	getTodoSnapshot?(): readonly TodoPhase[] | undefined;
+	/** Merge a schedule annotation into one exact row and append its durable snapshot. Critic redo reopens its row; an audit pass closes it; attempt history is preserved. */
+	updateTodoSchedule?(
+		task: string,
+		patch: Pick<
+			TodoSchedule,
+			| "review"
+			| "reviewSummary"
+			| "deliveryCritic"
+			| "audit"
+			| "auditRounds"
+			| "auditBase"
+			| "auditEscalation"
+			| "auditFollowUps"
+			| "handoffPending"
+			| "progress"
+			| "reviewPagePending"
+			| "firstRequirementAt"
+			| "firstDeliveredAt"
+			| "speculativeOn"
+			| "visibleAt"
+			| "previewPending"
+			| "previewTracked"
+			| "postDeadline"
+			| "resources"
+			| "readOnly"
+			| "owner"
+		>,
+	): boolean;
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
 	/** Current run mode. Use `"tui"` to guard terminal-only UI such as custom components. */
 	mode: ExtensionMode;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
+	/** Current task worker concurrency limit, if this host has settings available. */
+	getTaskMaxConcurrency(): number | undefined;
 	/** Get a read-only snapshot of async jobs owned by this session. */
 	getAsyncJobSnapshot(): AsyncJobSnapshot | null;
 	/** Compact the session context (interactive mode shows UI). */
@@ -819,6 +876,12 @@ export interface ExtensionContext {
 	abort(): void;
 	/** Whether there are queued messages waiting */
 	hasPendingMessages(): boolean;
+	/**
+	 * Set `/fast` for a live direct subagent owned by this session. Returns false
+	 * when the id is not an owned live subagent or its model has no tier control.
+	 * The change applies to the subagent's next provider request.
+	 */
+	setSubagentFastMode?(id: string, enabled: boolean): boolean | Promise<boolean>;
 	/** Gracefully shutdown and exit. */
 	shutdown(): void;
 	/**
@@ -855,6 +918,10 @@ export interface ExtensionContext {
 	sessionModes?: ExtensionSessionModes;
 	/** Identity of the agent this session runs: the top-level session or a subagent. */
 	agent: ExtensionAgentIdentity;
+	/** Host-owned peer registry; workers receive the canonical main-thread proxy. */
+	agentRegistry?: AgentRegistryApi;
+	/** Send a message to a live or revivable agent peer through the same route as `write agent://<id>`. */
+	sendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }>;
 	/**
 	 * Whether the current project/workspace is trusted. OMP performs no
 	 * project-trust gating — project-level settings and extensions load
@@ -1219,7 +1286,19 @@ export interface BeforeAgentStartEvent {
 
 /** Fired in the parent session before a subagent (task tool or eval `agent()`) resolves its model. */
 export interface BeforeSubagentSpawnEvent {
+	/** Admission runs before a job exists; check gates without recording a running worker.
+	 * The ordinary runtime event repeats checks to catch claims changed while queued. */
+	phase?: "admission";
+	readOnly?: boolean;
+	row?: string;
 	type: "before_subagent_spawn";
+	/** Declared exclusive checkout paths for this child; absent = undeclared, [] = owns nothing. */
+	resources?: string[];
+	workspace?: TaskWorkspace;
+	verifiedWorkspace?: VerifiedTaskWorkspace;
+	reads?: string[];
+	/** Effective checkout after harness preparation, not the parent's cwd. */
+	cwd?: string;
 	/** Agent definition name being spawned. */
 	agent: string;
 	invocationKind: "task" | "eval";
@@ -1229,6 +1308,12 @@ export interface BeforeSubagentSpawnEvent {
 	patterns: string[];
 	/** Stable per-spawn key for deterministic selection, when the caller supplies one. */
 	spawnKey?: string;
+	/** Whether the caller explicitly requested an isolated worktree. */
+	isolated?: boolean;
+	/** Verbatim task assignment text; lets routing gates scope checkouts before row owners are recorded. */
+	assignment?: string;
+	/** Caller-supplied assignment context. */
+	context?: string;
 }
 
 export type {
@@ -1239,6 +1324,15 @@ export type {
 	TurnEndEvent,
 	TurnStartEvent,
 } from "../shared-events";
+
+/** Awaited before a main-session assistant draft enters public state or output. */
+export interface BeforeAssistantMessageEvent {
+	type: "before_assistant_message";
+	/** Detached inspection draft. Mutating it does not change the delivered message. */
+	message: AssistantMessage;
+	/** Aborted on cancellation or when this handler exceeds its time budget. */
+	signal: AbortSignal;
+}
 
 /** Fired when a message starts (user, assistant, or toolResult) */
 export interface MessageStartEvent {
@@ -1421,6 +1515,8 @@ export interface UserPythonEvent {
 export interface InputEvent {
 	type: "input";
 	text: string;
+	/** Original submitted text, unchanged by earlier input-handler transforms. */
+	readonly rawText: string;
 	images?: ImageContent[];
 	source: "interactive" | "rpc" | "extension";
 }
@@ -1695,6 +1791,7 @@ export type ExtensionEvent =
 	| SessionStopEvent
 	| TurnStartEvent
 	| TurnEndEvent
+	| BeforeAssistantMessageEvent
 	| MessageStartEvent
 	| MessageUpdateEvent
 	| MessageEndEvent
@@ -1747,6 +1844,10 @@ export interface ContextEventResult {
 export interface AssistantMessageRewriteResult {
 	content?: AssistantMessage["content"];
 }
+export interface BeforeAssistantMessageEventResult {
+	replacementText: string;
+	settled?: true;
+}
 
 export type BeforeProviderRequestEventResult = unknown;
 
@@ -1783,6 +1884,8 @@ export interface BeforeAgentStartEventResult {
 }
 
 export interface BeforeSubagentSpawnEventResult {
+	/** Retry admission after the current resource holder releases, without starting an attempt. */
+	resourceWait?: { row: string; workerId?: string };
 	/** Replacement model patterns in attempt order (selectors or role aliases). Role identity is preserved. */
 	model?: string | string[];
 	/** Refuse the spawn. */
@@ -1922,6 +2025,10 @@ export interface ExtensionAPI {
 	on(event: "session_stop", handler: ExtensionHandler<SessionStopEvent, SessionStopEventResult>): void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
+	on(
+		event: "before_assistant_message",
+		handler: ExtensionHandler<BeforeAssistantMessageEvent, BeforeAssistantMessageEventResult>,
+	): void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
 	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): void;
 	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent>): void;
@@ -1954,6 +2061,13 @@ export interface ExtensionAPI {
 	on(event: "user_python", handler: ExtensionHandler<UserPythonEvent, UserPythonEventResult>): void;
 	on(event: "mcp_notification", handler: ExtensionHandler<McpNotificationEvent>): void;
 	on(event: "link_activate", handler: ExtensionHandler<LinkActivateEvent>): void;
+	/**
+	 * Register the single extension-owned provider for the native agent loop's soft tool gate.
+	 * The host evaluates it synchronously at each model-choice boundary with a fresh context;
+	 * Return undefined whenever the action is not currently safe. The host asks only after higher-priority queued
+	 * hard tool choices and pending-preview resolution requirements are absent. Register during extension load.
+	 */
+	registerSoftToolRequirementProvider(provider: (ctx: ExtensionContext) => SoftToolRequirement | undefined): void;
 
 	// =========================================================================
 	// Tool Registration
@@ -2137,19 +2251,25 @@ export interface ExtensionAPI {
 	 * With the default delivery (no `deliverAs`), an idle `display: true` message renders in the
 	 * transcript immediately, even with `triggerTurn: false`, without starting a turn. This does
 	 * not apply to `deliverAs: "nextTurn"` or `deliverAs: "aside"`, which keep the semantics
-	 * described below (`nextTurn` stays hidden until consumed; `aside` starts a turn when idle).
+	 * described below (`nextTurn` stays hidden until consumed; `aside` starts a turn when idle unless `triggerTurn: false`).
 	 *
 	 * `deliverAs: "nextTurn"` keeps the message hidden from the editable pending-message UI.
 	 * If `triggerTurn` is also true while the current turn is still unwinding, the session schedules
 	 * an internal continuation that consumes the message on the next turn.
 	 *
 	 * `deliverAs: "aside"` injects the message at the next agent step boundary without interrupting
-	 * the in-flight tool batch; when the session is idle it starts a turn regardless of `triggerTurn`
+	 * the in-flight tool batch; when idle it starts a turn unless `triggerTurn` is explicitly false
 	 * (plan mode folds it into context instead).
 	 */
 	sendMessage<T = unknown>(
 		message: CustomMessagePayload<T>,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+		options?: {
+			triggerTurn?: boolean;
+			deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+			interruptWait?: boolean;
+			/** Replace undelivered custom messages with this key (legacy customType also matches). User messages are never replaced. */
+			supersedes?: string;
+		},
 	): void;
 
 	/** Send a user prompt: idle starts a turn; streaming queues as steer unless deliverAs is set.
@@ -2196,6 +2316,23 @@ export interface ExtensionAPI {
 		family: Family,
 		tier: ExtensionServiceTier<Family> | undefined,
 	): void;
+
+	/**
+	 * Apply the saved model preset `name` to this session only: its roles, default thinking level and
+	 * `settings` become runtime overrides (nothing is written to config), subagents spawned afterwards
+	 * inherit them, and the active model switches to the preset's `default` role. Applying another
+	 * preset replaces the first. Check `result.kind === "switched"` for success.
+	 */
+	applySessionModelPreset(name: string): Promise<ModelPresetSwitchResult>;
+
+	/**
+	 * Remove the session preset, restoring exactly the overrides it displaced. The active model is
+	 * left unchanged. Returns the cleared preset's name, or undefined when none was active.
+	 */
+	clearSessionModelPreset(): string | undefined;
+
+	/** Name of the preset currently applied to this session, if any. */
+	getSessionModelPreset(): string | undefined;
 
 	/** Get the current session name. */
 	getSessionName(): string | undefined;
@@ -2386,9 +2523,15 @@ export type SendMessageHandler = <T = unknown>(
 	 * When paired with `triggerTurn: true` during prompt teardown, the session schedules
 	 * an internal continuation without surfacing the message in the editable pending queue.
 	 * `deliverAs: "aside"` injects at the next step boundary without interrupting the in-flight
-	 * tool batch, except that it ends a running interruptible `wait`; idle starts a turn regardless of `triggerTurn` (plan mode folds into context).
+	 * tool batch, except that it ends a running interruptible `wait`; idle starts a turn unless `triggerTurn` is explicitly false (plan mode folds into context).
 	 */
-	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+	options?: {
+		triggerTurn?: boolean;
+		deliverAs?: "steer" | "followUp" | "nextTurn" | "aside";
+		interruptWait?: boolean;
+		/** Replace undelivered custom messages with this key (legacy customType also matches). User messages are never replaced. */
+		supersedes?: string;
+	},
 ) => void;
 
 /** `deliverAs: "aside"` injects at the next step boundary without interrupting the in-flight tool
@@ -2418,6 +2561,12 @@ export type GetServiceTiersHandler = () => ServiceTierByFamily;
 
 export type SetServiceTierHandler = (family: ServiceTierFamily, tier: ServiceTier | undefined) => void;
 
+export type ApplySessionModelPresetHandler = (name: string) => Promise<ModelPresetSwitchResult>;
+
+export type ClearSessionModelPresetHandler = () => string | undefined;
+
+export type GetSessionModelPresetHandler = () => string | undefined;
+
 /** Shared state created by loader, used during registration and runtime. */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
@@ -2446,6 +2595,9 @@ export interface ExtensionActions {
 	setThinkingLevel: SetThinkingLevelHandler;
 	getServiceTiers?: GetServiceTiersHandler;
 	setServiceTier?: SetServiceTierHandler;
+	applySessionModelPreset?: ApplySessionModelPresetHandler;
+	clearSessionModelPreset?: ClearSessionModelPresetHandler;
+	getSessionModelPreset?: GetSessionModelPresetHandler;
 	getSessionName: () => string | undefined;
 	setSessionName: (name: string) => Promise<void>;
 }
@@ -2470,8 +2622,10 @@ export interface ExtensionContextActions {
 	getContextUsage: () => ContextUsage | undefined;
 	compact: (instructionsOrOptions?: string | CompactOptions) => Promise<void>;
 	getSystemPrompt: () => string[];
+	sendAgentMessage?: (to: string, message: string) => Promise<{ delivered: boolean; text: string }>;
 	runEphemeralTurn?: (options: EphemeralTurnOptions) => Promise<EphemeralTurnResult>;
 	startLive?: (options: ExtensionLiveStartOptions) => Promise<ExtensionLiveSession>;
+	setSubagentFastMode?: (id: string, enabled: boolean) => boolean | Promise<boolean>;
 }
 
 /** Actions for ExtensionCommandContext (ctx.* in command handlers). */
@@ -2493,12 +2647,17 @@ export interface ExtensionCommandContextActions {
 export interface ExtensionRuntime extends ExtensionRuntimeState, ExtensionActions {
 	getServiceTiers: GetServiceTiersHandler;
 	setServiceTier: SetServiceTierHandler;
+	applySessionModelPreset: ApplySessionModelPresetHandler;
+	clearSessionModelPreset: ClearSessionModelPresetHandler;
+	getSessionModelPreset: GetSessionModelPresetHandler;
 }
 
 /** Loaded extension with all registered items. */
 export interface Extension {
 	path: string;
 	resolvedPath: string;
+	/** SHA-256 of the entry file at module load, preserved when rebinding. */
+	sourceHash?: string;
 	label?: string;
 	handlers: Map<string, HandlerFn[]>;
 	tools: Map<string, RegisteredTool<any, any>>;
@@ -2518,6 +2677,8 @@ export interface Extension {
 	shortcuts: Map<KeyId, ExtensionShortcut>;
 	/** Set once the extension calls `registerProvider`; providers feed startup model resolution. */
 	registersProviders?: boolean;
+	/** Native soft tool gate provider registered by this extension, if any. */
+	softToolRequirementProvider?: (ctx: ExtensionContext) => SoftToolRequirement | undefined;
 }
 
 /**
@@ -2528,6 +2689,7 @@ export interface Extension {
 export interface PreparedExtension {
 	path: string;
 	resolvedPath: string;
+	sourceHash?: string;
 	factory: ExtensionFactory | null;
 	error: string | null;
 }

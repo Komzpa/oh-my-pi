@@ -28,11 +28,14 @@ async function drainMicrotasks(): Promise<void> {
 }
 
 function createAskTool(): AskTool {
-	return new AskTool({
-		hasUI: true,
-		settings: Settings.isolated({ "ask.timeout": 0.01, "ask.notify": "off", "speech.enabled": false }),
-		getPlanModeState: () => ({ enabled: false }),
-	} as unknown as ToolSession);
+	return new AskTool(
+		{
+			hasUI: true,
+			settings: Settings.isolated({ "ask.timeout": 0.01, "ask.notify": "off", "speech.enabled": false }),
+			getPlanModeState: () => ({ enabled: false }),
+		} as unknown as ToolSession,
+		{ interactiveAnswer: true },
+	);
 }
 
 function selectContext(select: AskSelect, extra: Record<string, unknown> = {}) {

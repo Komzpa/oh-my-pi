@@ -8,6 +8,7 @@
  * `launch` — see #1496 for the original "args silently leak to the LLM"
  * regression that motivated the split.
  */
+import type Providers from "./commands/providers";
 import type { CommandEntry } from "@oh-my-pi/pi-utils/cli";
 import * as commandHelp from "./cli/command-help";
 import {
@@ -25,6 +26,11 @@ function loadLaunchHelp(): typeof LaunchHelp.launchHelp {
 }
 
 export const commands: CommandEntry[] = [
+	{
+		name: "providers",
+		load: async () => (require("./commands/providers") as { default: typeof Providers }).default,
+		help: commandHelp.providersHelp,
+	},
 	{
 		name: "launch",
 		load: () => import("./commands/launch").then(m => m.default),
@@ -187,6 +193,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.predictHelp,
 	},
 	{
+		name: "peers",
+		load: () => import("./commands/peers").then(m => m.default),
+		help: commandHelp.peersHelp,
+	},
+	{
 		name: "ps",
 		load: () => import("./commands/ps").then(m => m.default),
 		help: commandHelp.psHelp,
@@ -252,6 +263,11 @@ export const commands: CommandEntry[] = [
 		name: "render",
 		load: () => import("./commands/render").then(m => m.default),
 		help: commandHelp.renderHelp,
+	},
+	{
+		name: "restart",
+		load: () => import("./commands/restart").then(m => m.default),
+		help: commandHelp.restartHelp,
 	},
 	{
 		name: "skill",

@@ -226,9 +226,12 @@ import {
 	kStreamingPartialJson,
 } from "../utils/block-symbols";
 import { deterministicUuid } from "../utils/deterministic-id";
+import { isLegacySubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import { AssistantMessageEventStream } from "../utils/event-stream";
-import { connectProxiedSocket, getProxyForUrl, wrapFetchForProxy } from "../utils/proxy";
+import { connectProxiedSocket, getProxyForUrl } from "../utils/proxy";
 import { createRequestDebugSession, isRequestDebugEnabled, type RequestDebugResponseLog } from "../utils/request-debug";
+import { assertModelNotBlacklisted } from "../model-blacklist";
+import { transportFetch } from "../utils/transport-fetch";
 import { waitForRetry } from "../utils/retry-wait";
 import { sanitizeSchemaForCursor, toolWireSchema } from "../utils/schema";
 import { formatConnectEndStreamError, hasRetryableCursorErrorDetail } from "./connect-error-detail";
@@ -846,6 +849,7 @@ function wrapHttp2RunTransport(request: http2.ClientHttp2Stream): CursorRunTrans
 }
 
 interface CursorHttp1RunTransportOptions {
+	model: Model<"cursor-agent">;
 	baseUrl: string;
 	headers: Record<string, string>;
 	requestId: string;
@@ -879,7 +883,7 @@ function readConnectFrameMessage(frame: Uint8Array): Uint8Array {
 function createHttp1RunTransport(options: CursorHttp1RunTransportOptions): CursorRunTransport {
 	const abortController = new AbortController();
 	const signal = options.signal ? AbortSignal.any([options.signal, abortController.signal]) : abortController.signal;
-	const fetchImpl = wrapFetchForProxy(globalThis.fetch, "cursor");
+	const fetchImpl = transportFetch(options.model, undefined);
 	const requestId = create(BidiRequestIdSchema, { requestId: options.requestId });
 	const pendingAppends: CursorPendingAppend[] = [];
 	let appendSeqno = 0n;
@@ -1205,6 +1209,9 @@ function streamCursorWithWireMode(
 	wireMode: CursorWireMode,
 	timing?: CursorStreamTiming,
 ): AssistantMessageEventStream {
+	if (context.messages.some(isLegacySubagentElapsedNote)) {
+		context = { ...context, messages: context.messages.filter(message => !isLegacySubagentElapsedNote(message)) };
+	}
 	// A relayed run outlives its first response: `context`, `options`, `stream`
 	// and `output` (and the response timings) belong to the request currently
 	// receiving it, and move to the request that resumes it (`CursorParkedRun`).
@@ -1528,9 +1535,11 @@ function streamCursorWithWireMode(
 				}
 				h2Client = client;
 				client.on("error", error => settleH2(mapH2TransportError(error, baseUrl)));
+				assertModelNotBlacklisted(model);
 				runTransport = wrapHttp2RunTransport(client.request(requestHeaders));
 			} else {
 				runTransport = createHttp1RunTransport({
+					model,
 					baseUrl,
 					headers: requestHeaders,
 					requestId,
@@ -2263,6 +2272,9 @@ function streamCursorWithWireMode(
 			}
 			output.stopReason = result.stopReason;
 			output.errorStatus = result.status;
+			output.errorType = result.errorType;
+			output.errorCode = result.errorCode;
+			output.errorResetAt = result.errorResetAt;
 			// The rejection is non-retriable on the poisoned id, but the fresh id
 			// is a different request. Mark this one attempt transient so the
 			// caller's retry loop actually rebuilds on the rotated id; if that id
@@ -7301,6 +7313,12 @@ async function buildGrpcRequestForWireMode(
 	wireMode: CursorWireMode,
 ): Promise<CursorTransportRequest> {
 	const blobStore = state.blobStore;
+	// The subagent elapsed note is advisory scaffolding with no wire slot: left
+	// in place it would become the active userMessageAction instead of the
+	// resumeAction a trailing tool result needs.
+	if (context.messages.some(isLegacySubagentElapsedNote)) {
+		context = { ...context, messages: context.messages.filter(message => !isLegacySubagentElapsedNote(message)) };
+	}
 
 	const systemPromptIds = buildCursorSystemPromptJsons(context.systemPrompt).map(json =>
 		storeCursorBlob(blobStore, new TextEncoder().encode(json)),

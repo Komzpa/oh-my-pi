@@ -24,10 +24,104 @@ const PROVIDER_MAX_CONCURRENCY_SETTINGS: Record<string, Setting<number>> = {
 
 interface ProviderSemaphoreEntry {
 	limit: number;
-	semaphore: Semaphore;
+	semaphore: ProviderSemaphore;
+}
+
+/** Main owns the counters; worker instances only proxy acquisitions to main. */
+export interface ProviderConcurrencyBridge {
+	acquire(provider: string, limit: number, signal?: AbortSignal): Promise<() => void | Promise<void>>;
+	resize(provider: string, limit: number): void;
+}
+
+export interface ProviderSemaphore {
+	acquire(signal?: AbortSignal): Promise<void>;
+	release(): void;
+	resize(limit: number): void;
+	acquireLease(signal?: AbortSignal): Promise<() => void>;
 }
 
 const providerSemaphores = new Map<string, ProviderSemaphoreEntry>();
+let workerBridge: ProviderConcurrencyBridge | undefined;
+
+/** Installed by the subagent thread service before any worker session starts. */
+export function installProviderConcurrencyBridge(bridge: ProviderConcurrencyBridge): void {
+	workerBridge = bridge;
+	// No session may acquire before boot; discard any pre-bootstrap module-local instances.
+	providerSemaphores.clear();
+}
+
+class LocalProviderSemaphore extends Semaphore implements ProviderSemaphore {
+	async acquireLease(signal?: AbortSignal): Promise<() => void> {
+		await this.acquire(signal);
+		let released = false;
+		const release = () => {
+			if (released) return;
+			released = true;
+			signal?.removeEventListener("abort", release);
+			this.release();
+		};
+		signal?.addEventListener("abort", release, { once: true });
+		if (signal?.aborted) {
+			release();
+			signal.throwIfAborted();
+		}
+		return release;
+	}
+}
+
+class RemoteProviderSemaphore implements ProviderSemaphore {
+	readonly #releases: Array<() => void> = [];
+	#limit: number;
+
+	constructor(
+		readonly provider: string,
+		readonly bridge: ProviderConcurrencyBridge,
+		limit: number,
+	) {
+		this.#limit = limit;
+	}
+
+	async acquireLease(signal?: AbortSignal): Promise<() => void> {
+		const release = await this.bridge.acquire(this.provider, this.#limit, signal);
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			// Link closure is expected during worker shutdown; main reclaims its leases.
+			Promise.resolve(release()).catch(() => {});
+		};
+	}
+
+	async acquire(signal?: AbortSignal): Promise<void> {
+		this.#releases.push(await this.acquireLease(signal));
+	}
+
+	release(): void {
+		this.#releases.shift()?.();
+	}
+
+	resize(limit: number): void {
+		this.#limit = limit;
+		this.bridge.resize(this.provider, limit);
+	}
+}
+
+/** Numeric entry point shared by main's thread service and local settings callers. */
+export function getProviderSemaphoreForLimit(provider: string, limit: number): ProviderSemaphore {
+	const existing = providerSemaphores.get(provider);
+	if (existing) {
+		if (existing.limit !== limit) {
+			existing.limit = limit;
+			existing.semaphore.resize(limit);
+		}
+		return existing.semaphore;
+	}
+	const semaphore = workerBridge
+		? new RemoteProviderSemaphore(provider, workerBridge, limit)
+		: new LocalProviderSemaphore(limit);
+	providerSemaphores.set(provider, { limit, semaphore });
+	return semaphore;
+}
 
 /**
  * Resolve the configured concurrency ceiling for a provider, or `undefined`
@@ -49,20 +143,9 @@ export function getProviderConcurrencyLimit(settings: Settings, provider: string
  * semaphore would orphan in-flight slots on the old instance and let a
  * runtime or mixed limit value exceed the cap (issue #3464 review feedback).
  */
-export function getProviderSemaphore(settings: Settings, provider: string): Semaphore | undefined {
+export function getProviderSemaphore(settings: Settings, provider: string): ProviderSemaphore | undefined {
 	const limit = getProviderConcurrencyLimit(settings, provider);
-	if (limit === undefined) return undefined;
-	const existing = providerSemaphores.get(provider);
-	if (existing) {
-		if (existing.limit !== limit) {
-			existing.limit = limit;
-			existing.semaphore.resize(limit);
-		}
-		return existing.semaphore;
-	}
-	const semaphore = new Semaphore(limit);
-	providerSemaphores.set(provider, { limit, semaphore });
-	return semaphore;
+	return limit === undefined ? undefined : getProviderSemaphoreForLimit(provider, limit);
 }
 
 /**
@@ -79,14 +162,9 @@ export function wrapStreamFnWithProviderConcurrency(settings: Settings, base: St
 	return async (model, context, options) => {
 		const semaphore = getProviderSemaphore(settings, model.provider);
 		if (!semaphore) return base(model, context, options);
-		await semaphore.acquire(options?.signal);
-		let released = false;
-		const release = () => {
-			if (released) return;
-			released = true;
-			semaphore.release();
-		};
+		const release = await semaphore.acquireLease(options?.signal);
 		try {
+			options?.signal?.throwIfAborted();
 			const stream = await base(model, context, options);
 			// EventStream.result() settles when the producer pushes 'done'/'error'
 			// or calls fail() — i.e. once the provider has finished producing.

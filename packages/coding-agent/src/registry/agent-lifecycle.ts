@@ -133,6 +133,9 @@ interface ReopeningAgent {
 
 /** How {@link AgentLifecycleApi.release} ends an agent. */
 export interface AgentReleaseOptions {
+	preserveServices?: boolean;
+	/** Keep a pending terminal publication receipt after shutdown disposal. */
+	retainPendingPublication?: boolean;
 	/** Explicit kill: keep a terminal `aborted` row and persist the kill marker. */
 	tombstone?: boolean;
 	/** Forwarded to the live session's dispose (e.g. the reason its `session_exit` record carries). */
@@ -160,7 +163,7 @@ export interface AgentLifecycleApi {
 	/** Dispose if live and drop timers; `tombstone` keeps a terminal `aborted` row. */
 	release(id: string, expected?: AgentRefExpectation, options?: AgentReleaseOptions): Promise<boolean>;
 	/** Tear down every adopted agent. */
-	dispose(deadlineAt?: number): Promise<void>;
+	dispose(deadlineAt?: number, preserveServices?: boolean): Promise<void>;
 }
 
 export class AgentLifecycleManager implements AgentLifecycleApi {
@@ -321,6 +324,7 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 	async reclaimDeadCorpse(id: string, expected: AgentRef): Promise<boolean> {
 		const ref = this.#registry.get(id);
 		if (ref !== expected || ref.status !== "parked" || ref.session) return false;
+		if (ref.lifecycle?.resultPublication === "pending" || ref.lifecycle?.resultPublication === "failed") return false;
 		if (this.#adopted.has(id) || this.#parks.has(id) || this.#revivals.has(id)) return false;
 
 		const persistedFactory = ref.sessionFile ? this.#persistedReviverFactory : undefined;
@@ -490,6 +494,9 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 				`Unknown agent "${id}" — it was never registered or has been released. If a transcript exists, read history://${id}.`,
 			);
 		}
+		if (!ref.session && ref.lifecycle?.resultPublication === "pending") {
+			throw new Error(`Agent "${id}" is still publishing its terminal result; retry after publication settles.`);
+		}
 		if (ref.status === "aborted") ref = await this.#reopen(id, ref);
 		// A revive attaches its session before it finishes initializing it: join the revive rather
 		// than hand out a session whose extensions have not re-registered their tools yet.
@@ -651,6 +658,15 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 		}
 
 		const live = this.#registry.get(id) === ref ? ref.session : null;
+		const retainPublication =
+			options?.retainPendingPublication === true &&
+			!options.tombstone &&
+			this.#registry.get(id) === ref &&
+			ref.lifecycle?.resultPublication === "pending";
+		if (retainPublication) {
+			this.#registry.detachSession(id, ref);
+			this.#registry.setStatus(id, "parked", ref);
+		}
 		if (options?.tombstone) {
 			// Apply the terminal transition synchronously, before any await. The
 			// dying session's own dispose path calls unregisterUnlessParked
@@ -668,6 +684,7 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 				logger.warn("AgentLifecycleManager.release: terminal transition rejected", { id });
 			}
 		}
+		let releaseError: unknown;
 		try {
 			if (options?.tombstone && ref.sessionFile) await persistAgentTombstone(ref.sessionFile);
 		} finally {
@@ -675,7 +692,7 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 			// dispose the captured session, even when tombstone persistence fails.
 			if (live) {
 				try {
-					await live.dispose(options?.dispose);
+					await live.dispose({ ...options?.dispose, preserveServices: options?.preserveServices });
 				} catch (error) {
 					logger.warn("AgentLifecycleManager.release: session dispose failed", { id, error: String(error) });
 				}
@@ -683,18 +700,25 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 			try {
 				await onRelease?.();
 			} catch (error) {
+				releaseError = error;
+				const message = error instanceof Error ? error.message : String(error);
 				logger.warn("AgentLifecycleManager.release: owned resource cleanup failed", {
 					id,
-					error: String(error),
+					error: message,
 				});
+				// Persist recovery through the established history channel before
+				// unregister below drops the ref: the thrown message carries the
+				// retained workspace path and rescue branch to the caller.
+				this.#registry.setHistory(id, { error: message });
 			}
 		}
-		if (!options?.tombstone) this.#registry.unregister(id, ref);
+		if (!options?.tombstone && !retainPublication) this.#registry.unregister(id, ref);
+		if (releaseError !== undefined) throw releaseError;
 		return true;
 	}
 
 	/** Teardown everything; disposing the global manager makes its next owner a fresh instance. */
-	async dispose(deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS): Promise<void> {
+	async dispose(deadlineAt: number = Date.now() + AGENT_RELEASE_GRACE_MS, preserveServices = false): Promise<void> {
 		this.#unsubscribe?.();
 		this.#disposed = true;
 		this.#unsubscribe = undefined;
@@ -706,7 +730,9 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 		await Promise.all(
 			ids.map(async id => {
 				const running = this.#registry.get(id)?.status === "running";
-				const release = this.release(id, undefined, running ? cutOff : undefined).then(() => {});
+				const release = this.release(id, undefined, { ...(running ? cutOff : undefined), preserveServices }).then(
+					() => {},
+				);
 				try {
 					await untilAborted(AbortSignal.timeout(Math.max(0, deadlineAt - Date.now())), () => release);
 				} catch (error) {

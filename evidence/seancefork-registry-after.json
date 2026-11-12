@@ -1,0 +1,26 @@
+{
+  "mode": "after",
+  "observations": [
+    {
+      "turn": 0,
+      "wallMs": 34813.812934,
+      "maxIntervalMs": 182.01252499999828,
+      "rcharBytes": 3717318298,
+      "directCost": 0
+    },
+    {
+      "turn": 1,
+      "wallMs": 11.397754999998142,
+      "maxIntervalMs": 10.984287999999651,
+      "rcharBytes": 250,
+      "directCost": 0.125
+    },
+    {
+      "turn": 2,
+      "wallMs": 1.2894779999987804,
+      "maxIntervalMs": 26.843151000000944,
+      "rcharBytes": 250,
+      "directCost": 0.25
+    }
+  ]
+}

@@ -537,6 +537,22 @@ function assertWorkerUsageProvider(provider: Provider, usageProvider: UsageProvi
 }
 
 class RemoteHealth implements HealthApi {
+	resetProviderDepletion(provider: Provider): void {
+		return this.#remote.callSync("health.resetProviderDepletion", provider);
+	}
+
+	markProviderSucceeded(provider: Provider): void {
+		return this.#remote.callSync("health.markProviderSucceeded", provider);
+	}
+
+	markProviderDepleted(provider: Provider, options?: { status?: number; message?: string; resetAtMs?: number }): void {
+		return this.#remote.callSync("health.markProviderDepleted", provider, options);
+	}
+
+	isProviderDepleted(provider: Provider): boolean {
+		return this.#remote.callSync("health.isProviderDepleted", provider);
+	}
+
 	readonly #remote: AuthRemote;
 	readonly #availability: RemoteAuthAvailability;
 

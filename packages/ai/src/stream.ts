@@ -1,3 +1,4 @@
+import { assertModelNotBlacklisted } from "./model-blacklist";
 import * as crypto from "node:crypto";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
@@ -676,6 +677,7 @@ function withProviderInFlightLimit<
 	const limit = resolveProviderInFlightLimit(model.provider, options);
 	if (limit === undefined) {
 		options?.beforeDispatch?.();
+		assertModelNotBlacklisted(model);
 		return healLeakedThinking(model, dispatch(false));
 	}
 
@@ -713,6 +715,7 @@ function withProviderInFlightLimit<
 				throw options.signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
 			}
 			options?.beforeDispatch?.();
+			assertModelNotBlacklisted(model);
 			const inner = healLeakedThinking(model, dispatch(true));
 			let terminalEvent: AssistantMessageEvent | undefined;
 			for await (const event of inner) {
@@ -851,28 +854,52 @@ function withResolvedModelHeaders<TApi extends Api>(
 	return outer;
 }
 
-export function stream<TApi extends Api>(
+function streamAllowed<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: OptionsForApi<TApi>,
 ): AssistantMessageEventStream {
+	const onSucceeded = options?.onProviderCallSucceeded;
+	const onFailed = options?.onProviderCallFailed;
+	const requestOptions =
+		onSucceeded || onFailed
+			? { ...options, onProviderCallSucceeded: undefined, onProviderCallFailed: undefined }
+			: options;
+	let response: AssistantMessageEventStream;
 	if (model.resolveHeaders) {
-		return withResolvedModelHeaders(model, options?.signal, resolvedModel => stream(resolvedModel, context, options));
-	}
-	if (!model.requiresGlyphTokenization) {
-		return withThinkingLoopGuard(model, options, opts =>
+		response = withResolvedModelHeaders(model, requestOptions?.signal, resolvedModel =>
+			stream(resolvedModel, context, requestOptions),
+		);
+	} else if (!model.requiresGlyphTokenization) {
+		response = withThinkingLoopGuard(model, requestOptions, opts =>
 			withProviderInFlightLimit(model, opts, limited => streamDispatch(model, context, opts, limited)),
 		);
+	} else {
+		const codec = applyGlyphCodec(context);
+		const execHandlers = requestOptions?.execHandlers;
+		const wireOptions: OptionsForApi<TApi> | undefined =
+			execHandlers === undefined
+				? requestOptions
+				: { ...requestOptions, execHandlers: codec.wrapCursorExecHandlers(execHandlers) };
+		response = codec.wrap(
+			withThinkingLoopGuard(model, wireOptions, opts =>
+				withProviderInFlightLimit(model, opts, limited => streamDispatch(model, codec.context, opts, limited)),
+			),
+		);
 	}
-	const codec = applyGlyphCodec(context);
-	const execHandlers = options?.execHandlers;
-	const wireOptions: OptionsForApi<TApi> | undefined =
-		execHandlers === undefined ? options : { ...options, execHandlers: codec.wrapCursorExecHandlers(execHandlers) };
-	return codec.wrap(
-		withThinkingLoopGuard(model, wireOptions, opts =>
-			withProviderInFlightLimit(model, opts, limited => streamDispatch(model, codec.context, opts, limited)),
-		),
-	);
+	return onSucceeded || onFailed
+		? observeProviderCompletion(
+				response,
+				onSucceeded
+					? message => {
+							if (requestOptions?.credentialId !== undefined) message.credentialId = requestOptions.credentialId;
+							onSucceeded(message);
+						}
+					: undefined,
+				onFailed,
+				requestOptions?.signal,
+			)
+		: response;
 }
 
 function streamDispatch<TApi extends Api>(
@@ -1190,32 +1217,100 @@ function withSupportedSamplingParams<T extends SamplingOptions>(model: Model<Api
 	return supported;
 }
 
+function observeProviderCompletion(
+	inner: AssistantMessageEventStream,
+	onSucceeded?: (message: AssistantMessage) => void,
+	onFailed?: (error: unknown) => void,
+	signal?: AbortSignal,
+): AssistantMessageEventStream {
+	const outer = new AssistantMessageEventStream();
+	const failed = (error: unknown): void => {
+		const failure = typeof error === "object" && error !== null ? (error as { stopReason?: unknown }) : undefined;
+		if (
+			!onFailed ||
+			signal?.aborted ||
+			failure?.stopReason === "aborted" ||
+			(error instanceof Error && AIError.is(AIError.classify(error), AIError.Flag.Abort))
+		) {
+			return;
+		}
+		try {
+			onFailed(error);
+		} catch (observerError) {
+			logger.warn("Provider failure observer failed", { error: String(observerError) });
+		}
+	};
+	const finish = (message: AssistantMessage): void => {
+		if (message.stopReason === "error") {
+			failed(message);
+		} else if (message.stopReason !== "aborted" && onSucceeded) {
+			try {
+				onSucceeded(message);
+			} catch (error) {
+				logger.warn("Provider success observer failed", { provider: message.provider, error: String(error) });
+			}
+		}
+	};
+	void (async () => {
+		try {
+			for await (const event of inner) {
+				if (event.type === "done") finish(event.message);
+				else if (event.type === "error") failed(event.error);
+				outer.push(event);
+				if (outer.done) return;
+			}
+			if (!outer.done) {
+				const result = await inner.result();
+				finish(result);
+				outer.end(result);
+			}
+		} catch (error) {
+			failed(error);
+			outer.fail(error);
+		}
+	})();
+	return outer;
+}
+
 export function streamSimple<TApi extends Api>(
 	model: Model<TApi>,
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
-	const sessionOptions = withInferenceSessionId(options);
+	const apiKeyResolver = isApiKeyResolver(options?.apiKey) ? options.apiKey : undefined;
+	const onSucceeded = options?.onProviderCallSucceeded ?? apiKeyResolver?.onProviderCallSucceeded;
+	const onFailed = options?.onProviderCallFailed ?? apiKeyResolver?.onProviderCallFailed;
+	const sessionOptions = withInferenceSessionId(
+		onSucceeded || onFailed
+			? { ...options, onProviderCallSucceeded: undefined, onProviderCallFailed: undefined }
+			: options,
+	);
 	// Unverified thinking is opt-in: without a requested effort the request is
 	// byte-identical to a non-reasoning model's.
 	const effortRequested =
 		sessionOptions.reasoning !== undefined && !sessionOptions.disableReasoning && !sessionOptions.forceReasoningOff;
+	assertModelNotBlacklisted(model);
 	if (!effortRequested) model = withoutUnverifiedThinking(model);
+	let response: AssistantMessageEventStream;
 	if (!model.requiresGlyphTokenization) {
-		return streamSimpleRequest(model, context, sessionOptions);
+		response = streamSimpleRequest(model, context, sessionOptions);
+	} else {
+		const codec = applyGlyphCodec(context);
+		const execHandlers = sessionOptions.cursorExecHandlers ?? sessionOptions.execHandlers;
+		const wrappedExecHandlers = execHandlers === undefined ? undefined : codec.wrapCursorExecHandlers(execHandlers);
+		const wireOptions =
+			wrappedExecHandlers === undefined
+				? sessionOptions
+				: {
+						...sessionOptions,
+						execHandlers: wrappedExecHandlers,
+						cursorExecHandlers: wrappedExecHandlers,
+					};
+		response = codec.wrap(streamSimpleRequest(model, codec.context, wireOptions));
 	}
-	const codec = applyGlyphCodec(context);
-	const execHandlers = sessionOptions.cursorExecHandlers ?? sessionOptions.execHandlers;
-	const wrappedExecHandlers = execHandlers === undefined ? undefined : codec.wrapCursorExecHandlers(execHandlers);
-	const wireOptions =
-		wrappedExecHandlers === undefined
-			? sessionOptions
-			: {
-					...sessionOptions,
-					execHandlers: wrappedExecHandlers,
-					cursorExecHandlers: wrappedExecHandlers,
-				};
-	return codec.wrap(streamSimpleRequest(model, codec.context, wireOptions));
+	return onSucceeded || onFailed
+		? observeProviderCompletion(response, onSucceeded, onFailed, options?.signal)
+		: response;
 }
 
 /**
@@ -1243,6 +1338,7 @@ function streamSimpleRequest<TApi extends Api>(
 	context: Context,
 	options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+	assertModelNotBlacklisted(model);
 	const requestOptions = withSupportedSamplingParams(
 		model,
 		withTransportFetch(model, (options || {}) as SimpleStreamOptions),
@@ -2418,4 +2514,14 @@ function getGoogleBudget(
 
 	// Unknown model - use dynamic
 	return -1;
+}
+
+/** Enforce the owner's current ban before entering provider-specific streaming work. */
+export function stream<TApi extends Api>(
+	model: Model<TApi>,
+	context: Context,
+	options?: OptionsForApi<TApi>,
+): AssistantMessageEventStream {
+	assertModelNotBlacklisted(model);
+	return streamAllowed(model, context, options);
 }

@@ -10,6 +10,7 @@ import { RemoteSlowModeLane } from "../../src/thread/services/auth-remote";
 
 /** Worker-side operations the test drives; each crosses to main as an async function. */
 export interface AuthProbe {
+	depletion(provider: string, action: "read" | "mark" | "success" | "reset"): Promise<boolean>;
 	key(provider: string, sessionId: string): Promise<string | undefined>;
 	keyError(provider: string, sessionId: string): Promise<{ missingApiKey: boolean; message: string }>;
 	accountId(provider: string, sessionId: string): Promise<string | undefined>;
@@ -52,6 +53,13 @@ function buildProbe(storage: AuthStorage): AuthProbe {
 	let unwatch: (() => void) | undefined;
 	let firstRegistry: ModelRegistry | undefined;
 	return {
+		depletion: async (provider, action) => {
+			if (action === "mark")
+				storage.health.markProviderDepleted(provider, { status: 429, resetAtMs: Date.now() + 60_000 });
+			if (action === "success") storage.health.markProviderSucceeded(provider);
+			if (action === "reset") storage.health.resetProviderDepletion(provider);
+			return storage.health.isProviderDepleted(provider);
+		},
 		key: (provider, sessionId) => storage.keys.get(provider, sessionId),
 		keyError: async (provider, sessionId) => {
 			try {

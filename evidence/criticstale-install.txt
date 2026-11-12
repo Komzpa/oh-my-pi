@@ -1,0 +1,17 @@
+bun install v1.4.4 (38afee6c8)
+Resolving dependencies
+Resolved, downloaded and extracted [2]
+
+$ bun run gen:export-viewer
+$ bun --cwd=packages/collab-web run gen:export-viewer
+$ bun scripts/build-export-viewer.ts
+Generated export-viewer-a8e4926d1aca4c0b13d11a422988cb58309b0b3e9a1c9550cd107e2f123c0b37.js (775.1 KiB)
+
++ @types/bun@1.4.2 (v1.4.4 available)
++ lint-staged@17.5.1 (v17.6.0 available)
++ oxfmt@0.65.0 (v0.76.0 available)
++ oxlint@1.85.0 (v1.91.0 available)
++ ts-morph@28.0.0
++ typescript@7.0.2
+
+307 packages installed [778.00ms]

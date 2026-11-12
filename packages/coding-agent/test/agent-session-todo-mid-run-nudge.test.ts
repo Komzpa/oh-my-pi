@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool, type AsideBoundary, type AsideMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, TextContent, ToolCall } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -7,7 +8,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TodoTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { BashTool, TodoTool, WriteTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
@@ -48,10 +49,12 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 	let sessionManager: SessionManager;
 	let reminderEvents: Array<Extract<AgentSessionEvent, { type: "todo_reminder" }>>;
 	let asideProvider: ((boundary: AsideBoundary) => AsideMessage[] | Promise<AsideMessage[]>) | undefined;
+	let taskExecutions: number;
+	let bashExecutions: number;
 
-	const THRESHOLD = 12; // mirrors MID_RUN_TODO_NUDGE_MUTATION_THRESHOLD
-	const MAX_PER_CYCLE = 2; // mirrors MID_RUN_TODO_NUDGE_MAX_PER_CYCLE
-	const NUDGE_TYPE = "mid-run-todo-nudge"; // mirrors MID_RUN_TODO_NUDGE_MESSAGE_TYPE
+	const THRESHOLD = 12; // mirrors MID_RUN_NUDGE_MUTATION_THRESHOLD
+	const MAX_PER_CYCLE = 2; // mirrors MID_RUN_NUDGE_MAX_PER_CYCLE
+	const NUDGE_TYPE = "mid-run-todo-nudge";
 
 	function toolUseAssistant(toolName: string): AssistantMessage {
 		const id = `call_${toolName}_${Date.now()}_${Math.random()}`;
@@ -119,6 +122,13 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		});
 	}
 
+	/** A compaction boundary: the earlier nudge left the model's context, but no todo state was written. */
+	function compact(): void {
+		const kept = sessionManager.appendMessage({ role: "user", content: "Continue work", timestamp: Date.now() });
+		sessionManager.appendCompaction("Earlier work", undefined, kept, 100);
+	}
+
+	/** Polls like the agent loop and delivers each nudge via message_end so it lands on the session branch. */
 	async function drainNudges(): Promise<CustomMessage[]> {
 		if (!asideProvider) throw new Error("aside provider was never captured");
 		const thunks = await asideProvider("work");
@@ -128,8 +138,10 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 			if (!message) continue;
 			if (message.role !== "custom") continue;
 			if ((message as CustomMessage).customType !== NUDGE_TYPE) continue;
+			session.agent.emitExternalEvent({ type: "message_end", message });
 			out.push(message as CustomMessage);
 		}
+		await session.waitForIdle();
 		return out;
 	}
 
@@ -154,12 +166,40 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 			settings,
 		};
 		const todoTool = new TodoTool(toolSession);
+		const writeTool = new WriteTool(toolSession);
+		taskExecutions = 0;
+		const taskTool: AgentTool = {
+			name: "task",
+			label: "Task",
+			description: "Mock planning worker dispatch",
+			parameters: type({}),
+			approval: "exec",
+			execute: async () => {
+				taskExecutions++;
+				return { content: [{ type: "text", text: "task-ok" }] };
+			},
+		};
+
+		// Real BashTool approval classification, stubbed execution: the gate must see the production tier.
+		const realBash = new BashTool(toolSession);
+		const bashTool: AgentTool = {
+			name: "bash",
+			label: "Bash",
+			description: "Mock bash with production approval",
+			parameters: type({}),
+			approval: realBash.approval,
+			execute: async () => {
+				bashExecutions++;
+				return { content: [{ type: "text", text: "bash-ok" }] };
+			},
+		};
+		bashExecutions = 0;
 
 		const agent = new Agent({
 			initialState: {
 				model,
 				systemPrompt: ["Test"],
-				tools: [todoTool as unknown as AgentTool],
+				tools: [todoTool, writeTool, taskTool, bashTool] as unknown as AgentTool[],
 				messages: [],
 			},
 		});
@@ -179,6 +219,12 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 			sessionManager,
 			settings,
 			modelRegistry: sharedModelRegistry,
+			toolRegistry: new Map<string, AgentTool>([
+				["todo", todoTool as unknown as AgentTool],
+				["write", writeTool as unknown as AgentTool],
+				["task", taskTool],
+				["bash", bashTool],
+			]),
 		});
 
 		reminderEvents = [];
@@ -186,14 +232,24 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 			if (event.type === "todo_reminder") reminderEvents.push(event);
 		});
 
-		session.setTodoPhases([
+		session.commitTodoPhases([
 			{
 				name: "Refactor pass",
-				tasks: [
-					{ content: "Sweep call sites", status: "in_progress" },
-					{ content: "Update tests", status: "pending" },
-					{ content: "Polish docs", status: "pending" },
-				],
+				tasks: ["Sweep call sites", "Update tests", "Polish docs"].map((content, index) => ({
+					content,
+					status: index === 0 ? ("in_progress" as const) : ("pending" as const),
+					schedule: {
+						dependencies: [],
+						estimate: {
+							optimisticSeconds: 60,
+							likelySeconds: 120,
+							pessimisticSeconds: 300,
+							confidence: "medium" as const,
+							basis: "Synthetic bounded task",
+							updatedAt: Date.now(),
+						},
+					},
+				})),
 			},
 		]);
 	});
@@ -220,28 +276,52 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(reminderEvents).toEqual([]);
 	});
 
-	it("injects a hidden custom nudge at the threshold — no event, no render", async () => {
+	it("nudges immediately for planning debt and rearms when new debt is discovered", async () => {
+		session.setTodoPhases([
+			{
+				name: "Refactor pass",
+				tasks: [{ content: "Missing estimate", status: "pending" }],
+			},
+		]);
+		const first = await drainNudges();
+		expect(first).toHaveLength(1);
+		expect(first[0]?.display).toBe(false);
+		expect(await drainNudges()).toEqual([]);
+
+		session.setTodoPhases([
+			{
+				name: "Refactor pass",
+				tasks: [
+					{
+						content: "Planned acceptance slice",
+						status: "pending",
+						schedule: {
+							dependencies: [],
+							estimate: {
+								optimisticSeconds: 60,
+								likelySeconds: 120,
+								pessimisticSeconds: 300,
+								confidence: "medium",
+								basis: "Synthetic bounded task",
+								updatedAt: Date.now(),
+							},
+						},
+					},
+					{ content: "Newly discovered acceptance slice", status: "pending" },
+				],
+			},
+		]);
+		expect(await drainNudges()).toHaveLength(1);
+		expect(reminderEvents).toEqual([]);
+	});
+
+	it("injects one hidden custom nudge at the mutation threshold without emitting a reminder event", async () => {
 		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 
 		const nudges = await drainNudges();
 		expect(nudges.length).toBe(1);
-		const nudge = nudges[0];
-		// Hidden from the TUI/transcript, visible to the model only.
-		expect(nudge?.display).toBe(false);
-		const text = typeof nudge?.content === "string" ? nudge.content : "";
-		expect(text).toContain("<system-reminder>");
-		expect(text).toContain("3 todo items");
-		// Gentle hint, not the stop-time escalation ladder: no per-task
-		// enumeration, no attempt counter.
-		expect(text).not.toContain("Sweep call sites");
-		expect(text).not.toMatch(/reminder \d\/\d/i);
-
-		// SEPARATE concept from the stop-time reminder: no todo_reminder event,
-		// so nothing renders a TodoReminderComponent or reaches extensions.
+		expect(nudges[0]?.display).toBe(false);
 		expect(reminderEvents).toEqual([]);
-
-		// Counter reset: another full runway is required before the next nudge,
-		// so an immediate poll right after firing must NOT re-inject.
 		expect(await drainNudges()).toEqual([]);
 	});
 
@@ -260,27 +340,62 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(reminderEvents).toEqual([]);
 	});
 
-	it("caps nudges per prompt cycle", async () => {
+	it("suppresses an identical mutation-window nudge until the content changes", async () => {
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+		const first = await drainNudges();
+		expect(first).toHaveLength(1);
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+		expect(await drainNudges()).toEqual([]);
+
+		const phases = session.getTodoPhases();
+		delete phases[0].tasks[1].schedule;
+		session.setTodoPhases(phases);
+		const changed = await drainNudges();
+		expect(changed).toHaveLength(1);
+		expect(changed[0]?.content).not.toEqual(first[0]?.content);
+		expect(reminderEvents).toEqual([]);
+	});
+
+	it("re-delivers the same nudge after compaction without lifting the per-cycle cap", async () => {
 		let fired = 0;
+		// Each compaction forgets the earlier nudge, so identical content is delivered again —
+		// but only up to the per-cycle cap, which compaction must not reset.
 		for (let cycle = 0; cycle < MAX_PER_CYCLE + 2; cycle++) {
 			for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+			if (cycle > 0) compact();
 			fired += (await drainNudges()).length;
 		}
 		expect(fired).toBe(MAX_PER_CYCLE);
 		expect(reminderEvents).toEqual([]);
 	});
 
+	it("re-delivers an identical nudge after the session tree is switched to before the last nudge", async () => {
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+		const first = await drainNudges();
+		expect(first).toHaveLength(1);
+
+		const nudgeEntry = sessionManager.getLatestBranchMatching(
+			metadata => metadata.type === "custom_message" && metadata.customType === NUDGE_TYPE,
+		);
+		expect(nudgeEntry?.parentId).toBeTruthy();
+		await session.navigateTree(nudgeEntry!.parentId!);
+
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+		const second = await drainNudges();
+		expect(second).toHaveLength(1);
+		expect(second[0]?.content).toEqual(first[0]?.content);
+	});
+
 	it("re-arms the nudge budget after a todo state write so a long turn keeps getting nudged", async () => {
-		// Without the re-arm, the cap outlives the progress it rations: two
-		// nudges in a single prompt silence the mid-run path until the next
-		// user prompt, which is precisely the stale-HUD case the nudge exists
-		// for.
 		let fired = 0;
 		for (let cycle = 0; cycle < MAX_PER_CYCLE; cycle++) {
 			for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+			if (cycle > 0) compact();
 			fired += (await drainNudges()).length;
 		}
 		expect(fired).toBe(MAX_PER_CYCLE);
+		compact();
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 		expect(await drainNudges()).toEqual([]);
 
 		// The agent acted on a nudge and wrote todo state — the same path the
@@ -296,6 +411,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		let fired = 0;
 		for (let cycle = 0; cycle < MAX_PER_CYCLE; cycle++) {
 			for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+			if (cycle > 0) compact();
 			fired += (await drainNudges()).length;
 		}
 		expect(fired).toBe(MAX_PER_CYCLE);
@@ -303,14 +419,17 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		// Neither a read-only view nor a failed attempt nor a details-less
 		// Cursor read snapshot wrote state, so none of them re-arms.
 		emitToolResult("todo", { details: { op: "view", phases: [] } });
+		compact();
 		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 		expect(await drainNudges()).toEqual([]);
 
 		emitToolResult("todo", { isError: true, details: { op: "done", phases: [] } });
+		compact();
 		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 		expect(await drainNudges()).toEqual([]);
 
 		emitToolResult("todo");
+		compact();
 		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 		expect(await drainNudges()).toEqual([]);
 		expect(reminderEvents).toEqual([]);
@@ -363,5 +482,70 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		emitToolResult("edit");
 		expect(await drainNudges()).toEqual([]);
 		expect(reminderEvents.length).toBe(1);
+	});
+
+	it("blocks initial direct and eval writes until the whole plan is estimated", async () => {
+		const direct = session.agent.state.tools.find(tool => tool.name === "write")!;
+		const bridged = session.getToolForEvalBridge("write")!;
+		const path = `${tempDir.path()}/admission.txt`;
+		await Bun.write(path, "original");
+		const phases = session.getTodoPhases();
+		phases[0].tasks[1].status = "blocked";
+		phases[0].tasks[1].blocker = "External approval";
+		const savedSchedule = phases[0].tasks[1].schedule;
+		delete phases[0].tasks[1].schedule;
+		session.setTodoPhases(phases);
+		await expect(direct.execute("direct-debt", { path, content: "bad direct" })).rejects.toThrow();
+		await expect(bridged.execute("eval-debt", { path, content: "bad eval" })).rejects.toThrow();
+		expect(await Bun.file(path).text()).toBe("original");
+		phases[0].tasks[1].schedule = savedSchedule;
+		session.setTodoPhases(phases);
+		await bridged.execute("scheduled-blocked", { path, content: "recovered" });
+		expect(await Bun.file(path).text()).toBe("recovered");
+	});
+
+	it("keeps task dispatch available while planning debt blocks ordinary writes", async () => {
+		const directWrite = session.agent.state.tools.find(tool => tool.name === "write")!;
+		const task = session.agent.state.tools.find(tool => tool.name === "task")!;
+		const path = `${tempDir.path()}/admission-task.txt`;
+		await Bun.write(path, "original");
+		const phases = session.getTodoPhases();
+		delete phases[0].tasks[1].schedule;
+		session.setTodoPhases(phases);
+
+		const refusal = await directWrite.execute("write-debt", { path, content: "bad write" }).then(
+			() => "",
+			error => (error instanceof Error ? error.message : String(error)),
+		);
+		const firstLine = refusal.split("\n")[0]!;
+		expect(firstLine.length).toBeLessThanOrEqual(100);
+		expect(firstLine).toContain('Schedule "Update tests"');
+		expect(firstLine).toContain("estimate and dependencies");
+		expect(firstLine).not.toStartWith("Complete whole-plan");
+		expect(refusal).toContain("Every non-read tool is refused");
+		await expect(task.execute("task-debt", {})).resolves.toEqual({
+			content: [{ type: "text", text: "task-ok" }],
+		});
+		expect(taskExecutions).toBe(1);
+		expect(await Bun.file(path).text()).toBe("original");
+	});
+
+	it("lets read-only bash through while planning debt blocks mutating bash", async () => {
+		const bash = session.agent.state.tools.find(tool => tool.name === "bash")!;
+		const phases = session.getTodoPhases();
+		delete phases[0].tasks[1].schedule;
+		session.setTodoPhases(phases);
+
+		await expect(bash.execute("bash-read", { command: "git diff --stat | head" })).resolves.toEqual({
+			content: [{ type: "text", text: "bash-ok" }],
+		});
+		expect(bashExecutions).toBe(1);
+		await expect(bash.execute("bash-commit", { command: "git commit -m x" })).rejects.toThrow(
+			'Schedule "Update tests" first',
+		);
+		await expect(bash.execute("bash-redirect", { command: "ls > f" })).rejects.toThrow(
+			'Schedule "Update tests" first',
+		);
+		expect(bashExecutions).toBe(1);
 	});
 });

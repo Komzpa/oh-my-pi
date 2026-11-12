@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs";
 import * as path from "node:path";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { registerPersistedSubagents } from "@oh-my-pi/pi-coding-agent/registry/persisted-agents";
@@ -19,6 +20,22 @@ function transcript(): string {
 }
 
 describe("persisted agent isolation artifacts", () => {
+	afterEach(() => vi.restoreAllMocks());
+	it("inspects directory entries once for patch ownership across a large roster", async () => {
+		using tempDir = TempDir.createSync("@omp-artifacts-index-");
+		const root = path.join(tempDir.path(), "main.jsonl");
+		const dir = path.join(tempDir.path(), "main");
+		await Bun.write(root, "");
+		for (let i = 0; i < 32; i++) await Bun.write(path.join(dir, `Worker${i}.jsonl`), `${transcript()}\n`);
+		await Bun.write(path.join(dir, "Worker7.nested-0-lib.patch"), "patch");
+		const inspected = vi.spyOn(fs.Dirent.prototype, "isFile");
+		const registry = new AgentRegistry();
+		await registerPersistedSubagents(registry, root, { hydrateHistory: false });
+		expect(registry.get("Worker7")?.history?.nestedPatchPaths).toEqual([
+			path.join(dir, "Worker7.nested-0-lib.patch"),
+		]);
+		expect(inspected.mock.calls.length).toBeLessThan(33 * 4);
+	});
 	it("restores nested-repo patch files beside a transcript in capture order", async () => {
 		using tempDir = TempDir.createSync("@omp-artifacts-nested-");
 		const dir = tempDir.path();

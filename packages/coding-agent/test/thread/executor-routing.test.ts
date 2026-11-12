@@ -15,6 +15,10 @@ import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import { AsyncJobManager } from "../../src/async/job-manager";
 import { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
+import { AgentProtocolHandler } from "../../src/internal-urls/agent-protocol";
+import { ProcProtocolHandler } from "../../src/internal-urls/proc-protocol";
+import { parseInternalUrl } from "../../src/internal-urls/parse";
+import type { ToolSession } from "../../src/tools";
 import { IrcBus } from "../../src/irc/bus";
 import { AgentLifecycleManager } from "../../src/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../../src/registry/agent-registry";
@@ -341,6 +345,53 @@ function rootSession(): AgentSession {
 }
 
 describe("subagent runs routed into pooled workers", () => {
+	it(
+		"lists and steers a worker while its startup extension is still loading",
+		async () => {
+			const entered = path.join(root, "startup-entered");
+			const release = path.join(root, "startup-release");
+			const extension = path.join(root, "startup-extension.ts");
+			await Bun.write(
+				extension,
+				`export default async function () { await Bun.write(${JSON.stringify(entered)}, "ready"); while (!await Bun.file(${JSON.stringify(release)}).exists()) await Bun.sleep(10); }`,
+			);
+			const running = runSubprocess(
+				runOptions("Starting", "ping", { preloadedExtensionPaths: [extension], parentAgentId: MAIN_AGENT_ID }),
+			);
+			try {
+				const deadline = Date.now() + 30000;
+				while (!(await Bun.file(entered).exists())) {
+					if (Date.now() > deadline) throw new Error("startup extension not reached");
+					await Bun.sleep(10);
+				}
+				const registry = AgentRegistry.global();
+				const session = {
+					agentRegistry: registry,
+					getAgentId: () => MAIN_AGENT_ID,
+					getSessionSpawns: () => "*",
+					settings,
+					cwd,
+					hasUI: false,
+				} as ToolSession;
+				expect(registry.listVisibleTo(MAIN_AGENT_ID).map(ref => ref.id)).toContain("Starting");
+				const proc = await new ProcProtocolHandler().resolve(parseInternalUrl("proc://"), { session });
+				expect(proc.content).toContain("Starting");
+				const sent = new AgentProtocolHandler().write(parseInternalUrl("agent://Starting"), "startup correction", {
+					session,
+				});
+				await Bun.write(release, "go");
+				expect((await sent).isError).not.toBe(true);
+				await running;
+				const child = registry.get("Starting")?.session;
+				expect(child?.messages.some(message => JSON.stringify(message).includes("startup correction"))).toBe(true);
+			} finally {
+				await Bun.write(release, "go");
+				await running;
+			}
+		},
+		TEST_TIMEOUT_MS,
+	);
+
 	it(
 		"warms a worker with a throwaway session sealed off from main, then runs subagents there",
 		async () => {

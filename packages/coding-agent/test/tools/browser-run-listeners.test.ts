@@ -230,7 +230,10 @@ return { order, onceCalls, reads, requestPatched };`,
 			await invoke({
 				action: "run",
 				name: "unsubscribe",
-				code: `const count = () => ["requestfinished", "requestfailed", "response"].map(type => page.listenerCount(type));
+				code: `// Opening the page can leave navigation request subscriptions in flight.
+// Measure both sides after network idle so only this run's subscriptions differ.
+await page.waitForNetworkIdle({ idleTime: 200, timeout: 3000 });
+const count = () => ["requestfinished", "requestfailed", "response"].map(type => page.listenerCount(type));
 const before = count();
 await tab.evaluate(url => fetch(url).then(response => response.text()), ${JSON.stringify(`${baseUrl}/`)});
 await page.waitForNetworkIdle({ idleTime: 200, timeout: 3000 });

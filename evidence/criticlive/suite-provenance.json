@@ -1,0 +1,11 @@
+{
+  "base": "77054de61f78ccb780462e1d26fb531a9a9a30b2",
+  "runtime": "bun 1.4.4 (38afee6c8)",
+  "regressionCommand": "bun test packages/reemxy-extensions/extensions/plan_critic.test.ts packages/reemxy-extensions/extensions/plan_critic.loading.test.ts",
+  "baseFailures": ["legacy resume does not dispatch a critic", "legacy restore does not dispatch a critic", "startup poll is 45 minutes instead of one minute", "continued lead is treated as a worker"],
+  "baseReplay": "Production plan_critic.ts, todo_dispatch.ts, requirement_quotes.ts and package.json restored byte-for-byte from base for the regression command, then restored to the candidate in finally.",
+  "coreCommand": "bun test $(cat evidence/criticlive/core-files.txt)",
+  "coreInclusion": "Every existing coding-agent test path containing todo or session before .test.ts; exact ordered 318-file list retained.",
+  "coreBaseReplay": "Same ordered list with all five changed production files restored byte-for-byte from base; candidate restored in finally.",
+  "nativeProvenance": "Existing lane dependency/native artifact unchanged; no native source changes or native rebuild in this patch. Tests do not prove a compiled installed build."
+}

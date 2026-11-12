@@ -15,6 +15,7 @@ import { MarketplaceManager } from "@oh-my-pi/pi-coding-agent/extensibility/plug
 import type { AgentSession, AsyncJobTree } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionDumpArchive } from "@oh-my-pi/pi-coding-agent/session/session-dump-format";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { MCPLoadResult } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import { getProjectDir, removeWithRetries, setProjectDir, TempDir } from "@oh-my-pi/pi-utils";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -66,7 +67,9 @@ interface FakeAcpBuiltinSession {
 	setTitleSystemPrompt(prompt: string | undefined): void;
 	setSlashCommands(commands: unknown[]): void;
 	refreshSkillsAndCommands(): Promise<void>;
+	reloadMCPRuntime(): Promise<MCPLoadResult>;
 	getTodoPhases(): Array<{ name: string; tasks: Array<{ content: string; status: string }> }>;
+	setTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	commitTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	refreshBaseSystemPrompt(): Promise<void>;
 	getHindsightSessionState(): undefined;
@@ -109,6 +112,9 @@ function createRuntime() {
 		setTitleSystemPrompt: (_prompt: string | undefined) => {},
 		setSlashCommands: (_commands: unknown[]) => {},
 		refreshSkillsAndCommands: async () => {},
+		async reloadMCPRuntime() {
+			return { tools: [], errors: new Map(), connectedServers: [], exaApiKeys: [] };
+		},
 		toggleFastMode() {
 			this.fastMode = !this.fastMode;
 			return this.fastMode;
@@ -161,6 +167,9 @@ function createRuntime() {
 		},
 		getTodoPhases() {
 			return this._todoPhases;
+		},
+		setTodoPhases(phases) {
+			this._todoPhases = phases;
 		},
 		commitTodoPhases(phases) {
 			this._todoPhases = phases;
@@ -1479,16 +1488,26 @@ describe("wave 4 commands", () => {
 		expect(output[0]).toContain("Usage");
 	});
 
-	it("/mcp reload: calls refreshCommands and outputs confirmation", async () => {
+	it("/mcp reload: refreshes commands and reports the runtime result", async () => {
 		let refreshCalled = false;
 		const { output, runtime } = createRuntime();
+		const reloadResult: MCPLoadResult = {
+			tools: [],
+			errors: new Map([["broken", "connection refused"]]),
+			connectedServers: ["working"],
+			exaApiKeys: [],
+		};
+		runtime.session.reloadMCPRuntime = async () => reloadResult;
 		runtime.refreshCommands = () => {
 			refreshCalled = true;
 		};
 		const result = await executeAcpBuiltinSlashCommand("/mcp reload", runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(refreshCalled).toBe(true);
-		expect(output[0]).toContain("reload");
+		expect(output).toEqual([
+			"MCP runtime reloaded. Connected servers: 1.",
+			"MCP connection errors: broken: connection refused",
+		]);
 	});
 
 	it("/mcp resources: outputs server list or no-server message", async () => {

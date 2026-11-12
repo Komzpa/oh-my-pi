@@ -29,7 +29,22 @@
 				"unwrap": null,
 				"timeoutMs": null,
 				"completion": "prompt_result",
-				"clientOmit": []
+				"clientOmit": [
+					"options"
+				]
+			},
+			{
+				"name": "prompt_custom",
+				"doc": "Submit an attributed custom message through the owner admission pipeline.",
+				"params": "PromptCustomParams",
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": "prompt_result",
+				"clientOmit": [
+					"options"
+				]
 			},
 			{
 				"name": "steer",
@@ -78,13 +93,15 @@
 			{
 				"name": "abort",
 				"doc": "Abort the current run.",
-				"params": null,
+				"params": "AbortParams",
 				"result": null,
 				"nullable": false,
 				"unwrap": null,
 				"timeoutMs": null,
 				"completion": null,
-				"clientOmit": []
+				"clientOmit": [
+					"options"
+				]
 			},
 			{
 				"name": "abort_and_prompt",
@@ -131,9 +148,66 @@
 				"clientOmit": []
 			},
 			{
-				"name": "get_state",
-				"doc": "Snapshot the session state.",
+				"name": "begin_dispose",
+				"doc": "Stop admitting new owner work before explicit shutdown.",
 				"params": null,
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "dispose_session",
+				"doc": "Dispose the runtime owner; view detachment does not call this.",
+				"params": "DisposeSessionParams",
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": [
+					"options"
+				]
+			},
+			{
+				"name": "checkpoint_session",
+				"doc": "Close and seal the owner journal after restart admission.",
+				"params": null,
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "save_draft",
+				"doc": "Persist unsent editor text with the runtime session writer.",
+				"params": "SaveDraftParams",
+				"result": null,
+				"nullable": false,
+				"unwrap": null,
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "consume_draft",
+				"doc": "Restore and remove the unsent editor draft once.",
+				"params": null,
+				"result": "ConsumeDraftResult",
+				"nullable": false,
+				"unwrap": "text",
+				"timeoutMs": null,
+				"completion": null,
+				"clientOmit": []
+			},
+			{
+				"name": "get_state",
+				"doc": "Snapshot the session state, optionally including presentation without opening a view writer.",
+				"params": "GetStateParams",
 				"result": "SessionState",
 				"nullable": false,
 				"unwrap": null,
@@ -2296,7 +2370,8 @@
 				"pending",
 				"in_progress",
 				"completed",
-				"abandoned"
+				"abandoned",
+				"blocked"
 			],
 			"type": "string"
 		},
@@ -2358,6 +2433,23 @@
 			],
 			"type": "string"
 		},
+		"TodoAwaitingUser": {
+			"type": "object",
+			"properties": {
+				"action": {
+					"type": "string"
+				},
+				"ids": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": [
+				"action"
+			]
+		},
 		"TodoItem": {
 			"type": "object",
 			"properties": {
@@ -2367,6 +2459,13 @@
 				"status": {
 					"$ref": "#/$defs/TodoStatus"
 				},
+				"schedule": {
+					"$ref": "#/$defs/TodoSchedule"
+				},
+				"blocker": {
+					"type": "string",
+					"description": "What a `blocked` task is waiting on."
+				},
 				"details": {
 					"type": "string"
 				},
@@ -2375,6 +2474,22 @@
 					"items": {
 						"type": "string"
 					}
+				},
+				"artifactCwd": {
+					"type": "string",
+					"description": "Persisted checkout whose clean HEAD is the row's QA artifact."
+				},
+				"artifactOwner": {
+					"type": "string",
+					"description": "Owner whose checkout was last verified as artifactCwd."
+				},
+				"deployment": {
+					"type": "string",
+					"description": "Explicit deployment identity for this requirement row."
+				},
+				"awaitingUser": {
+					"$ref": "#/$defs/TodoAwaitingUser",
+					"description": "User-owned pending check; it does not constitute verification or close the row."
 				}
 			},
 			"required": [
@@ -2399,6 +2514,267 @@
 				"name",
 				"tasks"
 			]
+		},
+		"TodoConfidence": {
+			"enum": [
+				"low",
+				"medium",
+				"high"
+			],
+			"type": "string"
+		},
+		"TodoScheduleReview": {
+			"enum": [
+				"user",
+				"accepted",
+				"redo",
+				"drop"
+			],
+			"type": "string"
+		},
+		"TodoWorkerOutcome": {
+			"enum": [
+				"completed",
+				"failed",
+				"aborted"
+			],
+			"type": "string"
+		},
+		"TodoEstimate": {
+			"type": "object",
+			"properties": {
+				"optimisticSeconds": {
+					"type": "number"
+				},
+				"likelySeconds": {
+					"type": "number"
+				},
+				"pessimisticSeconds": {
+					"type": "number"
+				},
+				"confidence": {
+					"$ref": "#/$defs/TodoConfidence"
+				},
+				"basis": {
+					"type": "string"
+				},
+				"updatedAt": {
+					"type": "number"
+				}
+			},
+			"required": [
+				"optimisticSeconds",
+				"likelySeconds",
+				"pessimisticSeconds",
+				"confidence",
+				"basis",
+				"updatedAt"
+			],
+			"description": "User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds."
+		},
+		"TodoScheduleProgress": {
+			"type": "object",
+			"properties": {
+				"at": {
+					"type": "number"
+				},
+				"evidence": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"at",
+				"evidence"
+			]
+		},
+		"TodoScheduleExecutor": {
+			"type": "object",
+			"properties": {
+				"workerId": {
+					"type": "string"
+				},
+				"startedAt": {
+					"type": "number"
+				},
+				"agentProfile": {
+					"type": "string"
+				},
+				"resolvedModel": {
+					"type": "string"
+				},
+				"thinkingLevel": {
+					"type": "string"
+				},
+				"finishedAt": {
+					"type": "number"
+				},
+				"outcome": {
+					"$ref": "#/$defs/TodoWorkerOutcome"
+				}
+			},
+			"required": [
+				"workerId",
+				"startedAt"
+			],
+			"description": "Observed Task worker that executed this row, independent of forecast ownership; timestamps are Unix milliseconds."
+		},
+		"TodoReworkAttempt": {
+			"type": "object",
+			"properties": {
+				"attemptId": {
+					"type": "string"
+				},
+				"workerName": {
+					"type": "string"
+				},
+				"resolvedModel": {
+					"type": "string"
+				},
+				"effort": {
+					"type": "string"
+				},
+				"startedAt": {
+					"type": "number"
+				},
+				"finishedAt": {
+					"type": "number"
+				},
+				"durationMs": {
+					"type": "number"
+				},
+				"terminalStatus": {
+					"$ref": "#/$defs/TodoWorkerOutcome"
+				},
+				"deliverablePaths": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"rejectionReason": {
+					"type": "string"
+				},
+				"reflectionAnswer": {
+					"type": "string"
+				},
+				"noAnswerReason": {
+					"type": "string"
+				},
+				"finalReportParagraph": {
+					"type": "string"
+				},
+				"interruption": {
+					"const": "restart"
+				},
+				"infraFailureLine": {
+					"type": "string"
+				},
+				"infraFailureError": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"attemptId",
+				"workerName",
+				"resolvedModel",
+				"effort",
+				"startedAt",
+				"finishedAt",
+				"durationMs",
+				"terminalStatus",
+				"deliverablePaths"
+			],
+			"description": "Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds."
+		},
+		"TodoResourceWait": {
+			"type": "object",
+			"properties": {
+				"row": {
+					"type": "string"
+				},
+				"workerId": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"row"
+			]
+		},
+		"TodoSchedule": {
+			"type": "object",
+			"properties": {
+				"dependencies": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Exact task-content references; absent means unknown, while an empty array explicitly means independent."
+				},
+				"owner": {
+					"type": "string",
+					"description": "Exclusive forecast owner while this task is running."
+				},
+				"resources": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"description": "Exclusive resource identifiers while running; absent means undeclared."
+				},
+				"resourceWait": {
+					"$ref": "#/$defs/TodoResourceWait"
+				},
+				"estimate": {
+					"$ref": "#/$defs/TodoEstimate"
+				},
+				"estimateRevision": {
+					"type": "number",
+					"description": "Server-owned revision: the first estimate is revision 1."
+				},
+				"reestimateCount": {
+					"type": "number"
+				},
+				"progress": {
+					"$ref": "#/$defs/TodoScheduleProgress"
+				},
+				"startedAt": {
+					"type": "number"
+				},
+				"finishedAt": {
+					"type": "number"
+				},
+				"firstRequirementAt": {
+					"type": "number",
+					"description": "Time this row first entered the plan as a user requirement."
+				},
+				"firstDeliveredAt": {
+					"type": "number",
+					"description": "Time the first usable result was handed to the user."
+				},
+				"attemptHistory": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/TodoReworkAttempt"
+					},
+					"description": "Append-only durable attempts for this exact row."
+				},
+				"reviewSummary": {
+					"type": "string",
+					"description": "Short final worker report retained for the user's review handoff."
+				},
+				"review": {
+					"$ref": "#/$defs/TodoScheduleReview",
+					"description": "User decision state for a delivered implementation result."
+				},
+				"speculativeOn": {
+					"type": "string",
+					"description": "Review row whose verdict gates publication of this speculative work."
+				},
+				"executor": {
+					"$ref": "#/$defs/TodoScheduleExecutor"
+				}
+			},
+			"description": "Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds."
 		},
 		"ContextUsage": {
 			"type": "object",
@@ -2445,6 +2821,144 @@
 				"followUp"
 			],
 			"description": "Displayable queue-chip text for pending user-authored messages; accepted verbatim by `remove_queued_message`."
+		},
+		"CustomPromptMessage": {
+			"type": "object",
+			"properties": {
+				"customType": {
+					"type": "string"
+				},
+				"content": {
+					"$ref": "#/$defs/MessageContent"
+				},
+				"display": {
+					"type": "boolean"
+				},
+				"details": {},
+				"attribution": {
+					"enum": [
+						"user",
+						"agent"
+					],
+					"type": "string"
+				}
+			},
+			"required": [
+				"customType",
+				"content",
+				"display"
+			],
+			"x-open": true
+		},
+		"CustomPromptOptions": {
+			"type": "object",
+			"properties": {
+				"streamingBehavior": {
+					"enum": [
+						"steer",
+						"followUp",
+						"aside"
+					],
+					"type": "string"
+				},
+				"toolChoice": {},
+				"queueChipText": {
+					"type": "string"
+				},
+				"queueOnly": {
+					"type": "boolean"
+				}
+			}
+		},
+		"SessionPromptOptions": {
+			"type": "object",
+			"properties": {
+				"expandPromptTemplates": {
+					"type": "boolean"
+				},
+				"runCommands": {
+					"type": "boolean"
+				},
+				"throwOnDrop": {
+					"type": "boolean"
+				},
+				"images": {
+					"type": "array",
+					"items": {
+						"$ref": "#/$defs/ImageContent"
+					}
+				},
+				"streamingBehavior": {
+					"enum": [
+						"steer",
+						"followUp",
+						"aside"
+					],
+					"type": "string"
+				},
+				"toolChoice": {},
+				"synthetic": {
+					"type": "boolean"
+				},
+				"userInitiated": {
+					"type": "boolean"
+				},
+				"attribution": {
+					"enum": [
+						"user",
+						"agent"
+					],
+					"type": "string"
+				},
+				"skipCompactionCheck": {
+					"type": "boolean"
+				},
+				"solutionSpace": {
+					"type": "string"
+				}
+			}
+		},
+		"SessionDisposeOptions": {
+			"type": "object",
+			"properties": {
+				"mnemopiConsolidateTimeoutMs": {
+					"type": "number"
+				},
+				"drainTimeoutMs": {
+					"type": "number"
+				},
+				"reason": {
+					"enum": [
+						"pre_exit",
+						"exit",
+						"sigint",
+						"sigterm",
+						"sighup",
+						"uncaught_exception",
+						"unhandled_rejection",
+						"manual"
+					],
+					"type": "string"
+				}
+			}
+		},
+		"SessionAbortOptions": {
+			"type": "object",
+			"properties": {
+				"goalReason": {
+					"enum": [
+						"interrupted",
+						"internal"
+					],
+					"type": "string"
+				},
+				"reason": {
+					"type": "string"
+				},
+				"preserveCompaction": {
+					"type": "boolean"
+				}
+			}
 		},
 		"ToolDescriptor": {
 			"type": "object",
@@ -2623,11 +3137,73 @@
 			],
 			"description": "Provider-neutral state of an account past its usage limit, discriminated by `stage`."
 		},
+		"InteractiveViewOptions": {
+			"type": "object",
+			"properties": {
+				"collapseCompactedHistory": {
+					"type": "boolean"
+				}
+			},
+			"x-open": true
+		},
+		"InteractiveViewSnapshot": {
+			"type": "object",
+			"properties": {
+				"sessionId": {
+					"type": "string"
+				},
+				"context": {
+					"type": "object",
+					"properties": {},
+					"additionalProperties": {}
+				},
+				"streamMessage": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/AgentMessage"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"pendingToolCallIds": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					}
+				},
+				"isStreaming": {
+					"type": "boolean"
+				},
+				"entryCount": {
+					"type": "number"
+				},
+				"compactionCount": {
+					"type": "number"
+				},
+				"sessionFile": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"sessionId",
+				"context",
+				"streamMessage",
+				"pendingToolCallIds",
+				"isStreaming",
+				"entryCount",
+				"compactionCount"
+			]
+		},
 		"SessionState": {
 			"type": "object",
 			"properties": {
 				"sessionId": {
 					"type": "string"
+				},
+				"view": {
+					"$ref": "#/$defs/InteractiveViewSnapshot"
 				},
 				"model": {
 					"$ref": "#/$defs/ModelInfo"
@@ -2640,6 +3216,10 @@
 					"default": false
 				},
 				"isCompacting": {
+					"type": "boolean",
+					"default": false
+				},
+				"hasPostPromptWork": {
 					"type": "boolean",
 					"default": false
 				},
@@ -4172,6 +4752,13 @@
 				"role": {
 					"type": "string"
 				},
+				"source": {
+					"enum": [
+						"primary",
+						"advisor"
+					],
+					"type": "string"
+				},
 				"reason": {
 					"type": "string"
 				}
@@ -4706,7 +5293,26 @@
 				"index": {
 					"type": "integer"
 				},
+				"followUpTurn": {
+					"type": "boolean"
+				},
+				"at": {
+					"type": "number",
+					"description": "Wall clock of the emitted lifecycle transition, in Unix milliseconds."
+				},
+				"resolvedModelIdentity": {
+					"type": "string"
+				},
+				"resolvedThinkingLevel": {
+					"type": "string"
+				},
 				"description": {
+					"type": "string"
+				},
+				"taskText": {
+					"type": "string"
+				},
+				"row": {
 					"type": "string"
 				},
 				"sessionFile": {
@@ -4748,6 +5354,9 @@
 					"properties": {},
 					"additionalProperties": {},
 					"description": "Raw `AgentProgress` record."
+				},
+				"followUpTurn": {
+					"type": "boolean"
 				},
 				"parentToolCallId": {
 					"type": "string"
@@ -6166,6 +6775,9 @@
 				"message": {
 					"type": "string"
 				},
+				"rawRequirementText": {
+					"type": "string"
+				},
 				"images": {
 					"type": "array",
 					"items": {
@@ -6175,6 +6787,23 @@
 				},
 				"streamingBehavior": {
 					"$ref": "#/$defs/StreamingBehavior"
+				},
+				"options": {
+					"$ref": "#/$defs/SessionPromptOptions"
+				}
+			},
+			"required": [
+				"message"
+			]
+		},
+		"PromptCustomParams": {
+			"type": "object",
+			"properties": {
+				"message": {
+					"$ref": "#/$defs/CustomPromptMessage"
+				},
+				"options": {
+					"$ref": "#/$defs/CustomPromptOptions"
 				}
 			},
 			"required": [
@@ -6243,6 +6872,14 @@
 				"message"
 			]
 		},
+		"AbortParams": {
+			"type": "object",
+			"properties": {
+				"options": {
+					"$ref": "#/$defs/SessionAbortOptions"
+				}
+			}
+		},
 		"AbortAndPromptParams": {
 			"type": "object",
 			"properties": {
@@ -6285,6 +6922,51 @@
 			"required": [
 				"sessionDir"
 			]
+		},
+		"DisposeSessionParams": {
+			"type": "object",
+			"properties": {
+				"options": {
+					"$ref": "#/$defs/SessionDisposeOptions"
+				}
+			}
+		},
+		"SaveDraftParams": {
+			"type": "object",
+			"properties": {
+				"text": {
+					"type": "string"
+				}
+			},
+			"required": [
+				"text"
+			]
+		},
+		"ConsumeDraftResult": {
+			"type": "object",
+			"properties": {
+				"text": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"text"
+			]
+		},
+		"GetStateParams": {
+			"type": "object",
+			"properties": {
+				"view": {
+					"$ref": "#/$defs/InteractiveViewOptions"
+				}
+			}
 		},
 		"SetFastModeParams": {
 			"type": "object",

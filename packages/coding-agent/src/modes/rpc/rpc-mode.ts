@@ -1,3 +1,4 @@
+import { assertInteractiveOwnerCanCheckpoint, createLocalInteractiveViewSource } from "../interactive-view";
 /**
  * RPC mode: Headless operation with JSON stdin/stdout protocol.
  *
@@ -13,6 +14,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { bindRequirementInput } from "../../session/requirement-input";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
@@ -32,14 +34,7 @@ import {
 	getExtensionUISelectOptionLabel,
 	timedOutAskDialogResult,
 } from "../../extensibility/extensions";
-import {
-	type BuiltSkillPromptMessage,
-	loadSkillPrompt,
-	parseSkillInvocation,
-	type Skill,
-	type SkillPromptInput,
-	type SkillRediscoverySource,
-} from "../../extensibility/skills";
+import { loadSkillPrompt } from "../../extensibility/skills";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import {
@@ -53,11 +48,11 @@ import { type AgentSession, type NavigateTreeResult, SessionBusyError } from "..
 import type { AgentSessionHandle } from "../../session/agent-session-handle";
 import type { MCPManager } from "../../mcp/manager";
 import { reconnectMcpManagerServer } from "../../mcp/oauth-reauth";
-import type { RestoredQueuedMessage } from "../../session/agent-session-types";
+import type { AgentSessionDisposeOptions, RestoredQueuedMessage } from "../../session/agent-session-types";
 import { CACHE_WARMING_MODES } from "../../session/cache-warmer";
 import { findMostRecentNonEmptySession, findRecentSessionContinuation } from "../../session/session-listing";
 import { probeSessionLeases } from "../../session/session-storage";
-import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
+import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
 import { listLogoutAccounts, logoutCredential } from "../../slash-commands/helpers/logout";
@@ -82,6 +77,8 @@ import { RpcBtwController } from "./rpc-btw";
 import { RpcGoalController } from "./rpc-goal";
 import { RpcDictationBridge, type RpcDictationControllerFactory } from "./rpc-dictation";
 import { RpcLiveBridge, type RpcLiveSessionFactory } from "./rpc-live";
+import { resolveRpcSkillInvocation, type RpcSkillCommandSession, runRpcSkillCommand } from "./rpc-skill-command";
+export * from "./rpc-skill-command";
 import { RpcOutputWriter } from "./rpc-output";
 import {
 	RpcExtensionUserMessageTracker,
@@ -252,59 +249,7 @@ export type RpcSessionChangeResult =
 
 export type RpcSessionChangeSession = Pick<AgentSession, "newSession" | "switchSession" | "branch" | "fork">;
 
-export type RpcSkillCommandSession = Pick<
-	AgentSession,
-	"buildUserSkillPrompt" | "renderUserSkillPrompt" | "promptCustomMessage" | "skills" | "skillsSettings"
-> &
-	SkillRediscoverySource;
 export type RpcSkillCommandResult = { agentInvoked: true };
-
-export interface RpcSkillInvocation extends SkillPromptInput {
-	skill: Skill;
-	queueChipText: string;
-}
-
-/**
- * Fast in-memory pre-check for a skill invocation: settings gate, text shape,
- * and skill lookup. Returns null when the message is not a runnable skill
- * command. Performs no I/O — safe to run on the RPC serial queue.
- */
-export function resolveRpcSkillInvocation(session: RpcSkillCommandSession, text: string): RpcSkillInvocation | null {
-	if (!session.skillsSettings?.enableSkillCommands) return null;
-	const parsed = parseSkillInvocation(text);
-	if (!parsed) return null;
-	const skill = session.skills.find(candidate => candidate.name === parsed.name);
-	if (!skill) return null;
-	return { skill, args: parsed.args, prompt: parsed.prompt, queueChipText: text };
-}
-
-/**
- * Slow half of a skill invocation: builds the skill prompt message (file I/O)
- * and dispatches it through the full prompt pipeline (usage preflight,
- * compaction checks, provider calls). Resolves once the turn is scheduled.
- * Must not run on the RPC serial queue's response path — register it with
- * watchAndReportPromptResult and answer the command once it is admitted.
- */
-export async function runRpcSkillCommand(
-	session: RpcSkillCommandSession,
-	invocation: RpcSkillInvocation,
-	streamingBehavior: "steer" | "followUp" = "steer",
-	prebuilt?: BuiltSkillPromptMessage,
-	onPromptAdmitted?: () => void,
-	images?: ImageContent[],
-): Promise<boolean> {
-	const built = prebuilt ?? (await session.buildUserSkillPrompt(invocation.skill, invocation));
-	return session.promptCustomMessage(
-		{
-			customType: SKILL_PROMPT_MESSAGE_TYPE,
-			content: images?.length ? [{ type: "text", text: built.message }, ...images] : built.message,
-			display: true,
-			details: built.details,
-			attribution: "user",
-		},
-		{ streamingBehavior, queueChipText: invocation.queueChipText, onPromptAdmitted },
-	);
-}
 
 /**
  * Skill branch of the `prompt` command: resolves the invocation cheaply, then
@@ -486,6 +431,7 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 	if (
 		BACKGROUND_COMMANDS.has(command.type) ||
 		command.type === "prompt" ||
+		command.type === "prompt_custom" ||
 		command.type === "steer" ||
 		command.type === "dictation_start" ||
 		command.type === "follow_up" ||
@@ -510,6 +456,7 @@ export function dispatchRpcInputFrame(parsed: unknown, deps: RpcInputFrameDeps):
 
 const USER_INPUT_TYPES: Record<string, true> = {
 	prompt: true,
+	prompt_custom: true,
 	steer: true,
 	follow_up: true,
 	abort_and_prompt: true,
@@ -1822,6 +1769,19 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 		},
 	);
 
+	const disposeOwner = async (options?: AgentSessionDisposeOptions): Promise<void> => {
+		// Report an unsaved side answer without skipping owner resource disposal.
+		await btw.close().catch(btwError => {
+			const message = toError(btwError).message;
+			logger.error(message);
+			output({ type: "notice", level: "error", message, source: "btw-history" });
+		});
+		// Close the realtime call (microphone, socket) before the session it delegates into.
+		dictationBridge.dispose();
+		await liveBridge.stop();
+		await session.dispose(options);
+	};
+
 	/**
 	 * Dispose the session, then end the process. A store failure still latched
 	 * at dispose makes `dispose()` reject, and the `notice` frame it emits is
@@ -1832,16 +1792,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	 */
 	const disposeAndExit = async (): Promise<never> => {
 		try {
-			// The process ends regardless; report an unsaved side answer instead of skipping dispose.
-			await btw.close().catch(btwError => {
-				const message = toError(btwError).message;
-				logger.error(message);
-				output({ type: "notice", level: "error", message, source: "btw-history" });
-			});
-			// Close the realtime call (microphone, socket) before the session it delegates into.
-			dictationBridge.dispose();
-			await liveBridge.stop();
-			await session.dispose();
+			await disposeOwner();
 		} catch (error) {
 			if (!persistenceFailure || error !== persistenceFailure) throw error;
 			// The notice frame this failure queued must reach the client before the
@@ -1891,19 +1842,34 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 	await emitAvailableCommandsUpdate();
 
 	const inputGate = new RpcUserInputGate();
-	type OrderedUserInput = Extract<RpcCommand, { type: "prompt" | "steer" | "follow_up" | "abort_and_prompt" }>;
+	type OrderedUserInput = Extract<
+		RpcCommand,
+		{ type: "prompt" | "prompt_custom" | "steer" | "follow_up" | "abort_and_prompt" }
+	>;
 	type OrderedInputOutcome = "local" | "cancelled" | "admitted" | "builtin-agent";
 	const dispatchOrderedUserInput = (
 		command: OrderedUserInput,
 		ticket: RpcPromptTicket | undefined,
-	): Promise<OrderedInputOutcome> =>
-		inputGate.enqueue(async () => {
+	): Promise<OrderedInputOutcome> => {
+		const submit = async (): Promise<OrderedInputOutcome> => {
 			const sessionId = session.sessionId;
 			const isCurrent = () =>
 				inputGate.isCurrent(command) && !shutdownState.requested && session.sessionId === sessionId;
 			if (!isCurrent()) return "cancelled";
+			if (command.type === "prompt_custom") {
+				if (!ticket) return "cancelled";
+				await watchAndReportPromptResult({
+					ticket,
+					startPrompt: onPromptAdmitted =>
+						session.promptCustomMessage(command.message, { ...command.options, onPromptAdmitted }),
+					results: promptResults,
+					onError: onPromptError(command.id, "prompt_custom"),
+					extensionUserMessageTracker,
+				});
+				return "admitted";
+			}
 			let text = command.message;
-			let images = command.images;
+			let images = command.images ?? (command.type === "prompt" ? command.options?.images : undefined);
 			const runner = session.extensionRunner;
 			if (runner?.hasHandlers("input")) {
 				const result = await runner.emitInput(text, images, "rpc");
@@ -1915,14 +1881,14 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			if (!isCurrent()) return "cancelled";
 			if (!text.trim() && !images?.length) return "local";
 			if (command.type === "steer") {
-				await session.steer(text, images);
+				await session.steer(text, images, { rawRequirementText: command.message });
 				return "admitted";
 			}
 			if (command.type === "follow_up") {
-				await session.followUp(text, images);
+				await session.followUp(text, images, { rawRequirementText: command.message });
 				return "admitted";
 			}
-			if (command.type === "prompt") {
+			if (command.type === "prompt" && command.options?.runCommands !== false) {
 				if (!ticket) return "cancelled";
 				const skillResult = await dispatchRpcSkillPrompt({
 					ticket,
@@ -1998,8 +1964,11 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				ticket,
 				startPrompt: onPromptAdmitted =>
 					session.prompt(text, {
+						...(command.type === "prompt" ? command.options : {}),
 						images,
-						...(command.type === "prompt" ? { streamingBehavior: command.streamingBehavior } : {}),
+						...(command.type === "prompt" && command.streamingBehavior
+							? { streamingBehavior: command.streamingBehavior }
+							: {}),
 						onPromptAdmitted,
 					}),
 				results: promptResults,
@@ -2007,8 +1976,16 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				extensionUserMessageTracker,
 			});
 			return "admitted";
-		});
-	// Abort controllers for builtin commands whose work outlives the prompt
+		};
+		return inputGate.enqueue(
+			typeof command.message === "string"
+				? bindRequirementInput(
+						(command.type === "prompt" ? command.rawRequirementText : undefined) ?? command.message,
+						submit,
+					)
+				: submit,
+		);
+	}; // Abort controllers for builtin commands whose work outlives the prompt
 	// response (e.g. the `/mcp reauth` browser wait, dispatched through
 	// `runCommandInBackground`). Host abort and disconnect must tear those
 	// down, or a tracked task parks the shutdown drain for up to five minutes
@@ -2058,6 +2035,17 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 				}
 			}
 
+			case "prompt_custom": {
+				const ticket = promptResults.begin(id);
+				try {
+					if ((await dispatchOrderedUserInput(command, ticket)) === "cancelled") promptResults.settle(ticket);
+					return success(id, "prompt_custom");
+				} catch (promptSetupError) {
+					promptResults.discard(ticket);
+					throw promptSetupError;
+				}
+			}
+
 			case "steer":
 			case "follow_up": {
 				await dispatchOrderedUserInput(command, undefined);
@@ -2088,7 +2076,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			case "abort": {
 				goalController.stopForHostAbort();
 				abortBuiltinCommands("RPC command aborted by host");
-				await session.abort({ reason: USER_INTERRUPT_LABEL });
+				await session.abort(command.options ?? { reason: USER_INTERRUPT_LABEL });
 				return success(id, "abort");
 			}
 
@@ -2257,6 +2245,30 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 			// State
 			// =================================================================
 
+			case "begin_dispose":
+				session.beginDispose();
+				return success(id, "begin_dispose");
+			case "dispose_session":
+				promptResults.abortOpen(true);
+				session.beginDispose();
+				pendingExtensionRequests.rejectAll("Session owner shut down before extension UI response completed");
+				await disposeOwner(command.options);
+				return success(id, "dispose_session");
+			case "checkpoint_session":
+				assertInteractiveOwnerCanCheckpoint(session);
+				await session.sessionManager.close();
+				assertInteractiveOwnerCanCheckpoint(session);
+				session.sessionManager.seal();
+				return success(id, "checkpoint_session");
+
+			case "save_draft":
+				await session.sessionManager.saveDraft(command.text);
+				return success(id, "save_draft");
+			case "consume_draft": {
+				const text = await session.sessionManager.consumeDraft();
+				return success(id, "consume_draft", { text });
+			}
+
 			case "get_state": {
 				// A goal exit triggered by the last turn restores tools asynchronously; report after it.
 				await goalController.settled();
@@ -2266,6 +2278,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					thinkingLevel: session.thinkingLevel,
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
+					hasPostPromptWork: session.hasPostPromptWork,
 					steeringMode: session.steeringMode,
 					followUpMode: session.followUpMode,
 					interruptMode: session.interruptMode,
@@ -2301,6 +2314,7 @@ export async function runRpcMode(session: AgentSession, options: RpcModeOptions 
 					contextUsage: session.getContextUsage(),
 					goal: session.getGoalModeState() ?? null,
 				};
+				if (command.view) state.view = await createLocalInteractiveViewSource(session).capture(command.view);
 				return success(id, "get_state", state);
 			}
 

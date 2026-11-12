@@ -8,6 +8,8 @@ import { getBundledModels, getBundledProviders } from "../src/models";
  * Additions require a comment naming the runtime path that resolves them.
  */
 const RUNTIME_ONLY_PROVIDERS = new Set([
+	// User-configured OpenAI/Codex gateway resolved by models.yml provider IDs.
+	"codex-lb",
 	"kimi-search",
 	"ollama",
 	"siliconflow",

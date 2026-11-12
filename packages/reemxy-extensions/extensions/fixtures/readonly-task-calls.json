@@ -1,0 +1,273 @@
+[
+  {
+    "failedAt": "2026-11-07T00:04:49.357Z",
+    "call": [
+      "2026-11-07T00:04:49.345Z",
+      {
+        "context": "XMOVA. Base: PR 114 at e6eb91a246bbeacf8d39748214804e182eef0c34. Use plain git. Never write to ROOT /home/kom/proj/sunbim/datacenter-decision-graph. Do not push. You may commit in your own worktree; --no-verify is allowed.\n\nCheck `git status` and `git log -5` first, then start acting within 3 minutes. Do not re-read history beyond the one prior output named in your task. Commit after each step that passes; if time runs short, commit and return what is done.\n\n`npm run lint` takes more than 300 s on this host. Run it in bash with timeout 0, or 900, and report its real exit code. Also run npx tsc -b and report its exit code.\n\nWrite every file by absolute path inside your worktree; a relative path or heredoc resolves to ROOT.\n\nPlaywright: --project=chromium --reporter=list,json. Use a free port in 47000-47999 (DCG_E2E_PORT) and your own --output dir. Prebuild with `npm run build -- --outDir tmp/e2e-preview-<port>`, then set DCG_E2E_PREBUILT=1. Each gate writes report.json, exit-code.txt and served.txt under /home/kom/proj/sunbim/evidence/<sha>/<run>/. Kill your own server PID before you yield.\n\nReturn the artifact as git:<worktree>@<full sha>. Retro: required.",
+        "tasks": [
+          {
+            "name": "AdaptiveBatchLand-6",
+            "agent": "rebaser",
+            "task": "60 MW preset adaptive 3 levels: generators through walls\n\nThe earlier starts (latest agent://AdaptiveBatchLand-5) crashed in the harness before doing anything. Audits fail because nothing is integrated, so build the integration branch now.\n\n1. Run `git worktree add -b adaptive-batch-2026-11-07 /home/kom/proj/sunbim/wt/AdaptiveBatch e6eb91a246bbeacf8d39748214804e182eef0c34` (reuse it if it already exists), then npm ci there.\n2. Cherry-pick these in order. For each, run `git cherry-pick -n <sha> && git commit --no-verify -C <sha>`, then amend to add `(cherry picked from commit <sha>)`:\n   60901058b06a9265217730eaa23fff4db454b998\n   3d3d8ae6637754d60837e7f1d339e1fcdb3603e6\n   306d1726c1e7841aa0cd4218bf7dad24ba7f354f\n   24bb38571b99840681b9607d3be5866b3da25402\n   3f9f5029cb99a895f873926476e2109447e40313\n   a8104b2d7d0f2d1238f134248c551dda51f8b20a (UX graph, from wt/UxGraph)\n   If a pick conflicts in product code, stop and report both sides.\n3. Run tsc. Run `npx vitest run src/__tests__/dataCenterGeneratorYardFit.test.ts src/__tests__/uxTransitionGraph.test.ts --project=precommit`. Run `npm run docs:ux-graph && git diff --exit-code doc/ux-transition-graph.md`. Run lint.\n4. Return the batch head SHA, the picked list with new SHAs, the check exit codes and a Retro block.",
+            "solutionSpace": "Mechanical cherry-pick.",
+            "row": "60 MW preset adaptive 3 levels: generators through walls",
+            "previewIntegration": {
+              "task": "60 MW preset adaptive 3 levels: generators through walls",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/wt/AdaptiveBatch"
+            ]
+          },
+          {
+            "name": "LeadersRotationProof-3",
+            "agent": "task",
+            "task": "Facility labels after rotation: leaders cross the building\n\nContinue from agent://LeadersRotationProof-2. Worktree /home/kom/proj/sunbim/wt/LeadersRotation at aa4514bf6. The gate is red at spec:474: the selected UPS 1.1 label has pinned=true but is dropped as no-slot-declutter.\n\n1. Check the three leads it named: (a) whether the cachedSolve/layoutSignature path at facilityScene.ts:11420 reuses a solve from before the selection; (b) the omission reason for the pinned candidate; (c) whether maxLeaderLength or leaderRooms reject every slot for that anchor.\n2. Fix the cause. A pinned/selected label must always get a slot, and may displace an unpinned label. Commit.\n3. Prebuild and rerun spec:384 into a new evidence dir. Open the selected-omitted and after-orbit screenshots at 1440 and 430.\n4. Run tsc and lint.\n5. Return the SHA, the stats from report.json, the exit code, served.txt, the screenshots and a Retro block.",
+            "solutionSpace": "Cause among three named leads.",
+            "row": "Facility labels after rotation: leaders cross the building",
+            "previewIntegration": {
+              "task": "Facility labels after rotation: leaders cross the building",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/wt/LeadersRotation"
+            ]
+          },
+          {
+            "name": "PipeHeaderRouting",
+            "agent": "task",
+            "task": "Maksim: pipes stick out of the building\n\nContinue from agent://AppallingChinchilla-9. Worktree /home/kom/proj/sunbim/wt/PipeGoldens at db1257cb8. The unit oracle is red: 8 failed / 9 passed, with metres outside listed per case.\n\n1. Remove the draft's 'nearest wall plus 1 m' allowance; it was not asked for. An exterior allowance covers only the segment from the shell wall to the yard unit's declared contact. Commit.\n2. Route the yard supply/return for each yard unit through one interior header. One pair per unit crosses the wall, at the wall point nearest that unit, with no repeated or parallel exterior runs. Commit after each preset/level group that turns green.\n3. Run the unit oracle green and record metres outside per case, before and after.\n4. Run tsc and lint. Commit.\n5. Return the SHA, the before/after table and a Retro block.\n\nThe e2e goldens are a later step; skip them.",
+            "solutionSpace": "Header routing design open.",
+            "row": "Maksim: pipes stick out of the building",
+            "previewIntegration": {
+              "task": "Maksim: pipes stick out of the building",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/wt/PipeGoldens"
+            ]
+          },
+          {
+            "name": "CoolingTrunksBuild-10",
+            "agent": "task",
+            "task": "Cooling pipes: consolidated realistic trunks, warm and cold both shown\n\nContinue from agent://CoolingTrunksBuild-9. Worktree /home/kom/proj/sunbim/wt/CoolingTrunks3 at 2c1eb75d1. Five cases are red at coolingTrunks.test.ts:13 because rejectors have no supply route.\n\n1. Write a diagnostic, as an absolute-path file inside the worktree, that prints the unconnected rejector IDs and their kindId for each red case. Run it.\n2. Fix dataCenterMaksimReferenceScene.ts around lines 601-636 so every rejector gets supply and return routes into its assembly's chain. Run the test file and commit after each case that turns green.\n3. Check the L2/L3 crossings at :15 and fix them. Commit.\n4. Delete the diagnostic file. Run tsc and lint.\n5. Return the SHA, the case table and a Retro block.",
+            "solutionSpace": "Cause narrowed; fix open.",
+            "row": "Cooling pipes: consolidated realistic trunks, warm and cold both shown",
+            "previewIntegration": {
+              "task": "Cooling pipes: consolidated realistic trunks, warm and cold both shown",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/wt/CoolingTrunks3"
+            ]
+          },
+          {
+            "name": "PushFitCamera-9",
+            "agent": "task",
+            "task": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.\n\nContinue from agent://PushFitCamera-8. The candidate is f44e79b3c in /home/kom/.omp/wt/t846ae3a86/m. The audit found that the focused e2e does not assert containment, and that its 1440 screenshot right after Apply is an empty canvas.\n\n1. Add an e2e assertion: after Levels=2 Apply in the AI Project at 11 MW Adaptive, wait for a fresh rendered frame. Then the projected bounds of the building plus its yards must lie inside the canvas at 1440x900 and 430x932, with a few px of margin. Log the measured box with testInfo.attach. Commit.\n2. Run it on the candidate. If it is red, fix the framing and commit.\n3. Open the after-Apply screenshots at both widths. The whole building and its yards must be visible and not blank.\n4. Run tsc and lint.\n5. Return the SHA, stats, exit-code, served, the measured boxes, the screenshots and a Retro block.\n\nSkip the full-suite classification.",
+            "solutionSpace": "Oracle given; framing fix may be needed.",
+            "row": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.",
+            "previewIntegration": {
+              "task": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/.omp/wt/t846ae3a86/m"
+            ]
+          },
+          {
+            "name": "Levels11MwNewKeys",
+            "agent": "task",
+            "task": "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor\n\nContinue from agent://FloorLevels11Mw-6. Worktree /home/kom/proj/sunbim/wt/Levels11Mw at beef45862. Seven product-root keys fail on the candidate but pass on base; see /home/kom/proj/sunbim/evidence/beef4586223d8e46263c8246472bacede98d47a1/ten-specs-r2/diff.json.\n\nThe audit also found, on the candidate's journey (facility-floor-buttons.spec.ts:377 and :308), that the 1440 screenshots after the Level 2/3 buttons still show lower-floor labels. The tests only poll layerVisibility.\n\n1. Strengthen :377: after each Level N button, the painted floor labels must contain 'Level N' and must not contain a lower level. Commit.\n2. Prebuild. Run :377, :308 and the 7 product-root keys alone on the candidate.\n3. Fix the causes. Do not loosen assertions. Commit.\n4. Rerun and open the 1440 and 430 screenshots.\n5. Run tsc and lint.\n6. Return the SHA, stats, exit-code, served, a per-key verdict and a Retro block.",
+            "solutionSpace": "Cause per key open.",
+            "row": "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor",
+            "previewIntegration": {
+              "task": "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/wt/Levels11Mw"
+            ]
+          },
+          {
+            "name": "OrbitFixLocate",
+            "agent": "task",
+            "task": "Facility orbit paints 30 fps: labels stop blocking frames\n\nContinue from agent://LandOrbitFix-12. The audit found that the orbit fix is not in HEAD. The r2 page credits a0b5962dc, which is the UX graph commit, and the spec `e2e/facility-frame-cap.spec.ts --grep 'orbit paints'` does not exist at HEAD.\n\n1. From agent://LandOrbitFix-9, agent://LandOrbitFix-10 and the worktrees under /home/kom/proj/sunbim/wt and /home/kom/.omp/wt, find the real orbit fix commits and the commit that adds the 'orbit paints' spec. Use `git log --all -S 'orbit paints'`.\n2. Verify each commit with git show.\n3. Fix the r2 page's credited commit in /home/kom/proj/ai_pr/review-page-orbit-fps-2026-11-07-r2/cards.json, rebuild it, and check HTTP 200.\n4. Return the full SHAs, their worktree/branch, a one-line diff summary per commit, and a Retro block.\n\nDo not run the Mac measurements; those need Darafei's machine.",
+            "solutionSpace": "Lookup plus page correction.",
+            "row": "Facility orbit paints 30 fps: labels stop blocking frames",
+            "previewIntegration": {
+              "task": "Facility orbit paints 30 fps: labels stop blocking frames",
+              "kind": "refresh"
+            },
+            "resources": [
+              "/home/kom/proj/ai_pr/review-page-orbit-fps-2026-11-07-r2"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "failedAt": "2026-11-07T00:06:26.685Z",
+    "call": [
+      "2026-11-07T00:06:26.684Z",
+      {
+        "context": "XMOVA. Base: PR 114 at e6eb91a246bbeacf8d39748214804e182eef0c34. Use plain git. Never write to ROOT /home/kom/proj/sunbim/datacenter-decision-graph. Do not push. You may commit in your own worktree; --no-verify is allowed.\n\nCheck `git status` and `git log -5` first, then start acting within 3 minutes. Do not re-read history beyond the prior output named in your task. Commit after each step that passes; if time runs short, commit and return what is done.\n\n`npm run lint` takes more than 300 s on this host. Run it in bash with timeout 0, or 900, and report its real exit code. Also run npx tsc -b and report its exit code.\n\nWrite every file by absolute path inside your worktree; a relative path or heredoc resolves to ROOT.\n\nPlaywright: --project=chromium --reporter=list,json. Use a free port in 47000-47999 (DCG_E2E_PORT) and your own --output dir. Prebuild with `npm run build -- --outDir tmp/e2e-preview-<port>`, then set DCG_E2E_PREBUILT=1. Each gate writes report.json, exit-code.txt and served.txt under /home/kom/proj/sunbim/evidence/<sha>/<run>/. Kill your own server PID before you yield.\n\nReturn the artifact as git:<worktree>@<full sha>. Retro: required.",
+        "tasks": [
+          {
+            "name": "AdaptiveBatchLand-6",
+            "agent": "rebaser",
+            "task": "60 MW preset adaptive 3 levels: generators through walls\n\nContinue from agent://AdaptiveBatchLand-5; it and the earlier starts crashed in the harness before doing anything. Build the integration branch now.\n\n1. Run `git worktree add -b adaptive-batch-2026-11-07 /home/kom/proj/sunbim/wt/AdaptiveBatch e6eb91a246bbeacf8d39748214804e182eef0c34` (reuse it if it exists), then npm ci.\n2. Cherry-pick these in order. For each, run `git cherry-pick -n <sha> && git commit --no-verify -C <sha>`, then amend to add `(cherry picked from commit <sha>)`:\n   60901058b06a9265217730eaa23fff4db454b998\n   3d3d8ae6637754d60837e7f1d339e1fcdb3603e6\n   306d1726c1e7841aa0cd4218bf7dad24ba7f354f\n   24bb38571b99840681b9607d3be5866b3da25402\n   3f9f5029cb99a895f873926476e2109447e40313\n   a8104b2d7d0f2d1238f134248c551dda51f8b20a (UX graph)\n   On a product-code conflict, stop and report both sides.\n3. Run tsc. Run `npx vitest run src/__tests__/dataCenterGeneratorYardFit.test.ts src/__tests__/uxTransitionGraph.test.ts --project=precommit`. Run `npm run docs:ux-graph && git diff --exit-code doc/ux-transition-graph.md`. Run lint.\n4. Return the head SHA, the picked list with new SHAs, the exit codes and a Retro block.",
+            "solutionSpace": "Mechanical cherry-pick.",
+            "row": "60 MW preset adaptive 3 levels: generators through walls",
+            "previewIntegration": {
+              "task": "60 MW preset adaptive 3 levels: generators through walls",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/wt/AdaptiveBatch"
+            ]
+          },
+          {
+            "name": "UxGraphJourneyProof",
+            "agent": "task",
+            "task": "UX graph: tab transitions and conflict Back modeled\n\nContinue from agent://UxGraphModel-9. The graph fix is at /home/kom/proj/sunbim/wt/UxGraph@a8104b2d7d0f2d1238f134248c551dda51f8b20a. Another lane is cherry-picking it into the batch branch, so do not edit wt/UxGraph product code.\n\n1. On wt/UxGraph, prebuild and run e2e/ux-conflict-return.spec.ts into a new evidence dir.\n2. Open its screenshots at 1440 and 430.\n3. Check that doc/ux-transition-graph.md contains projectSetupSection edges and the conflict Back → risk · riskConflictsOpen=true edge; quote those lines.\n4. Run `npx vitest run src/__tests__/uxTransitionGraph.test.ts --project=precommit`.\n5. Return the stats, exit-code, served, the screenshot paths, the quoted doc lines and a Retro block.",
+            "solutionSpace": "Proof only.",
+            "row": "UX graph: tab transitions and conflict Back modeled",
+            "previewIntegration": {
+              "task": "UX graph: tab transitions and conflict Back modeled",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/evidence"
+            ]
+          },
+          {
+            "name": "LeadersRotationProof-3",
+            "agent": "task",
+            "task": "Facility labels after rotation: leaders cross the building\n\nContinue from agent://LeadersRotationProof-2. Worktree /home/kom/proj/sunbim/wt/LeadersRotation at aa4514bf6. The gate is red at spec:474: the selected UPS 1.1 label has pinned=true but is dropped as no-slot-declutter.\n\n1. Check the three leads it named: (a) whether cachedSolve/layoutSignature at facilityScene.ts:11420 reuses a pre-selection solve; (b) the omission reason for the pinned candidate; (c) whether maxLeaderLength or leaderRooms reject every slot for that anchor.\n2. Fix the cause. A pinned/selected label must always get a slot, and may displace an unpinned label. Commit.\n3. Prebuild and rerun spec:384 into a new evidence dir. Open the selected-omitted and after-orbit screenshots at 1440 and 430.\n4. Run tsc and lint.\n5. Return the SHA, stats, exit code, served.txt, the screenshots and a Retro block.",
+            "solutionSpace": "Cause among three named leads.",
+            "row": "Facility labels after rotation: leaders cross the building",
+            "previewIntegration": {
+              "task": "Facility labels after rotation: leaders cross the building",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/wt/LeadersRotation"
+            ]
+          },
+          {
+            "name": "PipeHeaderRouting",
+            "agent": "task",
+            "task": "Maksim: pipes stick out of the building\n\nContinue from agent://AppallingChinchilla-9. Worktree /home/kom/proj/sunbim/wt/PipeGoldens at db1257cb8. The unit oracle is red: 8 failed / 9 passed.\n\n1. Remove the draft's 'nearest wall plus 1 m' allowance; it was not asked for. An exterior allowance covers only the segment from the shell wall to the yard unit's declared contact. Commit.\n2. Route the yard supply/return for each yard unit through one interior header. One pair per unit crosses the wall, at the wall point nearest that unit, with no repeated or parallel exterior runs. Commit after each preset/level group that turns green.\n3. Run the unit oracle green and record metres outside per case, before and after.\n4. Run tsc and lint. Commit.\n5. Return the SHA, the before/after table and a Retro block.\n\nThe e2e goldens are a later step; skip them.",
+            "solutionSpace": "Header routing design open.",
+            "row": "Maksim: pipes stick out of the building",
+            "previewIntegration": {
+              "task": "Maksim: pipes stick out of the building",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/wt/PipeGoldens"
+            ]
+          },
+          {
+            "name": "CoolingTrunksBuild-10",
+            "agent": "task",
+            "task": "Cooling pipes: consolidated realistic trunks, warm and cold both shown\n\nContinue from agent://CoolingTrunksBuild-9. Worktree /home/kom/proj/sunbim/wt/CoolingTrunks3 at 2c1eb75d1. Five cases are red at coolingTrunks.test.ts:13 because rejectors have no supply route.\n\n1. Write a diagnostic, as an absolute-path file in the worktree, that prints the unconnected rejector IDs and their kindId for each red case. Run it.\n2. Fix dataCenterMaksimReferenceScene.ts around lines 601-636 so every rejector gets supply and return routes into its assembly's chain. Commit after each case that turns green.\n3. Check the L2/L3 crossings at :15 and fix them. Commit.\n4. Delete the diagnostic. Run tsc and lint.\n5. Return the SHA, the case table and a Retro block.",
+            "solutionSpace": "Cause narrowed; fix open.",
+            "row": "Cooling pipes: consolidated realistic trunks, warm and cold both shown",
+            "previewIntegration": {
+              "task": "Cooling pipes: consolidated realistic trunks, warm and cold both shown",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/wt/CoolingTrunks3"
+            ]
+          },
+          {
+            "name": "PushFitCamera-9",
+            "agent": "task",
+            "task": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.\n\nContinue from agent://PushFitCamera-8. The candidate is f44e79b3c in /home/kom/.omp/wt/t846ae3a86/m. The audit found that the focused e2e does not assert containment, and that its 1440 screenshot after Apply is an empty canvas.\n\n1. Add an e2e assertion: after Levels=2 Apply in the AI Project at 11 MW Adaptive, wait for a fresh rendered frame. Then the projected bounds of the building plus its yards must lie inside the canvas at 1440x900 and 430x932, with a few px of margin. Log the measured box with testInfo.attach. Commit.\n2. Run it on the candidate. If it is red, fix the framing and commit.\n3. Open the after-Apply screenshots at both widths: the whole building and yards must be visible and not blank.\n4. Run tsc and lint.\n5. Return the SHA, stats, exit-code, served, the measured boxes, the screenshots and a Retro block.\n\nSkip the full-suite classification.",
+            "solutionSpace": "Oracle given; framing fix may be needed.",
+            "row": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.",
+            "previewIntegration": {
+              "task": "Collateral for \"Maksim: Building layout broken, model incomplete\": After applying two levels, the camera loses the building overview: the enlarged model extends beyond the viewport and dense communication pipes obscure the racks. Before, the building footprint and surrounding equipment were visible together.",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/.omp/wt/t846ae3a86/m"
+            ]
+          },
+          {
+            "name": "Levels11MwNewKeys",
+            "agent": "task",
+            "task": "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor\n\nContinue from agent://FloorLevels11Mw-6. Worktree /home/kom/proj/sunbim/wt/Levels11Mw at beef45862. Seven product-root keys fail on the candidate but pass on base (/home/kom/proj/sunbim/evidence/beef4586223d8e46263c8246472bacede98d47a1/ten-specs-r2/diff.json). The audit found that the 1440 screenshots after the Level 2/3 buttons still show lower-floor labels, because the tests only poll layerVisibility.\n\n1. Strengthen facility-floor-buttons.spec.ts:377: after each Level N button, the painted floor labels must contain 'Level N' and no lower level. Commit.\n2. Prebuild. Run :377, :308 and the 7 product-root keys alone on the candidate.\n3. Fix the causes. Do not loosen assertions. Commit.\n4. Rerun and open the 1440 and 430 screenshots.\n5. Run tsc and lint.\n6. Return the SHA, stats, exit-code, served, a per-key verdict and a Retro block.",
+            "solutionSpace": "Cause per key open.",
+            "row": "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor",
+            "previewIntegration": {
+              "task": "11 MW Adaptive: Level 2/3 buttons still draw Level 1 floor",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/wt/Levels11Mw"
+            ]
+          },
+          {
+            "name": "OrbitFixLocate",
+            "agent": "task",
+            "task": "Facility orbit paints 30 fps: labels stop blocking frames\n\nContinue from agent://LandOrbitFix-12. The audit found that the orbit fix is not in HEAD. The r2 page credits a0b5962dc, which is the UX graph commit, and `e2e/facility-frame-cap.spec.ts --grep 'orbit paints'` does not exist at HEAD.\n\n1. Find the real orbit fix commits and the commit that adds the 'orbit paints' spec. Use `git log --all -S 'orbit paints'`, agent://LandOrbitFix-9 and the worktrees under /home/kom/proj/sunbim/wt and /home/kom/.omp/wt.\n2. Verify each commit with git show.\n3. Correct the credited commit in /home/kom/proj/ai_pr/review-page-orbit-fps-2026-11-07-r2/cards.json, rebuild, and check HTTP 200.\n4. Return the full SHAs, their worktree/branch, a one-line diff summary per commit, and a Retro block.\n\nThe Mac measurements need Darafei's machine; do not try them.",
+            "solutionSpace": "Lookup plus page correction.",
+            "row": "Facility orbit paints 30 fps: labels stop blocking frames",
+            "previewIntegration": {
+              "task": "Facility orbit paints 30 fps: labels stop blocking frames",
+              "kind": "refresh"
+            },
+            "resources": [
+              "/home/kom/proj/ai_pr/review-page-orbit-fps-2026-11-07-r2"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "failedAt": "2026-11-07T00:10:23.602Z",
+    "call": [
+      "2026-11-07T00:10:23.601Z",
+      {
+        "context": "XMOVA. Base: PR 114 at e6eb91a246bbeacf8d39748214804e182eef0c34. Use plain git. Never write to ROOT /home/kom/proj/sunbim/datacenter-decision-graph. Do not push. Check git status/log first, then act within 3 minutes. Write files only by absolute path. Playwright: --project=chromium --reporter=list,json; free port 47000-47999; your own --output dir; prebuild with `npm run build -- --outDir tmp/e2e-preview-<port>` and set DCG_E2E_PREBUILT=1. Gates write report.json, exit-code.txt and served.txt under /home/kom/proj/sunbim/evidence/<sha>/<run>/. Kill your own server PID before you yield. Retro: required.",
+        "tasks": [
+          {
+            "name": "UxGraphJourneyProof",
+            "agent": "task",
+            "task": "UX graph: tab transitions and conflict Back modeled\n\nContinue from agent://UxGraphModel-9. The fix is at /home/kom/proj/sunbim/wt/UxGraph@a8104b2d7d0f2d1238f134248c551dda51f8b20a. It is being cherry-picked into the batch branch, so do not edit wt/UxGraph product code.\n\n1. In wt/UxGraph, prebuild and run e2e/ux-conflict-return.spec.ts into a new evidence dir.\n2. Open its screenshots at 1440 and 430.\n3. Quote the doc/ux-transition-graph.md lines that hold the projectSetupSection edges and the conflict Back → risk · riskConflictsOpen=true edge.\n4. Run `npx vitest run src/__tests__/uxTransitionGraph.test.ts --project=precommit`.\n5. Return the stats, exit-code, served, the screenshot paths, the quoted lines and a Retro block.",
+            "solutionSpace": "Proof only.",
+            "row": "UX graph: tab transitions and conflict Back modeled",
+            "previewIntegration": {
+              "task": "UX graph: tab transitions and conflict Back modeled",
+              "kind": "integration"
+            },
+            "resources": [
+              "/home/kom/proj/sunbim/evidence/a8104b2d7d0f2d1238f134248c551dda51f8b20a"
+            ]
+          },
+          {
+            "name": "OrbitFixLocate",
+            "agent": "task",
+            "task": "Facility orbit paints 30 fps: labels stop blocking frames\n\nContinue from agent://LandOrbitFix-12. The audit found that the orbit fix is not in HEAD. The r2 page credits a0b5962dc, which is the UX graph commit, and `e2e/facility-frame-cap.spec.ts --grep 'orbit paints'` does not exist at HEAD.\n\n1. Find the real orbit fix commits and the commit adding the 'orbit paints' spec. Use `git log --all -S 'orbit paints'`, agent://LandOrbitFix-9 and the worktrees under /home/kom/proj/sunbim/wt and /home/kom/.omp/wt.\n2. Verify each commit with git show.\n3. Correct the credited commit in /home/kom/proj/ai_pr/review-page-orbit-fps-2026-11-07-r2/cards.json, rebuild, and check HTTP 200.\n4. Return the full SHAs, their worktree/branch, a one-line summary per commit, and a Retro block.\n\nThe Mac measurements need Darafei's machine; do not try them.",
+            "solutionSpace": "Lookup plus page correction.",
+            "row": "Facility orbit paints 30 fps: labels stop blocking frames",
+            "previewIntegration": {
+              "task": "Facility orbit paints 30 fps: labels stop blocking frames",
+              "kind": "refresh"
+            },
+            "resources": [
+              "/home/kom/proj/ai_pr/review-page-orbit-fps-2026-11-07-r2"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

@@ -1,3 +1,5 @@
+import type { PeerCommandReceipt } from "../../src/collab/peer-commands";
+import { IrcBus } from "../../src/irc/bus";
 /**
  * Subagent worker entry for the agents-bridge tests: the real link wiring of
  * `subagent-worker-entry` with only the identity and agents services, plus a
@@ -37,9 +39,16 @@ export interface PeerReport {
 
 /** Operations the test drives on the worker. */
 export interface AgentsProbe {
+	publication(id: string, state: "pending" | "published" | "failed", responseAt: number): Promise<boolean>;
+	peerCommand(id: string, text: string): Promise<PeerCommandReceipt | null>;
+	shellReplyTarget(id: string): Promise<string>;
 	threadId(): Promise<string>;
 	/** Build a real session (mock model) and register it as `id` in the (remote) registry. */
-	open(id: string, options: { sessionFile?: string; gated?: boolean }): Promise<string>;
+	open(
+		id: string,
+		options: { sessionFile?: string; gated?: boolean; initialPromptPending?: boolean },
+	): Promise<string>;
+	clearInitialPromptPending(id: string, ownerId: string): Promise<boolean>;
 	/** Run a prompt on the local session to completion. */
 	prompt(id: string, text: string): Promise<void>;
 	/** Let gated model calls answer. */
@@ -64,8 +73,11 @@ export interface AgentsProbe {
 	adopt(id: string): Promise<void>;
 	/** Whether the local session of `key` was disposed. */
 	disposed(key: string): Promise<boolean>;
+	peerResources(id: string): Promise<string[]>;
 	/** Whether the worker's lifecycle proxy manages the worker's registry proxy. */
 	manages(): Promise<boolean>;
+	/** Open a persisted session so restart tests can read its checkpoint. */
+	openPersisted(id: string, persistedCwd: string): Promise<string>;
 }
 
 /** Test-only boot globals of the probe service. */
@@ -84,7 +96,7 @@ let threadName = "";
 let gate = Promise.withResolvers<void>();
 let gateOpen = false;
 
-async function makeSession(id: string, gated: boolean): Promise<AgentSession> {
+async function makeSession(id: string, gated: boolean, persistedCwd?: string): Promise<AgentSession> {
 	const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 	if (!model) throw new Error("bundled model missing");
 	const mock = createMockModel({
@@ -103,7 +115,9 @@ async function makeSession(id: string, gated: boolean): Promise<AgentSession> {
 	authStorage.keys.setRuntime("anthropic", "test-key");
 	const session = new AgentSession({
 		agent,
-		sessionManager: SessionManager.inMemory(),
+		sessionManager: persistedCwd
+			? SessionManager.create(persistedCwd, `${persistedCwd}/sessions`)
+			: SessionManager.inMemory(),
 		settings: Settings.isolated(),
 		modelRegistry: new ModelRegistry(authStorage),
 		agentId: id,
@@ -120,9 +134,25 @@ function local(id: string): AgentSession {
 }
 
 const probe: AgentsProbe = {
+	publication: async (id, state, responseAt) => {
+		const session = sessions.get(id);
+		if (!session) throw new Error("missing worker session");
+		const registry = AgentRegistry.global();
+		const ref = registry.get(id);
+		if (!ref) throw new Error("missing worker ref");
+		const recorded = registry.setResultPublication(id, state, ref, responseAt);
+		if (recorded && state === "published") registry.markResultAccepted(id, ref, responseAt);
+		return recorded;
+	},
+	peerCommand: async (id, text) => AgentRegistry.global().get(id)!.session!.executePeerSlashCommand(text),
+	shellReplyTarget: async id => IrcBus.global().resolveShellReplyTarget(id),
 	threadId: async () => threadName,
 	open: async (id, options) => {
-		const session = await makeSession(id, options.gated === true);
+		const session = await makeSession(
+			id,
+			options.gated === true,
+			"persistedCwd" in options && typeof options.persistedCwd === "string" ? options.persistedCwd : undefined,
+		);
 		const registry = AgentRegistry.global();
 		registry.register({
 			id,
@@ -130,11 +160,15 @@ const probe: AgentsProbe = {
 			kind: "sub",
 			session,
 			sessionFile: options.sessionFile ?? null,
-			status: "idle",
+			status: options.initialPromptPending ? "running" : "idle",
+			parentId: options.initialPromptPending ? "Main" : undefined,
+			initialPromptPending: options.initialPromptPending,
 		});
 		registry.syncSessionStatus(id, session);
 		return session.instanceKey;
 	},
+	clearInitialPromptPending: async (id, ownerId) =>
+		AgentRegistry.global().clearInitialPromptPending(id, local(ownerId)),
 	prompt: async (id, text) => {
 		await local(id).prompt(text);
 	},
@@ -212,7 +246,16 @@ const probe: AgentsProbe = {
 		if (!session) throw new Error(`no session ${key}`);
 		return session.isDisposed;
 	},
+	peerResources: async id =>
+		AgentRegistry.global()
+			.get(id)
+			?.session?.getTodoPhases()
+			.flatMap(phase => phase.tasks.flatMap(row => row.schedule?.resources ?? [])) ?? [],
 	manages: async () => AgentLifecycleManager.global().manages(AgentRegistry.global()),
+	openPersisted: async (id, persistedCwd) => {
+		const options = { gated: false, persistedCwd };
+		return probe.open(id, options);
+	},
 };
 
 function isProbeGlobals(value: unknown): value is AgentsProbeGlobals {

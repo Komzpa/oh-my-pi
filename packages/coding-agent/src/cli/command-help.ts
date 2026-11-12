@@ -42,6 +42,10 @@ export const collabHelp = {
 		"List active local Collab host metadata without URLs; use collab link <instanceId|pid> to retrieve a control link (--view for view-only)",
 } satisfies CommandMetadata;
 
+export const peersHelp = {
+	description: "List and message local OMP peer sessions",
+} satisfies CommandMetadata;
+
 export const clipHelp = {
 	description: "Upload a /record recording to live.omp.sh as a public clip and print its URL",
 } satisfies CommandMetadata;
@@ -123,6 +127,9 @@ export const readHelp = {
 export const renderHelp = {
 	description: "Draw a session's entire thread through the production transcript pipeline (with repaint timing)",
 } satisfies CommandMetadata;
+export const restartHelp = {
+	description: "Queue, inspect, or cancel a graceful restart for an exact live interactive session",
+} satisfies CommandMetadata;
 
 export const sayHelp = {
 	description: "Synthesize text with the local TTS engine and play it through the speakers",
@@ -199,4 +206,8 @@ export const usageHelp = {
 
 export const worktreeHelp = {
 	description: "Add, list, or clear git worktrees (clone-first when enabled)",
+} satisfies CommandMetadata;
+
+export const providersHelp = {
+	description: "List provider cooldowns, probe recovery now, or explicitly clear a cooldown",
 } satisfies CommandMetadata;

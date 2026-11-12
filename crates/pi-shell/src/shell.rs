@@ -43,6 +43,8 @@ use crate::{
 
 /// A live engine session and the filesystem it runs on.
 struct ShellSessionCore {
+	/// Setup and the first execution share one tool-call boundary.
+	init_limit: Option<Arc<pi_vcs::process_limit::ToolProcessLimit>>,
 	session:    Session,
 	/// The engine's filesystem slot (shared with the session's host). Each run
 	/// installs a cancellation-scoped view of the session filesystem, or of
@@ -137,6 +139,7 @@ async fn requested_cwd(core: &ShellSessionCore, cwd: Option<&str>) -> Result<Opt
 #[derive(Clone)]
 struct ShellConfig {
 	session_env:   Option<HashMap<String, String>>,
+	unset_env:     Option<Vec<String>>,
 	snapshot_path: Option<String>,
 	minimizer:     Option<minimizer::MinimizerConfig>,
 	filesystem:    Fs,
@@ -148,6 +151,8 @@ struct ShellConfig {
 #[derive(Debug, Clone, Default)]
 pub struct ShellOptions {
 	pub session_env:   Option<HashMap<String, String>>,
+	/// Remove these session bindings before and after snapshot sourcing.
+	pub unset_env:     Option<Vec<String>>,
 	pub snapshot_path: Option<String>,
 	pub minimizer:     Option<minimizer::MinimizerOptions>,
 	/// Filesystem backing every run of the session (native by default).
@@ -206,6 +211,8 @@ pub struct ShellExecuteOptions {
 	pub cwd:           Option<String>,
 	pub env:           Option<HashMap<String, String>>,
 	pub session_env:   Option<HashMap<String, String>>,
+	/// Remove these session bindings before and after snapshot sourcing.
+	pub unset_env:     Option<Vec<String>>,
 	pub timeout_ms:    Option<u32>,
 	pub snapshot_path: Option<String>,
 	pub minimizer:     Option<minimizer::MinimizerOptions>,
@@ -246,6 +253,7 @@ impl Shell {
 		let config = match options {
 			None => ShellConfig {
 				session_env:   None,
+				unset_env:     None,
 				snapshot_path: None,
 				minimizer:     None,
 				filesystem:    Fs::native(),
@@ -258,6 +266,7 @@ impl Shell {
 					.map(minimizer::MinimizerConfig::from_options);
 				ShellConfig {
 					session_env: opt.session_env,
+					unset_env: opt.unset_env,
 					snapshot_path: opt.snapshot_path,
 					minimizer,
 					filesystem: opt.filesystem,
@@ -369,6 +378,7 @@ pub async fn execute_shell(
 		.map(minimizer::MinimizerConfig::from_options);
 	let config = ShellConfig {
 		session_env:   options.session_env,
+		unset_env:     options.unset_env,
 		snapshot_path: options.snapshot_path,
 		minimizer:     minimizer.clone(),
 		filesystem:    options.filesystem,
@@ -410,6 +420,7 @@ pub async fn execute_shell_streams(
 ) -> Result<ShellExecuteResult> {
 	let config = ShellConfig {
 		session_env:   options.session_env,
+		unset_env:     options.unset_env,
 		snapshot_path: options.snapshot_path,
 		minimizer:     None,
 		filesystem:    options.filesystem,
@@ -852,7 +863,12 @@ async fn create_session_for_run(
 	let cancel = cancel_token.cloned().unwrap_or_default();
 	let runtime = tokio::runtime::Handle::current();
 	let slot = VfsFs::new(config.filesystem.with_cancellation(cancel.clone()), runtime.clone());
-	let vars = session_vars(config);
+	let mut vars = session_vars(config);
+	if let Some(keys) = &config.unset_env {
+		for key in keys {
+			vars.remove(normalize_inherited_env_key(key));
+		}
+	}
 	let has_env_var = vars.contains_key("env");
 	let env = vars
 		.into_iter()
@@ -876,7 +892,13 @@ async fn create_session_for_run(
 		None => Session::new(session_config),
 	}
 	.map_err(|err| Error::msg(format!("Failed to initialize shell: {err}")))?;
-	let mut core = ShellSessionCore { session, slot, filesystem: config.filesystem.clone(), cwd };
+	let mut core = ShellSessionCore {
+		init_limit: Some(Arc::default()),
+		session,
+		slot,
+		filesystem: config.filesystem.clone(),
+		cwd,
+	};
 
 	// A seed already holds both.
 	if config.seed.is_none() {
@@ -891,6 +913,20 @@ async fn create_session_for_run(
 				.await
 				.map_err(|err| Error::msg(format!("Failed to source snapshot: {err}")))?;
 		}
+	}
+	if let Some(keys) = &config.unset_env {
+		// Remove imported bindings directly; names never become shell code.
+		let options = RunOptions {
+			unset_env: keys
+				.iter()
+				.map(|key| BString::from(normalize_inherited_env_key(key)))
+				.collect(),
+			..RunOptions::new(":")
+		};
+		core
+			.session
+			.run_with(options, null_stdio()?, cancel.clone())
+			.await?;
 	}
 	restore_session_filesystem(&core);
 	if cancel.is_cancelled() {
@@ -907,7 +943,11 @@ async fn run_setup(
 ) -> Result<()> {
 	let outcome = core
 		.session
-		.run_with(RunOptions::new(command), null_stdio()?, cancel.clone())
+		.run_with(
+			RunOptions { process_limit: core.init_limit.clone(), ..RunOptions::new(command) },
+			null_stdio()?,
+			cancel.clone(),
+		)
 		.await?;
 	core.cwd = outcome.cwd;
 	Ok(())
@@ -930,11 +970,27 @@ fn is_macos_malloc_stack_logging_var(key: &str) -> bool {
 	matches!(key, "MallocStackLogging" | "MallocStackLoggingNoCompact")
 }
 
+/// Node's IPC channel pointers describe the agent's own worker channel. A
+/// tool-call child that inherits them misinterprets fd 3 as its control
+/// channel — `bun run` inside a bash tool call then dies with
+/// `EBADF: Bad file descriptor (posix_spawn())`. Windows env names are
+/// case-insensitive, so `node_channel_fd` binds there like `NODE_CHANNEL_FD`.
+#[cfg(windows)]
+pub fn is_node_ipc_channel_var(key: &str) -> bool {
+	key.eq_ignore_ascii_case("NODE_CHANNEL_FD")
+		|| key.eq_ignore_ascii_case("NODE_CHANNEL_SERIALIZATION_MODE")
+}
+
+#[cfg(not(windows))]
+pub fn is_node_ipc_channel_var(key: &str) -> bool {
+	matches!(key, "NODE_CHANNEL_FD" | "NODE_CHANNEL_SERIALIZATION_MODE")
+}
+
 fn should_skip_env_var(key: &str) -> bool {
 	if key.starts_with("BASH_FUNC_") && key.ends_with("%%") {
 		return true;
 	}
-	if is_macos_malloc_stack_logging_var(key) {
+	if is_macos_malloc_stack_logging_var(key) || is_node_ipc_channel_var(key) {
 		return true;
 	}
 
@@ -1017,9 +1073,10 @@ struct CommandRunOutput {
 
 /// What every session run of one command shares.
 struct CommandScope<'a> {
-	options: &'a ShellRunConfig,
-	env:     Vec<(BString, BString)>,
-	cancel:  CancellationToken,
+	process_limit: Arc<pi_vcs::process_limit::ToolProcessLimit>,
+	options:       &'a ShellRunConfig,
+	env:           Vec<(BString, BString)>,
+	cancel:        CancellationToken,
 }
 
 impl CommandScope<'_> {
@@ -1031,6 +1088,8 @@ impl CommandScope<'_> {
 		reported_error: Option<Arc<AtomicBool>>,
 	) -> RunOptions {
 		RunOptions {
+			process_limit: Some(Arc::clone(&self.process_limit)),
+			unset_env: Vec::new(),
 			command,
 			env: self.env.clone(),
 			cwd,
@@ -1143,8 +1202,12 @@ async fn run_shell_command_in_filesystem(
 	cancel_token: CancellationToken,
 ) -> Result<CommandResult> {
 	let cwd = requested_cwd(session, options.cwd.as_deref()).await?;
-	let scope =
-		CommandScope { options, env: command_env(options.env.as_ref()), cancel: cancel_token };
+	let scope = CommandScope {
+		process_limit: session.init_limit.take().unwrap_or_default(),
+		options,
+		env: command_env(options.env.as_ref()),
+		cancel: cancel_token,
+	};
 
 	let minimizer_mode = if let Some(config) = options.minimizer.as_ref() {
 		minimizer::engine::mode_for(&options.command, config)
@@ -1551,6 +1614,7 @@ async fn run_shell_command_streams_in_filesystem(
 ) -> Result<CommandResult> {
 	let cwd = requested_cwd(session, options.cwd.as_deref()).await?;
 	let scope = CommandScope {
+		process_limit: session.init_limit.take().unwrap_or_default(),
 		options,
 		env: command_env(options.env.as_ref()),
 		cancel: cancel_token.clone(),

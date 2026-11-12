@@ -166,6 +166,12 @@ describe("fetchWithRetry", () => {
 });
 
 describe("extractRetryHint", () => {
+	it('reads "try again in" with spelled-out seconds', () => {
+		expect(extractRetryHint(undefined, "Rate limit exceeded. Try again in 300s")).toBe(300_000);
+		expect(extractRetryHint(undefined, "Try again in 45 seconds")).toBe(45_000);
+		expect(extractRetryHint(undefined, "try again in 1 second")).toBe(1_000);
+	});
+
 	// Devin returns HTTP 403 with "Your limit will reset in 13 minutes" for an
 	// account-scoped message rate cap. Without recognizing "will reset in", the
 	// credential is blocked for the 1-minute default instead of 13 minutes and

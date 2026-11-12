@@ -1,0 +1,24 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/plan_critic.loading.test.ts:
+(pass) installed lead extension paths reach one reviewer after resume [377.23ms]
+(pass) installed lead extension paths reach one reviewer after restore [164.08ms]
+(pass) installed lead extension paths reach one reviewer after package [137.43ms]
+
+packages/reemxy-extensions/extensions/plan_critic.test.ts:
+(pass) critic receives the current requirement diff with its exact quote, excluding another revision's receipt [1.13ms]
+(pass) plan critic runtime binding > successful dependency mutation closes an action; prose and failed tools cannot [0.72ms]
+(pass) plan critic runtime binding > unaddressed verdict escalates on next wake and survives session restart [0.73ms]
+(pass) plan critic runtime binding > converging verdict permits waiting and repeats only after the configured interval [0.31ms]
+(pass) plan critic runtime binding > completed or worker sessions never spawn critics [0.13ms]
+(pass) plan critic runtime binding > fresh reviewer input excludes transcripts and coalesces concurrent wakes [55.10ms]
+(pass) plan critic runtime binding > new churn triggers a review immediately inside the periodic interval [0.52ms]
+(pass) plan critic runtime binding > malformed verdicts cannot erase obligations [0.09ms]
+(pass) plan critic runtime binding > unrelated mutations never count as executing a critic action [0.03ms]
+(pass) an empty startup followed by restored churn is reviewed by the next minute poll [0.26ms]
+(pass) a continued lead with parentSession runs; a depth-zero task child does not [0.29ms]
+
+ 14 pass
+ 0 fail
+ 47 expect() calls
+Ran 14 tests across 2 files. [1199.00ms]

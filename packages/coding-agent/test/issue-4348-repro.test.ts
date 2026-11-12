@@ -73,6 +73,9 @@ function makeRenderCtx(transcript: SessionContext): { ctx: InteractiveModeContex
 		focusedAgentId: undefined,
 		editor: { addToHistory: vi.fn() },
 		viewSession: {
+			sessionId: "cursor-rebuild-test",
+			isStreaming: false,
+			agent: { state: { streamMessage: null, pendingToolCalls: new Set<string>() } },
 			buildTranscriptSessionContext: () => transcript,
 			getToolByName: () => undefined,
 			hasBuiltInTool: () => true,

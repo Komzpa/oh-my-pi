@@ -27,7 +27,7 @@ It covers runtime behavior as implemented today, including precedence, invalid-d
 Task agents normalize into `AgentDefinition` (`src/task/types.ts`):
 
 - required `name`, `description`, and `systemPrompt`
-- optional `tools`, `spawns`, prioritized `model` list, `thinkingLevel`, `output`, `blocking`, `structured`, `autoloadSkills`, `readSummarize`, `prewalk`, `advisor`
+- optional `tools`, `spawns`, prioritized `model` list, `thinkingLevel`, `output`, `blocking`, `structured`, `autoloadSkills`, `readSummarize`, `agentsMd`, `prewalk`, `advisor`
 - `source`: `"bundled" | "user" | "project"` (extension agents are tagged with their extension root's project/user level)
 - optional `filePath`
 
@@ -47,6 +47,14 @@ Parsing comes from frontmatter via `parseAgentFields()` (`src/discovery/helpers.
 - `autoloadSkills` names skills from the parent session to inject before the first child prompt; unknown names are ignored
 - `prewalk: true` starts the subagent on its resolved model and hands off to the default prewalk target (the `smol` role) at its first edit/write, exactly like the session-level `--prewalk`; a string value (e.g. `prewalk: "@smol"` or `prewalk: "openai/gpt-5-mini"`) picks a custom target. The `task.agentPrewalk` settings record (agent name → `"on"` / `"off"` / pattern, configured per agent from the `/agents` hub via its prewalk strip) overrides the frontmatter. Resolution happens in `runSubprocess` (`src/task/executor.ts`). An unavailable target is skipped instead of failing the spawn. A resolved target is skipped only when both its model identity and its effective thinking mode/level match the starting selection after model clamping; a same-model effort downgrade is a real hand-off and still arms and switches at the first edit/write.
 - `advisor: true` pairs spawned sessions of the agent with an advisor running the model resolved for the `advisor` role; a string value (e.g. `advisor: "deepseek/deepseek-v4-flash"` or `advisor: "@smol:high"`) sets an explicit advisor model pattern (optional `:level` suffix), applied as the spawned session's `modelRoles.advisor`. The `task.agentAdvisor` settings record (agent name → `"on"` / `"off"` / pattern, configured per agent from the `/agents` hub via its advisor strip) overrides the frontmatter. Resolution happens in `runSubprocess` (`src/task/executor.ts`); subagents default to no advisor, and the effective opt-in is persisted in `session_init` so cold revival restores it.
+
+## Repository instructions for workers
+
+`task.agentsMd` defaults to `strip`: task workers receive no AGENTS.md, so the lead must include relevant repository rules in assignments. Agent frontmatter `agentsMd: strip` or `agentsMd: project` overrides the setting.
+
+With `task.agentsMd: project`, a worker discovers only AGENTS.md from its own cwd up to its Git repository root, in root-to-cwd order. An isolated worker reads its worktree's copies. AGENTS.override.md replaces AGENTS.md at the same level. User/global files, instructions above the repository root, the parent's pinned files and additional workspace roots are excluded. Recursive `@` includes expand only within that repository (including symlink targets). Outside a Git repository, no project instructions are loaded. `--no-context-files` still disables discovery.
+
+The task tool describes the default and each agent's effective policy: project workers already have their repository rules; strip workers need those rules in the assignment.
 
 ## Role-backed custom agents
 

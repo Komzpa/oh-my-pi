@@ -491,6 +491,12 @@ async fn an_executable_url_runs_as_the_file_it_aliases() {
 	let run = run_virtual(directory.path(), "virtual://tool").await;
 	assert_eq!(run.status, Some(0), "{}", run.stderr);
 	assert_eq!(run.stdout, "tool-ran");
+
+	fs::write(&tool, b"items=(two words); printf '%s|%s' \"${items[0]}\" \"$1\"\n")
+		.expect("shebangless Bash script");
+	let run = run_virtual(directory.path(), "virtual://tool argument").await;
+	assert_eq!(run.status, Some(0), "{}", run.stderr);
+	assert_eq!(run.stdout, "two|argument");
 }
 
 /// The same contract on Windows, where an executable is recognized by its

@@ -1,0 +1,36 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/reemxy-extensions/extensions/plan_critic.test.ts:
+(pass) critic receives the current requirement diff with its exact quote, excluding another revision's receipt [2.55ms]
+(pass) plan critic runtime binding > successful dependency mutation closes an action; prose and failed tools cannot [3.85ms]
+(pass) plan critic runtime binding > unaddressed verdict is delivered once across 35 wakes and session restart [2.11ms]
+(pass) plan critic runtime binding > converging verdict permits waiting and repeats only after the configured interval [0.73ms]
+(pass) plan critic runtime binding > completed or worker sessions never spawn critics [0.12ms]
+(pass) plan critic runtime binding > fresh reviewer input excludes transcripts and coalesces concurrent wakes [0.38ms]
+(pass) plan critic runtime binding > new churn triggers a review immediately inside the periodic interval [0.47ms]
+(pass) plan critic runtime binding > malformed verdicts cannot erase obligations [0.05ms]
+(pass) plan critic runtime binding > unrelated mutations never count as executing a critic action [0.02ms]
+(pass) an empty startup followed by restored churn is reviewed by the next minute poll [0.21ms]
+(pass) a continued lead with parentSession runs; a depth-zero task child does not [0.25ms]
+(pass) repeated empty-plan polls log one debug and warning for their skip reason [0.14ms]
+(pass) unchanged rejected action with a new id stays addressed after restart without waking the lead [0.44ms]
+(pass) seven unrelated successful plan results do not append seven duplicate bindings [0.39ms]
+(pass) changed attempts allows a rejected row action to wake the lead again [0.74ms]
+(pass) changed reestimates allows a rejected row action to wake the lead again [0.34ms]
+(pass) changed audit allows a rejected row action to wake the lead again [0.26ms]
+(pass) changed head allows a rejected row action to wake the lead again [0.26ms]
+(pass) reviewer history deduplicates bindings, keeps the latest three and bounds UTF-8 bytes [0.18ms]
+(pass) a rejection never suppresses a different action kind on the same row [0.34ms]
+(pass) escalations cannot become fake owner questions or self-addressed lead demands [0.36ms]
+(pass) critic projection drops a completed or deleted own row and is hidden from children [0.23ms]
+(pass) stale released worker auto-closes without a lead rejection or another delivery [0.28ms]
+(pass) stale abandoned reassigned row auto-closes without a lead rejection or another delivery [0.15ms]
+(pass) stale changed owner auto-closes without a lead rejection or another delivery [0.15ms]
+(pass) fresh action delivered once becomes first FIX NOW after two lead turns [0.62ms]
+(pass) a row changed while reviewer runs is closed before its first notification [0.25ms]
+(pass) changed row regenerates a verdict from current ownership instead of replaying it [0.35ms]
+
+ 28 pass
+ 0 fail
+ 118 expect() calls
+Ran 28 tests across 1 file. [55.00ms]

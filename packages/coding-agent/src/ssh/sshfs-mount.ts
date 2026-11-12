@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { $which, getRemoteDir, postmortem } from "@oh-my-pi/pi-utils";
+import { backgroundShellPrefix } from "@oh-my-pi/pi-utils/background-priority";
 import { $ } from "bun";
 import {
 	ensureSshControlDir,
@@ -74,13 +75,13 @@ function buildSshfsArgs(host: SSHConnectionTarget): string[] {
 async function unmountPath(path: string): Promise<boolean> {
 	const fusermount = $which("fusermount") ?? $which("fusermount3");
 	if (fusermount) {
-		const result = await $`${fusermount} -u ${path}`.quiet().nothrow();
+		const result = await $`${backgroundShellPrefix} ${fusermount} -u ${path}`.quiet().nothrow();
 		if (result.exitCode === 0) return true;
 	}
 
 	const umount = $which("umount");
 	if (!umount) return false;
-	const result = await $`${umount} ${path}`.quiet().nothrow();
+	const result = await $`${backgroundShellPrefix} ${umount} ${path}`.quiet().nothrow();
 	return result.exitCode === 0;
 }
 
@@ -104,7 +105,7 @@ export async function isMounted(mountPath: string, options: MountCheckOptions = 
 		const platform = options.platform ?? process.platform;
 		return platform === "darwin" ? isMountedByDeviceBoundary(mountPath, options.stat) : false;
 	}
-	const result = await $`${mountpoint} -q ${mountPath}`.quiet().nothrow();
+	const result = await $`${backgroundShellPrefix} ${mountpoint} -q ${mountPath}`.quiet().nothrow();
 	return result.exitCode === 0;
 }
 
@@ -128,7 +129,7 @@ export async function mountRemote(host: SSHConnectionTarget, remotePath = "/"): 
 
 	const target = `${buildSshTarget(host.username, host.host)}:${remotePath}`;
 	const args = buildSshfsArgs(host);
-	const result = await $`sshfs ${args} ${target} ${mountPath}`.nothrow();
+	const result = await $`${backgroundShellPrefix} sshfs ${args} ${target} ${mountPath}`.nothrow();
 
 	if (result.exitCode !== 0) {
 		const detail = result.stderr.toString().trim();

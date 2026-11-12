@@ -1,0 +1,1 @@
+../../../../skills/chief-of-staff/SKILL.md

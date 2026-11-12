@@ -474,16 +474,19 @@ pub enum ChildRedir {
 /// it), and a detached tree outlives the shell's cancellation and teardown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Lineage {
+	/// Embedding-owned process boundary, inherited even by delayed jobs.
+	#[serde(default)]
+	pub resource_scope: u16,
 	/// Host-chosen label of the innermost labeled subshell tree; 0 outside
 	/// any. A labeled subshell inside another replaces its parent's label.
-	pub label:    u32,
+	pub label:          u32,
 	/// The tree is detached (`nohup`): once set, every descendant keeps it.
 	/// [`ControlHandle::cancel`](crate::bash::ControlHandle::cancel) leaves
 	/// detached vprocs and their externals running, and a host must not
 	/// signal or kill a detached external when its [`ExtProc`] is dropped
 	/// (shell teardown); it still delivers [`ExtProc::signal`], which the
 	/// engine sends only for signals aimed at the tree (`kill`).
-	pub detached: bool,
+	pub detached:       bool,
 }
 
 /// CPU times of [`Host::cpu_times`], in nanoseconds.

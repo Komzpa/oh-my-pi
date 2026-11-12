@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
@@ -70,9 +71,12 @@ function mockCreateAgentSession(session: AgentSession) {
 }
 
 describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
-	afterEach(() => {
+	afterEach(async () => {
+		const manager = AsyncJobManager.instance();
+		if (manager) await manager.dispose({ timeoutMs: 200 });
 		vi.restoreAllMocks();
 		AgentRegistry.resetGlobalForTests();
+		AsyncJobManager.resetForTests();
 	});
 
 	const baseAgent: AgentDefinition = {
@@ -115,6 +119,55 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 		expect(elapsedMs).toBeLessThan(10_000);
 	});
 
+	it("reports owner background jobs when a worker fails after starting them", async () => {
+		const manager = new AsyncJobManager({});
+		AsyncJobManager.setInstance(manager);
+		const failingSession: Partial<AgentSession> = {
+			...createSessionDefaults(),
+			state: { messages: [] } as never,
+			agent: { state: { systemPrompt: ["test"] } } as never,
+			extensionRunner: undefined as never,
+			sessionManager: { appendSessionInit: () => {} } as never,
+			getActiveToolNames: () => ["bash", "yield"],
+			getEnabledToolNames: () => ["bash", "yield"],
+			subscribe: (_listener: (event: AgentSessionEvent) => void) => () => {},
+			prompt: async () => {
+				const jobId = manager.register(
+					"bash",
+					"walkthrough capture",
+					async ({ signal }) => {
+						await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+						return "cancelled";
+					},
+					{ id: "capture-4679-cont3", ownerId: "quota-worker" },
+				);
+				const job = manager.getJob(jobId);
+				if (job) job.latestDetails = { pid: 953008 };
+				throw new Error("Provider 403: usage quota exceeded");
+			},
+			waitForIdle: async () => {},
+			abort: async () => {},
+		};
+		mockCreateAgentSession(failingSession as AgentSession);
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "quota-worker",
+			asyncJobManager: manager,
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.retainedBackgroundJobs).toEqual([
+			{
+				id: "capture-4679-cont3",
+				type: "bash",
+				status: "running",
+				label: "walkthrough capture",
+				pid: 953008,
+			},
+		]);
+	});
+
 	it("does not abort early when the runtime budget is unlimited", async () => {
 		// Stub session resolves immediately to a no-op yield so we don't actually
 		// hang; we only need to assert that NO timeout fires when maxRuntimeMs=0.
@@ -124,7 +177,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -236,7 +289,8 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			signal: abortController.signal,
 		});
 		const creationOptions = await creationStarted.promise;
-		expect(creationOptions.expectedAgentRef).toBeNull();
+		expect(creationOptions.expectedAgentRef).toBe(registry.get("late-generation"));
+		expect(creationOptions.expectedAgentRef).toMatchObject({ status: "running", starting: true, session: null });
 		abortController.abort();
 		const cancelled = await run;
 		expect(cancelled.aborted).toBe(true);
@@ -272,7 +326,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -348,7 +402,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -447,7 +501,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -580,7 +634,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -662,7 +716,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -721,7 +775,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -774,7 +828,7 @@ describe("runSubprocess wall clock (task.maxRuntimeMs)", () => {
 			state: { messages: [] } as never,
 			agent: { state: { systemPrompt: ["test"] } } as never,
 			extensionRunner: undefined as never,
-			sessionManager: { appendSessionInit: () => {} } as never,
+			sessionManager: { appendSessionInit: () => {}, appendCustomEntry: () => {}, getHeader: () => null } as never,
 			getActiveToolNames: () => ["read", "yield"],
 			getEnabledToolNames: () => ["read", "yield"],
 			subscribe: (listener: (event: AgentSessionEvent) => void) => {

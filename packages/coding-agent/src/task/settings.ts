@@ -20,6 +20,30 @@ const EMPTY_AGENT_COMPACTION_THRESHOLD_OVERRIDES: Record<string, AgentCompaction
 const EMPTY_AGENT_ACCOUNT_POOLS: Record<string, OAuthAccountPools> = {};
 const EMPTY_AGENT_SOFT_REQUEST_BUDGET: Record<string, number | null> = {};
 
+/**
+ * Per-role effort ceilings. Max effort stays allowed only for analysis and judgment
+ * roles (architect, adversary, plan-doctor, researcher, business-analyst, reviewer,
+ * security-reviewer, qa-auditor, retro-facilitator, creative), which therefore have
+ * no entry. Executor roles are capped at `high` (sol coder at max: 13.5 min vs 9.1
+ * at high with the same success; `task` at max has a p90 of 164 min). Mechanical
+ * roles stay at `low` (git-pr-owner on Sol: low median 44 s vs medium 155 s), and
+ * `minor-coder`, for small known fixes, is capped at `low`. A user value replaces
+ * this whole map.
+ */
+const DEFAULT_AGENT_MAX_EFFORT: Record<string, string> = {
+	scout: "low",
+	"gate-runner": "low",
+	"git-pr-owner": "low",
+	workhorse: "low",
+	scribe: "low",
+	"minor-coder": "low",
+	coder: "high",
+	"coder-strong": "high",
+	"ui-coder": "high",
+	"ui-coder-strong": "high",
+	task: "high",
+};
+
 const DEFAULT_AGENT_MODEL_OVERRIDES: Record<string, string | string[]> = {};
 
 // Delegation. Task and isolation settings declare `protocolDefault`: protocol hosts get neutral
@@ -268,6 +292,16 @@ export const cfgTaskEager = register({
 	},
 });
 
+export const cfgRequirementAuditors = register({
+	id: "task.requirementAuditors",
+	type: "number",
+	default: 4,
+	validate: value => {
+		if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1))
+			throw new Error("task.requirementAuditors must be a positive integer");
+	},
+});
+
 export const cfgTaskAutoParallel = register({
 	id: "task.autoParallel",
 	protocolDefault: ["rpc", "acp"],
@@ -321,6 +355,24 @@ export const cfgTaskSteps = register({
 		label: "Sequential Task Steps",
 		description:
 			"Spawns take ordered `steps` instead of one `task`: the subagent gets the first step, then each next one once it finishes the previous; past 4 steps, earlier messages carry two or more. The last step's result is the task's result.",
+	},
+});
+
+export const cfgTaskAgentsMd = register({
+	id: "task.agentsMd",
+	type: "enum",
+	values: ["strip", "project"] as const,
+	default: "strip",
+	ui: {
+		tab: "tasks",
+		group: "Subagents",
+		label: "Subagent AGENTS.md",
+		description:
+			"Strip AGENTS.md or load only the worker repository instructions. Agent frontmatter agentsMd overrides this setting.",
+		options: [
+			{ value: "strip", label: "Strip", description: "Give relevant repository rules in the assignment" },
+			{ value: "project", label: "Project", description: "Include repository instructions in child context" },
+		],
 	},
 });
 
@@ -552,6 +604,28 @@ export const cfgTaskCompletionProbe = register({
 	},
 });
 
+function validateAgentMaxEffort(value: unknown): void {
+	if (value === undefined || value === null) return;
+	if (!isRecord(value)) {
+		const received = Array.isArray(value) ? "an array" : `a ${typeof value}`;
+		throw new Error(`Invalid task.agentMaxEffort: expected a map of agent name to effort level, got ${received}.`);
+	}
+	for (const [agentName, level] of Object.entries(value)) {
+		if (typeof level === "string" && (THINKING_EFFORTS as readonly string[]).includes(level)) continue;
+		throw new Error(
+			`Invalid task.agentMaxEffort.${agentName}: expected one of ${THINKING_EFFORTS.join(", ")}, got ${Bun.inspect(level)}.`,
+		);
+	}
+}
+
+export const cfgTaskAgentMaxEffort = register({
+	id: "task.agentMaxEffort",
+	protocolDefault: ["rpc", "acp"],
+	type: "record",
+	default: DEFAULT_AGENT_MAX_EFFORT,
+	validate: validateAgentMaxEffort,
+});
+
 export const cfgTaskAgentIdleTtlMs = register({
 	id: "task.agentIdleTtlMs",
 	type: "number",
@@ -639,7 +713,6 @@ export const cfgTaskMaxEffort = register({
 		options: THINKING_EFFORTS.map(getThinkingLevelMetadata),
 	},
 });
-
 export const cfgTaskDisabledAgents = register({
 	id: "task.disabledAgents",
 	protocolDefault: ["rpc", "acp"],
@@ -717,3 +790,16 @@ export const cfgTaskShowResolvedModelBadge = register({
 	},
 });
 effect(cfgTaskShowResolvedModelBadge, setFeedModelBadgeEnabled);
+
+/** Adds peer task/scope context and structural conflict checks to task children. */
+export const cfgTaskPeerAwareness = register({
+	id: "task.peerAwareness",
+	type: "boolean",
+	default: false,
+	ui: {
+		tab: "tasks",
+		group: "Coordination",
+		label: "Peer Awareness",
+		description: "Share sibling task scopes and require deconfliction before handover",
+	},
+});

@@ -445,6 +445,16 @@ Remote rows can supply current limits, pricing, modalities, and capability flags
 
 Fresh cached snapshots avoid a network request. If refresh fails, OMP keeps the last usable cached snapshot and marks it stale; without a cache, it falls back to the bundled catalog. Provider discovery state records `source` (`bundled`, `models.dev`, `provider`, or `cache`) and `fetchedAt` so callers can distinguish current remote data from an offline fallback.
 
+## Provider availability
+
+Model roles, pools and fallback chains express preference. Billing and credential failures do not rewrite them. All selection paths use the registry's shared availability gate, including subagents and audit selection.
+
+OMP stores provider failures in `provider-cooldowns.json` in its shared data directory. Structured status, type and code distinguish quota, empty balance, missing entitlement and authentication failures. Catalog discovery failures have a separate temporary state and retain known model entries. Records include first/last seen and failed-call count.
+
+Known quota resets restore availability at the reset time. Otherwise one process holds a short probe lease and runs a bounded, one-token request, with backoff from five minutes to one hour. Discovery recovery retries the catalog. Authentication recovery requires changed credentials or re-login. A successful recovery clears the shared state for every process. When all session candidates are unavailable, the session waits for recovery; a child attempt reports an infrastructure failure.
+
+Availability transitions use user notices. Hosts can also set `providers.availabilityNoticeCommand` to an executable path; OMP sends one JSON event on stdin with `provider`, `available`, `class`, `since` (Unix milliseconds) and `failedCallCount`. The command receives no model prompt or credential. Notices stay outside model context.
+
 ## Provider and model identity
 
 The registry retains concrete `provider` + `id` identities. Use an exact
@@ -830,6 +840,26 @@ chain rather than inheriting the active conversation model.
 
 If a role points at another role, the target model still inherits normally and any explicit suffix on the referring role wins for that role-specific use.
 
+#### Role pools
+
+`modelRolePools` turns a role into a weighted pool for load sharing across providers:
+
+```yaml
+modelRoles:
+  free: "openrouter/a:free, openrouter/b:free, groq/c"
+modelRolePools:
+  free:
+    "openrouter/a:free": 3   # drawn first ~3x as often as an unlisted member
+    "groq/c": 0              # never first; kept at the tail
+```
+
+When a subagent spawn expands a pool role (agent frontmatter `model: "@free, @fast"`), the role's members
+are reordered by a weighted random draw without replacement, seeded by the spawn so the pick and the
+child's installed fallback chain come from one draw. Members absent from the weight map weigh 1; weight 0
+keeps a member at the tail in its original order. Each role of a concatenated list shuffles inside its own
+segment, so `@free` stays ahead of `@fast`. Weights are keyed by the member selector as it appears in the
+role (after nested role aliases expand). Roles not listed, and callers without a seed, keep the configured order.
+
 ### Model presets
 
 A model preset is a named snapshot of every role assignment plus `defaultThinkingLevel`, so you can swap a whole setup at once:
@@ -838,6 +868,8 @@ A model preset is a named snapshot of every role assignment plus `defaultThinkin
 /modelpreset save cheap      # save the current roles and thinking level
 /modelpreset switch deep     # apply a saved preset
 /modelpreset                 # pick one from a list (interactive)
+/modelpreset session fast    # apply a preset to this session only (nothing is saved)
+/modelpreset session off     # drop the session preset, restoring what it displaced
 /modelpreset list | delete <name>
 ```
 
@@ -856,11 +888,29 @@ Switching writes roles the way the model picker does: into the scope chosen by `
 
 When several config layers define a preset of the same name, the highest layer (command line, then `--config` file, then project config, then global config) wins whole: entries are never merged across layers, so a project `deep` that only sets `default` applies without the global `deep`'s other roles. A `null` entry in a `--config` file (or a command-line override) hides the preset from lists and switches; a `null` entry in a project config is ignored, so the global preset of that name still applies. Saving always writes the named entry to the global config and reports when a higher layer still takes precedence for that name.
 
+#### Session-only presets
+
+`/modelpreset session <name>` applies a preset as runtime overrides of this session's settings instead of writing config files: its roles (roles it leaves out are hidden for the session), `defaultThinkingLevel` and an optional `settings` map. The active model switches to the resulting `default` like a normal switch. No configuration file is written. The session file records the model switch and preset name; clearing records a null name. Subagents spawned afterward inherit the overrides through their settings overlay. `/modelpreset session off` restores exactly the runtime overrides the preset displaced, including ones set earlier by `--model` or an extension; the current model is not switched back. `/modelpreset session` shows the active session preset. Applying another session preset replaces the first and keeps the original baseline.
+
+`settings` maps registered setting ids to values and is validated against the settings schema (unknown ids and invalid values make the preset malformed; `modelRoles`, `defaultThinkingLevel` and `modelPresets` are not allowed there):
+
+```yaml
+modelPresets:
+  fast:
+    modelRoles:
+      default: openai/gpt-5.5
+    settings:
+      tier.openai: priority
+```
+
+A global `/modelpreset switch` does not apply `settings`; the switch message lists the ids it skipped. Programmatic use: `applyModelPreset(settings, session, name, { scope: "session" })`, `clearSessionModelPreset(settings)` and `getSessionModelPreset(settings)` from `config/model-presets`; extensions call `pi.applySessionModelPreset(name)`, `pi.clearSessionModelPreset()` and `pi.getSessionModelPreset()`.
+
 Saving captures the effective assignments — including any `--model` session override — and the configured `defaultThinkingLevel`, not the session's live thinking level.
 
 Related settings:
 
 - `modelRoles` (record)
+- `modelRolePools` (record of role -> selector -> weight; see [Role pools](#role-pools))
 - `enabledModels` (scoped pattern list)
 - `modelProviderOrder` (provider precedence when equivalent concrete choices share an id)
 - `providers.kimiApiFormat` (`auto|openai|anthropic`; `auto` follows server-declared model metadata)

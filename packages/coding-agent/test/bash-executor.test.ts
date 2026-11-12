@@ -47,6 +47,14 @@ function makeTempDir(): string {
 	return fs.mkdtempSync(path.join(os.tmpdir(), "omp-bash-exec-"));
 }
 
+/** Load the fixture's user rc without the host distro's interactive setup. */
+function writeIsolatedZshRc(directory: string, content: string): void {
+	// ZDOTDIR alone still loads /etc/zshrc (Ubuntu compinit may prompt on CI).
+	// GLOBAL_RCS leaves the user's .zshrc enabled, so alias/PTY tests retain it.
+	fs.writeFileSync(path.join(directory, ".zshenv"), "unsetopt GLOBAL_RCS\n");
+	fs.writeFileSync(path.join(directory, ".zshrc"), content);
+}
+
 function shellQuote(value: string): string {
 	return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -111,6 +119,59 @@ describe("executeBash", () => {
 		if (fs.existsSync(tempDir)) {
 			removeSyncWithRetries(tempDir);
 		}
+	});
+	it.skipIf(process.platform === "win32")("masks desktop session variables only for subagent shells", async () => {
+		const desktopEnv = {
+			PATH: Bun.env.PATH ?? "",
+			HOME: tempDir,
+			SHELL: "/bin/bash",
+			WAYLAND_DISPLAY: "wayland-user",
+			DISPLAY: ":99",
+			DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+			XDG_RUNTIME_DIR: "/run/user/1000",
+			XAUTHORITY: "/run/user/1000/Xauthority",
+			DBUS_STARTER_ADDRESS: "unix:path=/run/user/1000/bus",
+			SWAYSOCK: "/run/user/1000/sway-ipc.sock",
+		};
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: "/bin/bash",
+			args: ["-c"],
+			env: desktopEnv,
+			prefix: undefined,
+		});
+		const snapshotPath = path.join(tempDir, "desktop-snapshot.sh");
+		fs.writeFileSync(
+			snapshotPath,
+			Object.entries(desktopEnv)
+				.map(([key, value]) => `export ${key}=${shellQuote(value)}`)
+				.join("\n"),
+		);
+		vi.spyOn(shellSnapshot, "getOrCreateSnapshot").mockResolvedValue(snapshotPath);
+		const command =
+			"/usr/bin/env; printf '%s\\n' \"$WAYLAND_DISPLAY|$DISPLAY|$DBUS_SESSION_BUS_ADDRESS|$XDG_RUNTIME_DIR\"";
+		const main = await executeBash(command, { cwd: tempDir });
+		const subagent = await executeBash(command, {
+			cwd: tempDir,
+			sessionKey: "desktop-mask-test",
+			maskDesktopSession: true,
+		});
+		expect(main.output).toContain("wayland-user|:99|unix:path=/run/user/1000/bus|/run/user/1000");
+		expect(subagent.output).not.toContain("wayland-user");
+		expect(subagent.output).not.toContain(":99");
+		expect(subagent.output).not.toContain("XDG_RUNTIME_DIR=/run/user/1000");
+		expect(subagent.output).not.toContain("|/run/user/1000");
+		for (const key of ["XAUTHORITY", "DBUS_STARTER_ADDRESS", "SWAYSOCK"]) {
+			expect(subagent.output).not.toContain(`${key}=`);
+		}
+		expect(subagent.output).toContain("omp-worker-runtime-desktop-mask-test-");
+		const fixtureBus = "unix:path=/tmp/omp-fixture-owned-bus";
+		const fixture = await executeBash(command, {
+			cwd: tempDir,
+			sessionKey: "desktop-mask-fixture-test",
+			maskDesktopSession: true,
+			env: { DBUS_SESSION_BUS_ADDRESS: fixtureBus },
+		});
+		expect(fixture.output).toContain(fixtureBus);
 	});
 
 	it("publishes the same live native owner before each trace callback", async () => {
@@ -577,7 +638,7 @@ exit 64
 		}
 
 		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-zsh-shellpath-"));
-		fs.writeFileSync(path.join(shellDir, ".zshrc"), "alias pi_shell_alias='printf zsh-alias-ok\\\\n'\n");
+		writeIsolatedZshRc(shellDir, "alias pi_shell_alias='printf zsh-alias-ok\\\\n'\n");
 		cfgShellPath.set(Settings.instance, zshPath);
 
 		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
@@ -589,12 +650,6 @@ exit 64
 				// zsh reads `.zshrc` from `$ZDOTDIR` when set; terminal integrations
 				// export their own, which would bypass the fixture rc.
 				ZDOTDIR: shellDir,
-				// The command runs through an interactive login zsh, which loads the
-				// system `/etc/zshrc`. On macOS that pulls in
-				// `/etc/zshrc_Apple_Terminal`, and under Apple Terminal it appends
-				// "Saving session..." lines to the captured output on exit. `HOME`
-				// does not isolate a system-level file; this is the opt-out Apple
-				// documents in that script.
 				SHELL_SESSIONS_DISABLE: "1",
 			},
 			prefix: undefined,
@@ -680,7 +735,7 @@ exit 64
 		}
 
 		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-zsh-pty-"));
-		fs.writeFileSync(path.join(shellDir, ".zshrc"), "alias pi_pty_alias='printf pty-alias-ok'\n");
+		writeIsolatedZshRc(shellDir, "alias pi_pty_alias='printf pty-alias-ok'\n");
 		cfgShellPath.set(Settings.instance, zshPath);
 
 		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
@@ -732,6 +787,8 @@ exit 64
 		if (!zshPath) {
 			return;
 		}
+		// Prevent the system zsh-newuser-install wizard from consuming PTY input.
+		writeIsolatedZshRc(tempDir, "# isolated prompt fixture\n");
 		cfgShellPath.set(Settings.instance, zshPath);
 		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
 			shell: zshPath,
@@ -771,7 +828,7 @@ exit 64
 			},
 		);
 
-		expect(result.timedOut).toBeUndefined();
+		expect(result.timedOut, JSON.stringify({ screen, answered, writable: !!write })).toBeUndefined();
 		expect(result.exitCode).toBe(0);
 		expect(result.output).toContain("ANSWER=y");
 	});

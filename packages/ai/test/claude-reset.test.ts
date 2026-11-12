@@ -323,6 +323,7 @@ describe("Claude usage reset integration", () => {
 		const report = await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: "token",
@@ -362,6 +363,7 @@ describe("Claude usage reset integration", () => {
 		const report = await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: "token",
@@ -394,6 +396,7 @@ describe("Claude usage reset integration", () => {
 		const report = await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: "token",
@@ -424,6 +427,7 @@ describe("Claude usage reset integration", () => {
 		const report = await claudeUsageProvider.fetchUsage(
 			{
 				provider: "anthropic",
+				accountKey: crypto.randomUUID(),
 				credential: {
 					type: "oauth",
 					accessToken: "token",

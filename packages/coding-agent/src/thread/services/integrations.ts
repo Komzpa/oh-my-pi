@@ -129,10 +129,14 @@ export function toWorkerCustomTool<TParams extends TSchema, TDetails>(
  * classes (`mcpManager`, `localProtocolOptions`, `preloadedPreparedExtensions`, tool contexts);
  * `perCallModelGrants` crosses intact (its `settings` becomes the worker's live mirror).
  */
-export function bridgeIntegrationOptions(options: ExecutorOptions): ExecutorOptions {
-	const bridged: ExecutorOptions = { ...options };
+/** Preserve synchronous root reads when discovery policy crosses to a worker. */
+export function bridgeExtensionRootOptions<T extends Pick<ExecutorOptions, "extensionRoots">>(options: T): T {
 	const extensionRoots = options.extensionRoots;
-	if (extensionRoots) bridged.extensionRoots = rpcSync(() => extensionRoots());
+	return extensionRoots ? { ...options, extensionRoots: rpcSync(() => extensionRoots()) } : { ...options };
+}
+
+export function bridgeIntegrationOptions(options: ExecutorOptions): ExecutorOptions {
+	const bridged = bridgeExtensionRootOptions(options);
 	const seance = options.preparedSession;
 	if (seance) {
 		const promptSuffix = seance.promptSuffix;
@@ -350,6 +354,7 @@ function serveMcpManager(state: PeerIntegrationState): RpcServe<MCPManager, McpM
 					settleQuietly(listener(serverName, method, params)),
 				),
 			),
+		allServerNames: manager => manager.getAllServerNames(),
 		connectedServers: manager => manager.getConnectedServers(),
 		serverResources: (manager, name) => manager.getServerResources(name),
 		ensureServerResources: (manager, name) => manager.ensureServerResources(name),

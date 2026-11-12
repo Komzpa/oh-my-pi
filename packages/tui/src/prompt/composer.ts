@@ -26,7 +26,7 @@ import { CustomEditor } from "./custom-editor";
 import type { WordCompletionMethod } from "./word-completion";
 import { type AnimationFrame, TranscriptContainer } from "../chrome/transcript-container";
 import { type VersionUpdate, WelcomeComponent } from "./welcome";
-import { ensureThemeSync, getEditorTheme, theme } from "../theme/theme";
+import { ensureThemeSync, getEditorTheme, getThemeEpoch, theme } from "../theme/theme";
 
 const DOUBLE_INTERRUPT_MS = 500;
 // How long idle chrome must hold its height after a turn before it is treated as permanent.
@@ -98,6 +98,9 @@ export interface ComposerOptions {
 
 /** How {@link Composer.setRuntimeChildren} lays out the roots below the transcript. */
 export interface RuntimeChildrenOptions {
+	/** Opt in pure roots to row/span reuse. Change the version for every row or click-target mutation.
+	 * Return undefined for roots with render-time effects (including image registration). */
+	readonly renderVersion?: (root: Component) => unknown;
 	/**
 	 * Dock order on a TSP terminal (no status strip; the composer carries its
 	 * facts): the native dock stacks HUD pills, the working row and queued messages over
@@ -140,6 +143,12 @@ export interface RuntimeChildrenOptions {
 	 * `selfClearingChrome`.
 	 */
 	readonly billedChrome?: readonly Component[];
+	/** Allocate a live HUD and input against the same rendered sibling chrome. */
+	readonly allocation?: {
+		readonly hud: Component;
+		readonly input: Component;
+		readonly apply: (viewport: ViewportSize, chromeRows: number, renderInput: () => number) => void;
+	};
 }
 
 /** Controls the first terminal paint for a composer that does not already own the terminal. */
@@ -161,10 +170,17 @@ export interface ComposerStartOptions {
  * status line's facts ({@link StatusLineComponent.describeComposerFacts}).
  */
 class StatusHost implements Component {
-	#component: Component | undefined;
+	#component: (Component & Partial<Pick<StatusLineComponent, "beginFrame" | "endFrame">>) | undefined;
 
 	setComponent(component: Component): void {
 		this.#component = component;
+	}
+
+	beginFrame(): void {
+		this.#component?.beginFrame?.();
+	}
+	endFrame(): void {
+		this.#component?.endFrame?.();
 	}
 
 	render(width: number): readonly string[] {
@@ -241,6 +257,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	readonly #statusHost = new StatusHost();
 	readonly #exit: (code: number) => void;
 	readonly #now: () => number;
+	#renderVersion: RuntimeChildrenOptions["renderVersion"];
+	#belowRootCache = new WeakMap<
+		Component,
+		{ version: unknown; width: number; themeEpoch: number; lines: string[]; spans: ViewportClickSpan[] }
+	>();
 	#preferences: ComposerPreferences;
 	#welcome: WelcomeComponent | undefined;
 	#version = "";
@@ -250,6 +271,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	#runtimeChildren: readonly Component[] = [];
 	#nativeDock: readonly Component[] | undefined;
 	#nativeTail: readonly Container[] = [];
+	#allocation: RuntimeChildrenOptions["allocation"];
 	/** Cache-driven status line shown until {@link setStatusComponent} mounts the session's. */
 	#startupStatus: StatusLineComponent | undefined;
 	#runtimeMounted = false;
@@ -428,6 +450,15 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 
 	/** Compose the bounded mutable viewport and the next ordered history append. */
 	renderFrame(viewport: ViewportSize): TerminalFramePlan {
+		this.#statusHost.beginFrame();
+		try {
+			return this.#renderFrame(viewport);
+		} finally {
+			this.#statusHost.endFrame();
+		}
+	}
+
+	#renderFrame(viewport: ViewportSize): TerminalFramePlan {
 		if (!this.#started || this.#stopped) return { viewport: [] };
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
@@ -461,9 +492,17 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		let transientRows = 0;
 		let selfClearingRows = 0;
 		let billedRows = 0;
+		const allocated = this.#allocateRuntimeRows(afterRoots, width, rows);
 		for (const root of afterRoots) {
 			const start = after.length;
-			this.#renderBelowRoot(root, width, after, afterSpans);
+			const cached = allocated?.get(root);
+			if (cached) {
+				after.push(...cached.lines);
+				for (const span of cached.spans)
+					afterSpans.push({ ...span, start: span.start + start, end: span.end + start });
+			} else {
+				this.#renderBelowRoot(root, width, after, afterSpans);
+			}
 			if (this.#billedChrome.has(root)) billedRows += after.length - start;
 			else if (this.#selfClearingChrome.has(root)) selfClearingRows += after.length - start;
 			else if (this.#transientChrome.has(root)) transientRows += after.length - start;
@@ -670,6 +709,24 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 	 * up to the last target.
 	 */
 	#renderBelowRoot(root: Component, width: number, after: string[], spans: ViewportClickSpan[]): void {
+		const version = this.#renderVersion?.(root);
+		if (version !== undefined) {
+			const themeEpoch = getThemeEpoch();
+			let cached = this.#belowRootCache.get(root);
+			if (!cached || cached.version !== version || cached.width !== width || cached.themeEpoch !== themeEpoch) {
+				cached = { version, width, themeEpoch, lines: [], spans: [] };
+				this.#renderBelowRootUncached(root, width, cached.lines, cached.spans);
+				this.#belowRootCache.set(root, cached);
+			}
+			const offset = after.length;
+			after.push(...cached.lines);
+			for (const span of cached.spans) spans.push({ ...span, start: span.start + offset, end: span.end + offset });
+			return;
+		}
+		this.#renderBelowRootUncached(root, width, after, spans);
+	}
+
+	#renderBelowRootUncached(root: Component, width: number, after: string[], spans: ViewportClickSpan[]): void {
 		const start = after.length;
 		const plainContainer = root instanceof Container && root.render === Container.prototype.render;
 		const targets = root instanceof Container ? root.children : [root];
@@ -1041,6 +1098,34 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		offered.rows = [...headerRows, ...(transcript?.rows ?? [])];
 	}
 
+	/** Render ordinary chrome once, then let the host cap input before selecting HUD rows. */
+	#allocateRuntimeRows(
+		roots: readonly Component[],
+		width: number,
+		rows: number,
+	): Map<Component, { lines: string[]; spans: ViewportClickSpan[] }> | undefined {
+		const allocation = this.#allocation;
+		if (!allocation || !roots.includes(allocation.hud) || !roots.includes(allocation.input)) return undefined;
+		const rendered = new Map<Component, { lines: string[]; spans: ViewportClickSpan[] }>();
+		const render = (root: Component): number => {
+			let cached = rendered.get(root);
+			if (!cached) {
+				cached = { lines: [], spans: [] };
+				this.#renderBelowRoot(root, width, cached.lines, cached.spans);
+				rendered.set(root, cached);
+			}
+			return cached.lines.length;
+		};
+		let chromeRows = 0;
+		for (const root of roots) {
+			if (root !== allocation.hud && root !== allocation.input) chromeRows += render(root);
+		}
+		allocation.apply({ columns: width, rows }, chromeRows, () => render(allocation.input));
+		render(allocation.input);
+		render(allocation.hud);
+		return rendered;
+	}
+
 	#renderRoots(roots: readonly Component[], width: number): string[] {
 		const rows: string[] = [];
 		for (const root of roots) rows.push(...root.render(width));
@@ -1057,7 +1142,11 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
 		if (transcriptIndex < 0) return this.#renderRoots(roots, width);
 		const transcript = roots[transcriptIndex] as TranscriptContainer;
-		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
+		const afterRoots = roots.slice(transcriptIndex + 1);
+		const allocated = this.#allocateRuntimeRows(afterRoots, width, rows);
+		const after = allocated
+			? afterRoots.flatMap(root => allocated.get(root)!.lines)
+			: this.#renderRoots(afterRoots, width);
 		const transcriptRows = transcript.renderTail(width, Math.max(0, rows - after.length));
 		const pre =
 			transcriptRows.length + after.length >= rows ? [] : this.#renderRoots(roots.slice(0, transcriptIndex), width);
@@ -1231,6 +1320,7 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 		this.#billedChromeRows = 0;
 		this.#billedChromeContracted = false;
 		this.#transientFloor = undefined;
+		this.#allocation = options.allocation;
 		this.ui.removeChild(this.#statusHost);
 		if (this.#runtimeMounted) {
 			for (const child of this.#runtimeChildren) this.ui.removeChild(child);
@@ -1240,6 +1330,8 @@ export class Composer implements TerminalFrameProvider, NativeSurfaceProvider {
 			this.#runtimeMounted = true;
 		}
 		this.#runtimeChildren = children;
+		this.#renderVersion = options.renderVersion;
+		this.#belowRootCache = new WeakMap();
 		for (const child of children) this.ui.addChild(child);
 		this.ui.addChild(this.#statusHost);
 		this.ui.requestRender();

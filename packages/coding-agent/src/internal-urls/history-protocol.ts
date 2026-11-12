@@ -13,15 +13,19 @@
  * mirroring how `agent://` reads `.md` outputs straight off disk.
  *
  * URL forms:
- * - history:// - Index of all registry + on-disk agents (id, status, kind, last activity)
+ * - history:// - Index of this caller session's registry + on-disk agents when caller-bound, else all agents
+ * - history://all - Index of all registry + on-disk agents (id, status, kind, last activity)
  * - history://<agentId> - Concise markdown transcript of that agent
  * - history://current/full - Full, caller-bound current branch history (experimental)
  */
+import * as path from "node:path";
+import * as fs from "node:fs/promises";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import type { AgentRef } from "../registry/agent-registry";
-import { AgentRegistry } from "../registry/agent-registry";
+import { AgentRegistry, type AgentRegistryApi } from "../registry/agent-registry";
 import { ensurePersistedRoster } from "../registry/persisted-agents";
 import { formatSessionHistoryMarkdown } from "../session/session-history-format";
 import {
@@ -67,6 +71,7 @@ function diskIdsForCompletion(preferredArtifactDir?: string, onlyPreferred = fal
 	ids.catch(() => completionDiskIds.delete(key));
 	return ids;
 }
+const UNKNOWN_AGENT_HINT_LIMIT = 10;
 
 /** Registry lookup for a `history://<id>` URL, bound to the caller's root. */
 interface RefLookup {
@@ -77,6 +82,11 @@ interface RefLookup {
 	preferredArtifactDir?: string;
 	/** Restrict fallback scans to the caller's artifact tree. */
 	onlyPreferred?: boolean;
+}
+
+interface CallerRootScope {
+	rootSessionFile?: string;
+	preferredArtifactDir?: string;
 }
 
 /** True for `history://current/<path>`; throws unless the route is exactly `current/full`. */
@@ -99,6 +109,84 @@ function formatAgo(timestamp: number): string {
 	const hours = Math.floor(mins / 60);
 	if (hours < 24) return `${hours}h ago`;
 	return `${Math.floor(hours / 24)}d ago`;
+}
+
+function editDistance(left: string, right: string): number {
+	const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+	const current = Array.from({ length: right.length + 1 }, () => 0);
+	for (let leftIndex = 1; leftIndex <= left.length; leftIndex++) {
+		current[0] = leftIndex;
+		for (let rightIndex = 1; rightIndex <= right.length; rightIndex++) {
+			const substitutionCost = left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1;
+			current[rightIndex] = Math.min(
+				previous[rightIndex] + 1,
+				current[rightIndex - 1] + 1,
+				previous[rightIndex - 1] + substitutionCost,
+			);
+		}
+		for (let index = 0; index < previous.length; index++) previous[index] = current[index] ?? 0;
+	}
+	return previous[right.length] ?? 0;
+}
+
+function closestAgentScore(requestedId: string, candidateId: string): number {
+	const requested = requestedId.toLowerCase();
+	const candidate = candidateId.toLowerCase();
+	const distance = editDistance(requested, candidate);
+	const lengthPenalty =
+		Math.abs(candidate.length - requested.length) / Math.max(candidate.length, requested.length, 1);
+	const substringBonus = candidate.includes(requested) || requested.includes(candidate) ? -2 : 0;
+	const prefixBonus = candidate.startsWith(requested) || requested.startsWith(candidate) ? -1 : 0;
+	return distance + lengthPenalty + substringBonus + prefixBonus;
+}
+
+function unknownAgentHints(agentId: string, visible: readonly AgentRef[]): string[] {
+	const hints: string[] = [];
+	const seen = new Set<string>();
+	const add = (id: string) => {
+		if (hints.length >= UNKNOWN_AGENT_HINT_LIMIT || seen.has(id)) return;
+		seen.add(id);
+		hints.push(id);
+	};
+
+	const running = visible
+		.filter(ref => ref.status === "running")
+		.toSorted((left, right) => right.lastActivity - left.lastActivity || left.id.localeCompare(right.id));
+	for (const ref of running) add(ref.id);
+
+	const closest = visible
+		.filter(ref => !seen.has(ref.id))
+		.toSorted((left, right) => {
+			const scoreDiff = closestAgentScore(agentId, left.id) - closestAgentScore(agentId, right.id);
+			return scoreDiff || left.id.localeCompare(right.id);
+		});
+	for (const ref of closest) add(ref.id);
+	return hints;
+}
+
+function registryForContext(context: ResolveContext | undefined): AgentRegistryApi {
+	return context?.agentRegistry ?? AgentRegistry.global();
+}
+
+function isSameOrInside(candidate: string, root: string): boolean {
+	const relative = path.relative(path.resolve(root), path.resolve(candidate));
+	return relative === "" || (!!relative && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function refSessionFile(ref: AgentRef): string | undefined {
+	return ref.sessionFile ?? ref.session?.sessionManager?.getSessionFile?.() ?? undefined;
+}
+
+function refBelongsToScope(ref: AgentRef, scope: CallerRootScope): boolean {
+	if (!scope.rootSessionFile && !scope.preferredArtifactDir) return true;
+	const sessionFile = refSessionFile(ref);
+	if (scope.rootSessionFile && sessionFile === scope.rootSessionFile) return true;
+	if (scope.preferredArtifactDir) {
+		if (sessionFile && isSameOrInside(sessionFile, scope.preferredArtifactDir)) return true;
+		const artifactsDir = ref.session?.sessionManager?.getArtifactsDir?.();
+		if (artifactsDir && isSameOrInside(artifactsDir, scope.preferredArtifactDir)) return true;
+	}
+	return false;
 }
 
 /** One row of the history index — either a registered ref or a disk-only transcript. */
@@ -133,6 +221,10 @@ function appendTextContent(lines: string[], content: string | readonly { type: s
 function appendRawMessage(lines: string[], message: AgentMessage): void {
 	switch (message.role) {
 		case "user":
+			lines.push(`### ${message.role}`);
+			lines.push(`[attribution: ${message.attribution ?? "unknown"}; synthetic: ${message.synthetic === true}]`);
+			appendTextContent(lines, message.content);
+			return;
 		case "developer":
 			lines.push(`### ${message.role}`);
 			appendTextContent(lines, message.content);
@@ -311,6 +403,81 @@ export function formatCurrentBranchFullHistory(entries: readonly SessionEntry[])
  * and unregistered agents alike.
  */
 export class HistoryProtocolHandler implements ProtocolHandler {
+	#materialized = new WeakMap<
+		object,
+		{ path: string; count: number; lastId?: string; lastStart: number; pending: Promise<void> }
+	>();
+	#directory?: TempDir;
+
+	async materialize(url: InternalUrl, context?: ResolveContext): Promise<string | null> {
+		if (!isCurrentFullRoute(url)) return null;
+		if (!context?.experimentalContextManagement)
+			throw new Error(
+				"history://current/full is available only when compaction.experimentalContextManagement is enabled",
+			);
+		const source = context.getSessionBranchView ?? context.getSessionBranch;
+		if (!source) throw new Error("history://current/full requires a bound live session branch");
+		const key = context.session?.sessionManager ?? source;
+		let cache = this.#materialized.get(key);
+		if (!cache) {
+			if (!this.#directory) {
+				this.#directory = TempDir.createSync("@omp-full-history-");
+				const directory = this.#directory;
+				process.once("exit", () => directory.removeSync());
+			}
+			cache = {
+				path: this.#directory.join(`${crypto.randomUUID()}.md`),
+				count: 0,
+				lastStart: 0,
+				pending: Promise.resolve(),
+			};
+			this.#materialized.set(key, cache);
+		}
+		const state = cache;
+		const work = state.pending.then(async () => {
+			const entries = source();
+			// The branch view is live; appends during I/O belong to the next materialization.
+			const count = entries.length;
+			context.signal?.throwIfAborted();
+			const prefix = state.count > 0 && count >= state.count && entries[state.count - 1]?.id === state.lastId;
+			if (prefix && count === state.count) return;
+			const start = prefix ? state.count - 1 : 0;
+			const file = await fs.open(state.path, "a+", 0o600);
+			try {
+				let offset = prefix ? state.lastStart : 0;
+				await file.truncate(offset);
+				if (!prefix) {
+					const header = formatCurrentBranchFullHistory([]).trimEnd() + (count ? "\n\n" : "\n");
+					await file.writeFile(header);
+					offset += Buffer.byteLength(header);
+				}
+				let sliceStart = performance.now();
+				for (let i = start; i < count; i++) {
+					context.signal?.throwIfAborted();
+					const lines: string[] = [];
+					renderRawEntry(lines, entries[i]!);
+					const content = i === count - 1 ? lines.join("\n").trimEnd() + "\n" : lines.join("\n") + "\n\n";
+					state.lastStart = offset;
+					await file.writeFile(content);
+					offset += Buffer.byteLength(content);
+					if (performance.now() - sliceStart >= 10) {
+						await Bun.sleep(0);
+						sliceStart = performance.now();
+					}
+				}
+				state.count = count;
+				state.lastId = entries[count - 1]?.id;
+			} catch (error) {
+				state.count = 0;
+				throw error;
+			} finally {
+				await file.close();
+			}
+		});
+		state.pending = work.catch(() => {});
+		await work;
+		return state.path;
+	}
 	readonly scheme = "history";
 	readonly spec: SchemeSpec = { backing: "virtual", selectors: "lines", immutable: false, linkable: true };
 
@@ -342,18 +509,15 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		// A seance sees only the consulted session's transcript tree, read in place.
 		const seanceDir = context?.session?.seanceSourceArtifactsDir ?? context?.seanceSourceArtifactsDir;
 		if (seanceDir) return { visible: [], preferredArtifactDir: seanceDir, onlyPreferred: true };
-		const registry = AgentRegistry.global();
+		const registry = registryForContext(context);
 		// A caller resolving a possibly-parked id refreshes its own root's
 		// persisted roster first: a same-named parked ref restored by another
 		// root's scan must not be served (or listed as known) in its place.
 		// The refresh is latched per root, so a settled roster never re-scans.
-		const rootSessionFile = context?.sessionFile
-			? await ensurePersistedRoster(registry, context.sessionFile)
-			: undefined;
+		const { preferredArtifactDir } = await this.#callerRootScope(context, registry);
 		// On-disk fallbacks scan the caller root's artifact directory first, so a
 		// same-named transcript restored by another root's scan never shadows
 		// this caller's own on-disk transcript.
-		const preferredArtifactDir = rootSessionFile?.slice(0, -".jsonl".length);
 		// Advisor transcripts are observability-only — surfaced in the Agent Hub, never
 		// in the agent-facing roster. Hide them from the index, lookup, and completions.
 		const visible = registry.list().filter(ref => ref.kind !== "advisor");
@@ -366,7 +530,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	 */
 	async #lookup(agentId: string, context: ResolveContext | undefined): Promise<RefLookup> {
 		const { visible, preferredArtifactDir, onlyPreferred } = await this.#roster(context);
-		let ref = onlyPreferred ? undefined : AgentRegistry.global().get(agentId);
+		let ref = onlyPreferred ? undefined : registryForContext(context).get(agentId);
 		if (ref?.kind === "advisor") ref = undefined;
 		if (!ref) {
 			// Case-insensitive fallback: agent ids are human-typed (e.g. AuthLoader).
@@ -376,13 +540,23 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		return { ref, visible, preferredArtifactDir, onlyPreferred };
 	}
 
+	async #callerRootScope(
+		context: ResolveContext | undefined,
+		registry: AgentRegistryApi = registryForContext(context),
+	): Promise<CallerRootScope> {
+		const rootSessionFile = context?.sessionFile
+			? await ensurePersistedRoster(registry, context.sessionFile)
+			: undefined;
+		return { rootSessionFile, preferredArtifactDir: rootSessionFile?.slice(0, -".jsonl".length) };
+	}
+
 	#resolveCurrentFull(url: InternalUrl, context: ResolveContext | undefined): InternalResource {
 		if (!context?.experimentalContextManagement) {
 			throw new Error(
 				"history://current/full is available only when compaction.experimentalContextManagement is enabled",
 			);
 		}
-		const branch = context.getSessionBranch?.();
+		const branch = (context.getSessionBranchView ?? context.getSessionBranch)?.();
 		if (!branch) {
 			throw new Error("history://current/full requires a bound live session branch");
 		}
@@ -398,9 +572,36 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
 		if (isCurrentFullRoute(url)) return this.#resolveCurrentFull(url, context);
 		const agentId = url.rawHost || url.hostname;
+		if (
+			agentId &&
+			agentId.toLowerCase() === "all" &&
+			(!url.pathname || url.pathname === "/") &&
+			!url.search &&
+			!url.hash
+		) {
+			const visible = AgentRegistry.global()
+				.list()
+				.filter(ref => ref.kind !== "advisor");
+			const content = await this.#renderIndex(visible, undefined, false);
+			return {
+				url: url.href,
+				content,
+				contentType: "text/markdown",
+				size: Buffer.byteLength(content, "utf-8"),
+			};
+		}
 		if (!agentId) {
 			const { visible, preferredArtifactDir, onlyPreferred } = await this.#roster(context);
-			const content = await this.#renderIndex(visible, preferredArtifactDir, onlyPreferred);
+			const scope = await this.#callerRootScope(context, registryForContext(context));
+			const scoped =
+				preferredArtifactDir && !context?.agentRegistry
+					? visible.filter(ref => refBelongsToScope(ref, scope))
+					: visible;
+			const content = await this.#renderIndex(
+				scoped,
+				preferredArtifactDir,
+				onlyPreferred || Boolean(preferredArtifactDir),
+			);
 			return {
 				url: url.href,
 				content,
@@ -416,7 +617,7 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 			const disk = await this.#resolveFromDisk(agentId, preferredArtifactDir, onlyPreferred);
 			if (disk) return { ...disk, url: url.href };
 
-			const known = visible.map(candidate => candidate.id);
+			const known = unknownAgentHints(agentId, visible);
 			const knownStr = known.length > 0 ? known.join(", ") : "none";
 			throw new Error(`Unknown agent: ${agentId}\nKnown agents: ${knownStr}\nList all with history://`);
 		}
@@ -425,9 +626,51 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		let messages: unknown[];
 		if (ref.session) {
 			messages = ref.session.messages;
-			notes.push("Source: live session");
+			if (messages.length === 0 && ref.status === "running") {
+				const fileMessages = ref.sessionFile ? await loadSessionMessagesReadOnly(ref.sessionFile) : [];
+				if (fileMessages.length === 0) {
+					const disk = await this.#resolveFromDisk(ref.id, preferredArtifactDir);
+					if (disk) return { ...disk, url: url.href };
+					const content = [
+						`# ${ref.id} (${ref.status})`,
+						"",
+						"No transcript has been written yet.",
+						`Started ${formatAgo(ref.createdAt)}.`,
+						"",
+					].join("\n");
+					return {
+						url: url.href,
+						content,
+						contentType: "text/markdown",
+						size: Buffer.byteLength(content, "utf-8"),
+						notes: ["Source: agent registry (no transcript yet)"],
+					};
+				}
+				messages = fileMessages;
+				notes.push(`Source: session file (read-only, ${ref.status})`);
+			} else {
+				notes.push("Source: live session");
+			}
 		} else if (ref.sessionFile) {
 			messages = await loadSessionMessagesReadOnly(ref.sessionFile);
+			if (messages.length === 0 && ref.status === "running") {
+				const disk = await this.#resolveFromDisk(ref.id, preferredArtifactDir);
+				if (disk) return { ...disk, url: url.href };
+				const content = [
+					`# ${ref.id} (${ref.status})`,
+					"",
+					"No transcript has been written yet.",
+					`Started ${formatAgo(ref.createdAt)}.`,
+					"",
+				].join("\n");
+				return {
+					url: url.href,
+					content,
+					contentType: "text/markdown",
+					size: Buffer.byteLength(content, "utf-8"),
+					notes: ["Source: agent registry (no transcript yet)"],
+				};
+			}
 			notes.push(`Source: session file (read-only, ${ref.status})`);
 		} else {
 			// No live session and no retained sessionFile — try the disk scan before
@@ -535,6 +778,11 @@ export class HistoryProtocolHandler implements ProtocolHandler {
 		}
 
 		const lines: string[] = ["# Agents", ""];
+		if (onlyPreferred) {
+			lines.push("Showing current session agents. Use `read history://all` to list every known transcript.", "");
+		} else {
+			lines.push("Showing all known agents.", "");
+		}
 		if (entries.length === 0) {
 			lines.push("No agents registered.");
 			return `${lines.join("\n")}\n`;

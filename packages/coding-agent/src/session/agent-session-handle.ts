@@ -1,3 +1,4 @@
+import type { PeerCommandReceipt } from "../collab/peer-commands";
 /**
  * Cross-agent views of an {@link AgentSession}.
  *
@@ -39,14 +40,16 @@ import type {
 	PromptOptions,
 	ResolvedRoleModel,
 	RestoredQueuedMessage,
+	RestartDrainLease,
 	RoleModelCycle,
 	RoleModelCycleResult,
 	SessionStats,
 	SteerOptions,
 } from "./agent-session-types";
 import type { BlobPutOptions, BlobPutResult } from "./blob-store";
+import type { SessionContextEntryMetadata } from "./session-context";
 import type { IdleMaintenanceOptions } from "./idle-maintenance";
-import type { CustomMessage } from "./messages";
+import type { CustomMessage, CustomMessagePayload } from "./messages";
 import type { ServingModel } from "./retry-fallback-chains";
 import type { AdvisorStatusOverviewEntry } from "./session-advisors";
 import type { SessionContext, TranscriptSessionContextOptions } from "./session-context";
@@ -94,6 +97,13 @@ export interface AgentSessionAdvisorOverview {
 
 /** The surface other agents' code uses on a session obtained from the registry, lifecycle, or IRC delivery. */
 export interface AgentSessionHandle {
+	readonly isDisposed: boolean;
+	beginRestartDrain(options?: { interruptProvider?: boolean }): RestartDrainLease;
+	getRestartPendingInputCount(): number;
+	getRestartBranchEntries(): Promise<SessionEntry[]>;
+	sendRestartNotice(message: Omit<CustomMessage, "role" | "timestamp">): Promise<void>;
+	flushRestartJournal(options?: { handoffIndex?: boolean }): Promise<void>;
+
 	/** Cross-thread identity token: `${homeThreadId}:${snowflake}`, unique per session object. */
 	readonly instanceKey: string;
 	/** Agent loop pause flag and live state. */
@@ -108,6 +118,10 @@ export interface AgentSessionHandle {
 	readonly ircWakesPending: boolean;
 	/** Full message list, including custom message types. */
 	readonly messages: AgentMessage[];
+	/** Current TODO rows, read from the home thread on each call. */
+	getTodoPhases(): TodoPhase[];
+	/** Stable immutable local plan view, when supported by this handle. */
+	getTodoSnapshot?(): readonly TodoPhase[];
 	/** Current transcript path, or undefined when sessions are disabled. */
 	readonly sessionFile: string | undefined;
 	/** Current model, when selected. */
@@ -141,6 +155,7 @@ export interface AgentSessionHandle {
 	/** Wait for any in-flight IRC wake-turn relays. */
 	waitForIrcReplies(): Promise<void>;
 	/** Send a prompt (or steer/follow up while streaming, per `options.streamingBehavior`). */
+	executePeerSlashCommand(text: string): Promise<PeerCommandReceipt | null>;
 	prompt(text: string, options?: PromptOptions): Promise<boolean>;
 	/** Queue a steering message for the next step boundary. */
 	steer(text: string, images?: ImageContent[], options?: SteerOptions): Promise<void>;
@@ -150,9 +165,12 @@ export interface AgentSessionHandle {
 		reason?: string;
 		preserveCompaction?: boolean;
 		deliverQueuedMessages?: boolean;
+		cancelBackgroundJobs?: boolean;
 	}): Promise<void>;
 	/** Replace the pooled-turn yield contract. */
 	setWorkPoolYieldItems(items: readonly WorkPoolYieldItem[]): Promise<void>;
+	/** Change fast mode on the home thread. */
+	setFastMode(enabled: boolean): boolean | Promise<boolean>;
 	/** Dispose the session and release its resources. */
 	dispose(options?: AgentSessionDisposeOptions): Promise<void>;
 }
@@ -165,6 +183,10 @@ export interface AgentViewSessionManager extends AgentSessionManagerHandle {
 	getEntries(): SessionEntry[];
 	/** Entries from the root to `fromId` (default: the current leaf). */
 	getBranch(fromId?: string): SessionEntry[];
+	/** Metadata-first newest iteration for bounded live state readers. */
+	iterateBranchMatchingNewestFirst?: (
+		predicate: (metadata: SessionContextEntryMetadata) => boolean,
+	) => Iterable<SessionEntry>;
 	/** Id of the current leaf entry. */
 	getLeafId(): string | null;
 	/** The newest entry that moves the conversation, when the active branch ends at it (`conversationTip`). */
@@ -254,6 +276,10 @@ export function isAgentViewSession(session: AgentSessionHandle): session is Agen
 
 /** Extra surface the TUI reads on a focused subagent (`ctx.viewSession`). */
 export interface AgentViewSession extends AgentSessionHandle {
+	sendCustomMessage(
+		message: CustomMessagePayload,
+		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" | "aside" },
+	): Promise<boolean>;
 	/** Agent loop pause flag, live state, and pending tool results. */
 	readonly agent: AgentViewLoop;
 	/** Agent loop state (same object as `agent.state`). */

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { Api, AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
 import { Effort } from "@oh-my-pi/pi-ai";
+import * as dirs from "@oh-my-pi/pi-utils";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import type { ModelRegistry } from "../../src/config/model-registry";
@@ -282,6 +283,25 @@ describe("runEvalCompletion", () => {
 
 		const model = spy.mock.calls[0]?.[0] as Model<Api>;
 		expect(`${model.provider}/${model.id}`).toBe("p/slow");
+	});
+
+	it("skips banned eager fallbacks while completing with a healthy primary or later fallback", async () => {
+		using root = TempDir.createSync("@omp-completion-blacklist-");
+		vi.spyOn(dirs, "getBaseConfigRoot").mockReturnValue(root.path());
+		await Bun.write(path.join(root.path(), "model-blacklist.json"), JSON.stringify({ "p/denied": "fixture ban" }));
+		const fallback = makeModel("p", "fallback");
+		const session = makeSession({ available: [SMOL, fallback] });
+		cfgRetryFallbackChains.set(session.settings, { smol: ["p/denied", "p/fallback"] });
+		const spy = vi
+			.spyOn(ai, "completeSimple")
+			.mockResolvedValueOnce(assistant({ text: "primary answer" }))
+			.mockResolvedValueOnce(assistant({ stopReason: "error", errorMessage: "quota exhausted" }))
+			.mockResolvedValueOnce(assistant({ text: "fallback answer" }));
+		expect((await runEvalCompletionAndWait({ prompt: "q", model: "smol" }, { session })).text).toBe("primary answer");
+		expect((await runEvalCompletionAndWait({ prompt: "q", model: "smol" }, { session })).text).toBe(
+			"fallback answer",
+		);
+		expect(spy.mock.calls.map(call => call[0].id)).toEqual(["smol", "smol", "fallback"]);
 	});
 
 	it("uses the tier fallback chain after the primary model fails", async () => {

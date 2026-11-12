@@ -1,3 +1,4 @@
+import { assertModelNotBlacklisted } from "../model-blacklist";
 import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
@@ -62,6 +63,7 @@ import {
 } from "../utils";
 import { clearStreamingPartialJson, kStreamingLastParseLen, kStreamingPartialJson } from "../utils/block-symbols";
 import { hasVisibleAssistantContent } from "../utils/empty-completion-retry";
+import { isLegacySubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { escapeHarmonyControlTokens, isHarmonyDialectModel } from "../utils/harmony-leak";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
@@ -1429,7 +1431,10 @@ export async function buildTransformedCodexRequestBody(
 	};
 
 	const body = await transformRequestBody(params, model, codexOptions, { developerMessages });
+	const { comparable, transientTail } = splitCodexTransientTail(body);
+	body.input = comparable.input;
 	applyCodexStableEffort(model, body, options);
+	if (transientTail.length > 0) body.input = [...(body.input ?? []), ...transientTail];
 	return body;
 }
 
@@ -1704,6 +1709,7 @@ async function openCodexWebSocketTransport(
 	// so it is only consumed once this request takes it (see `onOwned` below).
 	const steered = websocketState.acceptedSteering;
 	const onOwned = () => {
+		assertModelNotBlacklisted(model);
 		if (websocketState.acceptedSteering === steered) websocketState.acceptedSteering = undefined;
 	};
 	let websocketConnection = await getOrCreateCodexWebSocketConnection(
@@ -1737,8 +1743,10 @@ async function openCodexWebSocketTransport(
 		const steers = steered?.connection === websocketConnection ? steered.steers : [];
 		const liveSteers = steers.filter(steer => !websocketConnection.hasFailedSteer([steer.id]));
 		if (liveSteers.length > 0) {
+			// Timing scaffolding must not turn an accepted steer into new input.
+			const { comparable, transientTail } = splitCodexTransientTail(chainedBody);
 			const plan = planSteeredRequest(
-				chainedBody.previous_response_id ? chainedBody.input : undefined,
+				comparable.previous_response_id ? comparable.input : undefined,
 				liveSteers.flatMap(steer => steer.items),
 			);
 			if (plan.kind === "attach") {
@@ -1752,16 +1760,17 @@ async function openCodexWebSocketTransport(
 						onSseEvent,
 						onOwned,
 						releaseReservation,
+						() => assertModelNotBlacklisted(model),
 					),
-					requestBodyForState: cloneJsonTree(requestContext.transformedBody),
+					requestBodyForState: cloneJsonTree(splitCodexTransientTail(requestContext.transformedBody).comparable),
 					transport: "websocket",
 				};
 			}
 			if (plan.kind === "create") {
 				// The server prepends the accepted steering itself; it is carried too.
-				const delta = chainedBody.input ?? [];
+				const delta = comparable.input ?? [];
 				chainCarriedInput = [...chainCarriedInput, ...delta.filter(item => !plan.input.includes(item))];
-				chainedBody = { ...chainedBody, input: plan.input };
+				chainedBody = { ...chainedBody, input: [...plan.input, ...transientTail] };
 			} else {
 				// The server continues from input this request cannot line up with; a
 				// fresh socket drops its queue and the full transcript carries the input.
@@ -1811,7 +1820,7 @@ async function openCodexWebSocketTransport(
 				: [...chainCarriedInput, ...(websocketRequest.input ?? [])];
 		}
 		recordCodexTurnRequestDiagnostics(websocketState, websocketRequest, "websocket", canAppendBeforeRequest);
-		const requestBodyForState = cloneJsonTree(requestContext.transformedBody);
+		const requestBodyForState = cloneJsonTree(splitCodexTransientTail(requestContext.transformedBody).comparable);
 		// `onPayload` may rewrite the outgoing frame (e.g. drop `stream_options` or
 		// change `service_tier`); recorded state must reflect what was actually
 		// sent — the sequential-cutoff summary decoder and the served-tier
@@ -1846,6 +1855,7 @@ async function openCodexWebSocketTransport(
 			onSseEvent,
 			onOwned,
 			releaseReservation,
+			() => assertModelNotBlacklisted(model),
 		);
 		return {
 			eventStream,
@@ -1873,12 +1883,16 @@ function getCodexTurnStartedAtUnixMs(context: Context): number {
  * last assistant message is tool results), false when a new user turn starts.
  * Mirrors codex-rs, which scopes `x-codex-turn-state` to a single turn and
  * clears it when the next one begins.
+ *
+ * The trailing subagent elapsed signal is provider-only scaffolding, not
+ * conversation: skipping it keeps tool-result continuations within the turn.
  */
 function isCodexWithinTurnContinuation(context: Context): boolean {
 	for (let i = context.messages.length - 1; i >= 0; i--) {
-		const role = context.messages[i]?.role;
-		if (role === "toolResult") continue;
-		return role === "assistant";
+		const message = context.messages[i];
+		if (message?.role === "toolResult") continue;
+		if (isLegacySubagentElapsedNote(message)) continue;
+		return message?.role === "assistant";
 	}
 	return false;
 }
@@ -2036,6 +2050,9 @@ async function handleCodexStreamFailure(context: CodexStreamFailureContext, erro
 	});
 	output.stopReason = result.stopReason;
 	output.errorStatus = result.status;
+	output.errorType = result.errorType;
+	output.errorCode = result.errorCode;
+	output.errorResetAt = result.errorResetAt;
 	output.errorId = result.id;
 	output.errorMessage = result.message;
 	output.duration = performance.now() - context.startTime;
@@ -2384,8 +2401,13 @@ class CodexStreamProcessor {
 			return;
 		}
 		this.#steerConnection = connection;
-		this.#steerPump = new CodexSteerPump(source, connection, messages =>
-			toSteerInputItems(convertMessages(this.model, { messages: [...messages] })),
+		this.#steerPump = new CodexSteerPump(
+			source,
+			{
+				steer: (previousResponseId, input) =>
+					connection.steer(previousResponseId, input, () => assertModelNotBlacklisted(this.model)),
+			},
+			messages => toSteerInputItems(convertMessages(this.model, { messages: [...messages] })),
 		);
 		this.#steerPump.start(responseId);
 	}
@@ -3677,6 +3699,38 @@ function recordCodexTurnUsageDiagnostics(
 	CODEX_DEBUG && logger.debug("[codex] codex turn diagnostics", { diagnostics: state.stats.lastTurn });
 }
 
+/**
+ * Marker for wire input items rendered from synthetic developer scaffolding
+ * (e.g. the per-request subagent elapsed signal). The note text changes every
+ * turn, so it must ride along on the wire but stay out of the chain baseline
+ * and the prefix walk — the same treatment the trailing juice scaffolding
+ * gets in openai-responses.ts. A symbol (not a string key) so it can never
+ * leak onto the wire: JSON and structuredClone both drop symbol keys.
+ */
+const CODEX_TRANSIENT_INPUT_ITEM = Symbol("codexTransientInputItem");
+
+/** Wire input item carrying the transient-scaffolding mark. */
+type CodexMarkableInputItem = ResponseInput[number] & { [CODEX_TRANSIENT_INPUT_ITEM]?: boolean };
+
+function isCodexTransientInputItem(item: unknown): boolean {
+	if (!item || typeof item !== "object") return false;
+	return CODEX_TRANSIENT_INPUT_ITEM in item && item[CODEX_TRANSIENT_INPUT_ITEM] === true;
+}
+
+/**
+ * Split trailing transient scaffolding off a request body for chain
+ * comparison. Returns the same body reference when no trailing transient
+ * items are present, so the common path allocates nothing.
+ */
+function splitCodexTransientTail(body: RequestBody): { comparable: RequestBody; transientTail: InputItem[] } {
+	const input = body.input;
+	if (!Array.isArray(input) || input.length === 0) return { comparable: body, transientTail: [] };
+	let end = input.length;
+	while (end > 0 && isCodexTransientInputItem(input[end - 1])) end -= 1;
+	if (end === input.length) return { comparable: body, transientTail: [] };
+	return { comparable: { ...body, input: input.slice(0, end) }, transientTail: input.slice(end) };
+}
+
 const CODEX_CHAIN_TOP_LEVEL_EXCLUDE_MAP = {
 	service_tier: true,
 };
@@ -3698,19 +3752,26 @@ function buildCodexChainedRequestBody(
 	requestBody: RequestBody,
 	state: CodexWebSocketSessionState | undefined,
 ): RequestBody {
+	// Transient scaffolding (e.g. the refreshed elapsed note) rides the wire
+	// but is not conversation history: compare without it, re-append after.
+	const { comparable, transientTail } = splitCodexTransientTail(requestBody);
 	const chainable =
 		state?.canAppend === true &&
-		(state.lastRequest?.service_tier === "ultrafast") === (requestBody.service_tier === "ultrafast");
+		(state.lastRequest?.service_tier === "ultrafast") === (comparable.service_tier === "ultrafast");
 	const appendInput = chainable
 		? buildResponsesDeltaInput(
 				state.lastRequest,
 				state.lastResponseItems,
-				requestBody,
+				comparable,
 				CODEX_CHAIN_TOP_LEVEL_EXCLUDE_MAP,
 			)
 		: null;
 	if (appendInput && appendInput.length > 0 && state?.lastResponseId) {
-		return { ...requestBody, previous_response_id: state.lastResponseId, input: appendInput };
+		return {
+			...requestBody,
+			previous_response_id: state.lastResponseId,
+			input: [...appendInput, ...transientTail],
+		};
 	}
 	if (state?.canAppend) {
 		// Chaining was eligible but the prefix/options check failed: history
@@ -3884,6 +3945,7 @@ class CodexWebSocketConnection {
 		onSseEvent?: (event: RawSseEvent) => void,
 		onOwned?: () => void,
 		releaseReservation?: () => void,
+		beforeDispatch?: () => void,
 	): AsyncGenerator<Record<string, unknown>> {
 		releaseReservation?.();
 		let owned = false;
@@ -3903,6 +3965,7 @@ class CodexWebSocketConnection {
 						}
 					}
 				},
+				beforeDispatch,
 			);
 		} catch (error) {
 			CODEX_DEBUG &&
@@ -3916,7 +3979,7 @@ class CodexWebSocketConnection {
 	}
 
 	/** Submit steering on the current socket, even between response readers. */
-	steer(previousResponseId: string, input: InputItem[]): Promise<CodexSteerAck> {
+	steer(previousResponseId: string, input: InputItem[], beforeDispatch?: () => void): Promise<CodexSteerAck> {
 		if (!this.#channel.isOpen()) {
 			return Promise.reject(new CodexWebSocketTransportError("websocket connection is unavailable"));
 		}
@@ -3924,6 +3987,7 @@ class CodexWebSocketConnection {
 		const waiter: CodexSteerWaiter = { previousResponseId, resolve, reject };
 		this.#steerWaiters.push(waiter);
 		try {
+			beforeDispatch?.();
 			this.#channel.sendControl({ type: "response.steer", previous_response_id: previousResponseId, input });
 		} catch (error) {
 			const index = this.#steerWaiters.indexOf(waiter);
@@ -4362,7 +4426,13 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 
 			const normalizedContent = normalizeInputMessageContent(model, msg.content);
 			if (normalizedContent.length === 0) continue;
-			messages.push({ role: msg.role, content: normalizedContent });
+			const inputItem: CodexMarkableInputItem = { role: msg.role, content: normalizedContent };
+			if (isLegacySubagentElapsedNote(msg)) {
+				// Per-request elapsed scaffolding rides the wire but stays out of the
+				// chain baseline/prefix walk.
+				inputItem[CODEX_TRANSIENT_INPUT_ITEM] = true;
+			}
+			messages.push(inputItem);
 			msgIndex += 1;
 			continue;
 		}

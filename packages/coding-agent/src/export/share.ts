@@ -22,12 +22,18 @@ import * as path from "node:path";
 import type { AgentMessage, AgentState } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { $which, logger } from "@oh-my-pi/pi-utils";
+import { backgroundShellPrefix } from "@oh-my-pi/pi-utils/background-priority";
 import { DEFAULT_SHARE_URL } from "@oh-my-pi/pi-wire";
 import { $ } from "bun";
 import { obfuscateToolArguments } from "../secrets/message-transform";
 import type { SecretObfuscator } from "../secrets/obfuscator";
 import { SecretValueSet } from "../secrets/placeholder";
-import { type SessionEntry, type SessionHeader, TITLE_CHANGE_ENTRY_TYPE } from "../session/session-entries";
+import {
+	type SessionEntry,
+	type SessionHeader,
+	TITLE_CHANGE_ENTRY_TYPE,
+	sessionEntryForExport,
+} from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import type { SubSession } from "../session/sub-sessions";
@@ -301,6 +307,7 @@ function redactShareEntry(
 	entry: SessionEntry,
 	sharedRegexSecretValues: ReadonlySet<string>,
 ): SessionEntry {
+	entry = sessionEntryForExport(entry);
 	switch (entry.type) {
 		case "message":
 			return { ...entry, message: redactShareMessage(o, entry.message, sharedRegexSecretValues) };
@@ -627,7 +634,7 @@ function capLongStrings(value: unknown, cap: number): void {
 /** Create a secret gist holding base64 of the sealed blob; null when `gh` is unusable. */
 async function tryCreateGist(sealed: Uint8Array): Promise<{ id: string; url: string } | null> {
 	if (!$which("gh")) return null;
-	const auth = await $`gh auth status`.quiet().nothrow();
+	const auth = await $`${backgroundShellPrefix} gh auth status`.quiet().nothrow();
 	if (auth.exitCode !== 0) {
 		logger.debug("share: gh present but not authenticated; falling back to share server");
 		return null;
@@ -637,7 +644,7 @@ async function tryCreateGist(sealed: Uint8Array): Promise<{ id: string; url: str
 	try {
 		const file = path.join(dir, GIST_FILENAME);
 		await Bun.write(file, Buffer.from(sealed).toString("base64"));
-		const result = await $`gh gist create --public=false ${file}`.quiet().nothrow();
+		const result = await $`${backgroundShellPrefix} gh gist create --public=false ${file}`.quiet().nothrow();
 		if (result.exitCode !== 0) {
 			logger.warn("share: gist creation failed; falling back to share server", {
 				stderr: result.stderr.toString("utf-8").trim().slice(0, 500),

@@ -1,3 +1,6 @@
+import coolingYields from "../../reemxy-extensions/extensions/fixtures/row-audit-cooling-yields.json";
+import { YieldTool as RowAuditYieldTool } from "../src/tools/yield";
+import type { ToolSession } from "../src/tools";
 /**
  * Tests for ExtensionRunner - conflict detection, error handling, tool wrapping.
  */
@@ -7,9 +10,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Type } from "@oh-my-pi/omptype/typebox";
 import type { AgentMessage, AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { invalidateMessageCache } from "@oh-my-pi/pi-agent-core/compaction";
 import { streamAnthropic } from "@oh-my-pi/pi-ai/providers/anthropic";
 import type { MessageCreateParams } from "@oh-my-pi/pi-ai/providers/anthropic-wire";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import { Agent } from "@oh-my-pi/pi-agent-core";
 import {
 	isPerCallContextMessage,
 	kCursorExecResolved,
@@ -27,17 +32,23 @@ import {
 	testSetExtensionHandlerTimeoutMs,
 	testSetSessionShutdownHandlerTimeoutMs,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { sendAgentMessageFromSession } from "@oh-my-pi/pi-coding-agent/irc/messaging";
+import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type {
 	Extension,
+	ExtensionContext,
 	ExtensionError,
 	ExtensionUIContext,
 	InputEvent,
 	InputEventResult,
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { YieldTool } from "@oh-my-pi/pi-coding-agent/tools/yield";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getProjectAgentDir, logger, TempDir } from "@oh-my-pi/pi-utils";
+import { currentLoopPhase, getProjectAgentDir, logger, TempDir } from "@oh-my-pi/pi-utils";
 import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 describe("ExtensionRunner", () => {
@@ -73,6 +84,8 @@ describe("ExtensionRunner", () => {
 	afterEach(() => {
 		testSetExtensionHandlerTimeoutMs(EXTENSION_HANDLER_TIMEOUT_MS);
 		testSetSessionShutdownHandlerTimeoutMs(SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS);
+		IrcBus.resetGlobalForTests();
+		AgentRegistry.resetGlobalForTests();
 		tempDir.removeSync();
 	});
 
@@ -100,6 +113,41 @@ describe("ExtensionRunner", () => {
 		};
 	};
 
+	for (const event of ["tool_call", "tool_result"] as const) {
+		it(`releases the ${event} phase while an extension handler awaits`, async () => {
+			const runner = new ExtensionRunner([], new ExtensionRuntime(), tempDir.path(), sessionManager, modelRegistry);
+			const entered = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			const phases: Array<string | undefined> = [];
+			vi.spyOn(runner, "hasHandlers").mockImplementation(name => name === event);
+			const dispatch = async () => {
+				phases.push(currentLoopPhase());
+				entered.resolve();
+				await release.promise;
+				phases.push(currentLoopPhase());
+				return undefined;
+			};
+			const spy = event === "tool_call" ? vi.spyOn(runner, "emitToolCall") : vi.spyOn(runner, "emitToolResult");
+			spy.mockImplementation(dispatch);
+			const tool: AgentTool = {
+				name: "phase-probe",
+				label: "Probe",
+				description: "Probe",
+				parameters: Type.Object({}),
+				approval: "read",
+				execute: async () => ({ content: [{ type: "text", text: "done" }] }),
+			};
+			const execution = new ExtensionToolWrapper(tool, runner).execute("phase-call", {});
+			await entered.promise;
+			const waitingPhase = currentLoopPhase();
+			release.resolve();
+			await execution;
+			vi.restoreAllMocks();
+			expect(phases).toEqual([`extension.${event}:phase-probe`, undefined]);
+			expect(waitingPhase).toBeUndefined();
+		});
+	}
+
 	it("reflects SessionManager.moveTo() changes instead of the constructor-time snapshot (/move)", async () => {
 		const dirA = tempDir.join("dirA");
 		const dirB = tempDir.join("dirB");
@@ -119,7 +167,7 @@ describe("ExtensionRunner", () => {
 		expect(runner.createContext().cwd).toBe(dirB);
 	});
 
-	it("exposes the initialized host mode to extension contexts", async () => {
+	it("exposes initialized mode and forwards subagent fast-mode changes", async () => {
 		const result = await loadTestExtensions();
 		const runner = new ExtensionRunner(
 			result.extensions,
@@ -143,6 +191,7 @@ describe("ExtensionRunner", () => {
 			getSessionName: () => undefined,
 			setSessionName: async () => {},
 		};
+		const setSubagentFastMode = vi.fn((_id: string, _enabled: boolean) => true);
 		const contextActions = {
 			getModel: () => undefined,
 			isIdle: () => true,
@@ -152,12 +201,15 @@ describe("ExtensionRunner", () => {
 			getContextUsage: () => undefined,
 			compact: async () => {},
 			getSystemPrompt: () => [],
+			setSubagentFastMode,
 		};
 
 		expect(runner.createContext().mode).toBe("print");
 
 		runner.initialize(actions, contextActions, undefined, undefined, "rpc");
 		expect(runner.createContext().mode).toBe("rpc");
+		expect(runner.createContext().setSubagentFastMode?.("worker-1", true)).toBe(true);
+		expect(setSubagentFastMode).toHaveBeenCalledWith("worker-1", true);
 
 		runner.initialize(actions, contextActions, undefined, undefined, "json");
 		expect(runner.createContext().mode).toBe("json");
@@ -211,6 +263,215 @@ describe("ExtensionRunner", () => {
 		expect(compact).toHaveBeenCalledWith("preserve current task");
 	});
 
+	it("lets extension handlers send agent messages through the session IRC path", async () => {
+		const deliveredBodies: string[] = [];
+		const registry = AgentRegistry.global();
+		registry.register({
+			id: "Main",
+			displayName: "main",
+			kind: "main",
+			session: {} as never,
+		});
+		registry.register({
+			id: "Worker",
+			displayName: "worker",
+			kind: "sub",
+			session: {
+				deliverIrcMessage: async (message: { from: string; body: string }) => {
+					deliveredBodies.push(`${message.from}:${message.body}`);
+					return "injected";
+				},
+			} as never,
+		});
+
+		const results: Array<{ delivered: boolean; text: string }> = [];
+		const messageSession = {
+			agentRegistry: registry,
+			settings: Settings.isolated({}),
+			taskDepth: 1,
+			getAgentId: () => "Main",
+			getSessionFile: () => null,
+		};
+		const extensionPath = path.join(extensionsDir, "agent-message.ts");
+		// Asserted: optional registries added by other topics (e.g. transcriptPresenters) stay empty here.
+		const extension = {
+			path: extensionPath,
+			resolvedPath: extensionPath,
+			handlers: new Map([
+				[
+					"session_start",
+					[
+						async (...args: unknown[]) => {
+							const ctx = args[1] as ExtensionContext;
+							results.push(await ctx.sendAgentMessage("Worker", "status?"));
+							results.push(await ctx.sendAgentMessage("Missing", "status?"));
+						},
+					],
+				],
+			]),
+			tools: new Map(),
+			assistantThinkingRenderers: [],
+			assistantTextRenderers: [],
+			linkSchemes: [],
+			fileWriteFallbackHandlers: [],
+			fileDeleteFallbackHandlers: [],
+			messageRenderers: new Map(),
+			composerShapes: new Map(),
+			commands: new Map(),
+			flags: new Map(),
+			shortcuts: new Map(),
+		} as unknown as Extension;
+		const runner = new ExtensionRunner(
+			[extension],
+			new ExtensionRuntime(),
+			tempDir.path(),
+			sessionManager,
+			modelRegistry,
+		);
+		runner.initialize(
+			{
+				sendMessage: () => {},
+				sendUserMessage: async () => {},
+				appendEntry: () => {},
+				setLabel: () => {},
+				getActiveTools: () => [],
+				getAllTools: () => [],
+				setActiveTools: async () => {},
+				getCommands: () => [],
+				setModel: async () => false,
+				getThinkingLevel: () => undefined,
+				setThinkingLevel: () => {},
+				getSessionName: () => undefined,
+				setSessionName: async () => {},
+			},
+			{
+				getModel: () => undefined,
+				isIdle: () => true,
+				abort: () => {},
+				hasPendingMessages: () => false,
+				shutdown: () => {},
+				getContextUsage: () => undefined,
+				compact: async () => {},
+				getSystemPrompt: () => [],
+				sendAgentMessage: (to, message) => sendAgentMessageFromSession(messageSession, to, message),
+			},
+		);
+
+		await runner.emit({ type: "session_start" });
+
+		expect(results[0]).toEqual({ delivered: true, text: "Delivered to Worker." });
+		expect(deliveredBodies).toEqual(["Main:status?"]);
+		expect(results[1]?.delivered).toBe(false);
+		expect(results[1]?.text).toContain("Unknown agent");
+
+		const unavailable = await sendAgentMessageFromSession({ ...messageSession, enableIrc: false }, "Worker", "later");
+		expect(unavailable.delivered).toBe(false);
+		expect(unavailable.text).toContain("unavailable");
+	});
+
+	it("routes ctx.sendAgentMessage through the shared IRC path even when the host never wired it", async () => {
+		const registry = AgentRegistry.global();
+		registry.register({ id: "Main", displayName: "main", kind: "main", session: {} as never });
+		const deliveredBodies: string[] = [];
+		registry.register({
+			id: "Worker",
+			displayName: "worker",
+			kind: "sub",
+			session: {
+				deliverIrcMessage: async (message: { from: string; body: string }) => {
+					deliveredBodies.push(`${message.from}:${message.body}`);
+					return "injected";
+				},
+			} as never,
+		});
+		// Never initialized: mirrors hosts that construct a runner without
+		// context actions, where ctx.sendAgentMessage used to answer
+		// "unavailable" while `write agent://` delivered.
+		const runner = new ExtensionRunner(
+			[],
+			new ExtensionRuntime(),
+			tempDir.path(),
+			sessionManager,
+			modelRegistry,
+			undefined,
+			Settings.isolated({}),
+			undefined,
+			undefined,
+			{ kind: "sub", id: "Main", name: "Main", depth: 1 },
+		);
+		const ctx = runner.createContext();
+
+		const result = await ctx.sendAgentMessage("Worker", "status?");
+		expect(result).toEqual({ delivered: true, text: "Delivered to Worker." });
+		expect(deliveredBodies).toEqual(["Main:status?"]);
+
+		const missing = await ctx.sendAgentMessage("Nobody", "hello?");
+		expect(missing.delivered).toBe(false);
+
+		const direct = await sendAgentMessageFromSession(
+			{
+				agentRegistry: registry,
+				settings: Settings.isolated({}),
+				taskDepth: 1,
+				getAgentId: () => "Main",
+				getSessionFile: () => null,
+			},
+			"Worker",
+			"status?",
+		);
+		expect(direct).toEqual({ delivered: true, text: "Delivered to Worker." });
+	});
+
+	it("delivers check-ins through a real AgentSession command context", async () => {
+		const registry = AgentRegistry.global();
+		const deliveredBodies: string[] = [];
+		registry.register({
+			id: "Worker",
+			displayName: "worker",
+			kind: "sub",
+			session: {
+				deliverIrcMessage: async (message: { from: string; body: string }) => {
+					deliveredBodies.push(`${message.from}:${message.body}`);
+					return "injected";
+				},
+			} as never,
+		});
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const results: Array<{ delivered: boolean; text: string }> = [];
+		const commandPath = path.join(extensionsDir, "check-in.ts");
+		const session = new AgentSession({
+			agent: new Agent({ initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] } }),
+			sessionManager,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+			agentId: "Main",
+			agentRegistry: registry,
+			customCommands: [
+				{
+					path: commandPath,
+					resolvedPath: commandPath,
+					source: "project",
+					command: {
+						name: "check-in",
+						description: "Deliver an overdue check-in",
+						execute: async (_args, ctx) => {
+							results.push(await (ctx as unknown as ExtensionContext).sendAgentMessage("Worker", "status?"));
+							return undefined;
+						},
+					},
+				},
+			],
+		});
+		registry.register({ id: "Main", displayName: "main", kind: "main", session });
+		try {
+			await session.prompt("/check-in");
+			expect(results).toEqual([{ delivered: true, text: "Delivered to Worker." }]);
+			expect(deliveredBodies).toEqual(["Main:status?"]);
+		} finally {
+			await session.dispose();
+		}
+	});
 	describe("shortcut conflicts", () => {
 		it("warns when extension shortcut conflicts with built-in", async () => {
 			const extCode = `
@@ -459,6 +720,158 @@ describe("ExtensionRunner", () => {
 
 			controller.abort(new Error("caller aborted"));
 			await expect(pending).rejects.toThrow("caller aborted");
+		});
+
+		it("reuses cached message clones for append-only context handlers", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("context", event => ({
+						messages: [...event.messages, {
+							role: "developer",
+							content: [{ type: "text", text: "request-local context" }],
+							timestamp: 999999,
+						}],
+					}));
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "append-context.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const payload = "x".repeat(2500);
+			const messages: AgentMessage[] = Array.from({ length: 400 }, (_, index) => ({
+				role: "user",
+				content: [{ type: "text", text: `${index}:${payload}` }],
+				timestamp: index,
+			}));
+
+			const warmup = await runner.emitContext(messages);
+			expect(warmup).toHaveLength(401);
+
+			// Latency is tracked by bench/extension-context.bench.ts; this test stays deterministic.
+			const second = await runner.emitContext(messages);
+			expect(second).toHaveLength(401);
+			expect(second[0]).toBe(warmup[0]);
+		});
+
+		it("keeps mutating context handlers detached from live history and future calls", async () => {
+			const extCode = `
+				let calls = 0;
+				export default function(pi) {
+					pi.on("context", event => {
+						calls++;
+						if (calls === 1) {
+							event.messages[0].content[0].text = "mutated detached copy";
+						}
+						return { messages: event.messages };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "mutate-context.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const messages: AgentMessage[] = [
+				{
+					role: "user",
+					content: [{ type: "text", text: "live history" }],
+					timestamp: 1,
+				},
+			];
+
+			const first = await runner.emitContext(messages);
+			expect(((first[0] as { content: TextContent[] }).content[0] as TextContent).text).toBe(
+				"mutated detached copy",
+			);
+			expect(((messages[0] as { content: TextContent[] }).content[0] as TextContent).text).toBe("live history");
+
+			const second = await runner.emitContext(messages);
+			expect(((second[0] as { content: TextContent[] }).content[0] as TextContent).text).toBe("live history");
+		});
+
+		it("drops cached clones after an owner rewrite bumps the message version", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.on("context", event => ({ messages: event.messages }));
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "passthrough-context.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const message = {
+				role: "user",
+				content: [{ type: "text", text: "evict me" }],
+				timestamp: 1,
+			} as AgentMessage;
+
+			const first = await runner.emitContext([message]);
+			expect(((first[0] as { content: TextContent[] }).content[0] as TextContent).text).toBe("evict me");
+
+			((message as { content: TextContent[] }).content[0] as TextContent).text = "[evicted]";
+			invalidateMessageCache(message);
+
+			const second = await runner.emitContext([message]);
+			expect(((second[0] as { content: TextContent[] }).content[0] as TextContent).text).toBe("[evicted]");
+		});
+
+		it("does not leak handler mutations of non-plain descendants into later calls", async () => {
+			const extCode = `
+				let calls = 0;
+				export default function(pi) {
+					pi.on("context", event => {
+						calls++;
+						if (calls === 1) event.messages[0].details.tags.add("handler-only");
+						return { messages: event.messages };
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "mutate-map-context.ts"), extCode);
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const messages = [
+				{
+					role: "toolResult",
+					toolCallId: "call-1",
+					toolName: "bash",
+					content: [{ type: "text", text: "ok" }],
+					isError: false,
+					details: { tags: new Set<string>() },
+					timestamp: 1,
+				},
+			] as unknown as AgentMessage[];
+
+			const first = await runner.emitContext(messages);
+			expect((first[0] as unknown as { details: { tags: Set<string> } }).details.tags.has("handler-only")).toBe(
+				true,
+			);
+			const second = await runner.emitContext(messages);
+			expect((second[0] as unknown as { details: { tags: Set<string> } }).details.tags.size).toBe(0);
 		});
 
 		it("calls error listeners when handler throws", async () => {
@@ -1800,6 +2213,51 @@ describe("ExtensionRunner", () => {
 			const res = await wrapper.execute("call-flagged", {} as never, undefined, undefined, undefined);
 			expect(firstText(res)).toBe("now failing");
 			expect(res.isError).toBe(true);
+		});
+
+		it("lets a terminal yield retry after an extension rejects the result", async () => {
+			const runner = await runnerFor(`
+				export default function(pi) {
+					let first = true;
+					pi.on("tool_result", (event) => {
+						if (event.toolName !== "yield" || !first) return;
+						first = false;
+						return { content: [{ type: "text", text: "revise" }], isError: true };
+					});
+				}
+			`);
+			const tool = new YieldTool({ cwd: tempDir.path(), hasUI: false, settings: Settings.isolated() } as never);
+			const accepted: unknown[] = [];
+			tool.subscribeAcceptedResult((_id, details) => accepted.push(details.data));
+			const wrapper = new ExtensionToolWrapper(tool, runner);
+			const rejected = await wrapper.execute("rejected", { data: "first" });
+			expect(rejected.isError).toBe(true);
+			expect(accepted).toEqual([]);
+			const retried = await wrapper.execute("retry", { data: "corrected" });
+			expect(retried.details?.status).toBe("success");
+			expect(accepted).toEqual(["corrected"]);
+			await expect(wrapper.execute("duplicate", { data: "replacement" })).rejects.toThrow("already submitted");
+		});
+
+		it("releases a terminal claim when an extension downgrades it to a section", async () => {
+			const runner = await runnerFor(`
+				export default function(pi) {
+					pi.on("tool_result", (event) => {
+						if (event.toolCallId !== "section") return;
+						return { content: event.content, details: { ...event.details, type: ["notes"] } };
+					});
+				}
+			`);
+			const tool = new YieldTool({ cwd: tempDir.path(), hasUI: false, settings: Settings.isolated() } as never);
+			const accepted: unknown[] = [];
+			tool.subscribeAcceptedResult((_id, details) => accepted.push(details));
+			const wrapper = new ExtensionToolWrapper(tool, runner);
+			await wrapper.execute("section", { data: "notes" });
+			expect(accepted).toMatchObject([{ type: ["notes"], data: "notes" }]);
+			const result = await wrapper.execute("terminal", { data: "answer" });
+			expect(result.details?.status).toBe("success");
+			expect(accepted).toHaveLength(2);
+			await expect(wrapper.execute("duplicate", { data: "changed" })).rejects.toThrow("already submitted");
 		});
 
 		it("preserves a tool-reported error through extension rewrites", async () => {
@@ -4998,6 +5456,144 @@ describe("ExtensionRunner", () => {
 			return runner;
 		};
 
+		it("delivery critic launches through the native task implementation at low effort", async () => {
+			const seen: { params?: unknown } = {};
+			const native = { ...nativeProbe(seen), name: "task" };
+			const runner = await runnerWithNative(native);
+			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
+			expect(seen.params).toEqual({
+				agent: "reviewer",
+				name: "CriticDelivery",
+				task: "Review completed rack controls",
+				effort: "lo",
+			});
+			expect(result?.content).toEqual([{ type: "text", text: "native ran" }]);
+		});
+
+		it("delivery critic awaits a generic background-capable worker without detaching its verdict", async () => {
+			const seen: { params?: unknown } = {};
+			const native = {
+				...nativeProbe(seen),
+				name: "task",
+				executeBlocking: async (_id: string, params: unknown) => {
+					seen.params = params;
+					return { content: [{ type: "text" as const, text: "final verdict" }], details: {} };
+				},
+			};
+			const runner = await runnerWithNative(native);
+			const result = await runner.createContext().runDeliveryCritic?.("Review completed rack controls");
+			expect(seen.params).toEqual({
+				agent: "reviewer",
+				name: "CriticDelivery",
+				task: "Review completed rack controls",
+				effort: "lo",
+			});
+			expect(result?.content).toEqual([{ type: "text", text: "final verdict" }]);
+		});
+
+		it("Cooling audit rejects malformed and missing-row yields in-tool, then forwards the corrected verdict", async () => {
+			const seen: { params?: unknown; onUpdate?: unknown } = {};
+			const runner = await runnerWithNative({ ...nativeProbe(seen), name: "task" });
+			const valid = coolingYields[1].arguments.data!;
+			const row = valid.rows![0].row;
+			const received: unknown[] = [];
+			await runner
+				.createContext()
+				.runRowAudit?.("audit", "qa-auditor", undefined, undefined, row, [row], output => received.push(output));
+			const params = seen.params as { outputSchema?: unknown; schemaMode?: "strict" };
+			const tool = new RowAuditYieldTool({
+				cwd: tempDir.path(),
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				outputSchema: params.outputSchema,
+				outputSchemaMode: params.schemaMode,
+			} as ToolSession);
+			// Repetition must never reach the permissive schema override.
+			for (let i = 0; i < 5; i++) {
+				await expect(tool.execute("bad", coolingYields[0].arguments)).rejects.toThrow(
+					JSON.stringify(params.outputSchema, null, 2),
+				);
+			}
+			await expect(tool.execute("missing", { data: { rows: [] } })).rejects.toThrow("does not match schema");
+			// A completed-looking result without structured evidence must return to the same auditor.
+			const bare = { row, verdict: "fail", findings: "A check failed" };
+			await expect(tool.execute("no-evidence", { data: { rows: [bare] } })).rejects.toThrow("does not match schema");
+			await expect(
+				tool.execute("empty-evidence", { data: { rows: [{ ...bare, checks: [], screenshots: [] }] } }),
+			).rejects.toThrow("does not match schema");
+			await expect(
+				tool.execute("bad-check", { data: { rows: [{ ...bare, checks: [{ command: "npm test" }] }] } }),
+			).rejects.toThrow("does not match schema");
+			const checkOnly = await tool.execute("check-only", {
+				data: { rows: [{ ...bare, checks: [{ command: "npm test", exitCode: 1 }] }] },
+			});
+			expect(checkOnly.details?.status).toBe("success");
+			const shotOnly = await tool.execute("screenshot-only", {
+				data: { rows: [{ ...bare, screenshots: [{ path: "/tmp/capture.png" }] }] },
+			});
+			expect(shotOnly.details?.status).toBe("success");
+			const inconclusive = await tool.execute("inconclusive", {
+				data: { rows: [{ ...bare, verdict: "inconclusive" }] },
+			});
+			expect(inconclusive.details?.status).toBe("success");
+			const result = await tool.execute("corrected", { data: valid });
+			expect(result.details?.status).toBe("success");
+			const update = seen.onUpdate as (value: unknown) => void;
+			update({
+				details: {
+					progress: [
+						{
+							id: "audit",
+							extractedToolData: { yield: [{ data: coolingYields[0].arguments.data }, result.details] },
+						},
+					],
+				},
+			});
+			expect(received).toEqual([valid]);
+			// Multi-row coverage rejects duplicates even if the array has the right length.
+			await runner
+				.createContext()
+				.runRowAudit?.("audit", "qa-auditor", undefined, undefined, row, [row, "Other row"]);
+			const multi = seen.params as { outputSchema: unknown };
+			const multiTool = new RowAuditYieldTool({
+				cwd: tempDir.path(),
+				hasUI: false,
+				settings: Settings.isolated(),
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				outputSchema: multi.outputSchema,
+				outputSchemaMode: "strict",
+			} as ToolSession);
+			await expect(
+				multiTool.execute("duplicate", { data: { rows: [valid.rows![0], valid.rows![0]] } }),
+			).rejects.toThrow("does not match schema");
+		});
+
+		it("names row audits and plan critics at native dispatch by purpose", async () => {
+			const seen: { params?: unknown } = {};
+			const runner = await runnerWithNative({ ...nativeProbe(seen), name: "task" });
+			await runner
+				.createContext()
+				.runRowAudit?.("audit protocol", "qa-auditor", undefined, undefined, "Cooling pipes");
+			expect(seen.params).toEqual({ agent: "qa-auditor", task: "audit protocol", name: "AuditCoolingPipes" });
+			await runner.createContext().runRowAudit?.("audit protocol", "qa-auditor");
+			expect(seen.params).toMatchObject({ name: "QaAuditor" });
+			await runner
+				.createContext()
+				.runRowAudit?.(
+					"audit protocol",
+					"qa-auditor",
+					undefined,
+					undefined,
+					"Very long cooling pipes installation subject beyond the limit",
+				);
+			expect(seen.params).toMatchObject({ name: "AuditVeryLongCoolingPipesInstalla".slice(0, 32) });
+			await runner.createContext().runDeliveryCritic?.("plan protocol", undefined, "Plan");
+			expect(seen.params).toEqual({ agent: "reviewer", task: "plan protocol", effort: "lo", name: "CriticPlan" });
+		});
+
 		it("inherits the wrapper call's signal and onUpdate for a bare invokeTool", async () => {
 			const seen: { signal?: AbortSignal; onUpdate?: unknown; params?: unknown } = {};
 			const runner = await runnerWithNative(nativeProbe(seen));
@@ -5053,12 +5649,23 @@ describe("ExtensionRunner", () => {
 	});
 
 	describe("input attachment transforms", () => {
-		const inputRunner = (handler: (event: InputEvent) => InputEventResult): ExtensionRunner => {
+		const inputRunner = (
+			...handlers: Array<(event: InputEvent) => InputEventResult | undefined>
+		): ExtensionRunner => {
 			const extensionPath = path.join(extensionsDir, "input-transform.ts");
 			const extension: Extension = {
 				path: extensionPath,
 				resolvedPath: extensionPath,
-				handlers: new Map([["input", [async (...args: unknown[]) => handler(args[0] as InputEvent)]]]),
+				handlers: new Map([
+					[
+						"input",
+						handlers.map(
+							handler =>
+								async (...args: unknown[]) =>
+									handler(args[0] as InputEvent),
+						),
+					],
+				]),
 				tools: new Map(),
 				assistantThinkingRenderers: [],
 				assistantTextRenderers: [],
@@ -5087,6 +5694,21 @@ describe("ExtensionRunner", () => {
 			const image: ImageContent = { type: "image", mimeType: "image/png", data: "aW1hZ2U=" };
 
 			expect(await runner.emitInput("rewrite me", [image], "interactive")).toEqual({ text: "REWRITE ME" });
+		});
+		it("keeps submitted raw text after an earlier handler transforms the chained text", async () => {
+			const submitted = "feature ask, correction, rename";
+			const seen: InputEvent[] = [];
+			const runner = inputRunner(
+				event => ({ text: event.text.toUpperCase() }),
+				event => {
+					seen.push(event);
+					return undefined;
+				},
+			);
+
+			expect(await runner.emitInput(submitted, undefined, "interactive")).toEqual({ text: submitted.toUpperCase() });
+			expect(seen).toHaveLength(1);
+			expect(seen[0]).toMatchObject({ text: submitted.toUpperCase(), rawText: submitted });
 		});
 	});
 

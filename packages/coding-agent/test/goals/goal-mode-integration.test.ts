@@ -12,11 +12,12 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { normalizeCustomMessagePayload } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { convertToLlm, normalizeCustomMessagePayload } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import { TodoTool, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import { formatTodoArchiveSummary, type TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 function createToolSession(cwd: string, settings: Settings, overrides: Partial<ToolSession> = {}): ToolSession {
@@ -89,6 +90,7 @@ async function createGoalHarness(shared: SharedFixture): Promise<GoalHarness> {
 				tools: initialTools,
 				messages: [],
 			},
+			convertToLlm,
 		}),
 		sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
 		settings,
@@ -445,7 +447,133 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(content).toContain("- [completed] Identify gaps");
 		expect(content).toContain("- [in_progress] Choose &lt;next&gt; &amp; slice &lt;/todo_context&gt;");
 		expect(content).toContain("- [pending] Run focused checks");
+		expect(content).not.toMatch(/^Archive summary:/m);
 		expect(content.match(/<\/todo_context>/g)).toHaveLength(1);
+	});
+
+	it("hands off one live todo context and archive summary without archived payloads", async () => {
+		await harness.session.setActiveToolsByName(["read", "todo"]);
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		const now = Date.now();
+		const archivedPayload = "Archived task private payload";
+		harness.session.setTodoPhases([
+			{
+				name: "Finished work",
+				tasks: [
+					{
+						content: archivedPayload,
+						status: "completed",
+						details: "archive-details-private",
+						schedule: {
+							finishedAt: now - 30 * 60_000,
+							owner: "archive-owner-private",
+							estimate: {
+								optimisticSeconds: 1,
+								likelySeconds: 2,
+								pessimisticSeconds: 3,
+								confidence: "high",
+								basis: "archive-estimate-private",
+								updatedAt: now,
+							},
+							executor: {
+								workerId: "archive-actual-private",
+								startedAt: now - 40 * 60_000,
+								finishedAt: now - 30 * 60_000,
+								outcome: "completed",
+							},
+						},
+					},
+				],
+			},
+			{ name: "Current work", tasks: [{ content: "Continue the release", status: "in_progress" }] },
+		]);
+
+		// Handoff consumes a persisted archive; blocking unrelated work does not
+		// trigger archival or change the native closed-row retention policy.
+		const phases = harness.session.getTodoPhases();
+		harness.session.sessionManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, {
+			edit: {
+				v: 1,
+				kind: "archive",
+				at: now,
+				archivedPhases: phases.filter(phase => phase.name === "Finished work"),
+			},
+		});
+		harness.session.setTodoPhases(phases.filter(phase => phase.name === "Current work"));
+		const todo = new TodoTool({
+			...harness.toolSession,
+			sessionManager: harness.session.sessionManager,
+		});
+		const result = await todo.execute("block-current-plan", {
+			op: "block",
+			task: "Continue the release",
+			reason: "Waiting for release approval",
+		});
+		expect(result.isError).not.toBe(true);
+
+		const requestContents: string[] = [];
+		harness.session.agent.streamFn = (_model, context) => {
+			requestContents.push(
+				[
+					...(Array.isArray(context.systemPrompt) ? context.systemPrompt : [context.systemPrompt]),
+					...context.messages.map(message =>
+						typeof message.content === "string"
+							? message.content
+							: message.content.map(block => (block.type === "text" ? block.text : "")).join(""),
+					),
+				].join("\n"),
+			);
+			const message = {
+				role: "assistant" as const,
+				content: [{ type: "text" as const, text: "Objective updated." }],
+				api: "anthropic-messages" as const,
+				provider: "anthropic" as const,
+				model: "claude-sonnet-4-5",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				stopReason: "stop" as const,
+				timestamp: Date.now(),
+			};
+			const stream = new AssistantMessageEventStream();
+			queueMicrotask(() => {
+				stream.push({ type: "start", partial: message });
+				stream.push({ type: "done", reason: message.stopReason, message });
+			});
+			return stream;
+		};
+		let goalSetWhileStreaming = false;
+		harness.session.agent.setOnBeforeYield(async () => {
+			if (goalSetWhileStreaming) return;
+			goalSetWhileStreaming = true;
+			await executeBuiltinSlashCommand("/goal set Replace the objective", { ctx: harness.mode });
+		});
+		await harness.session.prompt("Continue the release");
+		await harness.session.waitForIdle();
+		expect(goalSetWhileStreaming).toBe(true);
+		expect(requestContents.length).toBeGreaterThanOrEqual(2);
+
+		const requestContent = requestContents[1] ?? "";
+
+		const summary = result.details?.archiveSummary;
+		if (!summary) throw new Error("Expected archive summary in the todo result");
+		expect(requestContent).toContain("- [blocked] Continue the release");
+		expect(requestContent).toContain("Replace the objective");
+		expect(requestContent).not.toContain(archivedPayload);
+		expect(requestContent).not.toContain("archive-details-private");
+		expect(requestContent).not.toContain("archive-owner-private");
+		expect(requestContent).not.toContain("archive-estimate-private");
+		expect(requestContent).not.toContain("archive-actual-private");
+		expect(requestContent.match(/<goal_context>/g)).toHaveLength(1);
+		expect(requestContent.match(/<todo_context>/g)).toHaveLength(1);
+		expect(summary).toMatchObject({ count: 1, done: 1, dropped: 0 });
+		const renderedSummary = formatTodoArchiveSummary(summary);
+		expect(requestContent.split(renderedSummary)).toHaveLength(2);
 	});
 
 	it("renders todo context text without raw line/control characters", async () => {
@@ -525,6 +653,171 @@ describe("InteractiveMode goal mode integration", () => {
 		await waiter.inputPromise;
 	});
 
+	it("waits for input rather than continuing an active goal with only blocked work", async () => {
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		harness.session.setTodoPhases([
+			{
+				name: "Approval",
+				tasks: [
+					{ content: "Prepare the proposal", status: "completed" },
+					{ content: "Apply the approved change", status: "blocked", blocker: "Awaiting user approval" },
+				],
+			},
+		]);
+
+		vi.useFakeTimers();
+		const waiter = await armInputWaiter(harness.mode);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()).toBeUndefined();
+
+		harness.mode.onInputCallback?.(harness.mode.startPendingSubmission({ text: "Approved" }));
+		await waiter.inputPromise;
+	});
+
+	it("drops an armed continuation when work becomes blocked, then resumes after input", async () => {
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		harness.session.setTodoPhases([
+			{ name: "Approval", tasks: [{ content: "Apply the change", status: "pending" }] },
+		]);
+
+		vi.useFakeTimers();
+		const waiter = await armInputWaiter(harness.mode);
+		harness.session.setTodoPhases([
+			{
+				name: "Approval",
+				tasks: [{ content: "Apply the change", status: "blocked", blocker: "Awaiting user approval" }],
+			},
+		]);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()).toBeUndefined();
+
+		const approval = harness.mode.startPendingSubmission({ text: "Approved" });
+		harness.mode.onInputCallback?.(approval);
+		await waiter.inputPromise;
+		harness.mode.finishPendingSubmission(approval);
+		harness.session.setTodoPhases([
+			{ name: "Approval", tasks: [{ content: "Apply the change", status: "pending" }] },
+		]);
+		const resumed = await armInputWaiter(harness.mode);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(resumed.getResolvedInput()?.customType).toBe("goal-continuation");
+		await resumed.inputPromise;
+	});
+
+	it("interrupt stops interactive continuation until the user resumes the active goal", async () => {
+		vi.spyOn(vcs, "repo").mockReturnValue(null);
+		vi.spyOn(vcs, "git").mockReturnValue(null);
+		await harness.mode.init({ suppressWelcomeIntro: true });
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		vi.useFakeTimers();
+		const waiter = await armInputWaiter(harness.mode);
+		await harness.session.abort();
+		expect(harness.session.getGoalModeState()?.enabled).toBe(true);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()).toBeUndefined();
+		await harness.mode.handleGoalModeCommand("resume");
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()?.customType).toBe("goal-continuation");
+		await waiter.inputPromise;
+	});
+
+	it("switching to another active goal does not inherit the interrupted session's stop", async () => {
+		vi.spyOn(vcs, "repo").mockReturnValue(null);
+		vi.spyOn(vcs, "git").mockReturnValue(null);
+		await harness.mode.init({ suppressWelcomeIntro: true });
+		await harness.mode.handleGoalModeCommand("Goal A");
+		const target = SessionManager.create(harness.tempDir.path(), harness.tempDir.path());
+		target.appendMessage({ role: "user", content: "Goal B", timestamp: Date.now() });
+		target.appendModeChange("goal", {
+			goal: { ...harness.session.getGoalModeState()?.goal, id: "goal-b", objective: "Goal B" },
+		});
+		await target.ensureOnDisk();
+		const targetFile = target.getSessionFile();
+		if (!targetFile) throw new Error("Expected target session file");
+		await target.close();
+		await harness.session.abort();
+		expect(await harness.session.switchSession(targetFile)).toBe(true);
+		vi.useFakeTimers();
+		const waiter = await armInputWaiter(harness.mode);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()?.customType).toBe("goal-continuation");
+		await waiter.inputPromise;
+	});
+
+	it("reloading the interrupted transcript preserves its stop", async () => {
+		vi.spyOn(vcs, "repo").mockReturnValue(null);
+		vi.spyOn(vcs, "git").mockReturnValue(null);
+		await harness.mode.init({ suppressWelcomeIntro: true });
+		await harness.mode.handleGoalModeCommand("Goal A");
+		await harness.session.sessionManager.ensureOnDisk();
+		const file = harness.session.sessionManager.getSessionFile();
+		if (!file) throw new Error("Expected session file");
+		await harness.session.abort();
+		expect(await harness.session.switchSession(file)).toBe(true);
+		vi.useFakeTimers();
+		const waiter = await armInputWaiter(harness.mode);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()).toBeUndefined();
+		harness.mode.onInputCallback?.(harness.mode.startPendingSubmission({ text: "Continue" }));
+		await waiter.inputPromise;
+	});
+
+	it("a new transcript does not inherit the previous goal's lifecycle abort", async () => {
+		vi.spyOn(vcs, "repo").mockReturnValue(null);
+		vi.spyOn(vcs, "git").mockReturnValue(null);
+		await harness.mode.init({ suppressWelcomeIntro: true });
+		await harness.mode.handleGoalModeCommand("Goal A");
+		expect(await harness.session.newSession()).toBe(true);
+		await harness.session.goalRuntime.createGoal({ objective: "Goal B" });
+		vi.useFakeTimers();
+		const waiter = await armInputWaiter(harness.mode);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()?.customType).toBe("goal-continuation");
+		await waiter.inputPromise;
+	});
+
+	it("internal abort preserves interactive continuation", async () => {
+		vi.spyOn(vcs, "repo").mockReturnValue(null);
+		vi.spyOn(vcs, "git").mockReturnValue(null);
+		await harness.mode.init({ suppressWelcomeIntro: true });
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		await harness.session.abort({ goalReason: "internal" });
+		vi.useFakeTimers();
+		const waiter = await armInputWaiter(harness.mode);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()?.customType).toBe("goal-continuation");
+		await waiter.inputPromise;
+	});
+
+	it("continues an active goal when actionable work remains alongside blocked work", async () => {
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		harness.session.setTodoPhases([
+			{
+				name: "Release",
+				tasks: [
+					{ content: "Get approval", status: "blocked", blocker: "Awaiting user approval" },
+					{ content: "Run independent checks", status: "pending" },
+				],
+			},
+		]);
+
+		vi.useFakeTimers();
+		const waiter = await armInputWaiter(harness.mode);
+		vi.advanceTimersByTime(800);
+		await waitForMicrotasks();
+		expect(waiter.getResolvedInput()?.customType).toBe("goal-continuation");
+		await waiter.inputPromise;
+	});
+
 	it("stops repeated goal continuations when identical tool evidence adds no new signal", async () => {
 		vi.spyOn(vcs, "repo").mockReturnValue(null);
 		vi.spyOn(vcs, "git").mockReturnValue(null);
@@ -534,7 +827,7 @@ describe("InteractiveMode goal mode integration", () => {
 		harness.session.setTodoPhases([
 			{
 				name: "Verification",
-				tasks: [{ content: "Run focused checks", status: "completed" }],
+				tasks: [{ content: "Run focused checks", status: "pending" }],
 			},
 		]);
 		let providerCall = 0;
@@ -592,7 +885,7 @@ describe("InteractiveMode goal mode integration", () => {
 		harness.session.setTodoPhases([
 			{
 				name: "Verification",
-				tasks: [{ content: "Review release artifact", status: "completed" }],
+				tasks: [{ content: "Review release artifact", status: "pending" }],
 			},
 		]);
 		await runContinuation();

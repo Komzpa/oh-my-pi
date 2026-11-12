@@ -301,6 +301,8 @@ export interface ParsedAgentFields {
 	thinkingLevel?: ConfiguredThinkingLevel;
 	autoloadSkills?: string[];
 	readSummarize?: boolean;
+	/** Overrides task.agentsMd for this agent. */
+	agentsMd?: "strip" | "project";
 	blocking?: boolean;
 	/** `true` = keep `yield` and the output schema when `task.structured` is off. */
 	structured?: boolean;
@@ -404,6 +406,8 @@ export function parseAgentFields(frontmatter: Record<string, unknown>): ParsedAg
 		structured,
 		autoloadSkills,
 		readSummarize,
+		agentsMd:
+			frontmatter.agentsMd === "strip" || frontmatter.agentsMd === "project" ? frontmatter.agentsMd : undefined,
 		prewalk,
 		advisor,
 	};

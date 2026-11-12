@@ -1737,6 +1737,22 @@ impl Shell {
 	/// starts from the shell's global state: it does not see the locals of
 	/// a function the shell is in the middle of (a host submits between
 	/// steps, at no particular point of the root's execution).
+	/// Assign the embedding boundary for the next root run. Existing jobs
+	/// retain the boundary they inherited when they were created.
+	pub fn set_resource_scope(&mut self, scope: u16) {
+		self.procs[0].lineage.resource_scope = scope;
+	}
+
+	/// Whether a background virtual process may still launch in this boundary.
+	pub fn resource_scope_live(&self, scope: u16) -> bool {
+		self
+			.procs
+			.iter()
+			.skip(1)
+			.chain(&self.k.spawned)
+			.any(|p| p.lineage.resource_scope == scope)
+	}
+
 	pub fn submit(&mut self, script: Script) -> RunId {
 		self.submit_from(0, script, None, None)
 	}

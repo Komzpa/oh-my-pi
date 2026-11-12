@@ -339,6 +339,11 @@ export class UsageCache {
 
 	/** A confirmed reset permits one fresh probe even during a pre-reset failure cooldown. */
 	invalidateAfterReset(provider: Provider, baseUrl?: string, options?: { resetSpentCredentialId?: number }): void {
+		for (const entry of this.#pool.entries(provider)) {
+			this.#usageProviders(provider)?.onReset?.(
+				usageRequest(provider, buildUsageCredential(entry.credential), baseUrl),
+			);
+		}
 		this.#recoveryEpochs.set(provider, this.recoveryEpoch(provider) + 1);
 		this.#bumpRefreshEpoch(provider);
 		if (!this.deletePrefix(`failure:report:${this.#usageCacheProviderKey(provider)}:`)) {

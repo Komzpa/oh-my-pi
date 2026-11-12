@@ -6,6 +6,7 @@ import type {
 	VcsHunkSelectionError,
 	VcsJjWorkspace,
 	VcsRepo,
+	VcsStatusOptions,
 } from "./index.js";
 /** Portable capabilities that differ between Git and Jujutsu. */
 export type VcsFeature = "stagedDiff" | "revDiff";
@@ -57,8 +58,24 @@ export declare function require(dir: string, ...features: VcsFeature[]): VcsRepo
 /** Like {@link git}, but throws a `NotARepository` {@link VcsError}. */
 export declare function requireGit(dir: string): VcsGitRepo;
 
+/** Read a fresh porcelain snapshot through the shared rate-limited status queue. */
+export declare function statusPorcelainFresh(
+	repo: VcsGitRepo,
+	options?: VcsStatusOptions,
+	signal?: AbortSignal,
+): Promise<string>;
+
+/** Invalidate cached status after a tool writes repository files; this does not reset rate limiting. */
+export declare function invalidateStatus(dir?: string): void;
+
+/** Snapshot repository identity, status metadata, and explicit invalidation generation. */
+export declare function statusEpoch(repo: VcsGitRepo | VcsRepo): { identity: string; metadata: string; generation: number } | null;
+
 /** Repository metadata only (cheap fs walk) — for synchronous render paths. */
 export declare function gitInfo(dir: string): VcsGitRepoInfo | null;
+
+/** Latest committer time in milliseconds; zero for an unborn repository. */
+export declare function lastCommitTime(repo: VcsGitRepo): Promise<number | undefined>;
 
 /** Discover the Jujutsu workspace containing `dir`; `null` when absent. */
 export declare function jj(dir: string): VcsJjWorkspace | null;
@@ -104,3 +121,9 @@ export declare const HEAD_WATCH_INTERVAL_MS: number;
 
 /** Watch a repository for head changes; returns a disposer. */
 export declare function watch(repo: VcsRepo, onChange: () => void, intervalMs?: number): () => void;
+
+/** Whether commit is an ancestor of descendant (HEAD by default). */
+export declare function isAncestor(dir: string, commit: string, descendant?: string): Promise<boolean>;
+
+/** Stable patch identities from a bounded reachable walk (milliseconds since epoch). */
+export declare function commitPatchIds(dir: string, revision: string, since?: number, limit?: number): Promise<{ patchId: string; commit: string }[]>;

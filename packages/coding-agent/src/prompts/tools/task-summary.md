@@ -6,6 +6,11 @@
 {{#if error}}
 <error>{{error}}</error>
 {{/if}}
+{{#if retainedBackgroundJobs}}
+<retained-background-jobs>
+{{retainedBackgroundJobs}}
+</retained-background-jobs>
+{{/if}}
 {{#if truncated}}
 <preview full-output="agent://{{id}}">
 {{preview}}
@@ -15,9 +20,15 @@
 {{preview}}
 </output>
 {{/if}}
+{{#if abandonedJobIds}}
+<warning>Terminal yield abandoned running processes: {{abandonedJobIds}}. Task cleanup cancels unfinished owner jobs.</warning>
+{{/if}}
 {{#if mergeSummary}}
 <merge-summary>
 {{mergeSummary}}
 </merge-summary>
+{{/if}}
+{{#if deconfliction}}
+<deconfliction>{{deconfliction}}</deconfliction>
 {{/if}}
 </task-result>

@@ -45,8 +45,30 @@ const featuresQuestion: ExtensionAskDialogQuestion = {
  */
 const scriptedAskProvider = `
 import { createAssistantMessageEventStream } from "@oh-my-pi/pi-ai";
+import { AskTool } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/tools/ask.ts"))};
+import { Settings } from ${JSON.stringify(path.resolve(import.meta.dir, "../src/config/settings.ts"))};
 
 export default function (pi) {
+	// Ordinary model asks return pending questions. This fixture deliberately
+	// exercises the interactive-answer path used when a host presents a form.
+	const interactiveAsk = new AskTool({
+		cwd: process.cwd(),
+		hasUI: true,
+		settings: Settings.isolated({ "ask.notify": "off", "speech.enabled": false }),
+		getSessionFile: () => null,
+		getSessionSpawns: () => "*",
+	}, { interactiveAnswer: true });
+	pi.registerTool({
+		name: "interactive_ask",
+		label: interactiveAsk.label,
+		description: interactiveAsk.description,
+		parameters: interactiveAsk.parameters,
+		execute: (id, args, signal, onUpdate, ctx) => interactiveAsk.execute(id, args, signal, onUpdate, {
+			hasUI: ctx.hasUI,
+			ui: ctx.ui,
+			abort: () => { throw new Error("Unexpected form cancellation"); },
+		}),
+	});
 	pi.registerProvider("scripted", {
 		baseUrl: "http://127.0.0.1:9/v1",
 		apiKey: "scripted-key",
@@ -77,7 +99,7 @@ export default function (pi) {
 			};
 			stream.push({ type: "start", partial: message });
 			if (argsAt >= 0) {
-				const toolCall = { type: "toolCall", id: "ask-" + context.messages.length, name: "ask", arguments: JSON.parse(text.slice(argsAt)) };
+				const toolCall = { type: "toolCall", id: "ask-" + context.messages.length, name: "interactive_ask", arguments: JSON.parse(text.slice(argsAt)) };
 				message.content = [toolCall];
 				message.stopReason = "toolUse";
 				stream.push({ type: "toolcall_start", contentIndex: 0, partial: message });
@@ -736,7 +758,7 @@ describe("RPC ask dialog", () => {
 		expect(onTimeout).not.toHaveBeenCalled();
 	});
 
-	it("walks the ask tool's form through select prompts, also after the host opts into ask dialogs", async () => {
+	it("walks an interactive-answer form through select prompts, also after the host opts into ask dialogs", async () => {
 		await using temp = await TempDir.create("@rpc-ask-dialog-");
 		const extensionPath = temp.join("scripted-ask.ts");
 		await Bun.write(extensionPath, scriptedAskProvider);
@@ -798,7 +820,7 @@ describe("RPC ask dialog", () => {
 				} else if (frame.type === "extension_ui_request" && frame.method === "ask") {
 					askRequests.push(frame);
 					await send({ type: "extension_ui_response", id: frame.id, cancelled: true });
-				} else if (frame.type === "tool_execution_end" && frame.toolName === "ask") {
+				} else if (frame.type === "tool_execution_end" && frame.toolName === "interactive_ask") {
 					toolResults.push(frame.result);
 				} else if (frame.type === "prompt_result" && frame.id === "fallback") {
 					await send({ type: "set_ask_dialog", id: "opt-in", enabled: true });

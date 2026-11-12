@@ -123,6 +123,10 @@ pub struct SessionConfig {
 /// One command of a [`Session`].
 #[derive(Clone, Default)]
 pub struct RunOptions {
+	/// Per-tool task boundary; shared by segments of one tool call.
+	pub process_limit:  Option<Arc<pi_vcs::process_limit::ToolProcessLimit>>,
+	/// Session bindings removed before this run.
+	pub unset_env:      Vec<BString>,
 	/// The command string (`bash -c` semantics).
 	pub command:        String,
 	/// Variables exported to this command only (pi's per-run env). They are
@@ -159,6 +163,8 @@ impl RunOptions {
 	/// Run `command` with no env overlay in the current directory.
 	pub fn new(command: impl Into<String>) -> Self {
 		Self {
+			process_limit:  None,
+			unset_env:      Vec::new(),
 			command:        command.into(),
 			env:            Vec::new(),
 			cwd:            None,
@@ -233,6 +239,9 @@ pub enum SessionError {
 	/// [`RunOptions::cwd`] is not absolute.
 	#[error("working directory {0} is not absolute")]
 	RelativeCwd(BString),
+	/// A tool exceeded its kernel task boundary.
+	#[error("{0}")]
+	ProcessLimit(#[source] std::io::Error),
 }
 
 /// The live externals of the run in flight (pi's `Shell::pids()`). Cheap to
@@ -538,7 +547,7 @@ impl Session {
 		guard.armed = false;
 		drop(guard);
 		match outcome {
-			Some(Ok(outcome)) => Ok(outcome),
+			Some(Ok(outcome)) => outcome,
 			Some(Err(_)) => {
 				self.close();
 				Err(SessionError::Closed)
@@ -624,7 +633,7 @@ struct Job {
 	options: RunOptions,
 	stdio:   RunStdio,
 	cancel:  Arc<CancelLevel>,
-	reply:   flume::Sender<RunOutcome>,
+	reply:   flume::Sender<Result<RunOutcome, SessionError>>,
 }
 
 /// The driver task's state: the shell and everything it is stepped with.
@@ -674,8 +683,35 @@ impl Driver {
 	/// Run one job to completion and send its outcome.
 	async fn run(&mut self, job: Job) {
 		let Job { options, stdio, cancel, reply } = job;
-		let RunOptions { command, env, cwd, pipe_tap, reported_error, text_capture, events } =
-			options;
+		let RunOptions {
+			command,
+			env,
+			cwd,
+			pipe_tap,
+			reported_error,
+			text_capture,
+			events,
+			process_limit,
+			unset_env,
+		} = options;
+		self
+			.host
+			.prune_process_limits(|id| self.shell.resource_scope_live(id));
+		let scope = match process_limit
+			.as_ref()
+			.map(|limit| self.host.install_process_limit(Arc::clone(limit)))
+			.transpose()
+		{
+			Ok(scope) => scope.unwrap_or(0),
+			Err(error) => {
+				let _ = reply.send(Err(SessionError::ProcessLimit(error)));
+				return;
+			},
+		};
+		self.shell.set_resource_scope(scope);
+		for name in unset_env {
+			self.store.del_out_of_band(Key::Var(name.as_bstr()));
+		}
 		self.host.set_pipe_tap(pipe_tap);
 		// A command owns its observer generation, even when successive
 		// observers request identical event masks.
@@ -753,7 +789,23 @@ impl Driver {
 		self.image.publish(&self.store);
 		let cwd = store_cwd(&self.store);
 		// The caller may have stopped waiting (dropped future).
-		let _ = reply.send(RunOutcome { status, cancelled: applied > 0, exited, cwd });
+		let result = (|| {
+			if let Some(limit) = &process_limit
+				&& limit.limit_was_hit()?
+			{
+				return Err(std::io::Error::other(format!(
+					"tool process limit exceeded: Linux cgroup pids.max blocked process creation at {} \
+					 tasks (threads count); reduce concurrent child processes, or raise the cap with {}",
+					limit.limit(),
+					pi_vcs::process_limit::TASK_LIMIT_ENV
+				)));
+			}
+			Ok(RunOutcome { status, cancelled: applied > 0, exited, cwd })
+		})();
+		if applied > 0 {
+			self.host.clear_process_limits().await;
+		}
+		let _ = reply.send(result.map_err(SessionError::ProcessLimit));
 	}
 
 	/// Let the background work a command started reach its first wait (an
@@ -907,6 +959,180 @@ mod tests {
 			.await
 			.unwrap();
 		Captured { outcome, stdout: out.join().unwrap(), stderr: err.join().unwrap() }
+	}
+
+	#[cfg(target_os = "linux")]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn process_boundary_contains_external_exec_pipeline_and_callout() {
+		let mut s = session();
+		let limit = Arc::new(pi_vcs::process_limit::ToolProcessLimit::new(64));
+		for command in [
+			"/bin/cat /proc/self/cgroup",
+			"exec /bin/cat /proc/self/cgroup",
+			"f() { /bin/cat /proc/self/cgroup; }; f | /bin/cat",
+			r#"echo "$(/bin/cat /proc/self/cgroup)""#,
+			"timeout 5 /bin/cat /proc/self/cgroup",
+			"printf '/proc/self/cgroup\\n' | xargs /bin/cat",
+			"env -i /bin/cat /proc/self/cgroup",
+		] {
+			let captured = capture(&mut s, RunOptions {
+				process_limit: Some(Arc::clone(&limit)),
+				..RunOptions::new(command)
+			})
+			.await;
+			assert_eq!(captured.outcome.status, 0, "{command}: {}", captured.stderr);
+			assert!(captured.stdout.contains("omp-tool-call-"), "{command}: {}", captured.stdout);
+		}
+		use std::os::unix::fs::PermissionsExt as _;
+		let dir = tempfile::tempdir().unwrap();
+		let script = dir.path().join("scoped-script");
+		std::fs::write(&script, "args=(/proc/self/cgroup); /bin/cat \"${args[0]}\"\n").unwrap();
+		std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+		let scripted = capture(&mut s, RunOptions {
+			process_limit: Some(Arc::clone(&limit)),
+			cwd: Some(BString::from(dir.path().as_os_str().as_encoded_bytes())),
+			..RunOptions::new("./scoped-script")
+		})
+		.await;
+		assert_eq!(scripted.outcome.status, 0, "{}", scripted.stderr);
+		assert!(scripted.stdout.contains("omp-tool-call-"), "{}", scripted.stdout);
+
+		let detached = capture(&mut s, RunOptions {
+			process_limit: Some(limit),
+			..RunOptions::new("nohup /bin/cat /proc/self/cgroup")
+		})
+		.await;
+		assert_eq!(detached.outcome.status, 0, "{}", detached.stderr);
+		assert!(!detached.stdout.contains("omp-tool-call-"), "{}", detached.stdout);
+	}
+
+	#[cfg(target_os = "linux")]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn process_boundary_caps_forks_and_reports_the_kernel_rejection() {
+		let mut s = session();
+		let result = s.run_with(RunOptions {
+			process_limit: Some(Arc::new(pi_vcs::process_limit::ToolProcessLimit::new(32))),
+			..RunOptions::new(r#"python3 -c 'import os,time; children=[]; exec("for _ in range(80):\n try: pid=os.fork()\n except OSError: break\n if pid==0: time.sleep(.3); os._exit(0)\n children.append(pid)"); [os.waitpid(pid,0) for pid in children]'"#)
+		}, RunStdio::default(), CancellationToken::new()).await;
+		let error = result
+			.expect_err("kernel task cap must fail the tool call")
+			.to_string();
+		assert!(error.contains("tool process limit exceeded"), "{error}");
+		assert!(error.contains("OMP_TOOL_TASKS_MAX"), "{error}");
+		assert_eq!(sh(&mut s, "echo usable").await.stdout, "usable\n");
+	}
+
+	#[cfg(target_os = "linux")]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn process_boundary_delayed_background_job_keeps_its_original_call() {
+		let mut s = session();
+		let dir = tempfile::tempdir().unwrap();
+		let first = dir.path().join("first");
+		let delayed = dir.path().join("delayed");
+		let command = format!(
+			"/bin/cat /proc/self/cgroup > '{}'; {{ /bin/sleep .2; /bin/cat /proc/self/cgroup > '{}'; \
+			 }} &",
+			first.display(),
+			delayed.display()
+		);
+		capture(&mut s, RunOptions {
+			process_limit: Some(Arc::new(pi_vcs::process_limit::ToolProcessLimit::new(64))),
+			..RunOptions::new(command)
+		})
+		.await;
+		let next = capture(&mut s, RunOptions {
+			process_limit: Some(Arc::new(pi_vcs::process_limit::ToolProcessLimit::new(64))),
+			..RunOptions::new("/bin/cat /proc/self/cgroup; wait")
+		})
+		.await;
+		let first = std::fs::read_to_string(first).unwrap();
+		let delayed = std::fs::read_to_string(delayed).unwrap();
+		let slice = |text: &str| {
+			text
+				.split('/')
+				.rfind(|part| part.starts_with("omp-tool-call-") && part.ends_with(".slice"))
+				.unwrap()
+				.to_owned()
+		};
+		assert_eq!(slice(&first), slice(&delayed));
+		assert_ne!(slice(&first), slice(&next.stdout));
+	}
+
+	#[cfg(target_os = "linux")]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn process_boundary_cancel_kills_escaped_child_and_keeps_neighbor() {
+		let mut s = session();
+		let dir = tempfile::tempdir().unwrap();
+		let pid_path = dir.path().join("pid");
+		let traps = dir.path().join("traps");
+		let mut neighbor = tokio::process::Command::new("sleep")
+			.arg("20")
+			.kill_on_drop(true)
+			.spawn()
+			.unwrap();
+		let command = format!(
+			r#"python3 -c 'import subprocess,time,signal; p=subprocess.Popen(["sleep","20"],start_new_session=True); signal.signal(signal.SIGTERM,lambda *_: open("{}","a").write("term\n")); open("{}","w").write(str(p.pid)); time.sleep(20)'"#,
+			traps.display(),
+			pid_path.display()
+		);
+		let cancel = CancellationToken::new();
+		let stopper = {
+			let cancel = cancel.clone();
+			let pid_path = pid_path.clone();
+			tokio::spawn(async move {
+				let deadline = Instant::now() + Duration::from_secs(15);
+				let pid = loop {
+					if let Some(pid) = std::fs::read_to_string(&pid_path)
+						.ok()
+						.and_then(|text| text.trim().parse::<i32>().ok())
+					{
+						break Some(pid);
+					}
+					if Instant::now() >= deadline {
+						break None;
+					}
+					tokio::time::sleep(Duration::from_millis(10)).await;
+				};
+				cancel.cancel();
+				pid
+			})
+		};
+		let result = s
+			.run_with(
+				RunOptions {
+					process_limit: Some(Arc::new(pi_vcs::process_limit::ToolProcessLimit::new(64))),
+					..RunOptions::new(command)
+				},
+				RunStdio::default(),
+				cancel,
+			)
+			.await
+			.unwrap();
+		let pid = stopper
+			.await
+			.unwrap()
+			.expect("escaped child must be ready before cancellation");
+		let running = || {
+			std::fs::read_to_string(format!("/proc/{pid}/stat"))
+				.is_ok_and(|s| !s.split_once(") ").unwrap().1.starts_with('Z'))
+		};
+		let deadline = Instant::now() + Duration::from_secs(5);
+		while running() && Instant::now() < deadline {
+			tokio::time::sleep(Duration::from_millis(20)).await;
+		}
+		let escaped_survived = running();
+		if escaped_survived {
+			// SAFETY: the fixture recorded its exact child pid.
+			unsafe {
+				libc::kill(pid, libc::SIGKILL);
+			}
+		}
+		let neighbor_survived = neighbor.try_wait().unwrap().is_none();
+		neighbor.kill().await.unwrap();
+		assert!(result.cancelled);
+		assert!(!escaped_survived, "escaped process {pid} survived cancellation");
+		assert!(neighbor_survived, "unrelated sibling was killed");
+		assert_eq!(std::fs::read_to_string(traps).unwrap(), "term\n");
 	}
 
 	async fn sh(session: &mut Session, command: &str) -> Captured {

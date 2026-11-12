@@ -2,6 +2,7 @@
 export interface LoopPhaseAttribution {
 	readonly label: string;
 	/** Total time this label was the innermost active phase inside the late window [start, end]. */
+	// Zero for an explicitly labeled launch-overlap candidate: no synchronous attribution.
 	readonly ms: number;
 }
 
@@ -9,7 +10,8 @@ export interface LoopPhaseAttribution {
  * Process-global synchronous loop phases. The watchdog arms a late window and
  * reads attribution via {@link takeLoopPhaseAttribution}; attribution totals
  * only the innermost label's time inside that window. A label is named only
- * when its total outweighs all unlabeled time, otherwise the block remains
+ * when its total outweighs all unlabeled time, otherwise an optional fallback names overlapping launch work with the explicit
+ * "launch-overlap:" prefix and ms=0 (no synchronous attribution), or stays
  * "unknown". Disarmed push/pop do not read the clock.
  *
  * This is deliberately a process-global stack and not part of the logger span
@@ -23,6 +25,11 @@ export interface LoopPhaseAttribution {
  * misattribute or leak phases. Instrument only synchronous spans; for async
  * work, push/pop around each synchronous chunk, not across the await.
  */
+let fallback: ((start: number, end: number) => string | undefined) | undefined;
+/** Register bounded wall-overlap diagnostics for work that resumes after an await. */
+export function setLoopPhaseFallback(provider: (start: number, end: number) => string | undefined): void {
+	fallback = provider;
+}
 const stack: string[] = [];
 const defaultClock = () => performance.now();
 let windowStart = Number.POSITIVE_INFINITY;
@@ -74,7 +81,7 @@ export function resetLoopPhaseWindow(start = Number.POSITIVE_INFINITY, now: () =
 	labeledMs = 0;
 }
 
-/** Attribute the window [start, end] and disarm it. Returns undefined when no window is armed or no label outweighs unlabeled time. */
+/** Attribute the window [start, end] and disarm it. Returns undefined when no window is armed, or neither synchronous attribution nor a fallback names work. */
 export function takeLoopPhaseAttribution(end?: number): LoopPhaseAttribution | undefined {
 	if (windowStart === Number.POSITIVE_INFINITY) return undefined;
 	const t = end ?? clock();
@@ -88,7 +95,13 @@ export function takeLoopPhaseAttribution(end?: number): LoopPhaseAttribution | u
 			winnerMs = ms;
 		}
 	}
-	const result = winner !== undefined && winnerMs > unknownMs ? { label: winner, ms: winnerMs } : undefined;
+	const candidate = fallback?.(windowStart, t);
+	const result =
+		winner !== undefined && winnerMs > unknownMs
+			? { label: winner, ms: winnerMs }
+			: candidate
+				? { label: candidate, ms: 0 }
+				: undefined;
 	resetLoopPhaseWindow();
 	return result;
 }

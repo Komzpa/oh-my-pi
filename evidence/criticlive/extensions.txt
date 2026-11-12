@@ -1,0 +1,1277 @@
+bun test v1.4.4 (38afee6c8) 32x PARALLEL
+
+packages/reemxy-extensions/extensions/codex_lb_provider.test.ts:
+(pass) Reemxy codex-lb provider > registers the current codex-lb OpenAI account model set [0.10ms]
+(pass) Reemxy codex-lb provider > keeps codex-lb on the local authenticated OpenAI-compatible endpoint [0.03ms]
+(pass) Reemxy codex-lb provider > registers codex-lb when the extension loads [0.04ms]
+
+packages/reemxy-extensions/extensions/plan-trajectory.test.ts:
+(pass) plan trajectory > real DC tail exposes deadline slip and the Labels dependency chain [1.97ms]
+(pass) plan trajectory > declining open work with fresh estimates produces no intervention [0.11ms]
+
+packages/reemxy-extensions/extensions/deadline-format.test.ts:
+(pass) repeated busy-plan timestamps preserve wire text and format only changed values [11.13ms]
+(pass) cached clocks preserve DST transitions and zone identity [0.95ms]
+
+packages/reemxy-extensions/extensions/plan_critic.test.ts:
+(pass) critic receives the current requirement diff with its exact quote, excluding another revision's receipt [5.05ms]
+(pass) plan critic runtime binding > successful dependency mutation closes an action; prose and failed tools cannot [7.41ms]
+(pass) plan critic runtime binding > unaddressed verdict escalates on next wake and survives session restart [5.21ms]
+(pass) plan critic runtime binding > converging verdict permits waiting and repeats only after the configured interval [0.58ms]
+(pass) plan critic runtime binding > completed or worker sessions never spawn critics [0.11ms]
+(pass) plan critic runtime binding > fresh reviewer input excludes transcripts and coalesces concurrent wakes [0.32ms]
+(pass) plan critic runtime binding > new churn triggers a review immediately inside the periodic interval [0.42ms]
+(pass) plan critic runtime binding > malformed verdicts cannot erase obligations [0.07ms]
+(pass) plan critic runtime binding > unrelated mutations never count as executing a critic action [0.03ms]
+(pass) an empty startup followed by restored churn is reviewed by the next minute poll [0.81ms]
+(pass) a continued lead with parentSession runs; a depth-zero task child does not [0.41ms]
+(pass) repeated empty-plan polls log one debug and warning for their skip reason [0.18ms]
+
+packages/reemxy-extensions/extensions/attempt_receipt.test.ts:
+(pass) redispatch selects latest attempt by finish time and carries existing fix, failed oracle and open question [7.86ms]
+(pass) redispatch refuses missing findings instead of running with stale premises [2.36ms]
+
+packages/reemxy-extensions/extensions/agent_profiles.test.ts:
+(pass) Reemxy extension agent model chains > removed user-shadow role is absent from the extension inventory [1.98ms]
+(pass) Reemxy extension agent model chains > all 18 shared preambles escalate brief mismatches to the lead and follow the answer [0.88ms]
+(pass) Reemxy extension agent model chains > profiles name role groups, not literal models [0.71ms]
+(pass) Reemxy extension agent model chains > every grouped profile is covered and pins a fixed frontmatter effort, not a model suffix [1.33ms]
+(pass) Reemxy extension agent model chains > judgment and strong profiles never include the free group [0.63ms]
+(pass) Reemxy extension agent model chains > git-pr-owner runs git against the brief ROOT and does not treat a missing object as a remote hang [0.82ms]
+
+packages/reemxy-extensions/extensions/checkout_scope.test.ts:
+(pass) checkoutScopesFromResources > a relative file next to an absolute worktree keeps the worktree scope [70.21ms]
+(pass) checkoutScopesFromResources > relative paths without exactly one worktree, and bare words, stay unknown [0.22ms]
+
+packages/reemxy-extensions/extensions/stakeholder-shadow.test.ts:
+(pass) extension root lists the shipped stakeholder skill and ignores a file entrypoint [5.75ms]
+(pass) project-local stakeholder skill owns the bare name over the shipped fallback [15.10ms]
+
+packages/reemxy-extensions/extensions/vision_gate.test.ts:
+(pass) image reads depend on file contents and current model capabilities, never the filename or brief [9.38ms]
+(pass) structured screenshot calls refuse before execution and opaque captures return an actionable error [0.44ms]
+(pass) registered hooks reject screenshot results while keeping ordinary results intact [0.71ms]
+
+packages/reemxy-extensions/extensions/delivery_critic.test.ts:
+(pass) completed commit queues once even with repeated completion and changed preview [4.61ms]
+(pass) evidenced defect becomes redo with the critic evidence as the next brief addendum [0.19ms]
+(pass) preview-only delivery joins the batch after clean and displays the verdict [20.00ms]
+
+packages/reemxy-extensions/extensions/requirement_quotes.test.ts:
+(pass) PRD dispatch carries original solar quote and refuses a row without its linked quote [0.85ms]
+(pass) conflicting product contract cannot redispatch through prose; only exact quote/conflict-bound resolution releases it [1.00ms]
+(pass) a passing requirement audit with executable checks cannot hide widening or omit quote comparison [0.23ms]
+
+packages/reemxy-extensions/extensions/delivery_critic.test.ts:
+(pass) 15-minute timeout releases owner decision while keeping the pending verdict [0.24ms]
+(pass) failed attempt and completed report without commit or preview never spawn a critic [0.07ms]
+(pass) thin input, unevidenced defects and contradictory clean verdicts cannot send a row to redo [0.04ms]
+(pass) delivery ledger appends kind and evidence in the tasks-loop prediction shape [7.59ms]
+(pass) restored pending critic keeps its deadline and never starts a second task [0.23ms]
+(pass) late defect from a superseded attempt is recorded without reopening the new attempt [0.19ms]
+(pass) a saved owner accepted decision survives a pending critic and its timeout [0.15ms]
+(pass) a saved owner redo decision survives a pending critic and its timeout [0.06ms]
+(pass) a saved owner drop decision survives a pending critic and its timeout [0.06ms]
+(pass) critic clean and timeout do not ask about an owner-specified cosmetic fix [0.13ms]
+(pass) critic clean and timeout do not ask about answered content [0.06ms]
+
+packages/reemxy-extensions/extensions/worker_asks.test.ts:
+(pass) seen worker ask survives prose, unrelated dispatch and failed/wrong-worker answers; successful reject releases gate [2.28ms]
+(pass) worker question preempts a churning row [0.49ms]
+(pass) direct lead questions require a real reply; progress cannot answer or create an ask [0.31ms]
+
+packages/reemxy-extensions/extensions/jev_compaction.test.ts:
+(pass) OMP JEV compaction timing > uses absolute token thresholds rather than model-window percentages [0.06ms]
+(pass) OMP JEV compaction timing > fragile transcript-only state outranks an apparently settled turn [0.05ms]
+(pass) OMP JEV compaction timing > settled and heavy work independently authorize compaction [0.02ms]
+(pass) OMP JEV compaction timing > JEV sees bounded user and assistant text without tool output [0.20ms]
+
+packages/reemxy-extensions/extensions/todo_review_answers.test.ts:
+(pass) replay DC 18:56 and saved 07:49 owner acceptance: close once, clear HUD and survive restart [208.05ms]
+
+packages/reemxy-extensions/extensions/mechanical-model-routing.test.ts:
+(pass) mechanical worker routing > gate-runner avoids the brrrr Opus pool and falls back to Luna when Terra is unavailable [11.32ms]
+(pass) mechanical worker routing > git-pr-owner avoids the brrrr Opus pool and falls back to Luna when Terra is unavailable [1.70ms]
+
+packages/reemxy-extensions/extensions/agent_router.yield-budget.test.ts:
+(pass) the yield gate answers inside the host's extension handler timeout [4.14ms]
+
+packages/reemxy-extensions/extensions/todo_review_answers.test.ts:
+(pass) redo applies the owner's correction through the native review transition [62.66ms]
+
+packages/reemxy-extensions/extensions/agent_router.yield-budget.test.ts:
+(pass) a yield hook slower than 30 s after a completed commit never blocks the worker's result [27.89ms]
+(pass) negative control: a fast refusal inside the budget still blocks the yield [0.39ms]
+(pass) neighbour: a fast pass inside the budget records nothing [0.26ms]
+
+packages/reemxy-extensions/extensions/lead_time_notes.test.ts:
+(pass) lead reminders append once, stay quiet between turns, then repeat after five minutes [19.29ms]
+(pass) large plan identities do not duplicate the plan in persisted note details [0.54ms]
+
+packages/reemxy-extensions/extensions/todo_review_answers.test.ts:
+(pass) drop applies the owner's correction through the native review transition [138.95ms]
+
+packages/reemxy-extensions/extensions/agent_router.attribution.test.ts:
+(pass) served attribution preserves chosen and first turn on task and wait outcomes [1.56ms]
+(pass) fallback outcome records exact provider error class status and message head [0.34ms]
+(pass) spawn substitution without a recorded trigger never invents failure cooldown [0.34ms]
+
+packages/reemxy-extensions/extensions/todo_review_answers.test.ts:
+(pass) stale answer never changes the row [23.45ms]
+(pass) fail answer never changes the row [11.90ms]
+(pass) slow answer never changes the row [31.73ms]
+(pass) ambiguous answer never changes the row [10.67ms]
+
+packages/reemxy-extensions/extensions/lead_time_notes.test.ts:
+(pass) a busy note check selects note metadata without hydrating 300k unrelated notices [183.54ms]
+
+packages/reemxy-extensions/extensions/todo_review_answers.test.ts:
+(pass) recorded card slug wins over a renamed row; blank redo leaves the decision open [72.49ms]
+
+packages/reemxy-extensions/extensions/todo_review_opener.test.ts:
+(pass) pending card claims survive restart, serialize concurrent checks, and admit changed content [1.12ms]
+(pass) a batch waits for every delivered card of the row and ignores other rows' answers [0.33ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.branch-reads.test.ts:
+(pass) todo state reads stop at the latest snapshot, including pending edits [1.26ms]
+(pass) native snapshots remain usable with pending writes without any todo history read [0.27ms]
+(pass) archive updates read only the appended tail and rebuild after switching branches [0.97ms]
+(pass) legacy managers still replay the latest todo snapshot [1.28ms]
+(pass) session loading warms archive history before interactive reads, including branch switches [9.33ms]
+
+packages/reemxy-extensions/extensions/user-deadline-replay.test.ts:
+(pass) transcript replay persists without focus, wraps at 23:00, and survives rewritten notes and compaction [54.96ms]
+(pass) no-deadline negative control keeps context and todo/task behavior unchanged [2.52ms]
+(pass) assistant status promises and synthetic user messages cannot extend or clear a missed deadline [3.00ms]
+(pass) a newer real user time replaces the constraint and clears wrap-up [3.66ms]
+(pass) after a miss unrelated work stays blocked until the user changes the constraint [2.17ms]
+(pass) delivering stages and dropping focus do not close the user's deadline [2.36ms]
+(pass) only a user-visible final records the single wrap-up status receipt [5.36ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.fast.test.ts:
+(pass) tier-less worker: setFast false is not recorded and the attempt is not repeated [0.48ms]
+(pass) fallback kimi → codex-lb re-applies priority after the model change [0.18ms]
+(pass) setFast true on a model that cannot realize priority is not recorded as on [0.06ms]
+
+packages/reemxy-extensions/extensions/user-deadline-replay.test.ts:
+(pass) real staffing consumer yields its demands and worker gate to missed-deadline wrap-up [50.93ms]
+
+packages/reemxy-extensions/extensions/todo_preview.runtime.test.ts:
+(pass) runtime rename replay refuses gate scheduling and gate dispatch, journals actual preview visibility and clears refusal [268.29ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > writes spawn JSONL with requested stats fields [1.37ms]
+(pass) agent router > visual words in a brief never refuse a spawn [0.29ms]
+(pass) agent router > blocks a second non-isolated writer while allowing isolation [13.28ms]
+(pass) agent router > keeps long file paths and worker ids actionable in the first line [6.61ms]
+(pass) agent router > incoming git-pr-owner bypasses the checkout gate while file writers stay gated [3.88ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.staffing.test.ts:
+(pass) staffing is the first notice each turn and new rows cannot jump failed workers [118.69ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > grievance 467: coder beside a running git-pr-owner is admitted on disjoint paths, refused on overlap [19.39ms]
+(pass) agent router > explicit spawn resources keep nested coders on disjoint subdirs of one repo admitted [7.88ms]
+(pass) agent router > lanePathsFromText drops HTTP routes whose top-level directory does not exist [0.05ms]
+
+packages/reemxy-extensions/extensions/todo_calibration.test.ts:
+(pass) history keeps completed runs only and strips the thinking suffix from the model [39.10ms]
+
+packages/reemxy-extensions/extensions/todo_preview.runtime.test.ts:
+(pass) runtime off has no preview journal, HUD metadata or dispatch obligation [94.46ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > unowned batch coders scope from spawn row title and lane path [18.12ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.staffing.test.ts:
+(pass) a batch that staffs every priority row may also staff a new row; a partial batch names only the missing rows [42.23ms]
+(pass) turn_start keeps three restored row owners working despite stale failed executor records [7.36ms]
+
+packages/reemxy-extensions/extensions/todo_calibration.test.ts:
+(pass) a hint needs ten finished runs of the owner's role/model and reports median and p90 [36.67ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.readonly.test.ts:
+(pass) recorded 7-task batch 2026-11-07T00:04:49.357Z preserves frozen review rows [87.59ms]
+
+packages/reemxy-extensions/extensions/todo_calibration.test.ts:
+(pass) an owner that names a role is calibrated on the whole role [6.48ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > checkout writer scopes allow disjoint repositories and refuse every active collision [30.00ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.readonly.test.ts:
+(pass) recorded 8-task batch 2026-11-07T00:06:26.685Z preserves frozen review rows [9.99ms]
+(pass) recorded 2-task batch 2026-11-07T00:10:23.602Z preserves frozen review rows [7.30ms]
+(pass) renamed rows inherit review metadata without writing either frozen row [14.73ms]
+(pass) read-only audits leave frozen review metadata and task arguments untouched [2.01ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.staffing.test.ts:
+(pass) task refuses a restored live row owner and admits replacement only after the owner stops [44.34ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.readonly.test.ts:
+(pass) registered dispatch refuses a retry without findings and attaches the previous same-row receipt [11.01ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > checkout writer scopes follow the canonical plan while the worker runs [39.47ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.staffing.test.ts:
+(pass) context withdraws a startup staffing warning after its owners are restored [11.80ms]
+
+packages/reemxy-extensions/extensions/dispatch_preflight.test.ts:
+(pass) write behavior blocks outside cwd without telltale prose and cannot be bypassed by retry [5.86ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.staffing.test.ts:
+(pass) task also refuses a row owned by an ordinary running job [1.91ms]
+
+packages/reemxy-extensions/extensions/dispatch_preflight.test.ts:
+(pass) known bash write operands are checked; mention-only commands pass [3.02ms]
+(pass) symlink escapes and edit rename targets are blocked [2.93ms]
+(pass) actual test launch probes fresh resources on each attempt; matching words alone do not [1.90ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > checkout writer scopes require exact canonical ownership and keep unknown active writers conservative [23.02ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.away.test.ts:
+HUD waiting row: Approve the load-test budget · waits for you: approve the 3m budget · proposal: approve 3m, because the load te… · 10m
+(pass) 1. a row waiting for the user shows as waits for you with the chief's proposal, not needs unblock [43.56ms]
+
+packages/reemxy-extensions/extensions/dispatch_preflight.test.ts:
+(pass) three same-project suites admit a fourth with RAM capacity of at least four [11.22ms]
+(pass) RAM below the floor refuses an idle project [0.25ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.staffing.test.ts:
+(pass) busy lead staffing bursts use one replacement key and changed staffing replaces that subject [27.41ms]
+
+packages/reemxy-extensions/extensions/dispatch_preflight.test.ts:
+(pass) low VRAM refuses hardware perf while functional e2e still runs [9.43ms]
+(pass) shell redirections and changed cwd resolve targets, quoted mentions remain inert [4.70ms]
+(pass) registered tool hook checks launch state and file target before execution [5.51ms]
+(pass) a managed browser launch checks RAM while attaching an existing browser does not [1.37ms]
+(pass) patch payload targets cannot escape through pathless edit formats [0.39ms]
+
+packages/reemxy-extensions/extensions/verify-churn.test.ts:
+(pass) DC snapshot: stakeholder reviews cannot replace the row executor or invalidate its audit [0.59ms]
+(pass) DC snapshot: a read-only gate receipt cannot spawn another stakeholder review [0.22ms]
+(pass) DC proof failure gives the lead one executable continuation with the revision and missing screens [4.70ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) todo dispatch supervisor > supervisor keeps all work visible without replaying the full attempt history every turn [49.20ms]
+(pass) todo dispatch supervisor > alarms once per accepted estimate revision [10.43ms]
+
+packages/reemxy-extensions/extensions/todo_calibration.test.ts:
+(pass) a schedule result lists history for the owners it set, generic text only [110.81ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) todo dispatch supervisor > nudges an idle root once each overdue minute without a new estimate [7.41ms]
+(pass) todo dispatch supervisor > fixed deadline risk calls for path diagnosis and conditional model escalation only [9.73ms]
+(pass) todo dispatch supervisor > accepted reestimate is not evidence of an earlier missed ETA [0.69ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > checkout writer scopes use the host latest TODO getter and current branch [64.27ms]
+(pass) agent router > leaves unknown agents untouched [0.42ms]
+(pass) agent router > capacity counts unique authenticated model routes [0.21ms]
+(pass) agent router > records exact settled wait job outcome once [0.48ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.away.test.ts:
+(pass) 2. a row waiting for the user without a proposal gets one notice: fill in your own proposal first [69.24ms]
+(pass) 3. while away, a waiting row raises no recovery alarm, leaves the ETA, and its dependent proceeds on the proposal [3.61ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > records a correlated task outcome with job id and resolved model when observable [5.59ms]
+(pass) agent router > records core fallback reason when resolved model differs from the router pick [2.05ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.away.test.ts:
+(pass) 3. negative control: while the user watches, a waiting row is recovered as today and holds its dependent [1.77ms]
+(pass) 3. neighbour: while away, a row blocked on a service still raises recovery and holds its dependent [0.70ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > does not invent an outcome when two pending spawns share the same agent and no exact key is visible [13.04ms]
+(pass) agent router > extension registers spawn, fallback and result handlers [0.15ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) todo dispatch supervisor > whole-plan missing estimates include blocked rows and deduplicate until plan changes [36.24ms]
+(pass) todo dispatch supervisor > canonical planning issues require decomposition beyond one hour [0.56ms]
+(pass) todo dispatch supervisor > paused deadline remains observable without wake or timer authority [0.41ms]
+(pass) todo dispatch supervisor > recalculates CPM late-start and fixed-deadline risk without changing the static plan key [1.29ms]
+(pass) todo dispatch supervisor > reuses static serialization but injects a fresh forecast on every request [1.08ms]
+(pass) todo dispatch supervisor > signals failed task children for exact-worker recovery, not unrelated failed jobs [0.95ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > announces file guard at session start and active writer once after async spawn [12.02ms]
+(pass) agent router > extension follows a late core fallback with the actual routed model in UI [0.16ms]
+
+packages/reemxy-extensions/extensions/dispatch_preflight.test.ts:
+(pass) a running worker reads live parent resources on every write, including revocation [75.99ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > refuses empty writes unless the call explicitly confirms replacement [1.23ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) todo dispatch supervisor > inactive goals and child sessions suppress wakes; active children do not block independent candidates [5.85ms]
+(pass) todo dispatch supervisor > blocked-only plans produce a recovery action and one changed-plan wake [2.65ms]
+(pass) todo dispatch supervisor > ready ownership requires an exact live task id or live non-job id [5.09ms]
+(pass) todo dispatch supervisor > resumed in-progress owner with zero live jobs is lost and unstaffed [0.91ms]
+(pass) todo dispatch supervisor > missed-eta stays silent for a live-owned row and exhausted rows ask for receipt plus split [8.01ms]
+(pass) todo dispatch supervisor > overrun budget adds elapsed-at-reestimate to the remaining instead of tripling it [0.08ms]
+(pass) todo dispatch supervisor > checkout-lock refusal extracts the holding owner for NOT STARTED [0.07ms]
+(pass) todo dispatch supervisor > a user decision to wait is a distant wait, an hours-long blocker is not [0.08ms]
+(pass) todo dispatch supervisor > each ready unstaffed row asks for a worker while blocked and dependency-waiting rows stay out [1.36ms]
+(pass) todo dispatch supervisor > settled child reopens its unfinished ready row without displacing live or blocked work [1.68ms]
+(pass) todo dispatch supervisor > runtime Task capacity changes independent-row starts, finish, and wake revision [1.29ms]
+(pass) todo dispatch supervisor > a completed-looking task job in the running snapshot does not prove live ownership [0.22ms]
+(pass) todo dispatch supervisor > independent ready rows require distinct live owners while a dependency chain may reuse one [1.56ms]
+(pass) todo dispatch supervisor > ready tail rows and unrelated active jobs do not suppress candidates [4.85ms]
+(pass) todo dispatch supervisor > restored owners are resumed once and unowned or dependency-waiting rows are not duplicated [0.74ms]
+(pass) restored roster excludes settled children but keeps parked children separate from running jobs [25.42ms]
+(pass) restored roster drops children unknown to the current process after restart [8.10ms]
+
+packages/reemxy-extensions/extensions/todo_calibration.test.ts:
+(pass) no hint without enough history, for a non-schedule call, or for a refused call [149.66ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) first-context 13-row dispatch becomes observation-only when paused [48.58ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.away.test.ts:
+(pass) 4. away with nothing ready, wait is refused once with the ordered work list [166.78ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > refuses tiny writes to tracked files but allows normal in-repository writes [147.78ms]
+(pass) agent router > writes and edits outside the session repository pass: sessions work on other repositories from tasks-loop [1.46ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.away.test.ts:
+(pass) 4. away with an empty work list, wait is allowed [25.80ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > unknown-scope holder only blocks writers in the session-cwd repo [43.99ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) agent_end and shutdown persist child IDs but drop stale IDs on an empty-snapshot restart [83.90ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.away.test.ts:
+(pass) 4. negative control: while the user watches, wait behaves as today [31.01ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) an unchanged open plan leaves context messages untouched on each request [23.38ms]
+
+packages/reemxy-extensions/extensions/agent_router.test.ts:
+(pass) agent router > writer refusal names the holder repo and points at row resources [34.65ms]
+(pass) a failed async-result delivery with no wait is recorded once [2.34ms]
+(pass) /brrrr session preset > applies the brrrr preset and clears it on off [0.52ms]
+(pass) /brrrr session preset > reports the canonical unavailable reason through the registered command [0.50ms]
+(pass) /brrrr session preset > reports the canonical unavailable reason through the registered command [0.04ms]
+(pass) /brrrr session preset > reports the canonical invalid reason through the registered command [0.10ms]
+(pass) /brrrr session preset > reports the canonical failed reason through the registered command [0.01ms]
+(pass) /brrrr session preset > reports a missing preset and an unsupported build without acting [0.30ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) todo schedule result plan check uses the just-returned phases [42.32ms]
+
+packages/reemxy-extensions/extensions/row_audit.test.ts:
+(pass) DC 16:45 replay: delivered rows verify, finished-without-change rows need a worker, nothing is stuck [15.97ms]
+
+packages/reemxy-extensions/extensions/todo_preview.runtime.test.ts:
+(pass) a failed todo call cannot waive preview dispatch; a successful structured reason can [466.01ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.render.test.ts:
+                                                                                                                        
+╭─── ✘ Todo ───────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│   Split remainder of "Publish amber panel".                                                                          │
+│ Refusing todo schedule: "Publish amber panel" has 2 reestimates unde…                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+                                                                                                                        
+(pass) the collapsed Todo error card keeps the recovery action and row visible [63.86ms]
+
+packages/reemxy-extensions/extensions/row_audit.test.ts:
+(pass) DC replay launches one batched audit per head, persists it first, and a reload does not duplicate it [9.52ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.archive-cost.test.ts:
+(pass) dispatch ticks replay archived rows once per TODO revision and observe init and branch changes [65.68ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.render.test.ts:
+(pass) accepted open rows render as closing without overdue error colour [10.08ms]
+(pass) a two-minute successor can replan despite a legacy inherited cap [0.36ms]
+
+packages/reemxy-extensions/extensions/row_audit.test.ts:
+(pass) audit pass closes the row; audit fail returns it to needs worker carrying the findings [7.82ms]
+(pass) a head move while the audit runs discards its verdicts and re-audits once at the new head [1.31ms]
+(pass) a restart relaunches a pending audit exactly once [0.78ms]
+(pass) batches split per repository head and stop at the auditor cap [1.19ms]
+(pass) aborted and lost workers need a worker; a lost audit of a delivered row is re-audited [0.39ms]
+(pass) audit verdict parser accepts fenced JSON and rejects malformed rows [0.05ms]
+(pass) DivineRoadrunner replay: a yield of unverified 'fail' verdicts is inconclusive, never needs worker [11.54ms]
+(pass) no auditor profile: nothing launches, never a gate-runner substitute, rows show auditor unavailable [13.13ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) PLAN CHECK advises executor planning only for three unseen rows and clears when a worker has finished one [50.36ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.lead-action.test.ts:
+(pass) live self-blocked rows are the lead's own action; neighbours are not [24.23ms]
+
+packages/reemxy-extensions/extensions/row_audit.test.ts:
+(pass) the auditor is resolved through the agent registry, not by file presence next to the extension [33.83ms]
+(pass) verdicts from the old gate-runner fallback are void: those rows reopen to verifying and are re-audited [7.94ms]
+(pass) every row in a running batched audit names its verifier in the HUD [1.46ms]
+(pass) new deliveries at the same head launch concurrently without duplicating a row or exceeding the cap [1.69ms]
+(pass) an omitted row retries once alone, then asks for proof instead of a third audit [1.27ms]
+(pass) the lead gate names an unsent review page and the evidence worker's missing check [0.95ms]
+(pass) a new worker delivery invalidates the previous pass and starts a fresh audit [4.98ms]
+(pass) 18:55 HUD replay: six idle deliveries have zero phantom verifiers and launch only within capacity [2.54ms]
+(pass) timestamp-only evidence updates cannot restart an exhausted audit [0.93ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.lead-action.test.ts:
+(pass) block is refused on a delivered row and names the lead's own action [56.68ms]
+
+packages/reemxy-extensions/extensions/todo_preview.runtime.test.ts:
+(pass) successful terminal branch receipt is attributed to the executor after schedule owner changes [126.65ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) planning-round nag skips rows that wait on unfinished rows and clears once the plan-doctor has read the plan [88.01ms]
+
+packages/reemxy-extensions/extensions/rework-gate-567.test.ts:
+(pass) 567: refused task rework spawns nothing while unread-receipts stands [9.65ms]
+(pass) 567 control: kill still allowed; remedy todo allowed; no-gate rework allowed [0.09ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.chat-choice.test.ts:
+(pass) blocked external work is not mistaken for a user decision [0.39ms]
+(pass) every decision needs a live artifact and state changes permit a fresh refusal [1.01ms]
+(pass) owner decision uses todo ownership, and a prose URL cannot substitute for an artifact [0.23ms]
+(pass) default probe requires a matching delivered card on the publisher port [0.68ms]
+(pass) live unfinished review rows do not demand decision pages before delivery [0.08ms]
+(pass) delivered and visible review rows still require a page even after closure [0.33ms]
+(pass) an abandoned result no longer demands a user decision [0.05ms]
+(pass) running CI cannot postpone a missing handoff [0.06ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.forecast-replan.test.ts:
+(pass) an unresolved requested row creates a named mandatory forecast replan [81.35ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.away.test.ts:
+(pass) 5. when the user writes while away, one notice lists the waiting rows with proposals first in the next turn [286.35ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.runtime.test.ts:
+(pass) wait: unrelated background work cannot hide overdue Brag and Finance; live owners alone cannot clear refusal [134.61ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.reviewdisplay.test.ts:
+(pass) DC delivered legacy status is closed consistently; a late undelivered neighbour stays overdue [14.96ms]
+
+packages/reemxy-extensions/extensions/plan-trajectory.test.ts:
+(pass) plan trajectory > bounded UTF-8 output retains original deadline and newest deadline with omission disclosure [2288.37ms]
+(pass) plan trajectory > note port preserves midnight rollover and STALL with active workers [0.96ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) PLAN CHECK advises retrospectives for sprint triggers and clears after retro-facilitator finishes [115.29ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.reviewdisplay.test.ts:
+(pass) DC missing handoff repeatedly gates waits during CI, ordinary completion is unaffected [12.70ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.runtime.test.ts:
+(pass) session_stop: unrelated background work cannot hide overdue Brag and Finance; live owners alone cannot clear refusal [35.95ms]
+
+packages/reemxy-extensions/extensions/todo_preview.runtime.test.ts:
+(pass) the plan timer observes preview advancement without another tool event [157.33ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.runtime.test.ts:
+(pass) wait preview gap is refused once per revision even with live owners [61.16ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.auto-goal.test.ts:
+(pass) an open plan forecast over 15 minutes away becomes the persisted active deadline [34.90ms]
+(pass) a plan forecast within the next 15 minutes does not create an automatic deadline [0.02ms]
+(pass) an active real goal or deadline prevents an automatic deadline [0.03ms]
+(pass) a later tick keeps the original automatic deadline for the same plan [0.05ms]
+(pass) a missed automatic forecast remains anchored even when estimates change [4.98ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.runtime.test.ts:
+(pass) lead default opens a 200 review URL once and opens its replacement [31.44ms]
+(pass) review opener respects {"worker":true} [1.14ms]
+(pass) review opener respects {"lane":true} [2.32ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.cow.test.ts:
+(pass) schedule notification patches only changed rows without cloning the archived plan [28.06ms]
+(pass) live state entry readers reuse the immutable owner snapshot without falling back to the cloning API [4.11ms]
+(pass) dispatch readers bypass replay only for native snapshots and still apply pending or durable edits [0.35ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.post-deadline.test.ts:
+(pass) an inactive deadline returns every after-deadline row to the normal queue with one visible note [163.48ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.runtime.test.ts:
+(pass) review opener respects {"autoOpen":false} [25.88ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.away.test.ts:
+(pass) 5. presence leaving away without a typed message also brings the notice, once [199.39ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.post-deadline.test.ts:
+(pass) a removed deadline also clears the flags on session start [45.64ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.git.test.ts:
+(pass) Git integration probing yields while Git is slow and retains merge facts [1069.59ms]
+(pass) a non-repository has no Git integration state [8.63ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.post-deadline.test.ts:
+(pass) negative control: an active deadline keeps the after-deadline flags [67.50ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.runtime.test.ts:
+(pass) wait: 11:04 versus 10:00 refuses; visible triage, crashing and safe overlap repair the fixed deadline [130.87ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.away.test.ts:
+(pass) 5. negative control: a message while the user already watches brings no return notice [140.13ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.state.test.ts:
+(pass) sprint state stays bounded > 1000 distinct plan checks keep the notice record small [177.68ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.receipts.test.ts:
+(pass) receipt scans share the last 500 branch-entry window before hydrating payloads [44.10ms]
+(pass) incomplete and malformed worker output stays excluded [0.12ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) verified path ignores the same partial prose; missing path refuses without cues [1729.11ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) a newly assigned worker is not blamed for an earlier plan miss [0.90ms]
+(pass) estimate floor refuses below the owner's successful p50 and accepts the floor [8.50ms]
+(pass) evidence-based remaining work may be shorter than full-task profile median [0.49ms]
+(pass) a remaining-time update on a running attempt with progress evidence is not floored [0.38ms]
+(pass) retry uses the previous attempt's measured duration, not a multiplied estimate [7.80ms]
+(pass) an overdue first attempt does not manufacture a retry duration [0.62ms]
+(pass) a schedule that only ratifies elapsed time is refused without evidence [1.42ms]
+(pass) TODO forecast display shows user review and speculative dependency [1.48ms]
+(pass) first handoff cut is required only when the earliest usable result misses 30 minutes or the user deadline [0.44ms]
+(pass) missed ETA notice names every late row, owner, and overrun [0.32ms]
+
+packages/reemxy-extensions/extensions/todo_preview.test.ts:
+(pass) rename commit at T+20 remains invisible behind gate at T+30; preview ancestry clears the blocking dispatch [2.57ms]
+(pass) setting off never probes or creates visibility obligations; structured reason lifts the obligation [0.26ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.lead-action.test.ts:
+(pass) negative control: block on a row without a delivered result still passes [503.78ms]
+
+packages/reemxy-extensions/extensions/todo_preview.test.ts:
+(pass) only structured git identities qualify, never a worker's prose [0.14ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) proof work proceeds only when marked speculative; independent work stays unblocked [6.99ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.forecast-replan.test.ts:
+(pass) an undelivered user wait demands a concrete forecast repair; delivered review is not debt [405.01ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.state.test.ts:
+(pass) sprint state stays bounded > a legacy full-text state restores bounded and hashed [72.29ms]
+(pass) sprint state prune keeps sessions bounded > 500 add/remove cycles with 10 live rows persist under 20 KB and rehydrate [5.92ms]
+(pass) sprint state prune keeps sessions bounded > a live row's seen flag survives pruning [0.13ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.forecast-replan.test.ts:
+(pass) a user delivery deadline after P95 creates a cut-to-fit replan demand [25.72ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.state.test.ts:
+(pass) sprint state prune keeps sessions bounded > a burst of state changes in one turn appends exactly one entry [0.56ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.forecast-replan.test.ts:
+(pass) a row past its canonical ETA creates a mandatory forecast replan [61.37ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.live-state.test.ts:
+(pass) live plan checks do not read historical TODO payloads and observe later changes [9.61ms]
+(pass) pending edits keep their original order after the current native snapshot [0.17ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.reviewdisplay.test.ts:
+(pass) admission and opener require the published matching result card, then open once [465.89ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.forecast-replan.test.ts:
+(pass) a passed automatic forecast deadline creates a mandatory replan and reports the miss [19.51ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) work outside the repo plus unrelated tracked dirt and untracked files may yield [156.46ms]
+
+packages/reemxy-extensions/extensions/todo_preview.test.ts:
+(pass) actual preview HEAD moving to worker commit records the first observed visibility [119.90ms]
+
+packages/reemxy-extensions/extensions/todo_preview.runtime.test.ts:
+(pass) ordinary completed worker's resource checkout attributes one commit to both rename rows [453.86ms]
+
+packages/reemxy-extensions/extensions/todo_preview.test.ts:
+(pass) TODO displays live asked-to-visible and freezes the measured duration [2.66ms]
+(pass) a journaled terminal receipt is still probed when the row no longer retains its executor commit [2.61ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.forecast-replan.test.ts:
+(pass) new estimates answer the forecast replan without moving the anchored automatic deadline [42.74ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.kill.test.ts:
+(pass) global kill commands are recognized, plain PID kills and quoted text are not [1.48ms]
+(pass) a subagent bash global kill is refused with the PID instruction; main and plain kill pass [10.31ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.lead-action.test.ts:
+(pass) resource schedule result steers the existing worker once without stopping it [184.50ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) explicit customer acceptance makes completed speculative results ready for delivery [191.45ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.runtime.test.ts:
+(pass) session_stop: 11:04 versus 10:00 refuses; visible triage, crashing and safe overlap repair the fixed deadline [310.57ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) structured redo and drop preserve dependent work and attempt history [37.24ms]
+
+packages/reemxy-extensions/extensions/goal_deadlines.test.ts:
+(pass) an exact user goal clock becomes its deadline at the original message time [6.00ms]
+(pass) replaces an automatic plan deadline with the objective clock on session start [3.62ms]
+(pass) preserves an already user-bound deadline on session start [1.42ms]
+(pass) goal deadline reminders > reports relative stage and final deadline progress [0.80ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.runtime.test.ts:
+(pass) P95-only deadline risk permits wait [46.58ms]
+
+packages/reemxy-extensions/extensions/plan_critic.loading.test.ts:
+(pass) installed lead extension paths reach one reviewer after resume [1223.36ms]
+
+packages/reemxy-extensions/extensions/goal_deadlines.test.ts:
+(pass) goal deadline reminders > renders due clocks in the persisted goal timezone [10.21ms]
+(pass) goal deadline reminders > overdue work names missing artifact and continues [0.10ms]
+(pass) goal deadline reminders > paused or exhausted schedules inject nothing [0.04ms]
+(pass) goal deadline reminders > rehydrates latest durable session state after compaction [0.03ms]
+(pass) goal deadline reminders > latest invalid deadline carrier does not revive an older valid schedule [0.11ms]
+(pass) goal deadline reminders > binds to the latest focused goal state [0.13ms]
+(pass) goal deadline reminders > resolves session focus from the persistent goal pool [0.05ms]
+(pass) goal deadline reminders > reads only a matching active schedule and returns milliseconds [0.17ms]
+(pass) goal deadline reminders > paused deadlines are displayable without granting active goal authority [0.09ms]
+(pass) goal deadline reminders > uses pi-goal-x pool only for explicit focus and honors native terminal mode [0.45ms]
+(pass) goal deadline reminders > surfaces deadlines in persistent UI text [0.14ms]
+(pass) goal deadline reminders > bounds reminder and never converts quota to tokens [0.10ms]
+(pass) goal deadline reminders > invalid or expired deadline intervals do not fabricate percentages [0.01ms]
+(pass) automatic presence > derives away at the silence and quiet-hour boundaries [3.85ms]
+(pass) automatic presence > derives watching during working hours [0.17ms]
+(pass) automatic presence > derives firefighting for a recent weekend at-risk deadline [0.11ms]
+(pass) automatic presence > uses the persisted goal timezone [1.13ms]
+(pass) automatic presence > reports the generic presence sentence [0.43ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wake-action.test.ts:
+(pass) no-event wake is silent, prose-only and re-estimate turns persist an escalating concrete action across reload [709.51ms]
+
+packages/reemxy-extensions/extensions/goal_deadlines.test.ts:
+(pass) automatic presence > context passes messages through and turn end appends a persisted automatic reminder [4.73ms]
+(pass) vetoes native and plugin goal completion until branch TODO work is closed [2.29ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) attempt two dispatches speculatively with a queued handoff, then honors correction [53.37ms]
+
+packages/reemxy-extensions/extensions/goal_deadlines.test.ts:
+(pass) native lifecycle preserves the original deadline without reviving stale goal focus [14.74ms]
+(pass) names deadline_at seconds and rejects implausible future seconds [0.77ms]
+(pass) clear lets an explicit set replace a corrupted immutable final deadline [1.82ms]
+(pass) persists a hard deadline without inventing goal focus or requiring goal metadata [2.23ms]
+(pass) tool results paint deadline state once, after recording delivery [1.72ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > resolves a bare HH:MM to the next such moment in the timezone [1.03ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) user accept resolves review and demands fast publication of the dependent work [12.80ms]
+
+packages/reemxy-extensions/extensions/goal_deadlines.test.ts:
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > live case: 'Continue until 19:00' at 17:24 +04 becomes 15:00Z, not a missed 2025 deadline [1.25ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > deadline normalization accepts frozen params and leaves the caller's stages unchanged [0.48ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > a deadline quote selects the newest real user message containing it [0.50ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > a made-up quote is rejected even when a user message exists [0.30ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > an older quoted message cannot replace a newer recorded deadline [0.98ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > a missed deadline replans open requested rows and keeps executing [2.49ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > deadline set and arrival notices are two lines, deduped, and precede the missed-deadline refusal [1.29ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > a deadline_at that disagrees with local_time is rejected with the resolved value [0.66ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > invalid long stage ids keep a bounded imperative action and the full id in the detail [0.77ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > a new user deadline in the past or beyond a week is an arithmetic error, never WRAP-UP [1.78ms]
+(pass) goal_deadline resolves wall-clock times and rejects arithmetic slips > a wrong value from the same user message can be corrected; a self-extension cannot [1.29ms]
+(pass) goal focus announces open TODO completion requirements before either completion tool [0.54ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) completed worker result without a page requests publication before user handoff [22.70ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.test.ts:
+(pass) no active deadline: overdue rows with live workers allow waiting [1.05ms]
+
+packages/reemxy-extensions/extensions/notice-delivery.test.ts:
+(pass) loaded harness extensions make zero provider requests before the first user prompt [1353.74ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.test.ts:
+(pass) no active deadline: a started overdue row without a live worker is still a red row, without the deadline lecture [0.38ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) owned work committed plus unrelated dirt may yield [205.84ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.test.ts:
+(pass) negative control: an active will-miss deadline with unstaffed critical rows refuses [0.37ms]
+(pass) active deadline: progressing executors allow waiting without revising the estimate [0.13ms]
+(pass) an overdue Brag/Finance model label and attempt do not permit waiting on unrelated jobs [0.42ms]
+(pass) an ownerless clock refuses idle; P95-only risk permits waiting [0.18ms]
+(pass) 15-minute preview gap refuses missing and unlanded identities once per row revision [0.32ms]
+(pass) a missing commit can be deferred only until its recorded time; an expired or untimed reason is not visibility [0.05ms]
+(pass) deadline slack uses the resource finish when expected finish is absent, and omits it without a due time [0.14ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wake-action.test.ts:
+(pass) successful dispatch counts as action, failed calls do not; a finished job allows a real update [68.83ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.test.ts:
+(pass) DC settled executors need restaff or verification; running registry workers and a live job pid permit wait [17.12ms]
+(pass) completed executor can hand off a visible user preview; review label alone still needs action [0.25ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.planfact.test.ts:
+(pass) lead idle event persists slip, churn and the exact blocked question without deleting old notes [145.24ms]
+(pass) failed attempts demand a strategy change; on-time work has no urgency and closed rows have no churn [0.35ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.bounded-state.test.ts:
+(pass) 300k historical edits do not make repeated dispatch and todo reads decode history [658.20ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) review reminder remains persisted without classifying assistant prose [43.80ms]
+
+packages/reemxy-extensions/extensions/todo_preview.test.ts:
+(pass) am/cherry-picked patches survive deleted worker worktrees and require every row commit [239.98ms]
+(pass) no identity has no measured delay and partial visibility remains a plan problem [0.55ms]
+(pass) invisible rows accept maintenance; explicit gate assignment accepts its documented reason escape [1.24ms]
+(pass) a coder owning a suite row is still eligible to own an invisible feature [0.18ms]
+(pass) preview gate exempts non-visual rows by behaviour > a rebaser branch row and a docs-file row are exempt [1.40ms]
+(pass) preview gate exempts non-visual rows by behaviour > negative control: a UI row's overdue preview still gates [0.09ms]
+(pass) preview gate exempts non-visual rows by behaviour > neighbour: a non-visual profile touching UI files or the preview checkout is visual [0.05ms]
+
+packages/reemxy-extensions/extensions/todo_preview.runtime.test.ts:
+(pass) lead todo git resource journals landed identity; absent identity is never a measured live delay [254.81ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wake-action.test.ts:
+(pass) CHURN cannot be satisfied by dispatching unrelated work; splitting its dependencies counts [43.82ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.red-rows.test.ts:
+(pass) DC lead waits on both overdue executors, refuses missing or stalled workers, and cannot stop [44.10ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:
+(pass) chief bash allows read-only loops and recursively checks substitutions [243.01ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) blocked user-unblock row is asked, and a recent persisted ask suppresses demand [30.17ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) edit-only handoff with an uncommitted owned file may yield [83.10ms]
+
+packages/reemxy-extensions/extensions/todo_preview.runtime.test.ts:
+(pass) the refusal's one-call schedule previewReason escape is admitted and persists [52.87ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wake-action.test.ts:
+(pass) CHURN chain review persists every link, survives reload and rejects unrelated work or head retries [61.88ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:
+(pass) chief bash admits live read-only compound commands [54.16ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) assigned to commit: an uncommitted owned file refuses, untracked files and committing do not [37.83ms]
+
+packages/reemxy-extensions/extensions/todo_preview.runtime.test.ts:
+(pass) live empty-updates deferral executes successfully and unblocks preview dispatch [39.00ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.sprint-amplify.test.ts:
+burst: 1 sprint-state record(s), 1114 bytes
+(pass) a burst of 26 new retro receipts persists one sprint-state record [142.41ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wake-action.test.ts:
+(pass) real chain dependencies can be rejected with a persisted per-link reason, changed graphs rearm review [59.83ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) commit must exist and be reachable from HEAD [78.05ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) missed ETA names every late owner, admits its rescheduled sibling task, and expires when no rows remain late [144.49ms]
+(pass) negated review words do not authorize publication or abandon dependent work [0.35ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wake-action.test.ts:
+(pass) AUDIT-FAIL heads trigger chain review during ordinary turns; a lone head and healthy chains do not [33.12ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) handed-off attempt can continue speculatively while the customer is absent [8.02ms]
+(pass) a fast older request cannot mask a late first slice for a newer requirement [0.17ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) an idle chief gets a persisted continuation demand for ready and overdue rows under a paused goal [96.22ms]
+(pass) an idle chief may stop when every open row needs the user to unblock it [3.34ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.push.test.ts:
+(pass) live heads create one notice and priority push row, then a worker push clears both without fetch [288.07ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wake-action.test.ts:
+(pass) dependent dispatch must succeed in an isolated worktree and have no unfinished logical dependency [26.49ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) a blocked row whose exact question reached the customer does not demand another ask [18.53ms]
+
+packages/reemxy-extensions/extensions/plan_critic.loading.test.ts:
+(pass) installed lead extension paths reach one reviewer after restore [308.55ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) commands require this worker's successful paired tool result [39.10ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) pending review does not turn unrelated publication words into a blanket gate [3.07ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) an ordinary-language blocker is rechecked once without claiming it is not waiting on the user [10.91ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) acceptance does not demand publishing a worker that has not produced its speculative result [3.76ms]
+(pass) a todo block waiting on the user is refused with the action-first text; the live shape included [1.43ms]
+(pass) a missionCritical row may wait on the user, now or after being marked [2.27ms]
+(pass) a schedule update keeping an owner-blocked row blocked is refused unless missionCritical [1.46ms]
+(pass) a delivered review:user row is closed for the HUD blocked count, dispatch and plan-check [6.66ms]
+(pass) the delivery notice is information, not a question, and the plan-check no longer demands a verdict [17.94ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) blocker accepts on third identical verified yield and changed evidence resets streak [70.68ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) the user-unblock ask is not repeated after 15 or 60 minutes, and one user message re-asks it once [67.91ms]
+(pass) accepted review closes in the schedule result and remains closed after replay [5.53ms]
+(pass) the user's Accept closes the row even when the requirement re-audit refuses done [10.21ms]
+(pass) negative control: a delivered row without the user's Accept still waits for review [0.24ms]
+(pass) a stuck accepted row from an old build names the one call that closes it [2.18ms]
+(pass) redo reopens a completed row and sends the user's actual note as the next brief [4.70ms]
+(pass) drop abandons the reviewed row and releases its dependants [7.15ms]
+(pass) customer verdicts pass admission on a user-review wait while ordinary wait edits stay refused [3.97ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) six refusals then annotated partial; main, readonly and incremental are exempt [78.87ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) DC audit dispatch survives all five refused calls and the intervening remedies [38.91ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) incomplete requirements need a blocker, failed commands cannot prove completion, trusted budget stops exempt [27.75ms]
+
+packages/reemxy-extensions/extensions/plan_critic.loading.test.ts:
+(pass) installed lead extension paths reach one reviewer after package [180.56ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) coder marks each bound row speculative automatically [6.48ms]
+(pass) structured row binding ignores other titles in a multi-row brief [0.08ms]
+(pass) a coder multi-row brief cannot hide an unaccepted dependency behind the first row [0.03ms]
+
+packages/reemxy-extensions/extensions/worker_continue.test.ts:
+(pass) inherited command success and foreign budget markers do not authorize ending [16.42ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.customer-review.test.ts:
+(pass) DC handoff refusals admit product workers without a review-page round trip [14.35ms]
+(pass) aborted and failed workers need receipt findings before retry, without demanding handoff [7.33ms]
+(pass) renamed rack work retains its predecessor's handoff and does not taint independent resources [7.62ms]
+(pass) published user-review row dispatches a speculative redo [2.64ms]
+(pass) runtime completion queues one delivery critic before the batch and clean releases it [0.92ms]
+(pass) restaffing does not request review for an owner-specified cosmetic fix [3.66ms]
+(pass) restaffing does not request review for answered product content [3.21ms]
+(pass) worker completion without critic does not ask about an owner-specified cosmetic fix [0.33ms]
+(pass) worker completion without critic does not ask about answered product content [0.11ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:
+(pass) chief bash admits cd-led looks, absolute-path binaries, gh reads and extended git reads [425.01ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.worktree.test.ts:
+(pass) no-commit counter reads the worker's own worktree, not the lead checkout it was spawned from [98.06ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) a retro-facilitator that completes after a reload still records the completed-retro boundary [503.81ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.worktree.test.ts:
+(pass) worktree is found from an absolute edit path and from cd/git -C when no cwd argument is given [91.94ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:
+(pass) chief bash admits git global options and read-only pager sinks [120.00ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) a new worker finishing predictable work after the remembered retro opens no notice [39.70ms]
+(pass) successful retro-facilitator settlement clears stale due on the next PLAN CHECK [4.65ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) idle lifecycle wakes once per active plan/alarm and suppresses paused or child sessions [1389.14ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) aborted worker is excluded while completed worker remains a retro participant [2.17ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) wait calls do not reset an unchanged idle continuation demand [453.55ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.worktree.test.ts:
+(pass) overlap notice compares normalized file paths, not command words or same-named files in different worktrees [36.96ms]
+(pass) bashWriteEffects returns only git add pathspecs, resolved against the working directory [0.15ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) unchanged skipped retro trigger notifies once until a genuinely new window [5.26ms]
+(pass) an async retro-facilitator that settles through wait clears the due notice [3.46ms]
+(pass) the per-request context note drops the due retro once its facilitator completed [12.37ms]
+
+packages/reemxy-extensions/extensions/lead-instructions.test.ts:
+(pass) every consumer display state and scenario has an instruction contract [0.11ms]
+(pass) unseen-product-decision: lead receives a row-specific next action without conflicting turn notices [0.25ms]
+(pass) working: lead receives a row-specific next action without conflicting turn notices [0.03ms]
+(pass) waiting: lead receives a row-specific next action without conflicting turn notices [0.02ms]
+(pass) verifying: lead receives a row-specific next action without conflicting turn notices
+(pass) audit-queued: lead receives a row-specific next action without conflicting turn notices
+(pass) handoff-pending: lead receives a row-specific next action without conflicting turn notices
+(pass) auditing: lead receives a row-specific next action without conflicting turn notices [0.01ms]
+(pass) ready-to-close: lead receives a row-specific next action without conflicting turn notices [0.02ms]
+(pass) needs-you: lead receives a row-specific next action without conflicting turn notices [0.01ms]
+(pass) findings-only: lead receives a row-specific next action without conflicting turn notices
+(pass) aborted: lead receives a row-specific next action without conflicting turn notices
+(pass) failed: lead receives a row-specific next action without conflicting turn notices
+(pass) refused: lead receives a row-specific next action without conflicting turn notices
+(pass) estimate-cap: lead receives a row-specific next action without conflicting turn notices
+(pass) external-blocker: lead receives a row-specific next action without conflicting turn notices
+(pass) lost-after-restart: lead receives a row-specific next action without conflicting turn notices
+(pass) audit-fail: lead receives a row-specific next action without conflicting turn notices
+(pass) missing-executable-proof: lead receives a row-specific next action without conflicting turn notices
+(pass) head-moved: lead receives a row-specific next action without conflicting turn notices [0.01ms]
+(pass) eta-reached: lead receives a row-specific next action without conflicting turn notices
+(pass) user-answered-review: lead receives a row-specific next action without conflicting turn notices
+(pass) blocked-on-user: lead receives a row-specific next action without conflicting turn notices
+(pass) blocked-user-already-asked: lead receives a row-specific next action without conflicting turn notices
+(pass) review-page-accept: lead receives a row-specific next action without conflicting turn notices [0.34ms]
+(pass) review-page-redo: lead receives a row-specific next action without conflicting turn notices [0.01ms]
+(pass) review-page-drop: lead receives a row-specific next action without conflicting turn notices [0.09ms]
+(pass) owner-question-telegram: lead receives a row-specific next action without conflicting turn notices
+(pass) never-handed-to-owner: lead receives a row-specific next action without conflicting turn notices
+(pass) running-worker-scope: lead receives a row-specific next action without conflicting turn notices
+(pass) capacity-full: lead receives a row-specific next action without conflicting turn notices
+(pass) unseen product decisions precede confirmations and saved answers do not ask again [0.16ms]
+
+packages/reemxy-extensions/extensions/notice-delivery.test.ts:
+(pass) an explicit peer wake still starts an idle turn with queued harness notices [735.20ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) an async background retro receipt clears the demand and never relists covered workers [105.29ms]
+(pass) twelve new workers with no retro still demand one [221.59ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) a changed plan rearms an idle demand without dropping dependent work [347.88ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) an async retro-facilitator that failed does not clear the due notice [56.41ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) waiting on a live worker does not demand another idle turn [59.85ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) workers that failed on provider errors are not retro participants [8.93ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) overdue follow-through re-arms by minute and dispatches only actionable, reconciled Task work [418.29ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) user correction retro classification: так. давай объясняй на чём всё блядь застряло [3.70ms]
+(pass) user correction retro classification: не только X [1.27ms]
+(pass) user correction retro classification: э блядь мы блеклистили ж этого линга [1.09ms]
+(pass) user correction retro classification: я же просил не трогать [8.50ms]
+(pass) user correction retro classification: не то, переделай [1.34ms]
+(pass) user correction retro classification: это худший вариант [82.83ms]
+
+packages/reemxy-extensions/extensions/notice-delivery.test.ts:
+(pass) a passive notice reaches the next provider input without waking after an internal abort (%s) [473.38ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) user correction retro classification: не тактичный ответ и поопять [7.52ms]
+(pass) user correction retro classification: НЕ ТАК, исправь [1.58ms]
+(pass) user correction retro classification: опять сломалось [1.40ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) dependency waits remain allowed until independently runnable work appears [106.67ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) user correction retro uses only user text: {"type":"input","source":"interactive","text":"продолжай","images":[{"type":"image","data":"я же просил","mimeType":"image/png"}]} [8.84ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) a genuine output-chained plan with external gates stays silent instead of demanding a replan [8.48ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) unchanged actionable TODO state blocks status-only stops after reads, history and waits without expiry [123.58ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) user correction retro uses only user text: {"type":"input","source":"extension","text":"я же просил не трогать"} [1.13ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) user-deferred Fireflies and external blockers never force ready work or mutate the plan [7.65ms]
+(pass) an unanswered human message refuses every wait with its timestamp and text, while reads stay allowed [0.79ms]
+(pass) published assistant text answers the human, but a newer human turn requires another reply [0.49ms]
+(pass) text in the in-flight assistant message carrying wait answers the human [0.49ms]
+(pass) context delivery keeps an already queued plan check unchanged (append-only history) [39.28ms]
+(pass) injected peer messages and synthetic notices do not require human replies [0.63ms]
+(pass) a worker's unanswered brief does not block wait or stop [0.48ms]
+(pass) empty stop and unpublished drafts keep the human unanswered until final text reaches history [0.57ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) user correction retro uses only user text: {"type":"input","source":"rpc","text":"я же просил не трогать"} [93.69ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) the main session is chief of staff: worker tools are refused while worker slots sit empty [95.48ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) a predictable delivery plus three hours without incidents opens no retro [1.32ms]
+(pass) an updater rejection opens a retro naming the incident [27.39ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) chief cannot bypass dispatch by leaving a small edit out of the plan [28.15ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) healthy worker telemetry does not wake the chief on a plan tick [83.96ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) a single quota failure opens no retro but the same failure twice does [11.14ms]
+(pass) a completed install job whose result carries a non-zero exit opens an updater rejection [7.67ms]
+(pass) a completed install job whose result exits zero opens no retro [1.37ms]
+(pass) an async install dispatch that settles through an async-result opens an updater rejection [8.13ms]
+(pass) a completed install job whose result has a camelCase installExit opens an updater rejection [1.28ms]
+(pass) a completed install job whose result has a terminal status of blocked opens an updater rejection [8.43ms]
+(pass) a completed install job whose result has a terminal status of failed opens an updater rejection [4.54ms]
+(pass) a completed install job whose result has the full installFailure payload opens an updater rejection [4.09ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) repeated retro and checkpoint notices do not send another chief turn, and an unchanged plan-check is delivered once [37.01ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) an updater job settled before its async-result still opens the rejection retro exactly once [8.87ms]
+(pass) a late async-result that exits zero opens no retro [14.32ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) an identical due notice is suppressed but a new worker failure wakes chief [36.51ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) a worker started but never linked to a row does not silence dispatch for the rest of a goal run [102.24ms]
+(pass) session_compact re-persists the full chief rules exactly once for a main session [0.93ms]
+
+packages/reemxy-extensions/extensions/notice-delivery.test.ts:
+(pass) a passive notice reaches the next provider input without waking after an internal abort (%s) [321.58ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) a completed non-install job whose result looks like a rejection opens no updater rejection [139.11ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) the context hook does not add the chief rules per request, and no entry appears without compaction [113.11ms]
+(pass) session_compact re-persists a worker's original brief [0.43ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) task settlement records install_exit=%s immediately and only once [44.11ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) wait is allowed when open rows depend on running work or user approval [175.44ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) task settlement records install_exit=%s immediately and only once [8.50ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) one ready row does not imply spare machine capacity [2.70ms]
+(pass) a dead scheduled owner prompts conditional owner repair [6.37ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) a lead re-dispatch chain Foo to Foo-3 on one row opens repeated failure [10.32ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) wait sees a row completed in the same batch [6.29ms]
+(pass) capacity reports zero when no authenticated worker profile can start [4.44ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.test.ts:
+(pass) a resolved merge left open is committed first, and a merge gets one worker, not one per file [154.20ms]
+(pass) extension-only context accumulation regression > duplicate main history keeps newest rules and todo error without mutating journal or reordering ordinary messages [1.95ms]
+(pass) extension-only context accumulation regression > five retained compactions keep all three latest custom types in model context without journal appends [1.47ms]
+(pass) extension-only context accumulation regression > five compactions reinject rules after they are dropped [0.82ms]
+(pass) extension-only context accumulation regression > five compactions reinject a genuinely dropped worker brief [0.26ms]
+(pass) extension-only context accumulation regression > five worker compactions retaining the newest brief do not append copies [0.19ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) a covered redispatch chain stays quiet until a new attempt appears [106.55ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) PLAN CHECK puts stale no-commit workers first and never aborts them [105.40ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) a single attempt on one row opens no repeated failure [8.60ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) dispatcher renders forecast and deadline times in the persisted goal timezone [1.86ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) a single reopened row opens a retro [1.23ms]
+(pass) a row past its canonical forecast opens a missed ETA retro [44.21ms]
+(pass) an empty worker result opens a retro [30.95ms]
+(pass) a substituted worker result opens a retro [1.87ms]
+(pass) red TUI event: gate rejection [6.61ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) wait refusals deduplicate by rendered content across plan revisions [85.80ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) red TUI event: failed todo update [1.17ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) OMP_LANE_UNIT suppresses chief gates, retros and continuation nudges [0.89ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) red TUI event: ordinary bash error [7.13ms]
+(pass) red TUI event: past ETA [1.59ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) plan tick flags an alive-but-waiting worker whose worktree is quiet, escalates, and ignores a stuck pending flag [9.12ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) red TUI event: on-time row [1.41ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:
+(pass) chief bash admits mid-chain cd and read-only git plumbing, and still refuses writers (sunbim 2026-10-23 13:12:44Z) [1178.67ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.retro.test.ts:
+(pass) a zero-worker deadline incident requests lead evidence rather than nonexistent reports [8.84ms]
+(pass) a new incident after covered reports uses lead evidence without relisting those workers [18.27ms]
+(pass) periodic retro receipt lookup uses the indexed 500-entry tail [3.69ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) plan tick never prints a quiet-worktree age from a cut-off mtime walk [75.08ms]
+(pass) plan tick negative control: a worker whose worktree changed recently is not a suspect [7.30ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:
+(pass) chief bash can run delivery commands but refuses unsafe chains and builds [101.03ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) plan ticker is re-armed on a turn when no tick ran for three minutes [34.80ms]
+(pass) a genuine Main message announces reply-before-wait once before either refusal [1.55ms]
+(pass) appended incomplete rows announce the exact schedule batch before any work can be refused [46.04ms]
+(pass) an unstaffed ready row announces staffing before wait and chief-work refusals [17.54ms]
+(pass) reached ETA and second-reestimate notices preserve the live owner [156.08ms]
+(pass) cap refusal preserves a progressing owner and permits waiting for its result [49.41ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:
+(pass) chief bash admits agent-cli lookups and write-nothing redirects, and refuses agent-cli writers and file redirects [279.94ms]
+(pass) chief bash still refuses non-delivery git mutations, tee pipes and redirects [42.71ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) sixty-minute escalation refuses repeated waits, ignores lead check-ins, and accepts a newer worker yield [169.51ms]
+(pass) cap recovery clears when its worker is gone and the row has a running new owner, without a kill [28.91ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:
+(pass) chief bash still refuses cd-led mutations, absolute mutators and gh writes [271.76ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) a deferred row with a finished worker does not demand killing it before waiting for other work [126.29ms]
+(pass) stuck escalation drops once its worker is gone from the job table without a kill or receipt [17.50ms]
+(pass) stuck escalation clears on kill with a new running owner; a sub-hour quiet worker permits wait [7.49ms]
+(pass) restoring an obsolete cap recovery never requires killing a healthy owner [2.07ms]
+(pass) stuck wait requires a fresh successful yield or completed result, never old receipts or failed yields [86.65ms]
+(pass) critical split: Litterbox wait names both rows and the misrouted worker, once per revision [192.25ms]
+(pass) critical split: an appended parallel row answers the refusal even after it is staffed [29.64ms]
+(pass) critical split: dropping a dependency answers the refusal [7.30ms]
+(pass) critical split: an honest idle-wait override lets an unsplittable chain wait [9.36ms]
+(pass) critical split: zero free slots and a non-critical single worker allow wait [8.59ms]
+(pass) critical split: a pending critical row behind a running non-critical row still refuses [4.23ms]
+(pass) critical split: free models and low effort are each flagged in refusal and plan check [23.77ms]
+(pass) critical split: a permitted mechanical low/free route never restaffs in refusal or plan check [8.89ms]
+(pass) critical split: effective policy project reviewer overrides bundled policy [19.71ms]
+(pass) critical split: effective policy custom low/free role [7.66ms]
+(pass) critical split: effective policy custom strong role [7.50ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:
+(pass) chief bash blocks mutations inside structure and malformed shell [442.51ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) critical split: effective policy operator permits reviewer low/free [9.45ms]
+(pass) critical split: effective policy operator requires gate-runner strong route [9.11ms]
+(pass) critical split: effective policy low operator effort ceiling [9.71ms]
+(pass) critical split: effective policy high operator effort ceiling [8.90ms]
+(pass) critical split: effective policy free alias resolves to paid model [10.75ms]
+(pass) critical split: effective policy compliant mixed-effort free fallback [9.89ms]
+(pass) critical split: effective policy truly under-effort free fallback [9.69ms]
+(pass) critical split: effective policy absent role effort inherits default [8.99ms]
+(pass) critical split: missing running identity cannot invent a policy mismatch [7.36ms]
+(pass) critical split: a lone running critical row with nothing parked behind it may wait [4.32ms]
+(pass) critical split: no forced split for external waits or multiple workers on the running row [4.00ms]
+(pass) critical split: completed prerequisites do not hide a pending critical wait [6.06ms]
+(pass) critical split: switching sessions resets the once-per-plan acknowledgement [11.35ms]
+(pass) obsolete cap recovery stays passive alongside startup advice [1.52ms]
+The user last wrote at 09:38 and may not come back. Do not wait for them. For every open question you asked, act on the default you stated now; if you stated none, pick the conservative one and say which. Close rows that only need their look as delivered. Only a missionCritical row may wait. If nothing can proceed without an irreversible/public step, wrap up: close what is done, then one final message listing done / left / defaults taken, and stop.
+(pass) an idle lead with open rows and a silent user gets the user-absent wake at 30 minutes [37.09ms]
+(pass) a no-progress turn gets exactly one wrap-up wake, then silence for hours [127.47ms]
+(pass) a progress turn re-arms the 30 minute timer with another user-absent wake [415.62ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.sprint-amplify.test.ts:
+cap: 601 total records, latest retroReceiptIds=500, latest bytes=11761
+(pass) retro receipt ids stay bounded as receipts accumulate [3675.09ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) a new user message resets the user-absent state [255.16ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.sprint-amplify.test.ts:
+override: 0 sprint-state record(s)
+(pass) a todo override naming retro persists once [104.93ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:
+(pass) no user-absent wake while workers run or while the lead is busy [66.21ms]
+(pass) idle stop and wait require a recorded decision and live page without classifying reply text [3.51ms]
+(pass) a blocked row whose worker delivered counts as ready work for the idle gate [1.40ms]
+(pass) negative control: a blocked row without a delivered result is not ready work [1.72ms]
+(pass) ETA replacement keys retain distinct rows and survive estimate revisions [3.92ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.liveness.test.ts:
+(pass) real gates, masks 0-255: todo/read admitted, every refusal names an admitted remedy [10394.49ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:
+(pass) every reachable gate state leaves the demanded action executable and never deadlocks [6153.64ms]
+(pass) negative control: a demand that accepts only its own tool deadlocks against planning admission [2857.93ms]
+(pass) omp is never handed a demand to enforce: no call is skipped, the demand is advice in context [72.98ms]
+(pass) kill switch stops demands and refusals but the model still sees its plan and role [63.36ms]
+(pass) registered admission exposes every open row and persistent failed tail while preserving genuine waits [62.49ms]
+(pass) a dispatch demand is met only by a task call that staffs a planned row [22.20ms]
+(pass) task calls refuse planning-failure worker names but allow verb-first neighbours [16.89ms]
+(pass) task calls allow re-staffing a legacy row whose owner already has the blocked name [6.80ms]
+(pass) a refused task dispatch opens bounded chief work without weakening the staffing gate [24.57ms]
+(pass) empty dispatchable ready after restored-child filtering admits chief bash without a refusal [10.44ms]
+(pass) PLAN CHECK names the rows queued behind one running row while worker slots are free [27.37ms]
+(pass) every todo result in the main session ends with the plan's problems [31.86ms]
+(pass) just-finished rows are not re-staffed; critical rows parked behind running work ask for a split once [31.92ms]
+(pass) PLAN CHECK excludes forecast rows closed in the current TODO phases [13.82ms]
+(pass) main-session plan snapshots feed plan-doctor from dispatcher-owned state files [30.75ms]
+(pass) a plan with problems is reported once per problem list, not again while it stands [18.91ms]
+(pass) PLAN CHECK names a worker whose session file went quiet, and only that one [8.49ms]
+(pass) PLAN CHECK reports compaction from disk once with a done/left split action [12.98ms]
+(pass) PLAN CHECK reports compaction from live session once with a done/left split action [9.47ms]
+(pass) PLAN CHECK asks only workers running longer than fifteen minutes for a done/left split [7.84ms]
+(pass) PLAN CHECK has the harness ask an overdue worker once instead of telling chief to inspect it [10.25ms]
+(pass) PLAN CHECK falls back when worker message delivery returns false [9.35ms]
+(pass) PLAN CHECK keeps the manual fallback when worker messaging is absent [8.99ms]
+(pass) PLAN CHECK does not ask a worker before its own P95 [10.36ms]
+(pass) PLAN CHECK includes compact running-worker status from session tool events [15.71ms]
+(pass) PLAN CHECK delivers an unchanged problem once while worker telemetry and the clock advance (live 2026-10-21 18:29-18:40Z) [35.12ms]
+(pass) PLAN CHECK is delivered once: an unchanged problem is never repeated on a timer, a changed one or a new user message delivers at once [74.93ms]
+(pass) PLAN CHECK warns both live workers and chief once when worker writes overlap [10.18ms]
+(pass) write to a settled worker names and redirects to the row's current live owner [6.64ms]
+(pass) refuses a second git-pr-owner on the same checkout while allowing another worktree [12.43ms]
+(pass) GIT FACTS names commits since previous chief turn and running git jobs [236.28ms]
+(pass) PLAN CHECK says when the finish recedes with the clock, not before 45 minutes of it [290.87ms]
+(pass) the waiting list is the chain that sets the ETA and names a shared resource as a queue, not a dependency [9.44ms]
+(pass) decideGateCall: reads, steering and non-done todo pass; other calls need a remedy [0.11ms]
+(pass) armed missed-eta admits peer reply agent://RunningWorker [0.01ms]
+(pass) armed missed-eta admits peer reply agent://IdleWorker
+(pass) armed missed-eta admits peer reply agent://ParkedWorker
+(pass) armed missed-eta admits peer reply agent://shell:babysitter
+(pass) armed missed-eta admits peer reply agent://peer:session
+(pass) armed missed-eta admits context_notes but refuses bash [0.01ms]
+(pass) parseTodoOverride names a gate id inside the override field [0.06ms]
+(pass) escalated plan demands refuse everything but a plan-fixing todo call; an override or a worker spawn does not lift it [13.24ms]
+(pass) an escalated demand decays once every row is closed (live sunbim 2026-10-27: unread-receipts blocked a 9/9-closed plan) [6.42ms]
+(pass) ignored retro blocks until a retro-facilitator is staffed; an override does not lift it [10.64ms]
+(pass) empty dispatchableReady does not refuse work that cannot be delegated [4.76ms]
+(pass) R1 (case A): a same-owner reestimate on a slipping running row is refused with one exact action [6.91ms]
+(pass) an overdue row's evidence-backed reestimate still meets the measured previous attempt floor [9.35ms]
+(pass) R2 (case B): an established capped owner gets a split action, never a kill [7.93ms]
+(pass) owner recovery: five reestimates under A do not exhaust the next schedule under B [7.81ms]
+(pass) owner recovery negative control: the same owner at three reestimates stays refused [2.00ms]
+(pass) R4: the slip refusal is one exact action whose calls compose with the escalation gate [3.76ms]
+(pass) a resumed live non-task worker staffs its row and allows wait [19.58ms]
+(pass) a fresh owner does not waive the measured attempt floor; stale owners remain refused [5.86ms]
+(pass) external wait: an active unit is staffed, then exit wakes exactly once and restores the nag [45.75ms]
+(pass) external wait negative control: an unowned ready row is still nagged [7.07ms]
+(pass) external wait: a nonexistent unit is unstaffed and nagged [13.26ms]
+(pass) external wait: jobs use exact running job IDs or live proc PIDs, not unknown owners [6.15ms]
+(pass) a worker that works in its own checkout cannot write a relative path into the lead's (sunbim 2026-10-23 18:41) [0.40ms]
+
+packages/reemxy-extensions/extensions/todo_dispatch.liveness.test.ts:
+(pass) real gates, masks 256-511: todo/read admitted, every refusal names an admitted remedy [5836.95ms]
+liveness: 512 states, 288 distinct refusal sets, 16s
+(pass) matrix close-out: 512 real states driven, every trigger varied, no deadlock [2.37ms]
+(pass) union decision (missed-eta escalation): refused state still admits the union of remedies [19.53ms]
+(pass) override (missed-eta escalation): a todo.override alone does not lift it; the next clean plan check does [8.55ms]
+(pass) retro escalation: a re-dispatched row (Foo -> Foo-2) blocks after three real ticks until a retro-facilitator is staffed [8.76ms]
+(pass) decideGateCall: allowed implies a satisfied remedy; refused names every gate [0.27ms]
+
+ 707 pass
+ 0 fail
+ 10042 expect() calls
+Ran 707 tests across 66 files. [18.06s]

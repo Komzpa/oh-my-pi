@@ -30,14 +30,24 @@ export const AGENT_SESSION_HOST_KIND = "agent-session-host";
 
 /** `AgentRegistryApi` (with its `awaits`) over the link. */
 export type AgentRegistryProtocol = {
+	setSubagentFastMode: RpcMethod<[parentId: string, id: string, enabled: boolean], boolean>;
 	register: RpcMethod<[input: RegisterInput], AgentRef>;
 	registerIfAvailable: RpcMethod<[input: RegisterInput, expected: AgentRef | null], AgentRef | undefined>;
 	reopen: RpcMethod<[id: string, expected: AgentRef], AgentRef | undefined>;
 	setHistory: RpcMethod<[id: string, history: AgentHistorySummary, expectedSessionFile?: string], boolean>;
 	setStatus: RpcMethod<[id: string, status: AgentStatus, expected?: AgentRefExpectation], boolean>;
+	setResultPublication: RpcMethod<
+		[id: string, state: "pending" | "published" | "failed", expected?: AgentRefExpectation, responseAt?: number],
+		boolean
+	>;
 	markResultAccepted: RpcMethod<[id: string, expected?: AgentRefExpectation, responseAt?: number], boolean>;
+	clearInitialPromptPending: RpcMethod<[id: string, session: AgentSessionHandle], boolean>;
 	staleAcceptedRuns: RpcMethod<[], AgentRef[]>;
 	setActivity: RpcMethod<[id: string, activity: string], void>;
+	restoreIdentity: RpcMethod<
+		[id: string, expected: AgentRef, identity: { displayName: string; parentId?: string }],
+		boolean
+	>;
 	attachSession: RpcMethod<
 		[id: string, session: AgentSessionHandle, sessionFile?: string | null, expected?: AgentRefExpectation],
 		boolean
@@ -77,7 +87,10 @@ export interface UnansweredSend {
 
 /** `IrcBusApi` over the link. */
 export type IrcBusProtocol = {
+	resolveShellReplyTarget: RpcMethod<[recipient: string], string>;
 	send: RpcMethod<[msg: Omit<IrcMessage, "id" | "ts">], IrcDeliveryReceipt>;
+	exchangeCursor: RpcMethod<[], number>;
+	exchangedSince: RpcMethod<[from: string, to: string, sinceTs: number], boolean>;
 	sentSince: RpcMethod<[from: string, to: string, sinceTs: number], boolean>;
 	unansweredSends: RpcMethod<[from: string, sinceTs: number], UnansweredSend[]>;
 	wait: RpcMethod<

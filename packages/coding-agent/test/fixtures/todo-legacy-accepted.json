@@ -1,0 +1,70 @@
+[
+  {
+    "name": "DC acceptance regression",
+    "tasks": [
+      {
+        "content": "Guide Hall rack model step: readable layout",
+        "status": "blocked",
+        "blocker": "Re-audit R182 (+1 more below); then retry done.",
+        "schedule": {
+          "review": "accepted",
+          "reviewClosingBlocked": "Re-audit R182 (+1 more below); then retry done."
+        }
+      },
+      {
+        "content": "Facility 2D: too much empty space around site",
+        "status": "blocked",
+        "blocker": "Restore or bind the artifact for R188 (+2 more below); then retry done.",
+        "schedule": {
+          "review": "accepted",
+          "reviewClosingBlocked": "Restore or bind the artifact for R188 (+2 more below); then retry done."
+        }
+      },
+      {
+        "content": "Callouts during rotation match settled layout",
+        "status": "blocked",
+        "blocker": "Re-audit R189 (+2 more below); then retry done.",
+        "schedule": {
+          "review": "accepted",
+          "reviewClosingBlocked": "Re-audit R189 (+2 more below); then retry done."
+        }
+      },
+      {
+        "content": "Main deploy pipeline: restore lost deploy script",
+        "status": "blocked",
+        "blocker": "Restore or bind the artifact for R199 (+2 more below); then retry done.",
+        "schedule": {
+          "review": "accepted",
+          "reviewClosingBlocked": "Restore or bind the artifact for R199 (+2 more below); then retry done."
+        }
+      },
+      {
+        "content": "Plan click opens same panel as left list, abbreviations expanded",
+        "status": "blocked",
+        "blocker": "Re-audit R209; then retry done.",
+        "schedule": {
+          "review": "accepted",
+          "reviewClosingBlocked": "Re-audit R209; then retry done."
+        }
+      },
+      {
+        "content": "Camera stays above ground, orbit pivot at viewport centre",
+        "status": "blocked",
+        "blocker": "Restore or bind the artifact for R209; then retry done.",
+        "schedule": {
+          "review": "accepted",
+          "reviewClosingBlocked": "Restore or bind the artifact for R209; then retry done."
+        }
+      },
+      {
+        "content": "Abbreviation expansions on every node, sorted",
+        "status": "blocked",
+        "blocker": "Re-audit R214; then retry done.",
+        "schedule": {
+          "review": "accepted",
+          "reviewClosingBlocked": "Re-audit R214; then retry done."
+        }
+      }
+    ]
+  }
+]

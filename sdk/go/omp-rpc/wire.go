@@ -2015,6 +2015,7 @@ const (
 	TodoStatusInProgress TodoStatus = "in_progress"
 	TodoStatusCompleted  TodoStatus = "completed"
 	TodoStatusAbandoned  TodoStatus = "abandoned"
+	TodoStatusBlocked    TodoStatus = "blocked"
 )
 
 func (v *TodoStatus) UnmarshalJSON(data []byte) error {
@@ -2023,7 +2024,7 @@ func (v *TodoStatus) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	switch value := TodoStatus(s); value {
-	case TodoStatusPending, TodoStatusInProgress, TodoStatusCompleted, TodoStatusAbandoned:
+	case TodoStatusPending, TodoStatusInProgress, TodoStatusCompleted, TodoStatusAbandoned, TodoStatusBlocked:
 		*v = value
 		return nil
 	}
@@ -2166,11 +2167,43 @@ func (v *SubagentStatus) UnmarshalJSON(data []byte) error {
 	return unknownValue("SubagentStatus", s)
 }
 
+type TodoAwaitingUser struct {
+	Action string   `json:"action"`
+	Ids    []string `json:"ids,omitempty"`
+}
+
+func (v *TodoAwaitingUser) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoAwaitingUser", v.decodeFrom)
+}
+
+func (v *TodoAwaitingUser) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoAwaitingUser
+	d := fieldDecoder{raw: raw, owner: "TodoAwaitingUser"}
+	d.required("action", &out.Action)
+	d.optional("ids", &out.Ids)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type TodoItem struct {
-	Content string     `json:"content"`
-	Status  TodoStatus `json:"status"`
-	Details *string    `json:"details,omitempty"`
-	Notes   []string   `json:"notes,omitempty"`
+	Content  string        `json:"content"`
+	Status   TodoStatus    `json:"status"`
+	Schedule *TodoSchedule `json:"schedule,omitempty"`
+	// What a `blocked` task is waiting on.
+	Blocker *string  `json:"blocker,omitempty"`
+	Details *string  `json:"details,omitempty"`
+	Notes   []string `json:"notes,omitempty"`
+	// Persisted checkout whose clean HEAD is the row's QA artifact.
+	ArtifactCwd *string `json:"artifactCwd,omitempty"`
+	// Owner whose checkout was last verified as artifactCwd.
+	ArtifactOwner *string `json:"artifactOwner,omitempty"`
+	// Explicit deployment identity for this requirement row.
+	Deployment *string `json:"deployment,omitempty"`
+	// User-owned pending check; it does not constitute verification or close the row.
+	AwaitingUser *TodoAwaitingUser `json:"awaitingUser,omitempty"`
 }
 
 func (v *TodoItem) UnmarshalJSON(data []byte) error {
@@ -2182,8 +2215,14 @@ func (v *TodoItem) decodeFrom(raw map[string]json.RawMessage) error {
 	d := fieldDecoder{raw: raw, owner: "TodoItem"}
 	d.required("content", &out.Content)
 	d.required("status", &out.Status)
+	d.optional("schedule", &out.Schedule)
+	d.optional("blocker", &out.Blocker)
 	d.optional("details", &out.Details)
 	d.optional("notes", &out.Notes)
+	d.optional("artifactCwd", &out.ArtifactCwd)
+	d.optional("artifactOwner", &out.ArtifactOwner)
+	d.optional("deployment", &out.Deployment)
+	d.optional("awaitingUser", &out.AwaitingUser)
 	if d.err != nil {
 		return d.err
 	}
@@ -2205,6 +2244,305 @@ func (v *TodoPhase) decodeFrom(raw map[string]json.RawMessage) error {
 	d := fieldDecoder{raw: raw, owner: "TodoPhase"}
 	d.required("name", &out.Name)
 	d.required("tasks", &out.Tasks)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type TodoConfidence string
+
+const (
+	TodoConfidenceLow    TodoConfidence = "low"
+	TodoConfidenceMedium TodoConfidence = "medium"
+	TodoConfidenceHigh   TodoConfidence = "high"
+)
+
+func (v *TodoConfidence) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoConfidence")
+	if err != nil {
+		return err
+	}
+	switch value := TodoConfidence(s); value {
+	case TodoConfidenceLow, TodoConfidenceMedium, TodoConfidenceHigh:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoConfidence", s)
+}
+
+type TodoScheduleReview string
+
+const (
+	TodoScheduleReviewUser     TodoScheduleReview = "user"
+	TodoScheduleReviewAccepted TodoScheduleReview = "accepted"
+	TodoScheduleReviewRedo     TodoScheduleReview = "redo"
+	TodoScheduleReviewDrop     TodoScheduleReview = "drop"
+)
+
+func (v *TodoScheduleReview) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoScheduleReview")
+	if err != nil {
+		return err
+	}
+	switch value := TodoScheduleReview(s); value {
+	case TodoScheduleReviewUser, TodoScheduleReviewAccepted, TodoScheduleReviewRedo, TodoScheduleReviewDrop:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoScheduleReview", s)
+}
+
+type TodoWorkerOutcome string
+
+const (
+	TodoWorkerOutcomeCompleted TodoWorkerOutcome = "completed"
+	TodoWorkerOutcomeFailed    TodoWorkerOutcome = "failed"
+	TodoWorkerOutcomeAborted   TodoWorkerOutcome = "aborted"
+)
+
+func (v *TodoWorkerOutcome) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoWorkerOutcome")
+	if err != nil {
+		return err
+	}
+	switch value := TodoWorkerOutcome(s); value {
+	case TodoWorkerOutcomeCompleted, TodoWorkerOutcomeFailed, TodoWorkerOutcomeAborted:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoWorkerOutcome", s)
+}
+
+// User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds.
+type TodoEstimate struct {
+	OptimisticSeconds  float64        `json:"optimisticSeconds"`
+	LikelySeconds      float64        `json:"likelySeconds"`
+	PessimisticSeconds float64        `json:"pessimisticSeconds"`
+	Confidence         TodoConfidence `json:"confidence"`
+	Basis              string         `json:"basis"`
+	UpdatedAt          float64        `json:"updatedAt"`
+}
+
+func (v *TodoEstimate) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoEstimate", v.decodeFrom)
+}
+
+func (v *TodoEstimate) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoEstimate
+	d := fieldDecoder{raw: raw, owner: "TodoEstimate"}
+	d.required("optimisticSeconds", &out.OptimisticSeconds)
+	d.required("likelySeconds", &out.LikelySeconds)
+	d.required("pessimisticSeconds", &out.PessimisticSeconds)
+	d.required("confidence", &out.Confidence)
+	d.required("basis", &out.Basis)
+	d.required("updatedAt", &out.UpdatedAt)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type TodoScheduleProgress struct {
+	At       float64 `json:"at"`
+	Evidence string  `json:"evidence"`
+}
+
+func (v *TodoScheduleProgress) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoScheduleProgress", v.decodeFrom)
+}
+
+func (v *TodoScheduleProgress) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoScheduleProgress
+	d := fieldDecoder{raw: raw, owner: "TodoScheduleProgress"}
+	d.required("at", &out.At)
+	d.required("evidence", &out.Evidence)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Observed Task worker that executed this row, independent of forecast ownership; timestamps are Unix milliseconds.
+type TodoScheduleExecutor struct {
+	WorkerID      string             `json:"workerId"`
+	StartedAt     float64            `json:"startedAt"`
+	AgentProfile  *string            `json:"agentProfile,omitempty"`
+	ResolvedModel *string            `json:"resolvedModel,omitempty"`
+	ThinkingLevel *string            `json:"thinkingLevel,omitempty"`
+	FinishedAt    *float64           `json:"finishedAt,omitempty"`
+	Outcome       *TodoWorkerOutcome `json:"outcome,omitempty"`
+}
+
+func (v *TodoScheduleExecutor) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoScheduleExecutor", v.decodeFrom)
+}
+
+func (v *TodoScheduleExecutor) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoScheduleExecutor
+	d := fieldDecoder{raw: raw, owner: "TodoScheduleExecutor"}
+	d.required("workerId", &out.WorkerID)
+	d.required("startedAt", &out.StartedAt)
+	d.optional("agentProfile", &out.AgentProfile)
+	d.optional("resolvedModel", &out.ResolvedModel)
+	d.optional("thinkingLevel", &out.ThinkingLevel)
+	d.optional("finishedAt", &out.FinishedAt)
+	d.optional("outcome", &out.Outcome)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds.
+type TodoReworkAttempt struct {
+	AttemptID            string                         `json:"attemptId"`
+	WorkerName           string                         `json:"workerName"`
+	ResolvedModel        string                         `json:"resolvedModel"`
+	Effort               string                         `json:"effort"`
+	StartedAt            float64                        `json:"startedAt"`
+	FinishedAt           float64                        `json:"finishedAt"`
+	DurationMs           float64                        `json:"durationMs"`
+	TerminalStatus       TodoWorkerOutcome              `json:"terminalStatus"`
+	DeliverablePaths     []string                       `json:"deliverablePaths"`
+	RejectionReason      *string                        `json:"rejectionReason,omitempty"`
+	ReflectionAnswer     *string                        `json:"reflectionAnswer,omitempty"`
+	NoAnswerReason       *string                        `json:"noAnswerReason,omitempty"`
+	FinalReportParagraph *string                        `json:"finalReportParagraph,omitempty"`
+	Interruption         *TodoReworkAttemptInterruption `json:"interruption,omitempty"`
+	InfraFailureLine     *string                        `json:"infraFailureLine,omitempty"`
+	InfraFailureError    *string                        `json:"infraFailureError,omitempty"`
+}
+
+func (v *TodoReworkAttempt) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoReworkAttempt", v.decodeFrom)
+}
+
+func (v *TodoReworkAttempt) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoReworkAttempt
+	d := fieldDecoder{raw: raw, owner: "TodoReworkAttempt"}
+	d.required("attemptId", &out.AttemptID)
+	d.required("workerName", &out.WorkerName)
+	d.required("resolvedModel", &out.ResolvedModel)
+	d.required("effort", &out.Effort)
+	d.required("startedAt", &out.StartedAt)
+	d.required("finishedAt", &out.FinishedAt)
+	d.required("durationMs", &out.DurationMs)
+	d.required("terminalStatus", &out.TerminalStatus)
+	d.required("deliverablePaths", &out.DeliverablePaths)
+	d.optional("rejectionReason", &out.RejectionReason)
+	d.optional("reflectionAnswer", &out.ReflectionAnswer)
+	d.optional("noAnswerReason", &out.NoAnswerReason)
+	d.optional("finalReportParagraph", &out.FinalReportParagraph)
+	d.optional("interruption", &out.Interruption)
+	d.optional("infraFailureLine", &out.InfraFailureLine)
+	d.optional("infraFailureError", &out.InfraFailureError)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+type TodoReworkAttemptInterruption string
+
+const (
+	TodoReworkAttemptInterruptionRestart TodoReworkAttemptInterruption = "restart"
+)
+
+func (v *TodoReworkAttemptInterruption) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "TodoReworkAttemptInterruption")
+	if err != nil {
+		return err
+	}
+	switch value := TodoReworkAttemptInterruption(s); value {
+	case TodoReworkAttemptInterruptionRestart:
+		*v = value
+		return nil
+	}
+	return unknownValue("TodoReworkAttemptInterruption", s)
+}
+
+type TodoResourceWait struct {
+	Row      string  `json:"row"`
+	WorkerID *string `json:"workerId,omitempty"`
+}
+
+func (v *TodoResourceWait) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoResourceWait", v.decodeFrom)
+}
+
+func (v *TodoResourceWait) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoResourceWait
+	d := fieldDecoder{raw: raw, owner: "TodoResourceWait"}
+	d.required("row", &out.Row)
+	d.optional("workerId", &out.WorkerID)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+// Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds.
+type TodoSchedule struct {
+	// Exact task-content references; absent means unknown, while an empty array explicitly means independent.
+	Dependencies []string `json:"dependencies,omitempty"`
+	// Exclusive forecast owner while this task is running.
+	Owner *string `json:"owner,omitempty"`
+	// Exclusive resource identifiers while running; absent means undeclared.
+	Resources    []string          `json:"resources,omitempty"`
+	ResourceWait *TodoResourceWait `json:"resourceWait,omitempty"`
+	Estimate     *TodoEstimate     `json:"estimate,omitempty"`
+	// Server-owned revision: the first estimate is revision 1.
+	EstimateRevision *float64              `json:"estimateRevision,omitempty"`
+	ReestimateCount  *float64              `json:"reestimateCount,omitempty"`
+	Progress         *TodoScheduleProgress `json:"progress,omitempty"`
+	StartedAt        *float64              `json:"startedAt,omitempty"`
+	FinishedAt       *float64              `json:"finishedAt,omitempty"`
+	// Time this row first entered the plan as a user requirement.
+	FirstRequirementAt *float64 `json:"firstRequirementAt,omitempty"`
+	// Time the first usable result was handed to the user.
+	FirstDeliveredAt *float64 `json:"firstDeliveredAt,omitempty"`
+	// Append-only durable attempts for this exact row.
+	AttemptHistory []TodoReworkAttempt `json:"attemptHistory,omitempty"`
+	// Short final worker report retained for the user's review handoff.
+	ReviewSummary *string `json:"reviewSummary,omitempty"`
+	// User decision state for a delivered implementation result.
+	Review *TodoScheduleReview `json:"review,omitempty"`
+	// Review row whose verdict gates publication of this speculative work.
+	SpeculativeOn *string               `json:"speculativeOn,omitempty"`
+	Executor      *TodoScheduleExecutor `json:"executor,omitempty"`
+}
+
+func (v *TodoSchedule) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "TodoSchedule", v.decodeFrom)
+}
+
+func (v *TodoSchedule) decodeFrom(raw map[string]json.RawMessage) error {
+	var out TodoSchedule
+	d := fieldDecoder{raw: raw, owner: "TodoSchedule"}
+	d.optional("dependencies", &out.Dependencies)
+	d.optional("owner", &out.Owner)
+	d.optional("resources", &out.Resources)
+	d.optional("resourceWait", &out.ResourceWait)
+	d.optional("estimate", &out.Estimate)
+	d.optional("estimateRevision", &out.EstimateRevision)
+	d.optional("reestimateCount", &out.ReestimateCount)
+	d.optional("progress", &out.Progress)
+	d.optional("startedAt", &out.StartedAt)
+	d.optional("finishedAt", &out.FinishedAt)
+	d.optional("firstRequirementAt", &out.FirstRequirementAt)
+	d.optional("firstDeliveredAt", &out.FirstDeliveredAt)
+	d.optional("attemptHistory", &out.AttemptHistory)
+	d.optional("reviewSummary", &out.ReviewSummary)
+	d.optional("review", &out.Review)
+	d.optional("speculativeOn", &out.SpeculativeOn)
+	d.optional("executor", &out.Executor)
 	if d.err != nil {
 		return d.err
 	}
@@ -2258,6 +2596,62 @@ func (v *QueuedMessagesState) decodeFrom(raw map[string]json.RawMessage) error {
 	}
 	*v = out
 	return nil
+}
+
+type CustomPromptMessage struct {
+	CustomType  string                          `json:"customType"`
+	Content     MessageContent                  `json:"content"`
+	Display     bool                            `json:"display"`
+	Details     json.RawMessage                 `json:"details,omitempty"`
+	Attribution *CustomPromptMessageAttribution `json:"attribution,omitempty"`
+	// Extra holds undeclared keys and declared keys whose value did not decode (that field stays zero).
+	// Encoding writes them back, over a declared field with the same key.
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+func (v *CustomPromptMessage) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "CustomPromptMessage", v.decodeFrom)
+}
+
+func (v *CustomPromptMessage) decodeFrom(raw map[string]json.RawMessage) error {
+	var out CustomPromptMessage
+	d := fieldDecoder{raw: raw, owner: "CustomPromptMessage", open: true}
+	d.required("customType", &out.CustomType)
+	d.required("content", &out.Content)
+	d.required("display", &out.Display)
+	d.optional("details", &out.Details)
+	d.optional("attribution", &out.Attribution)
+	out.Extra = d.rest()
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v CustomPromptMessage) MarshalJSON() ([]byte, error) {
+	type plain CustomPromptMessage
+	return encodeObject(plain(v), "", v.Extra)
+}
+
+type CustomPromptMessageAttribution string
+
+const (
+	CustomPromptMessageAttributionUser  CustomPromptMessageAttribution = "user"
+	CustomPromptMessageAttributionAgent CustomPromptMessageAttribution = "agent"
+)
+
+func (v *CustomPromptMessageAttribution) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "CustomPromptMessageAttribution")
+	if err != nil {
+		return err
+	}
+	switch value := CustomPromptMessageAttribution(s); value {
+	case CustomPromptMessageAttributionUser, CustomPromptMessageAttributionAgent:
+		*v = value
+		return nil
+	}
+	return unknownValue("CustomPromptMessageAttribution", s)
 }
 
 type ToolDescriptor struct {
@@ -2530,20 +2924,83 @@ func (v *UsageLimitState) decodeFrom(raw map[string]json.RawMessage) error {
 	return nil
 }
 
+type InteractiveViewOptions struct {
+	CollapseCompactedHistory *bool `json:"collapseCompactedHistory,omitempty"`
+	// Extra holds undeclared keys and declared keys whose value did not decode (that field stays zero).
+	// Encoding writes them back, over a declared field with the same key.
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+func (v *InteractiveViewOptions) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "InteractiveViewOptions", v.decodeFrom)
+}
+
+func (v *InteractiveViewOptions) decodeFrom(raw map[string]json.RawMessage) error {
+	var out InteractiveViewOptions
+	d := fieldDecoder{raw: raw, owner: "InteractiveViewOptions", open: true}
+	d.optional("collapseCompactedHistory", &out.CollapseCompactedHistory)
+	out.Extra = d.rest()
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
+func (v InteractiveViewOptions) MarshalJSON() ([]byte, error) {
+	type plain InteractiveViewOptions
+	return encodeObject(plain(v), "", v.Extra)
+}
+
+type InteractiveViewSnapshot struct {
+	SessionID          string                     `json:"sessionId"`
+	Context            map[string]json.RawMessage `json:"context"`
+	StreamMessage      *AgentMessage              `json:"streamMessage"`
+	PendingToolCallIds []string                   `json:"pendingToolCallIds"`
+	IsStreaming        bool                       `json:"isStreaming"`
+	EntryCount         float64                    `json:"entryCount"`
+	CompactionCount    float64                    `json:"compactionCount"`
+	SessionFile        *string                    `json:"sessionFile,omitempty"`
+}
+
+func (v *InteractiveViewSnapshot) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "InteractiveViewSnapshot", v.decodeFrom)
+}
+
+func (v *InteractiveViewSnapshot) decodeFrom(raw map[string]json.RawMessage) error {
+	var out InteractiveViewSnapshot
+	d := fieldDecoder{raw: raw, owner: "InteractiveViewSnapshot"}
+	d.required("sessionId", &out.SessionID)
+	d.required("context", &out.Context)
+	d.nullable("streamMessage", &out.StreamMessage)
+	d.required("pendingToolCallIds", &out.PendingToolCallIds)
+	d.required("isStreaming", &out.IsStreaming)
+	d.required("entryCount", &out.EntryCount)
+	d.required("compactionCount", &out.CompactionCount)
+	d.optional("sessionFile", &out.SessionFile)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SessionState struct {
-	SessionID             string         `json:"sessionId"`
-	Model                 *ModelInfo     `json:"model,omitempty"`
-	ThinkingLevel         *ThinkingLevel `json:"thinkingLevel,omitempty"`
-	IsStreaming           bool           `json:"isStreaming"`
-	IsCompacting          bool           `json:"isCompacting"`
-	SteeringMode          QueueMode      `json:"steeringMode"`
-	FollowUpMode          QueueMode      `json:"followUpMode"`
-	InterruptMode         InterruptMode  `json:"interruptMode"`
-	SessionFile           *string        `json:"sessionFile,omitempty"`
-	SessionName           *string        `json:"sessionName,omitempty"`
-	AutoCompactionEnabled bool           `json:"autoCompactionEnabled"`
-	FastModeEnabled       bool           `json:"fastModeEnabled"`
-	FastModeActive        bool           `json:"fastModeActive"`
+	SessionID             string                   `json:"sessionId"`
+	View                  *InteractiveViewSnapshot `json:"view,omitempty"`
+	Model                 *ModelInfo               `json:"model,omitempty"`
+	ThinkingLevel         *ThinkingLevel           `json:"thinkingLevel,omitempty"`
+	IsStreaming           bool                     `json:"isStreaming"`
+	IsCompacting          bool                     `json:"isCompacting"`
+	HasPostPromptWork     bool                     `json:"hasPostPromptWork"`
+	SteeringMode          QueueMode                `json:"steeringMode"`
+	FollowUpMode          QueueMode                `json:"followUpMode"`
+	InterruptMode         InterruptMode            `json:"interruptMode"`
+	SessionFile           *string                  `json:"sessionFile,omitempty"`
+	SessionName           *string                  `json:"sessionName,omitempty"`
+	AutoCompactionEnabled bool                     `json:"autoCompactionEnabled"`
+	FastModeEnabled       bool                     `json:"fastModeEnabled"`
+	FastModeActive        bool                     `json:"fastModeActive"`
 	// `/slow` applies to the active model.
 	SlowModeSupported bool `json:"slowModeSupported"`
 	// `/slow` is on for the active model; always `false` when `slowModeSupported` is `false`.
@@ -2577,10 +3034,12 @@ func (v *SessionState) decodeFrom(raw map[string]json.RawMessage) error {
 	var out SessionState
 	d := fieldDecoder{raw: raw, owner: "SessionState"}
 	d.required("sessionId", &out.SessionID)
+	d.optional("view", &out.View)
 	d.optional("model", &out.Model)
 	d.optional("thinkingLevel", &out.ThinkingLevel)
 	d.defaulted("isStreaming", &out.IsStreaming, `false`)
 	d.defaulted("isCompacting", &out.IsCompacting, `false`)
+	d.defaulted("hasPostPromptWork", &out.HasPostPromptWork, `false`)
 	d.defaulted("steeringMode", &out.SteeringMode, `"one-at-a-time"`)
 	d.defaulted("followUpMode", &out.FollowUpMode, `"one-at-a-time"`)
 	d.defaulted("interruptMode", &out.InterruptMode, `"immediate"`)
@@ -4214,10 +4673,11 @@ func (v CacheWarmingEndEvent) MarshalJSON() ([]byte, error) {
 }
 
 type RetryFallbackAppliedEvent struct {
-	From   string  `json:"from"`
-	To     string  `json:"to"`
-	Role   string  `json:"role"`
-	Reason *string `json:"reason,omitempty"`
+	From   string                           `json:"from"`
+	To     string                           `json:"to"`
+	Role   string                           `json:"role"`
+	Source *RetryFallbackAppliedEventSource `json:"source,omitempty"`
+	Reason *string                          `json:"reason,omitempty"`
 }
 
 func (v *RetryFallbackAppliedEvent) UnmarshalJSON(data []byte) error {
@@ -4231,6 +4691,7 @@ func (v *RetryFallbackAppliedEvent) decodeFrom(raw map[string]json.RawMessage) e
 	d.required("from", &out.From)
 	d.required("to", &out.To)
 	d.required("role", &out.Role)
+	d.optional("source", &out.Source)
 	d.optional("reason", &out.Reason)
 	if d.err != nil {
 		return d.err
@@ -4242,6 +4703,26 @@ func (v *RetryFallbackAppliedEvent) decodeFrom(raw map[string]json.RawMessage) e
 func (v RetryFallbackAppliedEvent) MarshalJSON() ([]byte, error) {
 	type plain RetryFallbackAppliedEvent
 	return encodeObject(plain(v), `"type":"retry_fallback_applied"`, nil)
+}
+
+type RetryFallbackAppliedEventSource string
+
+const (
+	RetryFallbackAppliedEventSourcePrimary RetryFallbackAppliedEventSource = "primary"
+	RetryFallbackAppliedEventSourceAdvisor RetryFallbackAppliedEventSource = "advisor"
+)
+
+func (v *RetryFallbackAppliedEventSource) UnmarshalJSON(data []byte) error {
+	s, err := decodeString(data, "RetryFallbackAppliedEventSource")
+	if err != nil {
+		return err
+	}
+	switch value := RetryFallbackAppliedEventSource(s); value {
+	case RetryFallbackAppliedEventSourcePrimary, RetryFallbackAppliedEventSourceAdvisor:
+		*v = value
+		return nil
+	}
+	return unknownValue("RetryFallbackAppliedEventSource", s)
 }
 
 type RetryFallbackSucceededEvent struct {
@@ -4966,14 +5447,21 @@ func (v *SubagentLifecycleStatus) UnmarshalJSON(data []byte) error {
 }
 
 type SubagentLifecyclePayload struct {
-	ID               string                  `json:"id"`
-	Agent            string                  `json:"agent"`
-	AgentSource      AgentSource             `json:"agentSource"`
-	Status           SubagentLifecycleStatus `json:"status"`
-	Index            int64                   `json:"index"`
-	Description      *string                 `json:"description,omitempty"`
-	SessionFile      *string                 `json:"sessionFile,omitempty"`
-	ParentToolCallID *string                 `json:"parentToolCallId,omitempty"`
+	ID           string                  `json:"id"`
+	Agent        string                  `json:"agent"`
+	AgentSource  AgentSource             `json:"agentSource"`
+	Status       SubagentLifecycleStatus `json:"status"`
+	Index        int64                   `json:"index"`
+	FollowUpTurn *bool                   `json:"followUpTurn,omitempty"`
+	// Wall clock of the emitted lifecycle transition, in Unix milliseconds.
+	At                    *float64 `json:"at,omitempty"`
+	ResolvedModelIdentity *string  `json:"resolvedModelIdentity,omitempty"`
+	ResolvedThinkingLevel *string  `json:"resolvedThinkingLevel,omitempty"`
+	Description           *string  `json:"description,omitempty"`
+	TaskText              *string  `json:"taskText,omitempty"`
+	Row                   *string  `json:"row,omitempty"`
+	SessionFile           *string  `json:"sessionFile,omitempty"`
+	ParentToolCallID      *string  `json:"parentToolCallId,omitempty"`
 	// The subagent runs as a detached background job.
 	Detached *bool `json:"detached,omitempty"`
 }
@@ -4990,7 +5478,13 @@ func (v *SubagentLifecyclePayload) decodeFrom(raw map[string]json.RawMessage) er
 	d.required("agentSource", &out.AgentSource)
 	d.required("status", &out.Status)
 	d.required("index", &out.Index)
+	d.optional("followUpTurn", &out.FollowUpTurn)
+	d.optional("at", &out.At)
+	d.optional("resolvedModelIdentity", &out.ResolvedModelIdentity)
+	d.optional("resolvedThinkingLevel", &out.ResolvedThinkingLevel)
 	d.optional("description", &out.Description)
+	d.optional("taskText", &out.TaskText)
+	d.optional("row", &out.Row)
 	d.optional("sessionFile", &out.SessionFile)
 	d.optional("parentToolCallId", &out.ParentToolCallID)
 	d.optional("detached", &out.Detached)
@@ -5008,6 +5502,7 @@ type SubagentProgressPayload struct {
 	Task        string      `json:"task"`
 	// Raw `AgentProgress` record.
 	Progress         map[string]json.RawMessage `json:"progress"`
+	FollowUpTurn     *bool                      `json:"followUpTurn,omitempty"`
 	ParentToolCallID *string                    `json:"parentToolCallId,omitempty"`
 	Assignment       *string                    `json:"assignment,omitempty"`
 	SessionFile      *string                    `json:"sessionFile,omitempty"`
@@ -5026,6 +5521,7 @@ func (v *SubagentProgressPayload) decodeFrom(raw map[string]json.RawMessage) err
 	d.required("agentSource", &out.AgentSource)
 	d.required("task", &out.Task)
 	d.required("progress", &out.Progress)
+	d.optional("followUpTurn", &out.FollowUpTurn)
 	d.optional("parentToolCallId", &out.ParentToolCallID)
 	d.optional("assignment", &out.Assignment)
 	d.optional("sessionFile", &out.SessionFile)
@@ -7205,6 +7701,25 @@ func (v *NegotiateProtocolResult) decodeFrom(raw map[string]json.RawMessage) err
 	return nil
 }
 
+type ConsumeDraftResult struct {
+	Text *string `json:"text"`
+}
+
+func (v *ConsumeDraftResult) UnmarshalJSON(data []byte) error {
+	return decodeWith(data, "ConsumeDraftResult", v.decodeFrom)
+}
+
+func (v *ConsumeDraftResult) decodeFrom(raw map[string]json.RawMessage) error {
+	var out ConsumeDraftResult
+	d := fieldDecoder{raw: raw, owner: "ConsumeDraftResult"}
+	d.nullable("text", &out.Text)
+	if d.err != nil {
+		return d.err
+	}
+	*v = out
+	return nil
+}
+
 type SetSlowModeResult struct {
 	Enabled bool `json:"enabled"`
 }
@@ -7795,7 +8310,8 @@ func (c Commands) NegotiateProtocol(ctx context.Context, p NegotiateProtocolComm
 
 // PromptCommand holds the parameters of "prompt".
 type PromptCommand struct {
-	Message string `json:"message"`
+	Message            string  `json:"message"`
+	RawRequirementText *string `json:"rawRequirementText,omitempty"`
 	// Images attached to the message.
 	Images            []ImageContent     `json:"images,omitempty"`
 	StreamingBehavior *StreamingBehavior `json:"streamingBehavior,omitempty"`
@@ -7807,6 +8323,17 @@ func (c Commands) Prompt(ctx context.Context, p PromptCommand) (PromptAck, error
 	var out PromptAck
 	err := c.call(ctx, "prompt", p, 0, &out)
 	return out, err
+}
+
+// PromptCustomCommand holds the parameters of "prompt_custom".
+type PromptCustomCommand struct {
+	Message CustomPromptMessage `json:"message"`
+}
+
+// PromptCustom sends "prompt_custom": Submit an attributed custom message through the owner admission pipeline.
+// Its work completes later with a prompt_result frame carrying the request id (see WithRequestID).
+func (c Commands) PromptCustom(ctx context.Context, p PromptCustomCommand) error {
+	return c.call(ctx, "prompt_custom", p, 0, nil)
 }
 
 // SteerCommand holds the parameters of "steer".
@@ -7909,10 +8436,47 @@ func (c Commands) OpenSession(ctx context.Context, p OpenSessionCommand) (OpenSe
 	return out, err
 }
 
-// GetState sends "get_state": Snapshot the session state.
-func (c Commands) GetState(ctx context.Context) (SessionState, error) {
+// BeginDispose sends "begin_dispose": Stop admitting new owner work before explicit shutdown.
+func (c Commands) BeginDispose(ctx context.Context) error {
+	return c.call(ctx, "begin_dispose", nil, 0, nil)
+}
+
+// DisposeSession sends "dispose_session": Dispose the runtime owner; view detachment does not call this.
+func (c Commands) DisposeSession(ctx context.Context) error {
+	return c.call(ctx, "dispose_session", nil, 0, nil)
+}
+
+// CheckpointSession sends "checkpoint_session": Close and seal the owner journal after restart admission.
+func (c Commands) CheckpointSession(ctx context.Context) error {
+	return c.call(ctx, "checkpoint_session", nil, 0, nil)
+}
+
+// SaveDraftCommand holds the parameters of "save_draft".
+type SaveDraftCommand struct {
+	Text string `json:"text"`
+}
+
+// SaveDraft sends "save_draft": Persist unsent editor text with the runtime session writer.
+func (c Commands) SaveDraft(ctx context.Context, p SaveDraftCommand) error {
+	return c.call(ctx, "save_draft", p, 0, nil)
+}
+
+// ConsumeDraft sends "consume_draft": Restore and remove the unsent editor draft once.
+func (c Commands) ConsumeDraft(ctx context.Context) (*string, error) {
+	var out ConsumeDraftResult
+	err := c.call(ctx, "consume_draft", nil, 0, &out)
+	return out.Text, err
+}
+
+// GetStateCommand holds the parameters of "get_state".
+type GetStateCommand struct {
+	View *InteractiveViewOptions `json:"view,omitempty"`
+}
+
+// GetState sends "get_state": Snapshot the session state, optionally including presentation without opening a view writer.
+func (c Commands) GetState(ctx context.Context, p GetStateCommand) (SessionState, error) {
 	var out SessionState
-	err := c.call(ctx, "get_state", nil, 0, &out)
+	err := c.call(ctx, "get_state", p, 0, &out)
 	return out, err
 }
 

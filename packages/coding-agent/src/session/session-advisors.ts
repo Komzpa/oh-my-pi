@@ -80,6 +80,7 @@ import {
 	formatModelString,
 	formatModelStringWithRouting,
 	resolveAdvisorRoleSelection,
+	modelSelectorBlacklistError,
 	resolveModelOverride,
 } from "../config/model-resolver";
 import { MODEL_ROLES } from "../config/model-roles";
@@ -1175,10 +1176,12 @@ export class SessionAdvisors {
 			// then tracks whatever the primary turn's classifier resolved to.
 			let autoThinking = false;
 			if (config.model) {
-				const resolved = resolveModelOverride([config.model], this.#host.modelRegistry, this.#host.settings);
-				model = resolved.model;
-				autoThinking = resolved.thinkingLevel === AUTO_THINKING;
-				thinkingLevel = concreteThinkingLevel(resolved.thinkingLevel);
+				const resolved = modelSelectorBlacklistError(config.model, this.#host.modelRegistry.getAvailable())
+					? undefined
+					: resolveModelOverride([config.model], this.#host.modelRegistry, this.#host.settings);
+				model = resolved?.model;
+				autoThinking = resolved?.thinkingLevel === AUTO_THINKING;
+				thinkingLevel = concreteThinkingLevel(resolved?.thinkingLevel);
 				if (!model) {
 					this.#advisorStatuses.set(slug, { name: config.name, status: "no_model" });
 					if (emitWarnings) {
@@ -2090,6 +2093,7 @@ export class SessionAdvisors {
 			return;
 		}
 		if (this.#host.isRetryFallbackSelectorSuppressed(originalSelector)) return;
+		if (modelSelectorBlacklistError(originalSelector.raw, this.#host.modelRegistry.getAvailable())) return;
 
 		const resolvedPrimary = resolveModelOverride(
 			[originalSelector.raw],
@@ -2253,6 +2257,7 @@ export class SessionAdvisors {
 		for (const role of chainKeys) {
 			for (const selector of this.#host.findRetryFallbackCandidates(role, currentSelector, currentModel)) {
 				if (this.#host.isRetryFallbackSelectorSuppressed(selector)) continue;
+				if (modelSelectorBlacklistError(selector.raw, this.#host.modelRegistry.getAvailable())) continue;
 				const resolved = resolveModelOverride([selector.raw], this.#host.modelRegistry, this.#host.settings);
 				const candidate = resolved.model ?? this.#host.modelRegistry.find(selector.provider, selector.id);
 				if (!candidate || modelsAreEqual(candidate, currentModel)) continue;
@@ -2286,6 +2291,7 @@ export class SessionAdvisors {
 				this.#host.settings.getStorage()?.recordModelUsage(formatModelStringWithRouting(candidate));
 				await this.#host.emitSessionEvent({
 					type: "retry_fallback_applied",
+					source: "advisor",
 					from: currentSelector,
 					to: selector.raw,
 					role,

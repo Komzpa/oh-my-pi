@@ -877,6 +877,8 @@ describe("terminal title runtime", () => {
 	}
 
 	function resetEmitted(): void {
+		// Finish any coalesced setup write before observing the next transition.
+		vi.advanceTimersByTime(1000);
 		writes.length = 0;
 		if (windowsTitleMock) windowsTitleMock.titles.length = 0;
 	}
@@ -907,6 +909,8 @@ describe("terminal title runtime", () => {
 		setSessionTerminalTitle(undefined);
 		setTerminalTitleState("idle");
 
+		vi.advanceTimersByTime(1000);
+
 		// Discard the reset's own emissions; each test asserts only its own writes.
 		writes.length = 0;
 		windowsTitleMock.titles.length = 0;
@@ -915,6 +919,9 @@ describe("terminal title runtime", () => {
 	afterEach(() => {
 		// Stop any spinner timer started during a test before tearing spies down.
 		disposeTerminalTitleState();
+		const titlesAtTeardown = emittedTitles();
+		vi.advanceTimersByTime(2000);
+		expect(emittedTitles()).toEqual(titlesAtTeardown);
 		windowsTitleMock?.restore();
 		windowsTitleMock = undefined;
 		stdoutSpy?.mockRestore();
@@ -930,6 +937,7 @@ describe("terminal title runtime", () => {
 		// the run state to `working` must NOT re-emit the base title with a
 		// spinner prefix. The override wins verbatim.
 		setExtensionTerminalTitle("Deploying prod");
+		vi.advanceTimersByTime(1000);
 		expect(emittedTitles().at(-1)).toBe("Deploying prod");
 		// The `beforeEach` reset already cleared the sync-setup emissions observed
 		// above; no re-reset — the state flips below must not move off the override.
@@ -953,9 +961,9 @@ describe("terminal title runtime", () => {
 		resetEmitted();
 
 		// Enter `working` to start the spinner interval, then advance the fake
-		// clock across several tick intervals (interval is 80ms).
+		// clock across several title ticks (at least 1000ms each).
 		setTerminalTitleState("working");
-		vi.advanceTimersByTime(400);
+		vi.advanceTimersByTime(3000);
 
 		for (const title of emittedTitles()) expect(title).toBe("Long extension task");
 		for (const payload of writes) {
@@ -971,6 +979,7 @@ describe("terminal title runtime", () => {
 
 		setSessionTerminalTitle("my-session");
 
+		vi.advanceTimersByTime(1000);
 		const last = emittedTitles().at(-1);
 		expect(last).toBeDefined();
 		expect(last).toContain("my-session");
@@ -980,6 +989,7 @@ describe("terminal title runtime", () => {
 	it("dedupes direct writes after sanitizing the title", () => {
 		setTerminalTitle("direct title\u0000");
 		setTerminalTitle("direct title");
+		vi.advanceTimersByTime(1000);
 
 		expect(emittedTitles()).toEqual(["direct title"]);
 		// Sink-specific: the native mock only fires on win32
@@ -1007,7 +1017,7 @@ describe("terminal title runtime", () => {
 			expect(emittedTitles()).toEqual(["π ⠋ windows-project"]);
 
 			resetEmitted();
-			vi.advanceTimersByTime(DEFAULT_SPINNER_INTERVAL_MS * 2);
+			vi.advanceTimersByTime(Math.max(1000, DEFAULT_SPINNER_INTERVAL_MS) * 2);
 			const titles = emittedTitles();
 			expect(titles.length).toBeGreaterThan(0);
 			expect(titles.every(title => SPINNER_FRAMES.some(frame => title.includes(frame)))).toBe(true);
@@ -1027,10 +1037,11 @@ describe("terminal title runtime", () => {
 			resetEmitted();
 
 			setTerminalTitleState("working");
+			vi.advanceTimersByTime(1000);
 			expect(emittedTitles()).toEqual(["π : wsl-project"]);
 
 			resetEmitted();
-			vi.advanceTimersByTime(400);
+			vi.advanceTimersByTime(3000);
 			expect(emittedTitles()).toEqual([]);
 		} finally {
 			if (originalWslDistro === undefined) delete process.env.WSL_DISTRO_NAME;
@@ -1048,6 +1059,7 @@ describe("terminal title runtime", () => {
 			Object.defineProperty(process, "platform", { value: "win32", configurable: true });
 			setTerminalTitle("native Ω");
 			setTerminalTitle("native Ω");
+			vi.advanceTimersByTime(1000);
 
 			expect(native.titles).toEqual(["native Ω"]);
 			expect(writes).toEqual([]);
@@ -1075,6 +1087,7 @@ describe("terminal title runtime", () => {
 
 			native.current = "omp";
 			setTerminalTitleState("idle");
+			vi.advanceTimersByTime(1000);
 			expect(native.titles).toEqual(["HOST: Summarize self-host blog post"]);
 			expect(writes).toEqual([]);
 		} finally {
@@ -1093,6 +1106,7 @@ describe("terminal title runtime", () => {
 			resetEmitted();
 
 			setTerminalTitle("custom direct");
+			vi.advanceTimersByTime(1000);
 
 			// The caller's own title is the OSC fallback — not the composed session
 			// state — and the interval is pinned off for later working frames.
@@ -1100,7 +1114,7 @@ describe("terminal title runtime", () => {
 			expect(windowsTitleMock?.titles).toEqual([]);
 			setTerminalTitleState("working");
 			resetEmitted();
-			vi.advanceTimersByTime(400);
+			vi.advanceTimersByTime(3000);
 			expect(emittedTitles()).toEqual([]);
 			expect(vi.getTimerCount()).toBe(0);
 		} finally {
@@ -1124,11 +1138,13 @@ describe("terminal title runtime", () => {
 			// animation, and the interval must stop so no later frame ticks.
 			native.succeeds = false;
 			setSessionTerminalTitle("windows-project-2");
+			vi.advanceTimersByTime(1000);
 
 			expect(emittedTitles().at(-1)).toBe("π : windows-project-2");
+			vi.advanceTimersByTime(1000);
 			expect(vi.getTimerCount()).toBe(0);
 			resetEmitted();
-			vi.advanceTimersByTime(400);
+			vi.advanceTimersByTime(3000);
 			expect(emittedTitles()).toEqual([]);
 		} finally {
 			Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
@@ -1147,6 +1163,7 @@ describe("terminal title runtime", () => {
 		setExtensionTerminalTitle("");
 
 		// The composed run-state title is back, not the bare `π` default.
+		vi.advanceTimersByTime(1000);
 		const last = emittedTitles().at(-1);
 		expect(last).toBeDefined();
 		expect(last).toContain("my-session");
@@ -1164,6 +1181,7 @@ describe("terminal title runtime", () => {
 
 		setTerminalTitleState("working");
 
+		vi.advanceTimersByTime(1000);
 		const last = emittedTitles().at(-1);
 		expect(last).toBeDefined();
 		expect(last).toContain("my-session");
@@ -1182,6 +1200,7 @@ describe("terminal title runtime", () => {
 
 		setTerminalTitleState("working");
 
+		vi.advanceTimersByTime(1000);
 		const last = emittedTitles().at(-1);
 		expect(last).toBeDefined();
 		expect(last).toContain("my-session");
@@ -1195,20 +1214,24 @@ describe("terminal title runtime", () => {
 			setNativeRendering(true);
 			resetEmitted();
 			// The terminal shows run state itself: no brand, no spinner ticks.
-			vi.advanceTimersByTime(400);
+			vi.advanceTimersByTime(3000);
 			setTerminalTitlePullRequest(412);
+			vi.advanceTimersByTime(1000);
 			expect(emittedTitles()).toEqual(["Ack path refactor · #412"]);
 
 			setSessionTerminalTitle("Renamed");
+			vi.advanceTimersByTime(1000);
 			expect(emittedTitles().at(-1)).toBe("Renamed · #412");
 			setSessionTerminalTitle(undefined);
 			setTerminalTitlePullRequest(undefined);
+			vi.advanceTimersByTime(1000);
 			expect(emittedTitles().at(-1)).toBe("omp");
 			setSessionTerminalTitle("Renamed");
 		} finally {
 			setNativeRendering(false);
 			setTerminalTitlePullRequest(undefined);
 		}
+		vi.advanceTimersByTime(1000);
 		expectWorkingSeparator(emittedTitles().at(-1), "Renamed");
 	});
 });

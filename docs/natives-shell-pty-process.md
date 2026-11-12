@@ -27,6 +27,50 @@ This document covers execution/process/terminal primitives in `@oh-my-pi/pi-nati
 
 ## Shell subsystem (`shell`)
 
+### Per-tool-call process limits
+
+On Linux with cgroup v2 and a working systemd user manager, each shell tool
+call places external commands and their descendants in its own transient slice
+with kernel-enforced `TasksMax=16384` (threads count; override with
+`OMP_TOOL_TASKS_MAX`, an integer from 64 to 4194304; an invalid value rejects
+external commands). The task limit is read back
+from the cgroup before user code runs. A successful persistent-shell call
+retains its scope while external background work remains live; later runs prune
+empty scopes, and cancellation, timeout, cap-hit, or session teardown stops the
+owned scope. Missing or unverifiable Linux enforcement rejects external
+commands. Git subprocesses and commit hooks, PTY commands, and retained Python/JavaScript eval kernels use the same
+native boundary owner. Scope execution preserves terminal handles, IPC,
+environment, working directory, and inherited resource limits. Linux refuses
+an unbounded JavaScript Worker fallback when subprocess startup fails.
+
+Local bash commands carry `OMP_SESSION_ID`. The native boundary binds its first
+launch to `omp-tool-<h12>.slice`, using a child named
+`omp-tool-<h12>-call-<pid>-<id>.slice`, where `h12` is the first 12 hex characters
+of SHA-256 of the full session id; systemd's slice hierarchy gives the
+session a single parent without changing the per-call `TasksMax` limit.
+`sessionSliceName(sessionId)` in the natives package is the canonical naming
+helper. Unowned host operations retain their existing per-call boundary.
+
+Local tool PATH puts a `systemd-run` shim first. It adds the session slice only
+when the manager options omit `--slice` (both `--slice=value` and `--slice value`
+are preserved). An operand's `--slice` is not a manager option. Deliberate
+long-lived work uses `--slice=omp-keep.slice`; no PID-based keep mechanism is
+provided. Slice shutdown, startup orphan reaping, launcher migration, and kept
+process visibility are owned by the session lifecycle, not this native wrapper.
+
+The shared Linux scope argv starts user work through `nice -n19 ionice -c2 -n7`:
+children and their ordinary descendants run at niceness 19 and best-effort IO
+priority 7, while omp's own CPU and IO priority are unchanged. Helpers are
+resolved against the host PATH before the command's environment is applied.
+These per-process priorities are distinct from cgroup CPU/IO weights, which do
+not set niceness or IO scheduling class. Non-scoped launch paths are separate
+owners and do not acquire priority changes from this boundary.
+
+This is resource containment, not an adversarial sandbox. Explicit operations
+against service managers, remote hosts, or existing daemons remain outside the
+child-process boundary; ordinary `systemctl --user` administration still works.
+Other platforms retain normal shell behavior without these resource guarantees.
+
 ### API model
 
 Shell execution modes:
@@ -211,7 +255,7 @@ Termination path:
 ### Cancellation and timeout semantics
 
 - `timeoutMs` and `AbortSignal` feed a `CancelToken`.
-- Preflight heartbeat checks before `openpty` and spawn reject cancellation as setup errors.
+- Preflight heartbeat checks before `openpty` and spawn return structured cancelled/timed-out results.
 - The running loop calls `ct.heartbeat()` with a 16ms maximum control wait cadence. Timeout classification uses a heartbeat error containing `Timeout`.
 - Cancellation, kill, or a lost JS callback terminates process targets and starts a 300ms post-cancel window. The result may still include an exit code observed while reaping.
 - On non-Windows, cancelled-child reaping polls for up to 500ms, then delegates an unfinished reap to a detached thread rather than pinning the promise.
@@ -336,3 +380,90 @@ Layout behavior:
 - **Shell persistent session**: if a run is cancelled/timed out/errors/non-keepalive control flow, Rust drops the internal session state. Successful normal runs keep the session for reuse.
 - **PTY session**: `core` is always cleared after `start()` finishes, including failure paths.
 - **No explicit JS finalizer-driven kill contract** is exposed by wrappers; cleanup is primarily tied to run completion/cancellation paths. Callers should use `timeoutMs`, `AbortSignal`, `shell.abort()`, or `pty.kill()` for deterministic teardown.
+
+## PR #88 port to the pi-shell engine (2026-11-03)
+
+Source: `Komzpa/oh-my-pi#88`, `topic/natives-process` at
+`6441d33945aaa0f49bcbc921dd9a05e7deac2c3e` (15 commits), old base
+`594670d6b0b6d5f8080693aad34dedd38b5ebd94`. Target upstream main:
+`90697feb527386992d7c534e3ffe80e5b2f78bb4`, including engine replacement
+`44711a78c1b`. User decision: “A: port the process containment onto upstream's
+new shell engine”. No installed binary or updater checkout is changed.
+
+The engine-independent parts retain their original authorship. The mixed r9
+handoff is applied together with its PR #108 yield removal; that intermediate
+yield change is excluded. The deleted Brush adapters are replaced at
+`PiHost::spawn` and `Launcher::launch`, the new engine's central external
+spawn owner. Manager setup runs on the blocking pool before descriptor routing
+and spawn; cancelling its future cannot launch abandoned user work. Payload
+script execution retains the engine's ENOEXEC fallback and asynchronous FIFO redirections.
+`Lineage.resource_scope` follows delayed jobs and tool-created subshells;
+segments share one boundary. Explicitly detached nohup jobs retain upstream's
+intentional exemption. The default cap is 16,384 tasks, not the stale 500 in
+the old PR description.
+
+Test paths below are relative to `packages/coding-agent/test/`, except Rust
+module names and the explicit `crates/` path. “Kept” means engine-independent;
+“Reimplemented” means coupled to the replacement engine.
+
+| Behavior | Disposition | Regression/contract test |
+| --- | --- | --- |
+| Kernel task cap, readback and invalid override fail closed | Kept backend; reimplemented spawn wiring | `pi-vcs process_limit::tests::kernel_cap_contains_forks_preserves_manager_operations_and_keeps_neighbor_independent`, `invalid_override_fails_closed_before_any_command_runs` |
+| Ordinary externals, exec, pipelines, substitution, timeout, xargs and env all use the same call boundary | Reimplemented | `pi-shell session::tests::process_boundary_contains_external_exec_pipeline_and_callout` |
+| Shebangless executable text retains Bash syntax, arguments, environment and FIFO progress | Reimplemented engine fallback before the wrapper hides ENOEXEC | `pi-shell shell::tests::builtins::executable_text_without_shebang_preserves_arguments_and_exit_status`, `shebangless_background_script_with_fifo_stdin`, `pi-shell tests/vfs.rs::an_executable_url_runs_as_the_file_it_aliases` |
+| Kernel rejection becomes an actionable error after output cleanup | Reimplemented | `pi-shell session::tests::process_boundary_caps_forks_and_reports_the_kernel_rejection` |
+| Background loops launch later children in their original call boundary | Reimplemented | `pi-shell session::tests::process_boundary_delayed_background_job_keeps_its_original_call` |
+| Detached nohup work bypasses per-call scope teardown | Reimplemented using upstream detached lineage | `pi-shell session::tests::process_boundary_contains_external_exec_pipeline_and_callout` |
+| Cancellation kills escaped setsid descendants and spares unrelated processes | Reimplemented | `pi-shell session::tests::process_boundary_cancel_kills_escaped_child_and_keeps_neighbor`, `pi-vcs dropping_call_boundary_kills_escaped_session_descendants` |
+| One TERM wave permits cleanup; no cgroup-stop duplicate during native grace | Reimplemented; finish native grace/KILL before cgroup stop | `pi-shell session::tests::process_boundary_cancel_kills_escaped_child_and_keeps_neighbor`, existing `shell::tests::session::cancellation_keeps_output_open_for_a_term_trap_that_writes` |
+| Snapshot-launched externals share the first command cap and use cancellation | Reimplemented setup boundary | `pi-shell tests/source_containment.rs`, `pi-shell shell::tests::session::cancelling_while_sourcing_snapshot_kills_snapshot_foreground_child` |
+| Concurrent shell cancellation spares a live neighboring run | Kept upstream engine cancellation | `pi-shell shell::tests::session::cancelling_one_run_spares_a_concurrent_runs_child` |
+| Remove environment keys after imports and snapshot reintroduction | Reimplemented `unset_env` API | `pi-shell shell::tests::env_cwd::unset_env_removes_import_and_snapshot_reintroduced_bindings` |
+| Git guard rejects invalid UTF-8, guard-off preserves raw argv | Reimplemented | `pi-shell shell::tests::builtins::git_guard_rejects_invalid_utf8_and_guard_off_preserves_bytes` |
+| External argv0, non-UTF-8 bytes, complete env, inherited rlimits, no helper fd leak | Kept standalone native launcher | `pi-vcs argv0_launcher_preserves_payload_environment` |
+| Scope launch works without coreutils env --argv0 and preserves dollar bytes on old systemd | Kept | `pi-vcs probe_and_scope_launch_on_pre_95_env_with_normal_argv0` |
+| Masked payload can reach manager without inheriting its desktop bindings | Kept | `pi-vcs masked_worker_reaches_manager_without_leaking_desktop_env`, `scoped_payload_preserves_effective_session_environment` |
+| Resolve real systemd-run rather than recursively launching session shim | Kept | `pi-vcs systemd_run_resolution_prefers_real_binary_over_session_shim`, `session-slice.test.ts` |
+| Stable full-session hash, per-call child hierarchy and explicit keep slice | Kept | `pi-vcs session_slice_naming_and_call_parenting`, `session-slice.test.ts` |
+| Dead-owner sweep preserves live/unproven/foreign units and removes stale runtime dropins | Kept | `pi-vcs stale_sweep_keeps_live_owner_and_active_unit`, `empty_sweep_never_selects_foreign_names`, `fifty_enforce_drop_cycles_leave_no_dropins_for_this_process` |
+| Session ownership markers, orphan cleanup and failed-stop backstop | Kept | `session-slice-lifecycle.test.ts` |
+| Sustained CPU sends hidden notice and visible line with shared debounce | Kept | `session-slice-lifecycle.test.ts` |
+| Child nice19 and best-effort IO7; parent unchanged across Bash/PTY/Python/JS | Kept | `tool-child-priority.test.ts`, `pi-iso rcopy::background_priority_tests::git_capture_background_priority_preserves_parent` |
+| Background launch helpers lower only children; I/O-priority denial is advisory | Kept | `background-priority.test.ts`, `pi-iso process::tests::denied_ioprio_set_does_not_fail_child_setup` |
+| PTY prelaunch cancellation/timeout returns structured flags | Kept native PTY changes | `bash-executor.test.ts` |
+| Cyclic Git object-store chains materialize locally; healthy stores remain borrowed | Kept; absent from upstream | `pi-vcs git::mutate::tests::detach_git_dir_breaks_alternates_cycle`, `detach_without_borrowing_leaves_unrelated_repo_alone`, `copy_objects_non_borrowing_merges_alternate_stores` |
+| VCS CLI and commit hooks enter native boundary | Kept | `pi-vcs git` tests and scoped payload regression |
+| Per-session private desktop runtime directory | Kept | `core/python-kernel-resource-scope.test.ts` |
+| Python and scoped JS first-use setup does not block JS event loop; no unbounded fallback | Kept | `core/python-kernel-resource-scope.test.ts`, `eval/context-manager-startup.test.ts` |
+| Browser priority and user-bus removal retain transcript scope | Kept | `browser-priority.test.ts`, `tools/browser-spawn-bus.test.ts`, `launch/session-launchers.test.ts` |
+| Daemon runtimeDir, accepted-launch drain, session release races and error propagation | Kept | `launch/session-daemon-release.test.ts`, `launch/session-release-start-race.test.ts`, `launch/session-launchers.test.ts` |
+| Session transitions/dispose/task settlement await owned-resource release and spare siblings | Kept | `launch/session-daemon-release.test.ts`, `sdk-dispose-options.test.ts`, `task/isolation-release.test.ts` |
+| MCP startup diagnostics include exit and bounded stderr without replay | Kept | `mcp-connection-status-events.test.ts` |
+| BSD date -j fixture is independent of host numeric files and preserves file precedence | Kept test adaptation | `pi-builtins date::tests::bsd_j_alone_is_a_no_op` |
+| Brush native-byte migration across values, expansion, predicates, read and serialization | Dropped deleted-engine adapters; new engine uses BString end to end | `crates/pi-shell/tests/byte_contract.rs` |
+| Brush output hooks/metadata and FIFO redirect marking | Dropped obsolete Brush hooks; upstream owns output capture/callouts | Existing `pi-shell shell::tests` output/minimizer/FIFO tests |
+| Brush dependency, deleted builtin adapters and Bazel brush lock refresh | Dropped obsolete dependency/build glue | Cargo checks and native build on this branch |
+| Old historical validation receipt | Retained as historical evidence only | New verification results belong to this port's PR Testing section |
+
+Upstream replacement owners for dropped adapters, at `90697feb527`:
+
+- Byte-valued spawn arguments: `crates/pi-shell/src/bash/host.rs:299`;
+  exported environment: `crates/pi-shell/src/bash/host.rs:643`; stored scalar,
+  indexed and associative values: `crates/pi-shell/src/bash/store.rs:540`.
+  Raw substring offsets needed a port fix in `bash/vm/expand.rs`; the byte
+  contract test exercises it along with argv, env, predicates, read and export.
+- Central asynchronous process spawn: `crates/pi-shell/src/host.rs:450`.
+  Process groups and termination escalation: `crates/pi-shell/src/sys/spawn/mod.rs:301`;
+  detached-session and grace tests: `crates/pi-shell/src/sys/spawn/unix/tests.rs:417`,
+  `:687`, `:694`. The containment wrapper extends this owner rather than
+  restoring Brush's command wrapper and `pi-builtins` exec adapters.
+- Output capture/minimizer and FIFO ownership:
+  `crates/pi-shell/src/shell.rs:1097`, `:1176`, `:1299`, `:1581`;
+  script redirection routing: `crates/pi-shell/src/sys/spawn/unix.rs:438`.
+  Existing output, minimizer and FIFO consumer tests run with containment on.
+- The Brush-only Bazel dependency lock and adapters have no remaining
+  consumer after engine replacement `44711a78c1b`; Cargo checks and the
+  rebuilt native addon verify the new graph.
+
+Executed counts and remaining baseline failures are recorded in the PR's
+Testing section after validation.

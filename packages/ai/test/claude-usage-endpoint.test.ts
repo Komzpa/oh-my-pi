@@ -42,6 +42,7 @@ function plainUsageUrls(urls: readonly string[]): string[] {
 function params(baseUrl?: string) {
 	return {
 		provider: "anthropic" as const,
+		accountKey: crypto.randomUUID(),
 		credential: {
 			type: "oauth" as const,
 			accessToken: "oat-test",

@@ -2761,6 +2761,8 @@ pub enum TodoStatus {
 	Completed,
 	#[serde(rename = "abandoned")]
 	Abandoned,
+	#[serde(rename = "blocked")]
+	Blocked,
 }
 
 impl TodoStatus {
@@ -2771,6 +2773,7 @@ impl TodoStatus {
 			Self::InProgress => "in_progress",
 			Self::Completed => "completed",
 			Self::Abandoned => "abandoned",
+			Self::Blocked => "blocked",
 		}
 	}
 }
@@ -2930,19 +2933,241 @@ impl SubagentStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoAwaitingUser {
+	pub action: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub ids: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
 	pub content: String,
 	pub status: TodoStatus,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub schedule: Option<TodoSchedule>,
+	/// What a `blocked` task is waiting on.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub blocker: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub details: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub notes: Option<Vec<String>>,
+	/// Persisted checkout whose clean HEAD is the row's QA artifact.
+	#[serde(rename = "artifactCwd", default, skip_serializing_if = "Option::is_none")]
+	pub artifact_cwd: Option<String>,
+	/// Owner whose checkout was last verified as artifactCwd.
+	#[serde(rename = "artifactOwner", default, skip_serializing_if = "Option::is_none")]
+	pub artifact_owner: Option<String>,
+	/// Explicit deployment identity for this requirement row.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub deployment: Option<String>,
+	/// User-owned pending check; it does not constitute verification or close the row.
+	#[serde(rename = "awaitingUser", default, skip_serializing_if = "Option::is_none")]
+	pub awaiting_user: Option<TodoAwaitingUser>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TodoPhase {
 	pub name: String,
 	pub tasks: Vec<TodoItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TodoConfidence {
+	#[serde(rename = "low")]
+	Low,
+	#[serde(rename = "medium")]
+	Medium,
+	#[serde(rename = "high")]
+	High,
+}
+
+impl TodoConfidence {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Low => "low",
+			Self::Medium => "medium",
+			Self::High => "high",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TodoScheduleReview {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "accepted")]
+	Accepted,
+	#[serde(rename = "redo")]
+	Redo,
+	#[serde(rename = "drop")]
+	Drop,
+}
+
+impl TodoScheduleReview {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Accepted => "accepted",
+			Self::Redo => "redo",
+			Self::Drop => "drop",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TodoWorkerOutcome {
+	#[serde(rename = "completed")]
+	Completed,
+	#[serde(rename = "failed")]
+	Failed,
+	#[serde(rename = "aborted")]
+	Aborted,
+}
+
+impl TodoWorkerOutcome {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Completed => "completed",
+			Self::Failed => "failed",
+			Self::Aborted => "aborted",
+		}
+	}
+}
+
+/// User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoEstimate {
+	#[serde(rename = "optimisticSeconds")]
+	pub optimistic_seconds: f64,
+	#[serde(rename = "likelySeconds")]
+	pub likely_seconds: f64,
+	#[serde(rename = "pessimisticSeconds")]
+	pub pessimistic_seconds: f64,
+	pub confidence: TodoConfidence,
+	pub basis: String,
+	#[serde(rename = "updatedAt")]
+	pub updated_at: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoScheduleProgress {
+	pub at: f64,
+	pub evidence: String,
+}
+
+/// Observed Task worker that executed this row, independent of forecast ownership; timestamps are Unix milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoScheduleExecutor {
+	#[serde(rename = "workerId")]
+	pub worker_id: String,
+	#[serde(rename = "startedAt")]
+	pub started_at: f64,
+	#[serde(rename = "agentProfile", default, skip_serializing_if = "Option::is_none")]
+	pub agent_profile: Option<String>,
+	#[serde(rename = "resolvedModel", default, skip_serializing_if = "Option::is_none")]
+	pub resolved_model: Option<String>,
+	#[serde(rename = "thinkingLevel", default, skip_serializing_if = "Option::is_none")]
+	pub thinking_level: Option<String>,
+	#[serde(rename = "finishedAt", default, skip_serializing_if = "Option::is_none")]
+	pub finished_at: Option<f64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub outcome: Option<TodoWorkerOutcome>,
+}
+
+/// Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoReworkAttempt {
+	#[serde(rename = "attemptId")]
+	pub attempt_id: String,
+	#[serde(rename = "workerName")]
+	pub worker_name: String,
+	#[serde(rename = "resolvedModel")]
+	pub resolved_model: String,
+	pub effort: String,
+	#[serde(rename = "startedAt")]
+	pub started_at: f64,
+	#[serde(rename = "finishedAt")]
+	pub finished_at: f64,
+	#[serde(rename = "durationMs")]
+	pub duration_ms: f64,
+	#[serde(rename = "terminalStatus")]
+	pub terminal_status: TodoWorkerOutcome,
+	#[serde(rename = "deliverablePaths")]
+	pub deliverable_paths: Vec<String>,
+	#[serde(rename = "rejectionReason", default, skip_serializing_if = "Option::is_none")]
+	pub rejection_reason: Option<String>,
+	#[serde(rename = "reflectionAnswer", default, skip_serializing_if = "Option::is_none")]
+	pub reflection_answer: Option<String>,
+	#[serde(rename = "noAnswerReason", default, skip_serializing_if = "Option::is_none")]
+	pub no_answer_reason: Option<String>,
+	#[serde(rename = "finalReportParagraph", default, skip_serializing_if = "Option::is_none")]
+	pub final_report_paragraph: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub interruption: Option<LitRestart>,
+	#[serde(rename = "infraFailureLine", default, skip_serializing_if = "Option::is_none")]
+	pub infra_failure_line: Option<String>,
+	#[serde(rename = "infraFailureError", default, skip_serializing_if = "Option::is_none")]
+	pub infra_failure_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoResourceWait {
+	pub row: String,
+	#[serde(rename = "workerId", default, skip_serializing_if = "Option::is_none")]
+	pub worker_id: Option<String>,
+}
+
+/// Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TodoSchedule {
+	/// Exact task-content references; absent means unknown, while an empty array explicitly means independent.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub dependencies: Option<Vec<String>>,
+	/// Exclusive forecast owner while this task is running.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub owner: Option<String>,
+	/// Exclusive resource identifiers while running; absent means undeclared.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub resources: Option<Vec<String>>,
+	#[serde(rename = "resourceWait", default, skip_serializing_if = "Option::is_none")]
+	pub resource_wait: Option<TodoResourceWait>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub estimate: Option<TodoEstimate>,
+	/// Server-owned revision: the first estimate is revision 1.
+	#[serde(rename = "estimateRevision", default, skip_serializing_if = "Option::is_none")]
+	pub estimate_revision: Option<f64>,
+	#[serde(rename = "reestimateCount", default, skip_serializing_if = "Option::is_none")]
+	pub reestimate_count: Option<f64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub progress: Option<TodoScheduleProgress>,
+	#[serde(rename = "startedAt", default, skip_serializing_if = "Option::is_none")]
+	pub started_at: Option<f64>,
+	#[serde(rename = "finishedAt", default, skip_serializing_if = "Option::is_none")]
+	pub finished_at: Option<f64>,
+	/// Time this row first entered the plan as a user requirement.
+	#[serde(rename = "firstRequirementAt", default, skip_serializing_if = "Option::is_none")]
+	pub first_requirement_at: Option<f64>,
+	/// Time the first usable result was handed to the user.
+	#[serde(rename = "firstDeliveredAt", default, skip_serializing_if = "Option::is_none")]
+	pub first_delivered_at: Option<f64>,
+	/// Append-only durable attempts for this exact row.
+	#[serde(rename = "attemptHistory", default, skip_serializing_if = "Option::is_none")]
+	pub attempt_history: Option<Vec<TodoReworkAttempt>>,
+	/// Short final worker report retained for the user's review handoff.
+	#[serde(rename = "reviewSummary", default, skip_serializing_if = "Option::is_none")]
+	pub review_summary: Option<String>,
+	/// User decision state for a delivered implementation result.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub review: Option<TodoScheduleReview>,
+	/// Review row whose verdict gates publication of this speculative work.
+	#[serde(rename = "speculativeOn", default, skip_serializing_if = "Option::is_none")]
+	pub speculative_on: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub executor: Option<TodoScheduleExecutor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2962,6 +3187,125 @@ pub struct QueuedMessagesState {
 	/// Leading `steering` entries are live steering already sent into the streaming response; `remove_queued_message` cannot reach them.
 	#[serde(rename = "liveSteered", default = "default_queued_messages_state_live_steered")]
 	pub live_steered: i64,
+}
+
+///
+/// Open record: declared fields are decoded leniently (a value that does not fit stays
+/// in `extra`) and every other key is kept in `extra`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CustomPromptMessage {
+	pub custom_type: Option<String>,
+	pub content: Option<MessageContent>,
+	pub display: Option<bool>,
+	pub details: Option<Value>,
+	pub attribution: Option<CustomPromptMessageAttribution>,
+	/// Every key not decoded into a declared field.
+	pub extra: Map<String, Value>,
+}
+
+impl Serialize for CustomPromptMessage {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		let mut map = serializer.serialize_map(None)?;
+		if let Some(value) = &self.custom_type {
+			map.serialize_entry("customType", value)?;
+		}
+		if let Some(value) = &self.content {
+			map.serialize_entry("content", value)?;
+		}
+		if let Some(value) = &self.display {
+			map.serialize_entry("display", value)?;
+		}
+		if let Some(value) = &self.details {
+			map.serialize_entry("details", value)?;
+		}
+		if let Some(value) = &self.attribution {
+			map.serialize_entry("attribution", value)?;
+		}
+		for (key, value) in &self.extra {
+			match key.as_str() {
+				"customType" if self.custom_type.is_some() => continue,
+				"content" if self.content.is_some() => continue,
+				"display" if self.display.is_some() => continue,
+				"details" if self.details.is_some() => continue,
+				"attribution" if self.attribution.is_some() => continue,
+				_ => {}
+			}
+			map.serialize_entry(key, value)?;
+		}
+		map.end()
+	}
+}
+
+impl<'de> Deserialize<'de> for CustomPromptMessage {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let mut extra = Map::<String, Value>::deserialize(deserializer)?;
+		Ok(Self {
+			custom_type: take(&mut extra, "customType"),
+			content: take(&mut extra, "content"),
+			display: take(&mut extra, "display"),
+			details: take(&mut extra, "details"),
+			attribution: take(&mut extra, "attribution"),
+			extra,
+		})
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomPromptOptions {
+	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
+	pub streaming_behavior: Option<CustomPromptOptionsStreamingBehavior>,
+	#[serde(rename = "toolChoice", default, skip_serializing_if = "Option::is_none")]
+	pub tool_choice: Option<Value>,
+	#[serde(rename = "queueChipText", default, skip_serializing_if = "Option::is_none")]
+	pub queue_chip_text: Option<String>,
+	#[serde(rename = "queueOnly", default, skip_serializing_if = "Option::is_none")]
+	pub queue_only: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionPromptOptions {
+	#[serde(rename = "expandPromptTemplates", default, skip_serializing_if = "Option::is_none")]
+	pub expand_prompt_templates: Option<bool>,
+	#[serde(rename = "runCommands", default, skip_serializing_if = "Option::is_none")]
+	pub run_commands: Option<bool>,
+	#[serde(rename = "throwOnDrop", default, skip_serializing_if = "Option::is_none")]
+	pub throw_on_drop: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub images: Option<Vec<ImageContent>>,
+	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
+	pub streaming_behavior: Option<SessionPromptOptionsStreamingBehavior>,
+	#[serde(rename = "toolChoice", default, skip_serializing_if = "Option::is_none")]
+	pub tool_choice: Option<Value>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub synthetic: Option<bool>,
+	#[serde(rename = "userInitiated", default, skip_serializing_if = "Option::is_none")]
+	pub user_initiated: Option<bool>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub attribution: Option<SessionPromptOptionsAttribution>,
+	#[serde(rename = "skipCompactionCheck", default, skip_serializing_if = "Option::is_none")]
+	pub skip_compaction_check: Option<bool>,
+	#[serde(rename = "solutionSpace", default, skip_serializing_if = "Option::is_none")]
+	pub solution_space: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionDisposeOptions {
+	#[serde(rename = "mnemopiConsolidateTimeoutMs", default, skip_serializing_if = "Option::is_none")]
+	pub mnemopi_consolidate_timeout_ms: Option<f64>,
+	#[serde(rename = "drainTimeoutMs", default, skip_serializing_if = "Option::is_none")]
+	pub drain_timeout_ms: Option<f64>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<SessionDisposeOptionsReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SessionAbortOptions {
+	#[serde(rename = "goalReason", default, skip_serializing_if = "Option::is_none")]
+	pub goal_reason: Option<SessionAbortOptionsGoalReason>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub reason: Option<String>,
+	#[serde(rename = "preserveCompaction", default, skip_serializing_if = "Option::is_none")]
+	pub preserve_compaction: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -3090,10 +3434,68 @@ impl<'de> Deserialize<'de> for UsageLimitState {
 	}
 }
 
+///
+/// Open record: declared fields are decoded leniently (a value that does not fit stays
+/// in `extra`) and every other key is kept in `extra`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InteractiveViewOptions {
+	pub collapse_compacted_history: Option<bool>,
+	/// Every key not decoded into a declared field.
+	pub extra: Map<String, Value>,
+}
+
+impl Serialize for InteractiveViewOptions {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		let mut map = serializer.serialize_map(None)?;
+		if let Some(value) = &self.collapse_compacted_history {
+			map.serialize_entry("collapseCompactedHistory", value)?;
+		}
+		for (key, value) in &self.extra {
+			match key.as_str() {
+				"collapseCompactedHistory" if self.collapse_compacted_history.is_some() => continue,
+				_ => {}
+			}
+			map.serialize_entry(key, value)?;
+		}
+		map.end()
+	}
+}
+
+impl<'de> Deserialize<'de> for InteractiveViewOptions {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let mut extra = Map::<String, Value>::deserialize(deserializer)?;
+		Ok(Self {
+			collapse_compacted_history: take(&mut extra, "collapseCompactedHistory"),
+			extra,
+		})
+	}
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InteractiveViewSnapshot {
+	#[serde(rename = "sessionId")]
+	pub session_id: String,
+	pub context: Map<String, Value>,
+	#[serde(rename = "streamMessage", deserialize_with = "Deserialize::deserialize")]
+	pub stream_message: Option<AgentMessage>,
+	#[serde(rename = "pendingToolCallIds")]
+	pub pending_tool_call_ids: Vec<String>,
+	#[serde(rename = "isStreaming")]
+	pub is_streaming: bool,
+	#[serde(rename = "entryCount")]
+	pub entry_count: f64,
+	#[serde(rename = "compactionCount")]
+	pub compaction_count: f64,
+	#[serde(rename = "sessionFile", default, skip_serializing_if = "Option::is_none")]
+	pub session_file: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionState {
 	#[serde(rename = "sessionId")]
 	pub session_id: String,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub view: Option<InteractiveViewSnapshot>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub model: Option<ModelInfo>,
 	#[serde(rename = "thinkingLevel", default, skip_serializing_if = "Option::is_none")]
@@ -3102,6 +3504,8 @@ pub struct SessionState {
 	pub is_streaming: bool,
 	#[serde(rename = "isCompacting", default = "default_session_state_is_compacting")]
 	pub is_compacting: bool,
+	#[serde(rename = "hasPostPromptWork", default = "default_session_state_has_post_prompt_work")]
+	pub has_post_prompt_work: bool,
 	#[serde(rename = "steeringMode", default = "default_session_state_steering_mode")]
 	pub steering_mode: QueueMode,
 	#[serde(rename = "followUpMode", default = "default_session_state_follow_up_mode")]
@@ -3902,6 +4306,8 @@ pub struct RetryFallbackAppliedEvent {
 	pub to: String,
 	pub role: String,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub source: Option<RetryFallbackAppliedEventSource>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub reason: Option<String>,
 }
 
@@ -4242,8 +4648,21 @@ pub struct SubagentLifecyclePayload {
 	pub agent_source: AgentSource,
 	pub status: SubagentLifecycleStatus,
 	pub index: i64,
+	#[serde(rename = "followUpTurn", default, skip_serializing_if = "Option::is_none")]
+	pub follow_up_turn: Option<bool>,
+	/// Wall clock of the emitted lifecycle transition, in Unix milliseconds.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub at: Option<f64>,
+	#[serde(rename = "resolvedModelIdentity", default, skip_serializing_if = "Option::is_none")]
+	pub resolved_model_identity: Option<String>,
+	#[serde(rename = "resolvedThinkingLevel", default, skip_serializing_if = "Option::is_none")]
+	pub resolved_thinking_level: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub description: Option<String>,
+	#[serde(rename = "taskText", default, skip_serializing_if = "Option::is_none")]
+	pub task_text: Option<String>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub row: Option<String>,
 	#[serde(rename = "sessionFile", default, skip_serializing_if = "Option::is_none")]
 	pub session_file: Option<String>,
 	#[serde(rename = "parentToolCallId", default, skip_serializing_if = "Option::is_none")]
@@ -4262,6 +4681,8 @@ pub struct SubagentProgressPayload {
 	pub task: String,
 	/// Raw `AgentProgress` record.
 	pub progress: Map<String, Value>,
+	#[serde(rename = "followUpTurn", default, skip_serializing_if = "Option::is_none")]
+	pub follow_up_turn: Option<bool>,
 	#[serde(rename = "parentToolCallId", default, skip_serializing_if = "Option::is_none")]
 	pub parent_tool_call_id: Option<String>,
 	#[serde(default, skip_serializing_if = "Option::is_none")]
@@ -5235,11 +5656,22 @@ pub struct NegotiateProtocolResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromptParams {
 	pub message: String,
+	#[serde(rename = "rawRequirementText", default, skip_serializing_if = "Option::is_none")]
+	pub raw_requirement_text: Option<String>,
 	/// Images attached to the message.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub images: Option<Vec<ImageContent>>,
 	#[serde(rename = "streamingBehavior", default, skip_serializing_if = "Option::is_none")]
 	pub streaming_behavior: Option<StreamingBehavior>,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<SessionPromptOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptCustomParams {
+	pub message: CustomPromptMessage,
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<CustomPromptOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5270,6 +5702,12 @@ pub struct PromoteQueuedMessageParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AbortParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<SessionAbortOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AbortAndPromptParams {
 	pub message: String,
 	/// Images attached to the message.
@@ -5291,6 +5729,29 @@ pub struct OpenSessionParams {
 	pub provider: Option<String>,
 	#[serde(rename = "modelId", default, skip_serializing_if = "Option::is_none")]
 	pub model_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisposeSessionParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub options: Option<SessionDisposeOptions>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SaveDraftParams {
+	pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConsumeDraftResult {
+	#[serde(deserialize_with = "Deserialize::deserialize")]
+	pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GetStateParams {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub view: Option<InteractiveViewOptions>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -5927,6 +6388,159 @@ impl AssistantErrorEventReason {
 	}
 }
 
+/// The constant `"restart"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct LitRestart;
+
+impl Serialize for LitRestart {
+	fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+		serializer.serialize_str("restart")
+	}
+}
+
+impl<'de> Deserialize<'de> for LitRestart {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let value = Value::deserialize(deserializer)?;
+		if value.as_str() == Some("restart") {
+			Ok(Self)
+		} else {
+			Err(D::Error::custom(format!("expected \"restart\", got {value}")))
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CustomPromptMessageAttribution {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "agent")]
+	Agent,
+}
+
+impl CustomPromptMessageAttribution {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Agent => "agent",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CustomPromptOptionsStreamingBehavior {
+	#[serde(rename = "steer")]
+	Steer,
+	#[serde(rename = "followUp")]
+	FollowUp,
+	#[serde(rename = "aside")]
+	Aside,
+}
+
+impl CustomPromptOptionsStreamingBehavior {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Steer => "steer",
+			Self::FollowUp => "followUp",
+			Self::Aside => "aside",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionPromptOptionsStreamingBehavior {
+	#[serde(rename = "steer")]
+	Steer,
+	#[serde(rename = "followUp")]
+	FollowUp,
+	#[serde(rename = "aside")]
+	Aside,
+}
+
+impl SessionPromptOptionsStreamingBehavior {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Steer => "steer",
+			Self::FollowUp => "followUp",
+			Self::Aside => "aside",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionPromptOptionsAttribution {
+	#[serde(rename = "user")]
+	User,
+	#[serde(rename = "agent")]
+	Agent,
+}
+
+impl SessionPromptOptionsAttribution {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::User => "user",
+			Self::Agent => "agent",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionDisposeOptionsReason {
+	#[serde(rename = "pre_exit")]
+	PreExit,
+	#[serde(rename = "exit")]
+	Exit,
+	#[serde(rename = "sigint")]
+	Sigint,
+	#[serde(rename = "sigterm")]
+	Sigterm,
+	#[serde(rename = "sighup")]
+	Sighup,
+	#[serde(rename = "uncaught_exception")]
+	UncaughtException,
+	#[serde(rename = "unhandled_rejection")]
+	UnhandledRejection,
+	#[serde(rename = "manual")]
+	Manual,
+}
+
+impl SessionDisposeOptionsReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::PreExit => "pre_exit",
+			Self::Exit => "exit",
+			Self::Sigint => "sigint",
+			Self::Sigterm => "sigterm",
+			Self::Sighup => "sighup",
+			Self::UncaughtException => "uncaught_exception",
+			Self::UnhandledRejection => "unhandled_rejection",
+			Self::Manual => "manual",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum SessionAbortOptionsGoalReason {
+	#[serde(rename = "interrupted")]
+	Interrupted,
+	#[serde(rename = "internal")]
+	Internal,
+}
+
+impl SessionAbortOptionsGoalReason {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Interrupted => "interrupted",
+			Self::Internal => "internal",
+		}
+	}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum GoalModeStateMode {
 	#[serde(rename = "active")]
@@ -5980,6 +6594,24 @@ impl LogoutAccountType {
 		match self {
 			Self::ApiKey => "api_key",
 			Self::Oauth => "oauth",
+		}
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RetryFallbackAppliedEventSource {
+	#[serde(rename = "primary")]
+	Primary,
+	#[serde(rename = "advisor")]
+	Advisor,
+}
+
+impl RetryFallbackAppliedEventSource {
+	/// Wire value.
+	pub fn as_str(self) -> &'static str {
+		match self {
+			Self::Primary => "primary",
+			Self::Advisor => "advisor",
 		}
 	}
 }
@@ -6098,6 +6730,10 @@ fn default_session_state_is_compacting() -> bool {
 	serde_json::from_str("false").expect("valid wire default")
 }
 
+fn default_session_state_has_post_prompt_work() -> bool {
+	serde_json::from_str("false").expect("valid wire default")
+}
+
 fn default_session_state_steering_mode() -> QueueMode {
 	serde_json::from_str("\"one-at-a-time\"").expect("valid wire default")
 }
@@ -6210,6 +6846,8 @@ impl Command for NegotiateProtocolCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PromptCommand {
 	pub message: String,
+	#[serde(rename = "rawRequirementText", default, skip_serializing_if = "Option::is_none")]
+	pub raw_requirement_text: Option<String>,
 	/// Images attached to the message.
 	#[serde(default, skip_serializing_if = "Option::is_none")]
 	pub images: Option<Vec<ImageContent>>,
@@ -6224,6 +6862,26 @@ impl Command for PromptCommand {
 
 	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
 		serde_json::from_value::<PromptAck>(data.unwrap_or_else(|| Value::Object(Map::new())))
+	}
+}
+
+/// Submit an attributed custom message through the owner admission pipeline.
+///
+/// The returned value is only the acknowledgement: the work completes with a
+/// `prompt_result` notification carrying this command's id.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PromptCustomCommand {
+	pub message: CustomPromptMessage,
+}
+
+impl Command for PromptCustomCommand {
+	const NAME: &'static str = "prompt_custom";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
 	}
 }
 
@@ -6390,9 +7048,88 @@ impl Command for OpenSessionCommand {
 	}
 }
 
-/// Snapshot the session state.
+/// Stop admitting new owner work before explicit shutdown.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct GetStateCommand {}
+pub struct BeginDisposeCommand {}
+
+impl Command for BeginDisposeCommand {
+	const NAME: &'static str = "begin_dispose";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Dispose the runtime owner; view detachment does not call this.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DisposeSessionCommand {}
+
+impl Command for DisposeSessionCommand {
+	const NAME: &'static str = "dispose_session";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Close and seal the owner journal after restart admission.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CheckpointSessionCommand {}
+
+impl Command for CheckpointSessionCommand {
+	const NAME: &'static str = "checkpoint_session";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Persist unsent editor text with the runtime session writer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SaveDraftCommand {
+	pub text: String,
+}
+
+impl Command for SaveDraftCommand {
+	const NAME: &'static str = "save_draft";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = ();
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		let _ = data;
+		Ok(())
+	}
+}
+
+/// Restore and remove the unsent editor draft once.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ConsumeDraftCommand {}
+
+impl Command for ConsumeDraftCommand {
+	const NAME: &'static str = "consume_draft";
+	const TIMEOUT_MS: Option<u64> = None;
+	type Output = Option<String>;
+
+	fn decode(data: Option<Value>) -> Result<Self::Output, serde_json::Error> {
+		serde_json::from_value::<ConsumeDraftResult>(data.unwrap_or_else(|| Value::Object(Map::new()))).map(|result| result.text)
+	}
+}
+
+/// Snapshot the session state, optionally including presentation without opening a view writer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct GetStateCommand {
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub view: Option<InteractiveViewOptions>,
+}
 
 impl Command for GetStateCommand {
 	const NAME: &'static str = "get_state";

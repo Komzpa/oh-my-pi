@@ -1,4 +1,13 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import type { EffectiveExtensionRoots } from "../../src/capability/types";
+import { revivePersistedPlaced } from "../../src/thread/executor-routing";
+import type { PersistedReviveSpec } from "../../src/task/persisted-revive";
+import type { SubagentWorkerPool } from "../../src/thread/subagent-worker";
+import type { AgentRef } from "../../src/registry/agent-registry";
+import type { AgentSessionHandle } from "../../src/session/agent-session-handle";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
 import type { CounterProtocol, FixtureMainApi, FixtureWorkerApi } from "../fixtures/rpc-link-worker";
 import {
@@ -297,4 +306,71 @@ describe("RpcLink", () => {
 		link.close("worker exited");
 		await expect(pending).rejects.toBeInstanceOf(RpcClosedError);
 	});
+});
+
+// Restart recovery cold-revives through placement, carrying discoveryOptions from
+// the owner. Exercise the real worker RPC encoding, not a local provider call.
+it("cold-revive placement keeps discoveryOptions roots synchronous in the worker", async () => {
+	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-revive-rpc-"));
+	const { link } = await startFixture();
+	const roots: EffectiveExtensionRoots = {
+		explicit: [cwd],
+		mode: "explicit-only",
+		configured: [],
+		configuredLevel: "project",
+	};
+	let observed: { paths: string[]; synchronous: boolean } | undefined;
+	const pool = {
+		acquire: async () => ({
+			worker: {
+				link: {
+					call: async (
+						_method: string,
+						spec: {
+							discoveryOptions: { extensionRoots: () => EffectiveExtensionRoots };
+							root: { effectiveExtensionRoots: () => EffectiveExtensionRoots };
+						},
+					) => {
+						observed = await link.call("discoverReviveRoots", cwd, spec.discoveryOptions.extensionRoots);
+						expect(await link.call("discoverReviveRoots", cwd, spec.root.effectiveExtensionRoots)).toEqual({
+							paths: [cwd],
+							synchronous: true,
+						});
+						return {} as AgentSessionHandle;
+					},
+				},
+			},
+			release: () => {},
+		}),
+	} as unknown as SubagentWorkerPool;
+	const spec = {
+		root: { effectiveExtensionRoots: () => roots },
+		discoveryOptions: { extensionRoots: () => roots },
+	} as PersistedReviveSpec & {
+		discoveryOptions: { extensionRoots: () => EffectiveExtensionRoots };
+	};
+	try {
+		await revivePersistedPlaced(pool, spec, {} as AgentRef, async () => {
+			throw new Error("expected worker placement");
+		});
+		expect(observed).toEqual({ paths: [cwd], synchronous: true });
+	} finally {
+		await fs.rm(cwd, { recursive: true, force: true });
+	}
+});
+
+it("discovery resolves an unbridged worker RPC provider without enabling ambient roots", async () => {
+	const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-roots-rpc-"));
+	const { link } = await startFixture();
+	try {
+		const roots: EffectiveExtensionRoots = {
+			explicit: [cwd],
+			mode: "explicit-only",
+			configured: [path.dirname(cwd)],
+			configuredLevel: "project",
+		};
+		expect(await link.call("discoverReviveRoots", cwd, () => roots)).toEqual({ paths: [cwd], synchronous: false });
+	} finally {
+		await fs.rm(cwd, { recursive: true, force: true });
+	}
 });

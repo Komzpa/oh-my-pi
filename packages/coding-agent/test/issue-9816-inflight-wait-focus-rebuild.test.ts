@@ -223,7 +223,17 @@ function makeSession(
 		retryAttempt: 0,
 		agent: {
 			get state() {
-				return { streamMessage: liveMessage };
+				const completedIds = new Set(bufferedResults.map(result => result.toolCallId));
+				const pendingToolCalls = new Set(
+					(liveMessage?.content ?? [])
+						.filter(
+							(part): part is Extract<AssistantMessage["content"][number], { type: "toolCall" }> =>
+								part.type === "toolCall",
+						)
+						.filter(part => !completedIds.has(part.id))
+						.map(part => part.id),
+				);
+				return { streamMessage: liveMessage, pendingToolCalls };
 			},
 			getPendingToolResults: () => bufferedResults,
 		},

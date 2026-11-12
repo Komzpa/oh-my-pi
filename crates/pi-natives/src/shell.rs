@@ -223,6 +223,8 @@ impl From<MinimizerOptions> for minimizer::MinimizerOptions {
 pub struct ShellOptions {
 	/// Environment variables to apply once per session.
 	pub session_env:   Option<HashMap<String, String>>,
+	/// Environment names removed after session import and snapshot sourcing.
+	pub unset_env:     Option<Vec<String>>,
 	/// Optional snapshot file to source on session creation.
 	pub snapshot_path: Option<String>,
 	/// Optional per-command output minimizer configuration.
@@ -235,6 +237,7 @@ impl From<ShellOptions> for CoreShellOptions {
 	fn from(value: ShellOptions) -> Self {
 		Self {
 			session_env:   value.session_env,
+			unset_env:     value.unset_env,
 			snapshot_path: value.snapshot_path,
 			minimizer:     value.minimizer.map(Into::into),
 			filesystem:    value.filesystem.map_or_default(ShellFilesystem::into_fs),
@@ -412,6 +415,8 @@ pub struct ShellExecuteOptions<'env> {
 	pub env:           Option<HashMap<String, String>>,
 	/// Environment variables to apply once per session.
 	pub session_env:   Option<HashMap<String, String>>,
+	/// Environment names removed after session import and snapshot sourcing.
+	pub unset_env:     Option<Vec<String>>,
 	/// Timeout in milliseconds before cancelling the command.
 	pub timeout_ms:    Option<u32>,
 	/// Optional snapshot file to source on session creation.
@@ -619,6 +624,7 @@ pub fn execute_shell<'env>(
 		cwd:           options.cwd,
 		env:           options.env,
 		session_env:   options.session_env,
+		unset_env:     options.unset_env,
 		timeout_ms:    options.timeout_ms,
 		snapshot_path: options.snapshot_path,
 		minimizer:     options.minimizer.map(Into::into),

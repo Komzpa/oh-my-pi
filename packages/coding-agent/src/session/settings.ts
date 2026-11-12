@@ -921,6 +921,19 @@ export const cfgRetryUsageReservePct = register({
 	},
 });
 
+export const cfgRetryUsageConfirmTimeoutMs = register({
+	id: "retry.usageConfirmTimeoutMs",
+	type: "number",
+	default: 60_000,
+	ui: {
+		tab: "model",
+		group: "Retry & Fallback",
+		label: "Reserve Confirmation Timeout",
+		description: "Milliseconds to wait before automatically choosing Yes and switching to the fallback.",
+		condition: "usageAwareFallbackEnabled",
+	},
+});
+
 export const cfgRetryUsageReservePolicy = register({
 	id: "retry.usageReservePolicy",
 	type: "enum",
@@ -999,6 +1012,7 @@ export const cfgRetry = combine({
 	usageAwareFallback: cfgRetryUsageAwareFallback,
 	usageReservePct: cfgRetryUsageReservePct,
 	usageReservePolicy: cfgRetryUsageReservePolicy,
+	usageConfirmTimeoutMs: cfgRetryUsageConfirmTimeoutMs,
 });
 
 /** Retry/backoff policy ({@link cfgRetry}). */
@@ -1689,4 +1703,11 @@ export const cfgSessionMaxCost = register({
 	type: "number",
 	default: undefined,
 	validate: validateCostThreshold("session.maxCost"),
+});
+
+/** Host-owned route for provider availability notices; receives JSON on stdin. */
+export const cfgProviderAvailabilityNoticeCommand = register({
+	id: "providers.availabilityNoticeCommand",
+	type: "string",
+	default: "",
 });

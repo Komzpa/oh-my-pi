@@ -12,7 +12,7 @@ import {
 } from "@oh-my-pi/pi-utils/file-lock";
 import { type FsError, hasFsCode, isEnoent } from "@oh-my-pi/pi-utils/fs-error";
 import * as logger from "@oh-my-pi/pi-utils/logger";
-import { popLoopPhase, pushLoopPhase, withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
+import { withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import { peekFileEnds } from "@oh-my-pi/pi-utils/peek-file";
 import { isPidAlive } from "@oh-my-pi/pi-utils/pid";
 import { Snowflake } from "@oh-my-pi/pi-utils/snowflake";
@@ -23,6 +23,29 @@ import {
 	type SessionTitleUpdate,
 	serializeTitleSlot,
 } from "./session-title-slot";
+
+interface AssistantScan {
+	ino: number;
+	dev: number;
+	size: number;
+	mtimeMs: number;
+	offset: number;
+	found: boolean;
+}
+
+// Listing creates fresh storage objects; keep the append cursor across those calls.
+const assistantScans = new Map<string, AssistantScan>();
+const ASSISTANT_SCAN_CACHE_LIMIT = 256;
+
+function isAssistantMessageLine(line: string): boolean {
+	if (!line.includes('"assistant"')) return false;
+	try {
+		const record = JSON.parse(line);
+		return record?.type === "message" && record.message?.role === "assistant";
+	} catch {
+		return false;
+	}
+}
 
 /** Shared base flags for the held transcript descriptor; callers add `O_APPEND` or `O_TRUNC`. */
 const SESSION_WRITE_FLAGS = fs.constants.O_WRONLY | fs.constants.O_CREAT;
@@ -101,6 +124,8 @@ export interface SessionStorageWriter {
 export interface SessionStorageWriteOptions {
 	/** Current UTF-8 byte length, or `null` when the target must not exist. */
 	expectedSize?: number | null;
+	/** Optional asynchronous source for bounded chunks of a large file-backed body. */
+	readLine?: (index: number) => string | Promise<string>;
 }
 
 /**
@@ -146,10 +171,13 @@ export class SessionLockError extends Error {
  * backend MUST check `expectedSize` and call `commitGuard()` synchronously
  * immediately before it makes the staged content visible at `path`. Failed
  * preconditions leave the target untouched. Backends MUST NOT yield between
- * the checks and publishing the write.
+ * the checks and publishing the write, unless the caller explicitly holds
+ * a mutation fence through `fencedAsyncPublish`.
  */
 export interface WriteTextAtomicOptions extends SessionStorageWriteOptions {
 	commitGuard?: () => boolean;
+	/** Caller fences all mutations, including synchronous supersession, until publication resolves. */
+	fencedAsyncPublish?: boolean;
 }
 
 export interface SessionStorage {
@@ -217,6 +245,8 @@ export interface SessionStorage {
 	 * omit it and callers keep the window evidence.
 	 */
 	scanLines?(path: string, visit: (line: string) => boolean): Promise<void>;
+	/** Optional append-aware assistant-only scan; generic visitors still use scanLines. */
+	scanAssistantTurn?(path: string): Promise<boolean>;
 	writeText(path: string, content: string): Promise<void>;
 	writeTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void>;
 	/** Streaming {@link writeTextAtomic}, optional on the same terms as {@link writeLinesSync}. */
@@ -722,37 +752,31 @@ function writeLinesToFileSync(target: string, lines: readonly string[]): void {
 }
 
 /**
- * Async {@link writeLinesToFileSync} through a buffered Bun file sink.
- * `target` must be a fresh path: a sink does not truncate an existing file.
- * A file sink flushes synchronously once its buffer fills, so each run of
- * writes between backpressure waits is a `session.rewrite` loop phase.
+ * Async {@link writeLinesToFileSync} through bounded I/O-pool writes.
+ * `target` must be a fresh staging path.
  */
-async function writeLinesToFile(target: string, lines: readonly string[]): Promise<void> {
-	const sink = Bun.file(target).writer({ highWaterMark: LINE_STREAM_CHUNK });
+async function writeLinesToFile(
+	target: string,
+	lines: readonly string[],
+	readLine?: (index: number) => string | Promise<string>,
+): Promise<void> {
+	const file = await fs.promises.open(target, "wx");
 	try {
-		let next = 0;
-		while (next < lines.length) {
-			let written: number | Promise<number> = 0;
-			pushLoopPhase("session.rewrite");
-			try {
-				while (next < lines.length && typeof written === "number") written = sink.write(lines[next++]);
-			} finally {
-				popLoopPhase();
+		let sliceStart = performance.now();
+		let chunk = "";
+		for (let i = 0; i < lines.length; i++) {
+			chunk += readLine ? await readLine(i) : lines[i];
+			if (chunk.length >= LINE_STREAM_CHUNK || performance.now() - sliceStart >= 4) {
+				await file.writeFile(chunk);
+				chunk = "";
+				await Bun.sleep(1);
+				sliceStart = performance.now();
 			}
-			// Backpressured writes can reject after end() has otherwise completed.
-			// Do not publish a partial transcript before every write is confirmed.
-			if (typeof written !== "number") await written;
 		}
-	} catch (err) {
-		try {
-			// Release the descriptor so the caller can discard the staging file.
-			await sink.end();
-		} catch {
-			// The write failure is the error worth reporting.
-		}
-		throw err;
+		if (chunk) await file.writeFile(chunk);
+	} finally {
+		await file.close();
 	}
-	await sink.end();
 }
 
 export class FileSessionStorage implements SessionStorage {
@@ -1157,6 +1181,70 @@ export class FileSessionStorage implements SessionStorage {
 		}
 	}
 
+	async scanAssistantTurn(path: string): Promise<boolean> {
+		const fileHandle = await fsp.open(path, "r");
+		try {
+			const stat = await fileHandle.stat();
+			const cached = assistantScans.get(path);
+			const sameFile = cached && cached.ino === stat.ino && cached.dev === stat.dev;
+			if (sameFile && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.found;
+			const appended = Boolean(sameFile && stat.size > cached.size);
+			let offset = appended && cached ? cached.offset : 0;
+			let found = Boolean(appended && cached?.found);
+			if (!found) {
+				const buffer = Buffer.allocUnsafe(64 * 1024);
+				let pending: Buffer[] = [];
+				let pendingBytes = 0;
+				let cursor = offset;
+				while (cursor < stat.size) {
+					const { bytesRead } = await fileHandle.read(
+						buffer,
+						0,
+						Math.min(buffer.length, stat.size - cursor),
+						cursor,
+					);
+					if (!bytesRead) break;
+					cursor += bytesRead;
+					const chunk = buffer.subarray(0, bytesRead);
+					let start = 0;
+					let end: number;
+					while ((end = chunk.indexOf(10, start)) !== -1) {
+						const line = chunk.subarray(start, end);
+						found = isAssistantMessageLine(
+							pendingBytes ? Buffer.concat([...pending, line]).toString("utf8") : line.toString("utf8"),
+						);
+						offset += pendingBytes + end + 1 - start;
+						pending = [];
+						pendingBytes = 0;
+						start = end + 1;
+						if (found) break;
+					}
+					if (found) break;
+					if (start < chunk.length) {
+						pending.push(Buffer.from(chunk.subarray(start)));
+						pendingBytes += chunk.length - start;
+					}
+				}
+				// Reparse an unterminated final record when its remaining bytes arrive.
+				if (!found && pendingBytes) found = isAssistantMessageLine(Buffer.concat(pending).toString("utf8"));
+			}
+			assistantScans.delete(path);
+			assistantScans.set(path, {
+				ino: stat.ino,
+				dev: stat.dev,
+				size: stat.size,
+				mtimeMs: stat.mtimeMs,
+				offset,
+				found,
+			});
+			if (assistantScans.size > ASSISTANT_SCAN_CACHE_LIMIT)
+				assistantScans.delete(assistantScans.keys().next().value!);
+			return found;
+		} finally {
+			await fileHandle.close();
+		}
+	}
+
 	async writeText(path: string, content: string): Promise<void> {
 		await Bun.write(path, content, { createPath: true });
 	}
@@ -1174,10 +1262,10 @@ export class FileSessionStorage implements SessionStorage {
 		if (this.writeTextAtomic !== FileSessionStorage.prototype.writeTextAtomic) {
 			return this.writeTextAtomic(fpath, lines.join(""), options);
 		}
-		await this.#publishAtomic(fpath, tempPath => writeLinesToFile(tempPath, lines), options);
+		await this.#publishAtomic(fpath, tempPath => writeLinesToFile(tempPath, lines, options?.readLine), options);
 	}
 
-	/** Async {@link #publishSync}: stages via `stage`, then guard-checks and publishes without yielding. */
+	/** Stage a replacement, then publish under the freshness lock and the caller's mutation fence. */
 	async #publishAtomic(
 		fpath: string,
 		stage: (tempPath: string) => Promise<void>,
@@ -1192,7 +1280,7 @@ export class FileSessionStorage implements SessionStorage {
 		try {
 			await stage(tempPath);
 		} catch (err) {
-			this.#discardTemp(tempPath, target);
+			await this.#discardTempAsync(tempPath, target);
 			throw toError(err);
 		}
 		// Guard-check + rename MUST NOT be separated by an await. A concurrent
@@ -1200,7 +1288,34 @@ export class FileSessionStorage implements SessionStorage {
 		// publish a fresh body between the check and the rename, and this stale
 		// staged body would overwrite it. Sync rename closes that window.
 		if (options?.commitGuard && !options.commitGuard()) {
-			this.#discardTemp(tempPath, target);
+			await this.#discardTempAsync(tempPath, target);
+			return;
+		}
+		if (options?.fencedAsyncPublish) {
+			const lockPath = this.#publishLockPath(target);
+			let gate: NativeFileLock | undefined;
+			try {
+				gate = this.#acquireOsPublishLock(target, this.#osGatePath(lockPath));
+				this.#acquirePublishLock(target, lockPath);
+				try {
+					this.#assertExpectedSize(target, options.expectedSize);
+					if (options.commitGuard && !options.commitGuard()) return;
+					try {
+						await this.rename(tempPath, target);
+					} catch (error) {
+						if (!hasFsCode(error, "EPERM")) throw error;
+						await this.#replaceFencedSessionFileAfterEperm(tempPath, target, error);
+					}
+				} finally {
+					await fs.promises.unlink(lockPath).catch(error => {
+						if (!isEnoent(error))
+							logger.warn("Failed to remove session publish lock", { target, error: String(error) });
+					});
+				}
+			} finally {
+				gate?.release();
+				await this.#discardTempAsync(tempPath, target);
+			}
 			return;
 		}
 		try {
@@ -1218,7 +1333,7 @@ export class FileSessionStorage implements SessionStorage {
 				}
 			});
 		} catch (err) {
-			this.#discardTemp(tempPath, target);
+			await this.#discardTempAsync(tempPath, target);
 			throw toError(err);
 		}
 	}
@@ -1230,6 +1345,45 @@ export class FileSessionStorage implements SessionStorage {
 	 */
 	renameSync(source: string, target: string): void {
 		fs.renameSync(source, target);
+	}
+
+	/** Fenced async counterpart of the synchronous Windows replacement fallback. */
+	async #replaceFencedSessionFileAfterEperm(tempPath: string, target: string, original: unknown): Promise<void> {
+		const backup = `${target}.${Snowflake.next()}.bak`;
+		try {
+			await this.rename(target, backup);
+		} catch (error) {
+			if (!isEnoent(error)) throw original;
+			await this.rename(tempPath, target);
+			return;
+		}
+		try {
+			await this.rename(tempPath, target);
+		} catch (error) {
+			try {
+				await this.rename(backup, target);
+			} catch (rollback) {
+				throw new Error(
+					`Failed to replace session file after EPERM (retry: ${String(error)}; rollback: ${String(rollback)})`,
+					{ cause: original },
+				);
+			}
+			throw error;
+		}
+		await this.#discardTempAsync(backup, target);
+	}
+
+	async #discardTempAsync(tempPath: string, targetPath: string): Promise<void> {
+		try {
+			await fs.promises.unlink(tempPath);
+		} catch (error) {
+			if (!isEnoent(error))
+				logger.warn("Failed to remove session rewrite temp file", {
+					sessionFile: targetPath,
+					tempPath,
+					error: String(error),
+				});
+		}
 	}
 
 	#discardTemp(tempPath: string, targetPath: string): void {

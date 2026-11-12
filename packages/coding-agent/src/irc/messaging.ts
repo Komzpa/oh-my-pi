@@ -8,6 +8,20 @@ import { canSpawnAtDepth } from "../task/types";
 
 import { cfgTaskMaxRecursionDepth } from "../task/settings";
 
+export interface AgentMessageDelivery {
+	delivered: boolean;
+	text: string;
+}
+
+interface AgentMessageSession {
+	agentRegistry?: AgentRegistryApi;
+	enableIrc?: boolean;
+	settings: Settings;
+	taskDepth?: number;
+	getAgentId?: () => string | null | undefined;
+	getSessionFile?: () => string | null | undefined;
+}
+
 function coordinationErrorResult(text: string, details: CoordinationDetails): AgentToolResult<CoordinationDetails> {
 	return { content: [{ type: "text", text }], details, isError: true };
 }
@@ -43,7 +57,7 @@ export async function executeSend(
 	// Restore parked recipients only when needed; never delay delivery to a live peer.
 	if (!isBroadcast && sessionFileHint) {
 		const recipient = registry.get(to);
-		if (!recipient || recipient.status === "parked") await ensurePersistedRoster(registry, sessionFileHint);
+		if (!recipient || recipient.status === "parked") await ensurePersistedRoster(registry, sessionFileHint, to);
 	}
 
 	const targets = isBroadcast ? registry.listVisibleTo(senderId).map(ref => ref.id) : [to];
@@ -82,13 +96,59 @@ export async function executeSend(
 		text =
 			receipt.outcome === "failed"
 				? `Failed: ${to} ${unavailable ? "is not running" : "could not receive the message"}. ${receipt.error ?? ""}`.trimEnd()
-				: receipt.outcome === "revived"
-					? `Queued for ${to} (was parked; revived).`
-					: `Delivered to ${to}.`;
+				: to.startsWith("shell:")
+					? `Delivered to ${to} (shell inbox).`
+					: to.startsWith("peer:")
+						? `Delivered to ${to} (peer session).`
+						: receipt.outcome === "revived"
+							? `Queued for ${to} (was parked; revived).`
+							: `Delivered to ${to}.`;
 	}
 	return {
 		content: [{ type: "text", text }],
 		details: { op: "send", from: senderId, to, receipts },
 		isError: delivered.length === 0 && targets.length > 0,
 	};
+}
+
+/**
+ * Shared availability predicate for peer messaging. The extension
+ * `ctx.sendAgentMessage` API and `write agent://` evaluate this same path so
+ * the two channels cannot disagree about whether messaging works in a
+ * session. Returns the user-facing reason when unavailable, `undefined` when
+ * delivery may proceed.
+ */
+export function agentMessagingUnavailableReason(session: AgentMessageSession): string | undefined {
+	const registry = session.agentRegistry;
+	const senderId = session.getAgentId?.() ?? undefined;
+	if (
+		!registry ||
+		!senderId ||
+		session.enableIrc === false ||
+		!isIrcEnabled(session.settings, session.taskDepth ?? 0)
+	) {
+		return "Peer messaging is unavailable in this session.";
+	}
+	return undefined;
+}
+export async function sendAgentMessageFromSession(
+	session: AgentMessageSession,
+	to: string,
+	message: string,
+): Promise<AgentMessageDelivery> {
+	const registry = session.agentRegistry;
+	const senderId = session.getAgentId?.() ?? undefined;
+	const unavailable = agentMessagingUnavailableReason(session);
+	if (unavailable !== undefined) return { delivered: false, text: unavailable };
+	try {
+		const result = await executeSend(
+			// `agentMessagingUnavailableReason` above guarantees both are present.
+			{ registry: registry!, senderId: senderId!, sessionFileHint: session.getSessionFile?.() },
+			{ to, message },
+		);
+		const text = result.content.find(item => item.type === "text")?.text ?? "Message delivery failed.";
+		return { delivered: result.isError !== true, text };
+	} catch (error) {
+		return { delivered: false, text: error instanceof Error ? error.message : String(error) };
+	}
 }

@@ -15,6 +15,8 @@ export interface IrcBridgeHost {
 	sessionManager: SessionManager;
 	isDisposed(): boolean;
 	isStreaming(): boolean;
+	isRestartDraining(): boolean;
+	queueForRestart(record: CustomMessage): Promise<void>;
 	planModeEnabled(): boolean;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	wakeForIrc(records: AgentMessage[]): void;
@@ -24,12 +26,15 @@ export interface IrcBridgeHost {
 export class IrcBridge {
 	/** Tracks parent IRC steers by object identity without trusting prompt text or publication on receipt. */
 	readonly #parentSteers = new WeakSet<AgentMessage>();
+	readonly #nonInterruptingAsides = new WeakSet<AgentMessage>();
 	/** A subagent's records from anyone but its parent: answered in their own turn, never by
 	 *  extending a finished one (whose text is the subagent's result). */
 	readonly #peerMessages = new WeakSet<AgentMessage>();
 	/** Queued broadcast legs and progress notes: they ask nothing of the recipient, so they
 	 *  inject at the next step boundary like any record but never cut a `wait` short. */
 	readonly #quietRecords = new WeakSet<AgentMessage>();
+	/** Follow-ups admitted here before a child receives its initial prompt. */
+	readonly #preBriefFollowUps = new WeakSet<AgentMessage>();
 
 	readonly #host: IrcBridgeHost;
 	#interrupts: AgentMessage[] = [];
@@ -61,14 +66,21 @@ export class IrcBridge {
 		return this.#interrupts.some(record => !this.#quietRecords.has(record));
 	}
 
-	/** Whether an aside is ready for step-boundary injection (not a parked wake). */
-	hasAsides(): boolean {
-		return this.#asides.length > 0;
+	/** Whether a queued aside should end an interruptible wait. */
+	hasInterruptingAsides(): boolean {
+		return this.#asides.some(record => !this.#nonInterruptingAsides.has(record));
 	}
 
 	/** Whether any undelivered IRC record remains queued. */
 	hasPending(): boolean {
-		return this.#interrupts.length > 0 || this.#asides.length > 0 || this.#deferredWakes.length > 0;
+		return (
+			this.#interrupts.length > 0 ||
+			this.#asides.length > 0 ||
+			this.#deferredWakes.length > 0 ||
+			this.#host.agent
+				.peekFollowUpQueue()
+				.some(record => record.role === "custom" && record.customType === "irc:incoming")
+		);
 	}
 
 	/** Whether an IRC message from `from` is still queued for a turn yet to run. */
@@ -118,12 +130,12 @@ export class IrcBridge {
 			const records = [...this.#interrupts, ...this.#asides].filter(record => !isPeer(record));
 			this.#interrupts = this.#interrupts.filter(isPeer);
 			this.#asides = this.#asides.filter(isPeer);
-			return records;
+			return withoutSupersededSnapshots(records);
 		}
 		const records = [...this.#interrupts, ...this.#asides];
 		this.#interrupts = [];
 		this.#asides = [];
-		return records;
+		return withoutSupersededSnapshots(records);
 	}
 
 	/** Snapshots and discards every queued IRC record — used when a session-boundary transition
@@ -158,7 +170,11 @@ export class IrcBridge {
 
 	/** Queues records for the next step-boundary aside injection: IRC wakes deferred by a
 	 *  session transition, and extension `deliverAs: "aside"` sends. */
-	queueAside(records: AgentMessage[]): void {
+	queueAside(records: AgentMessage[], options?: { interruptWait?: boolean }): void {
+		for (const record of records) {
+			if (options?.interruptWait === false) this.#nonInterruptingAsides.add(record);
+			else this.#nonInterruptingAsides.delete(record);
+		}
 		this.#asides.push(...records);
 	}
 
@@ -179,8 +195,12 @@ export class IrcBridge {
 	/** Delivers an IRC message into the recipient session without awaiting any wake turn. */
 	async deliver(msg: IrcMessage): Promise<"injected" | "woken"> {
 		if (this.#host.isDisposed()) throw new Error("Recipient session is disposed.");
+		const recipient = AgentRegistry.global().get(msg.to);
 		const streaming = this.#host.isStreaming();
-		const planModeIdle = !streaming && this.#host.planModeEnabled();
+		// Only the executor's explicit reservation owns the pre-brief window.
+		// A prompt in flight still accepts parent steering; a stale running ref wakes normally.
+		const dispatchPending = recipient?.initialPromptPending === true && recipient.status === "running" && !streaming;
+		const planModeIdle = !streaming && !dispatchPending && this.#host.planModeEnabled();
 		const registry = AgentRegistry.global();
 		const parentId = registry.get(msg.to)?.parentId;
 		const fromParent = parentId === msg.from;
@@ -208,6 +228,7 @@ export class IrcBridge {
 		const relayOnStop =
 			!streaming &&
 			!planModeIdle &&
+			(!dispatchPending || peerMessage) &&
 			msg.to !== MAIN_AGENT_ID &&
 			msg.wakeRelay !== true &&
 			msg.broadcast !== true &&
@@ -225,6 +246,7 @@ export class IrcBridge {
 			customType: "irc:incoming",
 			content: prompt.render(ircIncomingTemplate, {
 				from: msg.from,
+				fromName: escapeHarnessTags(msg.fromName ?? ""),
 				message: envelopeBody,
 				replyTo: msg.replyTo ?? "",
 				progress: msg.progress === true,
@@ -233,10 +255,11 @@ export class IrcBridge {
 			}),
 			// The parent steer becomes the transcript card when consumed; keep this
 			// observation available to listeners without also painting a live card.
-			display: !(streaming && fromParent && !peerMessage),
+			display: !(streaming && fromParent && !peerMessage && !quiet),
 			details: {
 				id: msg.id,
 				from: msg.from,
+				...(msg.fromName ? { fromName: msg.fromName } : {}),
 				message: msg.body,
 				...(msg.replyTo ? { replyTo: msg.replyTo } : {}),
 				...(msg.wakeRelay ? { wakeRelay: true } : {}),
@@ -247,10 +270,24 @@ export class IrcBridge {
 			attribution: "agent",
 			timestamp: msg.ts,
 		};
+		const restartQueue = this.#queueDuringRestartDrain(record, peerMessage);
+		if (restartQueue) {
+			await restartQueue;
+			return "injected";
+		}
 		if (peerMessage) this.#peerMessages.add(record);
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
+		if (dispatchPending) {
+			// Peers retain a separate monitored wake after publication, never the brief's result boundary.
+			if (peerMessage) this.queueDeferredWake([record]);
+			else {
+				this.#preBriefFollowUps.add(record);
+				this.#host.agent.followUp(record);
+			}
+			return "injected";
+		}
 		if (streaming) {
-			if (fromParent && !peerMessage) {
+			if (fromParent && !peerMessage && !quiet) {
 				const steer: AgentMessage = {
 					role: "user",
 					content: prompt.render(parentIrcSteerTemplate, { from: msg.from, message: envelopeBody }),
@@ -282,6 +319,13 @@ export class IrcBridge {
 		return "woken";
 	}
 
+	#queueDuringRestartDrain(record: CustomMessage, peerMessage: boolean): Promise<void> | undefined {
+		if (!this.#host.isRestartDraining()) return undefined;
+		if (peerMessage) this.#peerMessages.add(record);
+		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
+		return this.#host.queueForRestart(record);
+	}
+
 	/** Emits an IRC relay observation for rendering without persisting it. */
 	emitRelayObservation(record: CustomMessage): void {
 		void this.#host.emitSessionEvent({ type: "irc_message", message: record });
@@ -289,9 +333,58 @@ export class IrcBridge {
 
 	/** Persists queued IRC records that missed their step-boundary injection. */
 	flushPending(): void {
-		for (const record of this.drainPending()) {
+		const records = this.drainPending();
+		// A failed setup never runs the loop that drains pre-brief follow-ups.
+		// Persist them at disposal, but never hoist them ahead of a live brief.
+		if (this.#host.isDisposed()) {
+			const followUps = this.#host.agent.peekFollowUpQueue();
+			const incoming = followUps.filter(record => this.#preBriefFollowUps.has(record));
+			if (incoming.length > 0) {
+				const consumed = new Set(incoming);
+				this.#host.agent.replaceQueue(
+					"followUp",
+					followUps.filter(record => !consumed.has(record)),
+				);
+				records.push(...incoming);
+			}
+			records.push(...this.drainDeferredWakes());
+		}
+		for (const record of records) {
+			if (this.#host.isDisposed() && record.role === "custom") {
+				this.#host.sessionManager.appendCustomMessageEntry(
+					record.customType,
+					record.content,
+					record.display,
+					record.details,
+					record.attribution ?? "agent",
+				);
+				continue;
+			}
 			this.#host.agent.emitExternalEvent({ type: "message_start", message: record });
 			this.#host.agent.emitExternalEvent({ type: "message_end", message: record });
 		}
 	}
+}
+
+/** A custom record flagged `details.supersedesQueued` is a snapshot: of several queued ones with the
+ *  same customType only the newest is delivered, so a busy agent never reads stale state. */
+function withoutSupersededSnapshots(records: AgentMessage[]): AgentMessage[] {
+	const newest = new Map<string, AgentMessage>();
+	for (const record of records) {
+		if (isSupersedingSnapshot(record)) newest.set((record as { customType: string }).customType, record);
+	}
+	if (newest.size === 0) return records;
+	return records.filter(
+		record => !isSupersedingSnapshot(record) || newest.get((record as { customType: string }).customType) === record,
+	);
+}
+
+function isSupersedingSnapshot(record: AgentMessage): boolean {
+	if (record.role !== "custom") return false;
+	const details = (record as { details?: unknown }).details;
+	return (
+		typeof details === "object" &&
+		details !== null &&
+		(details as { supersedesQueued?: unknown }).supersedesQueued === true
+	);
 }

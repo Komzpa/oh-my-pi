@@ -43,10 +43,10 @@ import {
 } from "./anthropic";
 import { applyCompatOverrides } from "./apply";
 import { API_COMPAT_RECORDS, AXES, type CompatRecordName } from "./axes";
-import { hasModelScopedEffortsRule, resolveCascade } from "./cascade";
+import { hasModelScopedEffortsRule, resolveCascade, resolveCascadeRules } from "./cascade";
 import { compareRevision, parseRevision, type Revision } from "./revision";
 import { classifyModel, stripThinkingVariantSuffix } from "./taxonomy";
-import type { ModelIdentity, RequestPolicy, ResolvedAxes, ResolveTarget } from "./types";
+import type { CompiledCascade, ModelIdentity, RequestPolicy, ResolvedAxes, ResolveTarget } from "./types";
 
 /** Result of resolving one model spec through the compat engine. */
 export interface ResolvedModelPolicy<TApi extends Api = Api> {
@@ -1356,6 +1356,14 @@ export function resolveCatalogAxes(spec: CatalogPolicyInputs, route?: ResolveRou
 	const target = buildResolveTarget(spec, resolveIdentity(spec));
 	target.upstream = route?.upstream;
 	return resolveCascade(target).catalog;
+}
+
+/** Resolve caller-authored catalog overrides with the bundled cascade's target and precedence rules. */
+export function resolveCatalogOverrideAxes(
+	spec: CatalogPolicyInputs,
+	cascade: CompiledCascade,
+): Record<string, unknown> {
+	return resolveCascadeRules(cascade, buildResolveTarget(spec, resolveIdentity(spec))).catalog;
 }
 
 /**

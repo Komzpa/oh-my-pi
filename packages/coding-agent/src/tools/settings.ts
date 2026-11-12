@@ -375,6 +375,15 @@ export const cfgToolsRestrictedFolders = register({
 // Todo tool
 // Todo settings deliberately have no `protocolDefault`: protocol embedders need project-level opt-outs
 // for reminder/prelude prompt injection.
+export const cfgTodoReviewOpen = register({ id: "todo.reviewPage.open", type: "boolean", default: true });
+export const cfgTodoPreviewEnabled = register({ id: "todo.preview.enabled", type: "boolean", default: false });
+export const cfgTodoPreviewPaths = register({ id: "todo.preview.paths", type: "array", default: EMPTY_STRING_ARRAY });
+export const cfgTodoPreviewThresholdMinutes = register({
+	id: "todo.preview.thresholdMinutes",
+	type: "number",
+	default: 15,
+});
+
 export const cfgTodoEnabled = register({
 	id: "todo.enabled",
 	type: "boolean",

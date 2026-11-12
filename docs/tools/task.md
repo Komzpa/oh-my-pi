@@ -34,7 +34,7 @@
 
 ## Inputs
 
-The wire schema is shape-swapped by `task.batch` (default on). One unit of work is `{ name?, agent?, model?, task, solutionSpace, effort?, outputSchema?, schemaMode?, tools?, isolated? }`. `isolated` exists only when `task.isolation.enabled` is true **and plan mode is disabled**; `effort` requires `task.enableEffort=true` (default off), and `tools` requires `eval.tools.enabled` (default on).
+The wire schema is shape-swapped by `task.batch` (default on). One unit of work is `{ name?, agent?, model?, task, solutionSpace, effort?, rework?, outputSchema?, schemaMode?, tools?, resources?, workspace?, reads?, isolated? }`. `isolated` exists only when `task.isolation.enabled` is true **and plan mode is disabled**; `effort` requires `task.enableEffort=true` (default off), and `tools` requires `eval.tools.enabled` (default on). `rework` is the one-line chief reason for redispatching a completed task row; omit it for a new row and infrastructure retry.
 
 `task.steps` (default off) swaps `task` for `steps: string[]` in the wire schema and tool description, in either shape: the model sees only one of the two. Runtime accepts either (internal callers, stale transcripts) but rejects an item carrying both.
 
@@ -53,10 +53,38 @@ The wire schema is shape-swapped by `task.batch` (default on). One unit of work 
 | `steps`         | `string[]`                                                                              | Yes, when `task.steps` is on          | Replaces `task`: ordered stages for one subagent, each non-empty. The first is the initial prompt; each later one is sent once the subagent delivered the previous (terminal `yield`, or its final message without `yield`). More than `MAX_STEPS` (4) steps share prompts, earlier prompts taking the extra (5 → 2-1-1-1). The last prompt's result is the spawn's result; a failed `yield` or a budget stop ends the chain early. Item field in batch shape, top-level in flat shape.                                                                                                                                                                                                                  |
 | `solutionSpace` | `string`                                                                                | Yes                                   | How open-ended the child's problem is: whether the fix or design is given, or which causes or designs remain open (e.g. `one fix: rename, names given`; `deadlock cause open, no repro`). Volume of work does not widen it. Rides the child's first prompt into the `auto` thinking classifier as its sole input — the judge sees this field, not the `task` text; ignored when the child's thinking selector is not `auto` or `effort` overrides it. Blank or missing values fall back to classifying the `task` text: the schema advertises it as required, but the tool's lenient argument validation still spawns a call that omits it. Item field in batch shape, top-level in flat shape.            |
 | `effort`        | `"lo" \| "med" \| "hi"`                                                                 | No                                    | Present only with `task.enableEffort=true`. Per-spawn thinking effort, mapped onto the resolved model's supported range (lowest/middle/highest level it tops out at, e.g. `high`/`xhigh`/`max`). Overrides the agent's default selector, including `auto`, except for a mention agent whose tag names a level, which ignores it; omitting it keeps the agent's configured selector — automatic per-prompt classification only for agents configured `auto` (e.g. the bundled `task`); `scout`/`sonic` configure `medium`. Item field in batch shape, top-level in flat shape.                                                                                                                              |
+| `rework` | `string` | No | One-line chief reason for reworking a completed attempt on this same row. A rework dispatch MUST supply it; failed/aborted infrastructure retries MUST NOT supply it. Item field in batch shape, top-level in flat shape. |
 | `outputSchema`  | JSON Schema (`object \| boolean \| string \| null` at the coarse wire-validation layer) | No                                    | Invocation-specific structured-output contract. Takes precedence over agent frontmatter `output` and the inherited parent session schema. Item field in batch shape, top-level in flat shape.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `schemaMode`    | `"permissive" \| "strict"`                                                              | No                                    | Validation mode for the effective output schema. Overrides the parent mode; defaults to `permissive`. After schema-retry exhaustion, permissive mode can accept invalid payloads with a warning; strict mode fails. Invalid caller schemas fail preflight in either mode.                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `tools`         | `string[]`                                                                              | No                                    | Named tools already defined in the parent's Python or JS eval kernel. Present when `eval.tools.enabled=true`; child calls execute in the parent kernel, not the child's. Rejected in plan mode. Item field in batch shape, top-level in flat shape.                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `workspace` | `{ repo: string, base: string, path?: string }` | No | Typed checkout contract, resolved before any worker starts. `repo`: absolute source Git repository path, never inferred from task prose. `base`: a commit available in `repo`, resolved to an exact SHA before admission; run `git fetch` first when it is missing. `path`: an existing absolute checkout of the same repository at exactly `base` (same repo, exact HEAD); omit `path` to prepare a private checkout of `repo` at `base` for this item. Item field in batch shape, top-level in flat shape. |
+| `reads` | `string[]` | No | Absolute existing files or directories for the child to read; admission checks that every path exists before any worker starts. Reads grant no writes — write scope comes only from `resources`/workspace/row/cwd resolution. Item field in batch shape, top-level in flat shape. |
+| `resources` | `string[]` | No | Absolute write paths for the child; when present it alone defines write scope, and `[]` means no writes. Omitted → scope resolves in order: workspace cwd, explicit scheduled row resources, the checkout containing the child's actual cwd. Structural shape only (array of non-blank strings) is validated before launch. Declared `resources` are forwarded unchanged to the `before_subagent_spawn` hook; absent stays absent. Prose never grants rights. Item field in batch shape, top-level in flat shape. |
 | `isolated`      | `boolean`                                                                               | No                                    | Run in an isolated workspace and capture patches/branch changes. Present only when `task.isolation.enabled` is true and plan mode is disabled. Kept-alive task agents retain their workspace through idle/parked transitions and can be revived; release captures final changes and cleans the workspace.                                                                                                                                                                                                                                                                                                                                                                                                  |
+
+**Workspace resolution.** `workspace.repo` MUST be an absolute Git repository path and `workspace.base` MUST be a commit available in it; admission resolves `base` to an exact SHA before any worker starts (run `git fetch` first when the commit is missing). With `workspace.path`, the path MUST be an existing absolute checkout of the same repository with HEAD exactly at `base`; without `workspace.path`, a private checkout of `repo` at `base` is prepared for this item. `reads` paths MUST exist at admission and grant no writes. Missing input fails admission — NEVER substitute a value or infer one from task prose.
+
+A valid batch call (`task.batch` on), assuming `/work/project` is an existing checkout and `/work/evidence/report.txt` exists:
+
+```json
+{
+  "context": "# Goal\nFix the input handling issue described in the report.\n# Constraints\nKeep changes within /work/project/src; no checks mid-flight.",
+  "tasks": [
+    {
+      "name": "InputFix",
+      "task": "# Target\n/work/project/src; read /work/evidence/report.txt.\n# Change\nApply the bounded input handling fix described in the report.\n# Acceptance\nThe reported input produces the expected result; unrelated behavior stays unchanged.",
+      "solutionSpace": "one fix: input handling, change specified in report",
+      "workspace": {
+        "repo": "/work/project",
+        "base": "HEAD",
+        "path": "/work/project"
+      },
+      "reads": ["/work/evidence/report.txt"],
+      "resources": ["/work/project/src"]
+    }
+  ]
+}
+```
 
 There is no wire label field: the one-line UI label shown in the TUI/registry is generated automatically from the `task` text by the tiny/title model (fire-and-forget), so callers never provide it.
 
@@ -71,6 +99,17 @@ Runtime stays permissive: the flat form is accepted even while `task.batch` is o
 Batch calls reject a top-level `agent` rather than silently discarding a specialist selector and spawning the default agent. Put `agent` on each `tasks[]` item when selecting `reviewer`, `scout`, or a custom agent; the agent name is not inferred from the task text.
 
 There is no legacy per-call `schema` parameter. Use `outputSchema` and optional `schemaMode`; when absent, structured output falls back to the agent definition's `output` frontmatter and then the inherited parent session schema.
+
+## Rework contract
+
+- **Classification:** `rework` explicitly rejects a completed result and MUST be non-empty and single-line. Without it, a completed preparation or implementation can continue into another phase or independent verification on the same row using ordinary routing; completion alone is not rejection. An exhausted row is refused with split guidance instead of running again. Failed or aborted workers are infrastructure retries, not rework; they MUST stay on the same ladder rung and MUST NOT add a rejection reason.
+- **First dispatch:** A new row's first dispatch MUST use the ordinary router unchanged. It MUST show no previous-attempt block.
+- **Vendor change:** A re-dispatch after a rejected completion or a model-attributable failure takes the next entry of the agent's own resolved model chain (after `@role` expansion) whose vendor (model maker, derived from the model id, not the provider route) has not been tried on that row; the row's whole attempt history counts. Effort is not set here: it resolves normally (`defaultThinkingLevel: auto`). Infrastructure failures (quota, rate limit, billing, restart) re-dispatch on the agent's ordinary selection and do not consume a vendor. When no untried vendor remains the dispatch is refused with a request to split the row.
+- **Append-only row history:** Persist each attempt's record durably across restart and compaction, keyed to its task row. Append a completed attempt exactly once when its later rework reason is known; never rewrite an appended record. Rows MUST NOT share history.
+- **Previous attempts:** On rework, render records oldest-first and verbatim. Each record MUST include worker name; resolved `model:effort`; start and end times plus duration; status; deliverable paths; exact chief reason; and the previous worker's answer to `What was wrong with your approach, and what should the next attempt do differently?`. If unanswered, include `no answer (<reason>)` and the report's final paragraph. Infrastructure retry output MUST contain only `attempt N failed: <error>`, never a Previous attempts block.
+- **Top rung:** After a completed rework at the last configured rung, a re-dispatch of that row (or of a row blocked on the exhausted marker) MUST NOT request any user approval and MUST NOT dispatch another worker — in `yolo` mode, watching, away, or asleep alike. It fails as a normal tool error naming the split: call todo with op=append to split the row into 2-4 smaller rows, each with its own checkable result, then op=drop on the exhausted row (or make it depend on the new rows), then dispatch the new rows. Dispatching a new smaller row succeeds immediately with no prompt. A denied or missing approval MUST NEVER park the row as blocked waiting for the user.
+- **HUD:** Show the current attempt number and resolved model for every row/worker.
+- **Oracle:** With completed Luna, Terra, Sol 6.1, and Astra attempts all reporting `high`, the default ladder MUST select Terra `medium`, Sol 6.1 `medium`, Astra `medium`, then refuse with split guidance rather than wrap to Luna. A further dispatch of the exhausted row MUST return the split error and dispatch nothing, with no approval requested. Ordered prior rejection reasons survive session reconstruction, without duplicate attempt IDs. A 402 retry MUST remain on the same rung and show only `attempt N failed: <error>`. Every worker message back to its lead MUST answer exactly `Is there a much simpler different way?`.
 
 ## Outputs
 
@@ -93,6 +132,8 @@ Settled response (`async.enabled=false`, no job manager, every item's agent `blo
 - `content`: summary rendered from `packages/coding-agent/src/prompts/tools/task-summary.md`; output up to 11500 chars is inline whole, longer output shows a 5000-char preview and `agent://<id>` holds the full output. A sync batch concatenates the per-spawn summaries.
 - `details.results`: one `SingleResult` per spawn; `usage`, `outputPaths` populated (aggregated across spawns for a sync batch).
 
+An empty selected batch (`task.batch` on, non-empty `context`, `tasks: []`) returns normal text `No tasks selected; nothing to dispatch.` with `details.results: []`, leaves TODO state unchanged, and starts no subagents.
+
 `SingleResult` includes:
 
 - identity: `index`, `id`, `agent`, `agentSource`, `task`, `description`, optional `assignment` (internal payload names; the wire fields are `name`/`agent`/`task`)
@@ -114,7 +155,7 @@ Artifacts and side channels:
 ## Flow
 
 1. `TaskTool.create(...)` discovers agents through a process-level memo keyed by resolved cwd and effective extension roots (`discoverAgentsForCreate`). `refreshAgentDiscovery(...)` replaces the matching description snapshot after explicit reloads.
-2. `execute(...)` repairs inline prose (`repairTaskParams`), then validates: `schema` is always rejected; `tasks`/`context` are rejected unless `task.batch` is on; batch calls need a non-empty `tasks`, unique provided names, a non-empty shared `context`, and no top-level `task` or `steps` alongside `tasks`. Each item or flat call needs a non-empty `task` or a non-empty `steps` list, not both. The call is normalized into its spawn list (`resolveSpawnItems`) before normal dispatch starts any spawn.
+2. `execute(...)` repairs inline prose (`repairTaskParams`), then validates: `schema` is always rejected; `tasks`/`context` are rejected unless `task.batch` is on; batch calls need a `tasks` array (an empty one with valid `context` returns the no-work response), unique provided names, a non-empty shared `context`, and no top-level `task` or `steps` alongside `tasks`. Each item or flat call needs a non-empty `task` or a non-empty `steps` list, not both. The call is normalized into its spawn list (`resolveSpawnItems`) before normal dispatch starts any spawn.
    Eval-tool names and every item's effective spawn policy are preflighted before normal dispatch registers jobs. Unknown/disabled agents, invalid caller schemas, depth/spawn-policy violations, and unavailable plan-mode controls fail the call before dispatch.
 3. Per-item execution split: items whose agent type declares `blocking: true` run inline; the rest become background jobs. The whole call runs sync when `async.enabled=false`, the session has no `AsyncJobManager` (orphaned host), or every item is blocking; inline spawns run as `SpawnRun`s (`src/task/spawn-run.ts`), each holding a session-scoped semaphore permit until it settles.
 4. Background execution (any non-blocking item with `async.enabled=true` and an `AsyncJobManager`):
@@ -125,7 +166,7 @@ Artifacts and side channels:
    - a mixed call registers the async jobs first, then runs its blocking items inline and returns once they settle — the text combines the inline summaries with the spawned-job listing, and the block keeps rendering the still-running background rows beside the inline results.
 5. Each `SpawnRun` calls `#runSpawn` → `runStructuredSubagent(...)`. Shared policy resolution reloads settings and rediscovers agents from disk, so runtime resolution can differ from the create-time description.
 6. It resolves the requested agent, enforces depth/spawn policy and `PI_BLOCKED_AGENT` self-recursion prevention, validates the effective output schema, and applies `before_subagent_spawn` routing/blocking hooks.
-7. Model priority: `task.agentModelOverrides` → agent frontmatter → configured task role/session fallback. An approved per-call `model` replaces the last two; for an agent with a `task.agentModelOverrides` entry or a level-tagged mention agent it is a conflict error. Output schema priority: per-call `outputSchema` → agent frontmatter `output` → inherited parent session schema.
+7. Model priority: `task.agentModelOverrides` → agent frontmatter → configured task role/session fallback. Rework supplies its selected rung as an explicit model request, separately from its exact effort. An approved per-call `model` replaces the last two; for an agent with a `task.agentModelOverrides` entry or a level-tagged mention agent it is a conflict error. Output schema priority: per-call `outputSchema` → agent frontmatter `output` → inherited parent session schema.
 8. Plan mode supplies `read`, `grep`, `glob`, `web_search`, and any configured `ast_grep`, replaces the agent's spawn/prewalk controls, and disables LSP/IRC. Eval-defined tools and isolation/apply/merge controls are rejected.
 9. If `isolated`, it requires a git repo (`getRepoRoot(...)` / `captureBaseline(...)`) and opens the run's workspace (`openWorkspace`): by default it maps `isolation.backend` to a backend-kind hint (`parseIsolationBackend`) and materializes the workspace via the natives PAL (`nativeWorkspace` → `ensureIsolation` → `isoResolve`/`isoStart`), walking the candidate list when a backend is unavailable; when `isolation.backend` is `auto` and ovnfs is found (`ovnfsCommand`), it opens an ovnfs checkout instead (`ovnfsWorkspace`, `task/ovnfs.ts`).
 10.   Artifacts dir comes from the parent session file when available, otherwise a temp dir. When the session is executing an approved plan, the plan reference is handed to the subagent.
@@ -141,6 +182,8 @@ Artifacts and side channels:
       - isolated kept-alive run → follows the same idle/parking/revival path while retaining its workspace; explicit release captures final patches/branch state and cleans the isolation handle;
       - everything else (success and failure alike) → status `idle` with the live session attached, and `AgentLifecycleManager.global().adopt(id, { idleTtlMs, revive })` arms the park timer. The reviver reopens the session JSONL.
 16.   Lifecycle thereafter: `idle` agents are parked after `task.agentIdleTtlMs` (session disposed; `AgentRef` + session file retained); `write agent://<id>` or the Agent Hub revives parked and killed agents back to `idle`. `"Main"` is never parked.
+17.   Accepted-terminal-once per monitored run, any invocation path: an accepted terminal `yield` — direct tool call or eval-bridge (`callSessionTool`, JS and Python) — ends the monitored run/job and delivers exactly one parent completion carrying the accepted payload. A duplicate terminal yield inside the same run is rejected; a parent continuation (follow-up turn, IRC wake turn) re-arms a fresh result slot on the same tool. Invalid/refused yields never complete a run. Nonterminal incremental sections accumulate exactly once without completing the run.
+      - The submitting eval cell is excluded by its exact host job identity across JS/Python bridges; other foreground or background owner jobs still require the running-work warning. A forced-final incremental yield takes the same terminal latch and running-work checks as any other terminal result.
 
 ## Modes / Variants
 
@@ -188,12 +231,15 @@ Artifacts and side channels:
 - Background work / cancellation
    - `write proc://<jobId>/kill` (no `content` needed) or parent tool-call abort cancels background jobs; parent tool-call abort cancels sync runs through the call signal. A cancelled run stops but its agent stays `idle` and resumable. An owned running subagent without a job can be cancelled through `proc://<agentId>/kill`, which aborts and releases its session.
    - Missing-`yield` recovery sends up to three internal reminder prompts to the child session.
+   - Autonomous focused/IRC turns also enqueue at most three internal reminders after refused yields, within the same observed turn. A running-process warning does not silently discard that turn's result or move it into the next prompt's result slot.
 
 ## Limits & Caps
 
 - Tool mode: `approval="exec"`, `strict=false`, `lenientArgValidation=true`, `loadMode="essential"`.
 - Stepped spawns are opt-in: `task.steps` defaults to `false`; at most `MAX_STEPS = 4` prompts per spawn (`packages/coding-agent/src/task/steps.ts`).
 - Per-spawn effort is opt-in: `task.enableEffort` defaults to `false`; when false, `effort` is omitted from the dynamic model-facing schema.
+- Implementation workers MUST NOT run a Claude model above high effort: when the spawned agent is an implementation role (`coder`, `ui-coder`, `coder-strong`, `ui-coder-strong`, `task`, `workhorse`, `sonic`, `deepseek`) and the resolved model is a Claude model (catalog implementation-worker effort policy), the spawn ceiling is clamped to `high` — caller `effort: "hi"` resolves to high, and the cap rides into the child session so profile/model defaults are clamped too. Review/judgment roles (reviewer, qa-auditor, adversarial-review profiles, …) stay unclamped.
+- `task.agentMaxEffort` (record, agent name to effort level; default `scout`, `gate-runner`, `git-pr-owner`, `workhorse`, `scribe`, `minor-coder` = `low`; `coder`, `coder-strong`, `ui-coder`, `ui-coder-strong`, `task` = `high`; analysis and judgment roles have no entry and may use `max`) caps an agent on any model or provider. Effective effort is `min(requested/default, task.agentMaxEffort[agent], task.maxEffort when caller effort is supplied)`, snapped to the model's highest supported level at or below the cap; the cap rides into the child session and cold revival, so it also clamps an agent's own default selector. A user value replaces the whole map (include any default entries you want to keep). The Claude implementation-worker `high` cap above stays in force and combines with it by minimum.
 - Concurrency: `task.maxConcurrency` defaults to `32`; `0` means unlimited. One session-scoped `Semaphore` is resized from the live setting before every acquire/release and bounds every `SpawnRun` across task calls, including sync and speculative runs.
 - Isolation baseline: each repository's uncommitted snapshot is capped at `1 GiB` (`ISOLATION_BASELINE_MAX_CONTENT_BYTES` in `task/worktree.ts`). Oversized snapshots fail before spawning rather than buffering unbounded content.
 - Idle TTL: `task.agentIdleTtlMs`, default `420_000` ms (7 min); `<= 0` disables parking and keeps idle sessions live until exit.
@@ -205,14 +251,16 @@ Artifacts and side channels:
 - Hard wall clock: `task.maxRuntimeMs` applies to every spawn; default `0` disables it.
 - Recursion depth: `task.maxRecursionDepth` defaults to `2`; negative values disable the cap. The tool registry and shared preflight enforce it, and `runSubprocess(...)` strips child `task` access at max depth.
 - Inline summaries carry output up to `INLINE_OUTPUT_CHARS` (11500) characters whole (`packages/coding-agent/src/task/result-summary.ts`), keeping the envelope under async delivery's `ASYNC_INLINE_RESULT_MAX_CHARS` (12000); an envelope that a long `<error>` or `<merge-summary>` would push past that cap, and any longer output, gets a `PREVIEW_CHARS = 5000` head instead, which requires a full output artifact. `agent://<id>` points to that artifact.
+  - Each child attempt persists a developer transcript note at start and at request boundaries after five minutes have passed since the previous note: `<local HH:MM> · elapsed Nm in this attempt. Your role's time budget applies: past it, stop at the next checkable point and return what is done with its receipt.` Later requests include that history normally. A redispatch starts a fresh attempt clock; lifecycle revival continues the persisted attempt clock. The note does not abort or otherwise change runtime, effort, or model selection, and does not appear in the root session.
 
 ## Errors
 
 - Shape/preflight failures return `isError: true`, explanatory text, and empty `results`:
    - `schema` (never accepted)
    - `tasks` / `context` while `task.batch` is disabled
-   - batch calls: missing/empty `tasks`, duplicate provided names, missing shared `context`, top-level `task` or `steps` alongside `tasks`
+   - batch calls: missing `tasks`, duplicate provided names, missing shared `context`, top-level `task` or `steps` alongside `tasks`
    - any item or flat call: neither or both of `task` and `steps`, empty task text, or an empty `steps` list or step
+   - workspace/`reads`/`resources` admission: every such failure is raised before any worker starts and reports `field`, `expected`, `actual`, and `action`. Missing input (e.g. `repo` or `base`) is a failure — values are NEVER substituted or inferred from task prose.
    - invalid effort, unknown/settings-disabled agents, depth/spawn-policy denial, invalid caller output schemas, disabled isolation, or isolation/eval-tool controls in plan mode
    - unknown eval tools, disabled eval sharing, or a name defined in both parent kernels
    - per-call `model`: `task.perCallModel` does not allow this invocation kind (reported before selector validation); an invalid exact selector; both host `model` and per-call `model` supplied through the SDK; the bundled seance agent on the shared per-call path; a conflicting `task.agentModelOverrides` entry; or a mention agent whose `^provider/model:level` tag names a level, even when `model` repeats the tagged selector
@@ -266,3 +314,28 @@ The consult excludes additional roots, workspace tree, context files, skills, ru
 Warm or revived IRC follow-ups preserve this completion contract. A yielded follow-up republishes canonical `agent://<id>` output; successful, nonempty unstructured follow-ups also republish their final report when woken by a direct parent message (not an `agent://all` broadcast) or user-prompted, removing a stale `<id>.json` sidecar; peer-only unstructured replies and cancelled or empty follow-ups do not publish.
 
 Inherited source charges are zeroed; new consultation turns use existing task/Agent Hub usage tracking.
+
+## Resource claims
+
+Each task item (or flat task call) accepts `resources: ["/absolute/path"]` and
+`readOnly: true`. Resources narrow the matched open row's existing paths; to
+expand them, first update that row with `todo schedule`. A row can be selected
+with its exact `row` title. Shared batch context is background, not ownership.
+Readers hold no exclusive write claim, including when reading the checkout root.
+Reads observe the file version at each read, not a consistent filesystem snapshot.
+The read-only flag and `schedule.readOnly` restrict dispatched tools to read tools;
+qa-auditor, explore, scout, reviewer and security-reviewer are read-only roles.
+Shell-based review must use a writer role with explicit resources.
+
+Write scope resolves first-present-wins: item `resources` → workspace cwd (the
+declared workspace's checkout) → explicit scheduled row resources → the checkout
+containing the child's actual cwd (legacy, subject to live leases) — never an
+exclusive ROOT claim. An explicit `resources: []` means no writes. Admission
+verifies the resolved scope before any worker starts; the child's prompt and the
+tool result both report that verified grant, and prose (`context`, `task`, `row`
+text) grants no rights. Known file mutations still check explicit writer claims
+and atomically reserve their exact targets for the owning row until it closes.
+Opaque shell scripts retain the existing limitation: their internal write targets
+cannot be inferred; declare their resources before dispatch. Pending unowned rows
+reserve nothing. A conflict refuses the item before spawn and names the holder
+and path; use disjoint `tasks[].resources` or wait for that writer.

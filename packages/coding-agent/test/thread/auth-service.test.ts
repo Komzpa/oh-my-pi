@@ -98,6 +98,17 @@ describe("auth thread service", () => {
 		probe = await probed;
 	});
 
+	it("shares provider depletion between worker and main, including success and explicit reset", async () => {
+		expect(await probe.depletion(PROVIDER, "mark")).toBe(true);
+		expect(storage.health.isProviderDepleted(PROVIDER)).toBe(true);
+		expect(storage.health.isProviderDepleted("other-provider")).toBe(false);
+		expect(await probe.depletion(PROVIDER, "success")).toBe(false);
+		storage.health.markProviderDepleted(PROVIDER, { status: 429, resetAtMs: Date.now() + 60_000 });
+		expect(await probe.depletion(PROVIDER, "read")).toBe(true);
+		expect(await probe.depletion(PROVIDER, "reset")).toBe(false);
+		expect(storage.health.isProviderDepleted(PROVIDER)).toBe(false);
+	});
+
 	afterEach(async () => {
 		link?.close("test done");
 		link = undefined;

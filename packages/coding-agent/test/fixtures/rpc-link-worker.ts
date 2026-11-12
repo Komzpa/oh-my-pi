@@ -1,3 +1,5 @@
+import type { EffectiveExtensionRoots } from "../../src/capability/types";
+import { listOmpExtensionRoots } from "../../src/discovery/omp-extension-roots";
 import { type MessagePort, parentPort } from "node:worker_threads";
 import { type RemoteObject, type RpcFrame, RpcLink, type RpcMethod } from "../../src/thread/rpc";
 
@@ -20,6 +22,7 @@ export type FixtureMainApi = {
 
 /** Methods the fixture worker serves. */
 export type FixtureWorkerApi = {
+	discoverReviveRoots: RpcMethod<[string, () => EffectiveExtensionRoots], { paths: string[]; synchronous: boolean }>;
 	syncAfterNotify: RpcMethod<[], string[]>;
 	syncAdd: RpcMethod<[number, number], number>;
 	waitForAbort: RpcMethod<[AbortSignal], { name: string; message: string }>;
@@ -129,6 +132,15 @@ port.once("message", (init: { sync: MessagePort; counter: SharedArrayBuffer }) =
 		const value = counter.remote.callSync("value");
 		const sameOnMain = (await link.call("echo", counter)) === counter;
 		return { value, sameOnMain };
+	});
+	link.handle("discoverReviveRoots", async (cwd, provider) => {
+		const roots = provider();
+		return {
+			paths: (await listOmpExtensionRoots({ cwd, home: cwd, repoRoot: null, extensionRoots: roots })).map(
+				root => root.path,
+			),
+			synchronous: !(roots instanceof Promise),
+		};
 	});
 	link.handle("returnArg", value => value);
 	port.postMessage({ ready: true });

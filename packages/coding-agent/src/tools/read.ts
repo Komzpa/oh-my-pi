@@ -1,3 +1,4 @@
+import { isInstructionFilePath } from "../session/instruction-files";
 import { isReadableUrlPath, type ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -208,6 +209,73 @@ const MAX_URL_RAW_INLINE_BYTES = DEFAULT_MAX_BYTES;
 export const SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
 /** LF byte, scanned natively to find line boundaries in a buffered file. */
 const LF_BYTE = 0x0a;
+
+interface SkillReadPreparation {
+	canonicalUrl: string;
+	fullUrl: string;
+	forceFull: boolean;
+	sourcePath: string;
+	contentHash: string;
+	previousReadAt?: number;
+}
+
+function splitSkillReadQuery(url: string): { canonicalUrl: string; fullUrl: string; forceFull: boolean } | undefined {
+	if (extractUriScheme(url) !== "skill") return undefined;
+	const fragmentAt = url.indexOf("#");
+	const withoutFragment = fragmentAt === -1 ? url : url.slice(0, fragmentAt);
+	const queryAt = withoutFragment.indexOf("?");
+	const canonicalUrl = queryAt === -1 ? withoutFragment : withoutFragment.slice(0, queryAt);
+	const query = queryAt === -1 ? "" : withoutFragment.slice(queryAt + 1);
+	const forceFull = query.split("&").some(part => {
+		const key = part.includes("=") ? part.slice(0, part.indexOf("=")) : part;
+		try {
+			return decodeURIComponent(key.replaceAll("+", " ")) === "full";
+		} catch {
+			return key === "full";
+		}
+	});
+	return { canonicalUrl, fullUrl: `${canonicalUrl}?full`, forceFull };
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+	const hasher = new Bun.CryptoHasher("sha256");
+	hasher.update(bytes);
+	return hasher.digest("hex");
+}
+
+function formatSkillReadTime(timestamp: number): string {
+	const date = new Date(timestamp);
+	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function findMatchingSkillRead(
+	messages: ToolSession["messages"] | undefined,
+	sourcePath: string,
+	contentHash: string,
+): number | undefined {
+	if (!messages) return undefined;
+	for (let index = messages.length - 1; index >= 0; index--) {
+		const message = messages[index];
+		if (message?.role !== "toolResult" || message.toolName !== "read" || message.isError) continue;
+		// Pruned/shaken results keep their details but no longer carry the text.
+		if (message.prunedAt !== undefined) continue;
+		const marker = (message.details as ReadToolDetails | undefined)?.skillRead;
+		if (
+			marker?.full === true &&
+			marker.sourcePath === sourcePath &&
+			marker.contentHash === contentHash &&
+			Number.isFinite(marker.readAt)
+		) {
+			return marker.readAt;
+		}
+	}
+	return undefined;
+}
+
+function isRegisteredSkillInstructionPath(skills: ToolSession["skills"] | undefined, sourcePath: string): boolean {
+	const resolvedSourcePath = path.resolve(sourcePath);
+	return skills?.some(skill => path.resolve(skill.filePath) === resolvedSourcePath) ?? false;
+}
 
 /**
  * Whole-file bytes plus every view the local text read path consumes,
@@ -1234,6 +1302,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		let snapshotDigest: string | undefined;
 		try {
 			const speculativeSession = Object.create(this.session) as ToolSession;
+			Object.defineProperty(speculativeSession, "recordInstructionFile", { value: undefined });
 			Object.defineProperty(speculativeSession, "editStore", {
 				value: undefined,
 				writable: true,
@@ -1311,6 +1380,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				if (snapshotText !== null) {
 					const seenLines = staged.store.seenLines(staged.absolutePath, staged.snapshotHash);
 					getEditStore(this.session).recordSnapshot(staged.absolutePath, snapshotText, seenLines);
+					if (isInstructionFilePath(staged.absolutePath)) {
+						await this.session.recordInstructionFile?.(staged.absolutePath, snapshotText);
+					}
 				}
 			}
 			appendRepeatReadHint(this.session, staged?.path ?? (context.args as ReadParams).path, result);
@@ -1348,13 +1420,43 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			: undefined;
 	}
 
+	async #prepareSkillRead(url: string, sourcePath: string): Promise<SkillReadPreparation | undefined> {
+		const split = splitSkillReadQuery(url);
+		if (!split) return undefined;
+		if (!isRegisteredSkillInstructionPath(this.session.skills, sourcePath)) return undefined;
+		const bytes = await fs.readFile(sourcePath);
+		const contentHash = sha256Hex(bytes);
+		return {
+			...split,
+			sourcePath,
+			contentHash,
+			previousReadAt: findMatchingSkillRead(this.session.messages, sourcePath, contentHash),
+		};
+	}
+
+	#buildUnchangedSkillReadResult(preparation: SkillReadPreparation): AgentToolResult<ReadToolDetails> | undefined {
+		if (preparation.forceFull || preparation.previousReadAt === undefined) return undefined;
+		const readAt = formatSkillReadTime(preparation.previousReadAt);
+		const text = `${preparation.canonicalUrl} unchanged since your read at ${readAt} (still in context above); read ${preparation.fullUrl} to get it again`;
+		return toolResult<ReadToolDetails>({
+			resolvedPath: preparation.sourcePath,
+			contentType: "text/markdown",
+		})
+			.text(text)
+			.sourceInternal(preparation.canonicalUrl)
+			.done();
+	}
+
 	async #tryReadDelimitedPaths(
 		readPath: string,
 		signal: AbortSignal | undefined,
 		toolContext: AgentToolContext | undefined,
 		routedUrlPredicate?: (entry: string) => boolean,
 	): Promise<AgentToolResult<ReadToolDetails> | null> {
-		const parts = await splitDelimitedPathEntry(readPath, this.session.cwd, { routedUrlPredicate });
+		const parts = await splitDelimitedPathEntry(readPath, this.session.cwd, {
+			routedUrlPredicate,
+			context: sessionResolveContext(this.session, { signal }),
+		});
 		return parts ? this.#readDelimitedParts(parts, signal, toolContext) : null;
 	}
 
@@ -1587,7 +1689,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			const outputMime = imageMetadata?.mimeType ?? mimeType;
 			const imageQuestionPath = questionPath ?? formatPathRelativeToCwd(absolutePath, this.session.cwd);
 			const metadataLines = [
-				"Image metadata:",
+				"Image metadata (this session's active model does not support image input):",
 				`- MIME: ${outputMime}`,
 				`- Bytes: ${fileSize} (${formatBytes(fileSize)})`,
 				imageMetadata?.width !== undefined && imageMetadata.height !== undefined
@@ -1697,6 +1799,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (bridgePromise !== undefined) {
 			try {
 				const bridgeText = await bridgePromise;
+				if (isInstructionFilePath(absolutePath) && Buffer.byteLength(bridgeText) <= SNAPSHOT_MAX_BYTES) {
+					await this.session.recordInstructionFile?.(absolutePath, bridgeText);
+				}
 				const bridgeResult = await buildInMemoryMultiRangeResult(this.session, bridgeText, ranges, {
 					details: markMarkdownContentType(
 						this.session,
@@ -1948,6 +2053,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			readPath,
 			this.session.cwd,
 			part => parseReadUrlTarget(part) !== null || InternalUrlRouter.instance().canResolve(part),
+			sessionResolveContext(this.session, { signal }),
 		);
 		if (mixedParts) return this.#readDelimitedParts(mixedParts, signal, toolContext);
 		// Filesystem-backed reads choose JSON versus image questions after resolving
@@ -1998,7 +2104,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			const parsed = parseSel(peeled.sel);
 			if (peeled.sel !== undefined && parsed.kind === "none") {
 				throw new ToolError(
-					`Invalid selector ':${peeled.sel}' on '${peeled.path}'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), a comma-separated list of ranges, :raw, :img for SVG rendering, or a range combined with raw (e.g. :raw:50-100).`,
+					`Invalid selector ':${peeled.sel}' on '${peeled.path}'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), a comma-separated list of ranges, :raw, :img for images (SVG is rasterized), or a range combined with raw (e.g. :raw:50-100).`,
 				);
 			}
 			// SSH owns arbitrary URL queries. Only a recognized read-only JSON selector
@@ -2053,6 +2159,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				plainWindow,
 			});
 		}
+		const skillRead =
+			located.sel === undefined && question === undefined
+				? await this.#prepareSkillRead(located.url, located.path)
+				: undefined;
+		const unchangedSkillRead = skillRead ? this.#buildUnchangedSkillReadResult(skillRead) : undefined;
+		if (unchangedSkillRead) return unchangedSkillRead;
 		// A located URL reads its backing file through the filesystem pipeline (images, `:img`,
 		// `?q=`, archives, sqlite, streaming, paging) while the URL stays the read's identity.
 		const result = await this.#readFilesystemPath(located.path, {
@@ -2075,6 +2187,16 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			// The TUI falls back to this block when no structured display content exists.
 			if (firstText) firstText.text = `${provenance}\n${firstText.text}`;
 			else result.content.unshift({ type: "text", text: provenance });
+		}
+		// Only a read that put the whole file in context may later be stubbed; a truncated page did not.
+		if (skillRead && !details.truncation && !details.meta?.truncation) {
+			details.skillRead = {
+				sourcePath: skillRead.sourcePath,
+				contentHash: skillRead.contentHash,
+				readAt: Date.now(),
+				url: skillRead.canonicalUrl,
+				full: true,
+			};
 		}
 		return { ...result, details };
 	}
@@ -2364,6 +2486,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		// unbuffered files keep one centralized 256KB peek regardless of
 		// extension, since only magic bytes — never the name — decide.
 		const wholeFileBytes = fileSize <= SNAPSHOT_MAX_BYTES ? await readWholeFile(absolutePath) : undefined;
+		if (wholeFileBytes && this.session.recordInstructionFile && isInstructionFilePath(absolutePath)) {
+			await this.session.recordInstructionFile(absolutePath, wholeFileBytes?.toString("utf8"));
+		}
 		const imageHeader =
 			isRawSelector(parsed) && !rawImages
 				? undefined
@@ -2419,13 +2544,15 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			return this.#readVideoFile(absolutePath, localTarget.sel, fileSize, suffixResolution, question, signal);
 		}
 		if (parsed.kind === "image") {
+			// Detected raster bytes win over an .svg-looking name; the extension only decides when no raster format was detected.
+			const isSvg = imageMetadata === null && (ext === ".svg" || ext === ".svgz");
 			({ content, details, sourcePath } = await this.#loadImageContent({
 				readPath: localReadPath,
 				absolutePath,
-				mimeType: "image/svg+xml",
-				imageMetadata: null,
+				mimeType: isSvg ? "image/svg+xml" : (mimeType ?? "application/octet-stream"),
+				imageMetadata: isSvg ? null : imageMetadata,
 				fileSize,
-				imageKind: "svg",
+				...(isSvg ? { imageKind: "svg" as const } : {}),
 				question,
 				questionPath: questionPath ?? `${resolvedDisplayPath}:img`,
 				signal,
@@ -2635,6 +2762,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					if (bridgePromise !== undefined) {
 						try {
 							const bridgeText = await bridgePromise;
+							if (isInstructionFilePath(absolutePath) && Buffer.byteLength(bridgeText) <= SNAPSHOT_MAX_BYTES) {
+								await this.session.recordInstructionFile?.(absolutePath, bridgeText);
+							}
 							const bridgeResult = await buildInMemoryTextResult(this.session, bridgeText, offset, limit, {
 								details: markMarkdownContentType(
 									this.session,

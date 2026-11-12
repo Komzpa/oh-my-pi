@@ -365,6 +365,7 @@ describe("wait", () => {
 			const bridge = new IrcBridge({
 				agent: { steer: () => {} } as unknown as Agent,
 				isDisposed: () => false,
+				isRestartDraining: () => false,
 				isStreaming: () => true,
 				planModeEnabled: () => false,
 				emitSessionEvent: async () => {},
@@ -723,6 +724,64 @@ describe("wait", () => {
 			expect(settled).toBe(false);
 			await IrcBus.global().send({ from: "Main", to: "Child", body: "heliotrope" });
 			expect(await received(waiting, child)).toMatchObject([{ from: "Main", body: "heliotrope" }]);
+		});
+
+		test("a worker does not time out through ten minutes while its lead still holds the question", async () => {
+			vi.useFakeTimers();
+			const { main, child } = registerParentAndChild();
+			main.state.holdsQuestion = true;
+			await ask();
+			const waiting = childWait();
+			let settled = false;
+			void waiting.finally(() => {
+				settled = true;
+			});
+			await flushMicrotasks();
+			vi.advanceTimersByTime(600_000);
+			await flushMicrotasks();
+			expect(settled).toBe(false);
+			main.state.holdsQuestion = false;
+			await IrcBus.global().send({ from: "Main", to: "Child", body: "scope granted" });
+			expect(await received(waiting, child)).toMatchObject([{ from: "Main", body: "scope granted" }]);
+		});
+
+		test("the reply window becomes bounded again once the lead consumes the question", async () => {
+			vi.useFakeTimers();
+			const { main } = registerParentAndChild();
+			main.state.holdsQuestion = true;
+			await ask();
+			const waiting = childWait();
+			await flushMicrotasks();
+			vi.advanceTimersByTime(60_000);
+			await flushMicrotasks();
+			main.state.holdsQuestion = false;
+			vi.advanceTimersByTime(5_000);
+			expect(await idleText(waiting)).toContain("No reply within 5.0s");
+		});
+
+		test("an undelivered question does not prevent aborting its worker wait", async () => {
+			vi.useFakeTimers();
+			const { main } = registerParentAndChild();
+			main.state.holdsQuestion = true;
+			await ask();
+			const abort = new AbortController();
+			const waiting = new WaitTool(session(undefined, "Child")).execute("waiting-for-lead", {}, abort.signal);
+			await flushMicrotasks();
+			vi.advanceTimersByTime(60_000);
+			abort.abort();
+			await expect(waiting).rejects.toThrow("Operation aborted");
+		});
+
+		test("a departed lead ends the reply wait even with an undelivered question", async () => {
+			vi.useFakeTimers();
+			const { main, registry } = registerParentAndChild();
+			main.state.holdsQuestion = true;
+			await ask();
+			const waiting = childWait();
+			await flushMicrotasks();
+			vi.advanceTimersByTime(60_000);
+			registry.unregister("Main");
+			expect(await idleText(waiting)).toContain("`Main` finished its turn without replying");
 		});
 
 		test("a progress note leaves the question owed, even once the agent asked goes idle", async () => {

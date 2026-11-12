@@ -123,6 +123,8 @@ export function createSessionStub(
 			metadataForProvider: () => undefined,
 		},
 		getEvalPreludes: () => [],
+		getTodoPhases: () => [],
+		getTodoSnapshot: () => [],
 		getEnabledToolNames: () => [],
 		getContextUsage: () => undefined,
 		getGoalModeState: () => undefined,

@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { $ } from "bun";
+import { backgroundShellPrefix } from "@oh-my-pi/pi-utils/background-priority";
 import { $which, getTinyModelsCacheDir, isEnoent, type RuntimeInstallPhase, withFileLock } from "@oh-my-pi/pi-utils";
 
 /**
@@ -40,26 +41,32 @@ async function readReadyMarker(runtimeDir: string): Promise<string | null> {
 }
 
 async function installWithUv(uv: string, runtimeDir: string): Promise<void> {
-	const venv = await $`${uv} venv --quiet --python ${MLX_PYTHON_SPEC} ${runtimeDir}`.quiet().nothrow();
+	const venv = await $`${backgroundShellPrefix} ${uv} venv --quiet --python ${MLX_PYTHON_SPEC} ${runtimeDir}`
+		.quiet()
+		.nothrow();
 	if (venv.exitCode !== 0) throw new Error(`uv venv failed (exit ${venv.exitCode}): ${venv.stderr.toString().trim()}`);
 	const python = venvPython(runtimeDir);
-	const pip = await $`${uv} pip install --quiet --python ${python} mlx-lm==${MLX_LM_VERSION}`.quiet().nothrow();
+	const pip = await $`${backgroundShellPrefix} ${uv} pip install --quiet --python ${python} mlx-lm==${MLX_LM_VERSION}`
+		.quiet()
+		.nothrow();
 	if (pip.exitCode !== 0)
 		throw new Error(`uv pip install failed (exit ${pip.exitCode}): ${pip.stderr.toString().trim()}`);
 }
 
 async function installWithSystemPython(python3: string, runtimeDir: string): Promise<void> {
-	const check = await $`${python3} -c ${"import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"}`
-		.quiet()
-		.nothrow();
+	const check =
+		await $`${backgroundShellPrefix} ${python3} -c ${"import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"}`
+			.quiet()
+			.nothrow();
 	if (check.exitCode !== 0) throw new Error(`${python3} is older than Python 3.10; install uv or a newer Python`);
-	const venv = await $`${python3} -m venv ${runtimeDir}`.quiet().nothrow();
+	const venv = await $`${backgroundShellPrefix} ${python3} -m venv ${runtimeDir}`.quiet().nothrow();
 	if (venv.exitCode !== 0)
 		throw new Error(`python3 -m venv failed (exit ${venv.exitCode}): ${venv.stderr.toString().trim()}`);
 	const python = venvPython(runtimeDir);
-	const pip = await $`${python} -m pip install --quiet --disable-pip-version-check mlx-lm==${MLX_LM_VERSION}`
-		.quiet()
-		.nothrow();
+	const pip =
+		await $`${backgroundShellPrefix} ${python} -m pip install --quiet --disable-pip-version-check mlx-lm==${MLX_LM_VERSION}`
+			.quiet()
+			.nothrow();
 	if (pip.exitCode !== 0)
 		throw new Error(`pip install failed (exit ${pip.exitCode}): ${pip.stderr.toString().trim()}`);
 }

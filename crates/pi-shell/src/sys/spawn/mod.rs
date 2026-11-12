@@ -296,6 +296,21 @@ impl NativeSpawner {
 		crate::sys::pump::orphan::poll(cx);
 	}
 
+	/// A text executable needs the engine's script fallback. A wrapper
+	/// must probe its payload before its launcher hides the exec error.
+	pub(crate) fn script_fallback_error(path: &[u8], cwd: &[u8]) -> Option<io::Error> {
+		#[cfg(unix)]
+		{
+			unix::may_need_script_fallback(path, cwd)
+				.then(|| io::Error::from_raw_os_error(libc::ENOEXEC))
+		}
+		#[cfg(not(unix))]
+		{
+			let _ = (path, cwd);
+			None
+		}
+	}
+
 	/// Spawn `spec`; see the module docs for the process lifecycle.
 	///
 	/// # Errors

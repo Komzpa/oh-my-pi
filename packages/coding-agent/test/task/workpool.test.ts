@@ -43,8 +43,9 @@ function makeSession(
 	concurrency = 2,
 	freshAgents = false,
 	deliveries?: Array<{ id: string; text: string }>,
+	maxRunningJobs?: number,
 ): ToolSession {
-	const manager = new AsyncJobManager({ retentionMs: 0 });
+	const manager = new AsyncJobManager({ retentionMs: 0, maxRunningJobs });
 	if (deliveries) {
 		manager.registerDeliverySink("Main", (id, text) => {
 			deliveries.push({ id, text });
@@ -507,5 +508,158 @@ describe("WorkPool model selection", () => {
 		if (!workerId) throw new Error("First turn did not receive a worker id");
 		expect(follow.mock.calls[0]?.[0].id).toBe(workerId);
 		expect((follow.mock.calls[0]?.[0] as { perCallModel?: string } | undefined)?.perCallModel).toBeUndefined();
+	});
+});
+
+describe("WorkPool job capacity", () => {
+	it("waits for the global slot before starting a second independent worker", async () => {
+		const session = makeSession([], 2, false, undefined, 1);
+		const first = Promise.withResolvers<void>();
+		const second = Promise.withResolvers<void>();
+		const started: string[] = [];
+		let active = 0;
+		let peak = 0;
+		vi.spyOn(structured, "runStructuredSubagent").mockImplementation(async request => {
+			const id = request.identity!.id!;
+			started.push(id);
+			peak = Math.max(peak, ++active);
+			await (started.length === 1 ? first : second).promise;
+			active--;
+			markIdle(id);
+			return execution(id);
+		});
+		const workpool = pool(session, "global-cap");
+		try {
+			workpool.push(["one", "two"]);
+			await until(() => workpool.agents.length === 2);
+			expect(started).toEqual(["global-cap-1"]);
+			expect(workpool.items.map(item => item.status)).toEqual(["running", "queued"]);
+			first.resolve();
+			await until(() => started.length === 2);
+			second.resolve();
+			await finishPool(session, workpool);
+			expect(workpool.items.map(item => item.status)).toEqual(["completed", "completed"]);
+			expect(peak).toBe(1);
+		} finally {
+			first.resolve();
+			second.resolve();
+		}
+	});
+
+	it("reuses the worker only after the preceding job releases a one-job slot", async () => {
+		const session = makeSession([], 1, false, undefined, 1);
+		const first = Promise.withResolvers<void>();
+		vi.spyOn(structured, "runStructuredSubagent").mockImplementation(async request => {
+			await first.promise;
+			const id = request.identity!.id!;
+			markIdle(id);
+			return execution(id);
+		});
+		let predecessorStatus: string | undefined;
+		const follow = vi.spyOn(executor, "runSubagentFollowUpTurn").mockImplementation(async options => {
+			predecessorStatus = predecessor.status;
+			markIdle(options.id);
+			return singleResult(options.id);
+		});
+		const workpool = pool(session, "serial-cap");
+		workpool.push(["one", "two"]);
+		await until(() => workpool.agents[0]?.queue.length === 1);
+		const predecessor = session.asyncJobManager!.getJob(workpool.batches[0]!.jobId)!;
+		first.resolve();
+		await until(() => follow.mock.calls.length === 1 || predecessor.status === "failed");
+		expect(follow).toHaveBeenCalledTimes(1);
+		await finishPool(session, workpool);
+		expect(predecessorStatus).toBe("completed");
+		expect(workpool.items.map(item => item.status)).toEqual(["completed", "completed"]);
+	});
+
+	it("settles a rejected batch registration and leaves capacity usable by a healthy pool", async () => {
+		const session = makeSession([], 1, false, undefined, 1);
+		const manager = session.asyncJobManager!;
+		const register = manager.register.bind(manager);
+		vi.spyOn(manager, "register").mockImplementation((type, label, run, options) => {
+			if (options?.id === "rejected-1-b1") throw new Error("registration rejected");
+			return register(type, label, run, options);
+		});
+		const worker = vi.spyOn(structured, "runStructuredSubagent").mockImplementation(async request => {
+			const id = request.identity!.id!;
+			markIdle(id);
+			return execution(id);
+		});
+		const rejected = pool(session, "rejected");
+		rejected.push(["never starts"]);
+		await until(() => rejected.batches.length === 1);
+		expect(rejected.status().items).toEqual({ queued: 0, running: 0, completed: 0, failed: 1, cancelled: 0 });
+		expect(rejected.peek().batches[0]?.status).toBe("failed");
+		expect(rejected.peek().batches[0]?.output).toContain("registration rejected");
+		expect(worker).not.toHaveBeenCalled();
+		await finishPool(session, rejected);
+		expect(rejected.agents).toEqual([]);
+		const healthy = pool(session, "healthy-after-rejection");
+		healthy.push(["works"]);
+		await finishPool(session, healthy);
+		expect(healthy.status().items.completed).toBe(1);
+	});
+
+	it("marks submitted items failed when aggregate registration is refused", async () => {
+		const session = makeSession([], 1, false, undefined, 1);
+		const manager = session.asyncJobManager!;
+		const external = Promise.withResolvers<void>();
+		manager.register("task", "external", async () => {
+			await external.promise;
+			return "done";
+		});
+		const workpool = pool(session, "aggregate-refused");
+		try {
+			expect(() => workpool.push(["one", "two"])).toThrow("Background job limit reached");
+			expect(workpool.status().items).toEqual({ queued: 0, running: 0, completed: 0, failed: 2, cancelled: 0 });
+			expect(workpool.closed).toBe(true);
+			expect(workpool.agents).toEqual([]);
+		} finally {
+			external.resolve();
+		}
+	});
+
+	it("aborting the pool cancels queued work and waits for the active worker to release resources", async () => {
+		const session = makeSession([], 1, false, undefined, 1);
+		const entered = Promise.withResolvers<void>();
+		const aborted = Promise.withResolvers<void>();
+		const cleanup = Promise.withResolvers<void>();
+		let resourceHeld = false;
+		vi.spyOn(structured, "runStructuredSubagent").mockImplementation(async request => {
+			resourceHeld = true;
+			request.signal!.addEventListener("abort", () => aborted.resolve(), { once: true });
+			entered.resolve();
+			await aborted.promise;
+			await cleanup.promise;
+			resourceHeld = false;
+			const id = request.identity!.id!;
+			return { ...execution(id), result: { ...singleResult(id), exitCode: 1, aborted: true } };
+		});
+		const follow = vi.spyOn(executor, "runSubagentFollowUpTurn");
+		const workpool = pool(session, "abort-cap");
+		try {
+			workpool.push(["active", "queued"]);
+			await entered.promise;
+			await until(() => workpool.agents[0]?.queue.length === 1);
+			let settled = false;
+			const poolJob = session.asyncJobManager!.getJob(workpool.name)!;
+			void poolJob.promise.then(() => {
+				settled = true;
+			});
+			session.asyncJobManager!.cancel(workpool.name, { ownerId: "Main" });
+			await aborted.promise;
+			expect(workpool.items[1]?.status).toBe("cancelled");
+			expect(resourceHeld).toBe(true);
+			expect(settled).toBe(false);
+			cleanup.resolve();
+			await poolJob.promise;
+			expect(resourceHeld).toBe(false);
+			expect(workpool.items.map(item => item.status)).toEqual(["cancelled", "cancelled"]);
+			expect(follow).not.toHaveBeenCalled();
+			expect(workpool.peek().pending).toBe(0);
+		} finally {
+			cleanup.resolve();
+		}
 	});
 });

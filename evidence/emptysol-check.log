@@ -1,0 +1,114 @@
+$ bun run --parallel check:ts check:rs
+check:ts | $ oxlint . && oxfmt --check 'packages/*/src/**/*.{ts,tsx}' 'packages/*/{test,bench,examples,scripts}/**/*.ts' 'packages/*/*.ts' 'scripts/**/*.ts'
+check:rs | Running check:rs: "sdk/rust/omp-rpc/src/wire.rs" and 1 more changed.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.lead-action.test.ts:8:7: warning eslint(no-unused-vars): Variable 'NOW' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+check:ts | packages/coding-agent/src/thread/peer-agent-session.ts:249:27: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+check:ts | packages/coding-agent/src/thread/peer-agent-session.ts:262:27: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+check:ts | packages/coding-agent/src/thread/subagent-worker.ts:477:25: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+check:ts | packages/coding-agent/src/thread/remote-agent-session.ts:942:27: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+check:ts | packages/coding-agent/src/thread/remote-agent-session.ts:957:27: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+check:ts | packages/coding-agent/src/thread/services/agents-remote.ts:55:27: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+check:ts | packages/reemxy-extensions/extensions/worker_continue.ts:162:2: warning eslint(no-unused-vars): Parameter 'toolCallId' is declared but never used. Unused parameters should start with a '_'. help: Consider removing this parameter.
+check:ts | packages/reemxy-extensions/extensions/requirement_quotes.test.ts:4:57: warning eslint(no-unused-vars): Identifier 'requirementConflict' is imported but never used. help: Consider removing this import.
+check:ts | packages/coding-agent/test/tools/bash-interceptor.test.ts:249:4: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+check:ts | packages/coding-agent/test/tools/bash-interceptor.test.ts:251:4: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+check:ts | packages/coding-agent/test/tools/bash-interceptor.test.ts:253:4: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+check:ts | packages/coding-agent/test/tools/bash-interceptor.test.ts:258:32: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+check:ts | packages/coding-agent/test/tools/bash-interceptor.test.ts:269:16: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+check:ts | packages/coding-agent/src/thread/services/agents.ts:195:23: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+check:ts | packages/coding-agent/src/thread/services/agents.ts:213:22: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+check:ts | packages/coding-agent/test/tools/todo.test.ts:16:2: warning eslint(no-unused-vars): Identifier 'forecastTodoLivePlan' is imported but never used. help: Consider removing this import.
+check:ts | packages/coding-agent/test/tools/todo.test.ts:18:10: warning eslint(no-unused-vars): Identifier 'forecastTodoPlan' is imported but never used. help: Consider removing this import.
+check:ts | packages/coding-agent/test/subagent-mcp-follow.test.ts:21:10: warning eslint(no-unused-vars): Identifier 'createMCPProxyTools' is imported but never used. help: Consider removing this import.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.liveness.test.ts:46:40: warning eslint(no-unused-vars): Identifier 'parseTodoOverride' is imported but never used. help: Consider removing this import.
+check:ts | packages/reemxy-extensions/extensions/eval/lead-instructions.ts:98:13: warning eslint(no-unused-vars): Variable 'budgetLease' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:14:15: warning eslint(no-unused-vars): Type 'AgentMessage' is imported but never used. help: Consider removing this import.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:172:7: warning eslint(no-unused-vars): Variable 'TODO_ERROR_ENTRY_TYPE' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:3403:9: warning eslint(no-unused-vars): Variable 'PARALLEL_GATES' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:3927:52: warning eslint(no-unused-vars): Parameter 'pending' is declared but never used. Unused parameters should start with a '_'. help: Consider removing this parameter.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:4311:11: warning eslint(no-unused-vars): Variable 'input' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:6139:7: warning eslint(no-unused-vars): Variable 'lastIdlePlanCheckAt' is assigned a value but never used. Unused variables should start with a '_'. help: Did you mean to use this variable?
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:1210:5: warning unicorn(no-useless-spread): `Set` accepts an iterable, so it's unnecessary to convert the iterable to an array. help: Consider removing the spread operator.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:2422:21: warning unicorn(no-useless-spread): Using a spread operator here creates a new array unnecessarily. help: `for…of` can iterate over iterable, it's unnecessary to convert to an array.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:2692:27: warning unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary help: Spreading falsy values in object literals won't add any unexpected properties, so it's unnecessary to add an empty object as fallback.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:2693:49: warning unicorn(no-useless-fallback-in-spread): Empty fallbacks in spreads are unnecessary help: Spreading falsy values in object literals won't add any unexpected properties, so it's unnecessary to add an empty object as fallback.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.ts:3658:115: warning unicorn(no-thenable): Do not add `then` to an object. help: If an object is defined as 'thenable', once it's accidentally used in an await expression, it may cause problems
+check:ts | packages/catalog/src/provider-models/openai-compat.ts:5604:6: warning unicorn(prefer-string-starts-ends-with): Prefer String#startsWith over a regex with a caret. help: Replace `/^mimo-v2-/.test(modelId)` with `modelId.startsWith('mimo-v2-')`.
+check:ts | packages/catalog/src/provider-models/openai-compat.ts:5605:9: warning unicorn(prefer-string-starts-ends-with): Prefer String#startsWith over a regex with a caret. help: Replace `/^mimo-v2/.test(modelId)` with `modelId.startsWith('mimo-v2')`.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.planfact.test.ts:6:10: warning eslint(no-unused-vars): Identifier 'readGoalDeadline' is imported but never used. help: Consider removing this import.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.planfact.test.ts:13:5: warning eslint(no-unused-vars): Variable 'clock' is assigned a value but never used. Unused variables should start with a '_'. help: Did you mean to use this variable?
+check:ts | packages/reemxy-extensions/extensions/dispatch_preflight.ts:7:15: warning eslint(no-unused-vars): Type 'TodoScheduleInput' is imported but never used. help: Consider removing this import.
+check:ts | packages/reemxy-extensions/extensions/dispatch_preflight.ts:76:33: warning eslint(no-useless-escape): Unnecessary escape character '"' help: Replace `\"` with `"`.
+check:ts | packages/reemxy-extensions/extensions/dispatch_preflight.ts:242:45: warning eslint(no-useless-escape): Unnecessary escape character '/' help: Replace `\/` with `/`.
+check:ts | packages/reemxy-extensions/extensions/dispatch_preflight.ts:242:93: warning eslint(no-useless-escape): Unnecessary escape character '/' help: Replace `\/` with `/`.
+check:ts | packages/coding-agent/src/modes/interactive-mode.ts:220:2: warning eslint(no-unused-vars): Identifier 'getLatestTodoArchiveFromEntries' is imported but never used. help: Consider removing this import.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:2667:9: warning eslint(no-unused-vars): Variable 'now' is declared but never used. Unused variables should start with a '_'. help: Consider removing this declaration.
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.gates.test.ts:540:7: warning eslint(no-template-curly-in-string): Template placeholders will not interpolate in regular strings help: Did you mean to use a template string literal?
+check:ts | packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts:15:24: warning eslint(no-unused-vars): Identifier 'noticeDigest' is imported but never used. help: Consider removing this import.
+check:ts | packages/coding-agent/src/modes/acp/acp-agent.ts:58:10: warning eslint(no-unused-vars): Identifier 'buildSkillPromptMessage' is imported but never used. help: Consider removing this import.
+check:ts | Checking formatting...
+check:ts | 
+check:ts | All matched files use the correct format.
+check:ts | Finished in 209ms on 6748 files using 32 threads.
+check:ts | @oh-my-pi/browser-relay:check:types             | ✓ No type errors in 5 files [615.79ms]
+check:ts | @oh-my-pi/browser-relay:check:types             | Done in 624ms
+check:ts | @oh-my-pi/collab-web:check:types                | ✓ No type errors in 131 files [119.76ms]
+check:ts | @oh-my-pi/collab-web:check:types                | Done in 129ms
+check:ts | @oh-my-pi/omp-stats:check:types                 | ✓ No type errors in 524 files [305.75ms]
+check:ts | @oh-my-pi/omp-stats:check:types                 | ✓ No type errors in 88 files [59.40ms]
+check:ts | @oh-my-pi/omp-stats:check:types                 | Done in 387ms
+check:ts | @oh-my-pi/omptype:check:types                   | ✓ No type errors in 36 files [213.47ms]
+check:ts | @oh-my-pi/omptype:check:types                   | Done in 227ms
+check:ts | @oh-my-pi/pi-agent-core:check:types             | ✓ No type errors in 602 files [243.58ms]
+check:ts | @oh-my-pi/pi-agent-core:check:types             | Done in 262ms
+check:ts | @oh-my-pi/pi-ai:check:types                     | ✓ No type errors in 3,271 files [533.37ms]
+check:ts | @oh-my-pi/pi-ai:check:types                     | Done in 589ms
+check:ts | @oh-my-pi/pi-catalog:check:types                | ✓ No type errors in 2,878 files [480.37ms]
+check:ts | @oh-my-pi/pi-catalog:check:types                | Done in 514ms
+check:ts | @oh-my-pi/pi-coding-agent:check:types           | ✓ No type errors in 4,926 files [1478.85ms]
+check:ts | @oh-my-pi/pi-coding-agent:check:types           | Done in 1.53s
+check:ts | @oh-my-pi/pi-metaharness:check:types            | ✓ No type errors in 151 files [132.60ms]
+check:ts | @oh-my-pi/pi-metaharness:check:types            | ✓ No type errors in 2,714 files [407.49ms]
+check:ts | @oh-my-pi/pi-metaharness:check:types            | ✓ No type errors in 2,718 files [487.47ms]
+check:ts | @oh-my-pi/pi-metaharness:check:types            | ✓ No type errors in 2,716 files [461.01ms]
+check:ts | @oh-my-pi/pi-metaharness:check:types            | Done in 1.60s
+check:ts | @oh-my-pi/pi-mnemopi:check:types                | ✓ No type errors in 643 files [284.82ms]
+check:ts | @oh-my-pi/pi-mnemopi:check:types                | Done in 303ms
+check:ts | @oh-my-pi/pi-natives:check:types                | ✓ No type errors in 30 files [73.20ms]
+check:ts | @oh-my-pi/pi-natives:check:types                | Done in 81ms
+check:ts | @oh-my-pi/pi-tui:check:types                    | ✓ No type errors in 1,413 files [322.30ms]
+check:ts | @oh-my-pi/pi-tui:check:types                    | Done in 349ms
+check:ts | @oh-my-pi/pi-utils:check:types                  | ✓ No type errors in 253 files [347.84ms]
+check:ts | @oh-my-pi/pi-utils:check:types                  | Done in 358ms
+check:ts | @oh-my-pi/pi-wire:check:types                   | ✓ No type errors in 6 files [15.88ms]
+check:ts | @oh-my-pi/pi-wire:check:types                   | Done in 21ms
+check:ts | @oh-my-pi/reemxy-extensions:check:types         | ✓ No type errors in 2,806 files [673.08ms]
+check:ts | @oh-my-pi/reemxy-extensions:check:types         | Done in 707ms
+check:ts | @oh-my-pi/snapcompact:check:types               | ✓ No type errors in 502 files [257.42ms]
+check:ts | @oh-my-pi/snapcompact:check:types               | Done in 276ms
+check:ts | @oh-my-pi/typescript-edit-benchmark:check:types | ✓ No type errors in 2,718 files [475.65ms]
+check:ts | @oh-my-pi/typescript-edit-benchmark:check:types | Done in 506ms
+check:ts | Done in 9.83s
+check:rs | Diff in /home/kom/proj/ai_pr/omp-emptysol-20261107/oh-my-pi/crates/pi-shell/src/bash/trace/viz/printer.rs:1216:
+check:rs |  			}
+check:rs |  			out.push(self.segment(c, cmd.id, cmd.span, ")", "op", true));
+check:rs |  		} else if builtin && matches!(name.as_str(), "[" | "test") {
+check:rs | -			// A bare `[` (one word) yields the empty range 1..0; `get` keeps it empty.
+check:rs | +			// A bare `[` (one word) yields the empty range 1..0; `get` keeps it
+check:rs | +			// empty.
+check:rs |  			let end = if name == "[" {
+check:rs |  				s.words.len().saturating_sub(1)
+check:rs |  			} else {
+check:rs | Diff in /home/kom/proj/ai_pr/omp-emptysol-20261107/oh-my-pi/crates/pi-shell/src/bash/trace/viz/runtime_tests.rs:93:
+check:rs |  
+check:rs |  #[test]
+check:rs |  fn bare_test_bracket_without_operands_renders_instead_of_panicking() {
+check:rs | -	// Regression for #18320: a streamed `[` with no operands sliced `words[1..0]`
+check:rs | -	// and aborted the host process.
+check:rs | +	// Regression for #18320: a streamed `[` with no operands sliced
+check:rs | +	// `words[1..0]` and aborted the host process.
+check:rs |  	for (script, expected) in [
+check:rs |  		("[", &[""][..]),
+check:rs |  		("a && [", &["a", "and "]),
+check:rs | Exited with code 1
+error: script "check" exited with code 1

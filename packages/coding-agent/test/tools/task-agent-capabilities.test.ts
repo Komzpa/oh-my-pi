@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { isReadOnlyAgent } from "@oh-my-pi/pi-coding-agent/task";
+import path from "node:path";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { isReadOnlyAgent, TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import { loadBundledAgents } from "@oh-my-pi/pi-coding-agent/task/agents";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
 function agentByName(agents: AgentDefinition[], name: string): AgentDefinition {
 	const agent = agents.find(candidate => candidate.name === name);
@@ -24,5 +27,24 @@ describe("task agent capability descriptions", () => {
 
 		expect(isReadOnlyAgent({ ...scout, tools: ["read", "grep", "wait", "yield"] })).toBe(true);
 		expect(isReadOnlyAgent({ ...scout, tools: ["read", "grep", "wait", "bash"] })).toBe(false);
+	});
+
+	it("lists the creative profile from the real extension root", async () => {
+		const extensionRoot = path.resolve(import.meta.dir, "../../../reemxy-extensions/extensions");
+		const tool = await TaskTool.create({
+			cwd: "/tmp",
+			hasUI: false,
+			settings: Settings.isolated(),
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+			effectiveExtensionRoots: () => ({
+				explicit: [extensionRoot],
+				mode: "explicit-only",
+				configured: [],
+				configuredLevel: "user",
+			}),
+		} as unknown as ToolSession);
+
+		expect(tool.description).toContain("- `creative`:");
 	});
 });

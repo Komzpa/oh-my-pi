@@ -104,8 +104,10 @@ interface RefSnapshot {
 	readonly createdAt: number;
 	readonly lastActivity: number;
 	readonly activity: AgentRef["activity"];
+	readonly todoRow: AgentRef["todoRow"];
 	readonly history: AgentRef["history"];
 	readonly lifecycle: AgentRef["lifecycle"];
+	readonly initialPromptPending: AgentRef["initialPromptPending"];
 }
 
 /** Worker → main: which ref generation the worker means. */
@@ -158,8 +160,10 @@ const mainRefCodec: RpcCodec<AgentRef> = {
 			createdAt: ref.createdAt,
 			lastActivity: ref.lastActivity,
 			activity: ref.activity,
+			todoRow: ref.todoRow,
 			history: ref.history,
 			lifecycle: ref.lifecycle,
+			initialPromptPending: ref.initialPromptPending,
 		}) satisfies RefSnapshot,
 	decode: data => {
 		if (!isRefIdentity(data)) throw new Error("Malformed agent ref identity");
@@ -189,8 +193,10 @@ function refresh(ref: AgentRef, snapshot: RefSnapshot): AgentRef {
 	ref.createdAt = snapshot.createdAt;
 	ref.lastActivity = snapshot.lastActivity;
 	ref.activity = snapshot.activity;
+	ref.todoRow = snapshot.todoRow;
 	ref.history = snapshot.history;
 	ref.lifecycle = snapshot.lifecycle;
+	ref.initialPromptPending = snapshot.initialPromptPending;
 	return ref;
 }
 

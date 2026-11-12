@@ -86,7 +86,7 @@ describe("experimental context tool registration", () => {
 				expect(session.getEnabledToolNames()).toEqual(expect.arrayContaining(["context_notes", "new_context"]));
 				const notes = session.getToolByName("context_notes");
 				if (!notes) throw new Error("expected registered context notes tool");
-				await notes.execute("store-notebook", { text: "stored through SDK registration" });
+				await notes.execute("store-notebook", { action: "replace", text: "stored through SDK registration" });
 				expect(sessionManager.getBranch()).toEqual(
 					expect.arrayContaining([
 						expect.objectContaining({

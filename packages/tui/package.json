@@ -65,6 +65,10 @@
 			"types": "./src/tools/shell-viz.ts",
 			"import": "./src/tools/shell-viz.ts"
 		},
+		"./tools/todo-schedule": {
+			"types": "./src/tools/todo-schedule.ts",
+			"import": "./src/tools/todo-schedule.ts"
+		},
 		"./status-line": {
 			"types": "./src/status-line/index.ts",
 			"import": "./src/status-line/index.ts"

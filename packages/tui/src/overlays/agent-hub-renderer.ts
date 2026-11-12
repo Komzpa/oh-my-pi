@@ -83,11 +83,9 @@ export function statusDot(status: AgentStatus): TspTone {
 	return STATUS_DOT[status];
 }
 
-const ASSIGNMENT_PREFIX = /^\s*Complete assignment thoroughly:\s*/i;
-
-/** One-line task summary: the subagent prompt's fixed assignment preamble is not part of the task. */
+/** One-line task summary keeps the task text as supplied by the caller. */
 export function taskSummary(task: string): string {
-	return sanitizeDisplaySingleLine(task.replace(ASSIGNMENT_PREFIX, ""));
+	return sanitizeDisplaySingleLine(task);
 }
 
 /** Native span of {@link statusGlyph}. */

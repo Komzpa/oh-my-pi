@@ -8,7 +8,7 @@
  * This replaces the old single hardwired `onJobComplete` closure that routed
  * every completion — regardless of owner — into the first top-level session.
  */
-import { prompt } from "@oh-my-pi/pi-utils";
+import { isRecord, prompt } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobType } from "../async";
 import asyncResultTemplate from "../prompts/tools/async-result.md" with { type: "text" };
 import type { StructuredSubagentOutput } from "@oh-my-pi/pi-tui/tools/task";
@@ -17,11 +17,7 @@ import type { CustomMessage } from "./messages";
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { truncateMiddle } from "@oh-my-pi/pi-tui/tools/streaming-output";
 
-/**
- * `customType` of the injected async-result follow-up message. The task
- * executor's run monitor matches on it to invalidate a previously recorded
- * yield: a result injected after the yield supersedes that yield's payload.
- */
+/** `customType` of the injected owner-scoped async-result follow-up message. */
 export const ASYNC_RESULT_MESSAGE_TYPE = "async-result";
 
 /** Result payloads longer than this spill to an artifact with an inline preview. */
@@ -49,10 +45,12 @@ export interface AsyncResultEntry {
 }
 
 type AsyncResultJobDetails = {
+	agentProfile?: string;
 	jobId: string;
+	agentId?: string;
 	type?: AsyncJobType;
 	status?: AsyncJob["status"];
-	agentId?: string;
+	result?: string;
 	label?: string;
 	durationMs?: number;
 	/** Source capture metadata belongs to this job, not to the enclosing delivery report. */
@@ -166,17 +164,20 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			schemaStatusLabel: structured ? structuredStatusLabel(structured.status) : undefined,
 			schemaError: structured?.error === undefined ? undefined : escapeHarnessTags(structured.error),
 			schemaValid: structured?.status === "valid",
+			agentProfile: completedAgentProfile(entry.job),
 		};
 	});
 	const details: AsyncResultDetails = {
 		meta: { source: { type: "report", value: "background job delivery" } },
-		jobs: jobs.map(job => ({
+		jobs: jobs.map((job, index) => ({
 			jobId: job.jobId,
+			result: entries[index]!.result,
 			type: job.type,
 			status: job.status,
 			agentId: job.agentId,
 			label: job.label,
 			durationMs: job.durationMs,
+			agentProfile: job.agentProfile,
 			...(job.meta ? { meta: job.meta } : {}),
 			...(job.structured ? { schema: job.structured } : {}),
 		})),
@@ -195,4 +196,15 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 		details,
 		timestamp: Date.now(),
 	};
+}
+
+/** Preserve the completed profile after the live job and its artifacts are evicted. */
+function completedAgentProfile(job: AsyncJob | undefined): string | undefined {
+	if (job?.type !== "task" || job.status !== "completed") return undefined;
+	const progress = job.latestDetails?.progress;
+	if (!Array.isArray(progress)) return undefined;
+	const result = progress.find(item => isRecord(item) && item.id === (job.agentId ?? job.id));
+	return isRecord(result) && result.status === "completed" && typeof result.agent === "string"
+		? result.agent
+		: undefined;
 }

@@ -1,0 +1,2 @@
+Ask refused: every question must have a valid recommended option and this session needs a completed result from the configured shadow profile ({{agent}}) after the latest user message or within ask.gate.recentSeconds.
+Get the shadow's pick, proceed on the default, and put the choices on a styled review page; send the user only its link. For a genuine mission-critical stop, supply critical.kind and a concrete critical.reason.

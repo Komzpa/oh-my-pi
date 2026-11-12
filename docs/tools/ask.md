@@ -1,6 +1,32 @@
 # ask
 
-> Asks the interactive user to fill in one HTML form and returns the submitted form data.
+> Posts a pending HTML form and returns immediately. Explicit `/tree` re-answer waits for the submitted form data.
+
+## Asynchronous questions
+
+Ordinary calls return `details.pending` with the tool-call ID, session ID, original `html`, and field-derived questions. A host with `formDialog` opens that same HTML form without blocking the agent; explicit submission sends normal user-chat replies as `Answer to <tool-call-id> [<field-name>]: <answer>`. Hosts without a form surface retain the pending transcript and accept normal chat replies. Cancellation and timeouts never imply approval or submit a default as a user answer. Independent work continues; answer-dependent actions retain their permission gates.
+
+After a graceful restart, pending Ask calls reopen their original HTML form before the continuation; saved question-list calls are converted to a form at the restore boundary. Only unanswered named fields become normal chat replies, existing message attachments stay intact, and cancellation or timeouts leave the pending transcript unanswered.
+
+The modal flow, field-by-field fallback, and timeout behavior below apply only to explicit interactive re-answer.
+
+## Optional lead gate
+
+The gate is off by default. Enable it in `config.yml`:
+
+```yaml
+ask:
+  gate:
+    enabled: true
+    agent: gate-runner
+    recentSeconds: 300
+```
+
+For calls offering choices, every named field must have a valid preselected choice (`checked` or `selected`). The active session branch must also contain a successful task result from the configured agent profile, either after the latest user message or within `recentSeconds` (seconds; `0` disables the time-window alternative). Failed, aborted, running, wrong-profile and prose-only reports do not count. Async deliveries preserve the completed profile for resume. Worker questions bypass this lead-only gate.
+
+A passing non-critical call returns the existing pending identity plus `details.workingDefaults`, without opening a dialog or waiting. The recommended options become working defaults immediately; choices belong on a styled review page with only its link in chat. This grants no permission for actions requiring user approval. Explicit `/tree` re-answer remains interactive.
+
+A genuine mission-critical stop may supply `critical: { kind: "irreversible" | "public" | "hands" | "credential", reason: "concrete reason" }`. Its kind and non-blank reason are recorded in `details.critical`; it bypasses the gate and retains normal pending-question behavior.
 
 ## Source
 
@@ -23,7 +49,7 @@ The form is plain semantic HTML. Controls: `<input type="radio">` (one-of), `typ
 
 ## Outputs
 
-- Single-shot result.
+- Ordinary calls return the pending identity described above, never an answered result. The following result variants apply to explicit interactive re-answer.
 - `content[0].text`:
    - submit: `User answers:` followed by the form data as indented JSON
    - timeout: `No answer before the timeout; submitted the form's current values:` followed by the JSON
@@ -35,7 +61,7 @@ The form is plain semantic HTML. Controls: `<input type="radio">` (one-of), `typ
 ## Flow
 
 1. Registration requires `ask.enabled` and `AskTool.createIf()` requires `session.canPromptUser ?? session.hasUI` (or a headless fork advertising `ask`).
-2. `execute()` requires `context.hasUI` and `context.ui`. Without them a headless fork gets a `ToolError` telling its model to put open questions in its final answer; any other session aborts the context and throws `ToolAbortError("Ask tool requires interactive mode")`.
+2. Ordinary calls work without UI; advertised headless forks retain their final-answer fallback. Explicit interactive re-answer requires `context.hasUI` and `context.ui`, otherwise it aborts with `ToolAbortError("Ask tool requires interactive mode")`.
 3. The form is parsed. A form without a named control returns an error text result rather than throwing.
 4. It reads `ask.timeout` (seconds; `0` disables) and disables the timeout entirely while plan mode is enabled.
 5. If the session has a local UI and `ask.notify` is not `off`, it sends a terminal notification: `Waiting for input`. When `speech.enabled` is true, it speaks the field questions.
@@ -66,7 +92,7 @@ The form is plain semantic HTML. Controls: `<input type="radio">` (one-of), `typ
 - Unknown parameters are rejected because `AskTool.strict=true`.
 - `ask.timeout` defaults to `0` seconds (disabled). Plan mode always disables it.
 - In the fallback, `editor` prompts (textareas, prefilled inputs) have no timeout; `select` and `input` prompts do. Prompt surfaces that report presentation/reset events start or re-arm the deadline at those events; otherwise the timer starts when the prompt is requested.
-- `AskTool.concurrency = "exclusive"`: the tool runs alone in its tool batch because the dialog surface is shared.
+- Ordinary Ask uses `concurrency = "shared"`; explicit interactive re-answer uses `"exclusive"` for the shared modal surface.
 - Pictures load in the background while the form is open: at most 10 MiB each, remote ones within 10 s; PNG, JPEG, GIF, WebP and SVG. One that fails shows its `alt` and the reason. Only the interactive TUI/Tern form draws them; the fallback prompts and ACP show none.
 
 ## Errors

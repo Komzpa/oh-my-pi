@@ -33,7 +33,7 @@ function bundled(provider: GeneratedProvider, modelId: string): Model {
 	return model;
 }
 
-const gpt = bundled("openai", "gpt-5.4");
+const gpt = bundled("openai-codex", "gpt-5.6-sol");
 const claude = bundled("anthropic", "claude-opus-5-5");
 
 function assistant(model: Model, text: string, input = 0): AssistantMessage {
@@ -109,7 +109,7 @@ describe("switch after an OpenAI remote compaction", () => {
 		setAgentDir(path.join(tempDir, "agent"));
 		authStorage = await AuthStorage.create(":memory:");
 		authStorage.keys.setRuntime("anthropic", "test-key");
-		authStorage.keys.setRuntime("openai", "test-key");
+		authStorage.keys.setRuntime(gpt.provider, "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
 	});
 
@@ -137,7 +137,10 @@ describe("switch after an OpenAI remote compaction", () => {
 				model,
 				systemPrompt: ["Test"],
 				tools: [],
-				messages: sessionManager.buildSessionContext().messages,
+				// Seed the active provider's actual request shape. A provider-native
+				// compaction is replayable only when context construction knows the
+				// active model; the reader-agnostic display form is just its summary.
+				messages: sessionManager.buildSessionContext({ model }).messages,
 			},
 			convertToLlm,
 			streamFn: mock.stream,
@@ -182,6 +185,8 @@ describe("switch after an OpenAI remote compaction", () => {
 			tokensBefore: preparation.tokensBefore,
 		}));
 
+		// Keep the configured window: catalog refresh otherwise replaces the fixture with bundled metadata.
+		vi.spyOn(modelRegistry, "refreshSelectedModelMetadata").mockResolvedValue(smallClaude);
 		await session.setModel(smallClaude);
 		await session.prompt("What came before the compaction?");
 
@@ -217,7 +222,7 @@ describe("switch after an OpenAI remote compaction", () => {
 
 		const result = await session.compact(undefined, { readerModel: claude });
 
-		expect(result.summary).toBe("portable summary by openai");
+		expect(result.summary).toBe(`portable summary by ${gpt.provider}`);
 		expect(compactSpy).toHaveBeenCalledTimes(1);
 		// Soft summarization re-expands the history behind the remote boundary.
 		expect(countFacts(JSON.stringify(compactSpy.mock.calls[0]![0].messagesToSummarize))).toBeGreaterThan(0);

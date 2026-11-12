@@ -1,0 +1,29 @@
+# Zero-active chief — 2026-11-07
+
+Owner request (Darafei, verbatim): «советы хуеветы, а оно не может просто взять и nag ему что он пидорас нихуя не делает? когда 0 active при рабочем плане чифу нельзя спать давать».
+
+Authority: only PR92 topic/rt-agent-runtime-core, fork Komzpa/oh-my-pi. No install/updater, live session, desktop, ~/.omp or ~/.config writes. Supplied live incident is the fixture specification; no live session was resumed or modified. No commands run in datacenter-decision-graph.
+
+Contract: main with zero active workers and staffable rows gets a short first-result-line demand; third non-dispatch call refuses; task/ask and staffing TODO mutations stay available; two agent-result reads remain after threshold. Counter survives turns and unsuccessful staffing calls; clears when state clears. End of turn queues another triggering demand without the old three-turn cap. User blockers and live dependencies stay quiet. Shared classifier decides staffability. Resumed live workers with a running job retain existing staffing semantics.
+
+Staffing refusals now fit 300 characters, retain bounded prior-owner identity, and contain no test/port/role advice wall. Advice is separate static Markdown attached to successful task results. Existing independent gate refusals retain their semantics.
+
+Decisions: lane_ask confirmed todo view is non-dispatch, staffing mutations are exempt, two post-threshold reads, no reset after failed staffing; permitted worktree-local git after both but status and but commit report unsupported worktree. Second DECISION authorized narrow existing lifecycle repair and review-page probe adaptation. Full decision text: sibling ../evidence/zeroactive-decision2.txt; first decision reproduced in tool transcript. Completed/off goals no longer arm the legacy idle alarm; zero-active session-stop demand remains independent.
+
+Regression receipt: base 57d916321139dd3562d03f77e39164d4e10ac19a, same added tests, production TS and gate template temporarily replaced by exact git-show base bytes and restored in finally. Command: bun test packages/reemxy-extensions/extensions/todo_dispatch.wait.test.ts packages/reemxy-extensions/extensions/todo_dispatch.test.ts packages/reemxy-extensions/extensions/todo_dispatch.red-rows.runtime.test.ts --test-name-pattern zero-active. Base: 1 pass, 1 fail, missing first-line nag (original output received). Head: both pass as part of full suite. Test exercises three independent pending rows (display: needs worker), TODO view, proc reads, error result, third-call refusal, task/ask/schedule access, two agent reads, six consecutive triggering turns, worker-start release; neighbour covers user blockers and running dependency chain.
+
+Full extension suite: bun run --cwd packages/reemxy-extensions test: 753 pass, 0 fail, 10369 assertions, 71 files. Existing assertions updated only for intentionally replaced capped demands/verbose staffing results; review replacement uses an allowed schedule after two reads. Existing completed-goal alarm failure separately reproduced on base at todo_dispatch.test.ts:1635 and fixed in owner (final existing lifecycle test passes 34 assertions).
+
+Typecheck: package check:types exits zero. bun check TS/lint/format pass; unchanged base Rust formatting fails crates/pi-shell/src/bash/trace/viz/printer.rs:1216 and runtime_tests.rs:93. Rust is untouched. No full-check green claim. Frozen dependency install refused existing catalog/lock mismatch; installed without scripts and restored lockfile exactly; lockfile not changed.
+
+Native addon already present, no native-source edits; no native build/install claim. Exact addon hash and full composite proof recorded below after execution. Diffs and whitespace-insensitive diffs have equal counts; no whole-file formatting.
+
+Repeated undefined text.replace exception was traced to eager full-plan prompt formatting of incomplete fixture job.label; removed unnecessary currentDecision call from the new gate. Lookup: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Errors/No_properties. bun test --help consulted for repeat script exit diagnostics. No exception swallowing or label fallback added.
+
+Publication target: fork refs/heads/topic/rt-agent-runtime-core only. Old remote/rollback head 57d916321139dd3562d03f77e39164d4e10ac19a. Exact-lease push after fetch/rebase and composite checks; readback recorded below. No PR body/comments edited.
+
+Final verification: composite 81c3838601c contains source commit f112bf5df5c and all 77/77 manifest heads. All workspace packages check:types exited zero; reemxy-extensions checks 2873 files. Manifest, exact heads, merge ancestry, replay script and logs are retained in sibling ../evidence/zeroactive-{manifest.json,heads.json,merges.json,assemble.py,composite-types.log}. stack_check.py --repo . --candidate topic/rt-agent-runtime-core=f112bf5df5c --no-fetch: OK 77 PRs onto fork/main 9370e7bfe2. Newest task assertion also verifies actual admission (not merely absence of this gate text), then feeds a failed task result and proves the refusal remains. No production delta after source commit.
+
+Native test addon SHA256: 2d1c1146c25e431985d63b832e1db810be341ed21f36d074c64f1ff2f6fe240b. Build provenance not supplied; extension results do not claim native acceptance.
+
+Fetch/rebase: fork/topic/rt-agent-runtime-core still 57d916321139dd3562d03f77e39164d4e10ac19a, rebase reports already up to date. Entire prior history preserved; only additive commits. Final commit adds test/evidence only, followed by verified-head composite types and full extension suite. Publication/readback output is retained in sibling ../evidence/zeroactive-publication.log; full SHA reported to owner. The final full check remains non-green solely for the two base Rust format failures listed above; no install performed.

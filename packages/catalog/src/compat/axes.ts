@@ -328,6 +328,12 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 	"supports-sampling-params": wire("supportsSamplingParams", [...OAI, "anthropic", "bedrock", "devin", "google"]),
 
 	// ── thinking control surface ──
+	"thinking-implementation-worker-max-effort": {
+		key: "implementationWorkerMaxEffort",
+		set: "catalog",
+		shape: "scalar",
+		values: EFFORTS,
+	},
 	"thinking-default-level": { key: "defaultLevel", set: "thinking", shape: "scalar", values: EFFORTS },
 	"thinking-effort-budgets": { key: "effortBudgets", set: "thinking", shape: "object" },
 	"thinking-effort-map": { key: "effortMap", set: "thinking", shape: "object" },
@@ -474,7 +480,11 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 		shape: "scalar",
 		values: ["off", "semantic"],
 	},
+	// Comparable audit strength is deliberately separate from lineage classification.
+	"audit-vendor": { key: "auditVendor", set: "catalog", shape: "scalar" },
+	"audit-strength": { key: "auditStrength", set: "catalog", shape: "scalar" },
 	"delegation-bias": { key: "delegationBias", set: "catalog", shape: "scalar", values: DELEGATION_BIASES },
+	"normal-prose-spacing": { key: "normalProseSpacing", set: "catalog", shape: "scalar", values: [true, false] },
 	"discovery-api": { key: "discoveryApi", set: "catalog", shape: "scalar" },
 	"edit-prompt-variant": { key: "editPromptVariant", set: "catalog", shape: "scalar", values: ["full", "compact"] },
 	"edit-revision": { key: "editRevision", set: "catalog", shape: "scalar" },
@@ -585,6 +595,13 @@ export const AXES: Readonly<Record<string, AxisDef>> = {
 		set: "catalog",
 		shape: "scalar",
 		values: [true, false],
+	},
+	/** Channel for trusted harness notices; absence preserves legacy conversion. */
+	"harness-notice-role": {
+		key: "harnessNoticeRole",
+		set: "catalog",
+		shape: "scalar",
+		values: ["user", "developer", "tool", "off-legacy"],
 	},
 	/**
 	 * Prompt-cache lookback in block positions: how far back from a cache

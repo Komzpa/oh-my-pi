@@ -1,12 +1,16 @@
 import * as path from "node:path";
 import { MessageChannel, type MessagePort, receiveMessageOnPort } from "node:worker_threads";
+import { toolSessionEnvironment } from "../../exec/session-slice";
+import { ToolResourceScope } from "@oh-my-pi/pi-natives";
 import { isRecord, logger, Snowflake, workerHostEntry } from "@oh-my-pi/pi-utils";
 import {
 	createWorkerHandle,
-	createWorkerSubprocess,
+	createScopedWorkerSubprocess,
 	resolveWorkerSpawnCmd,
 	workerEnvFromParent,
+	type SpawnedSubprocess,
 } from "../../subprocess/worker-client";
+import { ensureSubagentRuntimeDir, enterMaskedDesktopSessionEnv, stripDesktopSessionEnv } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../../tools";
 import { ToolAbortError } from "../../tools/tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
@@ -23,7 +27,7 @@ import {
 import { shouldDetachKernel } from "../py/spawn-options";
 import { updateEvalState } from "../state";
 import type { EvalShadowCellSession } from "../speculation/cell-session";
-import { getActiveEvalShadowCell } from "../speculation/runtime-context";
+import { getActiveEvalJobId, getActiveEvalShadowCell } from "../speculation/runtime-context";
 import type { ShadowPlan } from "../speculation/types";
 import type { EvalDisplayOutput, EvalToolDescriptor, EvalToolInvokeResult } from "../types";
 import { type ShadowSnapshot, shadowSnapshotDigest } from "./shared/runtime";
@@ -67,8 +71,8 @@ export interface JsEvalWorkerHandle {
 
 /** Startup dependencies overridden by tests to exercise process-to-Worker recovery. */
 export interface JsEvalWorkerFactories {
-	spawnProcess(): JsEvalWorkerHandle;
-	spawnWorker(): JsEvalWorkerHandle;
+	spawnProcess(env?: Record<string, string>): Promise<JsEvalWorkerHandle>;
+	spawnWorker(maskDesktopSession: boolean): JsEvalWorkerHandle;
 }
 
 interface PendingRun {
@@ -76,6 +80,7 @@ interface PendingRun {
 	runState: VmRunState;
 	toolSession: ToolSession;
 	shadowCell?: EvalShadowCellSession;
+	evalJobId?: string;
 	/** The cell's `timeout` in ms, handed to prelude calls as their default budget. */
 	cellTimeoutMs?: number;
 	resolve(value: { value: unknown }): void;
@@ -474,7 +479,7 @@ export async function disposeVmContextsByOwner(ownerId: string): Promise<void> {
  * `omp --smoke-test` so binary / source / tarball installs all exercise it.
  */
 export async function smokeTestJsEvalWorker(): Promise<void> {
-	const worker = spawnJsWorker();
+	const worker = await spawnJsWorker(false);
 	const session: JsSession = {
 		sessionKey: "smoke",
 		sessionId: "smoke",
@@ -532,6 +537,7 @@ async function runOnce(
 		runState: options.runState,
 		toolSession: options.session,
 		shadowCell: getActiveEvalShadowCell(),
+		evalJobId: getActiveEvalJobId(),
 		cellTimeoutMs: options.timeoutMs ?? 0,
 		resolve,
 		reject,
@@ -644,7 +650,9 @@ async function acquireSession(
 	const startup = (async (): Promise<JsSession> => {
 		// Attach the message listener before sending init. Both Bun Worker messages
 		// and subprocess IPC can arrive immediately after the evaluator loads.
-		const worker = spawnJsWorker();
+		const maskDesktopSession = toolSession.agentKind === "sub";
+		const env = await toolSessionEnvironment(toolSession.getSessionId?.() ?? undefined, workerEnvFromParent());
+		const worker = await spawnJsWorker(maskDesktopSession, env);
 		const session: JsSession = {
 			sessionKey,
 			sessionId: snapshot.sessionId,
@@ -676,16 +684,16 @@ async function acquireSession(
 				// would make synchronous user code impossible to cancel.
 				const failed = session.worker;
 				await failed.terminate().catch(() => undefined);
-				if (failed.mode === "worker") {
+				if (failed.mode === "worker" || process.platform === "linux") {
 					throw new Error(
-						`Failed to initialize isolated JS eval worker: ${error instanceof Error ? error.message : String(error)}`,
+						`Failed to initialize isolated JS eval subprocess: ${error instanceof Error ? error.message : String(error)}`,
 						{ cause: error },
 					);
 				}
 				logger.warn("JS eval subprocess init failed; retrying with a Bun Worker", {
 					error: error instanceof Error ? error.message : String(error),
 				});
-				session.worker = workerFactories.spawnWorker();
+				session.worker = workerFactories.spawnWorker(maskDesktopSession);
 				session.state = "alive";
 			}
 		}
@@ -845,6 +853,7 @@ async function handleToolCall(session: JsSession, msg: Extract<WorkerOutbound, {
 			identity: msg.identity,
 			shadowCell: pending.shadowCell,
 			onReply: pending.runState.onReply,
+			evalJobId: pending.evalJobId,
 			emitStatus: (event: JsStatusEvent) => {
 				trackDeferPhase(pending, event);
 				pending.runState.onDisplay?.({ type: "status", event });
@@ -1000,25 +1009,42 @@ async function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number, reason
 	}
 }
 
-function spawnJsWorker(): JsEvalWorkerHandle {
+async function spawnJsWorker(maskDesktopSession: boolean, env?: Record<string, string>): Promise<JsEvalWorkerHandle> {
 	try {
-		return workerFactories.spawnProcess();
+		const restoreDesktopEnv = maskDesktopSession
+			? enterMaskedDesktopSessionEnv(ensureSubagentRuntimeDir("js-eval"))
+			: undefined;
+		try {
+			return await workerFactories.spawnProcess(
+				maskDesktopSession && env ? stripDesktopSessionEnv(env, ensureSubagentRuntimeDir("js-eval")) : env,
+			);
+		} finally {
+			restoreDesktopEnv?.();
+		}
 	} catch (error) {
+		if (process.platform === "linux") {
+			throw new Error(
+				`Refusing an unbounded JS eval Worker fallback on Linux: ${error instanceof Error ? error.message : String(error)}`,
+				{ cause: error },
+			);
+		}
 		// A worker thread remains isolated and can interrupt synchronous user code
 		// via terminate(), so it is the only safe recovery from subprocess spawn.
 		logger.warn("JS eval subprocess spawn failed; falling back to a Bun Worker", {
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
-	return workerFactories.spawnWorker();
+	return workerFactories.spawnWorker(maskDesktopSession);
 }
 
-function spawnBunWorker(): JsEvalWorkerHandle {
+function spawnBunWorker(maskDesktopSession: boolean): JsEvalWorkerHandle {
 	try {
 		const hostEntry = workerHostEntry();
+		const env = workerEnvFromParent();
+		const isolatedEnv = maskDesktopSession ? stripDesktopSessionEnv(env, ensureSubagentRuntimeDir("js-eval")) : env;
 		const worker = hostEntry
-			? new Worker(hostEntry, { type: "module", argv: ["__omp_worker_js_eval"] })
-			: new Worker(new URL("./worker-entry.ts", import.meta.url).href, { type: "module" });
+			? new Worker(hostEntry, { type: "module", argv: ["__omp_worker_js_eval"], env: isolatedEnv })
+			: new Worker(new URL("./worker-entry.ts", import.meta.url).href, { type: "module", env: isolatedEnv });
 		const channel = new MessageChannel();
 		const outbox: WorkerOutboxMessage = { type: "outbox", port: channel.port2 };
 		worker.postMessage(outbox, [channel.port2]);
@@ -1031,23 +1057,31 @@ function spawnBunWorker(): JsEvalWorkerHandle {
 	}
 }
 
-function spawnJsProcess(): JsEvalWorkerHandle {
-	const spawned = createWorkerSubprocess<WorkerOutbound>({
-		spawnCommand: resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG),
-		env: workerEnvFromParent(),
-		exitLabel: "JS eval worker",
-		detached: shouldDetachKernel(process.platform),
-		reportCleanExit: true,
-		unref: false,
-	});
+async function spawnJsProcess(env?: Record<string, string>): Promise<JsEvalWorkerHandle> {
+	const resourceScope = new ToolResourceScope();
+	let spawned: SpawnedSubprocess<WorkerOutbound>;
+	try {
+		spawned = await createScopedWorkerSubprocess<WorkerOutbound>({
+			spawnCommand: resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG),
+			env: env ?? workerEnvFromParent(),
+			exitLabel: "JS eval worker",
+			detached: shouldDetachKernel(process.platform),
+			reportCleanExit: true,
+			unref: false,
+			resourceScope,
+		});
+	} catch (error) {
+		resourceScope.close();
+		throw error;
+	}
 	const base = createWorkerHandle<WorkerInbound, WorkerOutbound>(spawned, message =>
 		safeSendIpc(spawned.proc, message, "js-eval"),
 	);
 	return {
 		mode: "process",
-		send: message => base.send(message),
-		onMessage: handler => base.onMessage(handler),
-		onError: handler => base.onError(handler),
+		send: base.send,
+		onMessage: base.onMessage,
+		onError: base.onError,
 		async close() {
 			const { promise, resolve } = Promise.withResolvers<boolean>();
 			let settled = false;
@@ -1055,7 +1089,7 @@ function spawnJsProcess(): JsEvalWorkerHandle {
 			const finish = (value: boolean): void => {
 				if (settled) return;
 				settled = true;
-				if (timeout) clearTimeout(timeout);
+				clearTimeout(timeout);
 				unsubscribe();
 				resolve(value);
 			};
@@ -1068,16 +1102,20 @@ function spawnJsProcess(): JsEvalWorkerHandle {
 			return await promise;
 		},
 		async terminate() {
-			await base.terminate();
-			// Bun hands the child's IPC messages to `ipc` until the channel closes, a SIGKILLed
-			// child's included; wait for that so its last output reaches the handlers. Bounded: a
-			// descendant that inherited the channel could keep it open.
-			const bound = Promise.withResolvers<void>();
-			const timer = setTimeout(bound.resolve, WORKER_CLOSE_TIMEOUT_MS);
 			try {
-				await Promise.race([spawned.disconnected, bound.promise]);
+				await base.terminate();
+				// Bun hands the child's IPC messages to `ipc` until the channel closes, a SIGKILLed
+				// child's included; wait for that so its last output reaches the handlers. Bounded: a
+				// descendant that inherited the channel could keep it open.
+				const bound = Promise.withResolvers<void>();
+				const timer = setTimeout(bound.resolve, WORKER_CLOSE_TIMEOUT_MS);
+				try {
+					await Promise.race([spawned.disconnected, bound.promise]);
+				} finally {
+					clearTimeout(timer);
+				}
 			} finally {
-				clearTimeout(timer);
+				resourceScope.close();
 			}
 		},
 	};

@@ -53,7 +53,7 @@ import {
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { isDsmlLeakRecoveryTarget, removeDsmlToolMarkupLeak } from "@oh-my-pi/pi-ai/utils/dsml-leak";
-import { cloneJsonTree, logger, sanitizeText, structuredCloneJSON, toError } from "@oh-my-pi/pi-utils";
+import { cloneJsonTree, logger, sanitizeText, structuredCloneJSON, toError, withLoopPhase } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { LiveSteeringChannel } from "./live-steering";
 import { agentPauseGate } from "./pause";
@@ -75,6 +75,16 @@ import {
 	startExecuteToolSpan,
 	startInvokeAgentSpan,
 } from "./telemetry";
+import {
+	admitAssistantMessage,
+	copyAssistantProviderReplayState,
+	getAssistantPublicationGate,
+	snapshotAssistantMessageForProviderReplay,
+	ASSISTANT_GATE_REFUSAL,
+	assistantAbortedDraftText,
+	isAssistantNarrativeReplaced,
+	replaceAssistantNarrative,
+} from "./assistant-publication";
 import { validateAgentToolArguments } from "./tool-arguments";
 import {
 	createAdditionalContextMessage,
@@ -83,6 +93,8 @@ import {
 	TOOL_RESULT_ADDITIONAL_CONTEXT,
 	type ToolResultWithAdditionalContext,
 } from "./tool-context";
+import * as prompt from "@oh-my-pi/pi-utils/prompt";
+import skippedToolPrompt from "./prompts/skipped-tool.md" with { type: "text" };
 import dsmlToolCallLeakPrompt from "./prompts/dsml-tool-call-leak.md" with { type: "text" };
 import type {
 	AgentContext,
@@ -447,7 +459,7 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 }
 
 function snapshotAssistantMessage(message: AssistantMessage): AssistantMessage {
-	return {
+	const snapshot: AssistantMessage = {
 		...message,
 		content: message.content.map(snapshotAssistantContentBlock),
 		usage: {
@@ -457,6 +469,8 @@ function snapshotAssistantMessage(message: AssistantMessage): AssistantMessage {
 		disabledFeatures: message.disabledFeatures ? [...message.disabledFeatures] : undefined,
 		toolCallAbortMessages: message.toolCallAbortMessages ? { ...message.toolCallAbortMessages } : undefined,
 	};
+	copyAssistantProviderReplayState(message, snapshot);
+	return snapshot;
 }
 
 /**
@@ -641,6 +655,7 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 			content,
 			details,
 			providerMetadata,
+			...(typeof rawObj?.harnessNotice === "string" ? { harnessNotice: rawObj.harnessNotice } : {}),
 			...(isError ? { isError: true } : {}),
 			...(useless && !isError ? { useless: true } : {}),
 		},
@@ -1242,6 +1257,7 @@ async function runLoopBody(
 	initialMessages: AgentMessage[],
 	streamFn?: StreamFn,
 ): Promise<void> {
+	const publicationGate = () => getAssistantPublicationGate(config);
 	let deadlineTimer: Timer | undefined;
 	if (config.deadline !== undefined) {
 		const deadline = config.deadline;
@@ -1279,7 +1295,7 @@ async function runLoopBody(
 			stream,
 			messages.filter(message => !undelivered.has(message)),
 		);
-		const aborted = emitAbortedAssistantMessage(null, false, new Set(), currentContext, config, stream, signal);
+		const aborted = await emitAbortedAssistantMessage(null, false, new Set(), currentContext, config, stream, signal);
 		newMessages.push(aborted);
 		await emitTurnEnd(stream, currentContext, aborted, [], config, signal, { willContinue: false });
 		endAgentStream(stream, newMessages, telemetry, stepCounter.count);
@@ -1315,7 +1331,9 @@ async function runLoopBody(
 		// getToolChoice is never advanced twice; the flag resets at the message boundary.
 		let hostToolChoice: ToolChoice | undefined;
 		let softRequiredTool: string | undefined;
+		let softEscalationToolChoice: ToolChoice | undefined;
 		let softSatisfies: SoftToolRequirement["satisfies"];
+		let softRequirementReminder: string | undefined;
 		let directiveResolvedForTurn = false;
 		let turnOpen = false;
 		// A trailing assistant message with unpaired tool calls: the harness
@@ -1407,7 +1425,12 @@ async function runLoopBody(
 				};
 				try {
 					if (config.syncContextBeforeModelCall) {
-						await config.syncContextBeforeModelCall(currentContext, signal);
+						const injected = await config.syncContextBeforeModelCall(currentContext, signal);
+						if (injected) {
+							currentContext.messages.push(...injected);
+							newMessages.push(...injected);
+							turnMessages.push(...injected);
+						}
 					}
 					if (signal?.aborted && (await endAbortedBeforeModel(turnMessages, turnOpen))) return;
 
@@ -1416,7 +1439,9 @@ async function runLoopBody(
 						const softReq = isSoftToolRequirement(directive) ? directive : undefined;
 						hostToolChoice = directive === undefined || isSoftToolRequirement(directive) ? undefined : directive;
 						softRequiredTool = softReq?.toolName;
+						softEscalationToolChoice = softReq?.escalationToolChoice;
 						softSatisfies = softReq?.satisfies;
+						softRequirementReminder = softReq ? firstReminderSentence(softReq.reminder) : undefined;
 						const softRequirementId = softRequirementState.id;
 						if (softReq !== undefined) {
 							if (softReq.id !== softRequirementId) {
@@ -1451,7 +1476,7 @@ async function runLoopBody(
 					throw error;
 				}
 				if (signal?.aborted && (await endAbortedBeforeModel(turnMessages, turnOpen))) return;
-				if (config.beforeModelCall && signal?.aborted) {
+				if (config.beforeModelCall && signal?.aborted && (config.beforeModelCallActive?.() ?? true)) {
 					gateResult = { stop: true };
 				}
 				if (gateResult?.stop) {
@@ -1596,6 +1621,8 @@ async function runLoopBody(
 					// ids are already claimed at run scope.
 					ensureUniqueToolCallIds(message, toolCallIdsDispatchedUnder(currentContext));
 					message = snapshotAssistantMessage(message);
+					await config.transformAssistantMessage?.(message, signal);
+					await admitAssistantMessage(message, publicationGate(), signal, abortReasonText);
 					currentContext.messages.push(message);
 					stream.push({ type: "message_start", message: snapshotAssistantMessage(message) });
 					stream.push({ type: "message_end", message: snapshotAssistantMessage(message) });
@@ -1713,12 +1740,16 @@ async function runLoopBody(
 					// reminder pays no message-cache invalidation. Re-engage so the loop
 					// never yields while the requirement is unmet.
 					for (const toolCall of toolCalls) {
-						const result = createAbortedToolResult(
-							toolCall,
-							stream,
-							"skipped",
-							`Not executed: call the \`${softRequiredTool}\` tool to resolve the pending action before using other tools.`,
-						);
+						const reason = [
+							`Skipped: waiting for the \`${softRequiredTool}\` tool first`,
+							softRequirementReminder,
+						]
+							.filter(Boolean)
+							.join(" — ");
+						const result = createAbortedToolResult(toolCall, stream, "skipped", reason, {
+							source: "soft_requirement_skipped",
+							waitingFor: softRequiredTool,
+						});
 						currentContext.messages.push(result);
 						newMessages.push(result);
 						toolResults.push(result);
@@ -1728,7 +1759,10 @@ async function runLoopBody(
 							status: "skipped",
 						});
 					}
-					softRequirementState.forcedToolChoice = { type: "tool", name: softRequiredTool };
+					softRequirementState.forcedToolChoice = softEscalationToolChoice ?? {
+						type: "tool",
+						name: softRequiredTool,
+					};
 					softRequirementState.escalations++;
 					hasMoreToolCalls = true;
 				} else if (hasMoreToolCalls) {
@@ -1949,18 +1983,37 @@ interface PreparedProviderCall {
  * queue peek and the loop's live-taken steering.
  */
 export function steeringQueueState(messages: readonly AgentMessage[], count = messages.length): SteeringQueueState {
-	if (count === 0) return { queued: false };
-	let hasAgentSteering = false;
+	let selected: SteeringQueueState = { queued: false };
 	for (let i = 0; i < count; i++) {
 		const message = messages[i];
 		const role = "role" in message ? message.role : undefined;
 		const attribution = "attribution" in message ? message.attribution : undefined;
-		if (attribution === "user") return { queued: true, source: "user" };
-		if (role !== "user") continue;
-		if (attribution !== "agent") return { queued: true, source: "user" };
-		hasAgentSteering = true;
+		// Passive notices remain queued for delivery but never preempt tools.
+		if ("interruptWait" in message && message.interruptWait === false) continue;
+		const source =
+			attribution === "user" || (role === "user" && attribution !== "agent")
+				? "user"
+				: role === "user"
+					? "agent"
+					: "system";
+		if (selected.source === "user" || (selected.source === "agent" && source === "system")) continue;
+		const content = "content" in message ? message.content : undefined;
+		const text =
+			typeof content === "string"
+				? content
+				: Array.isArray(content)
+					? content.flatMap(block => (block.type === "text" ? [block.text] : [])).join(" ")
+					: "";
+		selected = {
+			queued: true,
+			source,
+			advisory: {
+				type: "customType" in message ? String(message.customType) : String(role ?? source),
+				demand: text.replace(/\s+/g, " ").trim(),
+			},
+		};
 	}
-	return { queued: true, source: hasAgentSteering ? "agent" : "system" };
+	return selected;
 }
 
 /**
@@ -1990,7 +2043,10 @@ function openLiveSteering(
 			const transformed = config.transformContext
 				? await config.transformContext(messages, bound(signal))
 				: messages;
-			const converted = normalizeMessagesForProvider(await config.convertToLlm(transformed), prepared.model);
+			const converted = normalizeMessagesForProvider(
+				await config.convertToLlm(transformed, prepared.model),
+				prepared.model,
+			);
 			const userMessages: UserMessage[] = [];
 			for (const message of converted) {
 				if (message.role !== "user") return undefined;
@@ -2004,18 +2060,50 @@ function openLiveSteering(
 	});
 }
 
+function removeSupersededGoalContext(messages: AgentContext["messages"]): AgentContext["messages"] {
+	let newestGoalContext = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message?.role === "custom" && message.customType === "goal-mode-context") {
+			newestGoalContext = i;
+			break;
+		}
+	}
+	if (newestGoalContext <= 0) return messages;
+	let hasOlderGoalContext = false;
+	for (let i = 0; i < newestGoalContext; i++) {
+		const message = messages[i];
+		if (message?.role === "custom" && message.customType === "goal-mode-context") {
+			hasOlderGoalContext = true;
+			break;
+		}
+	}
+	if (!hasOlderGoalContext) return messages;
+	return messages.filter(
+		(message, index) =>
+			index >= newestGoalContext || message.role !== "custom" || message.customType !== "goal-mode-context",
+	);
+}
+
 async function prepareProviderCall(
 	context: AgentContext,
 	config: AgentLoopConfig,
 	signal: AbortSignal | undefined,
 ): Promise<PreparedProviderCall> {
 	const model = config.getModel?.() ?? config.model;
-	let messages = context.messages;
+	let messages = removeSupersededGoalContext(context.messages);
 	if (config.transformContext) {
+		messages = messages.map(message =>
+			message.role === "assistant" ? snapshotAssistantMessageForProviderReplay(message) : message,
+		);
 		messages = await config.transformContext(messages, signal);
 	}
 
-	const llmMessages = await config.convertToLlm(messages);
+	const llmMessages = await config.convertToLlm(
+		messages.map(message =>
+			message.role === "assistant" ? snapshotAssistantMessageForProviderReplay(message) : message,
+		),
+	);
 	const normalizedMessages = normalizeMessagesForProvider(llmMessages, model);
 	const ownedDialect: Dialect | undefined =
 		(config.getDialect ? config.getDialect(model) : config.dialect) ?? resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT);
@@ -2084,6 +2172,7 @@ async function streamAssistantResponse(
 	onProviderStart?: () => void,
 	canDispatchFinalToolCalls?: (message: AssistantMessage) => boolean,
 ): Promise<AssistantMessage> {
+	const publicationGate = () => getAssistantPublicationGate(config);
 	const providerCall = prepared ?? (await prepareProviderCall(context, config, signal));
 	const { model, context: llmContext, promptToolWireTools, ownedDialect } = providerCall;
 
@@ -2292,6 +2381,7 @@ async function streamAssistantResponse(
 
 			let providerStreamSettled = false;
 			let speculationSettled = false;
+			let finalMessagePublished = false;
 			const responseIterator = response[Symbol.asyncIterator]();
 			const finishAbortedStream = async (): Promise<AssistantMessage> => {
 				try {
@@ -2302,7 +2392,7 @@ async function streamAssistantResponse(
 				}
 				await speculationCoordinator?.discardAll("run aborted", "aborted");
 				speculationSettled = true;
-				const aborted = emitAbortedAssistantMessage(
+				const aborted = await emitAbortedAssistantMessage(
 					partialMessage,
 					addedPartial,
 					completedToolCallIds,
@@ -2311,8 +2401,47 @@ async function streamAssistantResponse(
 					stream,
 					requestSignal,
 				);
+				finalMessagePublished = true;
 				await finishChat(aborted);
 				return aborted;
+			};
+			const finishFailedStream = async (error: unknown): Promise<AssistantMessage> => {
+				await speculationCoordinator?.discardAll("provider stream failed", "aborted");
+				speculationSettled = true;
+				// A throwing iterator/result has no terminal event. Preserve its private
+				// draft's completed calls, usage, and real error without a raw fallback.
+				const failed = snapshotAssistantMessage(
+					retainCompletedToolCalls(
+						{
+							...(partialMessage ?? createGateStopMessage(model, undefined)),
+							stopReason: requestSignal?.aborted ? "aborted" : "error",
+							errorMessage: requestSignal?.aborted
+								? abortReasonText(requestSignal)
+								: error instanceof Error
+									? error.message
+									: String(error),
+						},
+						completedToolCallIds,
+					),
+				);
+				try {
+					await config.transformAssistantMessage?.(failed, requestSignal);
+				} catch {
+					replaceAssistantNarrative(
+						failed,
+						requestSignal?.aborted
+							? assistantAbortedDraftText(abortReasonText(requestSignal))
+							: ASSISTANT_GATE_REFUSAL,
+					);
+				}
+				await admitAssistantMessage(failed, publicationGate(), requestSignal, abortReasonText);
+				context.messages.push(failed);
+				finalMessagePublished = true;
+				stream.push({ type: "message_start", message: failed });
+				stream.push({ type: "message_end", message: failed });
+				await finishChat(failed);
+				providerStreamSettled = true;
+				return failed;
 			};
 
 			// Set up a single abort race: register the abort listener once for the whole
@@ -2388,6 +2517,7 @@ async function streamAssistantResponse(
 						if (config.transformAssistantMessage) {
 							await config.transformAssistantMessage(finalMessage, requestSignal);
 						}
+						await admitAssistantMessage(finalMessage, publicationGate(), requestSignal, abortReasonText);
 						// A pre-dispatch hook may request approval or change external state, so
 						// do not run it until the outer loop has established this tool turn can
 						// actually dispatch. The same gate keeps host-deferred speculation from
@@ -2429,6 +2559,7 @@ async function streamAssistantResponse(
 							context.messages.push(finalMessage);
 						}
 						await appendCursorToolResults();
+						finalMessagePublished = true;
 						if (!addedPartial) {
 							stream.push({ type: "message_start", message: snapshotAssistantMessage(finalMessage) });
 						}
@@ -2452,13 +2583,15 @@ async function streamAssistantResponse(
 										toolCallId: block.id,
 										toolName: block.name,
 										customWireName: block.customWireName,
-										emit: update =>
+										emit: update => {
+											if (publicationGate()) return;
 											stream.push({
 												type: "tool_stream_update",
 												toolCallId: block.id,
 												toolName: block.name,
 												update,
-											}),
+											});
+										},
 									});
 									if (argStream) argStreams.set(event.contentIndex, { id: block.id, stream: argStream });
 								} catch (error) {
@@ -2491,6 +2624,10 @@ async function streamAssistantResponse(
 					switch (event.type) {
 						case "start":
 							partialMessage = event.partial;
+							if (publicationGate()) {
+								config.onAssistantMessageEvent?.(partialMessage, event);
+								break;
+							}
 							if (addedPartial) {
 								context.messages[context.messages.length - 1] = partialMessage;
 								completedToolCallIds.clear();
@@ -2586,41 +2723,43 @@ async function streamAssistantResponse(
 									}
 								}
 								partialMessage = event.partial;
-								context.messages[context.messages.length - 1] = partialMessage;
+								if (addedPartial) context.messages[context.messages.length - 1] = partialMessage;
 								config.onAssistantMessageEvent?.(partialMessage, event);
-								// Track which blocks are still streaming: open blocks are
-								// re-cloned on every delta, finalized blocks are shared.
-								const contentIndex = (event as { contentIndex?: number }).contentIndex;
-								if (contentIndex !== undefined) {
-									if (event.type.endsWith("_start")) openBlocks.add(contentIndex);
-									else if (event.type.endsWith("_end")) openBlocks.delete(contentIndex);
+								if (!publicationGate()) {
+									// Track which blocks are still streaming: open blocks are
+									// re-cloned on every delta, finalized blocks are shared.
+									const contentIndex = event.contentIndex;
+									if (contentIndex !== undefined) {
+										if (event.type.endsWith("_start")) openBlocks.add(contentIndex);
+										else if (event.type.endsWith("_end")) openBlocks.delete(contentIndex);
+									}
+									// READ-ONLY-CONSUMER INVARIANT: `message` and
+									// `assistantMessageEvent.partial` intentionally share one snapshot,
+									// and the snapshot is rebuilt incrementally — only the delta's
+									// block, open blocks, and newly appended blocks are deep-cloned;
+									// finalized blocks are carried over from the previous snapshot by
+									// reference (see `snapshotAssistantMessageIncremental`), so they are
+									// shared across ALL message_update snapshots of the turn.
+									// Consumers MUST treat both fields — and every content block inside
+									// them — as read-only: mutating a snapshot would corrupt every
+									// earlier and later snapshot of the turn, not just this one. In
+									// exchange, per-delta work is proportional to the live stream
+									// instead of the whole turn (issue #10605).
+									const messageSnapshot: AssistantMessage = turnSnapshot
+										? snapshotAssistantMessageIncremental(
+												partialMessage,
+												turnSnapshot,
+												contentIndex ?? -1,
+												openBlocks,
+											)
+										: snapshotAssistantMessage(partialMessage);
+									turnSnapshot = messageSnapshot;
+									stream.push({
+										type: "message_update",
+										assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
+										message: messageSnapshot,
+									});
 								}
-								// READ-ONLY-CONSUMER INVARIANT: `message` and
-								// `assistantMessageEvent.partial` intentionally share one snapshot,
-								// and the snapshot is rebuilt incrementally — only the delta's
-								// block, open blocks, and newly appended blocks are deep-cloned;
-								// finalized blocks are carried over from the previous snapshot by
-								// reference (see `snapshotAssistantMessageIncremental`), so they are
-								// shared across ALL message_update snapshots of the turn.
-								// Consumers MUST treat both fields — and every content block inside
-								// them — as read-only: mutating a snapshot would corrupt every
-								// earlier and later snapshot of the turn, not just this one. In
-								// exchange, per-delta work is proportional to the live stream
-								// instead of the whole turn (issue #10605).
-								const messageSnapshot: AssistantMessage = turnSnapshot
-									? snapshotAssistantMessageIncremental(
-											partialMessage,
-											turnSnapshot,
-											contentIndex ?? -1,
-											openBlocks,
-										)
-									: snapshotAssistantMessage(partialMessage);
-								turnSnapshot = messageSnapshot;
-								stream.push({
-									type: "message_update",
-									assistantMessageEvent: snapshotAssistantMessageEvent(event, messageSnapshot),
-									message: messageSnapshot,
-								});
 							}
 							if (
 								event.type === "toolcall_end" &&
@@ -2633,6 +2772,9 @@ async function streamAssistantResponse(
 							break;
 					}
 				}
+			} catch (error) {
+				if (!publicationGate() || finalMessagePublished || error instanceof HarmonyLeakInterruption) throw error;
+				return await finishFailedStream(error);
 			} finally {
 				detachAbortListener?.();
 				cancelArgStreams();
@@ -2668,6 +2810,7 @@ async function streamAssistantResponse(
 					await config.transformAssistantMessage(trailing, requestSignal);
 				}
 				trailing = snapshotAssistantMessage(trailing);
+				await admitAssistantMessage(trailing, publicationGate(), requestSignal, abortReasonText);
 				const finalToolCallsCanDispatch =
 					!requestSignal?.aborted &&
 					(canDispatchFinalToolCalls?.(trailing) ??
@@ -2703,15 +2846,25 @@ async function streamAssistantResponse(
 					context.messages[context.messages.length - 1] = trailing;
 				} else {
 					context.messages.push(trailing);
-					stream.push({ type: "message_start", message: snapshotAssistantMessage(trailing) });
+					stream.push({
+						type: "message_start",
+						message: snapshotAssistantMessage(trailing),
+					});
 				}
 				await appendCursorToolResults();
-				stream.push({ type: "message_end", message: snapshotAssistantMessage(trailing) });
+				stream.push({
+					type: "message_end",
+					message: snapshotAssistantMessage(trailing),
+				});
+				finalMessagePublished = true;
 				await finishChat(trailing);
 				speculationSettled = true;
 				providerStreamSettled = true;
 				return trailing;
 			} catch (error) {
+				if (publicationGate() && !finalMessagePublished && !(error instanceof HarmonyLeakInterruption)) {
+					return await finishFailedStream(error);
+				}
 				if (!speculationSettled) {
 					await speculationCoordinator?.discardAll("provider stream finalization failed", "aborted");
 				}
@@ -2736,7 +2889,8 @@ function retainCompletedToolCalls(
 	let droppedIncompleteToolCall = false;
 	const content = message.content.filter(block => {
 		if (block.type !== "toolCall") return true;
-		const keep = completedToolCallIds.has(block.id);
+		const keep =
+			completedToolCallIds.has(block.id) || (block as CursorExecResolvedCarrier)[kCursorExecResolved] === true;
 		if (!keep) droppedIncompleteToolCall = true;
 		return keep;
 	});
@@ -2852,7 +3006,7 @@ export function abortReasonText(signal: AbortSignal | undefined): string {
 	return toolScopedAbortReason(signal)?.message ?? AIError.callerAbortReason(signal) ?? "Request was aborted";
 }
 
-function emitAbortedAssistantMessage(
+async function emitAbortedAssistantMessage(
 	partialMessage: AssistantMessage | null,
 	addedPartial: boolean,
 	completedToolCallIds: ReadonlySet<string>,
@@ -2860,7 +3014,8 @@ function emitAbortedAssistantMessage(
 	config: AgentLoopConfig,
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	requestSignal: AbortSignal | undefined,
-): AssistantMessage {
+): Promise<AssistantMessage> {
+	const publicationGate = getAssistantPublicationGate(config);
 	const model = config.getModel?.() ?? config.model;
 	const errorMessage = abortReasonText(requestSignal);
 	const errorId =
@@ -2898,13 +3053,32 @@ function emitAbortedAssistantMessage(
 		retained.toolCallAbortMessages = toolCallAbortMessages;
 	}
 	const abortedMessage = snapshotAssistantMessage(retained);
+	if (publicationGate) {
+		try {
+			await config.transformAssistantMessage?.(abortedMessage, requestSignal);
+		} catch {
+			replaceAssistantNarrative(abortedMessage, assistantAbortedDraftText(abortReasonText(requestSignal)));
+		}
+		await admitAssistantMessage(
+			abortedMessage,
+			publicationGate,
+			abortedMessage.stopReason === "aborted" ? undefined : requestSignal,
+			abortReasonText,
+		);
+	}
 	if (addedPartial) {
 		context.messages[context.messages.length - 1] = abortedMessage;
 	} else {
 		context.messages.push(abortedMessage);
-		stream.push({ type: "message_start", message: snapshotAssistantMessage(abortedMessage) });
+		stream.push({
+			type: "message_start",
+			message: snapshotAssistantMessage(abortedMessage),
+		});
 	}
-	stream.push({ type: "message_end", message: snapshotAssistantMessage(abortedMessage) });
+	stream.push({
+		type: "message_end",
+		message: snapshotAssistantMessage(abortedMessage),
+	});
 	return abortedMessage;
 }
 
@@ -2927,6 +3101,14 @@ interface PreparedToolCall {
 	blocked?: boolean;
 	blockReason?: string;
 	prepareError?: unknown;
+	/**
+	 * Gate deferral for the sibling-todo ordering barrier: when the batch holds
+	 * explicit todo mutations, a non-todo call skips `beforeToolCall` here and
+	 * `executeToolCalls` evaluates it once after the todo mutations settle, so
+	 * the gate reads post-mutation state. Never set alongside `blocked`.
+	 */
+	deferredGate?: boolean;
+	/** Keep mutation results out of transcript until deferred call args are finalized. */
 }
 
 /** Committed assistant messages whose unhealed DSML tool-call markup was stripped; the loop answers them with a failure nudge. */
@@ -2959,6 +3141,30 @@ function resolveToolForCall(
 		// mid-stream roster change cannot widen what this request can reach.
 		resolveFallbackTool?.(toolCall.name, tools ?? [])
 	);
+}
+
+function firstReminderSentence(reminders: AgentMessage[]): string | undefined {
+	const text: string[] = [];
+	for (const reminder of reminders) {
+		const content = (reminder as { content?: unknown }).content;
+		if (typeof content === "string") text.push(content);
+		else if (Array.isArray(content)) {
+			for (const part of content) {
+				if (part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part) {
+					const value = part.text;
+					if (typeof value === "string") text.push(value);
+				}
+			}
+		}
+	}
+	const flattened = text
+		.join(" ")
+		.replace(/<[^>]*>/gu, " ")
+		.replace(/\s+/gu, " ")
+		.trim();
+	if (!flattened) return undefined;
+	const sentence = flattened.match(/^.*?[.!?](?=\s|$)/u)?.[0];
+	return sentence ?? flattened;
 }
 
 /** Shortest suggestable segment; below this the match is noise (`id`, `to`). */
@@ -3033,6 +3239,28 @@ function formatToolNotFoundMessage(
 	if (suggestions.length === 0) return `Tool ${name} not found`;
 	if (suggestions.length === 1) return `Tool ${name} not found. Did you mean ${suggestions[0]}?`;
 	return `Tool ${name} not found. Closest available: ${suggestions.slice(0, MAX_TOOL_NAME_SUGGESTIONS).join(", ")}`;
+}
+
+/**
+ * Whether a call is an explicit todo mutation (`op="classify"`, `"append"`,
+ * …). Only `op="view"` reads without mutating; a missing or unrecognized op is
+ * treated as a mutation so the sibling ordering barrier still applies. The
+ * prepare phase and `executeToolCalls` share this predicate to agree on which
+ * calls form the mutation barrier.
+ */
+function isTodoMutationCall(name: string, args: unknown): boolean {
+	if (name !== "todo") return false;
+	if (typeof args !== "object" || args === null) return true;
+	if (!("op" in args)) return true;
+	return args.op !== "view" && args.op !== "done" && args.op !== "drop";
+}
+
+function resolveToolInterruptible(tool: AgentTool | undefined, args: Record<string, unknown>): boolean {
+	try {
+		return typeof tool?.interruptible === "function" ? tool.interruptible(args) : tool?.interruptible === true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -3151,6 +3379,12 @@ async function prepareToolCallDispatch(
 	// message keys per-call state on `toolCall.id`.
 	ensureUniqueToolCallIds(assistantMessage, toolCallIdsDispatchedUnder(context));
 	const prepared = new Map<string, PreparedToolCall>();
+	// Sibling-todo ordering barrier: when the batch holds explicit todo
+	// mutations, non-todo calls skip `beforeToolCall` here so the gate reads
+	// post-mutation state after `executeToolCalls` runs the mutations first.
+	const batchHasTodoMutation = assistantMessage.content.some(
+		call => call.type === "toolCall" && isTodoMutationCall(call.name, call.arguments),
+	);
 	for (const toolCall of assistantMessage.content) {
 		if (toolCall.type !== "toolCall") continue;
 		if ((toolCall as CursorExecResolvedCarrier)[kCursorExecResolved] === true) continue;
@@ -3173,8 +3407,8 @@ async function prepareToolCallDispatch(
 				: extractIntent(toolCall.arguments);
 			argsForExecution = strippedArgs;
 			if (intent) {
-				toolCall.intent = intent;
-			} else if (typeof tool?.intent === "function") {
+				if (!isAssistantNarrativeReplaced(assistantMessage)) toolCall.intent = intent;
+			} else if (!isAssistantNarrativeReplaced(assistantMessage) && typeof tool?.intent === "function") {
 				try {
 					const derived = tool.intent(strippedArgs as never)?.trim();
 					if (derived) {
@@ -3202,6 +3436,10 @@ async function prepareToolCallDispatch(
 		const effectiveArgs = validate(argsForExecution);
 		if (effectiveArgs === undefined) continue;
 		entry.args = effectiveArgs;
+		if (batchHasTodoMutation && !isTodoMutationCall(toolCall.name, effectiveArgs)) {
+			entry.deferredGate = true;
+			continue;
+		}
 		if (!beforeToolCall || !tool) continue;
 		let beforeResult: BeforeToolCallResult | undefined;
 		try {
@@ -3241,6 +3479,8 @@ async function prepareToolCallDispatch(
  * Final calls that can still reach tool execution after pre-dispatch policy.
  * Omitting a call is deliberate: reconciliation discards its direct candidate
  * and streamed children before final admission can release deferred work.
+ * Deferred-gate calls are omitted for the same reason: their candidate would
+ * otherwise launch and cache pre-gate arguments before the deferred hook runs.
  */
 function transformedExecutionArgs(
 	prepared: PreparedToolCall,
@@ -3279,6 +3519,7 @@ async function speculativeFinalCalls(
 		if (
 			!prepared ||
 			prepared.blocked ||
+			prepared.deferredGate === true ||
 			prepared.prepareError !== undefined ||
 			prepared.validationErrorMessage !== undefined
 		) {
@@ -3340,6 +3581,7 @@ async function executeToolCalls(
 		resolveFallbackTool,
 		suggestFallbackToolNames,
 		afterToolCall,
+		beforeToolCall,
 	} = config;
 	type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
 	// Defensive: the outer loop already filters exec-resolved blocks before
@@ -3373,7 +3615,11 @@ async function executeToolCalls(
 	const interruptibleSignal: AbortSignal = signal
 		? AbortSignal.any([signal, steeringAbortController.signal, ircAbortController.signal])
 		: AbortSignal.any([steeringAbortController.signal, ircAbortController.signal]);
-	const interruptState: { triggered: boolean; source?: AsideInterruptSource } = { triggered: false };
+	const interruptState: {
+		triggered: boolean;
+		source?: AsideInterruptSource;
+		advisory?: SteeringQueueState["advisory"];
+	} = { triggered: false };
 
 	// Streamed messages were prepared (validation + `beforeToolCall`) before
 	// `message_end`, so hook revisions are already part of the message; anything
@@ -3389,20 +3635,7 @@ async function executeToolCalls(
 			args: toolCall.arguments as Record<string, unknown>,
 		};
 		const { tool, args } = prepared;
-		const interruptibleMode = tool?.interruptible;
-		let interruptible = false;
-		if (typeof interruptibleMode === "function") {
-			try {
-				// Resolved from the prepared (possibly hook-revised) args so an
-				// argument-dependent policy governs the call that actually runs.
-				interruptible = interruptibleMode(args);
-			} catch {
-				// Resolver failures default to preserving the tool's outcome.
-				interruptible = false;
-			}
-		} else {
-			interruptible = interruptibleMode === true;
-		}
+		const interruptible = resolveToolInterruptible(tool, args);
 		return {
 			toolCall,
 			tool,
@@ -3414,12 +3647,13 @@ async function executeToolCalls(
 			result: undefined as AgentToolResult<any> | undefined,
 			isError: false,
 			skipped: false,
-			toolResultMessage: undefined as ToolResultMessage | undefined,
 			resultEmitted: false,
+			toolResultMessage: undefined as ToolResultMessage | undefined,
 			validationErrorMessage: prepared.validationErrorMessage,
 			blocked: prepared.blocked === true,
 			blockReason: prepared.blockReason,
 			prepareError: prepared.prepareError,
+			deferredGate: prepared.deferredGate === true,
 			preparedContext: prepared.additionalContext,
 			reportedContext: [] as string[],
 			executionArgs: prepared.executionArgs,
@@ -3488,7 +3722,10 @@ async function executeToolCalls(
 		let steeringSource: SteeringInterruptSource | undefined;
 		if (liveSteering.length > 0) {
 			steeringQueued = true;
-			steeringSource = steeringQueueState(liveSteering).source;
+			const state = steeringQueueState(liveSteering);
+			steeringQueued = state.queued;
+			steeringSource = state.source;
+			interruptState.advisory = state.advisory;
 		} else if (hasSteeringMessages) {
 			const queuedState = await hasSteeringMessages();
 			if (typeof queuedState === "boolean") {
@@ -3497,6 +3734,7 @@ async function executeToolCalls(
 			} else {
 				const state: SteeringQueueState = queuedState;
 				steeringQueued = state.queued;
+				interruptState.advisory = state.advisory;
 				steeringSource = state.source ?? (state.queued ? "unknown" : undefined);
 			}
 		}
@@ -3558,6 +3796,7 @@ async function executeToolCalls(
 			content: result.content,
 			details: result.details,
 			providerMetadata: result.providerMetadata,
+			...(result.harnessNotice !== undefined ? { harnessNotice: result.harnessNotice } : {}),
 			isError,
 			...(result.useless && !isError ? { useless: true } : {}),
 			timestamp: Date.now(),
@@ -3728,22 +3967,24 @@ async function executeToolCalls(
 						// nothing may await or call host code after this final check.
 						if (abortBeforeToolExecution()) return;
 						executionStarted = true;
-						rawResult = await tool.execute(
-							toolCall.id,
-							executionArgs,
-							record.signal,
-							partialResult => {
-								const event: Extract<AgentEvent, { type: "tool_execution_update" }> = {
-									type: "tool_execution_update",
-									toolCallId: toolCall.id,
-									toolName: toolCall.name,
-									args: executionArgs,
-									partialResult: coerceToolResult(partialResult).result,
-								};
-								if (stream.done) config.onDetachedToolUpdate?.(event);
-								else stream.push(event);
-							},
-							toolContext,
+						rawResult = await withLoopPhase(`tool.${toolCall.name}.execute`, () =>
+							tool.execute(
+								toolCall.id,
+								executionArgs,
+								record.signal,
+								partialResult => {
+									const event: Extract<AgentEvent, { type: "tool_execution_update" }> = {
+										type: "tool_execution_update",
+										toolCallId: toolCall.id,
+										toolName: toolCall.name,
+										args: executionArgs,
+										partialResult: coerceToolResult(partialResult).result,
+									};
+									if (stream.done) config.onDetachedToolUpdate?.(event);
+									else stream.push(event);
+								},
+								toolContext,
+							),
 						);
 					} finally {
 						await streamSession?.discard("outer tool completed without committing stream speculation");
@@ -3758,6 +3999,7 @@ async function executeToolCalls(
 				result = {
 					content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }],
 					details: {},
+					...(e instanceof ToolCallBlockedError ? { harnessNotice: e.message } : {}),
 				};
 				isError = true;
 			}
@@ -3786,6 +4028,7 @@ async function executeToolCalls(
 							isError: after.isError ?? result.isError,
 							providerMetadata: after.providerMetadata ?? result.providerMetadata,
 							useless: after.useless ?? result.useless,
+							harnessNotice: result.harnessNotice,
 						});
 						result = coerced.result;
 						isError = coerced.malformed || (after.isError ?? isError);
@@ -3812,7 +4055,16 @@ async function executeToolCalls(
 			// user abort takes priority even if a queued interrupt fixed the
 			// combined signal's reason first; keep the actual cancellation error.
 			record.skipped = true;
-			emitToolResult(record, createSkippedToolResult(interruptState.source, executionStarted), true);
+			emitToolResult(
+				record,
+				createSkippedToolResult(
+					interruptState.source,
+					executionStarted,
+					record.toolCall.name,
+					interruptState.advisory,
+				),
+				true,
+			);
 		} else {
 			// A tool that finished before the interrupt landed (`completedToolExecution`)
 			// keeps its real result even if its signal aborted around completion:
@@ -3849,6 +4101,71 @@ async function executeToolCalls(
 		// every later chained record with a phantom "pending steering" result.
 		await checkSteering().catch(() => undefined);
 	};
+
+	// Sibling-todo ordering barrier, second half: evaluate the deferred
+	// `beforeToolCall` gates once the todo mutations settle, so sibling
+	// execution tools read post-mutation state. A failed classify leaves the
+	// candidate unclassified, so the gate still blocks — classification failure
+	// never bypasses it. Each gate runs exactly once per call: the prepare
+	// phase skipped these calls, and this is their single evaluation.
+	const evaluateDeferredGates = async (): Promise<void> => {
+		for (const record of records) {
+			if (!record.deferredGate) continue;
+			record.deferredGate = false;
+			if (record.validationErrorMessage !== undefined) continue;
+			const { toolCall, tool } = record;
+			if (!beforeToolCall || !tool) continue;
+			let gateResult: BeforeToolCallResult | undefined;
+			try {
+				gateResult = await beforeToolCall(
+					{ assistantMessage, toolCall, tool, args: record.args, context: currentContext },
+					signal,
+				);
+			} catch (e) {
+				record.prepareError = e;
+				continue;
+			}
+			if (gateResult?.block) {
+				record.blocked = true;
+				record.blockReason = gateResult.reason;
+				continue;
+			}
+			if (isNonBlankContext(gateResult?.additionalContext)) {
+				record.preparedContext = gateResult.additionalContext;
+			}
+			if (gateResult?.args !== undefined) {
+				// A hook revision supersedes any cached admission-time transform
+				// result: runTool must derive execution args from the revised call.
+				record.executionArgs = undefined;
+				try {
+					const revised = validateAgentToolArguments(tool, { ...toolCall, arguments: gateResult.args });
+					toolCall.arguments = gateResult.args;
+					record.args = revised;
+					record.interruptible = resolveToolInterruptible(tool, revised);
+					record.handlesToolInterrupt = record.interruptible && tool.handlesToolInterrupt === true;
+					record.signal = record.interruptible ? interruptibleSignal : nonInterruptibleSignal;
+				} catch (validationError) {
+					record.args = gateResult.args;
+					record.validationErrorMessage =
+						validationError instanceof Error ? validationError.message : String(validationError);
+				}
+			}
+		}
+	};
+
+	const barrierActive = records.some(record => record.deferredGate);
+	const mutationIndices: number[] = [];
+	const restIndices: number[] = [];
+	if (barrierActive) {
+		records.forEach((record, index) => {
+			if (isTodoMutationCall(record.toolCall.name, record.args)) {
+				mutationIndices.push(index);
+			} else {
+				restIndices.push(index);
+			}
+		});
+	}
+	const orderedIndices: number[] | undefined = barrierActive ? [...mutationIndices, ...restIndices] : undefined;
 
 	let lastExclusive: Promise<void> = Promise.resolve();
 	let sharedTasks: Promise<void>[] = [];
@@ -3931,7 +4248,7 @@ async function executeToolCalls(
 					STEERING_INTERRUPT_POLL_MS,
 				)
 			: undefined;
-	for (let index = 0; index < records.length; index++) {
+	const scheduleRecord = (index: number): void => {
 		const record = records[index];
 		// Resolved from the prepared (possibly hook-revised) args — raw args
 		// only when validation failed, and those records error out before executing.
@@ -3970,8 +4287,16 @@ async function executeToolCalls(
 			const tier = typeof decision === "string" ? decision : (decision?.tier ?? "exec");
 			if (tier !== "read") sharedEffects.push(task);
 		}
-	}
+	};
 	try {
+		if (barrierActive) {
+			for (const index of mutationIndices) scheduleRecord(index);
+			await Promise.allSettled(tasks);
+			await evaluateDeferredGates();
+			for (const index of restIndices) scheduleRecord(index);
+		} else {
+			for (const index of orderedIndices ?? records.map((_record, index) => index)) scheduleRecord(index);
+		}
 		await Promise.allSettled(tasks);
 	} finally {
 		if (speculationCoordinator) speculationCoordinator.onIdle = undefined;
@@ -3989,7 +4314,11 @@ async function executeToolCalls(
 				toolName: record.toolCall.name,
 				status: "skipped",
 			});
-			emitToolResult(record, createSkippedToolResult(interruptState.source, false), true);
+			emitToolResult(
+				record,
+				createSkippedToolResult(interruptState.source, false, record.toolCall.name, interruptState.advisory),
+				true,
+			);
 		}
 	}
 	await speculationCoordinator?.discardAll("candidate was not dispatched");
@@ -4038,9 +4367,11 @@ export interface SyntheticToolResultDetails {
 		| "assistant_stop_aborted"
 		| "assistant_stop_error"
 		| "assistant_stop_skipped"
+		| "soft_requirement_skipped"
 		| "assistant_stop_length"
 		| "interrupt_skipped";
 	executed: false;
+	waitingFor?: string;
 	upstreamError?: string;
 }
 
@@ -4074,19 +4405,22 @@ export function isSyntheticToolResultMessage(
 function syntheticDetailsFor(
 	reason: "aborted" | "error" | "skipped" | "length",
 	errorMessage: string | undefined,
+	options?: { source?: SyntheticToolResultDetails["source"]; waitingFor?: string },
 ): SyntheticToolResultDetails {
 	const source: SyntheticToolResultDetails["source"] =
-		reason === "aborted"
+		options?.source ??
+		(reason === "aborted"
 			? "assistant_stop_aborted"
 			: reason === "error"
 				? "assistant_stop_error"
 				: reason === "length"
 					? "assistant_stop_length"
-					: "assistant_stop_skipped";
+					: "assistant_stop_skipped");
 	return {
 		__synthetic: true,
 		source,
 		executed: false,
+		...(options?.waitingFor ? { waitingFor: options.waitingFor } : {}),
 		...(reason === "error" && errorMessage ? { upstreamError: errorMessage } : {}),
 	};
 }
@@ -4099,6 +4433,7 @@ export function createSyntheticToolResultMessage(
 	toolCall: Extract<AssistantMessage["content"][number], { type: "toolCall" }>,
 	reason: "aborted" | "error" | "skipped" | "length",
 	errorMessage?: string,
+	options?: { source?: SyntheticToolResultDetails["source"]; waitingFor?: string },
 ): ToolResultMessage<SyntheticToolResultDetails> {
 	const message =
 		reason === "aborted"
@@ -4106,15 +4441,16 @@ export function createSyntheticToolResultMessage(
 			: reason === "length"
 				? "Tool call was not executed because the assistant hit its output token limit (stop_reason: length) before the arguments could complete; the recorded arguments are truncated and unsafe to run. Do NOT retry by re-emitting the same large payload — split the work into several smaller tool calls (e.g. for `write`/`edit`, write the first chunk then append the rest with subsequent `edit` insert ops, or break the file into multiple `write` targets)"
 				: reason === "skipped"
-					? "Tool call was not executed because the assistant ended its turn"
+					? "Tool call was skipped"
 					: "Tool call was not executed because the provider stream ended with an error before the tool could run";
-	const details = syntheticDetailsFor(reason, errorMessage);
+	const details = syntheticDetailsFor(reason, errorMessage, options);
 	return {
 		role: "toolResult",
 		toolCallId: toolCall.id,
 		toolName: toolCall.name,
 		content: [{ type: "text", text: errorMessage ? `${message}: ${errorMessage}` : `${message}.` }],
 		details,
+		harnessNotice: message,
 		isError: true,
 		timestamp: Date.now(),
 	};
@@ -4129,8 +4465,9 @@ function createAbortedToolResult(
 	stream: EventStream<AgentEvent, AgentMessage[]>,
 	reason: "aborted" | "error" | "skipped" | "length",
 	errorMessage?: string,
+	options?: { source?: SyntheticToolResultDetails["source"]; waitingFor?: string },
 ): ToolResultMessage {
-	const toolResultMessage = createSyntheticToolResultMessage(toolCall, reason, errorMessage);
+	const toolResultMessage = createSyntheticToolResultMessage(toolCall, reason, errorMessage, options);
 	const result: AgentToolResult<SyntheticToolResultDetails> = {
 		content: toolResultMessage.content,
 		details: toolResultMessage.details,
@@ -4167,9 +4504,11 @@ function createToolSignalAbortedResult(signal: AbortSignal): AgentToolResult<unk
 /** Origin of a mid-batch interrupt: queued steering, a peer IRC, a queued aside, or a background completion notice. */
 type AsideInterruptSource = SteeringInterruptSource | "irc" | "aside" | "background";
 
-function createSkippedToolResult(
+export function createSkippedToolResult(
 	source: AsideInterruptSource | undefined,
 	executionStarted: boolean,
+	toolName: string,
+	advisory?: SteeringQueueState["advisory"],
 ): AgentToolResult<SyntheticToolResultDetails | InterruptedToolResultDetails> {
 	let reason = "pending steering message";
 	let blocker = "queued message";
@@ -4192,11 +4531,13 @@ function createSkippedToolResult(
 		reason = "a queued background completion (job or supervised process)";
 		blocker = "completion notice";
 	}
+	const message = prompt.render(skippedToolPrompt, { reason, blocker, toolName, advisory }).trim();
 	return {
+		harnessNotice: message,
 		content: [
 			{
 				type: "text",
-				text: `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`,
+				text: message,
 			},
 		],
 		details: executionStarted

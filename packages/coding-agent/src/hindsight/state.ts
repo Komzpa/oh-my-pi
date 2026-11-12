@@ -269,7 +269,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	hasRecalledForFirstTurn: boolean;
 	lastRecallSnippet?: string;
 	#recallGeneration = 0;
-	/** Cached `<mental_models>` block injected into developer instructions. */
+	/** Cached `<mental_models>` block delivered as conversation context. */
 	mentalModelsSnippet?: string;
 	/** When the current bootstrap/boundary load settled; gates the first-turn race. */
 	mentalModelsLoadedAt?: number;
@@ -516,7 +516,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 		const generation = ++this.#recallGeneration;
 		// Reuse this transcript's recall so a resumed session sends the same prompt. Hindsight
 		// memories cannot be looked up by id, so changes since are not reported.
-		const persisted = findPersistedRecall(this.session.sessionManager, this.#recallScope());
+		const persisted = findPersistedRecall(this.session.sessionManager, this.recallScope());
 		if (persisted !== undefined) {
 			return {
 				context: persisted.text || undefined,
@@ -542,7 +542,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 		if (this.#recallGeneration !== generation) return false;
 		this.hasRecalledForFirstTurn = true;
 		if (context) this.lastRecallSnippet = context;
-		if (persist) persistRecall(this.session.sessionManager, this.#recallScope(), { text: context, memories: [] });
+		if (persist) persistRecall(this.session.sessionManager, this.recallScope(), { text: context, memories: [] });
 		return true;
 	}
 
@@ -550,7 +550,7 @@ export class HindsightSessionState implements HindsightSessionStateApi {
 	 * Identifies the server, account, bank and tag filter a recall reads, so a persisted
 	 * recall is only reused for the same ones. The account is a hash of the API token.
 	 */
-	#recallScope(): string {
+	recallScope(): string {
 		return JSON.stringify([
 			"hindsight",
 			this.config.hindsightApiUrl,

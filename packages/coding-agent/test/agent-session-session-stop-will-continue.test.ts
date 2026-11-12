@@ -11,7 +11,10 @@ import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import { ExtensionRuntime, loadExtensionFromFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { Type } from "@oh-my-pi/omptype/typebox";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -72,23 +75,28 @@ describe("AgentSession session_stop willContinue", () => {
 
 		const extensionEmits: Array<{ type: string; willContinue?: boolean }> = [];
 		let sessionStopCalls = 0;
-		// Partial ExtensionRunner double — same pattern as sibling agent-session tests;
-		// only the emit surfaces used on the session_stop continuation path are implemented.
-		const extensionRunner = {
-			emit: async (event: { type: string; willContinue?: boolean }) => {
-				extensionEmits.push({ type: event.type, willContinue: event.willContinue });
+		const runtime = new ExtensionRuntime();
+		const extension = await loadExtensionFromFactory(
+			pi => {
+				pi.on("agent_end", event => {
+					extensionEmits.push({ type: event.type, willContinue: event.willContinue });
+				});
+				pi.on("session_stop", () => {
+					sessionStopCalls++;
+					if (sessionStopCalls === 1) return { continue: true, additionalContext: "hook says continue" };
+				});
 			},
-			emitBeforeAgentStart: async () => undefined,
-			hasHandlers: (eventType: string) => eventType === "session_stop",
-			emitSessionStop: async () => {
-				sessionStopCalls++;
-				// Only the first settle should schedule a continuation; later settles are terminal.
-				if (sessionStopCalls === 1) {
-					return { continue: true, additionalContext: "hook says continue" };
-				}
-				return undefined;
-			},
-		} as unknown as ExtensionRunner;
+			tempDir.path(),
+			new EventBus(),
+			runtime,
+		);
+		const extensionRunner = new ExtensionRunner(
+			[extension],
+			runtime,
+			tempDir.path(),
+			SessionManager.inMemory(),
+			modelRegistry,
+		);
 
 		session = new AgentSession({
 			agent,
@@ -116,4 +124,79 @@ describe("AgentSession session_stop willContinue", () => {
 			expect(last.stopReason).toBe("stop");
 		}
 	});
+	for (const scenario of ["provider-error", "text-only", "tool-progress"] as const) {
+		it(`settles blocked stops safely: ${scenario}`, async () => {
+			const model = getBundledModel("openai", "gpt-5")!;
+			let requests = 0;
+			const mock = createMockModel({
+				handler: () => {
+					requests++;
+					// Bound the broken implementation by requests, not a timeout.
+					if (requests > 24) return { stopReason: "aborted", content: [] };
+					if (scenario === "provider-error") {
+						return { stopReason: "error", errorMessage: "HTTP 429 rate_limit_error retry-after-ms=46953000" };
+					}
+					if (scenario === "tool-progress" && requests === 8) {
+						return { content: [{ type: "toolCall", name: "probe", arguments: {} }] };
+					}
+					return { content: ["Still working"], stopReason: "stop" };
+				},
+			});
+			let tools = 0;
+			const agent = new Agent({
+				getApiKey: () => "test-key",
+				initialState: {
+					model,
+					systemPrompt: ["Test"],
+					messages: [],
+					tools: [
+						{
+							name: "probe",
+							label: "Probe",
+							description: "Progress probe",
+							parameters: Type.Object({}),
+							approval: "read",
+							execute: async () => {
+								tools++;
+								return { content: [{ type: "text", text: "progress" }] };
+							},
+						},
+					],
+				},
+				streamFn: mock.stream,
+			});
+			const runtime = new ExtensionRuntime();
+			const extension = await loadExtensionFromFactory(
+				pi => {
+					pi.on("session_stop", () => ({ decision: "block", reason: "Continue the pending work" }));
+				},
+				tempDir.path(),
+				new EventBus(),
+				runtime,
+			);
+			const manager = SessionManager.inMemory();
+			const runner = new ExtensionRunner([extension], runtime, tempDir.path(), manager, modelRegistry);
+			session = new AgentSession({
+				agent,
+				sessionManager: manager,
+				modelRegistry,
+				extensionRunner: runner,
+				settings: Settings.isolated({ "compaction.enabled": false, "retry.enabled": false }),
+			});
+			await session.prompt("Start");
+			await session.waitForIdle();
+			expect(session.isStreaming).toBe(false);
+			expect(requests).toBe(scenario === "provider-error" ? 1 : scenario === "tool-progress" ? 17 : 9);
+			if (scenario === "provider-error") {
+				expect(
+					agent.state.messages.filter(
+						message => message.role === "custom" && message.customType === "session-stop-continuation",
+					),
+				).toHaveLength(0);
+				expect(session.getLastAssistantMessage()?.stopReason).toBe("error");
+				expect(session.getLastAssistantMessage()?.errorMessage).toContain("HTTP 429");
+			}
+			if (scenario === "tool-progress") expect(tools).toBe(1);
+		});
+	}
 });

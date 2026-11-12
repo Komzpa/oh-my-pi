@@ -219,7 +219,10 @@ describe("GrepTool internal URL resolution", () => {
 			},
 		] as unknown as SessionEntry[];
 		const manager = {
-			getBranch: () => branch,
+			getBranch: () => {
+				throw new Error("Eager full-history hydration");
+			},
+			getBranchView: () => branch,
 			getSessionId: () => "grep-current-session",
 		} as unknown as NonNullable<ToolSession["sessionManager"]>;
 		const tool = new GrepTool(

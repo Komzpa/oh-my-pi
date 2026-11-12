@@ -4,17 +4,25 @@ import * as path from "node:path";
 import { Process } from "@oh-my-pi/pi-natives";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../src/config/settings";
+import { BashTool } from "../../src/tools/bash";
 import { startDaemonBrokerFromEnvironment } from "../../src/launch/broker";
 import * as brokerClients from "../../src/launch/client";
+import type { DaemonBrokerClient } from "../../src/launch/client";
 import {
 	DAEMON_IDLE_GRACE_ENV,
 	DAEMON_PROJECT_DIR_ENV,
 	DAEMON_RUNTIME_DIR_ENV,
 	type DaemonCompletionNotification,
 } from "../../src/launch/protocol";
-import { listServices, sendService, startService, waitForOwnedServiceCompletion } from "../../src/launch/services";
+import {
+	holdServicesForRestart,
+	listServices,
+	sendService,
+	startService,
+	stopService,
+	waitForOwnedServiceCompletion,
+} from "../../src/launch/services";
 import type { ToolSession } from "../../src/tools";
-import { BashTool } from "../../src/tools/bash";
 
 interface EmbeddedBroker {
 	/** Settles once this in-process broker has shut down and flushed its metadata. */
@@ -27,13 +35,13 @@ interface EmbeddedBroker {
  * broker-restart handoff; `finished` would then not track the broker that
  * flushes the metadata these tests read.
  */
-async function startBroker(projectDir: string, runtimeDir: string): Promise<EmbeddedBroker> {
+async function startBroker(projectDir: string, runtimeDir: string, idleGraceMs = 5_000): Promise<EmbeddedBroker> {
 	const previousProjectDir = process.env[DAEMON_PROJECT_DIR_ENV];
 	const previousRuntimeDir = process.env[DAEMON_RUNTIME_DIR_ENV];
 	const previousGrace = process.env[DAEMON_IDLE_GRACE_ENV];
 	process.env[DAEMON_PROJECT_DIR_ENV] = projectDir;
 	process.env[DAEMON_RUNTIME_DIR_ENV] = runtimeDir;
-	process.env[DAEMON_IDLE_GRACE_ENV] = "5000";
+	process.env[DAEMON_IDLE_GRACE_ENV] = String(idleGraceMs);
 	const listening = Promise.withResolvers<boolean>();
 	const finished = startDaemonBrokerFromEnvironment({ onListening: () => listening.resolve(true) });
 	if (previousProjectDir === undefined) delete process.env[DAEMON_PROJECT_DIR_ENV];
@@ -48,6 +56,139 @@ async function startBroker(projectDir: string, runtimeDir: string): Promise<Embe
 }
 
 describe("session-owned supervised services", () => {
+	// Real timers throughout: the broker's OS socket disconnect and idle timer must both fire.
+	const SERVER_SOURCE = `
+const answers: string[] = [];
+const server = Bun.serve({port: 0, hostname: "127.0.0.1", async fetch(request) {
+ if (request.method === "POST") answers.push(await request.text());
+ return Response.json(answers);
+}});
+await Bun.write("port.txt", String(server.port));
+console.log("review-ready");
+`;
+
+	/** A broker with a short idle grace and one named answer server owned by `review-owner`. */
+	async function withAnswerServer(
+		body: (ctx: {
+			session: ToolSession;
+			broker: EmbeddedBroker;
+			url: string;
+			pid: number;
+			disconnectOwner(): Promise<void>;
+			reconnect(): Promise<DaemonBrokerClient>;
+		}) => Promise<void>,
+	): Promise<void> {
+		const owner = "review-owner";
+		using tempDir = TempDir.createSync("@omp-review-server-");
+		const projectDir = path.join(tempDir.path(), "project");
+		const runtimeDir = path.join(tempDir.path(), "runtime");
+		await fs.mkdir(projectDir);
+		await Bun.write(path.join(projectDir, "server.ts"), SERVER_SOURCE);
+		let client = await brokerClients.createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 100 });
+		const previousTitle = process.title;
+		const broker = await startBroker(projectDir, runtimeDir, 100);
+		const callbacks: Array<() => void> = [];
+		const session: ToolSession = {
+			cwd: projectDir,
+			hasUI: false,
+			settings: Settings.isolated(),
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+			getSessionId: () => owner,
+			registerDisposeCallback: callback => {
+				callbacks.push(callback);
+			},
+		};
+		try {
+			vi.spyOn(brokerClients, "daemonClientForProject").mockImplementation(async () => client);
+			const started = await startService(session, {
+				name: "review",
+				command: "bun server.ts",
+				pty: false,
+				ready: { log: "review-ready", timeout: 5 },
+			});
+			const url = `http://127.0.0.1:${await Bun.file(path.join(projectDir, "port.txt")).text()}`;
+			await body({
+				session,
+				broker,
+				url,
+				pid: started.daemon.pid!,
+				async disconnectOwner() {
+					for (const dispose of callbacks) dispose();
+					await client.request({ op: "ping" });
+					client.close();
+				},
+				async reconnect() {
+					client = await brokerClients.createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 100 });
+					return client;
+				},
+			});
+		} finally {
+			vi.restoreAllMocks();
+			// The broker may already be gone (idle shutdown); a failed connection is fine then.
+			await brokerClients
+				.createDaemonBrokerClient(projectDir, { runtimeDir, idleGraceMs: 100 })
+				.then(async cleanup => {
+					await cleanup.request({ op: "shutdown" }).catch(() => undefined);
+					cleanup.close();
+				})
+				.catch(() => undefined);
+			client.close();
+			await broker.finished;
+			process.title = previousTitle;
+		}
+	}
+
+	it("keeps a named answer server through an in-place restart, then stops it on explicit stop", async () => {
+		await withAnswerServer(async ({ session, url, pid, disconnectOwner, reconnect }) => {
+			expect(await (await fetch(url, { method: "POST", body: "before" })).json()).toEqual(["before"]);
+			await holdServicesForRestart("review-owner");
+			await disconnectOwner();
+			// Exceed the idle grace with no project presence or attached clients.
+			await Bun.sleep(400);
+			expect(await (await fetch(url, { method: "POST", body: "after" })).json()).toEqual(["before", "after"]);
+			const client = await reconnect();
+			const resumed = { ...session, registerDisposeCallback: undefined };
+			const restored = (await listServices(resumed)).find(service => service.name === "review");
+			expect(restored?.pid).toBe(pid);
+			expect(restored?.owner).toBe("review-owner");
+			// Session-scoped, not persistent: only the restart hold carried it.
+			expect(restored?.persist).toBe(false);
+			await stopService(resumed, "review");
+			const exited = await client.request({ op: "wait", name: "review", for: "exit", timeoutMs: 5_000 });
+			if (exited.op !== "wait") throw new Error("Expected exit wait");
+			expect(exited.timedOut).toBe(false);
+		});
+	}, 15_000);
+
+	it("stops a named answer server when the owning session exits without a restart", async () => {
+		await withAnswerServer(async ({ broker, url, disconnectOwner }) => {
+			expect(await (await fetch(url, { method: "POST", body: "before" })).json()).toEqual(["before"]);
+			await disconnectOwner();
+			// Idle grace elapses, the broker shuts down and takes the service with it.
+			await broker.finished;
+			await expect(fetch(url)).rejects.toThrow();
+		});
+	}, 15_000);
+
+	it("stops a held answer server once the restart hold expires without the owner returning", async () => {
+		await withAnswerServer(async ({ session, broker, url, disconnectOwner }) => {
+			const held = await (
+				await brokerClients.daemonClientForProject(session.cwd)
+			).request({
+				op: "hold",
+				owner: "review-owner",
+				graceMs: 300,
+			});
+			expect(held).toEqual({ op: "hold", held: 1 });
+			await disconnectOwner();
+			await Bun.sleep(150);
+			expect(await (await fetch(url)).json()).toEqual([]);
+			await broker.finished;
+			await expect(fetch(url)).rejects.toThrow();
+		});
+	}, 15_000);
+
 	it("delivers a failed service only to its session when another session shares the broker", async () => {
 		using tempDir = TempDir.createSync("@omp-service-completion-");
 		const projectDir = path.join(tempDir.path(), "project");

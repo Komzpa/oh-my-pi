@@ -1,0 +1,17 @@
+[
+  [
+    "topic/rt-agent-runtime-core",
+    "ec0383dff989391eaa51761dd655ba53d58e7416",
+    "772058df75734f40bd6d550a3f303ebb455f45fd"
+  ],
+  [
+    "topic/rt-restart-queue",
+    "72872935462aa630593f4277307cf8f06bdb829a",
+    "8847e85e37ab577a4a1567b02645a37efa7b1f73"
+  ],
+  [
+    "topic/usage-shared-backoff",
+    "8f5a56c55b36e2c7e0524fbee9f8c86d8a0e17a5",
+    "dd56aad7497bb6cc10ec79d4775467407516424a"
+  ]
+]

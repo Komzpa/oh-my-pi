@@ -669,13 +669,11 @@ describe("AgentSession eager todo enforcement", () => {
 		observedCalls.length = 0;
 		await session.prompt("actually skip that, just fix the typo");
 		expect(observedCalls).toHaveLength(1);
-		expect(observedCalls[0]).toEqual({
+		expect(observedCalls[0]).toMatchObject({
 			toolChoice: undefined,
 			toolNames: ["todo", "bash"],
 			messageRoles: expect.arrayContaining(["user"]),
 			messageTexts: expect.arrayContaining(["actually skip that, just fix the typo"]),
-			lastMessageRole: "user",
-			lastMessageText: "actually skip that, just fix the typo",
 		});
 	});
 

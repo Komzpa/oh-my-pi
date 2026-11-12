@@ -611,6 +611,11 @@ describe("AsyncJobManager", () => {
 		await manager.drainDeliveries({ timeoutMs: 2_000 });
 
 		expect(manager.isJobResultConsumed(jobId)).toBe(true);
+		expect(manager.getJob(jobId)?.resultText).toBe("done");
+		// Lifecycle consumers retain the row until eviction; user-facing recent
+		// and proc listings hide consumed results without deleting this history.
+		expect(manager.getAllJobs().map(job => job.id)).toEqual([jobId]);
+		expect(manager.getRecentJobs()).toEqual([]);
 		await waitForJobEviction(manager, jobId);
 		expect(manager.getJob(jobId)).toBeUndefined();
 	});
@@ -726,7 +731,8 @@ describe("AsyncJobManager", () => {
 		vi.useFakeTimers();
 		try {
 			const manager = new AsyncJobManager({ retentionMs: 60_000, consumedResultEvictionMs: 25 });
-			manager.registerDeliverySink("Main", () => new Promise<void>(() => {}));
+			const delivery = Promise.withResolvers<void>();
+			manager.registerDeliverySink("Main", () => delivery.promise);
 
 			const jobId = manager.register("task", "hung", async () => "done", { ownerId: "Main" });
 			await manager.waitForAll();

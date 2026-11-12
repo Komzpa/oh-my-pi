@@ -1,4 +1,6 @@
-import { expect, it } from "bun:test";
+import * as dirs from "@oh-my-pi/pi-utils";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { expect, it, spyOn } from "bun:test";
 import type { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { streamCursor } from "@oh-my-pi/pi-ai/providers/cursor";
 import type { Context, Model } from "@oh-my-pi/pi-ai/types";
@@ -245,3 +247,50 @@ it(
 	},
 	SETTLE_TIMEOUT_MS,
 );
+
+it("blocks HTTP1 RunSSE and BidiAppend retries after a ban in the retry wait", async () => {
+	using root = TempDir.createSync("@cursor-http1-blacklist-");
+	const rootSpy = spyOn(dirs, "getBaseConfigRoot").mockReturnValue(root.path());
+	let runs = 0;
+	let bannedRequests = 0;
+	let banWritten = false;
+	const server = Bun.serve({
+		port: 0,
+		async fetch(request) {
+			await request.arrayBuffer();
+			if (banWritten) bannedRequests++;
+			if (new URL(request.url).pathname === "/agent.v1.AgentService/RunSSE") {
+				runs++;
+				return new Response(runs === 1 ? new Uint8Array() : turnEndedFrame(), {
+					headers: { "content-type": "application/connect+proto" },
+				});
+			}
+			return new Response(null, { headers: { "content-type": "application/proto" } });
+		},
+	});
+	const model = makeModel(server.url.toString());
+	let waits = 0;
+	try {
+		const response = streamCursor(model, context, {
+			apiKey: "fixture-key",
+			transport: "http1",
+			providerRetryWait: async () => {
+				waits++;
+				await Bun.write(
+					root.join("model-blacklist.json"),
+					JSON.stringify({ [`${model.provider}/${model.id}`]: "retry fixture ban" }),
+				);
+				banWritten = true;
+			},
+		});
+		const { result } = await drain(response);
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toContain("retry fixture ban");
+		expect(waits).toBe(1);
+		expect(runs).toBe(1);
+		expect(bannedRequests).toBe(0);
+	} finally {
+		server.stop(true);
+		rootSpy.mockRestore();
+	}
+});

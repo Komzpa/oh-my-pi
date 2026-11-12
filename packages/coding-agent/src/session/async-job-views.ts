@@ -4,8 +4,10 @@
  * the main thread's mirror of a worker-homed session, which scopes the same
  * root manager to the child's agent id.
  */
+import { runningAgentsFromRegistryOutsideJobs } from "../async/job-control";
 import type { AsyncJob, AsyncJobManagerApi } from "../async";
 import type { JobWidgetRegistry } from "../job-widgets/types";
+import { restoringAgentIds } from "../registry/restoring-agents";
 import { AgentRegistry } from "../registry/agent-registry";
 import type { JobWidgetEntry } from "@oh-my-pi/pi-tui/tools/job-widget";
 import type { AsyncJobInspection, AsyncJobSnapshot, AsyncJobSnapshotItem, AsyncJobTree } from "./agent-session-types";
@@ -39,7 +41,15 @@ export function asyncJobSnapshot(
 		.getRecentJobs(options?.recentLimit ?? 5, ownerFilter)
 		.map(job => jobSnapshotItem(job, manager.widgets));
 	const delivery = manager.getDeliveryState(ownerFilter);
-	return { running, recent, delivery };
+	const nonJobAgents = runningAgentsFromRegistryOutsideJobs(AgentRegistry.global(), manager, agentId).map(
+		({ id, live }) => ({ id, live }),
+	);
+	for (const id of restoringAgentIds(AgentRegistry.global(), agentId)) {
+		const existing = nonJobAgents.find(agent => agent.id === id);
+		if (existing) existing.live = true;
+		else nonJobAgents.push({ id, live: true });
+	}
+	return { running, recent, delivery, nonJobAgents };
 }
 
 /**

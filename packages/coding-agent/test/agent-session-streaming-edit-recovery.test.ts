@@ -20,6 +20,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { applyToolProxy } from "@oh-my-pi/pi-coding-agent/extensibility/tool-proxy";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -55,6 +56,7 @@ const messageText = (message: Message): string => {
 const streamingEditFailureStream = (opts: {
 	model: Model<Api>;
 	args: Record<string, unknown>;
+	signal?: AbortSignal;
 }): AssistantMessageEventStream => {
 	const { model, args } = opts;
 	const stream = new AssistantMessageEventStream();
@@ -69,6 +71,15 @@ const streamingEditFailureStream = (opts: {
 		stopReason: "toolUse",
 		timestamp: Date.now(),
 	};
+	// A real provider settles its stream on caller abort; an open mock must do so too.
+	const onAbort = () =>
+		stream.push({
+			type: "error",
+			reason: "aborted",
+			error: { ...partial, stopReason: "aborted", errorMessage: "Provider stream aborted" },
+		});
+	opts.signal?.addEventListener("abort", onAbort, { once: true });
+	if (opts.signal?.aborted) onAbort();
 	stream.push({ type: "start", partial });
 	stream.push({ type: "toolcall_start", contentIndex: 0, partial });
 	const encoded = JSON.stringify(args);
@@ -155,7 +166,8 @@ describe("AgentSession streaming edit preview recovery", () => {
 			// EditTool narrows `params` beyond AgentTool's generic schema
 			// (same cast the ACP permission tests use); the session registry
 			// only consumes the AgentTool surface.
-			const agentEditTool = editTool as AgentTool;
+			const agentEditTool = {} as AgentTool;
+			applyToolProxy(editTool, agentEditTool);
 
 			const model = createMockModel({ provider: "anthropic", id: "claude-streaming-edit-recovery" }).model;
 			settings.setModelRole("default", `${model.provider}/${model.id}`);
@@ -164,13 +176,14 @@ describe("AgentSession streaming edit preview recovery", () => {
 			const agent = new Agent({
 				getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
 				initialState: { model, systemPrompt: ["Test"], tools: [agentEditTool], messages: [] },
-				streamFn: (streamModel, context) => {
+				streamFn: (streamModel, context, options) => {
 					contexts.push(context);
 					call += 1;
 					return call === 1
 						? streamingEditFailureStream({
 								model: streamModel,
-								args: { path: "sample.txt", edits: [{ diff: "@@\n-missing\n+replacement\n" }] },
+								signal: options?.signal,
+								args: { path: "sample.txt", edits: [{ op: "update", diff: "@@\n-missing\n+replacement\n" }] },
 							})
 						: textStream({ model: streamModel, text: "Recovered after preview failure." });
 				},

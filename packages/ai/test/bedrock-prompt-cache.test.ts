@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { streamBedrock } from "@oh-my-pi/pi-ai/providers/amazon-bedrock";
 import type { Context, Model } from "@oh-my-pi/pi-ai/types";
+import { markPerCallContextMessage } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { withEnv } from "./helpers";
@@ -65,6 +66,35 @@ function checkpoints(payload: Payload): CachePoint[] {
 }
 
 describe("Bedrock prompt cache checkpoints", () => {
+	test("keeps the history checkpoint before per-call context", async () => {
+		const note = { role: "developer" as const, content: "elapsed 5s", synthetic: true, timestamp: 1 };
+		markPerCallContextMessage(note);
+		let payload: Payload | undefined;
+		const stream = streamBedrock(
+			model("anthropic.claude-opus-4-6-v1"),
+			{
+				...context,
+				messages: [...context.messages, note],
+			},
+			{
+				bearerToken: "test-token",
+				signal: abortedSignal(),
+				cacheRetention: "short",
+				onPayload: value => {
+					payload = value as Payload;
+				},
+			},
+		);
+		for await (const _event of stream) {
+		}
+		await stream.result();
+		expect(payload!.messages[0]?.content).toEqual([
+			{ text: "What is the answer?" },
+			{ cachePoint: { type: "default" } },
+		]);
+		expect(payload!.messages[1]?.content).toEqual([{ text: "elapsed 5s" }]);
+		expect(checkpoints(payload!)).toHaveLength(2);
+	});
 	test("downgrades unsupported long retention to default 5m at the existing two checkpoint locations", async () => {
 		const payload = await capturePayload(model("anthropic.claude-opus-4-6-v1"), "long");
 		expect(payload.system).toEqual([{ text: "Use concise answers." }, { cachePoint: { type: "default" } }]);

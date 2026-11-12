@@ -10,7 +10,8 @@
  */
 
 import { type IrcDeliveryReceipt, type IrcMessage } from "@oh-my-pi/pi-tui/tools/irc";
-import { logger, Snowflake } from "@oh-my-pi/pi-utils";
+import { logger, Snowflake, withTimeout } from "@oh-my-pi/pi-utils";
+import { PeerSessionError, sendPeerMessage, writeShellReply } from "../collab/registry";
 import { type AgentLifecycleApi, AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../registry/agent-registry";
 import type { CustomMessage } from "../session/messages";
@@ -56,10 +57,16 @@ const MAILBOX_CAP = 100;
 
 /** Public surface of the process-global IRC bus, implemented locally on main and by a proxy in workers. */
 export interface IrcBusApi {
+	/** Resolve a shell sender from the recipient mailbox history. */
+	resolveShellReplyTarget(recipient: string): string;
 	/** Fire-and-forget delivery; the receipt reports how the message reached the recipient. */
 	send(msg: Omit<IrcMessage, "id" | "ts">): Promise<IrcDeliveryReceipt>;
 	/** Whether `from` successfully sent `to` anything, progress included, at or after `sinceTs`. */
 	sentSince(from: string, to: string, sinceTs: number): boolean;
+	/** Monotonic boundary for successful direct exchanges. */
+	exchangeCursor(): number;
+	/** Both agents sent a successful direct message after the boundary; excludes progress/broadcasts. */
+	exchangedSince(from: string, to: string, sinceCursor: number): boolean;
 	/** Agents `from` messaged directly at or after `sinceTs` that have not answered since. */
 	unansweredSends(from: string, sinceTs: number): Array<{ to: string; sentAt: number; promised: boolean }>;
 	/** Block until a message for `agentId` that `filter` accepts arrives; null on timeout. */
@@ -126,7 +133,11 @@ export class IrcBus implements IrcBusApi {
 	/** Last {@link SendMark.seq} handed out, taken when a send starts. */
 	#sendSeq = 0;
 
-	constructor(registry: AgentRegistryApi = AgentRegistry.global(), lifecycle?: AgentLifecycleApi) {
+	constructor(
+		registry: AgentRegistryApi = AgentRegistry.global(),
+		lifecycle?: AgentLifecycleApi,
+		private readonly recipientReadyTimeoutMs = 30_000,
+	) {
 		this.#registry = registry;
 		// Lazy: the lifecycle global self-constructs against the global registry,
 		// so only touch it when a parked recipient actually needs reviving.
@@ -185,6 +196,16 @@ export class IrcBus implements IrcBusApi {
 	 * after `sinceTs`. The wake-turn relay uses it to skip agents that already
 	 * answered their waker themselves, or promised it a later answer.
 	 */
+	exchangeCursor(): number {
+		return this.#sendSeq;
+	}
+
+	exchangedSince(from: string, to: string, sinceCursor: number): boolean {
+		const sent = this.#lastDirect.get(from)?.get(to);
+		const reply = this.#lastDirect.get(to)?.get(from);
+		return sent !== undefined && reply !== undefined && sent.seq > sinceCursor && reply.seq > sinceCursor;
+	}
+
 	sentSince(from: string, to: string, sinceTs: number): boolean {
 		return [this.#lastSent, this.#lastProgress].some(table => (table.get(from)?.get(to)?.ts ?? -1) >= sinceTs);
 	}
@@ -214,9 +235,109 @@ export class IrcBus implements IrcBusApi {
 		return unanswered;
 	}
 
+	/** Resolve a bare shell reply only from senders that reached this recipient. */
+	resolveShellReplyTarget(recipient: string): string {
+		const candidates: string[] = [];
+		for (const [from, sent] of this.#lastSent) {
+			if (from.startsWith("shell:") && sent.has(recipient)) candidates.push(from);
+		}
+		if (candidates.length === 1) return candidates[0]!;
+		throw new PeerSessionError(
+			"not_found",
+			candidates.length === 0
+				? "No shell sender has messaged this session; use an exact shell:<id> reply address."
+				: `Ambiguous shell reply target; use an exact address: ${candidates.sort().join(", ")}`,
+		);
+	}
+
+	/**
+	 * Route external replies through the same resolver and transport as agent:// writes.
+	 * Shell transport preserves `shell:<id>` as `from`; successful delivery records
+	 * that sender against the receiving agent in #lastSent, making bare replies scoped
+	 * to the replying agent rather than any other agent in this session.
+	 */
+	async #deliverExternal(message: IrcMessage): Promise<IrcDeliveryReceipt> {
+		try {
+			const to = message.to === "shell" ? this.resolveShellReplyTarget(message.from) : message.to;
+			if (to.startsWith("shell:")) {
+				await writeShellReply(to, {
+					from: message.from,
+					...(message.fromName ? { fromName: message.fromName } : {}),
+					text: message.body,
+					createdAt: message.ts,
+				});
+				return { to: message.to, outcome: "injected" };
+			}
+			if (message.to.startsWith("peer:")) {
+				// Derive the replying session's identity from the registry sender so
+				// the peer transport labels the reply the same way agent:// does.
+				const senderSession = this.#registry.get(message.from)?.session;
+				const sessionId = senderSession?.sessionManager?.getSessionId() ?? message.from;
+				const cwd = senderSession?.sessionManager?.getCwd() ?? "";
+				const receipt = await sendPeerMessage({
+					from: { kind: "session", sessionId, cwd },
+					target: message.to,
+					text: message.body,
+				});
+				if (receipt.status === "failed" || receipt.status === "uncertain") {
+					return { to: message.to, outcome: "failed", error: receipt.reason ?? "Peer delivery failed." };
+				}
+				return {
+					to: message.to,
+					outcome: receipt.outcome === "woken" || receipt.outcome === "revived" ? receipt.outcome : "injected",
+				};
+			}
+		} catch (error) {
+			if (error instanceof PeerSessionError) {
+				return { to: message.to, outcome: "failed", error: error.message };
+			}
+			throw error;
+		}
+		return { to: message.to, outcome: "failed", error: `Unknown agent "${message.to}".` };
+	}
+
 	async #deliver(message: IrcMessage): Promise<IrcDeliveryReceipt> {
-		const ref = this.#registry.get(message.to);
+		// Bound only preparation, before injection can have any delivery side effect.
+		// Shared revival may finish later; this delivery must not resume with it.
+		const readyDeadline = performance.now() + this.recipientReadyTimeoutMs;
+		const awaitReady = <T>(prepare: () => Promise<T>): Promise<T> => {
+			const remaining = readyDeadline - performance.now();
+			const error = new Error(
+				`Agent "${message.to}" did not become ready within ${this.recipientReadyTimeoutMs} ms; message not delivered. Check its status before retrying.`,
+			);
+			// A resolved promise beats a zero-ms timer; refuse an exhausted budget
+			// before starting another lifecycle operation instead of racing it.
+			if (remaining <= 0) return Promise.reject(error);
+			return withTimeout(prepare(), remaining, error);
+		};
+		let ref = this.#registry.get(message.to);
+		if (ref?.starting && !ref.session) {
+			const expected = ref;
+			const ready = Promise.withResolvers<void>();
+			const check = () => {
+				const current = this.#registry.get(message.to);
+				if (current !== expected || !current.starting || current.status !== "running" || current.session)
+					ready.resolve();
+			};
+			const stop = this.#registry.onChange(check);
+			try {
+				check();
+				await awaitReady(() => ready.promise);
+			} catch (error) {
+				return { to: message.to, outcome: "failed", error: error instanceof Error ? error.message : String(error) };
+			} finally {
+				stop();
+			}
+			ref = this.#registry.get(message.to);
+			if (ref !== expected || ref.status === "aborted")
+				return { to: message.to, outcome: "failed", error: `Agent "${message.to}" stopped during startup.` };
+		}
 		if (!ref) {
+			// Shell senders and peer sessions are not in-process agents; route
+			// their replies through the same helpers agent:// already uses.
+			if (message.to === "shell" || message.to.startsWith("shell:") || message.to.startsWith("peer:")) {
+				return this.#deliverExternal(message);
+			}
 			return {
 				to: message.to,
 				outcome: "failed",
@@ -251,7 +372,7 @@ export class IrcBus implements IrcBusApi {
 		let revived = false;
 		if (needsLifecycleGate) {
 			try {
-				const liveSession = await lifecycle.ensureLive(message.to);
+				const liveSession = await awaitReady(() => lifecycle.ensureLive(message.to));
 				// Revival = we did not keep the same live instance (parked start, or
 				// park completed and a fresh session was rebuilt).
 				revived = !priorSession || liveSession !== priorSession;

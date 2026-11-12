@@ -43,6 +43,63 @@ async function supportsLinuxMountNamespaces(): Promise<boolean> {
 const linuxMountNamespacesAvailable = await supportsLinuxMountNamespaces();
 
 describe("ptree timeout", () => {
+	it("bounded bytes reject abort after root exit instead of returning the buffered prefix", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-utils-bounded-abort-"));
+		const pidFile = path.join(dir, "pid");
+		const controller = new AbortController();
+		const launcher = `
+const child = Bun.spawn([process.execPath, "-e", "await Bun.sleep(30_000)"], {
+	stdin: "ignore", stdout: "inherit", stderr: "ignore", detached: true,
+});
+await Bun.write(process.argv[1], String(child.pid));
+await Bun.write(Bun.stdout, new Uint8Array([0, 255, 42]));
+process.exit(0);
+`;
+		using child = spawn([process.execPath, "-e", launcher, pidFile], { signal: controller.signal });
+		let orphan: Process | null = null;
+		let outcome: Promise<Uint8Array> | undefined;
+		try {
+			await child.proc.exited;
+			orphan = Process.fromPid(Number.parseInt(await Bun.file(pidFile).text(), 10));
+			if (!orphan) throw new Error("Expected the fixture's pipe-holding descendant");
+			let settled = false;
+			outcome = child.bytes({ maxBytes: 4 });
+			void outcome.then(
+				() => {
+					settled = true;
+				},
+				() => {
+					settled = true;
+				},
+			);
+			const nextTurn = Promise.withResolvers<void>();
+			setImmediate(nextTurn.resolve);
+			await nextTurn.promise;
+			expect(settled, "root exit must not turn the buffered prefix into a complete response").toBe(false);
+			controller.abort("cancel inherited bounded output");
+			await expect(outcome).rejects.toBeInstanceOf(AbortError);
+		} finally {
+			if (orphan) {
+				orphan.killTree(9);
+				await orphan.waitForExit();
+			}
+			await outcome?.catch(() => {});
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("bounded bytes accept the exact binary limit and reject overflow without partial success", async () => {
+		using exact = spawn([process.execPath, "-e", "await Bun.write(Bun.stdout, new Uint8Array([0, 255, 42, 10]))"]);
+		expect(await exact.bytes({ maxBytes: 4 })).toEqual(new Uint8Array([0, 255, 42, 10]));
+		await exact.exitedCleanly;
+		using overflow = spawn([
+			process.execPath,
+			"-e",
+			"await Bun.write(Bun.stdout, new Uint8Array([0, 255, 42, 10, 1]))",
+		]);
+		await expect(overflow.bytes({ maxBytes: 4 })).rejects.toThrow(/exceed/i);
+	});
+
 	it("contains the lifecycle rejection when the caller does not observe exited", async () => {
 		const unhandled = new Set<unknown>();
 		const onUnhandled = (reason: unknown) => {
@@ -103,9 +160,17 @@ sleep 30
 				expect(await pidFileExists(), "the launcher must create its worker").toBe(true);
 
 				const workerPid = Number.parseInt((await Bun.file(pidFile).text()).trim(), 10);
-				const subreaper = Process.fromPid(child.pid);
-				const command = subreaper?.children()[0];
-				const worker = Process.fromPid(workerPid);
+				let subreaper: Process | null | undefined;
+				let command: Process | undefined;
+				let worker: Process | null | undefined;
+				const treeDeadline = Date.now() + 2_000;
+				while (Date.now() < treeDeadline) {
+					subreaper = Process.fromPid(child.pid);
+					command = subreaper?.children()[0];
+					worker = Process.fromPid(workerPid);
+					if (subreaper && command && worker) break;
+					await Bun.sleep(10);
+				}
 				if (!subreaper || !command || !worker) throw new Error("failed to capture the subreaper process tree");
 				cleanupProcesses.push(worker, command, subreaper);
 				expect(worker.ppid, "the worker must initially belong to the supervised command").toBe(command.pid);

@@ -465,7 +465,7 @@ describe("hindsightBackend first-turn injection", () => {
 		state!.mentalModelsSnippet = "<mental_models>\n# User Preferences\nprefers tabs\n</mental_models>";
 		state!.lastRecallSnippet = "<memories>\nrecalled fact\n</memories>";
 
-		const prompt = await hindsightBackend.buildDeveloperInstructions("/tmp", "/tmp", settings, session as never);
+		const prompt = await hindsightBackend.buildConversationContext!(session as never, undefined, "/tmp");
 		// `<memories>` and `<mental_models>` are mentioned in the static memory instructions
 		// bullets too. Match the actual injected block opener (tag + newline)
 		// to disambiguate documentation prose from the injected payloads.

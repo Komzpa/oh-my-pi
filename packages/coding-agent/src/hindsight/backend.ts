@@ -81,18 +81,20 @@ export const hindsightBackend: MemoryBackend = {
 		const config = loadHindsightConfig(settings);
 		if (!isHindsightConfigured(config)) return undefined;
 
-		const state = session?.getHindsightSessionState();
-		const primary = state?.aliasOf ?? state;
-		const recallSnippet = primary?.lastRecallSnippet;
-		const mentalModelsSnippet = primary?.mentalModelsSnippet;
+		return prompt.render(hindsightInstructions, { toolRefs: memoryToolRefs(session?.getXdevToolEntries()) });
+	},
 
-		// Order: static instructions → mental models (stable, curated) → recall
-		// (volatile per turn). Stable context first so the LLM's prior is
-		// anchored on curated knowledge.
-		const parts = [prompt.render(hindsightInstructions, { toolRefs: memoryToolRefs(session?.getXdevToolEntries()) })];
-		if (mentalModelsSnippet) parts.push(mentalModelsSnippet);
-		if (recallSnippet) parts.push(recallSnippet);
-		return parts.join("\n\n");
+	conversationScope(session) {
+		const state = session.getHindsightSessionState();
+		return state?.recallScope();
+	},
+
+	async buildConversationContext(session, recall) {
+		const state = session.getHindsightSessionState();
+		const primary = state?.aliasOf ?? state;
+		return (
+			[primary?.mentalModelsSnippet, recall ?? primary?.lastRecallSnippet].filter(Boolean).join("\n\n") || undefined
+		);
 	},
 
 	async beforeAgentStartPrompt(

@@ -1,4 +1,5 @@
 import { resolveExecutablePath } from "../../subprocess/worker-client";
+import { spawnBackground } from "@oh-my-pi/pi-utils/background-priority";
 
 /** Exit code and captured output of one Bun package-manager invocation. */
 export interface BunCliResult {
@@ -17,7 +18,7 @@ export interface BunCliResult {
  * `eval/js/package-installer.ts` and `@oh-my-pi/pi-utils` runtime installs.
  */
 export async function runBunCli(args: readonly string[], cwd: string): Promise<BunCliResult> {
-	const proc = Bun.spawn([resolveExecutablePath(), ...args], {
+	const proc = spawnBackground([resolveExecutablePath(), ...args], {
 		cwd,
 		env: { ...Bun.env, BUN_BE_BUN: "1" },
 		stdin: "ignore",

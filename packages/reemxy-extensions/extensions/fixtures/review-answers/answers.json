@@ -1,0 +1,18 @@
+{
+	"pr111-use-grid-explainer-panel": {
+		"answer": "accept",
+		"note": "",
+		"content_sha": "6ec1df78f1e58baf9872e5ebd4129e76aa0654bd1407d135e33136ed89927d0d"
+	},
+	"updatedAt": "2026-11-06T07:49:41.801Z",
+	"pr111-conflict-back-returns-to-origin": {
+		"answer": "accept",
+		"note": "",
+		"content_sha": "158298155660dae71c4eae4b8a5ced5b2b05e8f1cc1db747bdc6e7152d723e46"
+	},
+	"pr111-rack-choice-once-in-min-order-conflict": {
+		"answer": "accept",
+		"note": "",
+		"content_sha": "f00ae0a97513a9c6599e5c73b1a76cacf42845091dc553c52c0be273cf7013b4"
+	}
+}

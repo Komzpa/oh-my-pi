@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import path from "node:path";
@@ -14,10 +14,12 @@ import {
 	isProviderEnabled,
 	setDisabledProviders,
 } from "@oh-my-pi/pi-coding-agent/capability";
+import { resolveAgentModelSelection } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resolveModelOverrideWithAuthFallback } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import type { AgentCompactionThresholdOverride } from "@oh-my-pi/pi-coding-agent/config/compaction-threshold";
 import type {
 	BeforeSubagentSpawnEvent,
@@ -30,6 +32,8 @@ import {
 import * as planHandoff from "@oh-my-pi/pi-coding-agent/plan-mode/plan-handoff";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import * as todoModule from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -66,6 +70,29 @@ const AGENT: AgentDefinition = {
 	output: { type: "object", properties: { agent: { type: "boolean" } } },
 };
 
+let isolationRepo: string;
+beforeAll(async () => {
+	isolationRepo = await fs.mkdtemp(path.join(os.tmpdir(), "structured-isolation-"));
+	for (const args of [
+		["init"],
+		["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture"],
+	]) {
+		const run = Bun.spawnSync(["git", "-C", isolationRepo, ...args]);
+		if (run.exitCode) throw new Error(run.stderr.toString());
+	}
+});
+afterAll(async () => {
+	await fs.rm(isolationRepo, { recursive: true, force: true });
+});
+beforeEach(() => {
+	// Unit runner mocks do not consume native workspaces; give preflight a real Git checkout.
+	vi.spyOn(isolationRunner, "nativeWorkspace").mockReturnValue(async () => ({
+		dir: isolationRepo,
+		cleanup: async () => {},
+		retain: async () => ({ dir: isolationRepo, sidecarOk: true }),
+	}));
+});
+
 function session(
 	options: {
 		cwd?: string;
@@ -83,7 +110,7 @@ function session(
 	} = {},
 ): ToolSession {
 	return {
-		cwd: options.cwd ?? "/tmp",
+		cwd: options.cwd ?? (options.isolationEnabled ? isolationRepo : "/tmp"),
 		hasUI: false,
 		outputSchema: options.outputSchema,
 		settings:
@@ -143,9 +170,117 @@ function mockDiscovery(agent: AgentDefinition = AGENT): void {
 afterEach(() => {
 	vi.restoreAllMocks();
 	resetRegisteredArtifactDirsForTests();
+	AgentRegistry.resetGlobalForTests();
 });
 
 describe("structured subagent primitive", () => {
+	it("grants a writer its edit tools after a previous reader's claim", async () => {
+		mockDiscovery({ ...AGENT, tools: ["read", "bash", "write", "edit"] });
+		const parent = session();
+		parent.getTodoPhases = () => [
+			{
+				name: "Work",
+				tasks: [
+					{
+						content: "Repair",
+						status: "pending",
+						schedule: { owner: "reader", ownerReadOnly: { owner: "reader", readOnly: true } },
+					},
+				],
+			},
+		];
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({ session: parent, assignment: "Repair: update the module" }),
+		);
+		expect(policy.effectiveAgent.tools).toContain("edit");
+		expect(policy.effectiveAgent.readOnly).not.toBe(true);
+	});
+
+	it("lets a read-only QA row execute commands without granting edits or writer claims", async () => {
+		mockDiscovery({ ...AGENT, tools: ["read", "bash", "browser", "write", "edit", "ast_edit", "task"], spawns: "*" });
+		const parent = session();
+		parent.getToolByName = name =>
+			name === "browser"
+				? {
+						name,
+						label: "Browser",
+						description: "QA existing preview",
+						parameters: { type: "object", properties: {} },
+						execute: async () => ({ content: [{ type: "text", text: "preview inspected" }] }),
+					}
+				: undefined;
+		parent.getTodoPhases = () => [
+			{ name: "QA", tasks: [{ content: "Probe", status: "pending", schedule: { readOnly: true } }] },
+		];
+		const events: BeforeSubagentSpawnEvent[] = [];
+		parent.emitBeforeSubagentSpawn = async event => {
+			events.push(event);
+		};
+		const run = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(result());
+		await runStructuredSubagent(
+			request({ session: parent, assignment: "Probe: run pwd and git rev-parse --short HEAD" }),
+		);
+		expect(run.mock.calls[0]?.[0].agent.tools).toEqual(["read", "bash", "browser"]);
+		expect(run.mock.calls[0]?.[0].agent.spawns).toBeUndefined();
+		expect(events[0]?.readOnly).toBe(true);
+		const browser = run.mock.calls[0]?.[0].customTools?.find(tool => tool.name === "browser");
+		expect(await browser?.execute("qa", {}, undefined, undefined!)).toEqual({
+			content: [{ type: "text", text: "preview inspected" }],
+		});
+	});
+
+	it("preserves bundled scout tools and grants default task bash on explicit readOnly", async () => {
+		const scout = getBundledAgent("scout")!;
+		mockDiscovery(scout);
+		const scoutPolicy = await resolveEffectiveSubagentPolicy(request({ agent: "scout", readOnly: true }));
+		expect(scoutPolicy.effectiveAgent.tools).toEqual(scout.tools);
+		expect(scoutPolicy.effectiveAgent.tools).not.toContain("bash");
+		mockDiscovery({ ...AGENT, tools: undefined });
+		const defaultPolicy = await resolveEffectiveSubagentPolicy(request({ readOnly: true }));
+		expect(defaultPolicy.effectiveAgent.tools).toContain("bash");
+		expect(defaultPolicy.effectiveAgent.tools).not.toContain("write");
+	});
+
+	it("ordinary to strong dispatch resolves the selected family and never authenticates via parent Luna", async () => {
+		const models = ["gpt-6-luna", "gpt-6.1-sol"].map(id =>
+			buildModel({
+				id,
+				name: id,
+				provider: "codex-lb",
+				api: "openai-completions",
+				baseUrl: "http://localhost/v1",
+				reasoning: true,
+				input: ["text"],
+				contextWindow: 128000,
+				maxTokens: 8192,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			}),
+		);
+		const parent = session();
+		parent.getActiveModelString = () => "codex-lb/gpt-6-luna:medium";
+		parent.emitBeforeSubagentSpawn = async () => ({ model: ["codex-lb/gpt-6-luna:medium"] });
+		const resolved: string[] = [];
+		let solAuthenticated = true;
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			const selectors =
+				typeof options.modelOverride === "string" ? [options.modelOverride] : (options.modelOverride ?? []);
+			const selected = await resolveModelOverrideWithAuthFallback(selectors, options.parentActiveModelPattern, {
+				getAvailable: () => models,
+				getApiKey: async model => (model.id === "gpt-6-luna" || solAuthenticated ? "test-key" : undefined),
+			});
+			resolved.push(`${selected.model?.id}:${selected.thinkingLevel}`);
+			return result();
+		});
+		mockDiscovery({ ...AGENT, model: ["codex-lb/gpt-6-luna:medium"] });
+		await runStructuredSubagent(request({ session: parent }));
+		await runStructuredSubagent(request({ session: parent, model: "codex-lb/gpt-6.1-sol:high" }));
+		solAuthenticated = false;
+		parent.emitBeforeSubagentSpawn = undefined;
+		mockDiscovery({ ...AGENT, name: "ui-coder-strong", model: ["codex-lb/gpt-6.1-sol:high"] });
+		await runStructuredSubagent(request({ session: parent, agent: "ui-coder-strong" }));
+		expect(resolved).toEqual(["gpt-6-luna:medium", "gpt-6.1-sol:high", "gpt-6.1-sol:high"]);
+	});
+
 	it("resolves user-tagged model agents for task and eval but rejects untagged names", async () => {
 		mockDiscovery();
 		const taggedSession = session();
@@ -510,16 +645,21 @@ describe("structured subagent primitive", () => {
 		const untagged: AgentDefinition = { ...AGENT, name: "m2", model: [selector], thinkingLevel: Effort.Medium };
 		const settings = Settings.isolated({ "task.maxEffort": "low", "task.isolation.enabled": false });
 		const parent = Object.assign(session({ settings, sessionAgents: [tagged, untagged] }), {
-			modelRegistry: { authStorage: {}, refresh: async () => {}, getAvailable: () => [model] },
+			modelRegistry: {
+				authStorage: {},
+				refresh: async () => {},
+				getAvailable: () => [model],
+				getApiKey: async () => "test-key",
+			},
 			getApiKey: async () => "test-key",
 		});
-		const create = vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async () => {
+		const create = vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
 			const listeners: Array<(event: AgentSessionEvent) => void> = [];
 			const child = {
 				...createSessionDefaults(),
 				state: { messages: [] },
 				agent: { state: { systemPrompt: ["test"] } },
-				sessionManager: { appendSessionInit: () => {} },
+				sessionManager: options!.sessionManager!,
 				getActiveToolNames: () => ["read", "yield"],
 				getEnabledToolNames: () => ["read", "yield"],
 				subscribe: (listener: (event: AgentSessionEvent) => void) => {
@@ -548,7 +688,8 @@ describe("structured subagent primitive", () => {
 		});
 
 		for (const agent of ["m1", "m2", "worker"]) {
-			await runStructuredSubagent(request({ session: parent, agent, effort: "hi" }));
+			const settled = await runStructuredSubagent(request({ session: parent, agent, effort: "hi" }));
+			expect(settled.result.error).toBeUndefined();
 		}
 
 		expect(create.mock.calls.map(([options]) => options?.thinkingLevel)).toEqual([
@@ -556,7 +697,12 @@ describe("structured subagent primitive", () => {
 			Effort.Low,
 			Effort.Low,
 		]);
-		expect(create.mock.calls[0]?.[0]?.thinkingLevelCeiling).toBeUndefined();
+		expect(
+			create.mock.calls.map(([options]) => {
+				const ceiling = options?.thinkingLevelCeiling;
+				return typeof ceiling === "function" ? ceiling(model) : ceiling;
+			}),
+		).toEqual([undefined, Effort.Low, Effort.Low]);
 	});
 	it("holds the parent on an inline child until it settles, but not on a detached one", async () => {
 		mockDiscovery();
@@ -710,7 +856,9 @@ describe("structured subagent primitive", () => {
 		await resolveEffectiveSubagentPolicy(request({ session: childSession }));
 		expect(events).toEqual([]);
 
-		const settled = await runStructuredSubagent(request({ session: childSession, retainArtifacts: true }));
+		const settled = await runStructuredSubagent(
+			request({ session: childSession, retainArtifacts: true, context: "Assigned worktree /tmp/worker-evidence" }),
+		);
 		expect(dispatched[0]).toMatchObject({
 			modelOverride: ["openai/gpt-4o"],
 			modelRole: "definition",
@@ -723,6 +871,16 @@ describe("structured subagent primitive", () => {
 				invocationKind: "task",
 				modelRole: "definition",
 				patterns: ["anthropic/claude-opus-4-5"],
+				isolated: false,
+				assignment: "Inspect the target.",
+				context: "Assigned worktree /tmp/worker-evidence",
+				row: undefined,
+				cwd: "/tmp",
+				reads: [],
+				workspace: undefined,
+				verifiedWorkspace: { repo: "/tmp", cwd: "/tmp", head: "", reads: [], resources: ["/tmp"] },
+				readOnly: false,
+				spawnKey: undefined,
 			},
 		]);
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
@@ -730,13 +888,20 @@ describe("structured subagent primitive", () => {
 
 	it("rejects dispatch before leasing artifacts when an extension blocks the spawn", async () => {
 		mockDiscovery();
-		const blockedSession = session();
-		blockedSession.emitBeforeSubagentSpawn = async () => ({ block: true, reason: "pool exhausted" });
+		const blockedSession = session({ isolationEnabled: true });
+		const events: BeforeSubagentSpawnEvent[] = [];
+		blockedSession.emitBeforeSubagentSpawn = async event => {
+			events.push(event);
+			return { block: true, reason: "pool exhausted" };
+		};
 		const run = vi.spyOn(executorModule, "runSubprocess");
-		const error = await runStructuredSubagent(request({ session: blockedSession })).catch((cause: unknown) => cause);
+		const error = await runStructuredSubagent(
+			request({ session: blockedSession, isolation: { requested: true } }),
+		).catch((cause: unknown) => cause);
 		expect(error).toBeInstanceOf(StructuredSubagentError);
 		expect(error as StructuredSubagentError).toMatchObject({ kind: "preflight", message: "pool exhausted" });
 		expect(run).not.toHaveBeenCalled();
+		expect(events[0]?.isolated).toBe(true);
 		expect(artifactsDirsFromRegistry()).toEqual([]);
 	});
 
@@ -813,18 +978,30 @@ describe("structured subagent primitive", () => {
 		expect(evalPolicy.enableIrc).toBe(taskPolicy.enableIrc);
 	});
 
-	it("rejects an invalid caller schema before executor dispatch in both modes", async () => {
+	it("caller false disables inherited schemas and accepts a raw auditor table in both modes", async () => {
 		mockDiscovery();
-		const dispatch = vi.spyOn(executorModule, "runSubprocess");
-
+		const table =
+			"| id | verdict | evidence | artifact identity |\n| --- | --- | --- | --- |\n| R1 | pass | observed login | file:/receipt@sha256=abc |";
 		for (const schemaMode of ["permissive", "strict"] as const) {
-			await expect(runStructuredSubagent(request({ outputSchema: false, schemaMode }))).rejects.toThrow(
-				schemaMode === "strict"
-					? "Invalid strict caller output schema: boolean false schema rejects all outputs"
-					: "Invalid caller output schema: boolean false schema rejects all outputs",
+			const policy = await resolveEffectiveSubagentPolicy(
+				request({ outputSchema: false, schemaMode, session: session({ outputSchema: { type: "object" } }) }),
 			);
+			const output = executorModule.finalizeSubprocessOutput({
+				rawOutput: "",
+				exitCode: 0,
+				stderr: "",
+				doneAborted: false,
+				signalAborted: false,
+				yieldItems: [{ status: "success", data: table }],
+				outputSchema: policy.schema.schema,
+				outputSchemaSource: policy.schema.source,
+				outputSchemaMode: policy.schema.mode,
+			});
+			expect(output.exitCode).toBe(0);
+			expect(output.rawOutput).toBe(table);
+			expect(output.structuredOutput).toBeUndefined();
+			expect(policy.schema.outputSchemaOverridesAgent).toBe(true);
 		}
-		expect(dispatch).not.toHaveBeenCalled();
 	});
 
 	it("returns a prose answer in one turn when structured task results are disabled", async () => {
@@ -993,21 +1170,17 @@ describe("structured subagent primitive", () => {
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
 	});
 
-	it("keeps invalid inherited schemas permissive but rejects them when session strict mode is inherited", async () => {
-		const invalidAgent = { ...AGENT, output: false };
-		mockDiscovery(invalidAgent);
-		expect((await resolveEffectiveSubagentPolicy(request())).schema).toMatchObject({
-			source: "agent",
-			mode: "permissive",
-		});
-
-		const noAgentOutput = { ...AGENT, output: undefined };
-		mockDiscovery(noAgentOutput);
+	it("inherited false disables wrappers rather than rejecting strict output", async () => {
+		mockDiscovery({ ...AGENT, output: false });
+		const agent = await resolveEffectiveSubagentPolicy(request({ schemaMode: "strict" }));
+		expect(agent.schema.source).toBe("none");
+		expect(agent.schema.schema).toBeUndefined();
+		mockDiscovery({ ...AGENT, output: undefined });
 		const strictSession = session({ outputSchema: false });
 		strictSession.outputSchemaMode = "strict";
-		await expect(resolveEffectiveSubagentPolicy(request({ session: strictSession }))).rejects.toThrow(
-			"Invalid strict effective output schema: boolean false schema rejects all outputs",
-		);
+		const inherited = await resolveEffectiveSubagentPolicy(request({ session: strictSession }));
+		expect(inherited.schema.source).toBe("none");
+		expect(inherited.schema.schema).toBeUndefined();
 	});
 
 	it("persists nested patch text with the compatible recovery path and wording", async () => {
@@ -1713,7 +1886,8 @@ describe("per-call model preflight", () => {
 		);
 		expect(policy.modelOverride).toEqual(["mock/agent-own"]);
 		expect(policy.perCallModelGrants).toBeUndefined();
-		expect(policy.parentActiveModelPattern).toBe("mock/parent");
+		// An agent that names its own model never falls back to the parent session model on auth failure.
+		expect(policy.parentActiveModelPattern).toBeUndefined();
 	});
 
 	it("rejects a per-call model for a level-tagged agent, even its own selector", async () => {
@@ -1787,5 +1961,55 @@ describe("per-call model preflight", () => {
 			expect(policy.modelOverride).toEqual(["mock/target"]);
 			expect(policy.perCallModelGrants?.agentName).toBe("seance");
 		});
+	});
+	it("binds worker-owned rows before and after a run without materializing the branch", async () => {
+		mockDiscovery();
+		const manager = SessionManager.inMemory("/tmp");
+		let todoId: string;
+		Object.assign(manager, { getBranchMatching: () => [manager.getEntry(todoId)!] });
+		const snapshot = (content: string) => ({
+			phases: [{ name: "Plan", tasks: [{ content, status: "pending", schedule: { owner: "Worker" } }] }],
+		});
+		todoId = manager.appendCustomEntry(todoModule.USER_TODO_EDIT_CUSTOM_TYPE, snapshot("Before"));
+		vi.spyOn(manager, "getBranch").mockImplementation(() => {
+			throw new Error("full branch read forbidden");
+		});
+		const bind = vi
+			.spyOn(todoModule, "bindRequirementRowArtifact")
+			.mockResolvedValue({ cwd: "/tmp", head: null, dirty: false });
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async () => {
+			todoId = manager.appendCustomEntry(todoModule.USER_TODO_EDIT_CUSTOM_TYPE, snapshot("After"));
+			return result();
+		});
+		await runStructuredSubagent(
+			request({ identity: { id: "Worker" }, session: { ...session(), sessionManager: manager } }),
+		);
+		expect(bind.mock.calls.map(call => call[1])).toEqual(["Before", "After"]);
+	});
+});
+
+describe("role pool spawn preflight", () => {
+	it("uses the spawn identity seed during role pool preflight", async () => {
+		mockDiscovery({ ...AGENT, model: ["@pool"] });
+		const settings = Settings.isolated({
+			modelRoles: { pool: "pool/a, pool/b, pool/c" },
+			modelRolePools: { pool: { "pool/a": 0, "pool/b": 1, "pool/c": 1 } },
+		});
+		const expected = resolveAgentModelSelection({
+			agentModel: "@pool",
+			settings,
+			seed: "pool-spawn|call|3|123",
+		}).patterns;
+		const policy = await resolveEffectiveSubagentPolicy(
+			request({
+				session: session({ settings }),
+				identity: { id: "pool-spawn" },
+				parentToolCallId: "call",
+				index: 3,
+				invokedAt: 123,
+			}),
+		);
+		expect(policy.modelOverride).toEqual(expected);
+		expect(policy.modelOverride?.at(-1)).toBe("pool/a");
 	});
 });

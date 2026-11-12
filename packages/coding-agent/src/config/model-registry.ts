@@ -1,7 +1,10 @@
+import * as fs from "node:fs";
 import * as path from "node:path";
+import { splitUpstreamRouting } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import type { ApiKeyResolver, FetchImpl, ResolvedApiKey, UsageProvider } from "@oh-my-pi/pi-ai";
 import { type AuthApiKeyOptions, type AuthPeekOptions, oauthAccountKey } from "@oh-my-pi/pi-ai/auth-storage";
 import { registerCustomApi, unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
+import { filterBlacklistedModels, modelBlacklistReason } from "@oh-my-pi/pi-ai/model-blacklist";
 import { registerOAuthProvider, unregisterOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
 import { setCodexAttestationProvider } from "@oh-my-pi/pi-ai/providers/openai-codex-attestation";
@@ -34,6 +37,7 @@ import {
 	type ModelManagerOptions,
 	type ModelRefreshStrategy,
 } from "@oh-my-pi/pi-catalog/model-manager";
+import type { CacheEntry } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModels, getBundledProviders } from "@oh-my-pi/pi-catalog/models";
 import {
 	googleAntigravityModelManagerOptions,
@@ -49,11 +53,28 @@ import {
 import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
 import { apiServesKind, modelKind, type ModelKind } from "@oh-my-pi/pi-catalog/types";
 import { isOfficialCodexApiUrl } from "@oh-my-pi/pi-catalog/wire/codex";
-import { getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
+import {
+	extractHttpStatusFromError,
+	getAgentDir,
+	isBunTestRuntime,
+	logger,
+	wrapFetchForExtraCa,
+} from "@oh-my-pi/pi-utils";
+import * as AIError from "@oh-my-pi/pi-ai/error";
+import { extractProviderRetryHint } from "@oh-my-pi/pi-ai/utils/retry-after";
 import { resolveProviderModelReference } from "../config/model-resolver";
 import { generateCodexAttestation } from "../live/attestation";
 import { redactUrlForLog } from "../mcp/json-rpc";
 import type { AuthStorage } from "../session/auth-storage";
+import {
+	clearProviderAuthOnCredentialChange,
+	isProviderExhausted,
+	probeUnavailableProviders,
+	type ProviderProbeOptions,
+	providerExhaustionRecord,
+	recordProviderFailure,
+} from "../session/provider-exhaustion";
+import { probeProviderInference } from "../session/provider-availability-probe";
 import { type ApiKeyResolverModel, type ApiKeyResolverOptions, createApiKeyResolver } from "./api-key-resolver";
 import type { ConfigError, ConfigFile } from "./config-file";
 import {
@@ -80,6 +101,7 @@ import {
 	discoverLlamaCppModelRuntimeMetadata,
 	discoverLmStudioModelRuntimeMetadata,
 	discoverModelsByProviderType,
+	DiscoveryHttpError,
 	ensureLlamaCppV1BaseUrl,
 	getImplicitOllamaBaseUrl,
 	getOllamaContextLengthOverride,
@@ -137,6 +159,7 @@ import {
 	type ProviderValidationModel,
 	validateProviderConfiguration,
 } from "./models-config";
+import { writeFileAtomicallySync } from "../utils/atomic-file";
 import type { ModelOverride, ModelsConfig, ProviderAuthMode } from "./models-config-schema";
 import { type Settings, settings } from "./settings";
 
@@ -199,8 +222,30 @@ interface CustomModelsResult {
 	keylessProviders?: Set<string>;
 	discoverableProviders?: DiscoveryProviderConfig[];
 	configuredProviders?: Set<string>;
+	/** Config-sourced `apiKey` values by provider, re-installed when a retained snapshot is restored. */
+	providerApiKeys?: Map<string, string>;
+	/** `!command` credential sources by provider, re-registered when a retained snapshot is restored. */
+	commandConfigs?: Map<string, Set<string>>;
 	error?: ConfigError;
+	recovered?: boolean;
 	found: boolean;
+}
+
+/** Independent copy of a parsed models.yml result, so a reload that clears live collections cannot corrupt a retained snapshot. */
+function cloneCustomModelsResult(result: CustomModelsResult): CustomModelsResult {
+	return {
+		...result,
+		overrides: result.overrides && new Map(result.overrides),
+		modelOverrides:
+			result.modelOverrides &&
+			new Map([...result.modelOverrides].map(([provider, models]) => [provider, new Map(models)])),
+		keylessProviders: result.keylessProviders && new Set(result.keylessProviders),
+		configuredProviders: result.configuredProviders && new Set(result.configuredProviders),
+		providerApiKeys: result.providerApiKeys && new Map(result.providerApiKeys),
+		commandConfigs:
+			result.commandConfigs &&
+			new Map([...result.commandConfigs].map(([provider, configs]) => [provider, new Set(configs)])),
+	};
 }
 
 interface ConfiguredModelDiscoveryResult {
@@ -296,10 +341,116 @@ export type ResolvedRequestAuth =
 	  }
 	| { ok: false; error: string };
 
-/**
- * Model registry - loads and manages models, resolves API keys via AuthStorage.
- */
+interface CachedStandardProjection {
+	validUntil: number;
+	models: Model<Api>[];
+	bundledById: Map<string, Model<Api>> | undefined;
+	cacheMatchesBundledFingerprint: boolean;
+	cachedSnapshotMatchesBundled: boolean;
+}
+
+// Parsed payloads are process snapshots owned by the row memo. A replacement
+// payload gets a new array; freshness-only changes keep the projection alive.
+const standardCacheProjections = new WeakMap<Model<Api>[], Map<string, CachedStandardProjection>>();
+
+function projectCachedStandardModels(cache: CacheEntry<Api>, providerId: string): CachedStandardProjection {
+	let byProvider = standardCacheProjections.get(cache.models);
+	const existing = byProvider?.get(providerId);
+	const now = Date.now();
+	if (existing && now < existing.validUntil) return existing;
+	const sharedCatalogProvider = MODELS_DEV_CATALOG_PROVIDER_ID_LOOKUP[providerId] === true;
+	const additiveSharedCatalogProvider = ADDITIVE_MODELS_DEV_CATALOG_PROVIDER_ID_LOOKUP[providerId] === true;
+	// The model cache never persists request headers (#5780): restore
+	// them from the bundled static catalog, and drop cached rows whose
+	// headers cannot be rebuilt so the bundled fallback (which still
+	// carries its headers) wins the startup merge instead of a cached
+	// model with required transport headers missing.
+	const omittedHeaderIds = new Set(cache.headerOmittedModelIds);
+	const unrestorableHeaderIds = new Set(cache.unrestorableHeaderModelIds);
+	const bundledModels =
+		omittedHeaderIds.size > 0 || sharedCatalogProvider
+			? (getBundledModels(providerId as Parameters<typeof getBundledModels>[0]) as Model<Api>[])
+			: undefined;
+	// Every shared-catalog manager layers the catalog additively
+	// (`#collectBuiltInModelManagerOptions`), authoritative or not.
+	const bundledFingerprint = bundledModels
+		? fingerprintStaticModels(bundledModels, {
+				authoritative: sharedCatalogProvider && !additiveSharedCatalogProvider,
+				additive: sharedCatalogProvider,
+			})
+		: undefined;
+	// A matching cache may contain provider-endpoint overrides. Strip
+	// same-id rows only across a bundled-catalog upgrade, where the
+	// additive shared catalog must not replace the new bundled metadata.
+	const additiveCacheStaticMismatch =
+		additiveSharedCatalogProvider &&
+		bundledFingerprint !== undefined &&
+		cache.staticFingerprint !== bundledFingerprint &&
+		!cache.staticFingerprint.startsWith(`${bundledFingerprint}:drop:`);
+	const bundledById = bundledModels
+		? new Map(bundledModels.map(bundledModel => [bundledModel.id, bundledModel]))
+		: undefined;
+	const models: Model<Api>[] = [];
+	let validUntil = Number.POSITIVE_INFINITY;
+	for (const cachedModel of cache.models) {
+		// Shared catalog rows can be projected under another provider id.
+		// That changes policy inputs, so only this projection is rebuilt;
+		// same-provider materialized cache rows stay on the zero-build path.
+		const model =
+			cachedModel.provider === providerId
+				? cachedModel
+				: buildModel({ ...toModelSpec(cachedModel), provider: providerId });
+		if (cachedModel.provider !== providerId) {
+			validUntil = Math.min(validUntil, nextBuildPriceChange(cachedModel.cost, now));
+		}
+		if (additiveCacheStaticMismatch && bundledById?.has(model.id)) continue;
+		if (!omittedHeaderIds.has(model.id)) {
+			models.push(model);
+			continue;
+		}
+		// Current unrestorable markers prove that neither same-id nor
+		// request-model bundled headers matched the live model. Only markers
+		// from the old id-only writer may recover through `requestModelId`.
+		const unrestorable = unrestorableHeaderIds.has(model.id);
+		const bundledHeaders = (
+			unrestorable
+				? cache.legacyHeaderRestoreMarkers && model.requestModelId
+					? bundledById?.get(model.requestModelId)
+					: undefined
+				: (bundledById?.get(model.id) ??
+					(model.requestModelId ? bundledById?.get(model.requestModelId) : undefined))
+		)?.headers;
+		if (!bundledHeaders) continue;
+		models.push({ ...model, headers: bundledHeaders });
+	}
+	const projection: CachedStandardProjection = {
+		validUntil,
+		models,
+		bundledById,
+		cacheMatchesBundledFingerprint:
+			bundledFingerprint !== undefined &&
+			(cache.staticFingerprint === bundledFingerprint ||
+				cache.staticFingerprint.startsWith(`${bundledFingerprint}:drop:`)),
+		cachedSnapshotMatchesBundled:
+			sharedCatalogProvider &&
+			bundledModels !== undefined &&
+			fingerprintStaticModels(cache.models) === fingerprintStaticModels(bundledModels),
+	};
+	if (!byProvider) {
+		byProvider = new Map();
+		standardCacheProjections.set(cache.models, byProvider);
+	}
+	byProvider.set(providerId, projection);
+	return projection;
+}
+
+/** Model registry - loads and manages models, resolves API keys via AuthStorage. */
 export class ModelRegistry {
+	#availabilityTimer: NodeJS.Timeout | undefined;
+	#availabilityRun: Promise<void> | undefined;
+	#credentialVersions = new Map<string, string>();
+	#resolvedCredentialVersions = new Map<string, string>();
+	#discoveryProbeProviders = new Set<string>();
 	#models: Model<Api>[] = [];
 	#unprojectedModels: Model<Api>[] = [];
 	/**
@@ -371,12 +522,16 @@ export class ModelRegistry {
 	#configError: ConfigError | undefined = undefined;
 	#warnedCompatKeys = new Set<string>();
 	#configWarnings: string[] = [];
+	#configRecovered = false;
+	#lastGoodCustomModels: CustomModelsResult | undefined;
 	#modelsConfigFile: ConfigFile<ModelsConfig>;
 	#lastStaticLoadMtime: number | null = null;
 	#registeredProviderSources: Set<string> = new Set();
 	#providerDiscoveryStates: Map<string, ProviderDiscoveryState> = new Map();
 	#cacheDbPath?: string;
 	#suppressedSelectors: Map<string, number> = new Map();
+	/** Providers whose account-wide free-tier quota is spent, mapped to the cooldown end. */
+	#suppressedFreeTiers: Map<string, number> = new Map();
 	#backgroundRefresh?: Promise<void>;
 	/** Whether the first background discovery has settled; latches once so a late-armed waiter still resolves. */
 	#initialRefreshSettled = false;
@@ -645,6 +800,9 @@ export class ModelRegistry {
 		if (!this.#owner) this.authStorage.keys.setResolver(resolveConfigValue);
 		// Load config and cache-backed layers synchronously in the constructor.
 		this.#loadModels();
+		for (const provider of this.#knownStaticProviders()) {
+			this.#credentialVersions.set(provider, this.providerCredentialVersion(provider));
+		}
 	}
 
 	/**
@@ -905,6 +1063,7 @@ export class ModelRegistry {
 			this.#owner.refreshInBackground(strategy);
 			return;
 		}
+		this.#startAvailabilityMonitoring();
 		if (this.#backgroundRefresh) {
 			return;
 		}
@@ -925,6 +1084,117 @@ export class ModelRegistry {
 				this.#markInitialRefreshSettled();
 			});
 		this.#backgroundRefresh = refreshPromise;
+	}
+
+	/** Operational state never changes the catalog or the configured role preference. */
+	isProviderAvailable(provider: string): boolean {
+		return !this.#isProviderDisabled(provider) && !isProviderExhausted(provider);
+	}
+
+	async #rememberResolvedOverride(provider: string): Promise<void> {
+		const source = this.authStorage.keys.source(provider)?.kind;
+		if (source === "runtime" || source === "config") {
+			const key = await this.authStorage.keys.peek(provider);
+			this.#resolvedCredentialVersions.set(provider, Bun.hash(key ?? "").toString(16));
+		} else {
+			this.#resolvedCredentialVersions.delete(provider);
+		}
+	}
+
+	/** Fingerprint only; credential material is never persisted in availability records. */
+	providerCredentialVersion(provider: string): string {
+		return Bun.hash(
+			JSON.stringify([
+				this.authStorage.credentials.list(provider).map(({ id, credential }) => [id, credential]),
+				this.#runtimeProviderApiKeys.get(provider),
+				this.#resolvedCredentialVersions.get(provider),
+				this.#providerOverrides.get(provider)?.apiKey,
+				getEnvApiKey(provider),
+			]),
+		).toString(16);
+	}
+
+	#startAvailabilityMonitoring(): void {
+		if (this.#availabilityTimer || this.#owner || isBunTestRuntime()) return;
+		const registry = new WeakRef(this);
+		const timer = setInterval(() => {
+			const current = registry.deref();
+			if (!current) {
+				clearInterval(timer);
+				return;
+			}
+			void current.runAvailabilityProbes().catch(error => {
+				logger.debug("Provider availability check failed", { error: String(error) });
+			});
+		}, 60_000);
+		timer.unref();
+		this.#availabilityTimer = timer;
+	}
+
+	stopAvailabilityMonitoring(): void {
+		if (this.#availabilityTimer) clearInterval(this.#availabilityTimer);
+		this.#availabilityTimer = undefined;
+	}
+
+	/** Run one leased recovery pass. Explicit entry point also permits network-free regression tests. */
+	runAvailabilityProbes(options: ProviderProbeOptions = {}): Promise<void> {
+		if (options.force) return this.#runAvailabilityProbes(options);
+		if (this.#owner) return Promise.resolve();
+		this.#availabilityRun ??= this.#runAvailabilityProbes().finally(() => {
+			this.#availabilityRun = undefined;
+		});
+		return this.#availabilityRun;
+	}
+
+	async #runAvailabilityProbes(options: ProviderProbeOptions = {}): Promise<void> {
+		await this.authStorage.credentials.poll();
+		for (const provider of this.#knownStaticProviders()) {
+			if (providerExhaustionRecord(provider)?.class === "auth") {
+				// Peek neither refreshes OAuth nor rotates accounts. Include CLI and
+				// command-backed overrides without exposing key material in state.
+				try {
+					await this.#rememberResolvedOverride(provider);
+				} catch {
+					continue;
+				}
+			}
+			const version = this.providerCredentialVersion(provider);
+			const previous = this.#credentialVersions.get(provider);
+			if (
+				this.authStorage.keys.source(provider) !== undefined &&
+				((previous !== undefined && previous !== version) || isProviderExhausted(provider))
+			) {
+				clearProviderAuthOnCredentialChange(provider, version);
+			}
+			this.#credentialVersions.set(provider, version);
+		}
+		await probeUnavailableProviders(async record => {
+			if (this.#isProviderDisabled(record.provider)) return { available: false };
+			if (record.class === "discovery") {
+				this.#discoveryProbeProviders.add(record.provider);
+				try {
+					await this.refreshDiscoverableProviders([record.provider], "online");
+					const state = this.#providerDiscoveryStates.get(record.provider);
+					return {
+						available: state !== undefined && !state.error && (state.status === "ok" || state.status === "empty"),
+					};
+				} finally {
+					this.#discoveryProbeProviders.delete(record.provider);
+				}
+			}
+			return { available: await probeProviderInference(this, record.provider) };
+		}, options);
+	}
+
+	#recordDiscoveryFailure(provider: string, error: unknown): void {
+		if (this.#discoveryProbeProviders.has(provider)) return;
+		const classified =
+			error instanceof DiscoveryHttpError &&
+			recordProviderFailure(provider, {
+				status: error.status,
+				credentialVersion: this.providerCredentialVersion(provider),
+			});
+		if (!classified) recordProviderFailure(provider, { discoveryFailure: true });
 	}
 
 	/** Whether background discovery started by {@link refreshInBackground} is still running and may add models. */
@@ -952,7 +1222,7 @@ export class ModelRegistry {
 	async awaitBackgroundRefresh(): Promise<void> {
 		if (this.#owner) return this.#owner.awaitBackgroundRefresh();
 		if (this.#backgroundRefresh) {
-			await this.#backgroundRefresh;
+			await logger.time("modelRegistry.refresh.wait", () => this.#backgroundRefresh);
 		}
 	}
 
@@ -1031,6 +1301,7 @@ export class ModelRegistry {
 				this.#suppressedSelectors.delete(selector);
 			}
 		}
+		this.#suppressedFreeTiers.delete(providerId);
 		await this.#refreshRuntimeDiscoveries(strategy, new Set([providerId]));
 		// #reloadStaticModels above may have rebuilt #models from static sources,
 		// dropping models previously discovered by OTHER runtime providers (their
@@ -1309,9 +1580,15 @@ export class ModelRegistry {
 		return warnings;
 	}
 
+	/** Whether the failed primary load retained a validated in-memory or sidecar configuration. */
+	isUsingLastGoodConfig(): boolean {
+		return this.#configRecovered;
+	}
+
 	#loadModels() {
 		this.#resetStaticComposition();
 		// Load custom config first (to know which providers to override).
+		const customModelsResult = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
 		const {
 			models: customModels = [],
 			overrides = new Map(),
@@ -1320,8 +1597,12 @@ export class ModelRegistry {
 			discoverableProviders = [],
 			configuredProviders = new Set<string>(),
 			error: configError,
-		} = logger.time("modelRegistry:loadCustomModels", () => this.#loadCustomModels());
+		} = customModelsResult;
+		if (customModelsResult.found && !customModelsResult.error) {
+			this.#lastGoodCustomModels = cloneCustomModelsResult(customModelsResult);
+		}
 		this.#configError = configError;
+		this.#configRecovered = customModelsResult.recovered ?? false;
 		this.#keylessProviders = keylessProviders;
 		this.#discoverableProviders = discoverableProviders;
 		this.#customModelOverlays = customModels;
@@ -1404,7 +1685,8 @@ export class ModelRegistry {
 				this.#internedStaticModels.delete(key);
 			}
 		}
-		this.#providerLookupSnapshots.delete(providerName);
+		// Lookup snapshots are keyed by the normalized provider id (see #modelsForProviderLookup).
+		this.#providerLookupSnapshots.delete(providerName.trim().toLowerCase());
 	}
 
 	/** A modifier runs only for a provider holding OAuth credentials; without one it cannot touch the catalog. */
@@ -1715,65 +1997,8 @@ export class ModelRegistry {
 			if (cache.fresh && cache.authoritative) {
 				authoritativeFreshProviders.add(providerId);
 			}
-			// The model cache never persists request headers (#5780): restore
-			// them from the bundled static catalog, and drop cached rows whose
-			// headers cannot be rebuilt so the bundled fallback (which still
-			// carries its headers) wins the startup merge instead of a cached
-			// model with required transport headers missing.
-			const omittedHeaderIds = new Set(cache.headerOmittedModelIds);
-			const unrestorableHeaderIds = new Set(cache.unrestorableHeaderModelIds);
-			const bundledModels =
-				omittedHeaderIds.size > 0 || sharedCatalogProvider
-					? (getBundledModels(providerId as Parameters<typeof getBundledModels>[0]) as Model<Api>[])
-					: undefined;
-			// Every shared-catalog manager layers the catalog additively
-			// (`#collectBuiltInModelManagerOptions`), authoritative or not.
-			const bundledFingerprint = bundledModels
-				? fingerprintStaticModels(bundledModels, {
-						authoritative: sharedCatalogProvider && !additiveSharedCatalogProvider,
-						additive: sharedCatalogProvider,
-					})
-				: undefined;
-			// A matching cache may contain provider-endpoint overrides. Strip
-			// same-id rows only across a bundled-catalog upgrade, where the
-			// additive shared catalog must not replace the new bundled metadata.
-			const additiveCacheStaticMismatch =
-				additiveSharedCatalogProvider &&
-				bundledFingerprint !== undefined &&
-				cache.staticFingerprint !== bundledFingerprint &&
-				!cache.staticFingerprint.startsWith(`${bundledFingerprint}:drop:`);
-			const bundledById = bundledModels
-				? new Map(bundledModels.map(bundledModel => [bundledModel.id, bundledModel]))
-				: undefined;
-			const models: Model<Api>[] = [];
-			for (const cachedModel of cache.models) {
-				// Shared catalog rows can be projected under another provider id.
-				// That changes policy inputs, so only this projection is rebuilt;
-				// same-provider materialized cache rows stay on the zero-build path.
-				const model =
-					cachedModel.provider === providerId
-						? cachedModel
-						: buildModel({ ...toModelSpec(cachedModel), provider: providerId });
-				if (additiveCacheStaticMismatch && bundledById?.has(model.id)) continue;
-				if (!omittedHeaderIds.has(model.id)) {
-					models.push(model);
-					continue;
-				}
-				// Current unrestorable markers prove that neither same-id nor
-				// request-model bundled headers matched the live model. Only markers
-				// from the old id-only writer may recover through `requestModelId`.
-				const unrestorable = unrestorableHeaderIds.has(model.id);
-				const bundledHeaders = (
-					unrestorable
-						? cache.legacyHeaderRestoreMarkers && model.requestModelId
-							? bundledById?.get(model.requestModelId)
-							: undefined
-						: (bundledById?.get(model.id) ??
-							(model.requestModelId ? bundledById?.get(model.requestModelId) : undefined))
-				)?.headers;
-				if (!bundledHeaders) continue;
-				models.push({ ...model, headers: bundledHeaders });
-			}
+			const { models, bundledById, cacheMatchesBundledFingerprint, cachedSnapshotMatchesBundled } =
+				projectCachedStandardModels(cache, providerId);
 			const providerOverride = this.#providerOverrides.get(providerId);
 			const withCompat = providerOverride
 				? models.map(model => {
@@ -1788,13 +2013,6 @@ export class ModelRegistry {
 			const cachedModels = this.#applyHardcodedModelPolicies(resolved);
 			modelsByProvider.set(providerId, cachedModels);
 			if (sharedCatalogProvider) {
-				const cacheMatchesBundledFingerprint =
-					bundledFingerprint !== undefined &&
-					(cache.staticFingerprint === bundledFingerprint ||
-						cache.staticFingerprint.startsWith(`${bundledFingerprint}:drop:`));
-				const cachedSnapshotMatchesBundled =
-					bundledModels !== undefined &&
-					fingerprintStaticModels(cache.models) === fingerprintStaticModels(bundledModels);
 				const cacheContributed = additiveSharedCatalogProvider
 					? cachedModels.some(model => bundledById?.has(model.id) !== true)
 					: !(cacheMatchesBundledFingerprint && cachedSnapshotMatchesBundled);
@@ -2061,9 +2279,42 @@ export class ModelRegistry {
 				found: false,
 			};
 		}
-		const { value, error, status } = this.#modelsConfigFile.tryLoad();
+		let loaded = this.#modelsConfigFile.tryLoad();
+		let restoredFromSidecar = false;
+		const error = loaded.status === "error" ? loaded.error : undefined;
+		const configPath = this.#modelsConfigFile.path();
+		// Namespaced by the configured file so registries on different `modelsPath`
+		// values in one directory never restore each other's providers or keys.
+		const sidecarPath = configPath
+			? path.join(path.dirname(configPath), `${path.parse(configPath).name}.last-good.yml`)
+			: undefined;
+		if (loaded.status === "ok" && configPath && sidecarPath) {
+			try {
+				writeFileAtomicallySync(sidecarPath, fs.readFileSync(configPath, "utf8"));
+			} catch (writeError) {
+				logger.warn("Failed to persist last-good models config", { path: sidecarPath, error: writeError });
+			}
+		}
+		if (loaded.status === "error" && !this.#lastGoodCustomModels && sidecarPath) {
+			const sidecar = this.#modelsConfigFile.relocate(sidecarPath, configPath).tryLoad();
+			if (sidecar.status === "ok") {
+				loaded = sidecar;
+				restoredFromSidecar = true;
+			}
+		}
+		const { value, status } = loaded;
 
 		if (status === "error") {
+			if (this.#lastGoodCustomModels) {
+				const snapshot = cloneCustomModelsResult(this.#lastGoodCustomModels);
+				// The reload cleared config credentials; put the retained ones back.
+				for (const [provider, apiKey] of snapshot.providerApiKeys ?? [])
+					this.#installProviderApiKey(provider, apiKey);
+				for (const [provider, configs] of snapshot.commandConfigs ?? []) {
+					this.#commandConfigsByProvider.set(provider, configs);
+				}
+				return { ...snapshot, error, recovered: true };
+			}
 			return {
 				models: [],
 				overrides: new Map(),
@@ -2097,6 +2348,8 @@ export class ModelRegistry {
 		const overrides = new Map<string, ProviderOverride>();
 		const allModelOverrides = new Map<string, Map<string, ModelOverride>>();
 		const keylessProviders = new Set<string>();
+		const providerApiKeys = new Map<string, string>();
+		const parsedCommandConfigs = new Map<string, Set<string>>();
 		const discoverableProviders: DiscoveryProviderConfig[] = [];
 		const providerEntries = Object.entries(value.providers ?? {});
 		const configuredProviders = new Set(Object.keys(value.providers ?? {}));
@@ -2182,6 +2435,7 @@ export class ModelRegistry {
 			// must authenticate the outbound request.
 			if (providerConfig.apiKey) {
 				this.#installProviderApiKey(providerName, providerConfig.apiKey);
+				providerApiKeys.set(providerName, providerConfig.apiKey);
 			}
 
 			// Parse per-model overrides. Header values stay raw (`!cmd` intact)
@@ -2195,7 +2449,10 @@ export class ModelRegistry {
 				}
 				allModelOverrides.set(providerName, perModel);
 			}
-			if (commandConfigs.size > 0) this.#commandConfigsByProvider.set(providerName, commandConfigs);
+			if (commandConfigs.size > 0) {
+				this.#commandConfigsByProvider.set(providerName, commandConfigs);
+				parsedCommandConfigs.set(providerName, commandConfigs);
+			}
 		}
 
 		return {
@@ -2205,6 +2462,9 @@ export class ModelRegistry {
 			keylessProviders,
 			discoverableProviders,
 			configuredProviders,
+			providerApiKeys,
+			commandConfigs: parsedCommandConfigs,
+			...(restoredFromSidecar ? { error, recovered: true } : {}),
 			found: true,
 		};
 	}
@@ -2399,9 +2659,13 @@ export class ModelRegistry {
 			// `injectV1: false` additionally splits off its own namespace: rows
 			// cached from the `/v1`-injected URL can hold a different (smaller)
 			// model set and must never satisfy a bare provider's cache read.
+			const catalogSuffix =
+				providerConfig.discovery.modelsUrl || providerConfig.discovery.includeHidden
+					? `:catalog:${JSON.stringify([providerConfig.discovery.modelsUrl ?? null, providerConfig.discovery.includeHidden === true])}`
+					: "";
 			return providerConfig.discovery.injectV1 === false
-				? `${providerConfig.provider}:openai-models-list-bare-${this.advertisedReasoningCacheSuffix(providerConfig)}`
-				: `${providerConfig.provider}:openai-models-list-${this.advertisedReasoningCacheSuffix(providerConfig)}`;
+				? `${providerConfig.provider}:openai-models-list-bare-${this.advertisedReasoningCacheSuffix(providerConfig)}${catalogSuffix}`
+				: `${providerConfig.provider}:openai-models-list-${this.advertisedReasoningCacheSuffix(providerConfig)}${catalogSuffix}`;
 		}
 		if (providerConfig.discovery.type === "proxy") {
 			// proxy-v2 invalidates rows cached before a proxy row's advertised
@@ -2474,6 +2738,7 @@ export class ModelRegistry {
 				return models.map(toModelSpec);
 			} catch (error) {
 				discoveryError = error instanceof Error ? error.message : String(error);
+				this.#recordDiscoveryFailure(providerId, error);
 				// A 401/403 means the endpoint is reachable but rejected the
 				// request's credentials (or the keyless assumption). Surface it
 				// as an auth failure instead of a generic outage so the hub can
@@ -2924,6 +3189,7 @@ export class ModelRegistry {
 								: "empty";
 			// A throwing fetcher still resolves (cache or bundled), but the failure must reach the state and the log.
 			failure = result.fetchError;
+			if (failure !== undefined) this.#recordDiscoveryFailure(options.providerId, failure);
 			this.#providerDiscoveryStates.set(options.providerId, {
 				provider: options.providerId,
 				status,
@@ -2945,6 +3211,7 @@ export class ModelRegistry {
 			return { models, authoritativeProviders, replaceRuntimeProviders };
 		} catch (error) {
 			failure = error instanceof Error ? error.message : String(error);
+			this.#recordDiscoveryFailure(options.providerId, error);
 			const previous = this.#providerDiscoveryStates.get(options.providerId);
 			// Same auth-rejection surfacing as the configured-discovery path: a
 			// 401/403 with nothing to serve is a credential problem, not an
@@ -3398,16 +3665,32 @@ export class ModelRegistry {
 	 */
 	getAll(kind: ModelKind | "all" = "chat"): Model<Api>[] {
 		const models = this.#ensureFullSnapshot();
-		if (kind === "all") return models;
+		if (kind === "all") return this.#filterVisibleSnapshot(models);
 		let snapshots = this.#fullKindSnapshots.get(models);
 		if (!snapshots) {
 			snapshots = {};
 			this.#fullKindSnapshots.set(models, snapshots);
 		}
 		const cached = snapshots[kind];
-		if (cached) return cached;
+		if (cached) return this.#filterVisibleSnapshot(cached);
 		const filtered = models.filter(model => modelKind(model) === kind);
 		snapshots[kind] = filtered;
+		return this.#filterVisibleSnapshot(filtered);
+	}
+
+	#visibleModelSnapshots = new WeakMap<Model<Api>[], Model<Api>[]>();
+
+	#filterVisibleSnapshot(models: Model<Api>[]): Model<Api>[] {
+		const filtered = filterBlacklistedModels(models);
+		const previous = this.#visibleModelSnapshots.get(models);
+		if (
+			previous &&
+			previous.length === filtered.length &&
+			previous.every((model, index) => model === filtered[index])
+		) {
+			return previous;
+		}
+		this.#visibleModelSnapshots.set(models, filtered);
 		return filtered;
 	}
 
@@ -3431,6 +3714,7 @@ export class ModelRegistry {
 				// by `#keylessProviders`.
 				available =
 					!disabledProviders.has(provider) &&
+					this.isProviderAvailable(provider) &&
 					(this.#keylessProviders.has(provider) ||
 						this.authStorage.keys.source(provider) !== undefined ||
 						this.authStorage.keys.keyless(provider));
@@ -3447,6 +3731,10 @@ export class ModelRegistry {
 	 * pass `"all"` when the caller is intentionally selecting across kinds.
 	 */
 	getAvailableForProviders(providers: ReadonlySet<string>, kind: ModelKind | "all" = "chat"): Model<Api>[] {
+		return filterBlacklistedModels(this.#availableForProviders(providers, kind));
+	}
+
+	#availableForProviders(providers: ReadonlySet<string>, kind: ModelKind | "all"): Model<Api>[] {
 		const requested = new Set([...providers].map(provider => provider.trim().toLowerCase()).filter(Boolean));
 		const isProviderAvailable = this.#createProviderAvailabilityCheck();
 		if (this.#hasFullSnapshot) {
@@ -3609,12 +3897,14 @@ export class ModelRegistry {
 	 * - `cached`/`unavailable` while the initial background refresh is in
 	 *   flight: startup replayed a cache row or fell back to the bundled
 	 *   catalog, and that refresh may still add ids (a cold namespace after an
-	 *   upgrade, or a cache row keyed to another credential). With no refresh
-	 *   running (an embedder that manages discovery itself) these states are
-	 *   final, so unresolved selectors warn immediately.
+	 *   upgrade, or a cache row keyed to another credential).
+	 * A failed discovery remains unresolved until recovery: an unavailable
+	 * catalog cannot establish that a configured model does not exist.
 	 */
 	isProviderDiscoveryPending(provider: string): boolean {
-		const status = this.#providerDiscoveryStates.get(provider)?.status;
+		const state = this.#providerDiscoveryStates.get(provider);
+		if (state?.error !== undefined) return true;
+		const status = state?.status;
 		if (status === "idle") return true;
 		if (status !== "cached" && status !== "unavailable") return false;
 		return this.#backgroundRefresh !== undefined && !this.#initialRefreshSettled;
@@ -3625,10 +3915,12 @@ export class ModelRegistry {
 	 * models to find: every caller that falls back to a literal lookup when
 	 * availability-filtered resolution misses (retry fallback candidates,
 	 * advisors, restored and CLI models) would otherwise reach it anyway.
+	 * Operational failures preserve identity; dispatch checks isProviderAvailable.
 	 */
 	find(provider: string, modelId: string): Model<Api> | undefined {
 		if (this.#isProviderDisabled(provider)) return undefined;
-		return resolveProviderModelReference(provider, modelId, this.#modelsForProviderLookup(provider));
+		const model = resolveProviderModelReference(provider, modelId, this.#modelsForProviderLookup(provider));
+		return model && modelBlacklistReason(model) === undefined ? model : undefined;
 	}
 
 	/** Whether settings disable `provider` (`disabledProviders`). */
@@ -3644,7 +3936,7 @@ export class ModelRegistry {
 	 */
 	getProviderModels(provider: string): Model<Api>[] {
 		const normalizedProvider = provider.trim().toLowerCase();
-		return this.#modelsForProviderLookup(provider).filter(
+		return filterBlacklistedModels(this.#modelsForProviderLookup(provider)).filter(
 			model => model.provider.toLowerCase() === normalizedProvider,
 		);
 	}
@@ -3698,18 +3990,28 @@ export class ModelRegistry {
 		sessionId?: string,
 		options?: { signal?: AbortSignal },
 	): Promise<string | undefined> {
+		return logger.time("modelRegistry.apiKey.wait", () => this.#resolveModelApiKey(model, sessionId, options));
+	}
+
+	async #resolveModelApiKey(
+		model: Model<Api>,
+		sessionId?: string,
+		options?: { signal?: AbortSignal },
+	): Promise<string | undefined> {
 		// A disabled provider gets no credential, so no request reaches it however
 		// its model was obtained.
 		if (this.#isProviderDisabled(model.provider)) return undefined;
 		if (this.#isKeylessProvider(model.provider)) {
 			return kNoAuth;
 		}
-		return this.authStorage.keys.get(model.provider, sessionId, {
+		const key = await this.authStorage.keys.get(model.provider, sessionId, {
 			baseUrl: model.baseUrl,
 			modelId: model.id,
 			accountIds: model.accountAccess && Object.keys(model.accountAccess),
 			signal: options?.signal,
 		});
+		await this.#rememberResolvedOverride(model.provider);
+		return key;
 	}
 
 	/** Resolve request authentication through the historical Pi extension facade. */
@@ -3767,7 +4069,7 @@ export class ModelRegistry {
 			return { apiKey: kNoAuth };
 		}
 		const accountAccess = options?.modelId ? this.find(provider, options.modelId)?.accountAccess : undefined;
-		return this.authStorage.keys.getWithCredential(provider, sessionId, {
+		const credential = await this.authStorage.keys.getWithCredential(provider, sessionId, {
 			baseUrl: options?.baseUrl,
 			modelId: options?.modelId,
 			accountIds: accountAccess && Object.keys(accountAccess),
@@ -3776,6 +4078,8 @@ export class ModelRegistry {
 			rejectedAccessToken: options?.rejectedAccessToken,
 			signal: options?.signal,
 		});
+		await this.#rememberResolvedOverride(provider);
+		return credential;
 	}
 
 	/**
@@ -3790,20 +4094,61 @@ export class ModelRegistry {
 	resolver(target: string | ApiKeyResolverModel, optionsOrSessionId?: ApiKeyResolverOptions | string): ApiKeyResolver {
 		const options = typeof optionsOrSessionId === "string" ? { sessionId: optionsOrSessionId } : optionsOrSessionId;
 		if (typeof target === "string") {
-			return createApiKeyResolver(this, target, options);
+			return this.#attachProviderCallObservers(target, createApiKeyResolver(this, target, options));
 		}
-		return createApiKeyResolver(this, target.provider, {
-			...options,
-			baseUrl: target.baseUrl,
-			modelId: target.id,
-		});
+		return this.#attachProviderCallObservers(
+			target.provider,
+			createApiKeyResolver(this, target.provider, {
+				...options,
+				baseUrl: target.baseUrl,
+				modelId: target.id,
+			}),
+		);
+	}
+
+	#attachProviderCallObservers(provider: string, resolver: ApiKeyResolver): ApiKeyResolver {
+		resolver.onProviderCallSucceeded = message => this.authStorage.health.markProviderSucceeded(message.provider);
+		resolver.onProviderCallFailed = error => {
+			const candidate =
+				typeof error === "object" && error !== null
+					? (error as {
+							errorClassificationMessage?: unknown;
+							errorMessage?: unknown;
+							errorStatus?: unknown;
+							message?: unknown;
+						})
+					: undefined;
+			const message =
+				error instanceof Error
+					? error.message
+					: typeof error === "string"
+						? error
+						: (candidate?.errorClassificationMessage ??
+							candidate?.errorMessage ??
+							candidate?.message ??
+							String(error));
+			if (typeof message !== "string") return;
+			const status =
+				typeof candidate?.errorStatus === "number"
+					? candidate.errorStatus
+					: (AIError.status(error) ?? extractHttpStatusFromError(message));
+			const retryAfterMs = status === 429 ? extractProviderRetryHint(provider, message) : undefined;
+			const resetAtMs =
+				retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+					? Date.now() + retryAfterMs
+					: undefined;
+			this.authStorage.health.markProviderDepleted(provider, { status, message, resetAtMs });
+		};
+		return resolver;
 	}
 
 	async #peekApiKeyForProvider(provider: string, options?: AuthPeekOptions): Promise<string | undefined> {
 		if (this.#keylessProviders.has(provider) && this.authStorage.keys.source(provider) === undefined) {
 			return kNoAuth;
 		}
-		return this.authStorage.keys.peek(provider, options);
+		const key = await this.authStorage.keys.peek(provider, options);
+		await this.#rememberResolvedOverride(provider);
+		return key;
 	}
 
 	/** Whether a model uses OAuth credentials. Kept separate from subscription billing for cache-tier decisions. */
@@ -4206,6 +4551,18 @@ export class ModelRegistry {
 	}
 
 	/**
+	 * Suppress every `:free` model of the selector's provider until a specific timestamp. A provider's
+	 * free-tier daily limit (OpenRouter `free-models-per-day*`) is shared by the whole account, so
+	 * cooling down only the model that hit it lets the next draw pick another `:free` member.
+	 */
+	suppressFreeTier(selector: string, untilMs: number): void {
+		const normalized = normalizeSuppressedSelector(selector, (p, id) => this.find(p, id) !== undefined);
+		const provider = normalized.split("/")[0];
+		const existingUntilMs = this.#suppressedFreeTiers.get(provider) ?? 0;
+		this.#suppressedFreeTiers.set(provider, Math.max(existingUntilMs, untilMs));
+	}
+
+	/**
 	 * Check if a model selector is currently suppressed due to rate limits.
 	 */
 	isSelectorSuppressed(selector: string): boolean {
@@ -4213,10 +4570,26 @@ export class ModelRegistry {
 			selector,
 			(provider, id) => this.find(provider, id) !== undefined,
 		);
+		if (this.#isFreeTierSuppressed(normalizedSelector)) return true;
 		const suppressedUntil = this.#suppressedSelectors.get(normalizedSelector);
 		if (!suppressedUntil) return false;
 		if (suppressedUntil <= Date.now()) {
 			this.#suppressedSelectors.delete(normalizedSelector);
+			return false;
+		}
+		return true;
+	}
+
+	#isFreeTierSuppressed(normalizedSelector: string): boolean {
+		// :free is a deployment tier on the selector, not model lineage: it also
+		// applies to undiscovered siblings and must not depend on catalog membership.
+		const selector = splitUpstreamRouting(normalizedSelector)?.base ?? normalizedSelector;
+		if (!selector.endsWith(":free")) return false;
+		const provider = selector.split("/")[0];
+		const suppressedUntil = this.#suppressedFreeTiers.get(provider);
+		if (!suppressedUntil) return false;
+		if (suppressedUntil <= Date.now()) {
+			this.#suppressedFreeTiers.delete(provider);
 			return false;
 		}
 		return true;
@@ -4237,6 +4610,7 @@ export class ModelRegistry {
 	 */
 	clearSuppressedSelectors(): void {
 		this.#suppressedSelectors.clear();
+		this.#suppressedFreeTiers.clear();
 	}
 }
 

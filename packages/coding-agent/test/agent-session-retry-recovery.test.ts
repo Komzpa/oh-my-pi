@@ -255,13 +255,19 @@ describe("AgentSession retry recovery", () => {
 		sessions.push(session);
 		mockSchedulerWaitWithClock();
 
-		const rewriteStarted = Promise.withResolvers<void>();
-		const resumeRewrite = Promise.withResolvers<void>();
-		const rewriteEntries = sessionManager.rewriteEntries.bind(sessionManager);
-		vi.spyOn(sessionManager, "rewriteEntries").mockImplementation(async () => {
-			rewriteStarted.resolve();
-			await resumeRewrite.promise;
-			await rewriteEntries();
+		const flushStarted = Promise.withResolvers<void>();
+		const resumeFlush = Promise.withResolvers<void>();
+		const flush = sessionManager.flush.bind(sessionManager);
+		vi.spyOn(sessionManager, "flush").mockImplementation(async () => {
+			if (
+				sessionManager.getLatestBranchMatching(
+					entry => entry.type === "custom" && entry.customType === "omp:retry-recovery",
+				)
+			) {
+				flushStarted.resolve();
+				await resumeFlush.promise;
+			}
+			await flush();
 		});
 		const retryEndEvents: AutoRetryEndEvent[] = [];
 		const unsubscribe = session.subscribe(event => {
@@ -276,7 +282,7 @@ describe("AgentSession retry recovery", () => {
 		})();
 
 		try {
-			await Promise.race([rewriteStarted.promise, completion]);
+			await Promise.race([flushStarted.promise, completion]);
 			// Drain runnable work without releasing the recovery persistence gate.
 			const nextImmediate = Promise.withResolvers<void>();
 			setImmediate(nextImmediate.resolve);
@@ -284,7 +290,7 @@ describe("AgentSession retry recovery", () => {
 			expect(idleResolved).toBe(false);
 			expect(retryEndEvents).toEqual([]);
 		} finally {
-			resumeRewrite.resolve();
+			resumeFlush.resolve();
 			try {
 				await completion;
 			} finally {

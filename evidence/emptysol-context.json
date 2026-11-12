@@ -1,0 +1,160 @@
+[
+  {
+    "line": 132937,
+    "timestamp": "2026-11-07T15:01:21.262Z",
+    "customType": "todo-dispatch-time-note",
+    "details": {
+      "semanticKey": "f3a4791bc861a030",
+      "emittedAt": 1794063681187
+    },
+    "content": "19:01 \u00b7 PLAN SLIPPED by 339m against the anchored deadline. Replan now: split/cut/parallelize the remaining rows or escalate.\nAuto goal scope growth since anchor: Collateral for \"Facility labels after rotation: leaders cross the building\": At 430px, the two generator leader lines run behind the \u201cService room left rear\u201d plaque, making their ownership ambiguous.; PR descriptions carry polished, clear screenshots of each user-visible change, critic-reviewed; Cooling: PR 114 pipeline on bfbabf30d read back; Cooling: Heat mains blue/orange proven on bfbabf30d; PR 115 folded into PR 114, 114 mergeable onto main; Cooling: eliminate zero-length spare"
+  },
+  {
+    "line": 132938,
+    "timestamp": "2026-11-07T15:01:21.486Z",
+    "customType": "todo-dispatch-action-required",
+    "details": null,
+    "content": "ESCALATED DISPATCH ACTION (18 ignored turns): Ready row PR descriptions carry polished, clear screenshots of each user-visible change, critic-reviewed has had no live worker for at least 10 minutes with spare capacity. Staff it or record an explicit hold on that row with todo (blocked status and blocker).\nOnly observed state after this demand counts. Prose, owner assignment without a live executor, failed calls, and estimate changes alone do not count.\nThis is an internal dispatcher wake. Perform the action with tools. Do not narrate unchanged status. Reading, waiting, failed calls, and re-estimating alone do not satisfy this demand. On a CHU"
+  },
+  {
+    "line": 132939,
+    "timestamp": "2026-11-07T15:01:41.008Z",
+    "customType": "goal-deadline-time-note",
+    "details": {
+      "semanticKey": "bc2b02b0419cea7",
+      "emittedAt": 1794063701005
+    },
+    "content": "19:01 \u00b7 The user is: away (guess from signals: last message 55 min ago, 19:01 Asia/Tbilisi, deadline 13:57 missed at 13:57, by 304m) \u2014 the user's own words in the conversation outrank this guess.\n\nMISSED, slipped by 305m. Replan now: split or cut scope, parallelize independent work, or escalate. The anchored deadline stays unchanged.\nDeliver usable work; reserve review time; delegate bounded cheap tasks when authorized. Adjust depth to time/quota. Overdue is not a verdict: floor it and catch up; show the latest artifact or say none.\nDeadline set automatically from the TODO plan forecast.\nGoal=auto-todo-plan start=2026-11-07 11:12:07 Asia/Tbil"
+  },
+  {
+    "line": 132940,
+    "queuedType": "todo-dispatch-time-note",
+    "details": {
+      "semanticKey": "389e1bf65716cd7f",
+      "emittedAt": 1794063701116
+    }
+  },
+  {
+    "line": 132940,
+    "queuedType": "todo-dispatch-action-required",
+    "details": null
+  },
+  {
+    "line": 134143,
+    "timestamp": "2026-11-07T16:04:02.031Z",
+    "customType": "todo-dispatch-time-note",
+    "details": {
+      "semanticKey": "32515099008152e0",
+      "emittedAt": 1794067441970
+    },
+    "content": "20:04 \u00b7 CHURN: PR descriptions carry polished, clear screenshots of each user-visible change, critic-reviewed (4 re-estimates, 3 failed attempts). Change approach now: split or cut scope, parallelize independent work, or escalate the acceptance failure. Do not retry the same approach.\nCHURN: Cooling: eliminate zero-length spare routes blocking PR 114 (4 re-estimates, 0 failed attempts). Change approach now: split or cut scope, parallelize independent work, or escalate the acceptance failure. Do not retry the same approach.\nCHURN: PR 115 folded into PR 114, 114 mergeable onto main (4 re-estimates, 3 failed attempts). Change approach now: split"
+  },
+  {
+    "line": 134144,
+    "queuedType": "todo-dispatch-time-note",
+    "details": {
+      "semanticKey": "c53226eeb805a284",
+      "emittedAt": 1794067448826
+    }
+  },
+  {
+    "line": 134147,
+    "queuedType": "todo-dispatch-time-note",
+    "details": {
+      "semanticKey": "c53226eeb805a284",
+      "emittedAt": 1794067448826
+    }
+  },
+  {
+    "line": 134147,
+    "queuedType": "todo-plan-check",
+    "details": {
+      "planRows": [
+        "PR descriptions carry polished, clear screenshots of each user-visible change, critic-reviewed",
+        "Cooling: eliminate zero-length spare routes blocking PR 114",
+        "PR 115 folded into PR 114, 114 mergeable onto main"
+      ],
+      "supersedesQueued": true
+    }
+  },
+  {
+    "line": 134151,
+    "queuedType": "todo-dispatch-time-note",
+    "details": {
+      "semanticKey": "c53226eeb805a284",
+      "emittedAt": 1794067448826
+    }
+  },
+  {
+    "line": 134151,
+    "queuedType": "todo-plan-check",
+    "details": {
+      "planRows": [
+        "PR descriptions carry polished, clear screenshots of each user-visible change, critic-reviewed",
+        "Cooling: eliminate zero-length spare routes blocking PR 114",
+        "PR 115 folded into PR 114, 114 mergeable onto main"
+      ],
+      "supersedesQueued": true
+    }
+  },
+  {
+    "line": 134162,
+    "queuedType": "todo-dispatch-time-note",
+    "details": {
+      "semanticKey": "6b6aecef28afaaed",
+      "emittedAt": 1794067579586
+    }
+  },
+  {
+    "line": 134162,
+    "queuedType": "todo-plan-check",
+    "details": {
+      "planRows": [
+        "PR descriptions carry polished, clear screenshots of each user-visible change, critic-reviewed",
+        "Cooling: eliminate zero-length spare routes blocking PR 114",
+        "PR 115 folded into PR 114, 114 mergeable onto main"
+      ],
+      "supersedesQueued": true
+    }
+  },
+  {
+    "line": 134169,
+    "queuedType": "todo-dispatch-time-note",
+    "details": {
+      "semanticKey": "6b6aecef28afaaed",
+      "emittedAt": 1794067579586
+    }
+  },
+  {
+    "line": 134169,
+    "queuedType": "todo-plan-check",
+    "details": {
+      "planRows": [
+        "PR descriptions carry polished, clear screenshots of each user-visible change, critic-reviewed",
+        "Cooling: eliminate zero-length spare routes blocking PR 114",
+        "PR 115 folded into PR 114, 114 mergeable onto main"
+      ],
+      "supersedesQueued": true
+    }
+  },
+  {
+    "line": 134172,
+    "queuedType": "todo-dispatch-time-note",
+    "details": {
+      "semanticKey": "6b6aecef28afaaed",
+      "emittedAt": 1794067579586
+    }
+  },
+  {
+    "line": 134172,
+    "queuedType": "todo-plan-check",
+    "details": {
+      "planRows": [
+        "PR descriptions carry polished, clear screenshots of each user-visible change, critic-reviewed",
+        "Cooling: eliminate zero-length spare routes blocking PR 114",
+        "PR 115 folded into PR 114, 114 mergeable onto main"
+      ],
+      "supersedesQueued": true
+    }
+  }
+]

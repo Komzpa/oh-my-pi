@@ -43,7 +43,7 @@ describe("task description session agents", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("lists the frozen surface and stays byte-identical when a later tag lands", async () => {
+	it("keeps session model tags out of the cached schema across registrations", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: DISCOVERED, projectAgentsDir: null });
 		const committed = [tagged("m1", "b/y")];
 		const live = [tagged("m1", "b/y")];
@@ -53,8 +53,8 @@ describe("task description session agents", () => {
 				() => committed,
 			),
 		);
-		expect(tool.description).toContain("`m1`");
-		expect(tool.description).toContain("b/y");
+		expect(tool.description).not.toContain("`m1`");
+		expect(tool.description).not.toContain("b/y");
 
 		// A mid-session `^c/w` registration only reaches the live set. The
 		// model-facing description must not change: it is part of the provider tool
@@ -65,13 +65,13 @@ describe("task description session agents", () => {
 		expect(tool.description).not.toContain("m2");
 	});
 
-	it("falls back to the live set when the embedder has no prompt surface", async () => {
+	it("keeps embedded session tags out of the schema too", async () => {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: DISCOVERED, projectAgentsDir: null });
 		const live: AgentDefinition[] = [];
 		const tool = await TaskTool.create(createSession(() => live));
 		expect(tool.description).not.toContain("`m1`");
 
 		live.push(tagged("m1", "b/y"));
-		expect(tool.description).toContain("`m1`");
+		expect(tool.description).not.toContain("`m1`");
 	});
 });

@@ -23,12 +23,13 @@ import type {
 import type { postmortem } from "@oh-my-pi/pi-utils";
 import type { AdvisorConfig } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import type { AsyncJob, AsyncJobDeliveryState, AsyncJobManager, AsyncJobManagerApi } from "../async";
+import type { AgentRegistryApi } from "../registry/agent-registry";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { AgentDefinition } from "../task/types";
-import type { AgentRegistryApi } from "../registry/agent-registry";
 import type { SessionAccountPoolScope } from "../config/account-pools";
 import type { ModelRegistry } from "../config/model-registry";
 import type { PromptTemplate } from "../config/prompt-templates";
+import type { MCPLoadResult } from "../mcp/manager";
 import type { Settings } from "../config/settings";
 import type { SkillsSettings } from "../extensibility/settings";
 import type { CursorMcpResourceAdapter } from "../cursor";
@@ -53,12 +54,18 @@ import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SettingsGatedToolDelta, SystemPromptRebuilder } from "./session-tools";
 import type { CostGateApi } from "./cost-gate";
 import type { SessionManager } from "./session-manager";
+import type { InstructionFiles } from "./instruction-files";
+
+/** A fixed spawn cap or a policy evaluated for each active model. */
+export type ThinkingLevelCeiling = Effort | ((model: Model | undefined) => Effort | undefined);
 
 /** Maximum time the interactive shutdown path waits for Mnemopi consolidation. */
 export const SHUTDOWN_CONSOLIDATE_BUDGET_MS = 1_500;
 
 /** Options controlling session disposal. */
 export interface AgentSessionDisposeOptions {
+	/** Replace the runtime while retaining session-owned services and their process slice. */
+	preserveServices?: boolean;
 	mnemopiConsolidateTimeoutMs?: number;
 	/**
 	 * Deadline for the settle/drain wait before the terminal memory release
@@ -112,6 +119,8 @@ export interface AsyncJobInspection {
 export interface AsyncJobSnapshot {
 	running: AsyncJobSnapshotItem[];
 	recent: AsyncJobSnapshotItem[];
+	/** Exact ids and session-corroborated liveness for registry agents without a running job. */
+	nonJobAgents?: Array<{ id: string; live: boolean }>;
 	delivery: AsyncJobDeliveryState;
 }
 
@@ -126,6 +135,12 @@ export interface AsyncJobTree {
 }
 
 export type { ShakeMode, ShakeResult } from "./shake-types";
+/** Stops this session at the next safe model boundary until released. */
+export interface RestartDrainLease {
+	wasRunning: boolean;
+	waitForQuiescence(): Promise<void>;
+	release(): void;
+}
 
 /**
  * Prewalk switches an active session one-way from its starting model to a
@@ -174,6 +189,7 @@ export interface InitialRetryFallbackState {
 
 /** Dependencies and initial state used to construct an AgentSession. */
 export interface AgentSessionConfig {
+	instructionFiles?: InstructionFiles;
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;
@@ -214,7 +230,7 @@ export interface AgentSessionConfig {
 	/** Initial session thinking selector. */
 	thinkingLevel?: ConfiguredThinkingLevel;
 	/** Hard ceiling on the session's thinking effort (e.g. a task spawn's `task.maxEffort`-capped hint); every later change, including retry-fallback recovery, is re-clamped to it. */
-	thinkingLevelCeiling?: Effort;
+	thinkingLevelCeiling?: ThinkingLevelCeiling;
 	/**
 	 * Disable retry fallback, context promotion and usage-aware fallback: the turn retries on, or fails
 	 * with, its own model instead. Startup model selection, and the return to the primary after a
@@ -316,6 +332,8 @@ export interface AgentSessionConfig {
 	ensureWriteRegistered?: () => Promise<boolean>;
 	/** Reports whether the registered write tool is currently transport-only. */
 	isDeviceOnlyWrite?: () => boolean;
+	/** True when `write` is only the agent:// reply transport of a read-only agent. */
+	isAgentOnlyWrite?: () => boolean;
 	/** Switches the registered write tool between transport-only and full access. */
 	setDeviceOnlyWrite?: (enabled: boolean) => void;
 	/** Previews the full-write description without changing execution access. */
@@ -350,6 +368,8 @@ export interface AgentSessionConfig {
 	rawSseDebugBuffer?: RawSseDebugBuffer;
 	/** Current session message-to-LLM conversion pipeline. */
 	convertToLlm?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
+	/** Mutable boot context delivered with the first conversation turn. */
+	getStartupContext?: () => string | undefined;
 	/** System prompt builder that can consider tool availability. */
 	rebuildSystemPrompt?: SystemPromptRebuilder;
 	/** Sources of the initial base prompt, as returned by `buildSystemPrompt`. */
@@ -376,10 +396,10 @@ export interface AgentSessionConfig {
 	asyncJobManager?: AsyncJobManagerApi;
 	/** Registry identity used for IRC routing. */
 	agentId?: string;
+	/** Registry holding this session and its live subagents. */
+	agentRegistry?: AgentRegistryApi;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";
-	/** Registry whose awaits table records this agent blocked on the user while a dialog waits for their answer. */
-	agentRegistry?: AgentRegistryApi;
 	/** Provider-facing session ID override. */
 	providerSessionId?: string;
 	/** OAuth account pools enforced on the session's key lookups; the session lifts them on dispose. */
@@ -433,6 +453,8 @@ export interface AgentSessionConfig {
 	advisorConfigWarnings?: string[];
 	/** Disconnect the MCP manager owned by this session during disposal. */
 	disconnectOwnedMcpManager?: () => Promise<void>;
+	/** Reload only the MCP runtime owned by this session; absent on shared-manager children. */
+	reloadOwnedMcpManager?: () => Promise<MCPLoadResult>;
 	/** System prompt used by automatic session-title generation. */
 	titleSystemPrompt?: string;
 	/**
@@ -453,6 +475,8 @@ export interface PromptOptions {
 	 * drivers disable it so an assignment is always delivered to the model.
 	 */
 	runCommands?: boolean;
+	/** Propagate local command errors to callers that need an execution receipt. */
+	throwOnCommandError?: boolean;
 	/**
 	 * Reject with `PromptDroppedError` when the prompt is dropped before
 	 * reaching the agent, instead of resolving `true` (default: false).
@@ -460,6 +484,8 @@ export interface PromptOptions {
 	throwOnDrop?: boolean;
 	/** Image attachments. */
 	images?: ImageContent[];
+	/** Original user text before input-extension transformations, used for requirement provenance. */
+	rawRequirementText?: string;
 	/** Queue behavior while streaming. `"aside"` is non-interrupting — it does not steer/follow-up
 	 *  an in-flight tool batch, injecting at the next step boundary instead (see
 	 *  AgentSession.sendUserMessage's `deliverAs: "aside"`). */
@@ -517,6 +543,8 @@ export interface DroppedPrompt {
 	text: string;
 	/** Image attachments submitted with the prompt. */
 	images?: ImageContent[];
+	/** Original user text before input-extension transformations. */
+	rawRequirementText?: string;
 	/** Why the session refused it (e.g. the cost cap), for hosts to show beside the restored text; absent for an abort. */
 	reason?: string;
 	/** {@link PromptOptions.followUps} that were never sent, in order. */
@@ -531,14 +559,22 @@ export interface FollowUpOptions {
 	expandPromptTemplates?: boolean;
 	/** Explicit billing/initiator attribution. */
 	attribution?: MessageAttribution;
+	/** Original user text before input-extension transformations. */
+	rawRequirementText?: string;
 	/** Called synchronously with the messages pushed onto the follow-up queue. See {@link PromptOptions.onPromptQueued}. */
 	onPromptQueued?: PromptOptions["onPromptQueued"];
+	/** Called synchronously once the message is on its queue. See {@link PromptOptions.onPromptAdmitted}. */
+	onPromptAdmitted?: () => void;
 }
 
 /** Options for AgentSession.steer(). */
 export interface SteerOptions {
+	/** Administrative context only: never start a new turn or revive an idle worker. */
+	passive?: boolean;
 	/** Explicit billing/initiator attribution. */
 	attribution?: MessageAttribution;
+	/** Original user text before input-extension transformations. */
+	rawRequirementText?: string;
 	/** Called synchronously with the messages pushed onto the steering queue. See {@link PromptOptions.onPromptQueued}. */
 	onPromptQueued?: PromptOptions["onPromptQueued"];
 }

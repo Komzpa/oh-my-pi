@@ -820,15 +820,21 @@ describe("pickElectronTarget", () => {
 		30_000,
 	);
 
-	test("names the refused CDP websocket instead of reporting [object ErrorEvent]", async () => {
-		// `/json/version` answers, but its debugger websocket refuses the upgrade.
+	test("names the refused CDP websocket even when discovery disappears after resolution", async () => {
+		// Discovery disappears once its debugger websocket refuses the upgrade.
+		// Error normalization must retain the endpoint actually attempted rather than discover it again.
+		let refused = false;
 		const cdp = Bun.serve({
 			hostname: "127.0.0.1",
 			port: 0,
-			fetch: (request, server) =>
-				new URL(request.url).pathname === "/json/version"
-					? Response.json({ webSocketDebuggerUrl: `ws://127.0.0.1:${server.port}/devtools/browser/gone` })
-					: new Response("gone", { status: 404 }),
+			fetch: (request, server) => {
+				const pathname = new URL(request.url).pathname;
+				if (pathname === "/json/version" && !refused) {
+					return Response.json({ webSocketDebuggerUrl: `ws://127.0.0.1:${server.port}/devtools/browser/gone` });
+				}
+				if (pathname === "/devtools/browser/gone") refused = true;
+				return new Response("gone", { status: 404 });
+			},
 		});
 		const session = makeSession();
 		const prelude = createBrowserPrelude(session);
@@ -844,11 +850,11 @@ describe("pickElectronTarget", () => {
 				),
 			);
 			expect(error).toBeInstanceOf(Error);
-			expect(error).toMatchObject({
-				message: expect.stringContaining(
-					`WebSocket connection to 'ws://127.0.0.1:${cdp.port}/devtools/browser/gone'`,
-				),
-			});
+			const message = (error as Error).message;
+			expect(message).toContain(`WebSocket connection to 'ws://127.0.0.1:${cdp.port}/devtools/browser/gone'`);
+			expect(message).toContain("404");
+			expect((error as Error).cause).toBeInstanceOf(Error);
+			expect(String((error as Error).cause)).toContain("404");
 		} finally {
 			cdp.stop(true);
 		}

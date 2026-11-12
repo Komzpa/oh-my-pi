@@ -85,6 +85,18 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 			timestamp: Date.now(),
 		});
 		await sessionManager.ensureOnDisk();
+
+		quitCalled = Promise.withResolvers<void>();
+		quitSpy = vi.spyOn(postmortem, "quit").mockImplementation(async () => {
+			quitCalled.resolve();
+		});
+		exitSpy = vi.spyOn(postmortem, "exitProcess").mockImplementation(() => undefined as never);
+		showErrorSpy = vi.spyOn(mode, "showError").mockImplementation(() => {});
+		// Observe only: the real dispose implementation runs.
+		disposeSpy = vi.spyOn(session, "dispose");
+	});
+
+	async function failStore(): Promise<void> {
 		const materializedFile = sessionManager.getSessionFile();
 		if (!materializedFile) throw new Error("expected a materialized session file");
 		// Replace the session directory with a regular file: every later write
@@ -97,18 +109,11 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 		// repair) now fails; the manager latches the failure and the close()
 		// inside dispose() rethrows it, with no mocked error construction.
 		await sessionManager.rewriteEntries().catch(() => undefined);
-
-		quitCalled = Promise.withResolvers<void>();
-		quitSpy = vi.spyOn(postmortem, "quit").mockImplementation(async () => {
-			quitCalled.resolve();
-		});
-		exitSpy = vi.spyOn(postmortem, "exitProcess").mockImplementation(() => undefined as never);
-		showErrorSpy = vi.spyOn(mode, "showError").mockImplementation(() => {});
-		// Observe only: the real dispose implementation runs.
-		disposeSpy = vi.spyOn(session, "dispose");
-	});
+	}
 
 	afterEach(async () => {
+		// A failed shutdown deliberately leaves the UI live for the escape hatch.
+		mode.stop();
 		vi.restoreAllMocks();
 		authStorage.close();
 		tempDir.removeSync();
@@ -116,6 +121,7 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 	});
 
 	it("surfaces the store failure on the first attempt without force-exiting", async () => {
+		await failStore();
 		await mode.shutdown();
 
 		expect(disposeSpy).toHaveBeenCalledTimes(1);
@@ -138,6 +144,7 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 	});
 
 	it("exits without writing the session log on the second attempt", async () => {
+		await failStore();
 		await mode.shutdown();
 		await mode.shutdown();
 
@@ -151,6 +158,7 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 	});
 
 	it("a single Ctrl+C keypress after the failure reaches the escape hatch", async () => {
+		await failStore();
 		await mode.shutdown(); // arms the escape hatch and shows the message
 		quitSpy.mockClear();
 
@@ -167,8 +175,18 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 		expect(await Bun.file(sessionDir).text()).toBe(BLOCKER);
 	});
 
-	it("a failed restart arms the same single-Ctrl+C escape hatch", async () => {
+	it("refuses a restart with a failed store before disposal, then preserves the shutdown escape hatch", async () => {
+		await mode.init();
+		await failStore();
 		await mode.restart();
+
+		// Queue persistence fails before checkpoint/disposal. The process stays
+		// available; only a failed shutdown arms the one-press escape hatch.
+		expect(showErrorSpy.mock.calls.map(call => String(call[0])).join("\n")).toContain("Could not queue restart");
+		expect(disposeSpy).not.toHaveBeenCalled();
+		expect(mode.teardownFailed).toBe(false);
+		await mode.shutdown();
+		expect(mode.teardownFailed).toBe(true);
 		quitSpy.mockClear();
 
 		mode.lastSigintTime = 0;
@@ -182,6 +200,7 @@ describe("InteractiveMode shutdown when the session store keeps failing (#12238)
 	});
 
 	it("bypasses a guarded process.exit after cleanup", async () => {
+		await failStore();
 		await mode.shutdown();
 		quitSpy.mockRejectedValueOnce(new Error("process.exit is guarded"));
 

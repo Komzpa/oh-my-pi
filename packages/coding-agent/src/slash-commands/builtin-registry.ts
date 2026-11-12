@@ -40,33 +40,38 @@ export interface TuiBuiltinSlashCommand extends BuiltinSlashCommand {
 	getAutocompleteDescription?: () => string | undefined;
 }
 
-const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
-	...BUILTIN_MODE_SLASH_COMMANDS,
-	...BUILTIN_COLLABORATION_SLASH_COMMANDS,
-	...BUILTIN_SESSION_SLASH_COMMANDS,
-	...BUILTIN_LIFECYCLE_SLASH_COMMANDS,
-	...BUILTIN_MARKETPLACE_SLASH_COMMANDS,
-	...BUILTIN_SKILLS_SLASH_COMMANDS,
-	...BUILTIN_CONTROL_SLASH_COMMANDS,
-];
-
-const BUILTIN_SLASH_COMMAND_LOOKUP = new Map<string, SlashCommandSpec>();
-for (const command of BUILTIN_SLASH_COMMAND_REGISTRY) {
-	BUILTIN_SLASH_COMMAND_LOOKUP.set(command.name, command);
-	for (const alias of command.aliases ?? []) {
-		BUILTIN_SLASH_COMMAND_LOOKUP.set(alias, command);
-	}
+let builtinSlashCommandRegistry: ReadonlyArray<SlashCommandSpec> | undefined;
+function getBuiltinSlashCommandRegistry(): ReadonlyArray<SlashCommandSpec> {
+	return (builtinSlashCommandRegistry ??= [
+		...BUILTIN_MODE_SLASH_COMMANDS,
+		...BUILTIN_COLLABORATION_SLASH_COMMANDS,
+		...BUILTIN_SESSION_SLASH_COMMANDS,
+		...BUILTIN_LIFECYCLE_SLASH_COMMANDS,
+		...BUILTIN_MARKETPLACE_SLASH_COMMANDS,
+		...BUILTIN_SKILLS_SLASH_COMMANDS,
+		...BUILTIN_CONTROL_SLASH_COMMANDS,
+	]);
 }
 
-export const BUILTIN_SLASH_COMMAND_RESERVED_NAMES: ReadonlySet<string> = new Set(BUILTIN_SLASH_COMMAND_LOOKUP.keys());
+let builtinSlashCommandLookup: Map<string, SlashCommandSpec> | undefined;
+function getBuiltinSlashCommandLookup(): Map<string, SlashCommandSpec> {
+	if (!builtinSlashCommandLookup) {
+		builtinSlashCommandLookup = new Map();
+		for (const command of getBuiltinSlashCommandRegistry()) {
+			builtinSlashCommandLookup.set(command.name, command);
+			for (const alias of command.aliases ?? []) {
+				builtinSlashCommandLookup.set(alias, command);
+			}
+		}
+	}
+	return builtinSlashCommandLookup;
+}
 
-/** Builtin command metadata used for slash-command autocomplete and help text. */
-export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BUILTIN_SLASH_COMMAND_REGISTRY.map(
-	command => ({
+function getBuiltinSlashCommandDefs(): ReadonlyArray<BuiltinSlashCommand> {
+	return getBuiltinSlashCommandRegistry().map(command => ({
 		name: command.name,
 		aliases: command.aliases,
 		allowArgs: command.allowArgs === true,
-		// Getter: some descriptions name keys, formatted at read time (theme/preset may change).
 		get description() {
 			return command.description;
 		},
@@ -75,8 +80,47 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		subcommandOptional: command.subcommandOptional,
 		inlineHint: command.inlineHint,
 		getTuiAutocompleteDescription: command.getTuiAutocompleteDescription,
-	}),
+	}));
+}
+
+function lazyArray<T>(getItems: () => ReadonlyArray<T>): ReadonlyArray<T> {
+	return new Proxy([] as T[], {
+		get(_target, property) {
+			const items = getItems();
+			const value = Reflect.get(items, property, items);
+			return typeof value === "function" ? value.bind(items) : value;
+		},
+		has(_target, property) {
+			return Reflect.has(getItems(), property);
+		},
+		ownKeys() {
+			return Reflect.ownKeys(getItems());
+		},
+		getOwnPropertyDescriptor(_target, property) {
+			return Object.getOwnPropertyDescriptor(getItems(), property);
+		},
+	});
+}
+
+function lazySet<T>(getItems: () => ReadonlySet<T>): ReadonlySet<T> {
+	return new Proxy(new Set<T>(), {
+		get(_target, property) {
+			const items = getItems();
+			const value = Reflect.get(items, property, items);
+			return typeof value === "function" ? value.bind(items) : value;
+		},
+		has(_target, property) {
+			return Reflect.has(getItems(), property);
+		},
+	});
+}
+
+export const BUILTIN_SLASH_COMMAND_RESERVED_NAMES: ReadonlySet<string> = lazySet(
+	() => new Set(getBuiltinSlashCommandLookup().keys()),
 );
+
+/** Builtin command metadata used for slash-command autocomplete and help text. */
+export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = lazyArray(getBuiltinSlashCommandDefs);
 
 function materializeTuiBuiltinSlashCommand(
 	cmd: BuiltinSlashCommand,
@@ -120,12 +164,12 @@ function materializeTuiBuiltinSlashCommand(
  * Materialized builtin slash commands with completion functions derived from
  * declarative subcommand/hint definitions.
  */
-export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<TuiBuiltinSlashCommand> = BUILTIN_SLASH_COMMAND_DEFS.map(cmd =>
-	materializeTuiBuiltinSlashCommand(cmd),
+export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<TuiBuiltinSlashCommand> = lazyArray(() =>
+	getBuiltinSlashCommandDefs().map(cmd => materializeTuiBuiltinSlashCommand(cmd)),
 );
 
 export function buildTuiBuiltinSlashCommands(runtime: TuiSlashCommandRuntime): ReadonlyArray<TuiBuiltinSlashCommand> {
-	return BUILTIN_SLASH_COMMAND_DEFS.map(cmd => materializeTuiBuiltinSlashCommand(cmd, runtime));
+	return getBuiltinSlashCommandDefs().map(cmd => materializeTuiBuiltinSlashCommand(cmd, runtime));
 }
 
 /**
@@ -133,7 +177,8 @@ export function buildTuiBuiltinSlashCommands(runtime: TuiSlashCommandRuntime): R
  * one of `handle` / `handleTui`. The TUI dispatcher prefers `handleTui`; the
  * ACP dispatcher requires `handle` and skips TUI-only entries.
  */
-export const BUILTIN_SLASH_COMMANDS_INTERNAL: ReadonlyArray<SlashCommandSpec> = BUILTIN_SLASH_COMMAND_REGISTRY;
+export const BUILTIN_SLASH_COMMANDS_INTERNAL: ReadonlyArray<SlashCommandSpec> =
+	lazyArray(getBuiltinSlashCommandRegistry);
 
 /**
  * Execute a builtin slash command in the interactive TUI.
@@ -149,7 +194,7 @@ export async function executeBuiltinSlashCommand(
 	const parsed = parseSlashCommand(text);
 	if (!parsed) return false;
 
-	const command = BUILTIN_SLASH_COMMAND_LOOKUP.get(parsed.name);
+	const command = getBuiltinSlashCommandLookup().get(parsed.name);
 	if (!command) return false;
 	if (parsed.args.length > 0 && !command.allowArgs) {
 		return false;
@@ -201,7 +246,7 @@ export async function executeBuiltinSlashCommand(
 
 /** Look up a unified spec by name or alias. Used by the ACP dispatcher. */
 export function lookupBuiltinSlashCommand(name: string): SlashCommandSpec | undefined {
-	return BUILTIN_SLASH_COMMAND_LOOKUP.get(name);
+	return getBuiltinSlashCommandLookup().get(name);
 }
 
 export type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime, SlashCommandSpec, TuiSlashCommandRuntime };

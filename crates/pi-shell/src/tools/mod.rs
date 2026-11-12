@@ -375,7 +375,7 @@ impl Child {
 			.map(|(name, value)| (BString::from(name), BString::from(value)))
 			.collect();
 		self.status = None;
-		let lineage = Lineage { label: self.label, detached };
+		let lineage = Lineage { label: self.label, detached, ..Lineage::default() };
 		// `nohup` (the detached tool) execs its operand: its subshell stands
 		// for the command, so `$!` of `nohup cmd &` is the program's pid.
 		self.run = Some(if detached {

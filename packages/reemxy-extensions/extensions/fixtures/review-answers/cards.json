@@ -1,0 +1,56 @@
+{
+	"title": "PR #111: check three delivered changes",
+	"intro": "Three changes landed on PR #111 at revision 82c3304cb.",
+	"storageKey": "review:pr111-delivered-2026-11-06b:v1",
+	"session": "2ea423f011f76ad8",
+	"cards": [
+		{
+			"id": "pr111-use-grid-explainer-panel",
+			"disposition": {
+				"kind": "delivered-change",
+				"source": "Darafei correction 2026-11-06, recorded in doc/product-requirements.md:1554 (Power source rows)",
+				"reason": "Landed on PR #111; the result needs his Accept / Redo / Drop."
+			},
+			"title": "Use grid: the row opens an explainer panel, the switch is small and inline",
+			"requestedQuote": "Use grid: row opens explainer panel, small inline toggle. Clicking the row label opens the existing detail panel with a short explanation of that source and a large switch bound to the same value.",
+			"landed": "Commit 9dc2d31fe \"Open power source details from Facility rows\" (with 687eb7ad0, 3b1f65cd4, b44936be3, 2db8110d0) on PR #111, branch consolidated-2026-11-05 — row: Use grid: row opens explainer panel, small inline toggle",
+			"currentImage": "shots/use-grid-now.png",
+			"currentCaption": "Revision 82c3304cb, production build, captured 2026-11-06 05:35 at 1440 px: Facility → Power → Use grid? row clicked. Panel below shows the explanation and the large switch; the small checkbox stays at the row's right end.",
+			"captureWidth": 1440,
+			"default": "Continue with this result; silence is not acceptance.",
+			"footnote": "Before capture omitted: the base f492cee22 predates the per-source Power rows (no Use grid? row exists there), so it is not a comparable picture."
+		},
+		{
+			"id": "pr111-conflict-back-returns-to-origin",
+			"disposition": {
+				"kind": "delivered-change",
+				"source": "Lead request for PR #111 review: Conflict review Back returns to where user came from",
+				"reason": "Landed on PR #111; the result needs his Accept / Redo / Drop."
+			},
+			"title": "Conflict review: Back returns to where you came from",
+			"requestedQuote": "Conflict review Back returns to where user came from.",
+			"landed": "Commits 2316de658, 4b5a22163, 82afc11bb, 82c3304cb (\"Return conflict repairs to their origin\" … \"Test conflict return to Settings\") on PR #111 — row: Conflict review Back returns to where user came from",
+			"currentImage": "shots/after-back-now.png",
+			"currentCaption": "Revision 82c3304cb, captured 2026-11-06 05:35 at 1440 px: from Facility, open the conflict list, press Review Requested IT load (opens Project setup), then Back to Conflicts. The list is shown again with Back to Facility at the top.",
+			"captureWidth": 1440,
+			"default": "Continue with this result; silence is not acceptance.",
+			"footnote": "Before capture omitted: base f492cee22 has no rack minimum-order conflict to reach this list the same way."
+		},
+		{
+			"id": "pr111-rack-choice-once-in-min-order-conflict",
+			"disposition": {
+				"kind": "delivered-change",
+				"source": "Lead request for PR #111 review: remove duplicate React key graph-input:q-rack-form (speculative row; lead checks authority before publication)",
+				"reason": "Landed on PR #111; the result needs his Accept / Redo / Drop."
+			},
+			"title": "Rack minimum-order conflict shows the rack choice once",
+			"requestedQuote": "Remove duplicate React key graph-input:q-rack-form: the rack minimum-order conflict shows the rack choice once.",
+			"landed": "Commit a81e8776a \"Show the rack choice once in minimum-order conflicts\" on PR #111 — row: Remove duplicate React key graph-input:q-rack-form",
+			"currentImage": "shots/rack-conflict-now.png",
+			"currentCaption": "Revision 82c3304cb, captured 2026-11-06 05:35 at 1440 px: Risk conflict for NVIDIA GB300 NVL72 at 1 MW. One rack row (rack choice plus physical rack count) and one Requested IT load row.",
+			"captureWidth": 1440,
+			"default": "Continue with this result; silence is not acceptance.",
+			"footnote": "Previously the conflict listed Rack choice and Physical rack count as two rows sharing one key (graph-input:q-rack-form). Before capture omitted: base f492cee22 predates this conflict."
+		}
+	]
+}

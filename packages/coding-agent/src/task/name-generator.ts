@@ -1584,3 +1584,10 @@ export function sanitizeAgentId(value: string | undefined): string | undefined {
 export function resetTaskNames(): void {
 	usedNames = new Set<string>();
 }
+
+/** Stable harness identity; collision suffixes remain the allocator's responsibility. */
+export function purposeAgentName(role: string, subject = ""): string {
+	const words = (value: string) =>
+		(value.match(/[\p{L}\p{N}]+/gu) ?? []).map(word => word.charAt(0).toUpperCase() + word.slice(1)).join("");
+	return (words(role) + words(subject)).slice(0, 32) || "Worker";
+}

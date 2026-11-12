@@ -1277,9 +1277,13 @@ impl<'e, 'c> Expander<'e, 'c> {
 				let out = match v {
 					Val::Unset => Val::Unset,
 					Val::Str(text) => {
-						let chars: Vec<char> = text.chars().collect();
-						if let Some((start, end)) = slice_bounds(chars.len(), off, len) {
-							Val::Str(BString::from(chars[start..end].iter().collect::<String>()))
+						let offsets: Vec<usize> = text
+							.char_indices()
+							.map(|(start, ..)| start)
+							.chain(std::iter::once(text.len()))
+							.collect();
+						if let Some((start, end)) = slice_bounds(offsets.len() - 1, off, len) {
+							Val::Str(BString::from(&text[offsets[start]..offsets[end]]))
 						} else {
 							if len.is_some_and(|count| count < 0) {
 								return Err(negative());

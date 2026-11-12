@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import * as fs from "node:fs";
 import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
@@ -9,40 +10,26 @@ afterEach(() => {
 
 describe("FileSessionStorage streamed rewrite durability", () => {
 	it("preserves the saved transcript when a pending write later fails with ENOSPC", async () => {
-		using tempDir = TempDir.createSync("omp-streamed-rewrite-");
+		using tempDir = TempDir.createSync("@omp-streamed-rewrite-");
 		const sessionPath = path.join(tempDir.path(), "session.jsonl");
 		const storage = new FileSessionStorage();
 		const saved = '{"type":"session","id":"saved"}\n{"type":"message","text":"durable history"}\n';
 		storage.writeTextSync(sessionPath, saved);
 		const diskFull = Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" });
 		const writeStarted = Promise.withResolvers<void>();
-		const completeWrite = Promise.withResolvers<number>();
-		const createFile = Bun.file;
-
-		vi.spyOn(Bun, "file").mockImplementation((input, options) => {
-			const file =
-				typeof input === "number"
-					? createFile(input, options)
-					: typeof input === "string" || input instanceof URL
-						? createFile(input, options)
-						: createFile(input, options);
-			if (typeof input !== "string" || path.dirname(input) !== tempDir.path() || !input.endsWith(".tmp")) {
-				return file;
-			}
-			const createWriter = file.writer.bind(file);
-			vi.spyOn(file, "writer").mockImplementation(writerOptions => {
-				const sink = createWriter(writerOptions);
-				const write = sink.write.bind(sink);
-				vi.spyOn(sink, "write").mockImplementationOnce(chunk => {
-					const pending = Promise.resolve(write(chunk)).then(() => completeWrite.promise);
-					// Keep the deliberately ignored pre-fix promise from poisoning other tests.
-					// The public rewrite must still reject and preserve the saved transcript.
-					void pending.catch(() => {});
+		const completeWrite = Promise.withResolvers<void>();
+		const open = fs.promises.open;
+		vi.spyOn(fs.promises, "open").mockImplementation(async (...args) => {
+			const file = await open(...args);
+			const input = args[0];
+			if (typeof input === "string" && path.dirname(input) === tempDir.path() && input.endsWith(".tmp")) {
+				const write = file.writeFile.bind(file);
+				vi.spyOn(file, "writeFile").mockImplementationOnce(async (...writeArgs) => {
+					await write(...writeArgs);
 					writeStarted.resolve();
-					return pending;
+					await completeWrite.promise;
 				});
-				return sink;
-			});
+			}
 			return file;
 		});
 

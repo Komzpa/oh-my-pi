@@ -92,18 +92,19 @@ function repairSteps(steps: string[] | undefined): string[] | undefined {
 	return changed ? repaired : steps;
 }
 
-/** Repair a single (possibly partial) task item's prose fields (`task`, `steps`). */
+/** Repair a single (possibly partial) task item's prose fields (`task`, `steps`, `rework`). */
 function repairTaskItem(item: TaskItem): TaskItem {
 	if (item === null || typeof item !== "object") return item;
 	const task = typeof item.task === "string" ? repairDoubleEncodedJsonString(item.task) : item.task;
+	const rework = typeof item.rework === "string" ? repairDoubleEncodedJsonString(item.rework) : item.rework;
 	const steps = repairSteps(item.steps);
-	if (task === item.task && steps === item.steps) return item;
-	return { ...item, task, steps };
+	if (task === item.task && steps === item.steps && rework === item.rework) return item;
+	return { ...item, task, steps, rework };
 }
 
 /**
- * Repair double-encoded prose in task-tool params (flat `task`/`steps`, shared
- * `context`, and each batch task item's `task`/`steps`). Returns the same reference
+ * Repair double-encoded prose in task-tool params (flat `task`/`steps` and `rework`, shared
+ * `context`, and each batch task item's `task`/`steps` and `rework`). Returns the same reference
  * when nothing changed so callers can cheaply skip work. Defensive against
  * partially-streamed args (missing/undefined fields, partial task arrays) so
  * it is safe on the render path as well as on execution.
@@ -112,6 +113,7 @@ export function repairTaskParams(params: TaskParams): TaskParams {
 	if (params === null || typeof params !== "object") return params;
 
 	const task = typeof params.task === "string" ? repairDoubleEncodedJsonString(params.task) : params.task;
+	const rework = typeof params.rework === "string" ? repairDoubleEncodedJsonString(params.rework) : params.rework;
 	const context = typeof params.context === "string" ? repairDoubleEncodedJsonString(params.context) : params.context;
 	const steps = repairSteps(params.steps);
 
@@ -126,8 +128,14 @@ export function repairTaskParams(params: TaskParams): TaskParams {
 		if (changed) tasks = repaired;
 	}
 
-	if (task === params.task && steps === params.steps && context === params.context && tasks === params.tasks) {
+	if (
+		task === params.task &&
+		steps === params.steps &&
+		rework === params.rework &&
+		context === params.context &&
+		tasks === params.tasks
+	) {
 		return params;
 	}
-	return { ...params, task, steps, context, tasks };
+	return { ...params, task, steps, rework, context, tasks };
 }

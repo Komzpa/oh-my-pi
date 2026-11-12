@@ -1,0 +1,91 @@
+{
+  "source": "evidence/after-spawn",
+  "heartbeatMs": 10,
+  "unit": "milliseconds",
+  "turns": [
+    {
+      "start": 1794086426826,
+      "end": 1794086429169,
+      "maxIntervalMs": 283.18409800000154,
+      "rcharAtMax": 2652496,
+      "sampleEnd": 1794086426916
+    },
+    {
+      "start": 1794086429420,
+      "end": 1794086431863,
+      "maxIntervalMs": 94.66385500000251,
+      "rcharAtMax": 2032456,
+      "sampleEnd": 1794086431937
+    },
+    {
+      "start": 1794086432215,
+      "end": 1794086448476,
+      "maxIntervalMs": 430.96793199999956,
+      "rcharAtMax": 2089813,
+      "sampleEnd": 1794086448824
+    },
+    {
+      "start": 1794086449332,
+      "end": 1794086452823,
+      "maxIntervalMs": 246.0762259999974,
+      "rcharAtMax": 2313590,
+      "sampleEnd": 1794086449423
+    },
+    {
+      "start": 1794086453153,
+      "end": 1794086455293,
+      "maxIntervalMs": 262.3119420000003,
+      "rcharAtMax": 2121730,
+      "sampleEnd": 1794086453227
+    },
+    {
+      "start": 1794086455461,
+      "end": 1794086462829,
+      "maxIntervalMs": 76.77037800000107,
+      "rcharAtMax": 1750570,
+      "sampleEnd": 1794086455489
+    },
+    {
+      "start": 1794086462996,
+      "end": 1794086466572,
+      "maxIntervalMs": 311.34777100000065,
+      "rcharAtMax": 2700346,
+      "sampleEnd": 1794086466812
+    },
+    {
+      "start": 1794086467078,
+      "end": 1794086472808,
+      "maxIntervalMs": 217.4461880000017,
+      "rcharAtMax": 2021177,
+      "sampleEnd": 1794086467145
+    }
+  ],
+  "p50TurnMaxMs": 254.19408399999884,
+  "maxTurnMs": 430.96793199999956,
+  "tools": [
+    {
+      "tool": "task",
+      "isError": false,
+      "outOfMemory": false,
+      "hasHistoryHeader": false
+    },
+    {
+      "tool": "read",
+      "isError": false,
+      "outOfMemory": false,
+      "hasHistoryHeader": true
+    },
+    {
+      "tool": "read",
+      "isError": false,
+      "outOfMemory": false,
+      "hasHistoryHeader": true
+    },
+    {
+      "tool": "grep",
+      "isError": false,
+      "outOfMemory": false,
+      "hasHistoryHeader": true
+    }
+  ]
+}

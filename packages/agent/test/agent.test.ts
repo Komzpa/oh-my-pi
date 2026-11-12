@@ -16,6 +16,78 @@ import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream"
 import { createAssistantMessage, createUserMessage } from "./helpers";
 
 describe("Agent", () => {
+	it("shows count-only queue pressure at provider boundaries and clears it after drain", async () => {
+		const toolSchema = type({});
+		const agentRef = {} as { current: Agent };
+		const enqueueTool: AgentTool<typeof toolSchema> = {
+			name: "enqueue",
+			label: "Enqueue",
+			description: "Queue two steering messages",
+			parameters: toolSchema,
+			async execute() {
+				agentRef.current.steer({ role: "user", content: "queued A", timestamp: Date.now() });
+				agentRef.current.steer({ role: "user", content: "secret queued B", timestamp: Date.now() });
+				return { content: [{ type: "text", text: "queued" }] };
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "enqueue-1", name: "enqueue", arguments: {} }] },
+				{ content: ["continue"] },
+				{ content: ["done"] },
+				{ content: ["ordinary turn"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [enqueueTool], messages: [] },
+			streamFn: mock.stream,
+			steeringMode: "one-at-a-time",
+			transformProviderContext: context => ({
+				...context,
+				messages: [
+					...context.messages,
+					{ role: "developer", content: "existing transform", timestamp: Date.now() },
+				],
+			}),
+		});
+		agentRef.current = agent;
+
+		await agent.prompt("start");
+		expect(
+			mock.calls[1].context.messages.some(
+				message => message.role === "developer" && message.content === "existing transform",
+			),
+		).toBe(true);
+		const pressureMessages = (index: number) =>
+			mock.calls[index].context.messages.filter(
+				message =>
+					message.role === "developer" &&
+					typeof message.content === "string" &&
+					message.content.includes("pending queued messages"),
+			);
+
+		expect(pressureMessages(0)).toHaveLength(0);
+		expect(pressureMessages(1)).toMatchObject([
+			{ role: "developer", content: expect.stringContaining("There are 1 pending queued messages") },
+		]);
+		expect(
+			mock.calls[1].context.messages.some(
+				message => message.role === "user" && message.content === "secret queued B",
+			),
+		).toBe(false);
+		expect(pressureMessages(2)).toMatchObject([
+			{ role: "developer", content: expect.stringContaining("There are 0 pending queued messages") },
+		]);
+		expect(
+			mock.calls[2].context.messages.some(
+				message => message.role === "user" && message.content === "secret queued B",
+			),
+		).toBe(true);
+
+		await agent.prompt("ordinary turn");
+		expect(pressureMessages(3)).toHaveLength(0);
+	});
+
 	it("classifies agent-authored steering as a parent steering message", async () => {
 		const toolSchema = type({ value: type("string") });
 		const executed: string[] = [];
@@ -76,7 +148,7 @@ describe("Agent", () => {
 		expect(skippedContent?.type).toBe("text");
 		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
 		expect(skippedContent.text).toContain("Skipped due to pending parent steering message");
-		expect(skippedContent.text).toContain("After the steering message is handled on the next step");
+		expect(skippedContent.text).toContain("then retry echo");
 		expect(skippedContent.text).not.toContain("pending system advisory");
 		expect(skippedContent.text).not.toContain("queued user message");
 	});
@@ -316,16 +388,54 @@ describe("Agent", () => {
 		expect(calls).toBe(1);
 	});
 
-	it("continue() leaves queued messages owned when its signal is already aborted", async () => {
+	for (const tail of ["empty", "assistant"] as const) {
+		for (const queue of ["steering", "followUp"] as const) {
+			it.each(["pre-aborted", "external-hook", "agent-hook"] as const)(
+				`settles cancelled ${tail} ${queue} continuation (%s) with input pending for exactly one retry`,
+				async cancellation => {
+					const mock = createMockModel({ responses: [{ content: ["retried"] }] });
+					const agent = new Agent({ streamFn: mock.stream });
+					if (tail === "assistant")
+						agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
+					const before = [...agent.state.messages];
+					const queued = createUserMessage("stay queued");
+					if (queue === "steering") agent.steer(queued);
+					else agent.followUp(queued);
+					const controller = new AbortController();
+					let hookCalls = 0;
+					const detach = agent.addBeforeQueuedMessageDequeueHook(() => {
+						hookCalls++;
+						if (cancellation === "agent-hook") agent.abort();
+						else controller.abort();
+					});
+					if (cancellation === "pre-aborted") controller.abort();
+					try {
+						await expect(agent.continue(controller.signal)).resolves.toBeUndefined();
+						await agent.waitForIdle();
+						expect(agent.snapshotPendingQueues()[queue]).toEqual([queued]);
+						expect(agent.state.messages).toEqual(before);
+						expect(mock.calls).toHaveLength(0);
+						expect(agent.state.isStreaming).toBe(false);
+						expect(hookCalls).toBe(cancellation === "pre-aborted" ? 0 : 1);
+					} finally {
+						detach();
+					}
+					await agent.continue();
+					expect(mock.calls).toHaveLength(1);
+					expect(agent.state.messages.filter(message => message === queued)).toHaveLength(1);
+					expect(agent.hasQueuedMessages()).toBe(false);
+				},
+			);
+		}
+	}
+
+	it("still rejects an uncancelled assistant tail without pending input", async () => {
 		const agent = new Agent();
 		agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
-		agent.followUp({ role: "user", content: "stay queued", timestamp: Date.now() });
-		const controller = new AbortController();
-		controller.abort();
-
-		await expect(agent.continue(controller.signal)).rejects.toThrow("Cannot continue from message role: assistant");
-		expect(agent.peekFollowUpQueue()).toHaveLength(1);
+		await expect(agent.continue()).rejects.toThrow("Cannot continue from message role: assistant");
+		expect(agent.state.isStreaming).toBe(false);
 	});
+
 	it("keeps follow-up ownership when the deadline expires during a dequeue hook", async () => {
 		const mock = createMockModel({ responses: [{ content: ["done"] }] });
 		// Generous budget: the loop checks the deadline before invoking dequeue
@@ -351,7 +461,8 @@ describe("Agent", () => {
 	});
 	it("keeps queued work when continue() reaches its deadline inside a dequeue hook", async () => {
 		// Same starvation guard as above: hook entry must precede expiry.
-		const agent = new Agent({ deadline: Date.now() + 1_000 });
+		const mock = createMockModel({ responses: [{ content: ["retried"] }] });
+		const agent = new Agent({ streamFn: mock.stream, deadline: Date.now() + 1_000 });
 		agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
 		agent.addBeforeQueuedMessageDequeueHook(async signal => {
 			if (!signal) throw new Error("Expected the deadline-aware dequeue signal");
@@ -360,19 +471,31 @@ describe("Agent", () => {
 			signal.addEventListener("abort", () => resolve(), { once: true });
 			await promise;
 		});
-		agent.followUp({ role: "user", content: "stay queued before run loop", timestamp: Date.now() });
+		const queued = createUserMessage("stay queued before run loop");
+		agent.followUp(queued);
 
-		await expect(agent.continue()).rejects.toThrow("Cannot continue from message role: assistant");
+		await expect(agent.continue()).resolves.toBeUndefined();
 
-		expect(agent.peekFollowUpQueue()).toHaveLength(1);
+		expect(agent.peekFollowUpQueue()).toEqual([queued]);
+		expect(agent.state.isStreaming).toBe(false);
+		expect(mock.calls).toHaveLength(0);
+		// A deadline is immutable for this agent. Retry the retained queue with a fresh run budget.
+		const retry = new Agent({ streamFn: mock.stream, initialState: { messages: [...agent.state.messages] } });
+		retry.replaceQueues([...agent.peekSteeringQueue()], [...agent.peekFollowUpQueue()]);
+		await retry.continue();
+		expect(mock.calls).toHaveLength(1);
+		expect(retry.state.messages.filter(message => message === queued)).toHaveLength(1);
+		expect(retry.hasQueuedMessages()).toBe(false);
 	});
 
 	it("claims an abortable busy state while continue() awaits dequeue hooks", async () => {
-		const agent = new Agent();
+		const mock = createMockModel({ responses: [{ content: ["retried"] }] });
+		const agent = new Agent({ streamFn: mock.stream });
 		agent.replaceMessages([createAssistantMessage([{ type: "text", text: "ready" }])]);
-		agent.followUp({ role: "user", content: "stay queued", timestamp: Date.now() });
+		const queued = createUserMessage("stay queued");
+		agent.followUp(queued);
 		const hookStarted = Promise.withResolvers<void>();
-		agent.addBeforeQueuedMessageDequeueHook(async signal => {
+		const detach = agent.addBeforeQueuedMessageDequeueHook(async signal => {
 			if (!signal) throw new Error("Expected continuation dequeue signal");
 			hookStarted.resolve();
 			if (signal.aborted) return;
@@ -394,11 +517,17 @@ describe("Agent", () => {
 		await expect(agent.prompt("must not overlap")).rejects.toBeInstanceOf(AgentBusyError);
 
 		agent.abort("cancel dequeue");
-		await expect(continuing).rejects.toThrow("Cannot continue from message role: assistant");
+		await expect(continuing).resolves.toBeUndefined();
 		await idle;
 		expect(idleResolved).toBe(true);
 		expect(agent.state.isStreaming).toBe(false);
-		expect(agent.peekFollowUpQueue()).toHaveLength(1);
+		expect(agent.peekFollowUpQueue()).toEqual([queued]);
+		expect(mock.calls).toHaveLength(0);
+		detach();
+		await agent.continue();
+		expect(mock.calls).toHaveLength(1);
+		expect(agent.state.messages.filter(message => message === queued)).toHaveLength(1);
+		expect(agent.hasQueuedMessages()).toBe(false);
 	});
 
 	it("does not clear a successor prompt after continue() releases idle waiters", async () => {
@@ -591,6 +720,95 @@ describe("Agent", () => {
 
 		expect(hasQueuedFollowUp).toBe(true);
 		expect(agent.state.messages[agent.state.messages.length - 1].role).toBe("assistant");
+	});
+
+	it("replaces 38 queued goal continuations with one delivery and no model-news pressure", async () => {
+		const mock = createMockModel({ responses: [{ content: ["Processed"] }] });
+		const agent = new Agent({ streamFn: mock.stream });
+		const goalContinuations = Array.from({ length: 38 }, (_, index) => ({
+			role: "custom" as const,
+			customType: "goal-continuation",
+			content: `continuation ${index + 1}`,
+			display: false,
+			timestamp: index + 1,
+		}));
+		const newestGoalContinuation = goalContinuations[goalContinuations.length - 1]!;
+		agent.replaceMessages([
+			{ role: "user", content: "Initial", timestamp: Date.now() - 10 },
+			createAssistantMessage([{ type: "text", text: "Initial response" }]),
+		]);
+
+		for (const continuation of goalContinuations) agent.followUp(continuation);
+
+		expect(agent.peekFollowUpQueue()).toEqual([newestGoalContinuation]);
+		expect(agent.getPendingModelNewsCount()).toBe(0);
+		await agent.continue();
+
+		const delivered = agent.state.messages.filter(
+			(message): message is Extract<typeof message, { role: "custom" }> =>
+				message.role === "custom" && message.customType === "goal-continuation",
+		);
+		expect(delivered).toEqual([newestGoalContinuation]);
+	});
+
+	it("keeps only the newest goal continuation when restoring queued messages", () => {
+		const agent = new Agent();
+		const goalContinuations = Array.from({ length: 38 }, (_, index) => ({
+			role: "custom" as const,
+			customType: "goal-continuation",
+			content: `restored continuation ${index + 1}`,
+			display: false,
+			timestamp: index + 1,
+		}));
+		const newestGoalContinuation = goalContinuations[goalContinuations.length - 1]!;
+
+		agent.replaceQueues(goalContinuations.slice(0, 19), goalContinuations.slice(19));
+
+		expect(agent.peekSteeringQueue()).toEqual([]);
+		expect(agent.peekFollowUpQueue()).toEqual([newestGoalContinuation]);
+		expect(agent.getPendingModelNewsCount()).toBe(0);
+	});
+
+	it("counts queued user input as one model-news message", () => {
+		const agent = new Agent();
+		agent.steer({
+			role: "user",
+			content: "Please do this next",
+			attribution: "user",
+			timestamp: Date.now(),
+		});
+
+		expect(agent.getPendingModelNewsCount()).toBe(1);
+	});
+
+	it("counts worker and IRC results but ignores agent-attributed asides", () => {
+		const agent = new Agent();
+		agent.followUp({
+			role: "custom",
+			customType: "extension-aside",
+			content: "Harness status",
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		agent.followUp({
+			role: "custom",
+			customType: "async-result",
+			content: "Worker finished",
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+		agent.steer({
+			role: "custom",
+			customType: "irc:incoming",
+			content: "Peer result",
+			display: false,
+			attribution: "agent",
+			timestamp: Date.now(),
+		});
+
+		expect(agent.getPendingModelNewsCount()).toBe(2);
 	});
 
 	it("continue() should keep one-at-a-time steering semantics from assistant tail", async () => {

@@ -314,6 +314,16 @@ export interface AsyncJobFilter {
 	ownerId: string | undefined;
 }
 
+export interface AsyncJobQueryOptions {
+	/**
+	 * Foreground-backed jobs are hidden from user job listings until promoted to
+	 * background jobs, but owner quiescence checks still need to see them: a
+	 * hidden long-running foreground command can still auto-background and wake
+	 * the owner later.
+	 */
+	includeForeground?: boolean;
+}
+
 /** What a job body receives from {@link AsyncJobManagerApi.register}. */
 export interface AsyncJobRunContext {
 	jobId: string;
@@ -352,7 +362,7 @@ export interface AsyncJobManagerApi {
 	cancel(id: string, filter?: AsyncJobFilter): boolean;
 	getJob(id: string): AsyncJob | undefined;
 	/** Running background jobs; foreground-backed jobs stay hidden until promoted. */
-	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[];
+	getRunningJobs(filter?: AsyncJobFilter, options?: AsyncJobQueryOptions): AsyncJob[];
 	/** Settled background jobs, newest first. */
 	getRecentJobs(limit?: number, filter?: AsyncJobFilter): AsyncJob[];
 	/** Every background job row. */
@@ -460,8 +470,9 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 		return out;
 	}
 
-	#visibleJobs(filter?: AsyncJobFilter): AsyncJob[] {
-		return this.#filterJobs(this.#jobs.values(), filter).filter(job => !job.foreground);
+	#visibleJobs(filter?: AsyncJobFilter, options: AsyncJobQueryOptions = {}): AsyncJob[] {
+		const jobs = this.#filterJobs(this.#jobs.values(), filter);
+		return options.includeForeground === true ? jobs : jobs.filter(job => !job.foreground);
 	}
 
 	constructor(options: AsyncJobManagerOptions) {
@@ -671,13 +682,14 @@ export class AsyncJobManager implements AsyncJobManagerApi {
 	}
 
 	/** Running background jobs; foreground-backed jobs stay hidden until promoted. */
-	getRunningJobs(filter?: AsyncJobFilter): AsyncJob[] {
-		return this.#visibleJobs(filter).filter(job => job.status === "running");
+	getRunningJobs(filter?: AsyncJobFilter, options?: AsyncJobQueryOptions): AsyncJob[] {
+		return this.#visibleJobs(filter, options).filter(job => job.status === "running");
 	}
 
 	/** Settled background jobs, newest first; foreground-backed jobs stay hidden. */
 	getRecentJobs(limit = 10, filter?: AsyncJobFilter): AsyncJob[] {
 		return this.#visibleJobs(filter)
+			.filter(job => !this.#consumedJobResults.has(job.id))
 			.filter(job => job.status !== "running")
 			.sort((a, b) => b.startTime - a.startTime)
 			.slice(0, limit);

@@ -391,6 +391,16 @@ export class UsageService implements UsageApi {
 			const invalidated = usageCacheEpoch !== this.#deps.cache.epoch;
 			if (report !== null) {
 				if (invalidated) return report;
+				// A shared provider fallback is evidence from the old fetch, not a
+				// successful refresh that can heal blocks or append new history.
+				if (report.metadata?.stale === true) {
+					const retryAt = report.metadata.retryAt;
+					this.#deps.cache.set(cacheKey, {
+						value: report,
+						expiresAt: typeof retryAt === "number" ? retryAt : Date.now(),
+					});
+					return report;
+				}
 				this.#deps.blocks.reconcileRequest(request, report);
 				const ttlJitter = USAGE_REPORT_TTL_MS * (Math.random() * 0.5 - 0.25);
 				// Success: stagger per-credential cache expiry so all accounts don't

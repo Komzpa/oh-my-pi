@@ -4,9 +4,8 @@ import { TERMINAL_STATES } from "@oh-my-pi/pi-tui/apps/ps-data";
 import type { DaemonSnapshot, DaemonSpec } from "@oh-my-pi/pi-tui/tools/daemon";
 import { formatDuration, replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
-import { getDaemonRuntimeDir, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { type DaemonBrokerClient, daemonClientForProject } from "./client";
-import { canonicalProjectDir } from "./paths";
 import type { DaemonOperation, DaemonRpcResult } from "./protocol";
 import { renderTerminalOutputIsolated } from "./terminal-output-worker-client";
 import type { ToolSession } from "../tools";
@@ -14,6 +13,7 @@ import { resolveToCwd } from "../tools/path-utils";
 import { isSharedBrowserDaemonName } from "../tools/browser/shared-daemon";
 
 import { cfgLaunchEnabled, cfgLaunchPersist } from "../tools/settings";
+import { toolSessionEnvironment } from "../exec/session-slice";
 
 export interface ServiceReady {
 	log?: string;
@@ -75,6 +75,36 @@ function track(session: ToolSession, daemon: DaemonSnapshot): void {
 	const services = serviceState(session).owned;
 	if (TERMINAL_STATES[daemon.state]) services.delete(daemon.name);
 	else services.set(daemon.name, { id: daemon.id, startedAt: daemon.startedAt });
+	if (owner) {
+		if (services.size > 0) ownersWithServices.set(owner, session.cwd);
+		else ownersWithServices.delete(owner);
+	}
+}
+
+/** Session ids this process has live named services for, with the project dir whose broker holds them. */
+const ownersWithServices = new Map<string, string>();
+
+/** How long the broker keeps a restarting owner's services (and itself) alive waiting for the resumed session. */
+const RESTART_HOLD_MS = 2 * 60_000;
+
+/**
+ * Called by the in-place `/restart` path before the session is torn down: ask the broker to keep this
+ * session's named services through the exec. Services stay session-scoped, so the resumed session
+ * (same session id) finds them still running, while a normal exit, an explicit stop, or a restart that
+ * never comes back stops them exactly as before. A no-op when this process has no live service.
+ */
+export async function holdServicesForRestart(sessionId: string): Promise<void> {
+	const projectDir = ownersWithServices.get(sessionId);
+	if (projectDir === undefined) return;
+	try {
+		const client = await daemonClientForProject(projectDir);
+		await client.request({ op: "hold", owner: sessionId, graceMs: RESTART_HOLD_MS });
+	} catch (error) {
+		// A legacy broker rejects the unknown op; the restart proceeds as it did before holds existed.
+		logger.warn("Could not hold named services for restart", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
 }
 
 function subscribe(session: ToolSession, client: DaemonBrokerClient): void {
@@ -95,6 +125,7 @@ function subscribe(session: ToolSession, client: DaemonBrokerClient): void {
 		unsubscribe({ preservePending: true });
 		clients.delete(client);
 		serviceState(session).owned.clear();
+		ownersWithServices.delete(owner);
 		for (const listener of serviceState(session).listeners) listener();
 	});
 	session.registerSessionChangeCallback?.(() => {
@@ -103,6 +134,7 @@ function subscribe(session: ToolSession, client: DaemonBrokerClient): void {
 		unsubscribe({ preservePending: true });
 		clients.delete(client);
 		serviceState(session).owned.clear();
+		ownersWithServices.delete(owner);
 		for (const listener of serviceState(session).listeners) listener();
 	});
 }
@@ -112,9 +144,19 @@ async function request(
 	operation: DaemonOperation,
 	signal?: AbortSignal,
 ): Promise<DaemonRpcResult> {
-	const client = await daemonClientForProject(session.cwd);
+	const client = await daemonClientForProject(session.cwd, session.getSessionId?.() ?? undefined);
 	subscribe(session, client);
-	const result = await client.request(operation, signal);
+	const scopedOperation =
+		operation.op === "start"
+			? {
+					...operation,
+					spec: {
+						...operation.spec,
+						env: await toolSessionEnvironment(session.getSessionId?.() ?? undefined, operation.spec.env),
+					},
+				}
+			: operation;
+	const result = await client.request(scopedOperation, signal);
 	if (result.op === "list") {
 		const owner = serviceOwner(session);
 		serviceState(session).owned.clear();
@@ -158,8 +200,8 @@ export async function findService(
 }
 
 export async function serviceLogPath(session: ToolSession, name: string): Promise<string> {
-	const canonical = await canonicalProjectDir(session.cwd);
-	return path.join(getDaemonRuntimeDir(canonical), "daemons", name, "output.log");
+	const client = await daemonClientForProject(session.cwd, session.getSessionId?.() ?? undefined);
+	return path.join(client.runtimeDir, "daemons", name, "output.log");
 }
 
 /** Render legacy broker PTY bytes outside the client process. */

@@ -7,9 +7,11 @@
  * caller-supplied hooks.
  */
 import { toError } from "@oh-my-pi/pi-utils";
+import { createSessionModelPresetActions } from "../config/model-presets";
 import { runExtensionCompact, runExtensionSetModel } from "../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../extensibility/extensions/get-commands-handler";
 import type { ExtensionError, ExtensionMode, ExtensionUIContext } from "../extensibility/extensions/types";
+import { sendAgentMessageFromSession } from "../irc/messaging";
 import type { AgentSession } from "../session/agent-session";
 import { USER_INTERRUPT_LABEL } from "../session/messages";
 
@@ -134,6 +136,7 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			setThinkingLevel: level => session.setThinkingLevel(level),
 			getServiceTiers: () => session.serviceTierByFamily,
 			setServiceTier: (family, tier) => session.setServiceTierFamily(family, tier),
+			...createSessionModelPresetActions(session),
 			getSessionName: () => session.sessionManager.getSessionName(),
 			setSessionName: async name => {
 				await session.sessionManager.setSessionName(name, "user");
@@ -148,7 +151,9 @@ export async function initializeExtensions(session: AgentSession, options: Initi
 			shutdown,
 			getContextUsage: () => session.getContextUsage(),
 			getSystemPrompt: () => session.systemPrompt,
+			sendAgentMessage: (to, message) => sendAgentMessageFromSession(session, to, message),
 			runEphemeralTurn: args => session.runEphemeralTurn(args),
+			setSubagentFastMode: (id, enabled) => session.setSubagentFastMode(id, enabled),
 			compact: instructionsOrOptions => runExtensionCompact(session, instructionsOrOptions),
 		},
 		// ExtensionCommandContextActions — commands invokable via prompt("/command")

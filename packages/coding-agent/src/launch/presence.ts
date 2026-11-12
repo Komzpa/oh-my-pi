@@ -2,7 +2,7 @@ import type { Dirent } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { isEnoent, logger, postmortem } from "@oh-my-pi/pi-utils";
-import { canonicalProjectDir, daemonRuntimeDir } from "./paths";
+import { canonicalProjectDir, daemonRuntimeDir, processStartTime } from "./paths";
 
 const CLIENTS_DIR = "clients";
 const BROKER_PID_FILE = "broker.pid";
@@ -18,7 +18,7 @@ const DAEMONS_DIR = "daemons";
  * produced by `getDaemonRuntimeDir`. Only entries matching this are pruned,
  * which excludes the machine-global `global` container and any foreign dir.
  */
-const DAEMON_SCOPE_KEY = /^[0-9a-f]{16}$/;
+const DAEMON_SCOPE_KEY = /^[0-9a-f]{16}(?:-[0-9a-f]{1,16})?$/;
 /**
  * Grace before a dead daemon runtime dir becomes prune-eligible. Guards against
  * deleting a scope whose owning omp process is mid-startup (token written, broker
@@ -43,7 +43,10 @@ export async function registerDaemonProjectPresence(
 	await fs.mkdir(clientsDir, { recursive: true, mode: 0o700 });
 	const id = `${process.pid}-${crypto.randomUUID()}`;
 	const presencePath = path.join(clientsDir, `${id}.json`);
-	await Bun.write(presencePath, JSON.stringify({ pid: process.pid, id, projectDir: canonical }));
+	await Bun.write(
+		presencePath,
+		JSON.stringify({ pid: process.pid, processStartTime: processStartTime(process.pid), id, projectDir: canonical }),
+	);
 	// POSIX modes are meaningless on Windows; chmod there only costs another syscall.
 	if (process.platform !== "win32") await fs.chmod(presencePath, 0o600);
 	let closed = false;
@@ -82,6 +85,13 @@ export async function hasLiveDaemonProjectPresence(runtimeDir: string): Promise<
 				continue;
 			}
 			try {
+				if (
+					process.platform === "linux" &&
+					(!("processStartTime" in decoded) || decoded.processStartTime !== processStartTime(decoded.pid))
+				) {
+					await fs.rm(presencePath, { force: true });
+					continue;
+				}
 				process.kill(decoded.pid, 0);
 				live = true;
 			} catch {
@@ -106,6 +116,13 @@ export async function readLiveDaemonBrokerPid(runtimeDir: string): Promise<numbe
 		return undefined;
 	}
 	try {
+		if (
+			process.platform === "linux" &&
+			(!("processStartTime" in raw) || raw.processStartTime !== processStartTime(raw.pid))
+		) {
+			await fs.rm(path.join(runtimeDir, BROKER_PID_FILE), { force: true });
+			return undefined;
+		}
 		process.kill(raw.pid, 0);
 		return raw.pid;
 	} catch {

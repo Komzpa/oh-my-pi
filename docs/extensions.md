@@ -134,6 +134,7 @@ Core methods:
 - `getSessionName`, `setSessionName`
 - `setModel`, `getThinkingLevel`, `setThinkingLevel`
 - `getServiceTiers`, `setServiceTier`
+- `applySessionModelPreset`, `clearSessionModelPreset`, `getSessionModelPreset`
 - `registerProvider`, `unregisterProvider`
 - `registerFileWriteFallback`, `registerFileDeleteFallback`
 - `events` (shared event bus)
@@ -145,6 +146,8 @@ labeling action. `getAllTools()` returns tool schemas and source metadata, while
 `getActiveTools()` returns enabled names.
 
 `getServiceTiers()` returns a detached snapshot of the session's live per-family tier map. `setServiceTier(family, tier)` changes one family for subsequent requests; pass `undefined` to clear that session override. OpenAI accepts `auto`, `default`, `flex`, `scale`, `priority`, or `ultrafast`; Anthropic accepts `priority`; Google accepts `flex` or `priority`. Changes made while a response is streaming do not alter that in-flight request.
+
+`applySessionModelPreset(name)` applies a saved model preset to this session only (see [Model presets](./models.md#session-only-presets)): roles, default thinking level and the preset's `settings` become runtime overrides, nothing is written to config, subagents spawned afterwards inherit them, and the active model switches to the preset's `default`. It resolves to the same result as a normal switch; check `kind === "switched"`. `clearSessionModelPreset()` restores exactly the displaced overrides (the model is not switched back) and returns the cleared name, and `getSessionModelPreset()` returns the active name.
 
 ### Keyboard shortcuts
 
@@ -379,7 +382,9 @@ Handlers and tool `execute` receive `ctx` with:
 - `getContextUsage()`
 - `getAsyncJobSnapshot()` returns the current session's read-only async-job snapshot, or `null` when no session owns the context
 - `compact(instructionsOrOptions?)`: accepts summary focus text or `CompactOptions`, including one-off `mode: "soft" | "remote" | "snapcompact"`, `onComplete`, `onError`, and `suppressContinuation`
+- `sendAgentMessage(to, message)` sends an agent peer message and returns `{ delivered, text }`
 - `isIdle()`, `hasPendingMessages()`, `abort()`
+- `setSubagentFastMode(id, enabled)` (optional; changes a live direct child's `/fast` mode)
 - `shutdown()`
 - `resolvePlanReview(reviewId, choice, input?)`: answer the open interactive plan review; returns `false` when the review or choice is unavailable, `refine` requires non-empty `input.feedback`, and on approvals (`execute`, `compact`, `keep`) `input.role` may name a tier from the event's `tiers` to pick the execution model (an unknown role, or a `role` on any other choice, returns `false`)
 - `getPendingPlanReview()`: the open interactive plan review still awaiting an answer, in the `plan_review_requested` shape, or `undefined`; use it to answer a review that opened before the extension loaded or reconnected
@@ -405,6 +410,16 @@ Handlers and tool `execute` receive `ctx` with:
 - `annotations`: `/annotate` as an API, for boards and remote clients. `submit({ source, notes, deliver?, review?, focus? })` builds the feedback `/annotate` would and delivers it without any UI; `open({ source, deliver?, focus? })` mounts the annotation overlay on the source and resolves with the operator's notes (`undefined` when dismissed; `mode === "tui"` only). Text sources are `{ kind: "text", text, label? }`, `{ kind: "file", path }` (resolved against the live session cwd), or `{ kind: "last" }`; diff sources are `{ kind: "diff", diff, label? }`, `{ kind: "uncommitted" }`, or `{ kind: "pr", ref }` (`ref` is a GitHub PR or GitLab MR URL, `pr://owner/repo/N`, or `mr://<host>/<group>/<project>/N/diff`). `review`/`focus` apply to diff sources only (a type error on text sources). Text notes are `{ note, line?, quote? }` (1-based; whole-source when omitted, and the quoted line is filled in); diff notes are `{ path, note, line?, side?, occurrence?, rawLine? }` (`side` defaults to `"new"`; `rawLine` is the diff row including its `+`/`-`/space prefix). Notes that do not match their source reject rather than being dropped. `text` and `diff` sources are frozen snapshots of what you pass; `file`, `last`, `uncommitted`, and `pr` are re-read at call time and line numbers are matched against the current content, so pass `quote`/`rawLine` to reject a note (naming it) when that content drifted. `deliver` defaults to `"auto"`: pasteable notes go into the composer when the interactive TUI editor is available and are sent otherwise; an LLM review request (`review: true` on a diff) is always sent. Sending uses `pi.sendUserMessage` and queues as a follow-up while the agent is streaming. `"paste"`/`"send"` force a channel and `"none"` only returns `text`. The result is discriminated by `kind`: `"text"` carries `TextReviewAnnotation[]` and, after `open`, `editedText` when the operator replaced the source in the external editor (the feedback then refers to that text); `"diff"` carries `CodeReviewAnnotation[]` and `review` (whether `text` is an LLM review request). Both carry the rendered `text` and the `delivered` channel.
   Explicit paste requires `ctx.ui.supportsEditor === true`: the TUI and non-headless RPC expose composers; ACP and no-op UI contexts do not. Supplied diffs used for LLM review reject above 50,000 characters or 20 reviewable files before delivery, and `open` rejects such a patch before mounting the overlay; split larger patches into smaller requests. Notes-only submissions do not have this review-prompt bound.
 - `setInterval(fn, ms, ...args)` / `setTimeout(fn, ms, ...args)` / `clearTimer(timer)` — managed timers (see below)
+
+### Live subagent fast mode (`ctx.setSubagentFastMode`)
+
+Hosts that support this API let a handler change `/fast` for a live direct child by its exact agent id. It returns `false` when the target is not a live child owned by the current session or the child's model has no service-tier control. A successful change applies to the child's next provider request; an in-flight request keeps its current tier. Older hosts may omit the method.
+
+```ts
+if (ctx.setSubagentFastMode?.(agentId, isCritical)) {
+  // The child's next request will use the selected model's fast tier.
+}
+```
 
 ### Ephemeral side turns (`ctx.runEphemeralTurn`)
 
@@ -455,6 +470,19 @@ The promise resolves once the call is signaled and its control socket is open; a
 omp has no media peer for these calls, so it cannot tell when yours goes away. Call `live.stop()` when the peer disconnects (`connectionstatechange` to `failed` or `closed`, or your relay socket closing); otherwise the call stays open and the TUI keeps the live visualizer up.
 
 Whoever holds the peer steers this session by voice, including delegated work that runs tools, so authenticate the page or relay that hands you the offer.
+
+### Agent peer messages (`ctx.sendAgentMessage`)
+
+Extensions can send the same peer messages that `write agent://<id>` sends:
+
+```ts
+const result = await ctx.sendAgentMessage("Scout", "Status check: are you still blocked?");
+if (!result.delivered) {
+  ctx.ui.notify(result.text, "warning");
+}
+```
+
+`sendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }>` uses the current session's agent id as the sender. It follows normal peer-messaging availability rules: IRC must be enabled and the session must have an agent registry. Unavailable messaging, an unknown recipient, or another delivery failure resolves with `delivered: false` and a human-readable `text`; it does not throw for ordinary delivery failures.
 
 ### Background work (`ctx.setInterval` / `ctx.setTimeout`)
 
@@ -580,6 +608,7 @@ Cancellation stops the host from waiting but cannot stop extension code or undo 
 - `cache_warming_decision` — fired before each prompt-cache warming refresh with the warmer's economics (`warmCost`, `missCost`, `continuationProbability`, `action`). Return `{ action: "warm" | "stop" }` to override; the last handler returning an action wins, handler failures or answers slower than 2 seconds leave the warmer's decision standing, and a `"stop"` override ends warming until the next real request. Only the main agent loop warms; task/subagent sessions never fire this. The refresh itself replays the real request through the same provider path, so `before_provider_request` and `after_provider_response` fire for it too; a replacement payload must stay byte-identical to the real one for the refresh to hit the cache.
 - `turn_start` / `turn_end`
 - `assistant_message` — awaited once per finalized assistant message before agent context, persistence, `message_end`, or tool dispatch. Return `{ content }` to replace text for history, persistence, `message_end` consumers, and the next provider request; handlers chain. Text already delivered through streaming updates (`message_update`, ACP/RPC chunks) is not retracted, so clients that render from the stream may keep showing the original text. Text blocks must retain their count, order, and positions; only their text may change. All non-text blocks and other block metadata must remain unchanged. Unchanged text retains its original `textSignature` (even if the handler drops or changes it); edited text loses its signature so provider replay state is never reused for different text. Invalid replacements and handler errors are reported and skipped. If aborted while a handler is pending, completed rewrites so far are retained and remaining handlers are skipped.
+- `before_assistant_message` — awaited main-session publication gate. Receives `{ type: "before_assistant_message", message: AssistantMessage, signal: AbortSignal }` and returns `undefined` to approve or `{ replacementText: string, settled?: true }` to replace narrative before any assistant output, public state, or persistence. Registering this hook opts main sessions into withholding; unguarded and task/subagent sessions keep ordinary streaming.
 - `message_start` / `message_update` / `message_end` — lifecycle notifications; `message_end` receives a detached snapshot, so in-place changes cannot rewrite agent or provider context
 
 ```ts
@@ -589,6 +618,12 @@ pi.on("assistant_message", event => ({
 	),
 }));
 ```
+
+`before_assistant_message` runs after normal assistant transformations on a finalized draft. Each handler receives its own detached inspection copy of the original message; mutation is not an output channel. The first returned replacement wins and cannot be undone by later handlers, which still run and can fail closed. Replacement removes text and thinking, normally drops images, removes tool intent and opaque provider replay payload, and retains executable tool-call IDs and arguments. Signed provider thinking needed to continue a retained tool call stays only in a private replay copy; it does not appear in the admitted message or session history. Internal requirement-status replacements may explicitly retain captured images. Use `replacementText: ""` to withhold narrative without adding text.
+
+Publication handlers use the existing 30-second handler budget. Exceptions, malformed results, timeout, or cancellation withhold the draft and use a deterministic delivery refusal; timeout and cancellation abort the handler's event signal. The native `Agent.beforeAssistantMessage(message, signal)` callback backs this boundary; extensions use `pi.on("before_assistant_message", handler)` rather than installing it themselves. Internal stream safety checks and token accounting continue on the raw stream.
+
+Return `settled: true` only for a replaced no-tool status response that should end the current prompt without claiming task completion. Its receipt is private, tied to the admitted message, and ignored for tool-bearing or cancelled drafts. It suppresses built-in TODO completion reminders and advisory `session_stop` continuations for that response, not TODO state changes. The session still emits and awaits `session_stop`; unrelated explicit `{ decision: "block", reason }` refusals, safety retries, and cancellation retain their normal behavior.
 
 `before_agent_start` prepares policy for an ordinary prompt and for each steering or follow-up batch containing user work when that batch is actually dequeued (`reason: "prompt"`). It is not an enqueue notification: a live batch can fire it without another `agent_start`. Queue peeks, provider retries, tool-only iterations, and synthetic-only queued continuations do not fire it. Explicit synthetic prompts retain their ordinary prompt lifecycle. Reviving a parked subagent (for a wake, a message, or just to focus it) fires it once after `session_start` with `reason: "revive"`, an empty `prompt`, and its result discarded, so an extension can register again what it registered at the subagent's first prompt; handlers doing per-prompt work (recall, classification, logging) should return early for `reason: "revive"`, since the revive waits on them. Wake turns are agent-initiated and do not fire it, while a later ordinary prompt runs it as usual.
 
@@ -659,6 +694,7 @@ and `/new`. Commands retain their explicit prefill and session-transition action
 ### Subagent lifecycle
 
 - `before_subagent_spawn` → `{ model?: string | string[]; block?: boolean; reason?: string; note?: string }`. Fires in the parent session exactly once per spawned child (`task`, eval `agent()`, workpool workers), at dispatch before the child resolves its model — never during a frontend's validation preflight, so stateful routers (round-robin, quota) advance once per child. The event carries `agent`, `invocationKind`, `modelRole` (the pre-expansion role alias, when any), the expanded `patterns` core would use, and an optional stable `spawnKey`. A returned `model` replaces the spawn's attempt-ordered patterns while keeping the role identity, so the remaining entries become the child's retry fallback chain; handlers run in extension order and the last returned `model` wins, along with its `note`, which the task UI shows as the spawn's routing reason on live, async, and settled rows. `block: true` refuses the spawn with `reason`. Cancelling the spawn releases an awaiting handler (its result is discarded and pending `ctx.ui` dialogs close) instead of holding the spawn until the handler timeout.
+  `resources?: string[]` carries the child's declared exclusive checkout paths (absent = undeclared, `[]` = owns nothing); when present it is the sole ownership source.
 
 ### Reliability/runtime signals
 

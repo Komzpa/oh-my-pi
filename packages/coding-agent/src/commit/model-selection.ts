@@ -6,6 +6,7 @@ import {
 	getModelMatchPreferences,
 	type ModelLookupRegistry,
 	parseModelPattern,
+	modelSelectorBlacklistError,
 	resolveModelRoleValue,
 	resolveRoleSelection,
 } from "../config/model-resolver";
@@ -80,6 +81,7 @@ export async function resolveSmolModel(
 
 	const matchPreferences = getModelMatchPreferences(settings);
 	for (const pattern of roleDefaultModels().smol) {
+		if (modelSelectorBlacklistError(pattern, available)) continue;
 		const candidate = parseModelPattern(pattern, available, matchPreferences).model;
 		if (!candidate) continue;
 		const apiKey = await modelRegistry.getApiKey(candidate);

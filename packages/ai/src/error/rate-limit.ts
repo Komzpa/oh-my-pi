@@ -395,6 +395,18 @@ export function calculateRateLimitBackoffMs(reason: RateLimitReason): number {
 	}
 }
 
+/**
+ * Codex Responses websocket lifetime cap ("Responses websocket connection limit
+ * reached (60 minutes). Create a new websocket connection to continue."). It is
+ * a per-connection transport limit, not an account quota: a fresh connection
+ * succeeds immediately, so it must never classify as a usage limit.
+ */
+const WEBSOCKET_CONNECTION_LIMIT_PATTERN = /\bwebsocket_connection_limit_reached\b/i;
+
+export function isWebsocketConnectionLimitText(errorMessage: string | undefined): boolean {
+	return errorMessage !== undefined && WEBSOCKET_CONNECTION_LIMIT_PATTERN.test(errorMessage);
+}
+
 /** Detect usage/quota limit errors in error messages (persistent, requires credential switch). */
 const USAGE_LIMIT_PATTERN =
 	/usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?(?:exceeded|reached|insufficient)|额度不足|额度耗尽|resource.?exhausted|exhausted your capacity|quota will reset|insufficient.?(?:balance|quota)|balance.?exhausted|run out of credits|out of credits|out of (?:extra )?usage|spending[- _]?limit|personal-team-blocked|clinepass limit|free limit reached on model|access_terminated_error/i;
@@ -414,10 +426,24 @@ export function isUsageLimitStatus(status: number | undefined): boolean {
 	return status === 429 || status === 402;
 }
 const STATUS_402_QUOTA_PATTERN =
-	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?(?:balance|account.?funds))\b/i;
+	/\b(?:payment(?:\s+is)?[-_.\s]*required|deactivated_workspace|insufficient.?(?:balance|credits?|account.?funds)|requires?\s+more\s+credits|billing[-_.\s]*(?:verification|error|issue)|can only afford)\b/i;
+
+// Machine fields survive provider parsing even when the human detail is generic.
+const BILLING_ERROR_CODE_PATTERN = /^billing_(?:error|not_configured)$/i;
+const BILLING_ERROR_FIELD_PATTERN = /\b(?:type|code|param)=billing_(?:error|not_configured)(?=[\s)]|$)/i;
 
 export function is402BillingCapBody(message: string | undefined): boolean {
 	if (message === undefined || isOpaqueStatusBody(message)) return true;
+	if (BILLING_ERROR_CODE_PATTERN.test(message) || BILLING_ERROR_FIELD_PATTERN.test(message)) return true;
+	const body = parseJsonBody(message);
+	const error = asRecord(body?.error) ?? body;
+	if (
+		[error?.type, error?.code, error?.param].some(
+			value => typeof value === "string" && BILLING_ERROR_CODE_PATTERN.test(value),
+		)
+	) {
+		return true;
+	}
 	if (STATUS_402_QUOTA_PATTERN.test(message)) return true;
 	const reason = parseRateLimitReason(message);
 	return isQuotaExhaustedReason(reason) || reason === "CONCURRENT_LIMIT";
@@ -483,6 +509,7 @@ export function isUsageLimitOutcome(status: number | undefined, message: string 
 	const structuredReason = message ? parseGoogleRpcRateLimitReason(message) : undefined;
 	if (structuredReason !== undefined) return isQuotaExhaustedReason(structuredReason);
 	if (isConcurrencyCapExclusion(status, message)) return false;
+	if (isWebsocketConnectionLimitText(message)) return false;
 	if (message && matchesUsageLimitText(message)) return true;
 	// A 403 is normally an auth failure, but several providers deliver an
 	// account-scoped cap with it (Devin/Codeium Connect `permission_denied`,
@@ -532,6 +559,9 @@ export function isOpaqueStatusBody(message: string): boolean {
  * {@link isUsageLimitOutcome} uses it for the account-rotation decision.
  */
 export function matchesUsageLimitText(errorMessage: string): boolean {
+	// The generic `limit_reached` arm would otherwise swallow the websocket
+	// lifetime cap and park the credential for the 30-minute quota heuristic.
+	if (isWebsocketConnectionLimitText(errorMessage)) return false;
 	const structuredReason = parseGoogleRpcRateLimitReason(errorMessage);
 	if (structuredReason !== undefined) return isQuotaExhaustedReason(structuredReason);
 	if (isDashScopeTokenLimitText(errorMessage)) return false;

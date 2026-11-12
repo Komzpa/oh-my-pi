@@ -1,16 +1,30 @@
+import { formatSpawnRefusal } from "../../task/spawn-refusal";
+import { rowAuditOutputSchema } from "../../task/row-audit";
+import { buildOutputValidator } from "../../tools/output-schema-validator";
+import { purposeAgentName } from "../../task/name-generator";
+import type { TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
+import {
+	cfgTodoReviewOpen,
+	cfgTodoPreviewEnabled,
+	cfgTodoPreviewPaths,
+	cfgTodoPreviewThresholdMinutes,
+} from "../../tools/settings";
 /**
  * Extension runner - executes extensions and manages their lifecycle.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
+import { launchStep } from "@oh-my-pi/pi-utils/launch-trace";
 import {
 	type AgentMessage,
 	type AgentTool,
 	type AgentToolContext,
 	type AgentToolResult,
 	type AgentToolUpdateCallback,
+	type SoftToolRequirement,
 	isNonBlankContext,
 	joinAdditionalContext,
 } from "@oh-my-pi/pi-agent-core";
+import { messageEstimateVersion } from "@oh-my-pi/pi-agent-core/compaction";
 import type {
 	AssistantMessage,
 	CredentialDisabledEvent,
@@ -28,17 +42,21 @@ import {
 import { addKeyAliases, canonicalKeyId, type KeyId, type Keybinding } from "@oh-my-pi/pi-tui";
 import { KEYBINDINGS, KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { appApproveKeys, appFollowUpKeys } from "@oh-my-pi/pi-tui/keybinding-matchers";
-import { logger } from "@oh-my-pi/pi-utils";
+import { logger, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { refreshShellConfigCache } from "@oh-my-pi/pi-utils/procmgr";
 import { MAIN_AGENT_RULE_NAME } from "../../capability/rule";
+import { ASSISTANT_GATE_REFUSAL, assistantAbortedDraftText } from "@oh-my-pi/pi-agent-core/assistant-publication";
+import { abortReasonText } from "@oh-my-pi/pi-agent-core";
 import type { ModelRegistry } from "../../config/model-registry";
 import { type Settings, withActiveSettings } from "../../config/settings";
 import type { LocalProtocolOptions } from "../../internal-urls/local-protocol";
 import type { MemoryRuntimeContext } from "../../memory-backend";
 import { type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AsyncJobSnapshot, SendUserMessageOptions } from "../../session/agent-session";
-import { MAIN_AGENT_ID } from "../../registry/agent-registry";
+import { sendAgentMessageFromSession } from "../../irc/messaging";
+import { AgentRegistry, type AgentRegistryApi, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import type { SessionManager } from "../../session/session-manager";
+import { cfgTaskMaxConcurrency } from "../../task/settings";
 import { addFileDeleteFallback, addFileWriteFallback } from "../../tools/file-write-fallback";
 import type { BranchHandler, NavigateTreeHandler, NewSessionHandler } from "../session-handler-types";
 import { accumulateToolCallResult, buildAggregatedToolCallResult } from "../shared-events";
@@ -59,6 +77,8 @@ import type {
 	AssistantThinkingRenderer,
 	BeforeAgentStartEvent,
 	BeforeAgentStartEventResult,
+	BeforeAssistantMessageEvent,
+	BeforeAssistantMessageEventResult,
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
 	BeforeSubagentSpawnEvent,
@@ -149,6 +169,10 @@ export interface ToolCallPreflight {
 export const EXTENSION_HANDLER_TIMEOUT_MS = 30_000;
 let extensionHandlerTimeoutMs = EXTENSION_HANDLER_TIMEOUT_MS;
 
+function throwUnsupportedModelPresetAction(): never {
+	throw new Error("This extension host does not support session model presets");
+}
+
 function throwUnsupportedServiceTierAction(): never {
 	throw new Error("This extension host does not support service-tier actions");
 }
@@ -181,6 +205,122 @@ export function testSetSessionShutdownHandlerTimeoutMs(timeoutMs: number): void 
  *  uses its own short cap so teardown stays prompt. */
 function handlerTimeoutForEvent(eventType: string): number {
 	return eventType === "session_shutdown" ? sessionShutdownHandlerTimeoutMs : extensionHandlerTimeoutMs;
+}
+
+type ContextMessageMutationState = {
+	readonly source: AgentMessage;
+	readonly root: AgentMessage;
+	/** True when the clone holds descendants the mutation proxy cannot track (Map, Date, typed arrays, class instances). */
+	readonly opaque: boolean;
+	dirty: boolean;
+	readonly proxies: WeakMap<object, object>;
+};
+
+type ContextMessageProxyInfo = {
+	readonly state: ContextMessageMutationState;
+	readonly target: object;
+};
+
+const contextMessageProxyInfo = new WeakMap<object, ContextMessageProxyInfo>();
+
+type ContextMessageCloneEntry = {
+	readonly clone: AgentMessage;
+	/** {@link messageEstimateVersion} of the source when cloned; owner rewrites bump it. */
+	readonly version: number;
+	readonly opaque: boolean;
+};
+
+function cloneContextMessage(message: AgentMessage): AgentMessage {
+	try {
+		return structuredClone(message);
+	} catch {}
+	try {
+		return structuredCloneJSON(message);
+	} catch {}
+	return { ...message } as AgentMessage;
+}
+
+function hasOpaqueDescendant(value: unknown, seen = new Set<object>()): boolean {
+	if (value === null || typeof value !== "object") return false;
+	if (seen.has(value)) return false;
+	seen.add(value);
+	if (!isContextProxyableObject(value)) return true;
+	for (const key of Reflect.ownKeys(value)) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor?.enumerable) continue;
+		if (hasOpaqueDescendant(Reflect.get(value, key), seen)) return true;
+	}
+	return false;
+}
+
+function isContextProxyableObject(value: unknown): value is object {
+	if (value === null || typeof value !== "object") return false;
+	if (Array.isArray(value)) return true;
+	const proto = Object.getPrototypeOf(value);
+	return proto === Object.prototype || proto === null;
+}
+
+function materializeContextMessageValue(value: unknown, seen = new WeakMap<object, unknown>()): unknown {
+	if (value === null || typeof value !== "object") return value;
+	const proxyInfo = contextMessageProxyInfo.get(value);
+	if (proxyInfo) return materializeContextMessageValue(proxyInfo.target, seen);
+	if (!isContextProxyableObject(value)) return value;
+	const seenValue = seen.get(value);
+	if (seenValue) return seenValue;
+	if (Array.isArray(value)) {
+		const copy: unknown[] = [];
+		seen.set(value, copy);
+		for (let index = 0; index < value.length; index++) {
+			copy[index] = materializeContextMessageValue(value[index], seen);
+		}
+		return copy;
+	}
+	const copy: Record<PropertyKey, unknown> = {};
+	seen.set(value, copy);
+	for (const key of Reflect.ownKeys(value)) {
+		const descriptor = Object.getOwnPropertyDescriptor(value, key);
+		if (!descriptor?.enumerable) continue;
+		copy[key] = materializeContextMessageValue(Reflect.get(value, key), seen);
+	}
+	return copy;
+}
+
+function materializeContextMessage(message: AgentMessage): AgentMessage {
+	const proxyInfo = contextMessageProxyInfo.get(message as object);
+	if (proxyInfo && proxyInfo.target === proxyInfo.state.root) return proxyInfo.state.root as AgentMessage;
+	return materializeContextMessageValue(message) as AgentMessage;
+}
+
+function createContextMessageMutationView<T extends object>(target: T, state: ContextMessageMutationState): T {
+	if (!isContextProxyableObject(target)) return target;
+	const existing = state.proxies.get(target);
+	if (existing) return existing as T;
+	const proxy = new Proxy(target, {
+		get(targetObject, property, receiver) {
+			const value = Reflect.get(targetObject, property, receiver);
+			if (!isContextProxyableObject(value)) return value;
+			return createContextMessageMutationView(value, state);
+		},
+		set(targetObject, property, value) {
+			state.dirty = true;
+			return Reflect.set(targetObject, property, materializeContextMessageValue(value));
+		},
+		deleteProperty(targetObject, property) {
+			state.dirty = true;
+			return Reflect.deleteProperty(targetObject, property);
+		},
+		defineProperty(targetObject, property, attributes) {
+			state.dirty = true;
+			const materializedAttributes: PropertyDescriptor = { ...attributes };
+			if ("value" in materializedAttributes) {
+				materializedAttributes.value = materializeContextMessageValue(materializedAttributes.value);
+			}
+			return Reflect.defineProperty(targetObject, property, materializedAttributes);
+		},
+	});
+	state.proxies.set(target, proxy);
+	contextMessageProxyInfo.set(proxy, { state, target });
+	return proxy as T;
 }
 
 const EXTENSION_HANDLER_TIMEOUT = Symbol("extensionHandlerTimeout");
@@ -467,6 +607,7 @@ type RunnerEmitEvent = Exclude<
 	| BeforeProviderRequestEvent
 	| AfterProviderResponseEvent
 	| BeforeAgentStartEvent
+	| BeforeAssistantMessageEvent
 	| ResourcesDiscoverEvent
 	| InputEvent
 >;
@@ -616,8 +757,33 @@ export class ExtensionRunner {
 	#getContextUsageFn: () => ContextUsage | undefined = () => undefined;
 	#compactFn: (instructionsOrOptions?: string | CompactOptions) => Promise<void> = async () => {};
 	#getSystemPromptFn: () => string[] = () => [];
+	#sendAgentMessageFn: NonNullable<ExtensionContextActions["sendAgentMessage"]> = (to, message) =>
+		this.#defaultSendAgentMessage(to, message);
+	/**
+	 * Fallback peer-messaging route for runners whose host never wired
+	 * `sendAgentMessage` (or never called `initialize`). Uses the same
+	 * session-identity path as `write agent://` — the process registry with
+	 * this runner's own agent id, depth, and settings — so the extension API
+	 * and the URL write agree instead of one side answering "unavailable"
+	 * while the other delivers.
+	 */
+	#defaultSendAgentMessage(to: string, message: string): Promise<{ delivered: boolean; text: string }> {
+		if (!this.settings)
+			return Promise.resolve({ delivered: false, text: "Peer messaging is unavailable in this session." });
+		return sendAgentMessageFromSession(
+			{
+				agentRegistry: this.agentRegistry,
+				settings: this.settings,
+				taskDepth: this.agent.depth,
+				getAgentId: () => this.agent.id,
+			},
+			to,
+			message,
+		);
+	}
 	#runEphemeralTurnFn?: ExtensionContextActions["runEphemeralTurn"];
 	#startLiveFn?: ExtensionContextActions["startLive"];
+	#setSubagentFastModeFn?: ExtensionContextActions["setSubagentFastMode"];
 	#ephemeralTurnBlocker = new AsyncLocalStorage<string | undefined>();
 	#getAsyncJobSnapshotFn: () => AsyncJobSnapshot | null = () => null;
 	#newSessionHandler: NewSessionHandler = async () => ({ cancelled: false });
@@ -636,6 +802,7 @@ export class ExtensionRunner {
 	#commandDiagnostics: Array<{ type: string; message: string; path: string }> = [];
 	/** Link schemes already reported as claimed by more than one extension. */
 	#warnedLinkSchemes = new Set<string>();
+	#contextMessageCloneCache = new WeakMap<AgentMessage, ContextMessageCloneEntry>();
 	#toolRegistrationScope = new AsyncLocalStorage<ToolRegistrationScope>();
 	#toolRegistrationBarrier: Promise<void> | undefined;
 	/** Latest pending delivery per extension; see {@link #reserveDeliveryTurns}. Absent while idle. */
@@ -826,6 +993,8 @@ export class ExtensionRunner {
 			signal?: AbortSignal;
 			onUpdate?: AgentToolUpdateCallback<TDetails>;
 			depth?: number;
+			/** Await a background-capable native task without changing its profile. */
+			waitForCompletion?: boolean;
 			/**
 			 * The caller tool's own context. Reused for the native call so metadata the native tool
 			 * reads — `toolCall` (write/edit LSP batch flushing) and provider metadata /
@@ -841,8 +1010,11 @@ export class ExtensionRunner {
 		if (depth >= 8) {
 			throw new Error(`invokeTool: delegation depth exceeded 8 (recursive invokeTool for "${name}"?)`);
 		}
-		const toolCallId = `invoke-${name}-${Date.now().toString(36)}-${depth}`;
-		return (await resolved.tool.execute(
+		const toolCallId = `invoke-${name}-${crypto.randomUUID()}-${depth}`;
+		const tool = resolved.tool as AgentTool & { executeBlocking?: AgentTool["execute"] };
+		const execute = options?.waitForCompletion && tool.executeBlocking ? tool.executeBlocking : tool.execute;
+		return (await execute.call(
+			tool,
 			toolCallId,
 			params as never,
 			options?.signal,
@@ -866,6 +1038,11 @@ export class ExtensionRunner {
 		private readonly agent: ExtensionAgentIdentity = TOP_LEVEL_AGENT,
 		/** Builds `ctx.annotations`; supplied by the host that wires the bundled `/annotate` command. */
 		createAnnotations?: ExtensionAnnotationsFactory,
+		private readonly getTodoPhases?: ExtensionContext["getTodoPhases"],
+		private readonly updateTodoSchedule?: ExtensionContext["updateTodoSchedule"],
+		private readonly applyReviewPageAnswer?: ExtensionContext["applyReviewPageAnswer"],
+		private readonly getTodoSnapshot?: ExtensionContext["getTodoSnapshot"],
+		private readonly agentRegistry: AgentRegistryApi = AgentRegistry.global(),
 	) {
 		this.#uiContext = noOpUIContext;
 		this.#getMemoryFn = getMemory;
@@ -937,6 +1114,9 @@ export class ExtensionRunner {
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
 		this.runtime.getServiceTiers = actions.getServiceTiers ?? throwUnsupportedServiceTierAction;
 		this.runtime.setServiceTier = actions.setServiceTier ?? throwUnsupportedServiceTierAction;
+		this.runtime.applySessionModelPreset = actions.applySessionModelPreset ?? throwUnsupportedModelPresetAction;
+		this.runtime.clearSessionModelPreset = actions.clearSessionModelPreset ?? throwUnsupportedModelPresetAction;
+		this.runtime.getSessionModelPreset = actions.getSessionModelPreset ?? throwUnsupportedModelPresetAction;
 		this.runtime.getSessionName = actions.getSessionName;
 		this.runtime.setSessionName = actions.setSessionName;
 		this.runtime.registerProvider = (name, config, sourceId) => {
@@ -961,8 +1141,11 @@ export class ExtensionRunner {
 		this.#getContextUsageFn = contextActions.getContextUsage;
 		this.#compactFn = contextActions.compact;
 		this.#getSystemPromptFn = contextActions.getSystemPrompt;
+		this.#sendAgentMessageFn =
+			contextActions.sendAgentMessage ?? ((to, message) => this.#defaultSendAgentMessage(to, message));
 		this.#runEphemeralTurnFn = contextActions.runEphemeralTurn;
 		this.#startLiveFn = contextActions.startLive;
+		this.#setSubagentFastModeFn = contextActions.setSubagentFastMode;
 
 		// Command context actions (optional, only for interactive mode)
 		if (commandContextActions) {
@@ -1573,6 +1756,15 @@ export class ExtensionRunner {
 		return false;
 	}
 
+	/** Whether a loaded handler can become active again after an extension resumes. */
+	hasLoadedHandlers(eventType: string): boolean {
+		for (const ext of this.#loadOrder ?? this.extensions) {
+			const handlers = ext.handlers.get(eventType);
+			if (handlers && handlers.length > 0) return true;
+		}
+		return false;
+	}
+
 	getMessageRenderer(customType: string): MessageRenderer | undefined {
 		for (const ext of this.extensions) {
 			const renderer = ext.messageRenderers.get(customType);
@@ -1770,6 +1962,29 @@ export class ExtensionRunner {
 	}
 
 	/**
+	 * Evaluate the currently active extension-owned native soft tool requirement.
+	 * Providers share one fresh context and run synchronously at the model-choice boundary.
+	 * More than one active provider is ambiguous, so fail closed instead of silently choosing.
+	 */
+	getSoftToolRequirement(): SoftToolRequirement | undefined {
+		let ctx: ExtensionContext | undefined;
+		let activePath: string | undefined;
+		let activeRequirement: SoftToolRequirement | undefined;
+		for (const extension of this.extensions) {
+			const provider = extension.softToolRequirementProvider;
+			if (!provider) continue;
+			const requirement = withActiveSettings(this.settings, () => provider((ctx ??= this.createContext())));
+			if (requirement === undefined) continue;
+			if (activeRequirement !== undefined) {
+				throw new Error(`Multiple active soft tool requirement providers: ${activePath}, ${extension.path}`);
+			}
+			activePath = extension.path;
+			activeRequirement = requirement;
+		}
+		return activeRequirement;
+	}
+
+	/**
 	 * Creates an extension context, optionally scoped to a provider request model.
 	 *
 	 * `delegation` wires the same-tool `ctx.invokeTool` for a re-registered built-in: when `toolName`
@@ -1805,18 +2020,68 @@ export class ExtensionRunner {
 			ui: this.#uiContext,
 			mode: this.#mode,
 			getContextUsage: () => this.#getContextUsageFn(),
+			getTodoPreviewConfig: () => ({
+				openReviewPages: this.settings ? cfgTodoReviewOpen.get(this.settings) : true,
+				enabled: this.settings ? cfgTodoPreviewEnabled.get(this.settings) : false,
+				paths: this.settings ? cfgTodoPreviewPaths.get(this.settings) : [],
+				thresholdMinutes: this.settings ? cfgTodoPreviewThresholdMinutes.get(this.settings) : 15,
+			}),
+			getTaskMaxConcurrency: () => (this.settings ? cfgTaskMaxConcurrency.get(this.settings) : undefined),
 			compact: instructionsOrOptions => this.#compactFn(instructionsOrOptions),
 			getAsyncJobSnapshot: () => this.#getAsyncJobSnapshotFn(),
+			runDeliveryCritic: (task, signal, subject) =>
+				this.invokeNativeTool(
+					"task",
+					{ agent: "reviewer", name: purposeAgentName("Critic", subject ?? "Delivery"), task, effort: "lo" },
+					{ signal, waitForCompletion: true },
+				),
+			runRowAudit: (task, agent, signal, onStarted, subject, rows, onResult) => {
+				const outputSchema = rows ? rowAuditOutputSchema(rows) : undefined;
+				const validator = buildOutputValidator(outputSchema).validator;
+				return this.invokeNativeTool<TaskToolDetails>(
+					"task",
+					{
+						agent,
+						name: subject ? purposeAgentName("Audit", subject) : purposeAgentName(agent),
+						task,
+						...(outputSchema ? { outputSchema, schemaMode: "strict" } : {}),
+					},
+					{
+						signal,
+						waitForCompletion: true,
+						onUpdate: update => {
+							const id = update.details?.progress?.[0]?.id;
+							if (id) onStarted?.(id);
+							const yields = update.details?.progress?.[0]?.extractedToolData?.yield;
+							if (validator && Array.isArray(yields)) {
+								for (const item of [...yields].reverse()) {
+									if (!item || typeof item !== "object" || !("data" in item)) continue;
+									if (validator.validate(item.data).success) {
+										onResult?.(item.data);
+										break;
+									}
+								}
+							}
+						},
+					},
+				);
+			},
+			getTodoPhases: () => this.getTodoPhases?.(),
+			getTodoSnapshot: () => this.getTodoSnapshot?.() ?? this.getTodoPhases?.(),
+			applyReviewPageAnswer: answer => this.applyReviewPageAnswer?.(answer) ?? Promise.resolve(false),
+			updateTodoSchedule: (task, patch) => this.updateTodoSchedule?.(task, patch) ?? false,
+			setSubagentFastMode: this.#setSubagentFastModeFn,
 			hasUI: this.hasUI(),
 			cwd: this.cwd,
 			sessionManager: this.sessionManager,
 			modelRegistry: this.modelRegistry,
 			isProjectTrusted: () => true,
 			agent,
+			agentRegistry: this.agentRegistry,
 			get model() {
 				return getModel();
 			},
-			models: createExtensionModelQuery(this.modelRegistry, this.settings, getModel),
+			models: createExtensionModelQuery(this.modelRegistry, this.settings, getModel, this.cwd),
 			isIdle: () => this.#isIdleFn(),
 			abort: () => this.#abortFn(),
 			hasPendingMessages: () => this.#hasPendingMessagesFn(),
@@ -1829,6 +2094,7 @@ export class ExtensionRunner {
 				return getSessionModes();
 			},
 			getSystemPrompt: () => this.#getSystemPromptFn(),
+			sendAgentMessage: (to, message) => this.#sendAgentMessageFn(to, message),
 			runEphemeralTurn: runEphemeralTurn
 				? async options => {
 						if (this.#ephemeralTurnBlocker.getStore()) {
@@ -1936,9 +2202,12 @@ export class ExtensionRunner {
 		ctx: ExtensionContext,
 		ext: Extension,
 		timeoutMs: number,
-		onFailure?: (kind: "timeout" | "error", message: string) => R,
+		onFailure?: (kind: "timeout" | "error", message: string, error?: unknown) => R,
 		outerSignal?: AbortSignal,
 	): Promise<R | undefined> {
+		const originalHandler = handler;
+		handler = (value, context) =>
+			launchStep(`extension.event:${event.type}:${ext.path}`, () => originalHandler(value, context));
 		// Releasing events (RELEASING_SIGNAL_EVENTS) carry their own signal;
 		// `tool_call` receives the outer dispatch signal (loop request or wrapper
 		// execute). Either way an abort while a handler awaits a human dialog
@@ -1967,7 +2236,10 @@ export class ExtensionRunner {
 								event.type === "tool_call" || SESSION_BEFORE_EVENTS[event.type] === true ? budget : undefined,
 							);
 							result = await this.#toolRegistrationScope.run(registrationScope, () =>
-								handler(event, handlerContext),
+								handler(
+									event.type === "before_assistant_message" ? { ...event, signal: handlerSignal } : event,
+									handlerContext,
+								),
 							);
 						} catch (error) {
 							handlerFailure = { error };
@@ -2015,7 +2287,7 @@ export class ExtensionRunner {
 				error: message,
 				stack,
 			});
-			return onFailure?.("error", message);
+			return onFailure?.("error", message, handlerFailure.error);
 		}
 		return handlerResult as R | undefined;
 	}
@@ -2312,6 +2584,54 @@ export class ExtensionRunner {
 		};
 	}
 
+	/** Await delivery approval without exposing mutable drafts or treating failure as consent. */
+	async emitBeforeAssistantMessage(
+		event: BeforeAssistantMessageEvent,
+	): Promise<BeforeAssistantMessageEventResult | undefined> {
+		const refusal: BeforeAssistantMessageEventResult = { replacementText: ASSISTANT_GATE_REFUSAL, settled: true };
+		if (event.signal.aborted) {
+			return { replacementText: assistantAbortedDraftText(abortReasonText(event.signal)), settled: true };
+		}
+		let ctx: ExtensionContext | undefined;
+		let result: BeforeAssistantMessageEventResult | undefined;
+		for (const ext of this.extensions) {
+			const handlers = ext.handlers.get("before_assistant_message");
+			if (!handlers?.length) continue;
+			ctx ??= this.createContext();
+			for (const handler of handlers) {
+				let failed = false;
+				const handlerResult = await this.#runHandlerWithTimeout(
+					async (draft, context): Promise<BeforeAssistantMessageEventResult | undefined> => {
+						const output = await handler({ ...draft, message: structuredClone(draft.message) }, context);
+						if (output === undefined) return undefined;
+						if (!output || typeof output !== "object" || !("replacementText" in output)) {
+							throw new Error("Invalid before_assistant_message result");
+						}
+						const replacementText = output.replacementText;
+						const settled = "settled" in output ? output.settled : undefined;
+						if (typeof replacementText !== "string" || (settled !== undefined && settled !== true)) {
+							throw new Error("Invalid before_assistant_message result");
+						}
+						return { replacementText, settled };
+					},
+					event,
+					ctx,
+					ext,
+					normalizeHandlerTimeout(extensionHandlerTimeoutMs),
+					() => {
+						failed = true;
+						return refusal;
+					},
+					event.signal,
+				);
+				if (failed || event.signal.aborted) return refusal;
+				// Later handlers cannot undo either the first replacement or its settlement receipt.
+				result ??= handlerResult;
+			}
+		}
+		return event.signal.aborted ? refusal : result;
+	}
+
 	/**
 	 * Emit a `tool_call` event to every subscribed extension before the tool executes.
 	 *
@@ -2353,19 +2673,24 @@ export class ExtensionRunner {
 					ctx,
 					ext,
 					timeoutMs,
-					(kind, message) => ({
+					(kind, message, error) => ({
 						block: true,
 						reason:
 							kind === "timeout"
 								? `Extension ${ext.path} timed out after ${timeoutMs}ms`
-								: `Extension ${ext.path} failed: ${message}`,
+								: `Extension ${ext.path} failed: ${message}\nHook: tool_call (${event.toolName})\n${error instanceof Error ? Bun.inspect(error, { colors: false }) : ""}`,
 					}),
 					signal,
 				)) as ToolCallEventResult | undefined;
 
 				if (!handlerResult) continue;
 				if (handlerResult.block) {
-					return handlerResult;
+					return event.toolName === "task"
+						? {
+								...handlerResult,
+								reason: formatSpawnRefusal(handlerResult.reason ?? "Task blocked by extension"),
+							}
+						: handlerResult;
 				}
 				const { additionalContext: _context, input: _input, ...controlResult } = handlerResult;
 				accumulateToolCallResult(aggregated, handlerResult);
@@ -2470,7 +2795,13 @@ export class ExtensionRunner {
 
 		for (const ext of this.extensions) {
 			for (const handler of ext.handlers.get("input") ?? []) {
-				const event: InputEvent = { type: "input", text: currentText, images: currentImages, source };
+				const event: InputEvent = {
+					type: "input",
+					text: currentText,
+					rawText: text,
+					images: currentImages,
+					source,
+				};
 				const result = (await this.#runHandlerWithTimeout(handler, event, ctx, ext, extensionHandlerTimeoutMs)) as
 					| InputEventResult
 					| undefined;
@@ -2485,24 +2816,56 @@ export class ExtensionRunner {
 		return transformed;
 	}
 
+	#getContextMessageClone(message: AgentMessage): ContextMessageCloneEntry {
+		// Owner rewrites (advisor eviction, prune/shake, /drop-images) mutate the message in place and
+		// bump its estimate version; a clone taken before that bump is stale.
+		const version = messageEstimateVersion(message);
+		const cached = this.#contextMessageCloneCache.get(message);
+		if (cached && cached.version === version) return cached;
+		const clone = cloneContextMessage(message);
+		const entry: ContextMessageCloneEntry = { clone, version, opaque: hasOpaqueDescendant(clone) };
+		// Opaque payloads cannot be change-tracked, so they are re-cloned on every call.
+		if (entry.opaque) this.#contextMessageCloneCache.delete(message);
+		else this.#contextMessageCloneCache.set(message, entry);
+		return entry;
+	}
+
 	async emitContext(messages: AgentMessage[], signal?: AbortSignal): Promise<AgentMessage[]> {
 		// Check if any extensions actually have context handlers before building
 		// the context object or cloning; this runs on every provider request.
 		if (!this.hasHandlers("context")) return messages;
 		const ctx = this.createContext();
 
-		let currentMessages: AgentMessage[];
-		try {
-			currentMessages = structuredClone(messages);
-		} catch {
-			// Messages may contain non-cloneable objects (e.g. in ToolResultMessage.details
-			// or ProviderPayload). Fall back to a shallow array clone — extensions should
-			// return new message arrays rather than mutating in place.
-			currentMessages = [...messages];
-		}
-		for (let index = 0; index < currentMessages.length; index++) {
-			const message = currentMessages[index];
-			if (message) setContextHistoryIndex(message, index);
+		const mutationStates: ContextMessageMutationState[] = [];
+		let currentMessages: AgentMessage[] = [];
+		for (let index = 0; index < messages.length; index++) {
+			const message = messages[index];
+			// Sparse slots stay aligned with history indexes and get no index stamp.
+			if (!message) {
+				currentMessages.push(message);
+				mutationStates.push({
+					source: message,
+					root: message,
+					opaque: false,
+					dirty: false,
+					proxies: new WeakMap(),
+				});
+				continue;
+			}
+			// Per-message clone cache; non-cloneable payloads (ToolResultMessage.details,
+			// ProviderPayload) degrade gracefully inside #getContextMessageClone instead of
+			// aborting the whole context build.
+			const { clone, opaque } = this.#getContextMessageClone(message);
+			setContextHistoryIndex(clone, index);
+			const mutationState: ContextMessageMutationState = {
+				source: message,
+				root: clone,
+				opaque,
+				dirty: false,
+				proxies: new WeakMap(),
+			};
+			mutationStates.push(mutationState);
+			currentMessages.push(createContextMessageMutationView(clone, mutationState));
 		}
 
 		for (const ext of this.extensions) {
@@ -2538,14 +2901,25 @@ export class ExtensionRunner {
 			}
 		}
 
+		currentMessages = currentMessages.map(message => materializeContextMessage(message));
+		for (const mutationState of mutationStates) {
+			if (mutationState.dirty) this.#contextMessageCloneCache.delete(mutationState.source);
+		}
 		for (const message of currentMessages) {
 			const historyIndex = getContextHistoryIndex(message);
 			const historyMessage = historyIndex === undefined ? undefined : messages[historyIndex];
 			if (historyMessage && historyIndex !== undefined) setContextHistoryIndex(historyMessage, historyIndex);
-			const unchanged = historyMessage !== undefined && Bun.deepEquals(message, historyMessage);
+			const unchanged =
+				historyMessage !== undefined &&
+				historyIndex !== undefined &&
+				this.#contextMessageCloneCache.get(historyMessage)?.clone === message &&
+				!mutationStates[historyIndex]?.opaque &&
+				!mutationStates[historyIndex]?.dirty
+					? true
+					: historyMessage !== undefined && Bun.deepEquals(message, historyMessage);
 			clearContextHistoryIndex(message);
 			if (historyMessage) clearContextHistoryIndex(historyMessage);
-			if (unchanged) {
+			if (unchanged && historyMessage) {
 				this.#contextProjections.set(historyMessage, null);
 				continue;
 			}
@@ -2553,6 +2927,7 @@ export class ExtensionRunner {
 				markPerCallContextMessage(message);
 			}
 		}
+		for (const mutationState of mutationStates) clearContextHistoryIndex(mutationState.root);
 		for (const message of messages) clearContextHistoryIndex(message);
 		// An aborted handler is skipped and its input kept unchanged. Never hand that
 		// untransformed (possibly unredacted) context back to a caller as if every hook ran.
@@ -2708,7 +3083,7 @@ export class ExtensionRunner {
 	): Promise<BeforeSubagentSpawnEventResult | undefined> {
 		if (!this.hasHandlers("before_subagent_spawn")) return undefined;
 		const ctx = this.createContext();
-		let chosen: Pick<BeforeSubagentSpawnEventResult, "model" | "note"> | undefined;
+		let chosen: BeforeSubagentSpawnEventResult | undefined;
 
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get("before_subagent_spawn");
@@ -2726,8 +3101,8 @@ export class ExtensionRunner {
 				);
 				if (!handlerResult) continue;
 				const result = handlerResult as BeforeSubagentSpawnEventResult;
-				if (result.block) return result;
-				if (result.model !== undefined) chosen = { model: result.model, note: result.note };
+				if (result.block || result.resourceWait) return result;
+				if (result.model !== undefined) chosen = result;
 			}
 		}
 

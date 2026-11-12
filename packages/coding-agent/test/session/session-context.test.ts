@@ -3,7 +3,14 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type CompactionSummaryMessage, INTERRUPTED_THINKING_MESSAGE_TYPE } from "../../src/session/messages";
-import { buildSessionContext, type StrippedToolCallsMarker } from "../../src/session/session-context";
+import {
+	buildSessionContext,
+	buildSessionContextFromLeafPath,
+	sessionContextEntryMetadata,
+	selectSessionContextEntriesFromLeafPath,
+	type SessionContextEntryMetadata,
+	type StrippedToolCallsMarker,
+} from "../../src/session/session-context";
 import type { SessionEntry } from "../../src/session/session-entries";
 
 const timestamp = "2026-07-09T00:00:00.000Z";
@@ -378,5 +385,141 @@ describe("buildSessionContext failed replay tails", () => {
 		);
 
 		expect(context.messages.map(message => message.role)).toEqual(["user", "assistant", "toolResult"]);
+	});
+});
+
+describe("selective context replay", () => {
+	it.each([false, true])("skips irrelevant payloads while preserving replay (compacted=%s)", compacted => {
+		const entries: SessionEntry[] = [
+			{
+				type: "custom",
+				id: "noise-head",
+				parentId: null,
+				timestamp,
+				customType: "worker-frame",
+				data: "large payload",
+			},
+			...structuredClone(compactedEntries).filter(entry => compacted || entry.type !== "compaction"),
+			{
+				type: "custom",
+				id: "noise-tail",
+				parentId: null,
+				timestamp,
+				customType: "worker-frame",
+				data: "large payload",
+			},
+			{
+				type: "branch_summary",
+				id: "rewind-summary",
+				parentId: null,
+				timestamp,
+				fromId: "m1",
+				summary: "separate branch summary",
+			},
+			{
+				type: "custom",
+				id: "noise-rewind",
+				parentId: null,
+				timestamp,
+				customType: "worker-frame",
+				data: "large payload",
+			},
+			{
+				type: "custom_message",
+				id: "rewind-report",
+				parentId: null,
+				timestamp,
+				customType: "rewind-report",
+				content: "rewind report",
+				display: true,
+			},
+			{ type: "label", id: "label", parentId: null, timestamp, targetId: "m1", label: "bookmark" },
+			{
+				type: "custom",
+				id: "transition",
+				parentId: null,
+				timestamp,
+				customType: "restart_request_transition",
+				data: { record: { requestId: "request", state: "completed" } },
+			},
+			{
+				type: "custom_message",
+				id: "notice",
+				parentId: null,
+				timestamp,
+				customType: "restart-queued",
+				content: "queued",
+				display: true,
+				details: { requestId: "request" },
+			},
+			{
+				type: "custom",
+				id: "notes",
+				parentId: null,
+				timestamp,
+				customType: "experimental_context_notes",
+				data: { version: 1, text: "durable notebook" },
+			},
+		];
+		for (let index = 0; index < entries.length; index++) entries[index]!.parentId = entries[index - 1]?.id ?? null;
+		const byId = new Map(entries.map(entry => [entry.id, entry]));
+		const read = (id: string): SessionEntry => {
+			if (id.startsWith("noise-") || id === "label") throw new Error(`irrelevant payload read: ${id}`);
+			return byId.get(id)!;
+		};
+		const selected = selectSessionContextEntriesFromLeafPath(
+			entries.map(sessionContextEntryMetadata).reverse(),
+			read,
+		);
+		expect(buildSessionContextFromLeafPath(selected.slice())).toEqual(buildSessionContext(entries));
+		expect(selected.find(entry => entry.id === "notes")).toMatchObject({ data: { text: "durable notebook" } });
+		expect(selected[0]?.id).toBe("notes");
+	});
+});
+
+describe("session context entry selection", () => {
+	it("keeps the newest legacy assistant beyond a reset boundary", () => {
+		const path: SessionContextEntryMetadata[] = [
+			{ id: "current-user", parentId: "reset", type: "message", messageRole: "user" },
+			{ id: "reset", parentId: "new-assistant", type: "reset_boundary" },
+			{ id: "new-assistant", parentId: "old-assistant", type: "message", messageRole: "assistant" },
+			{ id: "old-assistant", parentId: null, type: "message", messageRole: "assistant" },
+		];
+
+		const selected = selectSessionContextEntriesFromLeafPath(path, id => ({ id }) as unknown as SessionEntry);
+
+		expect(selected.map(entry => entry.id)).toEqual(["current-user", "reset", "new-assistant"]);
+	});
+
+	it("preserves full-context model inference when compaction omits the assistant tail", () => {
+		const oldAssistant = assistantEntry("old-assistant", null, "stop", "old", 1);
+		const newestAssistant = assistantEntry("new-assistant", "old-assistant", "stop", "new", 2);
+		if (newestAssistant.type !== "message" || newestAssistant.message.role !== "assistant")
+			throw new Error("Expected assistant history");
+		newestAssistant.message.model = "new-default";
+		const compaction: SessionEntry = {
+			type: "compaction",
+			id: "compact",
+			parentId: "new-assistant",
+			timestamp,
+			summary: "summarized assistant turns",
+			firstKeptEntryId: "tail-user",
+			tokensBefore: 10,
+		};
+		const tail = userEntry("tail-user", "compact", "after compaction", 3);
+		const fullBranch = [oldAssistant, newestAssistant, compaction, tail];
+		const full = buildSessionContext(fullBranch);
+		const path: SessionContextEntryMetadata[] = [tail, compaction, newestAssistant, oldAssistant].map(entry => ({
+			id: entry.id,
+			parentId: entry.parentId,
+			type: entry.type,
+			messageRole: entry.type === "message" ? entry.message.role : undefined,
+		}));
+		const selected = selectSessionContextEntriesFromLeafPath(path, id => fullBranch.find(entry => entry.id === id)!);
+		const projected = buildSessionContextFromLeafPath(selected);
+
+		expect(selected.map(entry => entry.id)).toContain("new-assistant");
+		expect(projected.models.default).toBe("anthropic/new-default");
+		expect(projected.models.default).toBe(full.models.default);
 	});
 });

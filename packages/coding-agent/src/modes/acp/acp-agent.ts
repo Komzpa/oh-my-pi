@@ -45,6 +45,7 @@ import {
 	type Usage,
 } from "@oh-my-pi/pi-utils/acp";
 import { disableProvider, enableProvider } from "../../capability";
+import { createSessionModelPresetActions } from "../../config/model-presets";
 import { Settings } from "../../config/settings";
 import { clearPluginRootsAndCaches, resolveActiveProjectRegistryPath } from "../../discovery/helpers";
 import {
@@ -55,7 +56,8 @@ import {
 } from "../../extensibility/extensions";
 import { runExtensionCompact } from "../../extensibility/extensions/compact-handler";
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
-import { parseSkillInvocation } from "../../extensibility/skills";
+import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
+import { sendAgentMessageFromSession } from "../../irc/messaging";
 import { PYTHON_KERNEL_CANCEL_BUDGET_MS } from "../../eval/py/kernel";
 import { MCPManager } from "../../mcp/manager";
 import { reconnectMcpManagerServer } from "../../mcp/oauth-reauth";
@@ -3272,6 +3274,15 @@ export class AcpAgent implements Agent {
 			return;
 		}
 
+		const presetActions = createSessionModelPresetActions(record.session);
+		const notifyPresetConfig = () => {
+			const delivery = this.#pushConfigOptionUpdate(record).catch((error: unknown) => {
+				logger.warn("ACP session preset config update failed", { error });
+			});
+			record.promptEventHandlers.add(delivery);
+			void delivery.finally(() => record.promptEventHandlers.delete(delivery));
+		};
+
 		extensionRunner.initialize(
 			{
 				sendMessage: (message, options) => {
@@ -3306,6 +3317,17 @@ export class AcpAgent implements Agent {
 				setThinkingLevel: level => record.session.setThinkingLevel(level),
 				getServiceTiers: () => record.session.serviceTierByFamily,
 				setServiceTier: (family, tier) => record.session.setServiceTierFamily(family, tier),
+				...presetActions,
+				applySessionModelPreset: async name => {
+					const result = await presetActions.applySessionModelPreset(name);
+					if (result.kind === "switched" || result.kind === "failed") notifyPresetConfig();
+					return result;
+				},
+				clearSessionModelPreset: () => {
+					const cleared = presetActions.clearSessionModelPreset();
+					if (cleared !== undefined) notifyPresetConfig();
+					return cleared;
+				},
 				getSessionName: () => record.session.sessionManager.getSessionName(),
 				setSessionName: async name => {
 					await record.session.sessionManager.setSessionName(name, "user");
@@ -3321,7 +3343,9 @@ export class AcpAgent implements Agent {
 				shutdown: () => {},
 				getContextUsage: () => record.session.getContextUsage(),
 				getSystemPrompt: () => record.session.systemPrompt,
+				sendAgentMessage: (to, message) => sendAgentMessageFromSession(record.session, to, message),
 				runEphemeralTurn: args => record.session.runEphemeralTurn(args),
+				setSubagentFastMode: (id, enabled) => record.session.setSubagentFastMode(id, enabled),
 				compact: instructionsOrOptions => runExtensionCompact(record.session, instructionsOrOptions),
 			},
 			{

@@ -72,6 +72,30 @@ export const cfgContextFilesExtra = register({
 // Context
 // ────────────────────────────────────────────────────────────────────────
 
+export const cfgInstructionRefreshEnabled = register({
+	id: "instructionRefresh.enabled",
+	type: "boolean",
+	default: true,
+});
+export const cfgInstructionRefreshMaxBytes = register({
+	id: "instructionRefresh.maxBytes",
+	type: "number",
+	default: 16_384,
+	validate: value => {
+		if (value !== undefined && (!Number.isSafeInteger(value) || Number(value) < 1))
+			throw new Error("instructionRefresh.maxBytes must be a positive integer");
+	},
+});
+export const cfgInstructionRefreshSubagentMinAgeMs = register({
+	id: "instructionRefresh.subagentMinAgeMs",
+	type: "number",
+	default: 300_000,
+	validate: value => {
+		if (value !== undefined && (!Number.isSafeInteger(value) || Number(value) < 0))
+			throw new Error("instructionRefresh.subagentMinAgeMs must be a non-negative integer");
+	},
+});
+
 // Context promotion
 export const cfgContextPromotionEnabled = register({
 	id: "contextPromotion.enabled",

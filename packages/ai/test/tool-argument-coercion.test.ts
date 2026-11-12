@@ -219,8 +219,8 @@ describe("Tool argument coercion", () => {
 								type: "object",
 								additionalProperties: false,
 								properties: {
-									x: { type: ["string", "null"] },
-									y: { type: ["string", "null"] },
+									x: { type: "string" },
+									y: { type: "string" },
 								},
 								minProperties: 1,
 							},
@@ -229,7 +229,7 @@ describe("Tool argument coercion", () => {
 								additionalProperties: false,
 								properties: {
 									x: { type: ["string", "null"] },
-									y: { type: ["string", "null"] },
+									y: { type: "string" },
 								},
 								required: ["x"],
 							},
@@ -1919,6 +1919,26 @@ describe("Tool argument coercion", () => {
 			},
 		]);
 	});
+	it("preserves optional nullable clears while removing invalid optional placeholders", () => {
+		const tool: Tool = {
+			name: "clear_saved_value",
+			description: "",
+			parameters: type({
+				"value?": "string | null",
+				"count?": "number",
+			}),
+		};
+		const arguments_ = { value: null, count: null };
+		const result = validateToolArguments(tool, {
+			type: "toolCall",
+			id: "clear-value",
+			name: tool.name,
+			arguments: arguments_,
+		});
+		expect(result).toEqual({ value: null });
+		expect(arguments_).toEqual({ value: null, count: null });
+	});
+
 	it("substitutes the schema default when a required field arrives as null", () => {
 		const tool: Tool = {
 			name: "t-defaulted-null",

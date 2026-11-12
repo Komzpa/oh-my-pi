@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { ipcEndpoint } from "@oh-my-pi/pi-natives";
 import { getDaemonRuntimeDir, hasFsCode, isEacces, isEisdir, isEnoent } from "@oh-my-pi/pi-utils";
+import { readFileSync } from "node:fs";
 
 /** Resolve the private runtime directory shared by omp processes in one project directory. */
 export { getDaemonRuntimeDir as daemonRuntimeDir };
@@ -70,6 +71,17 @@ export interface StoredDaemonRecord {
 	legacyLayout: boolean;
 }
 
+/** Linux process birth tick (stat field 22), including comm names containing spaces. */
+export function processStartTime(pid: number): string | undefined {
+	if (process.platform !== "linux") return undefined;
+	try {
+		const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+		return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+	} catch {
+		return undefined;
+	}
+}
+
 /**
  * Read a daemon record dir in either layout. Undefined when `meta.json` has no
  * daemon snapshot; throws when a file is missing or malformed.
@@ -77,6 +89,24 @@ export interface StoredDaemonRecord {
 export async function readStoredDaemonRecord(dir: string): Promise<StoredDaemonRecord | undefined> {
 	const meta: unknown = await Bun.file(path.join(dir, DAEMON_META_FILE)).json();
 	if (typeof meta !== "object" || meta === null || !("daemon" in meta)) return undefined;
+	const daemon = meta.daemon;
+	if (
+		process.platform === "linux" &&
+		typeof daemon === "object" &&
+		daemon !== null &&
+		"pid" in daemon &&
+		typeof daemon.pid === "number"
+	) {
+		const startTime = processStartTime(daemon.pid);
+		// Records written before processStartTime existed carry no stored value: unknown,
+		// not stale. Keep them while the pid is alive; only a dead pid or a recorded
+		// start time that no longer matches proves the daemon gone or the pid reused.
+		const recorded = "processStartTime" in meta ? meta.processStartTime : undefined;
+		if (!startTime || (recorded !== undefined && recorded !== startTime)) {
+			await fs.rm(dir, { recursive: true, force: true });
+			return undefined;
+		}
+	}
 	if ("spec" in meta) return { meta, spec: meta.spec, legacyLayout: true };
 	const spec: unknown = await Bun.file(path.join(dir, DAEMON_SPEC_FILE)).json();
 	return { meta, spec, legacyLayout: false };

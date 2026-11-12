@@ -145,6 +145,7 @@ const probe: FocusProbe = {
 			modelRegistry: registry,
 			extensionRunner: new ExtensionRunner([], new ExtensionRuntime(), process.cwd(), sessionManager, registry),
 			agentId: id,
+			agentKind: "sub",
 		});
 		sessions.set(id, session);
 		AgentRegistry.global().register({ id, displayName: id, kind: "sub", session, sessionFile: null, status: "idle" });

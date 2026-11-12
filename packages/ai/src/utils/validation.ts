@@ -825,14 +825,15 @@ function normalizeOptionalNullsForSchema(
 		if (!(key in nextValue)) continue;
 		const currentValue = nextValue[key];
 		const isNullish =
-			currentValue === null ||
+			(currentValue === null && !branchMatchesSchema(propertySchema, currentValue, root)) ||
 			(currentValue === "null" &&
 				!(Object.hasOwn(CONTENT_CARRYING_KEYS, key) && branchMatchesSchema(propertySchema, currentValue, root)));
 		const isInvalidEmptyString =
 			currentValue === "" && !required.has(key) && !branchMatchesSchema(propertySchema, currentValue, root);
 
-		// Strip optional null placeholders, but preserve literal "null" in content
-		// fields whose schema accepts it (e.g. JSON payloads).
+		// Explicitly nullable fields use null as data (including patch clears).
+		// Strip only invalid null placeholders, preserving literal "null" in
+		// content fields whose schema accepts it (e.g. JSON payloads).
 		// Strip empty strings only when the property schema rejects them.
 		if ((isNullish || isInvalidEmptyString) && !required.has(key)) {
 			if (!changed) {
@@ -2062,7 +2063,7 @@ export function validateToolArguments(
 	const ctx = getValidationContext(tool);
 	const { json } = ctx;
 
-	// Always normalize first — strip null/string "null" from optional fields,
+	// Always normalize first — strip invalid null/string "null" from optional fields,
 	// strip optional empty strings only when their property schema rejects the
 	// explicit value, and substitute defaults. Handles LLM outputting
 	// placeholders for "no value" even when validation would otherwise pass.

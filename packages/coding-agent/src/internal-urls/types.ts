@@ -126,7 +126,7 @@ export interface SchemeSpec {
 	unbounded?: boolean;
 	/** Renderers may call `locate` to hyperlink these URLs: locate is local, cheap, never spawns or fetches. */
 	linkable?: boolean;
-	/** Transcript read cards collapse like plain files instead of expanding (xd://). */
+	/** Transcript read cards collapse like plain files instead of expanding. */
 	compactTranscript?: boolean;
 	/** `read` peels a trailing `?q=<question>` as an image question (local://, attachment://); other schemes own their query. */
 	imageQuestion?: true;
@@ -301,6 +301,8 @@ export interface ResolveContext {
 	 * file, or on-disk transcript.
 	 */
 	getSessionBranch?: () => readonly SessionEntry[];
+	/** Same branch without the defensive copy; preferred by bounded full-history materialization. */
+	getSessionBranchView?: () => readonly SessionEntry[];
 	/**
 	 * Calling session's `local://` root mapping. When present, the local-protocol
 	 * handler resolves the URL against THIS session's artifacts dir instead of
@@ -382,6 +384,8 @@ export interface ProtocolHandler {
 	 * @throws Error with user-friendly message if resolution fails
 	 */
 	resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource>;
+	/** Render a large virtual document to a private file for bounded read/search paging. */
+	materialize?(url: InternalUrl, context?: ResolveContext): Promise<string | null>;
 	/**
 	 * Handler-owned write hook: present exactly when `spec.write.via` is
 	 * `"handler"` (the router enforces this at registration). The write tool

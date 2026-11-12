@@ -14,7 +14,7 @@ describe("stats dashboard host arguments", () => {
 	it("forwards the real omp stats flags to the dashboard runner", async () => {
 		vi.spyOn(theme, "initTheme").mockResolvedValue();
 		const runStatsCommand = vi.spyOn(statsCli, "runStatsCommand").mockResolvedValue();
-		const command = new Stats(["--host", "::", "--port", "3850"], TEST_CONFIG);
+		const command = new Stats(["--host", "::", "--port", "3850", "--frame-drops", "--minutes", "7"], TEST_CONFIG);
 
 		await command.run();
 
@@ -23,6 +23,8 @@ describe("stats dashboard host arguments", () => {
 			host: "::",
 			json: false,
 			summary: false,
+			frameDrops: true,
+			minutes: 7,
 		});
 	});
 

@@ -349,7 +349,7 @@ fn drive(world: &World, tool: &str, exec: bool, src: &str) -> String {
 				let mut api = shell.api(&mut cx, id).expect("call is outstanding");
 				let mut script = Script::command(&b"\"$@\""[..]);
 				script.args = Some(call.argv[1..].to_vec());
-				let lineage = Lineage { label: 0, detached: exec };
+				let lineage = Lineage { label: 0, detached: exec, ..Lineage::default() };
 				let run = if exec {
 					api.exec_subshell_in(script, lineage)
 				} else {

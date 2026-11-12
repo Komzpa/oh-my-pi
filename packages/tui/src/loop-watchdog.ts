@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
-import { logger, resetLoopPhaseWindow, takeLoopPhaseAttribution } from "@oh-my-pi/pi-utils";
+import * as logger from "@oh-my-pi/pi-utils/logger";
+import { resetLoopPhaseWindow, takeLoopPhaseAttribution } from "@oh-my-pi/pi-utils/loop-phase";
 
 export interface LoopWatchdogOptions {
 	/** How far ahead each probe tick is scheduled, in ms. Default 250. */
@@ -14,6 +15,8 @@ export interface LoopWatchdogOptions {
 	cpuNow?: () => number;
 	/** Timer source; injectable for tests. Default `setTimeout`. */
 	schedule?: (cb: () => void, ms: number) => LoopWatchdogTimer;
+	/** Called when a real loop block is reported. */
+	onBlocked?: (event: { blockedMs: number; cpuMs: number; phase: string }) => void;
 }
 
 /**
@@ -38,8 +41,9 @@ const CPU_BUSY_RATIO = 0.01;
  * Always-on event-loop lag probe. Each tick is scheduled `intervalMs` ahead,
  * with that target recorded as its deadline; a tick that fires `thresholdMs`
  * past its deadline means the loop was blocked that long. The overshoot is
- * logged once on the rising edge (one block ⇒ one line, deduped via
- * `#wasBlocked`). Attribution via
+ * logged for every delayed probe window. Re-arming a timer establishes a new
+ * deadline: another late callback is another stall, even without an on-time tick
+ * in between. Attribution via
  * {@link takeLoopPhaseAttribution} totals each innermost phase only after the tick's
  * deadline. A phase is named, with `phaseMs`, only when its total outweighs all
  * unlabeled time in that late window; otherwise the block remains "unknown".
@@ -62,9 +66,9 @@ export class LoopWatchdog {
 	#now: () => number;
 	#cpuNow: () => number;
 	#schedule: (cb: () => void, ms: number) => LoopWatchdogTimer;
+	#onBlocked: ((event: { blockedMs: number; cpuMs: number; phase: string }) => void) | undefined;
 	#expected = 0;
 	#expectedCpu = 0;
-	#wasBlocked = false;
 	// When the most recent late tick ran — the moment a detected block ended.
 	#stallEndedAt = Number.NEGATIVE_INFINITY;
 	#running = false;
@@ -91,12 +95,12 @@ export class LoopWatchdog {
 				const timer = setTimeout(cb, ms);
 				return { unref: () => timer.unref?.(), cancel: () => clearTimeout(timer) };
 			});
+		this.#onBlocked = options.onBlocked;
 	}
 
 	start(): void {
 		if (this.#running) return;
 		this.#running = true;
-		this.#wasBlocked = false;
 		this.#stallEndedAt = Number.NEGATIVE_INFINITY;
 		this.#armTick();
 	}
@@ -105,7 +109,6 @@ export class LoopWatchdog {
 		// Attribution state is process-global: a watchdog that is not running must not disarm another's window.
 		if (!this.#running) return;
 		this.#running = false;
-		this.#wasBlocked = false;
 		this.#stallEndedAt = Number.NEGATIVE_INFINITY;
 		this.#generation++;
 		this.#handle?.cancel?.();
@@ -151,23 +154,18 @@ export class LoopWatchdog {
 		// Consume every valid tick, even without a warning, so no phase carries
 		// forward into a later, phase-less block.
 		const phase = takeLoopPhaseAttribution(now);
-		if (blockedMs > this.#thresholdMs) {
-			if (this.#isSuspension(blockedMs, cpuMs)) {
-				this.#wasBlocked = false;
-			} else {
-				this.#stallEndedAt = now;
-				if (!this.#wasBlocked) {
-					this.#wasBlocked = true;
-					logger.warn("ui.loop-blocked", {
-						blockedMs: Math.round(blockedMs),
-						cpuMs: Math.round(cpuMs),
-						phase: phase?.label ?? "unknown",
-						...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
-					});
-				}
-			}
-		} else {
-			this.#wasBlocked = false;
+		if (blockedMs > this.#thresholdMs && !this.#isSuspension(blockedMs, cpuMs)) {
+			this.#stallEndedAt = now;
+			// This establishes delayed macrotask delivery, not whether one synchronous
+			// block or a chain of microtasks occupied the intervening time.
+			logger.warn("ui.loop-blocked", {
+				cause: "macrotask-delay",
+				blockedMs: Math.round(blockedMs),
+				cpuMs: Math.round(cpuMs),
+				phase: phase?.label ?? "unknown",
+				...(phase ? { phaseMs: Math.round(phase.ms) } : {}),
+			});
+			this.#onBlocked?.({ blockedMs, cpuMs, phase: phase?.label ?? "unknown" });
 		}
 		this.#armTick();
 	}

@@ -48,6 +48,7 @@
  */
 import type { AgentMessage, AgentTool, QueuedMessageGate } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
+import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { Rule } from "../capability/rule";
 import type { OverlayLayers, Settings } from "../config/settings";
@@ -80,6 +81,8 @@ import {
 /** Full state of a local session, as published to main. */
 export function captureSessionState(session: AgentSession): SessionMirrorState {
 	return {
+		isDisposed: read.isDisposed(session),
+		restartPendingInputCount: read.restartPendingInputCount(session),
 		isStreaming: read.isStreaming(session),
 		runStartedAt: read.runStartedAt(session),
 		ircWakesPending: read.ircWakesPending(session),
@@ -141,6 +144,7 @@ type DiffedViewState = Omit<SessionViewState, "activeToolExecutionUpdates">;
 
 /** Live objects behind the wire copies of the heavy view fields; an unchanged source reuses its copy. */
 interface ViewSources {
+	readonly todoPhases: readonly TodoPhase[];
 	readonly tools: readonly AgentTool[];
 	readonly systemPrompt: readonly string[];
 	readonly skills: readonly Skill[];
@@ -448,6 +452,7 @@ export class SessionPublisher {
 		const previous = this.#view;
 		const prior = this.#viewSources;
 		const sources: ViewSources = {
+			todoPhases: session.getTodoSnapshot(),
 			tools: session.agent.state.tools,
 			systemPrompt: session.systemPrompt,
 			skills: session.skills,
@@ -508,7 +513,7 @@ export class SessionPublisher {
 			goalMode: toWireData(session.getGoalModeState()),
 			advisorCost: session.getAdvisorCost(),
 			advisorUsingSubscription: session.isAdvisorUsingSubscription(),
-			todoPhases: toWireData(session.getTodoPhases()),
+			todoPhases: previous && reuse("todoPhases") ? previous.todoPhases : toWireData([...sources.todoPhases]),
 			queuedMessages: toWireData(session.getQueuedMessages()),
 			restorableQueue: toWireData({ steering: steering.map(queuedEntry), followUp: followUp.map(queuedEntry) }),
 			ephemeralMaxTokensPreservesRequest: session.ephemeralMaxTokensPreservesRequest(),
@@ -548,6 +553,8 @@ function localModel(session: AgentSession, model: Model): Model {
 
 /** Worker-side implementation of {@link SessionHostProtocol}; commands flush state before their result posts. */
 export const SESSION_HOST_SERVE: RpcServe<SessionPublisher, SessionHostProtocol> = {
+	executePeerSlashCommand: async (publisher, text) =>
+		settle(publisher, publisher.session.executePeerSlashCommand(text)),
 	prompt: async (publisher, text, options) => settle(publisher, publisher.session.prompt(text, options)),
 	steer: async (publisher, text, images, options) => settle(publisher, publisher.session.steer(text, images, options)),
 	abort: async (publisher, options) => settle(publisher, publisher.session.abort(options)),
@@ -573,6 +580,10 @@ export const SESSION_HOST_SERVE: RpcServe<SessionPublisher, SessionHostProtocol>
 		if (message) session.withdrawQueuedMessage(message);
 		publisher.schedule();
 	},
+	setFastMode: async (publisher, enabled) =>
+		settle(publisher, Promise.resolve(publisher.session.setFastMode(enabled))),
+	sendCustomMessage: async (publisher, message, options) =>
+		settle(publisher, publisher.session.sendCustomMessage(message, options)),
 	setTodoPhases: (publisher, phases) => {
 		publisher.session.setTodoPhases(phases);
 		publisher.schedule();
@@ -585,6 +596,10 @@ export const SESSION_HOST_SERVE: RpcServe<SessionPublisher, SessionHostProtocol>
 		publisher.session.sessionManager.appendModelUsage(usage, owner);
 		publisher.schedule();
 	},
+	beginRestartDrain: publisher => publisher.session.beginRestartDrain(),
+	getRestartBranchEntries: publisher => publisher.session.getRestartBranchEntries(),
+	sendRestartNotice: (publisher, message) => settle(publisher, publisher.session.sendRestartNotice(message)),
+	flushRestartJournal: (publisher, options) => settle(publisher, publisher.session.flushRestartJournal(options)),
 	flushSession: async publisher => settle(publisher, publisher.session.sessionManager.flush()),
 	ensureOnDisk: async publisher => settle(publisher, publisher.session.sessionManager.ensureOnDisk()),
 	getArtifactPath: (publisher, id) => publisher.session.sessionManager.getArtifactPath(id),

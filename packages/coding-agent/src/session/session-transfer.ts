@@ -676,7 +676,9 @@ export async function markSessionMoved(sessionFile: string, label: string): Prom
  * return `manager` itself.
  */
 export async function forkIfMovedAway(manager: SessionManager, sessionDir?: string): Promise<SessionManager> {
-	const marker = lastSessionTransfer(manager.getEntries());
+	// Transfer notices cannot occur in conversation payloads. Preserve journal
+	// append order without materializing every historical message on resume.
+	const marker = lastSessionTransfer([...manager.iterateEntries("custom_message")]);
 	if (marker?.kind !== "departed") return manager;
 	const source = manager.getSessionFile();
 	if (!source) return manager;

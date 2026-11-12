@@ -93,8 +93,8 @@ _MESSAGE_UPDATES_VALUES: Final[frozenset[str]] = frozenset({"full", "delta"})
 _decode_message_updates = cast("Decoder[MessageUpdates]", literal(_MESSAGE_UPDATES_VALUES))
 
 
-TodoStatus: TypeAlias = Literal["pending", "in_progress", "completed", "abandoned"]
-_TODO_STATUS_VALUES: Final[frozenset[str]] = frozenset({"pending", "in_progress", "completed", "abandoned"})
+TodoStatus: TypeAlias = Literal["pending", "in_progress", "completed", "abandoned", "blocked"]
+_TODO_STATUS_VALUES: Final[frozenset[str]] = frozenset({"pending", "in_progress", "completed", "abandoned", "blocked"})
 _decode_todo_status = cast("Decoder[TodoStatus]", literal(_TODO_STATUS_VALUES))
 
 
@@ -127,6 +127,21 @@ _decode_agent_source = cast("Decoder[AgentSource]", literal(_AGENT_SOURCE_VALUES
 SubagentStatus: TypeAlias = Literal["pending", "running", "completed", "failed", "aborted"]
 _SUBAGENT_STATUS_VALUES: Final[frozenset[str]] = frozenset({"pending", "running", "completed", "failed", "aborted"})
 _decode_subagent_status = cast("Decoder[SubagentStatus]", literal(_SUBAGENT_STATUS_VALUES))
+
+
+TodoConfidence: TypeAlias = Literal["low", "medium", "high"]
+_TODO_CONFIDENCE_VALUES: Final[frozenset[str]] = frozenset({"low", "medium", "high"})
+_decode_todo_confidence = cast("Decoder[TodoConfidence]", literal(_TODO_CONFIDENCE_VALUES))
+
+
+TodoScheduleReview: TypeAlias = Literal["user", "accepted", "redo", "drop"]
+_TODO_SCHEDULE_REVIEW_VALUES: Final[frozenset[str]] = frozenset({"user", "accepted", "redo", "drop"})
+_decode_todo_schedule_review = cast("Decoder[TodoScheduleReview]", literal(_TODO_SCHEDULE_REVIEW_VALUES))
+
+
+TodoWorkerOutcome: TypeAlias = Literal["completed", "failed", "aborted"]
+_TODO_WORKER_OUTCOME_VALUES: Final[frozenset[str]] = frozenset({"completed", "failed", "aborted"})
+_decode_todo_worker_outcome = cast("Decoder[TodoWorkerOutcome]", literal(_TODO_WORKER_OUTCOME_VALUES))
 
 
 SlowModeScope: TypeAlias = Literal["session", "global"]
@@ -500,6 +515,18 @@ class AssistantErrorEvent(TypedDict):
     error: AssistantMessage
 
 
+class CustomPromptMessage(TypedDict):
+    customType: str
+    content: MessageContent
+    display: bool
+    details: NotRequired[JsonValue]
+    attribution: NotRequired[Literal["user", "agent"]]
+
+
+class InteractiveViewOptions(TypedDict):
+    collapseCompactedHistory: NotRequired[bool]
+
+
 class SelectOptionDetail(TypedDict):
     """Presentation metadata aligned positionally with `options`."""
     description: NotRequired[str]
@@ -554,17 +581,122 @@ class ModelInfo:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class TodoAwaitingUser:
+    action: str
+    ids: tuple[str, ...] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class TodoItem:
     content: str
     status: TodoStatus
+    schedule: TodoSchedule | None = None
+    blocker: str | None = None
+    """What a `blocked` task is waiting on."""
     details: str | None = None
     notes: tuple[str, ...] | None = None
+    artifact_cwd: str | None = None
+    """Persisted checkout whose clean HEAD is the row's QA artifact."""
+    artifact_owner: str | None = None
+    """Owner whose checkout was last verified as artifactCwd."""
+    deployment: str | None = None
+    """Explicit deployment identity for this requirement row."""
+    awaiting_user: TodoAwaitingUser | None = None
+    """User-owned pending check; it does not constitute verification or close the row."""
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class TodoPhase:
     name: str
     tasks: tuple[TodoItem, ...]
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoEstimate:
+    """User-maintained duration estimate in seconds; `updatedAt` is Unix milliseconds."""
+    optimistic_seconds: float
+    likely_seconds: float
+    pessimistic_seconds: float
+    confidence: TodoConfidence
+    basis: str
+    updated_at: float
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoScheduleProgress:
+    at: float
+    evidence: str
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoScheduleExecutor:
+    """Observed Task worker that executed this row, independent of forecast ownership; timestamps are Unix milliseconds."""
+    worker_id: str
+    started_at: float
+    agent_profile: str | None = None
+    resolved_model: str | None = None
+    thinking_level: str | None = None
+    finished_at: float | None = None
+    outcome: TodoWorkerOutcome | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoReworkAttempt:
+    """Immutable terminal worker attempt attached to its exact todo row; timestamps and duration are milliseconds."""
+    attempt_id: str
+    worker_name: str
+    resolved_model: str
+    effort: str
+    started_at: float
+    finished_at: float
+    duration_ms: float
+    terminal_status: TodoWorkerOutcome
+    deliverable_paths: tuple[str, ...]
+    rejection_reason: str | None = None
+    reflection_answer: str | None = None
+    no_answer_reason: str | None = None
+    final_report_paragraph: str | None = None
+    interruption: Literal["restart"] | None = None
+    infra_failure_line: str | None = None
+    infra_failure_error: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoResourceWait:
+    row: str
+    worker_id: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class TodoSchedule:
+    """Native estimate, dependency, progress, and worker metadata for the exact task content; timestamps are Unix milliseconds."""
+    dependencies: tuple[str, ...] | None = None
+    """Exact task-content references; absent means unknown, while an empty array explicitly means independent."""
+    owner: str | None = None
+    """Exclusive forecast owner while this task is running."""
+    resources: tuple[str, ...] | None = None
+    """Exclusive resource identifiers while running; absent means undeclared."""
+    resource_wait: TodoResourceWait | None = None
+    estimate: TodoEstimate | None = None
+    estimate_revision: float | None = None
+    """Server-owned revision: the first estimate is revision 1."""
+    reestimate_count: float | None = None
+    progress: TodoScheduleProgress | None = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    first_requirement_at: float | None = None
+    """Time this row first entered the plan as a user requirement."""
+    first_delivered_at: float | None = None
+    """Time the first usable result was handed to the user."""
+    attempt_history: tuple[TodoReworkAttempt, ...] | None = None
+    """Append-only durable attempts for this exact row."""
+    review_summary: str | None = None
+    """Short final worker report retained for the user's review handoff."""
+    review: TodoScheduleReview | None = None
+    """User decision state for a delivered implementation result."""
+    speculative_on: str | None = None
+    """Review row whose verdict gates publication of this speculative work."""
+    executor: TodoScheduleExecutor | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -581,6 +713,43 @@ class QueuedMessagesState:
     follow_up: tuple[str, ...]
     live_steered: int = 0
     """Leading `steering` entries are live steering already sent into the streaming response; `remove_queued_message` cannot reach them."""
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class CustomPromptOptions:
+    streaming_behavior: Literal["steer", "followUp", "aside"] | None = None
+    tool_choice: JsonValue | None = None
+    queue_chip_text: str | None = None
+    queue_only: bool | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionPromptOptions:
+    expand_prompt_templates: bool | None = None
+    run_commands: bool | None = None
+    throw_on_drop: bool | None = None
+    images: tuple[ImageContent, ...] | None = None
+    streaming_behavior: Literal["steer", "followUp", "aside"] | None = None
+    tool_choice: JsonValue | None = None
+    synthetic: bool | None = None
+    user_initiated: bool | None = None
+    attribution: Literal["user", "agent"] | None = None
+    skip_compaction_check: bool | None = None
+    solution_space: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionDisposeOptions:
+    mnemopi_consolidate_timeout_ms: float | None = None
+    drain_timeout_ms: float | None = None
+    reason: Literal["pre_exit", "exit", "sigint", "sigterm", "sighup", "uncaught_exception", "unhandled_rejection", "manual"] | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
+class SessionAbortOptions:
+    goal_reason: Literal["interrupted", "internal"] | None = None
+    reason: str | None = None
+    preserve_compaction: bool | None = None
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -641,12 +810,26 @@ class UsageLimitWrapUp:
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
+class InteractiveViewSnapshot:
+    session_id: str
+    context: JsonObject
+    stream_message: AgentMessage | None
+    pending_tool_call_ids: tuple[str, ...]
+    is_streaming: bool
+    entry_count: float
+    compaction_count: float
+    session_file: str | None = None
+
+
+@dataclass(slots=True, frozen=True, kw_only=True)
 class SessionState:
     session_id: str
+    view: InteractiveViewSnapshot | None = None
     model: ModelInfo | None = None
     thinking_level: ThinkingLevel | None = None
     is_streaming: bool = False
     is_compacting: bool = False
+    has_post_prompt_work: bool = False
     steering_mode: QueueMode = "one-at-a-time"
     follow_up_mode: QueueMode = "one-at-a-time"
     interrupt_mode: InterruptMode = "immediate"
@@ -1169,6 +1352,7 @@ class RetryFallbackAppliedEvent:
     from_model: str
     to_model: str
     role: str
+    source: Literal["primary", "advisor"] | None = None
     reason: str | None = None
 
 
@@ -1327,7 +1511,14 @@ class SubagentLifecyclePayload:
     agent_source: AgentSource
     status: SubagentLifecycleStatus
     index: int
+    follow_up_turn: bool | None = None
+    at: float | None = None
+    """Wall clock of the emitted lifecycle transition, in Unix milliseconds."""
+    resolved_model_identity: str | None = None
+    resolved_thinking_level: str | None = None
     description: str | None = None
+    task_text: str | None = None
+    row: str | None = None
     session_file: str | None = None
     parent_tool_call_id: str | None = None
     detached: bool | None = None
@@ -1342,6 +1533,7 @@ class SubagentProgressPayload:
     task: str
     progress: JsonObject
     """Raw `AgentProgress` record."""
+    follow_up_turn: bool | None = None
     parent_tool_call_id: str | None = None
     assignment: str | None = None
     session_file: str | None = None
@@ -1877,6 +2069,14 @@ parse_assistant_error_event = cast("Decoder[AssistantErrorEvent]", open_record("
 """Decodes a `AssistantErrorEvent` open record: checks the discriminator and keeps every key."""
 
 
+parse_custom_prompt_message = cast("Decoder[CustomPromptMessage]", open_record(None, None))
+"""Decodes a `CustomPromptMessage` open record: checks the discriminator and keeps every key."""
+
+
+parse_interactive_view_options = cast("Decoder[InteractiveViewOptions]", open_record(None, None))
+"""Decodes a `InteractiveViewOptions` open record: checks the discriminator and keeps every key."""
+
+
 parse_select_option_detail = cast("Decoder[SelectOptionDetail]", open_record(None, None))
 """Decodes a `SelectOptionDetail` open record: checks the discriminator and keeps every key."""
 
@@ -1946,13 +2146,27 @@ def parse_model_info(value: object, path: str = "ModelInfo") -> ModelInfo:
     )
 
 
+def parse_todo_awaiting_user(value: object, path: str = "TodoAwaitingUser") -> TodoAwaitingUser:
+    payload = expect_object(value, path)
+    return TodoAwaitingUser(
+        action=required(payload, "action", decode_str, path),
+        ids=optional(payload, "ids", array(decode_str), path),
+    )
+
+
 def parse_todo_item(value: object, path: str = "TodoItem") -> TodoItem:
     payload = expect_object(value, path)
     return TodoItem(
         content=required(payload, "content", decode_str, path),
         status=required(payload, "status", _decode_todo_status, path),
+        schedule=optional(payload, "schedule", parse_todo_schedule, path),
+        blocker=optional(payload, "blocker", decode_str, path),
         details=optional(payload, "details", decode_str, path),
         notes=optional(payload, "notes", array(decode_str), path),
+        artifact_cwd=optional(payload, "artifactCwd", decode_str, path),
+        artifact_owner=optional(payload, "artifactOwner", decode_str, path),
+        deployment=optional(payload, "deployment", decode_str, path),
+        awaiting_user=optional(payload, "awaitingUser", parse_todo_awaiting_user, path),
     )
 
 
@@ -1961,6 +2175,92 @@ def parse_todo_phase(value: object, path: str = "TodoPhase") -> TodoPhase:
     return TodoPhase(
         name=required(payload, "name", decode_str, path),
         tasks=required(payload, "tasks", array(parse_todo_item), path),
+    )
+
+
+def parse_todo_estimate(value: object, path: str = "TodoEstimate") -> TodoEstimate:
+    payload = expect_object(value, path)
+    return TodoEstimate(
+        optimistic_seconds=required(payload, "optimisticSeconds", decode_float, path),
+        likely_seconds=required(payload, "likelySeconds", decode_float, path),
+        pessimistic_seconds=required(payload, "pessimisticSeconds", decode_float, path),
+        confidence=required(payload, "confidence", _decode_todo_confidence, path),
+        basis=required(payload, "basis", decode_str, path),
+        updated_at=required(payload, "updatedAt", decode_float, path),
+    )
+
+
+def parse_todo_schedule_progress(value: object, path: str = "TodoScheduleProgress") -> TodoScheduleProgress:
+    payload = expect_object(value, path)
+    return TodoScheduleProgress(
+        at=required(payload, "at", decode_float, path),
+        evidence=required(payload, "evidence", decode_str, path),
+    )
+
+
+def parse_todo_schedule_executor(value: object, path: str = "TodoScheduleExecutor") -> TodoScheduleExecutor:
+    payload = expect_object(value, path)
+    return TodoScheduleExecutor(
+        worker_id=required(payload, "workerId", decode_str, path),
+        started_at=required(payload, "startedAt", decode_float, path),
+        agent_profile=optional(payload, "agentProfile", decode_str, path),
+        resolved_model=optional(payload, "resolvedModel", decode_str, path),
+        thinking_level=optional(payload, "thinkingLevel", decode_str, path),
+        finished_at=optional(payload, "finishedAt", decode_float, path),
+        outcome=optional(payload, "outcome", _decode_todo_worker_outcome, path),
+    )
+
+
+def parse_todo_rework_attempt(value: object, path: str = "TodoReworkAttempt") -> TodoReworkAttempt:
+    payload = expect_object(value, path)
+    return TodoReworkAttempt(
+        attempt_id=required(payload, "attemptId", decode_str, path),
+        worker_name=required(payload, "workerName", decode_str, path),
+        resolved_model=required(payload, "resolvedModel", decode_str, path),
+        effort=required(payload, "effort", decode_str, path),
+        started_at=required(payload, "startedAt", decode_float, path),
+        finished_at=required(payload, "finishedAt", decode_float, path),
+        duration_ms=required(payload, "durationMs", decode_float, path),
+        terminal_status=required(payload, "terminalStatus", _decode_todo_worker_outcome, path),
+        deliverable_paths=required(payload, "deliverablePaths", array(decode_str), path),
+        rejection_reason=optional(payload, "rejectionReason", decode_str, path),
+        reflection_answer=optional(payload, "reflectionAnswer", decode_str, path),
+        no_answer_reason=optional(payload, "noAnswerReason", decode_str, path),
+        final_report_paragraph=optional(payload, "finalReportParagraph", decode_str, path),
+        interruption=optional(payload, "interruption", cast('Decoder[Literal["restart"]]', literal(frozenset({"restart"}))), path),
+        infra_failure_line=optional(payload, "infraFailureLine", decode_str, path),
+        infra_failure_error=optional(payload, "infraFailureError", decode_str, path),
+    )
+
+
+def parse_todo_resource_wait(value: object, path: str = "TodoResourceWait") -> TodoResourceWait:
+    payload = expect_object(value, path)
+    return TodoResourceWait(
+        row=required(payload, "row", decode_str, path),
+        worker_id=optional(payload, "workerId", decode_str, path),
+    )
+
+
+def parse_todo_schedule(value: object, path: str = "TodoSchedule") -> TodoSchedule:
+    payload = expect_object(value, path)
+    return TodoSchedule(
+        dependencies=optional(payload, "dependencies", array(decode_str), path),
+        owner=optional(payload, "owner", decode_str, path),
+        resources=optional(payload, "resources", array(decode_str), path),
+        resource_wait=optional(payload, "resourceWait", parse_todo_resource_wait, path),
+        estimate=optional(payload, "estimate", parse_todo_estimate, path),
+        estimate_revision=optional(payload, "estimateRevision", decode_float, path),
+        reestimate_count=optional(payload, "reestimateCount", decode_float, path),
+        progress=optional(payload, "progress", parse_todo_schedule_progress, path),
+        started_at=optional(payload, "startedAt", decode_float, path),
+        finished_at=optional(payload, "finishedAt", decode_float, path),
+        first_requirement_at=optional(payload, "firstRequirementAt", decode_float, path),
+        first_delivered_at=optional(payload, "firstDeliveredAt", decode_float, path),
+        attempt_history=optional(payload, "attemptHistory", array(parse_todo_rework_attempt), path),
+        review_summary=optional(payload, "reviewSummary", decode_str, path),
+        review=optional(payload, "review", _decode_todo_schedule_review, path),
+        speculative_on=optional(payload, "speculativeOn", decode_str, path),
+        executor=optional(payload, "executor", parse_todo_schedule_executor, path),
     )
 
 
@@ -1979,6 +2279,51 @@ def parse_queued_messages_state(value: object, path: str = "QueuedMessagesState"
         steering=required(payload, "steering", array(decode_str), path),
         follow_up=required(payload, "followUp", array(decode_str), path),
         live_steered=defaulted(payload, "liveSteered", decode_int, path, 0),
+    )
+
+
+def parse_custom_prompt_options(value: object, path: str = "CustomPromptOptions") -> CustomPromptOptions:
+    payload = expect_object(value, path)
+    return CustomPromptOptions(
+        streaming_behavior=optional(payload, "streamingBehavior", cast('Decoder[Literal["steer", "followUp", "aside"]]', literal(frozenset({"steer", "followUp", "aside"}))), path),
+        tool_choice=optional(payload, "toolChoice", decode_json, path),
+        queue_chip_text=optional(payload, "queueChipText", decode_str, path),
+        queue_only=optional(payload, "queueOnly", decode_bool, path),
+    )
+
+
+def parse_session_prompt_options(value: object, path: str = "SessionPromptOptions") -> SessionPromptOptions:
+    payload = expect_object(value, path)
+    return SessionPromptOptions(
+        expand_prompt_templates=optional(payload, "expandPromptTemplates", decode_bool, path),
+        run_commands=optional(payload, "runCommands", decode_bool, path),
+        throw_on_drop=optional(payload, "throwOnDrop", decode_bool, path),
+        images=optional(payload, "images", array(parse_image_content), path),
+        streaming_behavior=optional(payload, "streamingBehavior", cast('Decoder[Literal["steer", "followUp", "aside"]]', literal(frozenset({"steer", "followUp", "aside"}))), path),
+        tool_choice=optional(payload, "toolChoice", decode_json, path),
+        synthetic=optional(payload, "synthetic", decode_bool, path),
+        user_initiated=optional(payload, "userInitiated", decode_bool, path),
+        attribution=optional(payload, "attribution", cast('Decoder[Literal["user", "agent"]]', literal(frozenset({"user", "agent"}))), path),
+        skip_compaction_check=optional(payload, "skipCompactionCheck", decode_bool, path),
+        solution_space=optional(payload, "solutionSpace", decode_str, path),
+    )
+
+
+def parse_session_dispose_options(value: object, path: str = "SessionDisposeOptions") -> SessionDisposeOptions:
+    payload = expect_object(value, path)
+    return SessionDisposeOptions(
+        mnemopi_consolidate_timeout_ms=optional(payload, "mnemopiConsolidateTimeoutMs", decode_float, path),
+        drain_timeout_ms=optional(payload, "drainTimeoutMs", decode_float, path),
+        reason=optional(payload, "reason", cast('Decoder[Literal["pre_exit", "exit", "sigint", "sigterm", "sighup", "uncaught_exception", "unhandled_rejection", "manual"]]', literal(frozenset({"pre_exit", "exit", "sigint", "sigterm", "sighup", "uncaught_exception", "unhandled_rejection", "manual"}))), path),
+    )
+
+
+def parse_session_abort_options(value: object, path: str = "SessionAbortOptions") -> SessionAbortOptions:
+    payload = expect_object(value, path)
+    return SessionAbortOptions(
+        goal_reason=optional(payload, "goalReason", cast('Decoder[Literal["interrupted", "internal"]]', literal(frozenset({"interrupted", "internal"}))), path),
+        reason=optional(payload, "reason", decode_str, path),
+        preserve_compaction=optional(payload, "preserveCompaction", decode_bool, path),
     )
 
 
@@ -2042,14 +2387,30 @@ def parse_usage_limit_wrap_up(value: object, path: str = "UsageLimitWrapUp") -> 
     )
 
 
+def parse_interactive_view_snapshot(value: object, path: str = "InteractiveViewSnapshot") -> InteractiveViewSnapshot:
+    payload = expect_object(value, path)
+    return InteractiveViewSnapshot(
+        session_id=required(payload, "sessionId", decode_str, path),
+        context=required(payload, "context", decode_json_object, path),
+        stream_message=required(payload, "streamMessage", nullable(parse_agent_message), path),
+        pending_tool_call_ids=required(payload, "pendingToolCallIds", array(decode_str), path),
+        is_streaming=required(payload, "isStreaming", decode_bool, path),
+        entry_count=required(payload, "entryCount", decode_float, path),
+        compaction_count=required(payload, "compactionCount", decode_float, path),
+        session_file=optional(payload, "sessionFile", decode_str, path),
+    )
+
+
 def parse_session_state(value: object, path: str = "SessionState") -> SessionState:
     payload = expect_object(value, path)
     return SessionState(
         session_id=required(payload, "sessionId", decode_str, path),
+        view=optional(payload, "view", parse_interactive_view_snapshot, path),
         model=optional(payload, "model", parse_model_info, path),
         thinking_level=optional(payload, "thinkingLevel", _decode_thinking_level, path),
         is_streaming=defaulted(payload, "isStreaming", decode_bool, path, False),
         is_compacting=defaulted(payload, "isCompacting", decode_bool, path, False),
+        has_post_prompt_work=defaulted(payload, "hasPostPromptWork", decode_bool, path, False),
         steering_mode=defaulted(payload, "steeringMode", _decode_queue_mode, path, "one-at-a-time"),
         follow_up_mode=defaulted(payload, "followUpMode", _decode_queue_mode, path, "one-at-a-time"),
         interrupt_mode=defaulted(payload, "interruptMode", _decode_interrupt_mode, path, "immediate"),
@@ -2617,6 +2978,7 @@ def parse_retry_fallback_applied_event(value: object, path: str = "RetryFallback
         from_model=required(payload, "from", decode_str, path),
         to_model=required(payload, "to", decode_str, path),
         role=required(payload, "role", decode_str, path),
+        source=optional(payload, "source", cast('Decoder[Literal["primary", "advisor"]]', literal(frozenset({"primary", "advisor"}))), path),
         reason=optional(payload, "reason", decode_str, path),
     )
 
@@ -2799,7 +3161,13 @@ def parse_subagent_lifecycle_payload(value: object, path: str = "SubagentLifecyc
         agent_source=required(payload, "agentSource", _decode_agent_source, path),
         status=required(payload, "status", _decode_subagent_lifecycle_status, path),
         index=required(payload, "index", decode_int, path),
+        follow_up_turn=optional(payload, "followUpTurn", decode_bool, path),
+        at=optional(payload, "at", decode_float, path),
+        resolved_model_identity=optional(payload, "resolvedModelIdentity", decode_str, path),
+        resolved_thinking_level=optional(payload, "resolvedThinkingLevel", decode_str, path),
         description=optional(payload, "description", decode_str, path),
+        task_text=optional(payload, "taskText", decode_str, path),
+        row=optional(payload, "row", decode_str, path),
         session_file=optional(payload, "sessionFile", decode_str, path),
         parent_tool_call_id=optional(payload, "parentToolCallId", decode_str, path),
         detached=optional(payload, "detached", decode_bool, path),
@@ -2814,6 +3182,7 @@ def parse_subagent_progress_payload(value: object, path: str = "SubagentProgress
         agent_source=required(payload, "agentSource", _decode_agent_source, path),
         task=required(payload, "task", decode_str, path),
         progress=required(payload, "progress", decode_json_object, path),
+        follow_up_turn=optional(payload, "followUpTurn", decode_bool, path),
         parent_tool_call_id=optional(payload, "parentToolCallId", decode_str, path),
         assignment=optional(payload, "assignment", decode_str, path),
         session_file=optional(payload, "sessionFile", decode_str, path),
@@ -3357,6 +3726,12 @@ class WireClient:
     def _listen(self, frame_type: str, listener: Callable[..., None]) -> Callable[[], None]:
         raise NotImplementedError
 
+    def prompt_custom(self, message: CustomPromptMessage) -> None:
+        """Submit an attributed custom message through the owner admission pipeline."""
+        params: dict[str, object] = {}
+        params["message"] = message
+        self._command("prompt_custom", params)
+
     def steer(self, message: str, *, images: Sequence[ImageContent] | None = None) -> None:
         """Queue a steering message."""
         params: dict[str, object] = {}
@@ -3413,9 +3788,37 @@ class WireClient:
             params["modelId"] = model_id
         return parse_open_session_result(self._command("open_session", params), "open_session")
 
-    def get_state(self) -> SessionState:
-        """Snapshot the session state."""
+    def begin_dispose(self) -> None:
+        """Stop admitting new owner work before explicit shutdown."""
         params: dict[str, object] = {}
+        self._command("begin_dispose", params)
+
+    def dispose_session(self) -> None:
+        """Dispose the runtime owner; view detachment does not call this."""
+        params: dict[str, object] = {}
+        self._command("dispose_session", params)
+
+    def checkpoint_session(self) -> None:
+        """Close and seal the owner journal after restart admission."""
+        params: dict[str, object] = {}
+        self._command("checkpoint_session", params)
+
+    def save_draft(self, text: str) -> None:
+        """Persist unsent editor text with the runtime session writer."""
+        params: dict[str, object] = {}
+        params["text"] = text
+        self._command("save_draft", params)
+
+    def consume_draft(self) -> str | None:
+        """Restore and remove the unsent editor draft once."""
+        params: dict[str, object] = {}
+        return required(expect_object(self._command("consume_draft", params), "consume_draft"), "text", nullable(decode_str), "consume_draft")
+
+    def get_state(self, view: InteractiveViewOptions | None = None) -> SessionState:
+        """Snapshot the session state, optionally including presentation without opening a view writer."""
+        params: dict[str, object] = {}
+        if view is not None:
+            params["view"] = view
         return parse_session_state(self._command("get_state", params), "get_state")
 
     def set_fast_mode(self, enabled: bool) -> FastModeResult:
@@ -4084,6 +4487,8 @@ __all__ = [
     "ConfirmUiRequest",
     "ContextUsage",
     "CustomMessage",
+    "CustomPromptMessage",
+    "CustomPromptOptions",
     "DeveloperMessage",
     "DictationEndEvent",
     "DictationStateEvent",
@@ -4110,6 +4515,8 @@ __all__ = [
     "HostUriSchemeDefinition",
     "ImageContent",
     "InputUiRequest",
+    "InteractiveViewOptions",
+    "InteractiveViewSnapshot",
     "InterruptMode",
     "IrcMessageEvent",
     "LineRange",
@@ -4164,9 +4571,12 @@ __all__ = [
     "RpcNotification",
     "SelectOptionDetail",
     "SelectUiRequest",
+    "SessionAbortOptions",
     "SessionCredits",
+    "SessionDisposeOptions",
     "SessionEntries",
     "SessionInfoUpdateEvent",
+    "SessionPromptOptions",
     "SessionSettledEvent",
     "SessionState",
     "SessionStats",
@@ -4199,9 +4609,12 @@ __all__ = [
     "ThinkingLevelChangedEvent",
     "ThinkingLevelCycleResult",
     "TodoAutoClearEvent",
+    "TodoAwaitingUser",
     "TodoItem",
     "TodoPhase",
     "TodoReminderEvent",
+    "TodoResourceWait",
+    "TodoScheduleReview",
     "TodoStatus",
     "TokenUsage",
     "ToolCall",
@@ -4277,6 +4690,8 @@ __all__ = [
     "parse_confirm_ui_request",
     "parse_context_usage",
     "parse_custom_message",
+    "parse_custom_prompt_message",
+    "parse_custom_prompt_options",
     "parse_developer_message",
     "parse_dictation_end_event",
     "parse_dictation_state_event",
@@ -4299,6 +4714,8 @@ __all__ = [
     "parse_host_uri_scheme_definition",
     "parse_image_content",
     "parse_input_ui_request",
+    "parse_interactive_view_options",
+    "parse_interactive_view_snapshot",
     "parse_irc_message_event",
     "parse_line_range",
     "parse_live_connect_result",
@@ -4344,9 +4761,12 @@ __all__ = [
     "parse_rpc_frame_error_event",
     "parse_select_option_detail",
     "parse_select_ui_request",
+    "parse_session_abort_options",
     "parse_session_credits",
+    "parse_session_dispose_options",
     "parse_session_entries",
     "parse_session_info_update_event",
+    "parse_session_prompt_options",
     "parse_session_settled_event",
     "parse_session_state",
     "parse_session_stats",
@@ -4371,9 +4791,11 @@ __all__ = [
     "parse_thinking_level_changed_event",
     "parse_thinking_level_cycle_result",
     "parse_todo_auto_clear_event",
+    "parse_todo_awaiting_user",
     "parse_todo_item",
     "parse_todo_phase",
     "parse_todo_reminder_event",
+    "parse_todo_resource_wait",
     "parse_token_usage",
     "parse_tool_call",
     "parse_tool_descriptor",
@@ -4393,3 +4815,17 @@ __all__ = [
     "parse_user_content",
     "parse_user_message",
 ]
+__all__.extend([
+    "TodoConfidence",
+    "TodoEstimate",
+    "TodoReworkAttempt",
+    "TodoSchedule",
+    "TodoScheduleExecutor",
+    "TodoScheduleProgress",
+    "TodoWorkerOutcome",
+    "parse_todo_estimate",
+    "parse_todo_rework_attempt",
+    "parse_todo_schedule",
+    "parse_todo_schedule_executor",
+    "parse_todo_schedule_progress",
+])

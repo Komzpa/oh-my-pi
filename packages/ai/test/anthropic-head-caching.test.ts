@@ -727,6 +727,26 @@ describe("anthropic head caching (general API-key path)", () => {
 		expect(stableText(after)).toEqual(stableText(before));
 	});
 
+	it("caches both the cross-project head and the complete project before changing recall", async () => {
+		const capture = (recall: string) =>
+			captureWireBody(undefined, {
+				...CONTEXT,
+				systemPrompt: ["Global policy", "Agent policy", "<project-context>Project rules</project-context>"],
+				messages: [
+					{ role: "developer", content: recall, timestamp: 1 },
+					{ role: "user", content: "Task", timestamp: 2 },
+				],
+			});
+		const first = await capture("Recall one");
+		const second = await capture("Recall two");
+		for (const body of [first, second]) {
+			const system = textSystemBlocks(body);
+			expect(system.flatMap((block, index) => (block.cache_control ? [index] : []))).toEqual([1, 2]);
+			expect(countCacheBreakpoints(body)).toBeLessThanOrEqual(4);
+		}
+		expect(textSystemBlocks(first)).toEqual(textSystemBlocks(second));
+	});
+
 	it("anchors before the first volatile segment so blocks appended behind it stay out of the cached head", async () => {
 		// Coding-agent layout: static prompt, cwd-derived `<project-context>`,
 		// per-spawn subagent role text, then per-turn recall.

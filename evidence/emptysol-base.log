@@ -1,0 +1,56 @@
+bun test v1.4.4 (38afee6c8)
+
+packages/coding-agent/test/agent-session-empty-stop-guard.test.ts:
+209 | 		await session.sendCustomMessage({
+210 | 			customType: "todo-plan-check", content: "Staff the ready row", display: false,
+211 | 			details: { silentAssistant: true, actionDemand: "Staff the ready row with a tool" },
+212 | 		}, { triggerTurn: true });
+213 | 		await session.waitForIdle();
+214 | 		expect(mock.calls).toHaveLength(3);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 3
+Received length: 1
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-emptysol-20261107/oh-my-pi/packages/coding-agent/test/agent-session-empty-stop-guard.test.ts:214:22)
+(fail) AgentSession empty stop guard > retries a silent dispatcher action demand until its tool runs [71.35ms]
+223 | 		await session.sendCustomMessage({
+224 | 			customType: "todo-plan-check", content: "Staff the ready row", display: false,
+225 | 			details: { silentAssistant: true, actionDemand: "Staff the ready row with a tool" },
+226 | 		}, { triggerTurn: true });
+227 | 		await session.waitForIdle();
+228 | 		expect(mock.calls).toHaveLength(4);
+                           ^
+error: expect(received).toHaveLength(expected)
+
+Expected length: 4
+Received length: 1
+
+      at <anonymous> (/home/kom/proj/ai_pr/omp-emptysol-20261107/oh-my-pi/packages/coding-agent/test/agent-session-empty-stop-guard.test.ts:228:22)
+(fail) AgentSession empty stop guard > exposes the retry cap for a silent dispatcher demand instead of idling silently [3.13ms]
+(pass) AgentSession empty stop guard > accepts an idle silent dispatcher wake with no action demand [2.08ms]
+(pass) AgentSession empty stop guard > retries an empty assistant stop after a tool result [17.15ms]
+(pass) AgentSession empty stop guard > retries a tool-use stop that has no tool call or text [4.33ms]
+(pass) AgentSession empty stop guard > retries a stop that only contains thinking [4.11ms]
+(pass) AgentSession empty stop guard > continues with an output reminder after a Cloud Code Assist empty response [6.47ms]
+(pass) AgentSession empty stop guard > caps provider-empty recovery without consuming generic retries and accepts the next prompt [7.21ms]
+(pass) AgentSession empty stop guard > keeps a signed thinking-only stop instead of discarding it as empty [3.15ms]
+(pass) AgentSession empty stop guard > removes orphaned tool-use stops even when retry cap is hit [6.03ms]
+(pass) AgentSession empty stop guard > caps empty stop retries at three attempts and discards the final empty turn [3.52ms]
+(pass) AgentSession empty stop guard > does not revive capped empty responses through pending todo reminders [5.97ms]
+(pass) AgentSession empty stop guard > discards the capped empty stop durably without waiting on a stalled message_end hook [3.66ms]
+(pass) AgentSession empty stop guard > does not let a capped empty stop anchor the next context estimate [2.83ms]
+(pass) AgentSession empty stop guard > emits failed auto-retry end when repeated empty stops exhaust the retry cap [3.69ms]
+(pass) AgentSession empty stop guard > reports capped empty-stop diagnostics without inventing a cause for unknown reasoning usage [3.51ms]
+(pass) AgentSession empty stop guard > reports capped empty-stop diagnostics without inventing a cause for partial reasoning usage [2.91ms]
+(pass) AgentSession empty stop guard > reports capped empty-stop diagnostics without inventing a cause for reasoning-only usage [2.57ms]
+(pass) AgentSession empty stop guard > ends auto-retry state when empty stop retries hit the cap [8.53ms]
+(pass) AgentSession empty stop guard > preserves auto-retry budget across empty stop continuations [3.58ms]
+(pass) AgentSession empty stop guard > preserves Codex commentary when discarding a colliding empty final stop [5.98ms]
+(pass) AgentSession empty stop guard > does not retry normal stop or tool-use turns [3.78ms]
+
+ 20 pass
+ 2 fail
+ 111 expect() calls
+Ran 22 tests across 1 file. [1.51s]

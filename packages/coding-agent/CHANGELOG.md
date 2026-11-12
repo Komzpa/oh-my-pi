@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A quota failure now makes its provider unavailable until the retry hint in the error (explicit reset, Retry-After, or "try again in N seconds"), or five minutes without one, instead of an hour; the cooldown expires exactly at its own `until`.
+- Failed subagent startup now releases waiting message senders before artifact publication or cleanup finishes.
+- Messages waiting for a subagent to start or revive now fail after a bounded readiness deadline without being delivered later.
 ### Breaking Changes
 
 - `secrets.yml` regex rules are now Rust `regex` patterns run natively, in linear time: lookarounds and backreferences are no longer supported, and a `(?P<secret>…)` group marks the part to redact (text around it is context that stays); `\d`, `\w` and `\s` are Unicode-aware. A regex rule that does not compile stops startup with an error naming the file and entry instead of being skipped. Migrate `(?<=password=)\S+` to `password=(?P<secret>\S+)`; see [docs/secrets.md](https://github.com/can1357/oh-my-pi/blob/main/docs/secrets.md) ([#18965](https://github.com/can1357/oh-my-pi/pull/18965) by [@H4vC](https://github.com/H4vC))

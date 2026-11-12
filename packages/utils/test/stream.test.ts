@@ -201,6 +201,16 @@ describe("ConcatSink", () => {
 });
 
 describe("parseJsonlLenient", () => {
+	it("recovers after a malformed multiline record with no parsed value", () => {
+		const malformed: number[] = [];
+		const result = parseJsonlLenient<{ a: number }>(`{"a":\n\n{"a":3}\n`, {
+			onMalformedRecord: () => malformed.push(1),
+		});
+
+		expect(result).toEqual([{ a: 3 }]);
+		expect(malformed).toHaveLength(1);
+	});
+
 	it("skips malformed lines and continues", () => {
 		const result = parseJsonlLenient<{ a: number }>('{"a":1}\n{bad json}\n{"a":3}\n');
 		expect(result).toEqual([{ a: 1 }, { a: 3 }]);

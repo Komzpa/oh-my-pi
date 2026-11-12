@@ -28,6 +28,7 @@ use crate::bash::{
 
 /// What a spawn hands the OS in place of the URLs it names; before
 /// [`resolve`], what the command wrote.
+#[derive(Clone)]
 pub(super) struct Names {
 	/// The program.
 	pub path: BString,

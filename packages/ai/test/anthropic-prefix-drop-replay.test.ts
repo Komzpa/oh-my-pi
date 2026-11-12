@@ -60,7 +60,7 @@ const droppedTransformations = [
 
 type ReportedAt = "message_start" | "message_delta";
 
-function droppedResponse(reportedAt: ReportedAt) {
+function droppedResponse(reportedAt: ReportedAt, report = true) {
 	const usage = { input_tokens: 12, output_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 	const events = [
 		{
@@ -68,7 +68,7 @@ function droppedResponse(reportedAt: ReportedAt) {
 			message: {
 				id: "msg_dropped",
 				usage: { ...usage, output_tokens: 0 },
-				...(reportedAt === "message_start" ? { input_transformations: droppedTransformations } : {}),
+				...(report && reportedAt === "message_start" ? { input_transformations: droppedTransformations } : {}),
 			},
 		},
 		{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
@@ -78,7 +78,7 @@ function droppedResponse(reportedAt: ReportedAt) {
 			type: "message_delta",
 			delta: { stop_reason: "end_turn" },
 			usage,
-			...(reportedAt === "message_delta" ? { input_transformations: droppedTransformations } : {}),
+			...(report && reportedAt === "message_delta" ? { input_transformations: droppedTransformations } : {}),
 		},
 		{ type: "message_stop" },
 	];
@@ -113,6 +113,44 @@ function replayedReasoning(payload: WirePayload): string[] {
 describe("anthropic drop_block replay after reported thinking drops", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+	});
+
+	it("identifies a rewritten prefix at warn without disclosing content or signatures", async () => {
+		let requests = 0;
+		vi.spyOn(AnthropicMessages.prototype, "create").mockImplementation(() =>
+			droppedResponse("message_start", requests++ > 0),
+		);
+		const warn = vi.spyOn(logger, "warn");
+		const providerSessionState = new Map<string, ProviderSessionState>();
+		const run = (ctx: Context) =>
+			streamAnthropic(model, ctx, { apiKey: "sk-ant-test", providerSessionState }).result();
+		expect((await run(context)).stopReason).toBe("stop");
+		const changed = structuredClone(context);
+		changed.messages[0] = { role: "user", content: "PRIVATE replacement history", timestamp: 0 };
+		expect((await run(changed)).stopReason).toBe("stop");
+		const warning = warn.mock.calls.find(
+			([message]) => message === "anthropic: dropped thinking block after conversation prefix changed",
+		);
+		expect(warning?.[1]).toMatchObject({
+			prefixDiagnostic: {
+				baseline: "previous-dispatch",
+				comparison: "changed",
+				stage: "before-onPayload; upstream-stage-unknown",
+				difference: {
+					section: "messages",
+					messageIndex: 0,
+					blockIndex: 0,
+					oldRole: "user",
+					newRole: "user",
+					oldBlockTypes: ["text"],
+					newBlockTypes: ["text"],
+					field: "text",
+				},
+			},
+		});
+		const logged = JSON.stringify(warning);
+		for (const secret of ["PRIVATE", "Inspect the repository", "sig_bound", "Look at the tree", "redacted_bound"])
+			expect(logged).not.toContain(secret);
 	});
 
 	const reportPoints: ReportedAt[] = ["message_start", "message_delta"];

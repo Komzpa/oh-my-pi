@@ -102,6 +102,10 @@ export class RemoteAgentRegistry implements AgentRegistryApi {
 		this.#listeners = new ForwardedListeners("agent-registry", forward => remote.callSync("subscribe", forward));
 	}
 
+	setSubagentFastMode(parentId: string, id: string, enabled: boolean): Promise<boolean> {
+		return this.#remote.call("setSubagentFastMode", parentId, id, enabled);
+	}
+
 	register(input: RegisterInput): AgentRef {
 		return this.#remote.callSync("register", input);
 	}
@@ -114,6 +118,10 @@ export class RemoteAgentRegistry implements AgentRegistryApi {
 		return this.#remote.callSync("reopen", id, expected);
 	}
 
+	restoreIdentity(id: string, expected: AgentRef, identity: { displayName: string; parentId?: string }): boolean {
+		return this.#remote.callSync("restoreIdentity", id, expected, identity);
+	}
+
 	setHistory(id: string, history: AgentHistorySummary, expectedSessionFile?: string): boolean {
 		return this.#remote.callSync("setHistory", id, history, expectedSessionFile);
 	}
@@ -122,8 +130,21 @@ export class RemoteAgentRegistry implements AgentRegistryApi {
 		return this.#remote.callSync("setStatus", id, status, expected);
 	}
 
+	setResultPublication(
+		id: string,
+		state: "pending" | "published" | "failed",
+		expected?: AgentRefExpectation,
+		responseAt?: number,
+	): boolean {
+		return this.#remote.callSync("setResultPublication", id, state, expected, responseAt);
+	}
+
 	markResultAccepted(id: string, expected?: AgentRefExpectation, responseAt?: number): boolean {
 		return this.#remote.callSync("markResultAccepted", id, expected, responseAt);
+	}
+
+	clearInitialPromptPending(id: string, session: AgentSessionHandle): boolean {
+		return this.#remote.callSync("clearInitialPromptPending", id, session);
 	}
 
 	staleAcceptedRuns(): AgentRef[] {
@@ -241,6 +262,10 @@ export class RemoteIrcBus implements IrcBusApi {
 		return this.#remote.call("send", msg);
 	}
 
+	resolveShellReplyTarget(recipient: string): string {
+		return this.#remote.callSync("resolveShellReplyTarget", recipient);
+	}
+
 	sentSince(from: string, to: string, sinceTs: number): boolean {
 		return this.#remote.callSync("sentSince", from, to, sinceTs);
 	}
@@ -257,6 +282,14 @@ export class RemoteIrcBus implements IrcBusApi {
 		options?: { drainPending?: boolean },
 	): Promise<IrcMessage | null> {
 		return this.#remote.call("wait", agentId, filter, timeoutMs, signal, options);
+	}
+
+	exchangeCursor(): number {
+		return this.#remote.callSync("exchangeCursor");
+	}
+
+	exchangedSince(from: string, to: string, sinceTs: number): boolean {
+		return this.#remote.callSync("exchangedSince", from, to, sinceTs);
 	}
 
 	take(agentId: string, from?: string): IrcMessage | undefined {

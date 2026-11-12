@@ -1,0 +1,3 @@
+DECISION: Yes—add a separate isolated root-settle probe with todo dispatch disabled, using the same frozen journal.
+
+Worker/critic `agent_end` logs and the recovered read trigger do not show root `agent_end` maintenance running. Keep the probe offline and isolated; no live changes.

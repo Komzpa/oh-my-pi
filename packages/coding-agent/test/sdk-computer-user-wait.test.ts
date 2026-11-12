@@ -3,7 +3,7 @@
  * tool approval through the extension runner's) end the computer turn's display hold while they wait, and the turn
  * holds again after the answer.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,6 +18,8 @@ import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-in
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { BUILTIN_TOOLS } from "@oh-my-pi/pi-coding-agent/tools";
+import { AskTool } from "@oh-my-pi/pi-coding-agent/tools/ask";
 import { computerTurnInFlight, registerComputerController } from "@oh-my-pi/pi-coding-agent/tools/computer/supervisor";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
@@ -39,7 +41,15 @@ describe("SDK session dialogs and the computer display hold", () => {
 		modelRegistry = new ModelRegistry(authStorage);
 	});
 
+	beforeEach(() => {
+		// Only explicit interactive re-answer blocks; ordinary ask returns a pending question.
+		spyOn(BUILTIN_TOOLS, "ask").mockImplementation(
+			toolSession => new AskTool(toolSession, { interactiveAnswer: true }),
+		);
+	});
+
 	afterEach(async () => {
+		vi.restoreAllMocks();
 		unregister?.();
 		unregister = undefined;
 		await session?.dispose();
@@ -114,7 +124,7 @@ describe("SDK session dialogs and the computer display hold", () => {
 		stopReason: "toolUse",
 	});
 
-	it("ends the hold while `ask` waits for an answer", async () => {
+	it("ends the hold while interactive `ask` waits for an answer", async () => {
 		const target = await createSession({}, [call("ask", { html: GO_ON_FORM }), { content: ["done"] }]);
 		const running = target.prompt("go");
 		const open = await dialog.promise;
@@ -125,7 +135,7 @@ describe("SDK session dialogs and the computer display hold", () => {
 		expect(releases).toEqual([1, 2]);
 	});
 
-	it("keeps the hold while an `ask` with an `ask.timeout` deadline waits, since the turn goes on unattended", async () => {
+	it("keeps the hold while an interactive `ask` with an `ask.timeout` deadline waits, since the turn goes on unattended", async () => {
 		const target = await createSession({ "ask.timeout": 30 }, [
 			call("ask", { html: GO_ON_FORM }),
 			{ content: ["done"] },

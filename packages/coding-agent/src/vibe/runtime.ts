@@ -24,6 +24,7 @@ import {
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { setImmediate as yieldImmediate } from "node:timers/promises";
 import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManagerApi, AsyncJobRunResult } from "../async/job-manager";
 import { validateAgentAccountPools } from "../config/account-pools";
@@ -99,6 +100,7 @@ export interface VibeParentSession {
 	getSessionId?: () => string | null;
 	getSessionFile: () => string | null;
 	sessionManager?: ToolSession["sessionManager"] &
+		Partial<Pick<SessionManager, "getBranchMatching" | "getLatestBranchMatching" | "iterateEntries">> &
 		Partial<
 			Pick<SessionManager, "appendModeChange" | "appendEntriesAtomically" | "recoverPersistenceFromCurrentState">
 		>;
@@ -420,7 +422,9 @@ export class VibeSessionRegistry {
 
 	#hasInMemoryTombstone(session: VibeParentSession, record: VibeRecord): boolean {
 		let terminalReason: VibeTombstoneReason | undefined;
-		for (const entry of session.sessionManager?.getEntries() ?? []) {
+		for (const entry of session.sessionManager?.iterateEntries?.("custom", VIBE_LIFECYCLE_CUSTOM_TYPE) ??
+			session.sessionManager?.getEntries() ??
+			[]) {
 			if (entry.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
 			const event = parseLifecycleEvent(entry.data);
 			if (
@@ -576,7 +580,9 @@ export class VibeSessionRegistry {
 
 	#persistedIds(session: VibeParentSession, scope: VibeOwnerScope): Set<string> {
 		const ids = new Set<string>();
-		for (const entry of session.sessionManager?.getEntries() ?? []) {
+		for (const entry of session.sessionManager?.iterateEntries?.("custom", VIBE_LIFECYCLE_CUSTOM_TYPE) ??
+			session.sessionManager?.getEntries() ??
+			[]) {
 			if (entry.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
 			const event = parseLifecycleEvent(entry.data);
 			if (event?.ownerId === scope.ownerId && event.parentSessionId === scope.parentSessionId) ids.add(event.id);
@@ -693,7 +699,13 @@ export class VibeSessionRegistry {
 		const scope = this.ownerScope(session);
 		const allSpawns = new Map<string, VibeSpawnLifecycleEvent>();
 		const terminalIntents = new Map<string, VibeTombstoneReason>();
-		for (const entry of sessionManager.getEntries()) {
+		let lastYield = performance.now();
+		for (const entry of sessionManager.iterateEntries?.("custom", VIBE_LIFECYCLE_CUSTOM_TYPE) ??
+			sessionManager.getEntries()) {
+			if (performance.now() - lastYield >= 16) {
+				await yieldImmediate();
+				lastYield = performance.now();
+			}
 			if (entry.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
 			const event = parseLifecycleEvent(entry.data);
 			if (!event || event.ownerId !== scope.ownerId || event.parentSessionId !== scope.parentSessionId) continue;
@@ -705,7 +717,12 @@ export class VibeSessionRegistry {
 		}
 
 		const candidates = new Map<string, VibeRestoreCandidate>();
-		for (const entry of sessionManager.getBranch()) {
+		const lifecycleEntries = sessionManager.getBranchMatching
+			? sessionManager.getBranchMatching(
+					metadata => metadata.type === "custom" && metadata.customType === VIBE_LIFECYCLE_CUSTOM_TYPE,
+				)
+			: sessionManager.getBranch();
+		for (const entry of lifecycleEntries) {
 			if (entry.type !== "custom" || entry.customType !== VIBE_LIFECYCLE_CUSTOM_TYPE) continue;
 			const event = parseLifecycleEvent(entry.data);
 			if (!event || event.ownerId !== scope.ownerId || event.parentSessionId !== scope.parentSessionId) continue;
@@ -1108,13 +1125,11 @@ export class VibeSessionRegistry {
 			record => matchesScope(record, scope) && !(record.state === "dead" && record.terminalPersisted),
 		);
 		if (records.length === 0) {
-			const entries = session.sessionManager?.getBranch() ?? [];
-			for (let index = entries.length - 1; index >= 0; index--) {
-				const entry = entries[index];
-				if (entry.type !== "mode_change") continue;
-				if (entry.mode === "none") return 0;
-				break;
-			}
+			const sessionManager = session.sessionManager;
+			const latestModeChange = sessionManager?.getLatestBranchMatching
+				? sessionManager.getLatestBranchMatching(metadata => metadata.type === "mode_change")
+				: sessionManager?.getBranch().findLast(entry => entry.type === "mode_change");
+			if (latestModeChange?.type === "mode_change" && latestModeChange.mode === "none") return 0;
 		}
 		try {
 			await this.#persistModeExit(session, scope, records);

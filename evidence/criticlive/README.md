@@ -1,0 +1,7 @@
+The large DC journal remains private under `../../../evidence/dc-source.jsonl` (relative to this directory). It is a `cp --reflink=auto` snapshot of the exact journal named in request.md. Do not add it to git. The probe opens only its disposable sibling `dc.jsonl`.
+
+From repository root, stage the installed package shape by copying `packages/reemxy-extensions` to `evidence/criticlive/runtime/node_modules/@oh-my-pi/reemxy-extensions`. Before each probe copy `../evidence/dc-source.jsonl` to `../evidence/dc.jsonl` with `cp --reflink=auto`.
+
+Run with `PI_CONFIG_DIR=proj/ai_pr/omp-criticlive-20261107/evidence/config PI_CODING_AGENT_DIR=/home/kom/proj/ai_pr/omp-criticlive-20261107/evidence/agent bun evidence/criticlive/probe.ts resume` (or `restore`, or `package`). The config path is relative to the current user's home as required by the SDK; the probe checks that it resolves inside this lane. The native reviewer is stubbed; the lead stream rejects provider requests. Async children, MCP, LSP and context discovery are disabled.
+
+`restore` uses the CLI's real `restoreSession()` implementation after extension initialization. A normal-exit marker on the copy prevents replaying its interrupted lead turn or children. This proves extension initialization and critic dispatch, not execution of a production restart controller, OS re-exec or live provider review. Installed binary validation and installation are the updater owner's job.

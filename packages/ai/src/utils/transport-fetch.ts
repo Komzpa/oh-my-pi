@@ -1,4 +1,5 @@
 import { resolveExtraCa, withExtraCaInit } from "@oh-my-pi/pi-utils";
+import { assertModelNotBlacklisted } from "../model-blacklist";
 import { coworkFetch } from "../providers/cowork-fetch";
 import { withInferenceUserAgent } from "../providers/inference-headers";
 import type { Api, FetchImpl, Model } from "../types";
@@ -37,6 +38,7 @@ export function transportFetch(
 
 	const fetch: TransportFetch = async (input, init) => {
 		beforeDispatch?.();
+		assertModelNotBlacklisted(model);
 		if ((init?.method ?? (input instanceof Request ? input.method : "GET")) === "POST") {
 			recordDispatchOrigin(model, input);
 		}
@@ -46,6 +48,7 @@ export function transportFetch(
 		if (proxyUrl) init = withProxyInit(input, init, proxyUrl);
 		if (!isRequestDebugEnabled()) return base(input, init);
 		const session = await createFetchRequestDebugSession(input, init);
+		assertModelNotBlacklisted(model);
 		return session.wrapResponse(await base(input, init));
 	};
 	if (base.preconnect) fetch.preconnect = base.preconnect;

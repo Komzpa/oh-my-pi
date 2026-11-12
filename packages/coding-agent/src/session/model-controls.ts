@@ -36,6 +36,7 @@ import {
 	type ConfiguredThinkingLevel,
 	clampAutoThinkingEffort,
 	clampThinkingLevelToCeiling,
+	modelSupportsEffortCeiling,
 	resolveProvisionalAutoLevel,
 	resolveThinkingLevelForModel,
 	shouldDisableReasoning,
@@ -43,7 +44,13 @@ import {
 } from "@oh-my-pi/pi-tui/thinking";
 import type { EditModeSetting } from "../edit/settings";
 import type { AgentSessionEvent } from "./agent-session-events";
-import type { ModelCycleResult, ResolvedRoleModel, RoleModelCycle, RoleModelCycleResult } from "./agent-session-types";
+import type {
+	ModelCycleResult,
+	ResolvedRoleModel,
+	RoleModelCycle,
+	RoleModelCycleResult,
+	ThinkingLevelCeiling,
+} from "./agent-session-types";
 import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
 import { EPHEMERAL_MODEL_CHANGE_ROLE, PREWALK_MODEL_CHANGE_ROLE } from "./session-entries";
 import type { SessionManager } from "./session-manager";
@@ -173,7 +180,7 @@ export class ModelControls {
 	#scopedModels: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 	#thinkingLevel: ThinkingLevel | undefined;
 	/** Hard per-session effort ceiling (e.g. a task spawn's `task.maxEffort` cap); recovery paths re-clamp to it. */
-	readonly #thinkingLevelCeiling: Effort | undefined;
+	readonly #thinkingLevelCeiling: ThinkingLevelCeiling | undefined;
 	#autoThinking = false;
 	#autoResolvedLevel: Effort | undefined;
 	#serviceTierByFamily: ServiceTierByFamily;
@@ -183,7 +190,7 @@ export class ModelControls {
 		options: {
 			scopedModels?: Array<{ model: Model; thinkingLevel?: ThinkingLevel }>;
 			thinkingLevel?: ConfiguredThinkingLevel;
-			thinkingLevelCeiling?: Effort;
+			thinkingLevelCeiling?: ThinkingLevelCeiling;
 			serviceTierByFamily?: ServiceTierByFamily;
 		},
 	) {
@@ -197,13 +204,13 @@ export class ModelControls {
 			this.#thinkingLevel = clampThinkingLevelToCeiling(
 				this.#model,
 				resolveProvisionalAutoLevel(this.#model),
-				this.#thinkingLevelCeiling,
+				this.thinkingLevelCeiling,
 			);
 		} else {
 			this.#thinkingLevel = clampThinkingLevelToCeiling(
 				this.#model,
 				options.thinkingLevel,
-				this.#thinkingLevelCeiling,
+				this.thinkingLevelCeiling,
 			);
 		}
 		this.#applyThinkingLevelToAgent(this.#thinkingLevel);
@@ -220,7 +227,21 @@ export class ModelControls {
 
 	/** Hard per-session effort ceiling every thinking-level change is clamped to. */
 	get thinkingLevelCeiling(): Effort | undefined {
-		return this.#thinkingLevelCeiling;
+		return this.#validateThinkingLevelCeiling(this.#model);
+	}
+
+	#validateThinkingLevelCeiling(model: Model | undefined): Effort | undefined {
+		const ceiling = this.getThinkingLevelCeiling(model);
+		if (model && ceiling && !modelSupportsEffortCeiling(model, ceiling)) {
+			throw new Error(`Model ${model.provider}/${model.id} cannot honor effort ceiling ${ceiling}`);
+		}
+		return ceiling;
+	}
+
+	getThinkingLevelCeiling(model: Model | undefined = this.#model): Effort | undefined {
+		return typeof this.#thinkingLevelCeiling === "function"
+			? this.#thinkingLevelCeiling(model)
+			: this.#thinkingLevelCeiling;
 	}
 
 	/** Configured selector, preserving `auto` while classification is active. */
@@ -269,11 +290,11 @@ export class ModelControls {
 				? clampThinkingLevelToCeiling(
 						this.#model,
 						resolveProvisionalAutoLevel(this.#model),
-						this.#thinkingLevelCeiling,
+						this.thinkingLevelCeiling,
 					)
 				: resolveThinkingLevelForModel(
 						this.#model,
-						clampThinkingLevelToCeiling(this.#model, level, this.#thinkingLevelCeiling),
+						clampThinkingLevelToCeiling(this.#model, level, this.thinkingLevelCeiling),
 					);
 		this.#applyThinkingLevelToAgent(this.#thinkingLevel);
 	}
@@ -310,6 +331,8 @@ export class ModelControls {
 			selector?: string;
 			thinkingLevel?: ThinkingLevel;
 			persist?: boolean;
+			reason?: string;
+			beforeSwitch?: () => void;
 		},
 	): Promise<{ switched: boolean }> {
 		const previousEditMode = this.#host.resolveActiveEditMode();
@@ -318,11 +341,18 @@ export class ModelControls {
 		}
 
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
+		this.#validateThinkingLevelCeiling(targetModel);
 
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
+		options?.beforeSwitch?.();
 		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(targetModel);
-		this.#host.sessionManager.appendModelChange(`${targetModel.provider}/${targetModel.id}`, role);
+		const modelSelector = `${targetModel.provider}/${targetModel.id}`;
+		if (options?.reason === undefined) {
+			this.#host.sessionManager.appendModelChange(modelSelector, role);
+		} else {
+			this.#host.sessionManager.appendModelSelectionChange(modelSelector, role, options.reason);
+		}
 		if (options?.persist) {
 			this.#host.settings.setModelRole(
 				role,
@@ -364,6 +394,7 @@ export class ModelControls {
 		}
 
 		const targetModel = await this.#host.modelRegistry.refreshSelectedModelMetadata(model);
+		this.#validateThinkingLevelCeiling(targetModel);
 
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(targetModel));
 		this.#host.clearActiveRetryFallback();
@@ -486,6 +517,9 @@ export class ModelControls {
 		const nextIndex = direction === "forward" ? (currentIndex + 1) % len : (currentIndex - 1 + len) % len;
 		const next = scopedModels[nextIndex];
 
+		// Reject an incompatible ceiling before changing the model or transcript.
+		this.#validateThinkingLevelCeiling(next.model);
+
 		// Apply model
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(next.model));
 		this.#host.clearActiveRetryFallback();
@@ -518,6 +552,7 @@ export class ModelControls {
 			throw new Error(`No API key for ${nextModel.provider}/${nextModel.id}`);
 		}
 
+		this.#validateThinkingLevelCeiling(nextModel);
 		this.#host.modelRegistry.clearSuppressedSelector(formatModelStringWithRouting(nextModel));
 		this.#host.clearActiveRetryFallback();
 		await this.#host.setModelWithProviderSessionReset(nextModel);
@@ -561,7 +596,7 @@ export class ModelControls {
 			const provisional = clampThinkingLevelToCeiling(
 				this.#model,
 				resolveProvisionalAutoLevel(this.#model),
-				this.#thinkingLevelCeiling,
+				this.thinkingLevelCeiling,
 			);
 			const wasAuto = this.#autoThinking;
 			const previousLevel = this.#thinkingLevel;
@@ -588,7 +623,7 @@ export class ModelControls {
 		this.#autoResolvedLevel = undefined;
 		const effectiveLevel = resolveThinkingLevelForModel(
 			this.#model,
-			clampThinkingLevelToCeiling(this.#model, level, this.#thinkingLevelCeiling),
+			clampThinkingLevelToCeiling(this.#model, level, this.thinkingLevelCeiling),
 		);
 		// Leaving auto must persist even when the resolved effort is unchanged (e.g.
 		// auto resolved to medium, then the user pins medium): otherwise the latest
@@ -625,7 +660,7 @@ export class ModelControls {
 	getAvailableEffortSelectors(): ConfiguredThinkingLevel[] {
 		if (!this.#model?.reasoning) return [];
 		const efforts = this.getAvailableThinkingLevels();
-		const ceiling = this.#thinkingLevelCeiling;
+		const ceiling = this.thinkingLevelCeiling;
 		const selectable =
 			ceiling === undefined
 				? efforts
@@ -717,7 +752,7 @@ export class ModelControls {
 		const effort = clampThinkingLevelToCeiling(
 			model,
 			resolved ?? this.#autoResolvedLevel ?? resolveProvisionalAutoLevel(model),
-			this.#thinkingLevelCeiling,
+			this.thinkingLevelCeiling,
 		);
 		if (effort === undefined) return;
 		this.#resolveAutoThinkingLevel(effort);

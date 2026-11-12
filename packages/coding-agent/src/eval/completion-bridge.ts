@@ -26,6 +26,7 @@ import {
 	formatModelString,
 	formatModelStringWithRouting,
 	getModelMatchPreferences,
+	modelSelectorBlacklistError,
 	resolveModelFromString,
 	resolveModelOverride,
 } from "../config/model-resolver";
@@ -231,6 +232,7 @@ function appendFallbackCandidates(
 	for (const entry of findRetryFallbackCandidates(deps.context, chainKey, selector, model, {
 		allowMissingPrimary: true,
 	})) {
+		if (modelSelectorBlacklistError(entry.raw, deps.modelRegistry.getAvailable())) continue;
 		const resolved = resolveModelOverride([entry.raw], deps.modelRegistry, deps.settings);
 		const candidate = resolved.model;
 		if (!candidate || deps.disabledProviders.has(candidate.provider)) continue;
@@ -259,6 +261,7 @@ function resolveTierCandidates(tier: CompletionTier, session: ToolSession): Comp
 	): { model: Model<Api>; selector: string; configuredEffort?: ConfiguredThinkingLevel } | undefined => {
 		if (!pattern) return undefined;
 		const selector = expandRoleAlias(pattern, session.settings);
+		if (modelSelectorBlacklistError(selector, available)) return undefined;
 		const model = resolveModelFromString(selector, available, matchPreferences);
 		if (!model) return undefined;
 		const configuredEffort =

@@ -1,0 +1,3 @@
+DECISION: Yes—use the linked-worktree-local Git fallback and the 77-PR composite recipe on read-only fork/main, then rebase and fast-forward the authorized PR92 branch with an exact lease.
+
+PR92 owns `topic/rt-agent-runtime-core`; replace its head and keep changes limited to that topic. Treat unrelated failures as evidence gaps and report them separately; do not install anything.
