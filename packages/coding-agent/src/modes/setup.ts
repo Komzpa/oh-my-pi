@@ -31,6 +31,32 @@ export { ALL_SCENES, CURRENT_SETUP_VERSION, setupWizardAllowed };
 export type { SetupScene, SetupSceneHost } from "@oh-my-pi/pi-tui/setup/scenes/types";
 export { runStartupSplash } from "@oh-my-pi/pi-tui/setup/startup-splash";
 
+/**
+ * The persisting instance behind a session's settings. A session reads through an in-memory
+ * overlay of the launch settings, and overlay writes never reach config.yml; setup answers
+ * and completion must be saved on the root or the next launch asks again.
+ */
+function persistentSettings(settings: Settings): Settings {
+	let root = settings;
+	for (let parent = root.overlayParent(); parent; parent = root.overlayParent()) root = parent;
+	return root;
+}
+
+/**
+ * Apply a setup answer to the session's settings, which the running UI reads (a launch or
+ * project layer may shadow the root), and to the persisting root so it survives the launch.
+ */
+function applySetupChoice(session: Settings, apply: (target: Settings) => void): Settings {
+	const root = persistentSettings(session);
+	apply(session);
+	if (root !== session) apply(root);
+	return root;
+}
+
+async function saveSetupChoice(session: Settings, apply: (target: Settings) => void): Promise<void> {
+	await applySetupChoice(session, apply).flush();
+}
+
 /** Bind application preferences and runtime effects to the setup presentation. */
 export function createSetupHost(ctx: InteractiveModeContext): SetupHost {
 	const modelSource = createModelBrowserSource(ctx.settings, model => ctx.session.effectiveServiceTier(model));
@@ -67,8 +93,8 @@ export function createSetupHost(ctx: InteractiveModeContext): SetupHost {
 		selectModel: async (model, selector) => {
 			const projectScope = cfgModelRoleStorage.get(ctx.settings) === "project";
 			await ctx.session.setModel(model, "default", { selector, persist: !projectScope });
-			if (projectScope) ctx.settings.setProjectModelRole("default", selector);
-			await ctx.settings.flush();
+			if (projectScope)
+				await saveSetupChoice(ctx.settings, target => target.setProjectModelRole("default", selector));
 		},
 		refreshProvider: async provider => {
 			// An OAuth alias (`openai-codex-device`) stores its credential under the base provider.
@@ -76,22 +102,20 @@ export function createSetupHost(ctx: InteractiveModeContext): SetupHost {
 			await ctx.session.refreshScopedModels();
 		},
 		saveComposerShape: async shape => {
-			cfgComposerShape.set(ctx.settings, shape);
-			await ctx.settings.flush();
+			await saveSetupChoice(ctx.settings, target => cfgComposerShape.set(target, shape));
 		},
 		saveSymbolPreset: preset => {
-			cfgSymbolPreset.set(ctx.settings, preset);
+			applySetupChoice(ctx.settings, target => cfgSymbolPreset.set(target, preset));
 		},
 		saveColorBlindMode: enabled => {
-			cfgColorBlindMode.set(ctx.settings, enabled);
+			applySetupChoice(ctx.settings, target => cfgColorBlindMode.set(target, enabled));
 		},
 		saveTheme: (mode, name) => {
-			(mode === "dark" ? cfgThemeDark : cfgThemeLight).set(ctx.settings, name);
+			applySetupChoice(ctx.settings, target => (mode === "dark" ? cfgThemeDark : cfgThemeLight).set(target, name));
 		},
 		canAutoUpdate: () => canSelfUpdate(),
 		saveAutoUpdate: async enabled => {
-			cfgUpdateAuto.set(ctx.settings, enabled);
-			await ctx.settings.flush();
+			await saveSetupChoice(ctx.settings, target => cfgUpdateAuto.set(target, enabled));
 		},
 		captureBrowserSession,
 		openInBrowser: url => ctx.openInBrowser(url),
@@ -103,8 +127,9 @@ export function createSetupHost(ctx: InteractiveModeContext): SetupHost {
 
 /** Persist completion only after the setup overlay finishes. */
 export async function markSetupWizardComplete(settings: Settings, version = CURRENT_SETUP_VERSION): Promise<void> {
-	cfgSetupVersion.set(settings, version);
-	await settings.flush();
+	const persistent = persistentSettings(settings);
+	cfgSetupVersion.set(persistent, version);
+	await persistent.flush();
 }
 
 /** Select eligible setup scenes using the application's live capabilities. */
