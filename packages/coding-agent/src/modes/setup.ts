@@ -95,6 +95,11 @@ export function createSetupHost(ctx: InteractiveModeContext): SetupHost {
 			await ctx.session.setModel(model, "default", { selector, persist: !projectScope });
 			if (projectScope)
 				await saveSetupChoice(ctx.settings, target => target.setProjectModelRole("default", selector));
+			else {
+				const root = persistentSettings(ctx.settings);
+				if (root !== ctx.settings) root.setModelRole("default", ctx.settings.getModelRole("default"));
+				await root.flush();
+			}
 		},
 		refreshProvider: async provider => {
 			// An OAuth alias (`openai-codex-device`) stores its credential under the base provider.

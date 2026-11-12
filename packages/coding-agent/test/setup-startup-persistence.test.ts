@@ -15,6 +15,7 @@ import { createSettingsHost } from "../src/config/settings-ui";
 import { cfgUpdateAuto } from "../src/modes/settings";
 import { runInteractiveMode } from "../src/main";
 import * as interactiveModeModule from "../src/modes/interactive-mode";
+import { createSetupHost } from "../src/modes/setup";
 import { AgentSession } from "../src/session/agent-session";
 import { AuthStorage } from "../src/session/auth-storage";
 import { convertToLlm } from "../src/session/messages";
@@ -67,7 +68,12 @@ function configText(): string {
  * through an overlay exactly as sdk.ts builds it, the real setup host and wizard. Only the terminal
  * view is a stub; `keys` are fed to the wizard overlay until startup reaches the input loop.
  */
-async function launch(options: { keys: string[]; configFiles?: string[]; goal?: string }): Promise<Launch> {
+async function launch(options: {
+	keys: string[];
+	configFiles?: string[];
+	goal?: string;
+	selectModel?: boolean;
+}): Promise<Launch> {
 	resetSettingsForTest();
 	const root = await Settings.init({ agentDir: dir, cwd: dir, configFiles: options.configFiles });
 	const auth = await AuthStorage.create(":memory:");
@@ -121,6 +127,13 @@ async function launch(options: { keys: string[]; configFiles?: string[]; goal?: 
 		settleStartupRun() {}
 		stop() {}
 		async getUserInput(): Promise<never> {
+			if (options.selectModel) {
+				const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+				const host = createSetupHost(this as never);
+				await host.selectModel(model, `${model.provider}/${model.id}`);
+				await host.markComplete(3);
+				expect(session.settings.getModelRole("default")).toContain(model.id);
+			}
 			throw new StartupDone();
 		}
 	}
@@ -191,6 +204,34 @@ describe("release setup question persistence through startup", () => {
 
 	// Escape thrice: splash -> question, skip the question, dismiss the outro.
 	const SKIP = ["\x1b", "\x1b", "\x1b"];
+
+	it(
+		"persists the selected global model through completion and a fresh settings load",
+		async () => {
+			await launch({ keys: [...SKIP], selectModel: true });
+			resetSettingsForTest();
+			const reloaded = await Settings.init({ agentDir: dir, cwd: dir });
+			expect(reloaded.getModelRole("default")).toContain("claude-sonnet-4-5");
+			expect(configText()).toContain("setupVersion: 3");
+		},
+		TEST_TIMEOUT_MS,
+	);
+
+	it(
+		"keeps a project model selection out of the global model role",
+		async () => {
+			fs.writeFileSync(
+				path.join(dir, "config.yml"),
+				"setupVersion: 2\nmodelRoleStorage: project\nmodelRoles:\n  default: anthropic/global-control\n",
+			);
+			await launch({ keys: [...SKIP], selectModel: true });
+			resetSettingsForTest();
+			const reloaded = await Settings.init({ agentDir: dir, cwd: dir });
+			expect(reloaded.getModelRole("default")).toContain("claude-sonnet-4-5");
+			expect(configText()).toContain("anthropic/global-control");
+		},
+		TEST_TIMEOUT_MS,
+	);
 
 	it(
 		"shows the question once when skipped with Esc, then never again",
@@ -331,7 +372,7 @@ describe("source build skips the update question through real startup", () => {
 				JSON.stringify({
 					status: "built",
 					source_tree: "tree-0123",
-					candidate_sha256: "ab".repeat(32),
+					candidate_sha256: new Bun.CryptoHasher("sha256").update("#!/bin/sh\n").digest("hex"),
 					version: "1.2.3",
 				}),
 			);

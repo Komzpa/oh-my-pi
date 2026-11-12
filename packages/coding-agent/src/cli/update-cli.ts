@@ -434,8 +434,8 @@ export interface SourceBuildInfo {
  * A local builder writes `build.json` (`{"status": "built", "source_tree", "candidate_sha256",
  * "version"}`) beside the binary it produces, and installing that binary carries the file
  * beside the installed target. Such a build is owned by whoever built it, so no updater may
- * replace it. Anything short of a complete `built` record (absent, unreadable, or partial) is
- * not a source build, which keeps release and package-manager installs updating as before.
+ * replace it. A missing, unreadable, partial, or stale record does not identify a source build,
+ * which keeps release and package-manager installs updating as before.
  */
 export async function sourceBuildInfo(binaryPath: string): Promise<SourceBuildInfo | undefined> {
 	const resolved = tryRealpath(binaryPath);
@@ -450,6 +450,14 @@ export async function sourceBuildInfo(binaryPath: string): Promise<SourceBuildIn
 	const { version, source_tree: sourceTree, candidate_sha256: candidateSha256 } = record;
 	for (const field of [version, sourceTree, candidateSha256]) {
 		if (typeof field !== "string" || !field) return undefined;
+	}
+	try {
+		const hasher = new Bun.CryptoHasher("sha256");
+		for await (const chunk of Bun.file(resolved).stream()) hasher.update(chunk);
+		const hash = hasher.digest("hex");
+		if (hash !== candidateSha256) return undefined;
+	} catch {
+		return undefined;
 	}
 	return { version: version as string, sourceTree: sourceTree as string, candidateSha256: candidateSha256 as string };
 }

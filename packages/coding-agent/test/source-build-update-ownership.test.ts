@@ -13,7 +13,7 @@ import * as sharedWorker from "../src/subprocess/shared-worker";
 const BUILT = {
 	status: "built",
 	source_tree: "tree-0123",
-	candidate_sha256: "ab".repeat(32),
+	candidate_sha256: new Bun.CryptoHasher("sha256").update("#!/bin/sh\n").digest("hex"),
 	version: "1.2.3",
 };
 
@@ -59,6 +59,14 @@ describe("source build ownership (sibling build.json)", () => {
 
 			fs.writeFileSync(path.join(dir, "build.json"), JSON.stringify(BUILT));
 			expect(await updateCli.canSelfUpdate()).toBe(false);
+		});
+
+		it("allows a release replacing a source binary while its stale marker remains", async () => {
+			installBinary(BUILT);
+			expect(await updateCli.canSelfUpdate()).toBe(false);
+			fs.writeFileSync(path.join(dir, "replacement"), "replacement release binary");
+			fs.renameSync(path.join(dir, "replacement"), binary);
+			expect(await updateCli.canSelfUpdate()).toBe(true);
 		});
 
 		it("keeps Tern-managed installs denied independently of build.json", async () => {
