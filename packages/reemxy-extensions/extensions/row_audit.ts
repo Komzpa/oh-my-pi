@@ -398,7 +398,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 			const after = isLive(row) ? undefined : todoRowAfterWorker(row);
 			return (
 				(after?.kind === "verify" && after.via === "audit") ||
-				(after?.kind === "needs-worker" && after.reason === "audit-inconclusive")
+				(after?.kind === "needs-worker" && (after.reason === "audit-inconclusive" || after.reason === "audit-failed"))
 			);
 		});
 	if (!candidates.length) return 0;
@@ -414,23 +414,26 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		const identity = rowAuditRepository(row, ctx.cwd);
 		const head = repoPath ? (heads.get(repoPath) ?? "unknown") : "unknown";
 		let receiptBlocker: string | undefined;
+		const integrationCommits: string[] = [];
 		if (repoPath && !("blocker" in identity)) {
 			for (const receipt of rowDeliveryCommits(row)) {
 				try {
-					if (
-						head === "unknown" ||
-						!(await (options.containsCommit ?? vcs.isAncestor)(repoPath, receipt.commit, head))
-					)
-						receiptBlocker = `Delivery commit ${receipt.commit} is not contained in ${repoPath}@${head}; restore the delivered history before audit`;
+					if (head === "unknown") {
+						receiptBlocker = `Cannot verify delivery commit ${receipt.commit} in ${repoPath}@${head}; restore the repository and commit before audit`;
+					} else if (!(await (options.containsCommit ?? vcs.isAncestor)(repoPath, receipt.commit, head))) {
+						integrationCommits.push(receipt.commit);
+					}
 				} catch {
 					receiptBlocker = `Cannot verify delivery commit ${receipt.commit} in ${repoPath}@${head}; restore the repository and commit before audit`;
 				}
 				if (receiptBlocker) break;
 			}
 		}
+		const awaitingIntegration = !receiptBlocker && integrationCommits.length > 0;
 		if (
 			!("blocker" in identity) &&
 			!receiptBlocker &&
+			!awaitingIntegration &&
 			(!binding || (binding.repoPath === repoPath && binding.head === head))
 		)
 			continue;
@@ -452,8 +455,9 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		const findings =
 			"blocker" in identity
 				? identity.blocker
-				: (receiptBlocker ??
-					`Pinned delivery ${binding!.repoPath}@${binding!.head} does not match checkout ${repoPath}@${head}; restore or rebind the artifact before audit`);
+				: (receiptBlocker ?? (awaitingIntegration
+					? `Delivery awaits integration of ${integrationCommits.join(", ")} into ${repoPath}@${head}`
+					: `Pinned delivery ${binding!.repoPath}@${binding!.head} does not match checkout ${repoPath}@${head}; restore or rebind the artifact before audit`));
 		if (
 			row.schedule?.audit?.delivery === delivery &&
 			row.schedule.audit.head === head &&
@@ -466,11 +470,12 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 				repoPath: repoPath ?? "",
 				head,
 				resourcesKey: todoAuditResourcesKey(row.schedule),
-				bindingMismatch: true,
+				bindingMismatch: !awaitingIntegration,
+				...(awaitingIntegration ? { integrationCommits } : {}),
 				startedAt: now(),
-				verdict: "inconclusive",
+				verdict: awaitingIntegration ? "awaiting-integration" : "inconclusive",
 				agent: TODO_ROW_AUDITOR,
-				attempts: 2,
+				attempts: awaitingIntegration ? 0 : 2,
 				evidence: row.schedule?.progress?.evidence ?? "",
 				findings,
 				at: now(),

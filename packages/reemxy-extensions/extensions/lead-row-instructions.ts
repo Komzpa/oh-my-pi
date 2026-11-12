@@ -60,6 +60,14 @@ export function renderLeadRowInstructions(
 					data.handoffAction = true;
 					data.reviewPage = row.schedule?.reviewPage;
 					break;
+				case "awaiting integration": {
+					const audit = after?.kind === "verify" ? after.audit : undefined;
+					data.integrationAction = true;
+					data.integrationCommands = audit?.integrationCommits?.map(commit =>
+						`git -C '${audit.repoPath.replaceAll("'", "'\\''")}' merge --no-edit ${commit}`,
+					);
+					break;
+				}
 				case "audit queued":
 				case "auditing":
 				case "verifying":

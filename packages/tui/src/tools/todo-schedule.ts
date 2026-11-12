@@ -246,8 +246,10 @@ export interface TodoRowAudit {
 	resourcesKey?: string;
 	/** This inconclusive result records that the pinned checkout did not match. */
 	bindingMismatch?: boolean;
+	/** Existing delivery commits that must become reachable before audit can start. */
+	integrationCommits?: string[];
 	startedAt: number;
-	verdict: "pending" | "pass" | "fail" | "inconclusive" | "omitted" | "unavailable";
+	verdict: "pending" | "pass" | "fail" | "inconclusive" | "omitted" | "unavailable" | "awaiting-integration";
 	agent?: string;
 	/** Audit attempts for this delivery at this head, including missing verdicts. */
 	attempts?: number;
@@ -2505,6 +2507,9 @@ export function todoAuditMatchesResources(schedule: TodoSchedule | undefined, au
 	return (
 		!binding ||
 		(binding.repoPath === audit.repoPath && audit.head === binding.head) ||
+		(audit.verdict === "awaiting-integration" &&
+			audit.resourcesKey !== undefined &&
+			binding.repoPath === audit.repoPath) ||
 		(audit.bindingMismatch === true && audit.resourcesKey !== undefined && audit.verdict === "inconclusive")
 	);
 }
@@ -2634,6 +2639,7 @@ export type TodoDisplayState =
 	| "auditing"
 	| "verifying"
 	| "audit queued"
+	| "awaiting integration"
 	| "handoff pending"
 	| "ready to close"
 	| "needs you"
@@ -2713,6 +2719,8 @@ export function classifyTodoDisplayRow(
 	const waiting = findDependency(task.schedule?.dependencies ?? []);
 	if (waiting) return waiting;
 	const after = todoRowAfterWorker(task);
+	if (after?.kind === "verify" && after.audit?.verdict === "awaiting-integration")
+		return { state: "awaiting integration" };
 	if (after?.kind === "verify")
 		return {
 			state: "audit queued",
@@ -2778,6 +2786,7 @@ export function renderTodoPlanDisplay(
 				"auditing",
 				"verifying",
 				"audit queued",
+				"awaiting integration",
 				"ready to close",
 				"handoff pending",
 				"needs you",

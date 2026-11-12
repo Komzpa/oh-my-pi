@@ -56,12 +56,13 @@ export interface Case {
 }
 
 /** Independent consumer expectation: adding a display state requires a decision here. */
-export const expectedDisplayActions: Record<TodoDisplayState, "wait" | "task" | "todo" | "ask"> = {
+export const expectedDisplayActions: Record<TodoDisplayState, "wait" | "task" | "todo" | "ask" | "command"> = {
 	working: "wait",
 	waiting: "wait",
 	auditing: "wait",
 	verifying: "wait",
 	"audit queued": "wait",
+	"awaiting integration": "command",
 	"handoff pending": "ask",
 	"ready to close": "todo",
 	"needs you": "wait",
@@ -134,6 +135,16 @@ function cases(now: number): Case[] {
 		verdict: "pending",
 		workerId: "RowAudit",
 	};
+	const integration = change(delivered, { content: "Integrate delivered result" });
+	integration.schedule!.audit = {
+		agent: schedule.TODO_ROW_AUDITOR,
+		delivery: schedule.todoRowDeliveryKey(integration.schedule),
+		repoPath: "/fixture",
+		head: "b".repeat(40),
+		startedAt: now,
+		verdict: "awaiting-integration",
+		integrationCommits: ["a".repeat(40)],
+	};
 
 	const proof = normalize(structuredClone(churn.row) as TodoScheduleInputTask);
 	proof.schedule!.audit = {
@@ -172,6 +183,12 @@ function cases(now: number): Case[] {
 			workers: [{ id: "RowAudit", agent: "qa-auditor" }],
 		},
 		{ id: "audit-queued", row: change(delivered), state: "audit queued", expected: null },
+		{
+			id: "awaiting-integration",
+			row: integration,
+			state: "awaiting integration",
+			expected: { tool: "bash", args: { command: `git -C '/fixture' merge --no-edit ${"a".repeat(40)}` } },
+		},
 		{
 			id: "handoff-pending",
 			row: change(auditedReview, { schedule: { ...auditedReview.schedule, handoffPending: true } }),
