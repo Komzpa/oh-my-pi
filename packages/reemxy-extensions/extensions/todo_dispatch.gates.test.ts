@@ -719,7 +719,9 @@ test("registered admission exposes every open row and persistent failed tail whi
     const tail = await outcome({ plan: "hiddenTail", git: "clean", admissionOpen: true, running: 0 }, cwd, null) as { demand?: Demand; note: string; handed?: unknown };
     expect(tail.note).toContain("Repair hidden export tail");
     expect(tail.note).toContain("65 open");
-    expect(tail.note.length).toBeLessThan(8192);
+    for (let i = 1; i <= 64; i++) {
+      expect(tail.note).toMatch(new RegExp(`Await approval ${i}(?!\\d)`));
+    }
     expect(tail.demand?.toolName).toBe("task");
     expect(tail.handed).toBeUndefined(); // advice must not block other legal progress
     expect(tail.demand?.satisfies?.({ name: "task", arguments: { tasks: [{ name: "RepairHiddenExport", agent: "coder", task: "Repair hidden export tail" }] } })).toBe(true);

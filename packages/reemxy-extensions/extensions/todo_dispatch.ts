@@ -293,15 +293,19 @@ export function autoGoalDeadlineState(input: {
     baselineDeadlineAt: deadlineAt,
   };
 }
+function dispatchModelContext(ctx: ExtensionContext) {
+  const options = { maxFrameDataBytes: 0 };
+  return ctx.sessionManager.buildSessionContext?.(options) ?? buildSessionContext(ctx.sessionManager.getBranch(), undefined, undefined, options);
+}
 // Canonical surviving model context for the compact guard: use the shared
 // SessionManager.buildSessionContext producer and check whether that customType still reaches the model.
 // Never re-derive retained ranges or compaction boundaries here. Canonical builder errors must surface.
 function survivingCompactionCustomType(ctx: ExtensionContext, customType: string): boolean {
-  const context = ctx.sessionManager.buildSessionContext?.() ?? buildSessionContext(ctx.sessionManager.getBranch());
+  const context = dispatchModelContext(ctx);
   return context.messages.some((message) => message.role === "custom" && message.customType === customType);
 }
 function deliveredDispatchAction(ctx: ExtensionContext, content: string): boolean {
-  const context = ctx.sessionManager.buildSessionContext?.() ?? buildSessionContext(ctx.sessionManager.getBranch());
+  const context = dispatchModelContext(ctx);
   const previous = context.messages.findLast(message => message.role === "custom" && message.customType === "todo-dispatch-action-required");
   const prefix = /^(?:REQUIRED|ESCALATED) DISPATCH ACTION \(\d+ ignored turns\): /;
   return typeof previous?.content === "string" && previous.content.replace(prefix, "") === content.replace(prefix, "");
@@ -6824,7 +6828,7 @@ export default async function todoDispatch(pi: ExtensionAPI, options: { external
     });
     // Retained deltas can refer to full instructions lost during compaction.
     // Only a note delivered against the current canonical boundary can be the baseline.
-    const modelContext = ctx.sessionManager.buildSessionContext?.() ?? buildSessionContext(ctx.sessionManager.getBranch());
+    const modelContext = dispatchModelContext(ctx);
     const deliveredWindow = deliveredNoteWindow(modelContext.messages, "todo-dispatch-time-note");
     if (deliveredWindow && !timedNoteDue(ctx, "todo-dispatch-time-note", semanticKey, workOpen, now)) return;
     const projected = projectRowBlocks(blocks, deliveredWindow, kind => prompt.render(gateNoticeInstructions, { rowInstruction: true, bare: true, scopeParagraph: kind === "scope", staffingParagraph: kind === "staffing" }).trim());
