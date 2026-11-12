@@ -244,6 +244,8 @@ export interface TodoRowAudit {
 	head: string;
 	/** Resource set recorded when the audit started; legacy records may omit it. */
 	resourcesKey?: string;
+	/** Exact delivered resource pin verified as an ancestor of this audit's HEAD. */
+	integratedCommit?: string;
 	/** This inconclusive result records that the pinned checkout did not match. */
 	bindingMismatch?: boolean;
 	/** Existing delivery commits that must become reachable before audit can start. */
@@ -2507,6 +2509,12 @@ export function todoAuditMatchesResources(schedule: TodoSchedule | undefined, au
 	return (
 		!binding ||
 		(binding.repoPath === audit.repoPath && audit.head === binding.head) ||
+		(binding.repoPath === audit.repoPath &&
+			audit.integratedCommit === binding.head &&
+			audit.resourcesKey !== undefined &&
+			(schedule?.executor?.gitCommits ?? schedule?.attemptHistory?.at(-1)?.gitCommits ?? []).some(
+				receipt => receipt.repoPath === binding.repoPath && receipt.commit === binding.head,
+			)) ||
 		(audit.verdict === "awaiting-integration" &&
 			audit.resourcesKey !== undefined &&
 			binding.repoPath === audit.repoPath) ||

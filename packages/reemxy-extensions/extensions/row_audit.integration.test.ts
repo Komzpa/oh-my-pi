@@ -21,7 +21,7 @@ function git(repo: string, ...args: string[]): string {
 	return result.stdout.toString().trim();
 }
 
-function fixture(receipt: "lane" | "reachable" | "missing" | "none" = "lane", fail = false) {
+function fixture(receipt: "lane" | "reachable" | "missing" | "none" = "lane", fail = false, pin: "delivery" | "base" | undefined = undefined) {
 	const repo = fs.mkdtempSync(path.join(os.tmpdir(), "row-integration-"));
 	roots.push(repo);
 	git(repo, "init", "-q");
@@ -35,10 +35,15 @@ function fixture(receipt: "lane" | "reachable" | "missing" | "none" = "lane", fa
 	git(repo, "commit", "-qm", "delivery");
 	const commit = git(repo, "rev-parse", "HEAD");
 	git(repo, "checkout", "-q", "--detach", base);
+	if (pin) {
+		fs.writeFileSync(path.join(repo, "integration.txt"), "independent change\n");
+		git(repo, "add", "integration.txt");
+		git(repo, "commit", "-qm", "integration head");
+	}
 	const receiptCommit = receipt === "missing" ? "f".repeat(40) : receipt === "reachable" ? base : commit;
 	let phases: TodoPhase[] = [{ name: "Work", tasks: [{
 		content: "Deliver result", status: "in_progress", schedule: {
-			resources: [repo], progress: { at: 2, evidence: "Saved delivery receipt" },
+			resources: [pin ? `git:${repo}@${pin === "delivery" ? commit : base}` : repo], progress: { at: 2, evidence: "Saved delivery receipt" },
 			...(receipt === "none" ? { reviewPage: "/review/result.html" } : {}),
 			executor: { workerId: "Producer", startedAt: 1, finishedAt: 2, outcome: "completed",
 				...(receipt === "none" ? {} : { gitCommits: [{ repoPath: repo, commit: receiptCommit }] }) },
@@ -96,9 +101,10 @@ test.each(["fresh", "previously failed"])("R1: %s unmerged delivery awaits integ
 	expect(todoRowDeliveryKey(h.row().schedule)).toBe(identity);
 });
 
-test("R2: integration alone starts the audit without a new worker or delivery identity", async () => {
-	const h = fixture();
+test.each([undefined, "delivery"] as const)("R2: integration alone starts the audit without a new worker or delivery identity (pin %s)", async pin => {
+	const h = fixture("lane", false, pin);
 	const identity = todoRowDeliveryKey(h.row().schedule);
+	const resources = [...h.row().schedule!.resources!];
 	expect(await h.check()).toBe(0);
 	expect(h.state()).toBe("awaiting integration");
 	git(h.repo, "merge", "--no-edit", h.commit);
@@ -108,6 +114,18 @@ test("R2: integration alone starts the audit without a new worker or delivery id
 	expect(h.row().schedule?.audit?.verdict).toBe("pass");
 	expect(h.row().status).toBe("completed");
 	expect(todoRowDeliveryKey(h.row().schedule)).toBe(identity);
+	expect(h.row().schedule?.resources).toEqual(resources);
+	expect(todoRowAfterWorker(h.row())).toBeUndefined();
+	expect(h.row().schedule?.audit?.head).toBe(git(h.repo, "rev-parse", "HEAD"));
+});
+
+test("R2 negative: an ancestor pin absent from the delivery receipt remains a mismatch after merge", async () => {
+	const h = fixture("lane", false, "base");
+	expect(await h.check()).toBe(0);
+	git(h.repo, "merge", "--no-edit", h.commit);
+	expect(await h.check()).toBe(0);
+	expect(h.launches()).toBe(0);
+	expect(h.row().schedule?.audit).toMatchObject({ bindingMismatch: true, verdict: "inconclusive" });
 });
 
 test("negative: nonexistent commit remains failed delivery, not integration pending", async () => {

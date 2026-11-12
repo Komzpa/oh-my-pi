@@ -193,6 +193,7 @@ export function planRowAudits(
 	cwd: string,
 	isLive: (row: RowAuditRow) => boolean,
 	inFlight: (repoPath: string, head: string, row: RowAuditRow) => boolean,
+	integratedPins: ReadonlyMap<string, string> = new Map(),
 ): RowAuditBatch[] {
 	const batches = new Map<string, RowAuditBatch>();
 	for (const row of rows) {
@@ -207,7 +208,8 @@ export function planRowAudits(
 		if (!repoPath) continue;
 		const head = heads.get(repoPath) ?? "unknown";
 		const binding = todoArtifactGitBinding(row);
-		if (head === "unknown" || (binding && (binding.repoPath !== repoPath || binding.head !== head))) continue;
+		if (head === "unknown" || (binding && (binding.repoPath !== repoPath ||
+			(binding.head !== head && integratedPins.get(row.content) !== binding.head)))) continue;
 		const previous = after.kind === "verify" ? after.audit : row.schedule?.audit;
 		const audit = previous?.head === head && previous.repoPath === repoPath ? previous : undefined;
 		if (audit?.verdict === "pass" || audit?.cancelled) continue;
@@ -408,6 +410,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 	))
 		heads.set(repoPath, (await readHead(repoPath)) ?? "unknown");
 	const blocked = new Set<string>();
+	const integratedPins = new Map<string, string>();
 	for (const row of candidates) {
 		const binding = todoArtifactGitBinding(row);
 		const repoPath = rowRepo(row, ctx.cwd);
@@ -429,12 +432,16 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 				if (receiptBlocker) break;
 			}
 		}
+		if (binding && binding.repoPath === repoPath && !receiptBlocker && !integrationCommits.length &&
+			rowDeliveryCommits(row).some(receipt => receipt.repoPath === repoPath && receipt.commit === binding.head))
+			integratedPins.set(row.content, binding.head);
 		const awaitingIntegration = !receiptBlocker && integrationCommits.length > 0;
 		if (
 			!("blocker" in identity) &&
 			!receiptBlocker &&
 			!awaitingIntegration &&
-			(!binding || (binding.repoPath === repoPath && binding.head === head))
+			(!binding || (binding.repoPath === repoPath &&
+				(binding.head === head || integratedPins.get(row.content) === binding.head)))
 		)
 			continue;
 		blocked.add(rowKey(row));
@@ -496,6 +503,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		ctx.cwd,
 		isLive,
 		busy,
+		integratedPins,
 	);
 	if (!batches.length) return 0;
 	// A row may be rebound while registry resolution or an auditor is in flight.
@@ -518,7 +526,8 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 		)
 			return undefined;
 		const binding = todoArtifactGitBinding(latest);
-		return binding && (binding.repoPath !== batch.repoPath || binding.head !== batch.head) ? undefined : latest;
+		return binding && (binding.repoPath !== batch.repoPath ||
+			(binding.head !== batch.head && integratedPins.get(row.content) !== binding.head)) ? undefined : latest;
 	};
 	const agent = await (options.resolveAuditor ?? (() => registryAuditor(ctx.cwd)))();
 	if (!agent) {
@@ -537,6 +546,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 						repoPath: batch.repoPath,
 						head: batch.head,
 						resourcesKey: todoAuditResourcesKey(row.schedule),
+						integratedCommit: integratedPins.get(row.content),
 						startedAt: now(),
 						verdict: "unavailable",
 						agent: TODO_ROW_AUDITOR,
@@ -576,6 +586,7 @@ export async function checkRowAudits(ctx: ExtensionContext, options: RowAuditOpt
 					repoPath: batch.repoPath,
 					head: batch.head,
 					resourcesKey: todoAuditResourcesKey(row.schedule),
+					integratedCommit: integratedPins.get(row.content),
 					startedAt,
 					verdict: "pending",
 					agent,
