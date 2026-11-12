@@ -166,6 +166,7 @@ import { isReadOnlyAgent, isReadOnlyToolNames } from "./read-only-policy";
 import { formatTaskResultSummary } from "./result-summary";
 import { subprocessToolRegistry } from "./subprocess-tool-registry";
 import { resolveSubagentToolNames } from "./tool-plan";
+import type { StepProgress } from "./steps";
 import type { WorkPoolYieldItem } from "./workpool-yield";
 import {
 	type AgentDefinition,
@@ -577,6 +578,12 @@ export interface ExecutorOptions {
 	worktree?: string;
 	agent: AgentDefinition;
 	task: string;
+	/**
+	 * Every step prompt of a stepped spawn (`renderStepPrompts` in `./steps`):
+	 * {@link task} already carries the first, the run sends each later one once
+	 * the previous one was delivered. Absent for a single-prompt assignment.
+	 */
+	steps?: string[];
 	assignment?: string;
 	/**
 	 * Image attachments delivered as real image content parts in the child's
@@ -2893,9 +2900,23 @@ async function driveSessionToResult(
 		onPromptBusy?: () => Promise<void>;
 		/** Go on with the interrupted turn instead of sending `task`, which only labels the run. */
 		restore?: boolean;
+		/**
+		 * Step prompts of a stepped spawn (see `./steps`): the first `sent` went
+		 * out already (`task`; with `restore`, the interrupted turn is the last of
+		 * them); each later one is sent once the previous one was delivered.
+		 */
+		steps?: StepProgress;
 	} = {},
 ): Promise<DriveOutcome> {
-	const { solutionSpace, images, onPromptBusy, restore } = options;
+	const { solutionSpace, images, onPromptBusy, restore, steps } = options;
+	// This fork keeps the single accepted terminal yield: a yield ends the run, and there is no
+	// yield turn-stop to park a finished step on while the next one is sent. Refuse a multi-prompt
+	// stepped spawn rather than silently running only its first step.
+	if (steps && steps.prompts.length > 1) {
+		throw new Error(
+			`task.steps is not supported in this build: this spawn has ${steps.prompts.length} step prompts, but a run ends at its first accepted yield. Disable task.steps and send the stages as one task.`,
+		);
+	}
 	await validatePersistedTaskWorkspace(session.sessionManager);
 	const structured = options.structured !== false;
 	const abortSignal = monitor.abortSignal;
@@ -4367,6 +4388,8 @@ export interface FollowUpTurnOptions {
 	restore?: boolean;
 	/** Effort-only continuation: retain the resolved model and session identity. */
 	thinkingLevel?: Effort;
+	/** With {@link restore}: the interrupted run's step progress; its unsent prompts follow the restored turn. */
+	steps?: StepProgress;
 	index?: number;
 	description?: string;
 	/** Explicit pre-expansion model role alias retained from the original run. */
@@ -4583,6 +4606,7 @@ async function driveFollowUpTurn(
 			outcome = await driveSessionToResult(session, monitor, message, {
 				structured,
 				restore: options.restore,
+				steps: options.steps,
 				onPromptBusy: async () => {
 					attemptUnsubscribe();
 					logger.debug("Subagent follow-up lost the prompt race to an IRC wake; backing off", { id });
@@ -6276,6 +6300,7 @@ async function runSubprocessOnThisThread(options: ExecutorOptions): Promise<Sing
 				solutionSpace: options.solutionSpace,
 				...(options.images?.length ? { images: options.images } : {}),
 				structured,
+				steps: options.steps?.length ? { prompts: options.steps, sent: 1 } : undefined,
 			});
 
 			if (

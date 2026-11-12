@@ -64,7 +64,6 @@ import {
 	toRestoredQueuedMessage,
 } from "../session/queued-messages";
 import type { SessionEntry } from "../session/session-entries";
-import { sessionApprovalGrantKeys } from "../tools/approval-cache";
 import { isRpcProxy, type RpcServe } from "./rpc";
 import {
 	SESSION_STATE_READERS as read,
@@ -517,10 +516,6 @@ export class SessionPublisher {
 			todoPhases: previous && reuse("todoPhases") ? previous.todoPhases : toWireData([...sources.todoPhases]),
 			queuedMessages: toWireData(session.getQueuedMessages()),
 			restorableQueue: toWireData({ steering: steering.map(queuedEntry), followUp: followUp.map(queuedEntry) }),
-			approvals: {
-				scopes: session.extensionRunner?.sessionApprovalKeys() ?? [],
-				grants: sessionApprovalGrantKeys(session.settings.getAgentDir(), session.sessionManager.getSessionId()),
-			},
 			ephemeralMaxTokensPreservesRequest: session.ephemeralMaxTokensPreservesRequest(),
 			settings: settingsSource(session.settings),
 		};

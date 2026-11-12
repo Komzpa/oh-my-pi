@@ -100,7 +100,6 @@ import { SessionEntryIndex } from "../session/session-manager";
 import type { RestartDrainLease } from "../session/agent-session-types";
 import type { AgentDefinition } from "../task/types";
 import type { WorkPoolYieldItem } from "../task/workpool-yield";
-import { type ApprovalGrantStore, getApprovalGrants } from "../tools/approval-cache";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../tools/todo";
 import { TokenRateMeter } from "../utils/token-rate";
 import type { ThreadId } from "./identity";
@@ -214,7 +213,6 @@ function emptyViewState(): SessionViewState {
 		todoPhases: [],
 		queuedMessages: { steering: [], followUp: [], liveSteered: 0 },
 		restorableQueue: { steering: [], followUp: [] },
-		approvals: { scopes: [], grants: [] },
 		ephemeralMaxTokensPreservesRequest: false,
 		settings: { base: null, layers: [] },
 		activeToolExecutionUpdates: [],
@@ -523,13 +521,10 @@ export class RemoteAgentSession implements AgentViewSession {
 
 	/**
 	 * Only ever called on the caller's own session, which is homed on the
-	 * caller's thread; draining another thread's queue from a mirror would
-	 * consume records its owner is about to inject.
+	 * caller's thread; a mirror does not track its owner's IRC queue.
 	 */
-	drainPendingIrcInboxMessages(_agentId: string, _opts?: { ifAny?: (msg: IrcMessage) => boolean }): IrcMessage[] {
-		throw new Error(
-			`drainPendingIrcInboxMessages must run on the session's home thread (${this.home}), not on a mirror`,
-		);
+	hasIrcInterrupts(): boolean {
+		throw new Error(`hasIrcInterrupts must run on the session's home thread (${this.home}), not on a mirror`);
 	}
 
 	emitIrcRelayObservation(record: CustomMessage): void {
@@ -783,17 +778,6 @@ export class RemoteAgentSession implements AgentViewSession {
 			this.#settle(id);
 		}
 		return restored;
-	}
-
-	hasSessionApproval(key: string): boolean {
-		return this.#view.approvals.scopes.includes(key);
-	}
-
-	/** The child's conversation tier, as mirrored, over the database of its agent directory. */
-	getApprovalGrants(): ApprovalGrantStore {
-		const grants = getApprovalGrants(this.settings.getAgentDir());
-		for (const key of this.#view.approvals.grants) grants.session.record(key);
-		return grants;
 	}
 
 	resume(): Promise<void> {

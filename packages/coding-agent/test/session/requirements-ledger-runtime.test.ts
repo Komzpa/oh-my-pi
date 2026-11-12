@@ -2111,12 +2111,12 @@ describe("real row-scoped auditor receipts", () => {
 });
 
 describe("requirement image audit inputs", () => {
-	it.each([false, true])("refuses file-backed auditors before admission (batch: %s)", async batch => {
+	it.each([false, true])("refuses step-backed auditors before admission (batch: %s)", async batch => {
 		const { cwd, runtime } = fixture();
 		try {
-			const item = { name: "main", agent: "qa-auditor", requirementIds: ["R1"], taskFile: join(cwd, "audit.md") };
+			const item = { name: "main", agent: "qa-auditor", requirementIds: ["R1"], steps: ["Audit R1", "Report"] };
 			await expect(
-				runtime.prepareAuditorTaskCall("task", "file-audit", batch ? { tasks: [item] } : item),
+				runtime.prepareAuditorTaskCall("task", "steps-audit", batch ? { tasks: [item] } : item),
 			).rejects.toThrow("inline task text");
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });

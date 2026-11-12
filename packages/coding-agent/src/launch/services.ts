@@ -12,7 +12,7 @@ import type { ToolSession } from "../tools";
 import { resolveToCwd } from "../tools/path-utils";
 import { isSharedBrowserDaemonName } from "../tools/browser/shared-daemon";
 
-import { cfgLaunchEnabled } from "../tools/settings";
+import { cfgLaunchEnabled, cfgLaunchPersist } from "../tools/settings";
 import { toolSessionEnvironment } from "../exec/session-slice";
 
 export interface ServiceReady {
@@ -302,7 +302,7 @@ export async function startService(
 				}
 			: undefined,
 		restart: "no",
-		persist: false,
+		persist: cfgLaunchPersist.get(session.settings),
 		detached: false,
 	};
 	const result = await request(

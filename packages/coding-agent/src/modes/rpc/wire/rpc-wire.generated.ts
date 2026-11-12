@@ -1460,6 +1460,14 @@ export interface SelectUiRequest {
 	title: string;
 	options: string[];
 	optionDetails?: SelectOptionDetail[];
+	/** Index into `options` to focus first. */
+	initialIndex?: number;
+	/** Marker style for the first `markableCount` options. */
+	selectionMarker?: "radio" | "checkbox";
+	/** For `checkbox`: indices into `options` currently checked. Authoritative; hosts render it per option. */
+	checkedIndices?: number[];
+	/** Leading options that get a marker; trailing ones are actions. Defaults to all options when `selectionMarker` is set. */
+	markableCount?: number;
 	timeout?: number;
 }
 
@@ -1491,7 +1499,7 @@ export interface EditorUiRequest {
 	promptStyle?: boolean;
 }
 
-/** Every question of one `ask` tool call; sent only after `set_ask_dialog` enables it. */
+/** Every question of one extension `ui.askDialog` call; sent only after `set_ask_dialog` enables it. */
 export interface AskUiRequest {
 	type: "extension_ui_request";
 	id: string;
@@ -1560,7 +1568,7 @@ export interface OpenUrlUiRequest {
 /** Extension UI request, discriminated by `method`. */
 export type ExtensionUiRequest = SelectUiRequest | ConfirmUiRequest | InputUiRequest | EditorUiRequest | AskUiRequest | CancelUiRequest | NotifyUiRequest | SetStatusUiRequest | SetWidgetUiRequest | SetTitleUiRequest | SetEditorTextUiRequest | OpenUrlUiRequest;
 
-/** Answer to one `ask` question: exact option labels, plus optional free text. */
+/** Answer to one `ui.askDialog` question: exact option labels, plus optional free text. */
 export interface AskAnswer {
 	id: string;
 	selectedOptions: string[];
@@ -1581,7 +1589,7 @@ export interface ConfirmUiResponse {
 	confirmed: boolean;
 }
 
-/** Dismisses a dialog; `timedOut` reports the host's own deadline (an `ask` then takes its recommended answers). */
+/** Dismisses a dialog; `timedOut` reports the host's own deadline (an `ask` dialog then takes its recommended answers). */
 export interface CancelUiResponse {
 	type: "extension_ui_response";
 	id: string;

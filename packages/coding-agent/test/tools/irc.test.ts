@@ -1001,31 +1001,6 @@ describe("IRC", () => {
 			expect(String(queuedMessage.content)).not.toContain("Active interruptible wait stopped");
 		});
 
-		it("lets an explicit inbox read consume a pre-brief parent message", async () => {
-			const { session } = createRealSession();
-			sessions.push(session);
-			registry.register({
-				id: "0-Child",
-				displayName: "task",
-				kind: "sub",
-				parentId: "Main",
-				session,
-				initialPromptPending: true,
-			});
-			await session.deliverIrcMessage({
-				id: "inbox-before-brief",
-				from: "Main",
-				to: "0-Child",
-				body: "inspect me",
-				ts: Date.now(),
-			});
-			expect(session.drainPendingIrcInboxMessages("0-Child")).toMatchObject([
-				{ id: "inbox-before-brief", body: "inspect me" },
-			]);
-			expect(session.agent.peekFollowUpQueue()).toHaveLength(0);
-			expect(session.drainPendingIrcInboxMessages("0-Child")).toEqual([]);
-		});
-
 		it("persists undelivered pre-brief messages if setup is disposed before dispatch", async () => {
 			const dir = TempDir.createSync("@pi-aborted-brief-");
 			const manager = SessionManager.create(dir.path(), dir.path());
@@ -1127,7 +1102,7 @@ describe("IRC", () => {
 			expect(promptSpy).not.toHaveBeenCalled();
 			expect(await session.agent.hasIrcInterrupts?.()).toBe(false);
 			expect(await session.agent.hasQueuedAsides?.()).toBe(false);
-			expect(session.drainPendingIrcInboxMessages("0-Me").map(msg => msg.id)).toEqual(["msg-b", "msg-p"]);
+			expect(session.hasQueuedIrcFrom("0-Peer")).toBe(true);
 		});
 
 		it("queues parent IRC as steering while a subagent turn is streaming", async () => {

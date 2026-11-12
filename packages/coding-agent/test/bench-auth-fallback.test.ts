@@ -21,6 +21,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as availability from "@oh-my-pi/pi-coding-agent/session/provider-exhaustion";
 import { getModelDbPath, TempDir } from "@oh-my-pi/pi-utils";
 import { endpoint as responsesEndpoint } from "../../ai/test/fixtures/openai-responses-server";
+import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 function fakeModel(provider: string, id: string): Model<Api> {
 	return buildModel({
@@ -306,6 +307,51 @@ describe("default bench runtime", () => {
 			expect(stdout.trim()).toBe(`opencode-go/${modelId}`);
 		} finally {
 			await tempDir.remove();
+		}
+	});
+});
+
+describe("bench OAuth account selection", () => {
+	it("uses the selected account for every request instead of rotating", async () => {
+		const auth = createInMemoryAuthStorage();
+		try {
+			await auth.credentials.set(
+				"anthropic",
+				["a", "b"].map(suffix => ({
+					type: "oauth" as const,
+					access: `access-${suffix}`,
+					refresh: `refresh-${suffix}`,
+					expires: Date.now() + 3_600_000,
+					accountId: suffix,
+					email: `${suffix}@example.com`,
+					orgId: suffix,
+				})),
+			);
+			const model = fakeModel("anthropic", "test-model");
+			const registry = fakeRegistry({ models: [model], authedProviders: ["anthropic"] });
+			const keys: unknown[] = [];
+			const summary = await runBenchCommand(
+				{ models: ["anthropic/test-model"], flags: { account: 2, runs: 2, json: true } },
+				{
+					createRuntime: async () => ({ modelRegistry: registry, oauth: auth.oauth }),
+					writeStdout: () => {},
+					writeStderr: () => {},
+					setExitCode: () => {},
+					streamSimple: (_model, _context, options) => {
+						const stream = fakeStream();
+						const iterator = (async function* () {
+							if (typeof options?.apiKey !== "function") throw new Error("Missing resolver");
+							keys.push(await options.apiKey({ error: undefined, lastChance: false }));
+							yield* stream;
+						})();
+						return Object.assign(iterator, { result: stream.result }) as unknown as AssistantMessageEventStream;
+					},
+				},
+			);
+			expect(summary.failures).toBe(0);
+			expect(keys).toEqual(["access-b", "access-b"]);
+		} finally {
+			auth.close();
 		}
 	});
 });
@@ -616,6 +662,33 @@ describe("bench standard Responses transport", () => {
 });
 
 describe("bench service tier", () => {
+	it("rejects a priority run that fell back to standard speed", async () => {
+		const model = getBundledModel("anthropic", "claude-opus-4-5");
+		if (!model) throw new Error("Missing Anthropic model");
+		const registry = fakeRegistry({ models: [model], authedProviders: ["anthropic"] });
+		const summary = await runBenchCommand(
+			{ models: ["anthropic/claude-opus-4-5"], flags: { runs: 1, serviceTier: "priority", json: true } },
+			{
+				createRuntime: async () => ({ modelRegistry: registry }),
+				writeStdout: () => {},
+				writeStderr: () => {},
+				setExitCode: () => {},
+				streamSimple: () => {
+					const stream = fakeStream();
+					const iterator = (async function* () {
+						for await (const event of stream) {
+							if (event.type === "done") event.message.disabledFeatures = ["priority"];
+							yield event;
+						}
+					})();
+					return Object.assign(iterator, { result: stream.result }) as unknown as AssistantMessageEventStream;
+				},
+			},
+		);
+		expect(summary.failures).toBe(1);
+		expect(summary.models[0]?.results[0]).toMatchObject({ ok: false, error: expect.stringContaining("fell back") });
+	});
+
 	it("sends the configured serviceTier setting when no flag is passed", async () => {
 		const { wire, summary } = await captureServiceTier({ setting: "flex" });
 		expect(wire).toBe("flex");

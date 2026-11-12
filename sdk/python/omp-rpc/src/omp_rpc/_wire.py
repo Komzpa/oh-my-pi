@@ -1696,6 +1696,14 @@ class SelectUiRequest:
     title: str
     options: tuple[str, ...]
     option_details: tuple[SelectOptionDetail, ...] | None = None
+    initial_index: int | None = None
+    """Index into `options` to focus first."""
+    selection_marker: Literal["radio", "checkbox"] | None = None
+    """Marker style for the first `markableCount` options."""
+    checked_indices: tuple[int, ...] | None = None
+    """For `checkbox`: indices into `options` currently checked. Authoritative; hosts render it per option."""
+    markable_count: int | None = None
+    """Leading options that get a marker; trailing ones are actions. Defaults to all options when `selectionMarker` is set."""
     timeout: int | None = None
 
 
@@ -1732,7 +1740,7 @@ class EditorUiRequest:
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class AskUiRequest:
-    """Every question of one `ask` tool call; sent only after `set_ask_dialog` enables it."""
+    """Every question of one extension `ui.askDialog` call; sent only after `set_ask_dialog` enables it."""
     type: Literal["extension_ui_request"] = "extension_ui_request"
     id: str
     method: Literal["ask"] = "ask"
@@ -1813,6 +1821,14 @@ class ExtensionUiRequest(ExtensionUiRequestMixin):
     title: str | None = None
     options: tuple[str, ...] | None = None
     option_details: tuple[SelectOptionDetail, ...] | None = None
+    initial_index: int | None = None
+    """Index into `options` to focus first."""
+    selection_marker: Literal["radio", "checkbox"] | None = None
+    """Marker style for the first `markableCount` options."""
+    checked_indices: tuple[int, ...] | None = None
+    """For `checkbox`: indices into `options` currently checked. Authoritative; hosts render it per option."""
+    markable_count: int | None = None
+    """Leading options that get a marker; trailing ones are actions. Defaults to all options when `selectionMarker` is set."""
     timeout: int | None = None
     message: str | None = None
     placeholder: str | None = None
@@ -1836,7 +1852,7 @@ class ExtensionUiRequest(ExtensionUiRequestMixin):
 
 @dataclass(slots=True, frozen=True, kw_only=True)
 class AskAnswer:
-    """Answer to one `ask` question: exact option labels, plus optional free text."""
+    """Answer to one `ui.askDialog` question: exact option labels, plus optional free text."""
     id: str
     selected_options: tuple[str, ...]
     custom_input: str | None = None
@@ -3352,6 +3368,10 @@ def parse_select_ui_request(value: object, path: str = "SelectUiRequest") -> Sel
         title=required(payload, "title", decode_str, path),
         options=required(payload, "options", array(decode_str), path),
         option_details=optional(payload, "optionDetails", array(parse_select_option_detail), path),
+        initial_index=optional(payload, "initialIndex", decode_int, path),
+        selection_marker=optional(payload, "selectionMarker", cast('Decoder[Literal["radio", "checkbox"]]', literal(frozenset({"radio", "checkbox"}))), path),
+        checked_indices=optional(payload, "checkedIndices", array(decode_int), path),
+        markable_count=optional(payload, "markableCount", decode_int, path),
         timeout=optional(payload, "timeout", decode_int, path),
     )
 
@@ -3489,6 +3509,10 @@ def parse_extension_ui_request(value: object, path: str = "ExtensionUiRequest") 
         title=optional(payload, "title", decode_str, path),
         options=optional(payload, "options", array(decode_str), path),
         option_details=optional(payload, "optionDetails", array(parse_select_option_detail), path),
+        initial_index=optional(payload, "initialIndex", decode_int, path),
+        selection_marker=optional(payload, "selectionMarker", cast('Decoder[Literal["radio", "checkbox"]]', literal(frozenset({"radio", "checkbox"}))), path),
+        checked_indices=optional(payload, "checkedIndices", array(decode_int), path),
+        markable_count=optional(payload, "markableCount", decode_int, path),
         timeout=optional(payload, "timeout", decode_int, path),
         message=optional(payload, "message", decode_str, path),
         placeholder=optional(payload, "placeholder", decode_str, path),

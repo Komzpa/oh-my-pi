@@ -1,7 +1,6 @@
 import { getAssistantProviderReplayState } from "@oh-my-pi/pi-agent-core/assistant-publication";
 import * as fs from "node:fs";
 import { launchScope, launchStep, launchMetric } from "@oh-my-pi/pi-utils/launch-trace";
-import { withLoopPhase } from "@oh-my-pi/pi-utils/loop-phase";
 import * as path from "node:path";
 import type {
 	AssistantRetryRecovery,
@@ -35,6 +34,7 @@ import {
 	pushLoopPhase,
 	stringifyJson,
 	toError,
+	withLoopPhase,
 } from "@oh-my-pi/pi-utils";
 import { isTaskToolDetails, type StructuredSubagentSchemaMode } from "@oh-my-pi/pi-tui/tools/task";
 import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
@@ -2335,7 +2335,10 @@ export class SessionManager {
 		});
 	}
 
-	/** Serialize the whole file as stamped lines; only live payloads receive weak snapshot identities. */
+	/**
+	 * Serialize the whole file as stamped lines; only live payloads receive weak snapshot identities.
+	 * Runs as the `session.rewrite` loop phase: a long transcript takes hundreds of milliseconds to stringify.
+	 */
 	#serializeBody(): SessionFileBody {
 		const titleLine = this.#titleSlotLine();
 		const headerLine = this.#lineFor(this.#header);
@@ -2344,21 +2347,23 @@ export class SessionManager {
 		let bytes = Buffer.byteLength(titleLine, "utf8") + Buffer.byteLength(headerLine, "utf8");
 		const positions: SessionFileBody["positions"] = [];
 		const ranges: SessionFileBody["ranges"] = new Map();
-		for (const entry of this.#index.entries()) {
-			const line = this.#lineFor(entry);
-			const length = Buffer.byteLength(line, "utf8");
-			positions.push({
-				id: entry.id,
-				offset: bytes,
-				length,
-				revision: this.#index.revision(entry.id),
-				line: lines.length,
-				entry: this.#index.retainedEntry(entry.id) ? new WeakRef(entry) : undefined,
-			});
-			ranges.set(entry.id, { offset: bytes, length });
-			bytes += length;
-			lines.push(line);
-		}
+		withLoopPhase("session.rewrite", () => {
+			for (const entry of this.#index.entries()) {
+				const line = this.#lineFor(entry);
+				const length = Buffer.byteLength(line, "utf8");
+				positions.push({
+					id: entry.id,
+					offset: bytes,
+					length,
+					revision: this.#index.revision(entry.id),
+					line: lines.length,
+					entry: this.#index.retainedEntry(entry.id) ? new WeakRef(entry) : undefined,
+				});
+				ranges.set(entry.id, { offset: bytes, length });
+				bytes += length;
+				lines.push(line);
+			}
+		});
 		const stamp: SessionBodyStamp = {
 			entries,
 			entryCount: this.#index.count(),

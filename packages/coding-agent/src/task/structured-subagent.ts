@@ -59,6 +59,7 @@ import { buildOutputValidator } from "../tools/output-schema-validator";
 import { bindRequirementRowArtifact, getRequirementArtifactTodoPhases } from "../tools/todo";
 import { trackLateCleanup } from "../utils/late-cleanup";
 import { type DiscoveryResult, discoverAgents, getAgent } from "./discovery";
+import { renderStepPrompts } from "./steps";
 import { type ExecutorOptions, runSubprocess, type SubagentToolResult } from "./executor";
 import {
 	applyEligibleNestedPatches,
@@ -154,6 +155,11 @@ export interface StructuredSubagentRequest {
 	context?: string;
 	/** Peer ownership agreement for this child. */
 	scope?: PeerScope;
+	/**
+	 * Ordered stages sent instead of `assignment`, one prompt per delivered stage (see `./steps`);
+	 * `assignment` then only labels and displays the run (`renderStepsBrief`).
+	 */
+	steps?: string[];
 	agent?: string;
 	/** Saved source session selected for the bundled seance agent. */
 	sourceSession?: string;
@@ -939,6 +945,7 @@ function buildExecutorOptions(
 		}
 	}
 	const enableMCP = !restrictToolNames && (session.enableMCP ?? true);
+	const steps = request.steps?.length ? renderStepPrompts(request.steps, policy.structured) : undefined;
 	return {
 		cwd: request.verifiedWorkspace?.cwd ?? session.cwd,
 		verifiedWorkspace: request.verifiedWorkspace,
@@ -947,9 +954,13 @@ function buildExecutorOptions(
 		getApiKey: session.getApiKey,
 		credentialSourceSessionId: session.getCredentialSourceSessionId?.(),
 		agent: policy.effectiveAgent,
+		// A stepped spawn starts on its first step prompt; the executor sends the rest.
 		task: request.verifiedWorkspace
-			? `${renderTaskWorkspace(request.verifiedWorkspace)}\n${request.assignment}`
-			: request.assignment,
+			? `${renderTaskWorkspace(request.verifiedWorkspace)}\n${steps ? steps[0] : request.assignment}`
+			: steps
+				? steps[0]
+				: request.assignment,
+		steps,
 		assignment: request.assignment,
 		row: request.row,
 		preparedSession,
