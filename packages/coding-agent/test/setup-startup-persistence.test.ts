@@ -376,7 +376,7 @@ describe("source build skips the update question through real startup", () => {
 					version: "1.2.3",
 				}),
 			);
-			expect((await launch({ keys: [] })).overlays).toBe(0);
+			expect((await launch({ keys: ["\x1b", "\x1b", "\x1b"] })).overlays).toBe(0);
 			expect(configText()).toContain("setupVersion: 3");
 			expect(configText()).not.toContain("auto:");
 		},
