@@ -34,6 +34,7 @@ import {
 	unsupportedProxyMessage,
 	withTimeoutSignal,
 } from "../utils/fetch-timeout";
+import { sha256File } from "../utils/file-hash";
 import { type BuildAnswer, type BuildPatch, type Fetch, fetchBuild, type UpdateChannel } from "./build-service";
 import {
 	DEFAULT_NPM_REGISTRY,
@@ -452,10 +453,7 @@ export async function sourceBuildInfo(binaryPath: string): Promise<SourceBuildIn
 		if (typeof field !== "string" || !field) return undefined;
 	}
 	try {
-		const hasher = new Bun.CryptoHasher("sha256");
-		for await (const chunk of Bun.file(resolved).stream()) hasher.update(chunk);
-		const hash = hasher.digest("hex");
-		if (hash !== candidateSha256) return undefined;
+		if ((await sha256File(resolved)) !== candidateSha256) return undefined;
 	} catch {
 		return undefined;
 	}
