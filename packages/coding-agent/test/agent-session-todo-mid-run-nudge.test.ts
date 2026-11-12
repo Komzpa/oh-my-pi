@@ -122,6 +122,13 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		});
 	}
 
+	/** A compaction boundary: the earlier nudge left the model's context, but no todo state was written. */
+	function compact(): void {
+		const kept = sessionManager.appendMessage({ role: "user", content: "Continue work", timestamp: Date.now() });
+		sessionManager.appendCompaction("Earlier work", undefined, kept, 100);
+	}
+
+	/** Polls like the agent loop and delivers each nudge via message_end so it lands on the session branch. */
 	async function drainNudges(): Promise<CustomMessage[]> {
 		if (!asideProvider) throw new Error("aside provider was never captured");
 		const thunks = await asideProvider("work");
@@ -131,8 +138,10 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 			if (!message) continue;
 			if (message.role !== "custom") continue;
 			if ((message as CustomMessage).customType !== NUDGE_TYPE) continue;
+			session.agent.emitExternalEvent({ type: "message_end", message });
 			out.push(message as CustomMessage);
 		}
+		await session.waitForIdle();
 		return out;
 	}
 
@@ -223,7 +232,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 			if (event.type === "todo_reminder") reminderEvents.push(event);
 		});
 
-		session.setTodoPhases([
+		session.commitTodoPhases([
 			{
 				name: "Refactor pass",
 				tasks: ["Sweep call sites", "Update tests", "Polish docs"].map((content, index) => ({
@@ -331,27 +340,62 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		expect(reminderEvents).toEqual([]);
 	});
 
-	it("continues nudging after new mutation windows until the per-cycle cap", async () => {
-		let fired = 0;
-		for (let cycle = 0; cycle < 3; cycle++) {
-			for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
-			fired += (await drainNudges()).length;
-		}
-		expect(fired).toBe(2);
+	it("suppresses an identical mutation-window nudge until the content changes", async () => {
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+		const first = await drainNudges();
+		expect(first).toHaveLength(1);
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+		expect(await drainNudges()).toEqual([]);
+
+		const phases = session.getTodoPhases();
+		delete phases[0].tasks[1].schedule;
+		session.setTodoPhases(phases);
+		const changed = await drainNudges();
+		expect(changed).toHaveLength(1);
+		expect(changed[0]?.content).not.toEqual(first[0]?.content);
 		expect(reminderEvents).toEqual([]);
 	});
 
-	it("re-arms the nudge budget after a todo state write so a long turn keeps getting nudged", async () => {
-		// Without the re-arm, the cap outlives the progress it rations: two
-		// nudges in a single prompt silence the mid-run path until the next
-		// user prompt, which is precisely the stale-HUD case the nudge exists
-		// for.
+	it("re-delivers the same nudge after compaction without lifting the per-cycle cap", async () => {
 		let fired = 0;
-		for (let cycle = 0; cycle < MAX_PER_CYCLE; cycle++) {
+		// Each compaction forgets the earlier nudge, so identical content is delivered again —
+		// but only up to the per-cycle cap, which compaction must not reset.
+		for (let cycle = 0; cycle < MAX_PER_CYCLE + 2; cycle++) {
 			for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+			if (cycle > 0) compact();
 			fired += (await drainNudges()).length;
 		}
 		expect(fired).toBe(MAX_PER_CYCLE);
+		expect(reminderEvents).toEqual([]);
+	});
+
+	it("re-delivers an identical nudge after the session tree is switched to before the last nudge", async () => {
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+		const first = await drainNudges();
+		expect(first).toHaveLength(1);
+
+		const nudgeEntry = sessionManager.getLatestBranchMatching(
+			metadata => metadata.type === "custom_message" && metadata.customType === NUDGE_TYPE,
+		);
+		expect(nudgeEntry?.parentId).toBeTruthy();
+		await session.navigateTree(nudgeEntry!.parentId!);
+
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+		const second = await drainNudges();
+		expect(second).toHaveLength(1);
+		expect(second[0]?.content).toEqual(first[0]?.content);
+	});
+
+	it("re-arms the nudge budget after a todo state write so a long turn keeps getting nudged", async () => {
+		let fired = 0;
+		for (let cycle = 0; cycle < MAX_PER_CYCLE; cycle++) {
+			for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+			if (cycle > 0) compact();
+			fired += (await drainNudges()).length;
+		}
+		expect(fired).toBe(MAX_PER_CYCLE);
+		compact();
+		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 		expect(await drainNudges()).toEqual([]);
 
 		// The agent acted on a nudge and wrote todo state — the same path the
@@ -367,6 +411,7 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		let fired = 0;
 		for (let cycle = 0; cycle < MAX_PER_CYCLE; cycle++) {
 			for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
+			if (cycle > 0) compact();
 			fired += (await drainNudges()).length;
 		}
 		expect(fired).toBe(MAX_PER_CYCLE);
@@ -374,14 +419,17 @@ describe("AgentSession mid-run todo reconciliation nudge", () => {
 		// Neither a read-only view nor a failed attempt nor a details-less
 		// Cursor read snapshot wrote state, so none of them re-arms.
 		emitToolResult("todo", { details: { op: "view", phases: [] } });
+		compact();
 		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 		expect(await drainNudges()).toEqual([]);
 
 		emitToolResult("todo", { isError: true, details: { op: "done", phases: [] } });
+		compact();
 		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 		expect(await drainNudges()).toEqual([]);
 
 		emitToolResult("todo");
+		compact();
 		for (let i = 0; i < THRESHOLD; i++) emitToolResult("edit");
 		expect(await drainNudges()).toEqual([]);
 		expect(reminderEvents).toEqual([]);

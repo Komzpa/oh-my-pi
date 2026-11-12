@@ -19,6 +19,14 @@ export interface LeadRowInstructionOptions {
 	forecast?: TodoPlanForecast;
 	reviewAnswers?: ReadonlySet<string>;
 	userBlockAsked?: ReadonlySet<string>;
+	/** Omit paragraphs that repeat on every row of the same kind; the caller emits them once. */
+	compact?: boolean;
+}
+
+export interface LeadRowBlock {
+	row: string;
+	text: string;
+	shared: Array<"scope" | "staffing">;
 }
 
 /** The same row projection as the TODO view, with actions at the event instead of in a runbook. */
@@ -27,7 +35,17 @@ export function renderLeadRowInstructions(
 	context: TodoDisplayContext,
 	options: LeadRowInstructionOptions,
 ): string {
-	const externalGates = new Set<string | undefined>();
+	return renderLeadRowBlocks(phases, context, options)
+		.map(block => block.text)
+		.join("\n");
+}
+
+/** One rendered instruction per row. In compact mode the paragraphs shared by many rows are left out and named in `shared`. */
+export function renderLeadRowBlocks(
+	phases: TodoScheduleInput,
+	context: TodoDisplayContext,
+	options: LeadRowInstructionOptions,
+): LeadRowBlock[] {
 	return phases
 		.flatMap(phase => phase.tasks)
 		.sort((a, b) => Number(todoNeedsOwnerDecision(b.schedule)) - Number(todoNeedsOwnerDecision(a.schedule)))
@@ -105,18 +123,13 @@ export function renderLeadRowInstructions(
 					throw new Error(`Unmapped TODO state: ${unmapped}`);
 				}
 			}
-			if (data.waitExternal) {
-				if (externalGates.has(row.blocker)) return [];
-				externalGates.add(row.blocker);
-				data.row = phases
-					.flatMap(phase => phase.tasks)
-					.filter(item => item.status === "blocked" && item.blocker === row.blocker)
-					.map(item => JSON.stringify(item.content))
-					.join(", ");
-			}
-			return [prompt.render(notices, data).trim()];
-		})
-		.join("\n");
+			const shared: LeadRowBlock["shared"] = [];
+			if (options.compact && data.waitWorker) shared.push("scope");
+			if (options.compact && data.workerAction) shared.push("staffing");
+			data.scopeParagraph = data.waitWorker === true && !options.compact;
+			data.staffingParagraph = data.workerAction === true && !options.compact;
+			return [{ row: row.content, text: prompt.render(notices, data).trim(), shared }];
+		});
 }
 
 /** A failed/exhausted audit requires an execution/repair worker, not another review. */
