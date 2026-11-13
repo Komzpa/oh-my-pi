@@ -668,6 +668,7 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 				logger.warn("AgentLifecycleManager.release: terminal transition rejected", { id });
 			}
 		}
+		let releaseError: unknown;
 		try {
 			if (options?.tombstone && ref.sessionFile) await persistAgentTombstone(ref.sessionFile);
 		} finally {
@@ -683,13 +684,20 @@ export class AgentLifecycleManager implements AgentLifecycleApi {
 			try {
 				await onRelease?.();
 			} catch (error) {
+				releaseError = error;
+				const message = error instanceof Error ? error.message : String(error);
 				logger.warn("AgentLifecycleManager.release: owned resource cleanup failed", {
 					id,
-					error: String(error),
+					error: message,
 				});
+				// Persist recovery through the established history channel before
+				// unregister below drops the ref: the thrown message carries the
+				// retained workspace path and rescue branch to the caller.
+				this.#registry.setHistory(id, { error: message });
 			}
 		}
 		if (!options?.tombstone) this.#registry.unregister(id, ref);
+		if (releaseError !== undefined) throw releaseError;
 		return true;
 	}
 
