@@ -5,6 +5,10 @@
 ### Fixed
 
 - Retry-hint parsing now understands "try again in N seconds" spelled out.
+### Added
+
+- Added `mixHex` for blending two hex colors ([#19167](https://github.com/can1357/oh-my-pi/pull/19167) by [@materemias](https://github.com/materemias))
+
 ## [18.19.0] - 2026-11-12
 
 ### Added

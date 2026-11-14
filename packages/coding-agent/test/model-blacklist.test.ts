@@ -598,7 +598,7 @@ test("a banned advisor roster entry stays unavailable without disabling the perm
 			{ name: "Denied", model: bannedSelector },
 			{ name: "Permitted", model: allowedSelector },
 		],
-		advisorTools: [],
+		advisorTools: { names: () => [], create: () => ({ tools: [] }) },
 		advisorStreamFn: (model, context, options) => {
 			requested.push(model.id);
 			return advisor.stream(model, context, options);
