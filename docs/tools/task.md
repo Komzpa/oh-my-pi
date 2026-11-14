@@ -229,7 +229,7 @@ Artifacts and side channels:
    - Allocates session-scoped output ids through `AgentOutputManager` so `agent://` stays unique across invocations.
    - Shares the parent `local://` root and `ArtifactManager` with subagents.
 - Background work / cancellation
-   - `write proc://<jobId>/kill` (no `content` needed) or parent tool-call abort cancels background jobs; parent tool-call abort cancels sync runs through the call signal. A cancelled run stops but its agent stays `idle` and resumable. An owned running subagent without a job can be cancelled through `proc://<agentId>/kill`, which aborts and releases its session.
+   - `write proc://<jobId>/kill` (empty `content`) or parent tool-call abort cancels background jobs; parent tool-call abort cancels sync runs through the call signal. A cancelled run stops but its agent stays `idle` and resumable. An owned running subagent without a job can be cancelled through `proc://<agentId>/kill`, which aborts and releases its session.
    - Missing-`yield` recovery sends up to three internal reminder prompts to the child session.
    - Autonomous focused/IRC turns also enqueue at most three internal reminders after refused yields, within the same observed turn. A running-process warning does not silently discard that turn's result or move it into the next prompt's result slot.
 

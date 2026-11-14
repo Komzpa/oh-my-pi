@@ -74,6 +74,7 @@ import { isRecord, logger, prompt, Snowflake, toError, withLoopPhase } from "@oh
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import compactionBackoffNotice from "../prompts/steering/compaction-backoff.md" with { type: "text" };
 import { writeArtifact } from "./artifacts";
+import { cfgOffline } from "../config/auxiliary-model-policy";
 import type { ModelRegistry } from "../config/model-registry";
 import { CHAT_MODEL_ROLE_IDS } from "../config/model-roles";
 import type { Settings } from "../config/settings";
@@ -3909,9 +3910,11 @@ export class SessionMaintenance {
 		availableModels = availableModels.map(model => registry.fitContextWindow(model, settings));
 		const candidates: Model[] = [];
 		const seen = new Set<string>();
+		const activeProvider = this.#model?.provider;
+		const offline = cfgOffline.get(settings);
 
 		const addCandidate = (model: Model | undefined): void => {
-			if (!model) return;
+			if (!model || (offline && (!activeProvider || model.provider !== activeProvider))) return;
 			const key = `${model.provider}/${model.id}`;
 			if (seen.has(key)) return;
 			seen.add(key);
@@ -3935,8 +3938,9 @@ export class SessionMaintenance {
 		const sortedByContext = [...availableModels].sort((a, b) => (b.contextWindow ?? 0) - (a.contextWindow ?? 0));
 		for (const model of sortedByContext) {
 			if (!seen.has(`${model.provider}/${model.id}`)) {
+				const count = candidates.length;
 				addCandidate(model);
-				break;
+				if (candidates.length > count) break;
 			}
 		}
 

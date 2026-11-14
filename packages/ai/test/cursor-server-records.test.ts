@@ -216,6 +216,12 @@ function model(id: string, baseUrl = ""): Model<"cursor-agent"> {
 
 const firstUser: Message = { role: "user", content: "Is the number in /tmp/num.txt prime?", timestamp: 1 };
 const secondUser: Message = { role: "user", content: "What is it plus 7921?", timestamp: 3 };
+// Context a `context` hook appends after the prompt for one request only.
+const hookContext: Message = {
+	role: "developer",
+	content: "Retrieved project memory: num.txt holds 7919.",
+	timestamp: 2,
+};
 
 /**
  * Turn 1 on K3: the model reads a file through the exec channel, the server
@@ -244,13 +250,13 @@ const recordTurn: FixtureStream = (stream, headers, received) => {
 };
 
 async function recordK3Turn(
-	tail: Message[] = [],
+	messages: Message[] = [firstUser],
 ): Promise<{ assistant: AssistantMessage; toolResult: ToolResultMessage }> {
 	const paired: ToolResultMessage[] = [];
 	const assistant = await withCursorServer([recordTurn], async baseUrl => {
 		const response = streamCursor(
 			model("kimi-k3", baseUrl),
-			{ messages: [firstUser, ...tail] },
+			{ messages },
 			{
 				apiKey: "test-token",
 				sessionId: `records-${crypto.randomUUID()}`,
@@ -338,7 +344,7 @@ describe("Cursor server records", () => {
 			content:
 				"elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
 		};
-		const { assistant, toolResult } = await recordK3Turn([note]);
+		const { assistant, toolResult } = await recordK3Turn([firstUser, note]);
 		const { ids } = await rootPromptIds(model("kimi-k3"), [
 			firstUser,
 			assistant,
@@ -520,6 +526,35 @@ describe("Cursor server records", () => {
 
 		expect(ids.filter(id => SPAN_IDS.includes(id))).toEqual([]);
 		expect(records.slice(2).map(record => JSON.parse(record).role)).toEqual(["assistant", "tool", "assistant"]);
+	});
+
+	it("sends the user prompt, not context appended after it, as the run's user message", async () => {
+		const blobStore = new Map<string, Uint8Array>();
+		const { requestBytes } = await buildGrpcRequest(
+			model("kimi-k3"),
+			{ messages: [firstUser, hookContext] },
+			undefined,
+			{ conversationId: `records-${crypto.randomUUID()}`, blobStore },
+		);
+		const message = fromBinary(AgentClientMessageSchema, requestBytes).message;
+		const action = message.case === "runRequest" ? message.value.action?.action : undefined;
+		const root = message.case === "runRequest" ? (message.value.conversationState?.rootPromptMessagesJson ?? []) : [];
+
+		expect(action?.case).toBe("userMessageAction");
+		expect(action?.case === "userMessageAction" ? action.value.userMessage?.text : undefined).toBe(
+			"Is the number in /tmp/num.txt prime?",
+		);
+		const history = root.map(id => new TextDecoder().decode(blobStore.get(hex(id))));
+		expect(history.some(record => record.includes("Retrieved project memory"))).toBe(true);
+	});
+
+	it("replays a turn recorded beside transient context once that context leaves history", async () => {
+		const { assistant, toolResult } = await recordK3Turn([firstUser, hookContext]);
+
+		const { ids } = await rootPromptIds(model("kimi-k3"), [firstUser, assistant, toolResult, secondUser]);
+
+		expect(assistant.providerPayload).toEqual(k3Payload);
+		expect(ids.filter(id => SPAN_IDS.includes(id))).toEqual(SPAN_IDS);
 	});
 
 	it("keeps the records of a turn that resumed from a checkpoint", async () => {

@@ -91,7 +91,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 	});
 
@@ -288,7 +287,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
 			settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 
 		try {
@@ -328,7 +326,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings: session.settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 		expect(customSession.isAdvisorEnabled()).toBe(false);
 
@@ -394,7 +391,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings,
 			modelRegistry: registry,
-			advisorTools: [],
 		});
 		try {
 			expect(raceSession.isAdvisorEnabled()).toBe(true);
@@ -428,14 +424,12 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager,
 			settings: sharedSettings,
 			modelRegistry,
-			advisorTools: [],
 		});
 		const sessionB = new AgentSession({
 			agent: session.agent,
 			sessionManager,
 			settings: sharedSettings,
 			modelRegistry,
-			advisorTools: [],
 		});
 
 		expect(sessionA.isAdvisorEnabled()).toBe(false);
@@ -496,7 +490,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 
 		try {
@@ -796,7 +789,7 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
 			settings: Settings.isolated({ "compaction.enabled": false, "session.maxCost": 0.25 }),
 			modelRegistry,
-			advisorTools: [],
+			advisorTools: { names: () => [], create: () => ({ tools: [] }) },
 			extensionRunner,
 		});
 		session.setSessionSwitchReconciler(async () => {
@@ -805,7 +798,7 @@ describe("AgentSession advisor toggle", () => {
 				sessionManager: SessionManager.inMemory(tempDir.path()),
 				settings: session.settings,
 				modelRegistry,
-				advisorTools: [],
+				advisorTools: { names: () => [], create: () => ({ tools: [] }) },
 				costGate: session.costGate,
 			});
 			children.push(child);
@@ -852,7 +845,7 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
 			settings: Settings.isolated({ "compaction.enabled": false }),
 			modelRegistry,
-			advisorTools: [],
+			advisorTools: { names: () => [], create: () => ({ tools: [] }) },
 			extensionRunner,
 		});
 		session.restoreInitialAdvisorCosts(new Map([["", 0.5]]));
@@ -936,7 +929,7 @@ describe("AgentSession advisor toggle", () => {
 							sessionManager: SessionManager.inMemory(tempDir.path()),
 							settings: active.settings,
 							modelRegistry,
-							advisorTools: [],
+							advisorTools: { names: () => [], create: () => ({ tools: [] }) },
 							costGate: active.costGate,
 						});
 						await active.advisorCostRestore;
@@ -1323,7 +1316,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: branchManager,
 			settings: Settings.isolated({ "compaction.enabled": false }),
 			modelRegistry,
-			advisorTools: [],
 			extensionRunner,
 		});
 		try {
@@ -1366,7 +1358,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: branchManager,
 			settings: Settings.isolated({ "compaction.enabled": false }),
 			modelRegistry,
-			advisorTools: [],
 			extensionRunner,
 		});
 		try {
@@ -1416,7 +1407,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 
 		try {
@@ -1488,7 +1478,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.inMemory(),
 			settings,
 			modelRegistry,
-			advisorTools: [],
 		});
 
 		try {
@@ -1653,7 +1642,6 @@ describe("AgentSession advisor toggle", () => {
 			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
 			settings: subSettings,
 			modelRegistry,
-			advisorTools: [],
 			agentKind: "sub",
 			advisorConfigs: roster,
 		});

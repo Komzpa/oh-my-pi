@@ -1991,7 +1991,7 @@ export async function resolveModelOverrideWithAuthFallback(
 		Partial<Pick<ModelRegistry, "isSelectorSuppressed">>,
 	settings?: Settings,
 	sessionId?: string,
-	options?: { exactOnly?: boolean },
+	options?: { exactOnly?: boolean; allowedProvider?: string | null },
 ): Promise<{
 	model?: Model<Api>;
 	thinkingLevel?: ConfiguredThinkingLevel;
@@ -2006,11 +2006,21 @@ export async function resolveModelOverrideWithAuthFallback(
 		disabledProviders,
 		settings,
 	);
-	if (disabledProviders.size > 0) {
-		const enabledModels = lookupRegistry.getAvailable().filter(model => !disabledProviders.has(model.provider));
+	if (disabledProviders.size > 0 || options?.allowedProvider !== undefined) {
+		const enabledModels = lookupRegistry
+			.getAvailable()
+			.filter(
+				model =>
+					!disabledProviders.has(model.provider) &&
+					(options?.allowedProvider === undefined || model.provider === options.allowedProvider),
+			);
 		lookupRegistry = { getAvailable: () => enabledModels };
 	}
 	const primary = resolveModelOverride(modelPatterns, lookupRegistry, settings, options);
+	if (!primary.model && options?.allowedProvider !== undefined && parentActiveModelPattern && !options.exactOnly) {
+		const fallback = resolveModelOverride([parentActiveModelPattern], lookupRegistry, settings);
+		if (fallback.model) return { ...fallback, authFallbackUsed: true };
+	}
 	if (!primary.model) {
 		return { ...primary, authFallbackUsed: false };
 	}
