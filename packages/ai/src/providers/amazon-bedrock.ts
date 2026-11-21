@@ -1,3 +1,8 @@
+import {
+	recordThinkingPrefixDispatch,
+	snapshotThinkingPrefix,
+	thinkingPrefixDiagnostic,
+} from "./thinking-prefix-diagnostics";
 /**
  * Amazon Bedrock chat transport.
  *
@@ -882,6 +887,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 						: undefined,
 				...(prefixMismatchBehavior ? { additionalModelResponseFieldPaths: ["/input_transformations"] } : {}),
 			};
+			const beforePayloadHook = options?.onPayload ? snapshotThinkingPrefix(commandInput) : undefined;
 			const replacementInput = await options?.onPayload?.(commandInput, model);
 			if (replacementInput !== undefined) commandInput = replacementInput as ConverseStreamRequest;
 			// After the hook so extension-injected tags are validated too, and before the
@@ -899,6 +905,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 					url: resolveBedrockRequestUrl(model, base, "converse-stream").url,
 					body: commandInput,
 				};
+				recordThinkingPrefixDispatch(commandInput, options, `bedrock:${base}:${model.id}`, beforePayloadHook);
 				({ response } = await sendBedrockRequest(model, options, region, base, commandInput, "converse-stream"));
 				if (response.ok) break;
 				if (!bearerToken && (response.status === 401 || response.status === 403)) {
@@ -1017,6 +1024,7 @@ export const streamBedrock: StreamFunction<"bedrock-converse-stream"> = (
 								transformations
 									.filter(transformation => transformation.reason === "prefix_binding_mismatch")
 									.map(transformation => transformation.path),
+								thinkingPrefixDiagnostic(commandInput),
 							);
 						}
 						// A sentinel-only request must never surface a tool-use stop:
