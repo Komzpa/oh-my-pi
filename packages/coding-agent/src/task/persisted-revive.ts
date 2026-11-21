@@ -21,6 +21,7 @@ import type { PreparedExtension } from "../extensibility/extensions/types";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
+import { findLastPersistedSubagentElapsedNoteAt, SubagentElapsedSignal } from "./subagent-elapsed-signal";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionHandle } from "../session/agent-session-handle";
 import type { ArtifactManagerApi } from "../session/artifacts";
@@ -432,6 +433,14 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 	const mcpProxyTools = mcpFollower?.proxyTools() ?? [];
 
 	let session: AgentSession;
+	const attemptStartedAt =
+		typeof init.attemptStartedAt === "number" && Number.isFinite(init.attemptStartedAt)
+			? init.attemptStartedAt
+			: Date.now();
+	const elapsedMessages = reopened
+		.getBranch()
+		.flatMap(entry => (entry.type === "message" && entry.message.role === "developer" ? [entry.message] : []));
+	const lastNoteAt = findLastPersistedSubagentElapsedNoteAt(elapsedMessages, attemptStartedAt);
 	try {
 		({ session } = await createAgentSession({
 			cwd: restoredSeance?.cwd ?? spec.root.sessionManager.getCwd(),
@@ -445,6 +454,7 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			...(persistedModelPattern ? { modelPattern: persistedModelPattern } : {}),
 			modelPatternAuthFallback: restoredSeance || init.perCallModel ? undefined : init.resolvedModel,
 			settings: subagentSettings,
+			noContextFiles: init.noContextFiles,
 			sessionManager: reopened,
 			agentId: ref.id,
 			agentDisplayName: ref.displayName,
@@ -523,6 +533,17 @@ export async function revivePersistedSubagent(spec: PersistedReviveSpec, expecte
 			throw error;
 		}
 	}
+	const elapsedSignal = new SubagentElapsedSignal({
+		attemptStartedAt,
+		lastNoteAt,
+		appendMessage: message => {
+			// Cold revival may not have an agent yet; the session entry still persists.
+			session.agent?.appendMessage?.(message);
+			reopened.appendMessage(message);
+		},
+	});
+	elapsedSignal.attach(session.agent);
+	// Let interrupted-turn recovery inspect the untouched transcript before the first provider request.
 	mcpFollower?.bind(session);
 	// Clamp the active set to the persisted list: createAgentSession's
 	// `alwaysInclude` can re-add non-defaultInactive extension/custom tools

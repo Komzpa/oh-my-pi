@@ -131,6 +131,19 @@ describe("anthropic media Claude cannot read", () => {
 		);
 	});
 
+	it("still rejects unsupported attachments before a legacy elapsed scaffold", () => {
+		const elapsed: DeveloperMessage = {
+			role: "developer",
+			content:
+				"elapsed 12s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+			synthetic: true,
+			timestamp: clock++,
+		};
+		expect(() => convertAnthropicMessages([withAttachment("image/heic"), elapsed], MODEL, false)).toThrow(
+			rejection("image/heic"),
+		);
+	});
+
 	it("lets the continue shortcut recover after the rejected turn", () => {
 		const resume: DeveloperMessage = {
 			role: "developer",

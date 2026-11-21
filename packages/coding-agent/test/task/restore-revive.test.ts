@@ -1,3 +1,5 @@
+import type { Message } from "@oh-my-pi/pi-ai";
+import { isPersistedSubagentElapsedNote } from "@oh-my-pi/pi-ai/utils/subagent-elapsed-note";
 /**
  * `omp --restore` end to end for a subagent: a transcript a crash cut off mid tool
  * call is revived from disk, its cut-off call runs again, the agent answers, and the
@@ -85,7 +87,13 @@ const thinking = { mode: "effort", efforts: [Effort.Medium, Effort.High] } as co
  * `handoff` records a prewalk handoff to `high` effort before the cut-off call;
  * `fallback` follows that handoff with a retry fallback hop back to the spawn model.
  */
-async function restoreInterruptedChild(options: { transcript?: "handoff" | "fallback" } = {}) {
+async function restoreInterruptedChild(
+	options: {
+		transcript?: "handoff" | "fallback";
+		attemptStartedAt?: number;
+		checkpoints?: { requests: Message[][]; advanceClock(): void };
+	} = {},
+) {
 	const cwd = path.join(root, "home", "work");
 	await fs.mkdir(cwd, { recursive: true });
 	const notes = path.join(cwd, "notes.txt");
@@ -112,6 +120,7 @@ async function restoreInterruptedChild(options: { transcript?: "handoff" | "fall
 		tools: ["read"],
 		agent: "task",
 		resolvedModel: `mock/${SPAWN_MODEL}`,
+		attemptStartedAt: options.attemptStartedAt,
 	});
 	child.appendMessage({ role: "user", content: "report what notes.txt says", timestamp: Date.now() });
 	if (options.transcript) {
@@ -150,8 +159,15 @@ async function restoreInterruptedChild(options: { transcript?: "handoff" | "fall
 				id,
 				reasoning: true,
 				handler: (context, streamOptions) => {
-					const last = context.messages.at(-1);
+					const last = context.messages.findLast(message => !isPersistedSubagentElapsedNote(message));
 					if (last?.role !== "toolResult" || last.toolName !== "read") return { content: ["label"] };
+					if (options.checkpoints) {
+						const { requests, advanceClock } = options.checkpoints;
+						requests.push(structuredClone(context.messages));
+						if (requests.length === 1) advanceClock();
+						if (requests.length < 3)
+							return { content: [{ type: "toolCall", name: "read", arguments: { path: notes } }] };
+					}
 					readResults[id]!.push(JSON.stringify(last.content));
 					readEfforts[id]!.push(streamOptions?.reasoning);
 					return { content: [`restored: 42 (${id})`] };
@@ -225,4 +241,31 @@ it("revives a subagent whose handoff target failed over on the spawn model, not 
 	expect(delivered).toContain(`restored: 42 (${SPAWN_MODEL})`);
 	expect(readResults[SPAWN_MODEL]).toHaveLength(1);
 	expect(readResults[HANDOFF_MODEL]).toEqual([]);
+}, 20_000);
+
+it("keeps cold-revived checkpoints in the prefix of subsequent tool requests", async () => {
+	let now = Date.now();
+	const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+	const requests: Message[][] = [];
+	try {
+		const { delivered } = await restoreInterruptedChild({
+			attemptStartedAt: now - 6 * 60_000,
+			checkpoints: {
+				requests,
+				advanceClock: () => {
+					now += 5 * 60_000;
+				},
+			},
+		});
+		expect(delivered).toContain(`restored: 42 (${SPAWN_MODEL})`);
+		expect(requests).toHaveLength(3);
+		expect(requests[0]!.filter(isPersistedSubagentElapsedNote).at(-1)).toMatchObject({
+			role: "developer",
+			content: expect.stringMatching(/ · elapsed 6m in this attempt\./),
+		});
+		expect(requests[1]!.filter(isPersistedSubagentElapsedNote).at(-1)?.timestamp).toBe(now);
+		expect(requests[2]!.slice(0, requests[1]!.length)).toEqual(requests[1]);
+	} finally {
+		clock.mockRestore();
+	}
 }, 20_000);

@@ -53,6 +53,7 @@ import type {
 import { normalizeSystemPrompts } from "../utils";
 import { isDemotedThinking } from "../utils/block-symbols";
 import { deterministicUuid } from "../utils/deterministic-id";
+import { isLegacySubagentElapsedNote } from "../utils/subagent-elapsed-note";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import { MIN_COMPRESSED_BODY_BYTES } from "../utils/request-compression";
 import { normalizeSchemaForGoogle, toolWireSchema } from "../utils/schema";
@@ -242,6 +243,8 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 			const baseUrl = (model.baseUrl || DEVIN_API_URL).replace(/\/+$/, "");
 			const auth = await fetchDevinAuthMetadata(options?.apiKey, baseUrl, fetchImpl, options?.signal);
 			const chatBaseUrl = auth.baseUrl ?? baseUrl;
+			// Use the same note-free history for wire shaping and recovery.
+			const messages = context.messages.filter(message => !isLegacySubagentElapsedNote(message));
 			const turn: DevinTurn = {
 				apiKey: options?.apiKey,
 				userJwt: auth.userJwt,
@@ -249,8 +252,10 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 				// Foreign ids (cross-model calls and their results alike): Responses
 				// composites (`call_id|item_id`) keep their wire `call_id`; opaque ids
 				// from other APIs keep every segment. Both are then sanitized and capped.
+				// The subagent elapsed note is advisory scaffolding: left in the turn it would
+				// be routed on and replayed as the active user prompt.
 				messages: transformMessages(
-					context.messages,
+					messages,
 					model,
 					(id, _target, source) =>
 						normalizeToolCallId(
@@ -358,16 +363,17 @@ export const streamDevin: StreamFunction<"devin-agent"> = (
 								// The full protobuf also contains the system prompt and tool
 								// schemas, which history maintenance cannot shrink. Re-encode
 								// only the repeated history field before choosing recovery.
+								// Inspect source roles: wire normalization may demote orphan tool results to users.
 								let activeTailCount = 0;
-								const lastRole = context.messages.at(-1)?.role;
+								const lastRole = messages.at(-1)?.role;
 								if (lastRole === "user" || lastRole === "developer") {
 									activeTailCount = 1;
 									// A trailing developer message can accompany the current user
 									// prompt. Earlier user-role records may instead be flushed
 									// execution history and must remain eligible for compaction.
 									if (lastRole === "developer") {
-										for (let i = context.messages.length - 2; i >= 0; i--) {
-											const role = context.messages[i].role;
+										for (let i = messages.length - 2; i >= 0; i--) {
+											const role = messages[i].role;
 											if (role !== "user" && role !== "developer") break;
 											activeTailCount++;
 										}

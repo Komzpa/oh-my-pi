@@ -236,7 +236,7 @@ function installRefusingLane(): void {
 }
 
 describe("codex live steering", () => {
-	it("steers the streaming response and reads the server's automatic continuation without sending a request", async () => {
+	it.each([false, true])("attaches accepted steering (elapsed tail: %s)", async withElapsed => {
 		installSocket((frame, socket) => {
 			if (frame.type === "response.create") {
 				// Stream part of an answer, then wait for the steer.
@@ -284,7 +284,25 @@ describe("codex live steering", () => {
 		const steerMessage: UserMessage = { role: "user", content: "use tabs", timestamp: Date.now() };
 		const second = await streamOpenAICodexResponses(
 			model,
-			{ systemPrompt: SYSTEM, messages: [user, first, steerMessage] },
+			{
+				systemPrompt: SYSTEM,
+				messages: [
+					user,
+					first,
+					steerMessage,
+					...(withElapsed
+						? [
+								{
+									role: "developer" as const,
+									content:
+										"elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+									synthetic: true,
+									timestamp: 4,
+								},
+							]
+						: []),
+				],
+			},
 			options(state),
 		).result();
 
@@ -294,7 +312,7 @@ describe("codex live steering", () => {
 		expect(ScriptedWebSocket.instances).toHaveLength(1);
 	});
 
-	it("returns pending tool output without repeating steering the server already queued", async () => {
+	it.each([false, true])("returns tool output after steering (elapsed tail: %s)", async withElapsed => {
 		installSocket((frame, socket) => {
 			if (frame.type === "response.create" && creates().length === 1) {
 				const call = { type: "function_call", id: "fc_1", call_id: "call_1", name: "status", arguments: "{}" };
@@ -351,7 +369,26 @@ describe("codex live steering", () => {
 
 		await streamOpenAICodexResponses(
 			model,
-			{ systemPrompt: SYSTEM, messages: [user, first, toolResult, steerMessage] },
+			{
+				systemPrompt: SYSTEM,
+				messages: [
+					user,
+					first,
+					toolResult,
+					steerMessage,
+					...(withElapsed
+						? [
+								{
+									role: "developer" as const,
+									content:
+										"elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+									synthetic: true,
+									timestamp: 4,
+								},
+							]
+						: []),
+				],
+			},
 			options(state),
 		).result();
 
@@ -359,7 +396,21 @@ describe("codex live steering", () => {
 		expect(continuation?.previous_response_id).toBe("resp_1");
 		expect(continuation?.input).toEqual([
 			expect.objectContaining({ type: "function_call_output", call_id: "call_1", output: "design done" }),
+			...(withElapsed
+				? [
+						expect.objectContaining({
+							role: "developer",
+							content: [
+								{
+									type: "input_text",
+									text: "elapsed 5s. Informational only: no deadline or time budget. Continue until the assigned work is done.",
+								},
+							],
+						}),
+					]
+				: []),
 		]);
+		expect(ScriptedWebSocket.instances).toHaveLength(1);
 	});
 
 	it("leaves accepted steering to the request that wins the socket when an overlapping one falls back to SSE", async () => {
