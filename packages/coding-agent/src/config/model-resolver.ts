@@ -23,6 +23,7 @@ import {
  */
 
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { drawPoolOrder, type ModelRolePool } from "./model-role-pools";
 import type { ModelRoleLookup } from "@oh-my-pi/pi-tui/overlays/model-browser";
 import type { Api, Effort, KnownProvider, Model, ModelSpec } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -1212,12 +1213,23 @@ export function rolePriorityDefaults(role: string): string[] {
 	return hasOwnKey(defaults, key) ? normalizeModelPatternList([...defaults[key]]) : [];
 }
 
+/**
+ * Role lookup that may also expose weighted pools (`modelRolePools`). `Settings` satisfies it;
+ * a plain {@link ModelRoleLookup} simply has no pools.
+ */
+export interface ModelRolePoolLookup extends ModelRoleLookup {
+	/** Effective settings revision; mutable lookups without one are never cached. */
+	readonly revision?: number;
+	getModelRolePool?(role: string): ModelRolePool | undefined;
+}
+
 /** Resolve aliases inside a configured pattern list without leaking cycles to model matching. */
 function resolveNestedRolePatterns(
 	value: string | string[],
 	roleDefaults: string[],
-	settings: ModelRoleLookup | undefined,
+	settings: ModelRolePoolLookup | undefined,
 	visited: Set<string>,
+	seed?: string,
 ): string[] {
 	const resolved: string[] = [];
 	for (const pattern of normalizeModelPatternList(value)) {
@@ -1240,7 +1252,7 @@ function resolveNestedRolePatterns(
 			continue;
 		}
 
-		const recursed = resolveConfiguredRolePattern(pattern, settings, new Set(visited));
+		const recursed = resolveConfiguredRolePattern(pattern, settings, new Set(visited), seed);
 		if (recursed) resolved.push(...recursed);
 	}
 	return resolved;
@@ -1250,17 +1262,19 @@ function resolveDefaultInheritedPatterns(
 	role: ModelRole,
 	configuredDefault: string | undefined,
 	roleDefaults: string[],
-	settings: ModelRoleLookup | undefined,
+	settings: ModelRolePoolLookup | undefined,
 	visited: Set<string>,
+	seed?: string,
 ): string[] {
 	if (!shouldInheritDefaultBeforePriority(role) || !configuredDefault) return [];
-	return resolveNestedRolePatterns(configuredDefault, roleDefaults, settings, visited);
+	return resolveNestedRolePatterns(configuredDefault, roleDefaults, settings, visited, seed);
 }
 
 function resolveConfiguredRolePattern(
 	value: string,
-	settings?: ModelRoleLookup,
+	settings?: ModelRolePoolLookup,
 	visited: Set<string> = new Set(),
+	seed?: string,
 ): string[] | undefined {
 	const normalized = value.trim();
 	if (!normalized) return undefined;
@@ -1280,7 +1294,7 @@ function resolveConfiguredRolePattern(
 	// Built-in defaults chain to other roles (judge: `@tiny`, `@smol`, `@default`). Left unexpanded, the
 	// matcher reads them as literal ids and `@default` fuzzy-matches Vertex ids like `claude-opus-4-8@default`.
 	const roleDefaults = isModelRole(role)
-		? resolveNestedRolePatterns(rolePriorityDefaults(role), [], settings, visited)
+		? resolveNestedRolePatterns(rolePriorityDefaults(role), [], settings, visited, seed)
 		: [];
 	const configuredFallback = isModelRole(role) ? ROLE_CONFIGURED_FALLBACK[role] : undefined;
 	const fallbackPatterns =
@@ -1288,13 +1302,18 @@ function resolveConfiguredRolePattern(
 		!configuredFallback ||
 		(configuredFallback.configuredOnly && !settings?.getModelRole(configuredFallback.role)?.trim())
 			? undefined
-			: resolveConfiguredRolePattern(formatModelRoleAlias(configuredFallback.role), settings, new Set(visited));
+			: resolveConfiguredRolePattern(
+					formatModelRoleAlias(configuredFallback.role),
+					settings,
+					new Set(visited),
+					seed,
+				);
 	const resolved = configured
-		? resolveNestedRolePatterns(configured, roleDefaults, settings, visited)
+		? resolveNestedRolePatterns(configured, roleDefaults, settings, visited, seed)
 		: fallbackPatterns
 			? fallbackPatterns
 			: isModelRole(role)
-				? resolveDefaultInheritedPatterns(role, configuredDefault, roleDefaults, settings, visited)
+				? resolveDefaultInheritedPatterns(role, configuredDefault, roleDefaults, settings, visited, seed)
 				: roleDefaults;
 	if (resolved.length === 0) {
 		resolved.push(...roleDefaults);
@@ -1303,7 +1322,12 @@ function resolveConfiguredRolePattern(
 		return undefined;
 	}
 
-	return thinkingLevel ? resolved.map(pattern => `${pattern}:${thinkingLevel}`) : resolved;
+	// A pool role reorders its own members; the draw is keyed by seed + role so each role of a
+	// concatenated list (`@free, @fast`) shuffles inside its own segment.
+	const pool = seed === undefined ? undefined : settings?.getModelRolePool?.(role);
+	const ordered = pool && seed !== undefined ? drawPoolOrder(resolved, pool, `${seed}\0${role}`) : resolved;
+
+	return thinkingLevel ? ordered.map(pattern => `${pattern}:${thinkingLevel}`) : ordered;
 }
 
 /**
@@ -1319,15 +1343,42 @@ export function expandRoleAlias(value: string, settings?: ModelRoleLookup): stri
 	return resolved ?? value;
 }
 
+const configuredPatternCache = new WeakMap<ModelRolePoolLookup, { revision: number; values: Map<string, string[]> }>();
+const CONFIGURED_PATTERN_CACHE_LIMIT = 8192;
+
+/**
+ * Expand every role alias in `value` to its ordered member patterns. With a `seed`, roles listed in
+ * `modelRolePools` are reordered by a weighted draw within their own segment (segment order is
+ * kept); without one the configured order is returned unchanged.
+ */
 export function resolveConfiguredModelPatterns(
 	value: string | string[] | undefined,
-	settings?: ModelRoleLookup,
+	settings?: ModelRolePoolLookup,
+	seed?: string,
 ): string[] {
+	const revision = settings?.revision;
+	let cache: Map<string, string[]> | undefined;
+	const key = JSON.stringify([value, seed]);
+	if (settings && typeof revision === "number") {
+		let entry = configuredPatternCache.get(settings);
+		if (entry?.revision !== revision) {
+			entry = { revision, values: new Map() };
+			configuredPatternCache.set(settings, entry);
+		}
+		cache = entry.values;
+		const cached = cache.get(key);
+		if (cached) return [...cached];
+	}
 	const patterns = normalizeModelPatternList(value);
-	return patterns.flatMap(pattern => {
-		const resolved = resolveConfiguredRolePattern(pattern, settings);
+	const resolvedPatterns = patterns.flatMap(pattern => {
+		const resolved = resolveConfiguredRolePattern(pattern, settings, new Set(), seed);
 		return resolved ?? [];
 	});
+	if (cache) {
+		if (cache.size >= CONFIGURED_PATTERN_CACHE_LIMIT) cache.delete(cache.keys().next().value!);
+		cache.set(key, resolvedPatterns);
+	}
+	return [...resolvedPatterns];
 }
 export interface AgentModelPatternResolutionOptions {
 	/** Highest-priority request selector, when supplied by a caller. */
@@ -1337,6 +1388,11 @@ export interface AgentModelPatternResolutionOptions {
 	settings?: Settings;
 	activeModelPattern?: string;
 	fallbackModelPattern?: string;
+	/**
+	 * Seed for `modelRolePools` draws (the spawn/agent id). Resolve once per spawn and reuse the
+	 * returned patterns for both the pick and the fallback chain. Absent: no randomness.
+	 */
+	seed?: string;
 }
 
 interface EffectiveAgentModelSelection {
@@ -1347,20 +1403,21 @@ interface EffectiveAgentModelSelection {
 function resolveEffectiveAgentModelSelection(
 	options: AgentModelPatternResolutionOptions,
 ): EffectiveAgentModelSelection {
-	const { requestModel, settingsOverride, agentModel, settings, activeModelPattern, fallbackModelPattern } = options;
+	const { requestModel, settingsOverride, agentModel, settings, activeModelPattern, fallbackModelPattern, seed } =
+		options;
 
-	const requestPatterns = resolveConfiguredModelPatterns(requestModel, settings);
+	const requestPatterns = resolveConfiguredModelPatterns(requestModel, settings, seed);
 	if (requestPatterns.length > 0) {
 		return { source: requestModel, patterns: requestPatterns };
 	}
 
-	const overridePatterns = resolveConfiguredModelPatterns(settingsOverride, settings);
+	const overridePatterns = resolveConfiguredModelPatterns(settingsOverride, settings, seed);
 	if (overridePatterns.length > 0) {
 		return { source: settingsOverride, patterns: overridePatterns };
 	}
 
 	const normalizedAgentPatterns = normalizeModelPatternList(agentModel);
-	const configuredAgentPatterns = resolveConfiguredModelPatterns(agentModel, settings);
+	const configuredAgentPatterns = resolveConfiguredModelPatterns(agentModel, settings, seed);
 	const singleAgentPattern = normalizedAgentPatterns.length === 1 ? normalizedAgentPatterns[0] : undefined;
 	const agentInheritsSessionModel = singleAgentPattern ? isSessionInheritedAgentPattern(singleAgentPattern) : false;
 	if (configuredAgentPatterns.length > 0) {
@@ -1375,7 +1432,7 @@ function resolveEffectiveAgentModelSelection(
 
 	const fallback =
 		activeModelPattern?.trim() || fallbackModelPattern?.trim() || settings?.getModelRole("default")?.trim() || "";
-	return { patterns: resolveConfiguredModelPatterns(fallback, settings) };
+	return { patterns: resolveConfiguredModelPatterns(fallback, settings, seed) };
 }
 
 /** Effective agent model patterns paired with the pre-expansion role alias behind them. */
