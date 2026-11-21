@@ -13,7 +13,7 @@ import type { EffectiveExtensionRoots } from "@oh-my-pi/pi-coding-agent/capabili
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { parseModelPattern } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { cfgCompaction } from "@oh-my-pi/pi-coding-agent/session/context-settings";
+import { cfgWorkspaceAdditionalDirectories, cfgCompaction } from "@oh-my-pi/pi-coding-agent/session/context-settings";
 import type { PreparedExtension } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import { RpcSubagentRegistry } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
@@ -43,6 +43,7 @@ import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import { createPersistedSubagentReviverFactory } from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
 import { PerCallModelError, PerCallModelUnavailableError } from "@oh-my-pi/pi-coding-agent/task/model-approval";
 import { cfgTaskMaxEffort } from "@oh-my-pi/pi-coding-agent/task/settings";
+import * as extensionRootsModule from "@oh-my-pi/pi-coding-agent/discovery/omp-extension-roots";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { buildWakeRelayBody } from "@oh-my-pi/pi-coding-agent/task/executor";
@@ -224,6 +225,7 @@ async function createPersistedSession(
 
 interface ReviveOwnerOptions {
 	extensionRoots?: () => EffectiveExtensionRoots;
+	functionRoots?: boolean;
 	preparedExtensions?: readonly PreparedExtension[];
 	authStorage?: AuthStorage;
 	modelRegistry?: ModelRegistry;
@@ -241,14 +243,14 @@ function createFactory(cwd: string, eventBus?: EventBus, owner: ReviveOwnerOptio
 			return path.join(cwd, "parent.jsonl");
 		},
 		get effectiveExtensionRoots() {
-			return (
+			const roots = (): EffectiveExtensionRoots =>
 				owner.extensionRoots?.() ?? {
 					explicit: [],
 					mode: "merge",
 					configured: [],
 					configuredLevel: "user",
-				}
-			);
+				};
+			return owner.functionRoots ? roots : roots();
 		},
 		get preparedExtensions() {
 			return owner.preparedExtensions;
@@ -295,7 +297,8 @@ describe("persisted subagent revival", () => {
 		expect(emit).toHaveBeenCalledWith({ type: "session_start" });
 	});
 
-	it("loads only extensions allowed by the live owner's root policy", async () => {
+	it.each([false, true])("revives with live roots (provider=%s)", async function (functionRoots) {
+		const rootsDiscovery = vi.spyOn(extensionRootsModule, "listOmpExtensionRoots");
 		const cwd = makeTempDir("@pi-revive-owner-roots-");
 		const sessionFile = await createPersistedSession(cwd, false, "default");
 		const ownerExtension = path.join(cwd, "owner-extension.ts");
@@ -327,6 +330,7 @@ describe("persisted subagent revival", () => {
 		const ref = AgentRegistry.global().register(createRef(sessionFile));
 		const reviver = await createFactory(cwd, undefined, {
 			extensionRoots: () => extensionRoots,
+			functionRoots,
 			authStorage,
 			modelRegistry,
 		})(ref);
@@ -343,6 +347,9 @@ describe("persisted subagent revival", () => {
 		let revived: AgentSession | undefined;
 		try {
 			revived = localSession(await reviver(ref));
+			expect(rootsDiscovery).toHaveBeenCalledWith(
+				expect.objectContaining({ extensionRoots: expect.objectContaining({ explicit: [ownerExtension] }) }),
+			);
 			const read = revived.getToolByName("read");
 			if (!read) throw new Error("Missing revived read tool");
 			await expect(read.execute("denied", { path: blockedPath })).rejects.toThrow("Owner policy denied the read");
@@ -573,6 +580,51 @@ describe("persisted subagent revival", () => {
 		expect(reviver).toBeUndefined();
 	});
 
+	it("revives restart-retained isolation in its exact workspace while ordinary revival follows the parent", async () => {
+		const cwd = makeTempDir("@pi-retained-revive-");
+		const parentCwd = makeTempDir("@pi-retained-parent-");
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession([]).session } as CreateAgentSessionResult;
+		});
+		for (const isolated of [true, false]) {
+			const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, { isolated });
+			const ref = createRef(sessionFile);
+			await Bun.write(
+				path.join(path.dirname(sessionFile), `${ref.id}.restart-isolation.json`),
+				JSON.stringify({ id: ref.id, cwd }),
+			);
+			const reviver = await createFactory(parentCwd, undefined, {
+				settings: Settings.isolated({ "workspace.additionalDirectories": [parentCwd] }),
+			})(ref);
+			if (!reviver) throw new Error("Expected restart revival");
+			await reviver(ref);
+			expect(capturedOptions?.cwd).toBe(isolated ? cwd : parentCwd);
+			expect(capturedOptions?.additionalDirectories).toEqual(isolated ? [] : undefined);
+			expect(cfgWorkspaceAdditionalDirectories.get(capturedOptions!.settings!)).toEqual(isolated ? [] : [parentCwd]);
+		}
+	});
+
+	it("refuses mismatched restart markers and rechecks retention before opening isolation", async () => {
+		const cwd = makeTempDir("@pi-retained-mismatch-");
+		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, { isolated: true });
+		const ref = createRef(sessionFile);
+		const marker = path.join(path.dirname(sessionFile), `${ref.id}.restart-isolation.json`);
+		for (const value of [
+			{ id: "other", cwd },
+			{ id: ref.id, cwd: path.dirname(cwd) },
+		]) {
+			await Bun.write(marker, JSON.stringify(value));
+			expect(await createFactory(cwd)(ref)).toBeUndefined();
+		}
+		await Bun.write(marker, JSON.stringify({ id: ref.id, cwd }));
+		const reviver = await createFactory(cwd)(ref);
+		if (!reviver) throw new Error("Expected restart revival");
+		await fs.promises.rm(marker);
+		await expect(reviver(ref)).rejects.toThrow(/no longer retained/);
+	});
+
 	it("restores the persisted agent definition name on cold revival so agent-scoped rules keep matching", async () => {
 		const cwd = makeTempDir("@pi-revive-agent-name-");
 		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, { agent: "scout" });
@@ -690,7 +742,7 @@ describe("persisted subagent revival", () => {
 				perCallThinkingLevel: Effort.Low,
 			});
 			const ref = createRef(sessionFile);
-			const reviver = await createFactory(cwd, undefined, { settings, modelRegistry })(ref);
+			const reviver = await createFactory(cwd, undefined, { settings, modelRegistry, functionRoots: true })(ref);
 			if (!reviver) throw new Error("Expected a persisted reviver");
 			await reviver(ref);
 			const check = options?.assertDispatchModel;
@@ -702,6 +754,12 @@ describe("persisted subagent revival", () => {
 
 		// The spawn approved the model through the agent's frontmatter; revival keeps that grant.
 		expect((await revive(Settings.isolated()))(own)).toBeUndefined();
+		expect(discover.mock.calls[0]?.[2]).toEqual({
+			explicit: [],
+			mode: "merge",
+			configured: [],
+			configuredLevel: "user",
+		});
 		// A disabled, removed or project-sourced agent no longer grants its model.
 		await expect(revive(Settings.isolated({ "task.disabledAgents": ["reviewer"] }))).rejects.toThrow(/not approved/);
 		discover.mockResolvedValue({ agents: [{ ...reviewer, source: "project" }], projectAgentsDir: null });

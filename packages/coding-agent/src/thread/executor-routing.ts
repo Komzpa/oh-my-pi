@@ -29,8 +29,9 @@ import { type AgentDefinition, TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "../task/t
 import { type EventBus, emitSubagentFrame } from "../utils/event-bus";
 import { isMainThread, type ThreadId } from "./identity";
 import type { WorkerThreadLink } from "./protocol";
+import { rpcSync } from "./rpc";
 import { RemoteAgentSession } from "./remote-agent-session";
-import { bridgeIntegrationOptions } from "./services/integrations";
+import { bridgeExtensionRootOptions, bridgeIntegrationOptions } from "./services/integrations";
 import { existingSubagentWorkerPool, type SubagentWorker, type SubagentWorkerPool } from "./subagent-worker";
 
 /** This worker's link to main, once the executor thread service installed it. */
@@ -202,16 +203,31 @@ export async function runFollowUpTurnOnHome(
  * Main thread: cold-revive the agent of `spec` where `pool` places it, like a fresh spawn: in a
  * worker (returning its mirror) or through `reviveHere` on this thread.
  */
-export async function revivePersistedPlaced(
+export async function revivePersistedPlaced<
+	T extends PersistedReviveSpec & {
+		readonly discoveryOptions?: Pick<ExecutorOptions, "extensionRoots">;
+	},
+>(
 	pool: SubagentWorkerPool,
-	spec: PersistedReviveSpec,
+	spec: T,
 	expected: AgentRef,
 	reviveHere: (spec: PersistedReviveSpec, expected: AgentRef) => Promise<AgentSessionHandle>,
 ): Promise<AgentSessionHandle> {
 	const placement = await pool.acquire();
 	try {
 		if (!placement.worker) return await reviveHere(spec, expected);
-		return await placement.worker.link.call("revivePersisted", spec, expected);
+		// Discovery overrides can carry the owner's live provider just like fresh
+		// launches. Unmarked RPC callbacks return Promises in the worker.
+		const roots = spec.root.effectiveExtensionRoots;
+		const bridged = {
+			...spec,
+			root:
+				typeof roots === "function"
+					? { ...spec.root, effectiveExtensionRoots: rpcSync(() => roots.call(spec.root)) }
+					: spec.root,
+			...(spec.discoveryOptions ? { discoveryOptions: bridgeExtensionRootOptions(spec.discoveryOptions) } : {}),
+		};
+		return await placement.worker.link.call("revivePersisted", bridged, expected);
 	} finally {
 		// A worker-homed revived session's open mirror retains its worker from here on.
 		placement.release();

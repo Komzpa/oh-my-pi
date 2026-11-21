@@ -21,7 +21,7 @@ import * as path from "node:path";
 import { getAgentDir, isEnoent, logger, MAIN_CONFIG_FILENAMES, tryParseJson } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import { readDirEntries, readFile } from "../capability/fs";
-import type { ExtensionRootMode, LoadContext } from "../capability/types";
+import type { EffectiveExtensionRoots, ExtensionRootMode, LoadContext } from "../capability/types";
 import { getEnabledPlugins } from "../extensibility/plugins/loader";
 import { expandTilde } from "../tools/path-utils";
 import { listClaudePluginRoots } from "./helpers";
@@ -253,6 +253,11 @@ async function isDirectory(p: string): Promise<boolean> {
 	}
 }
 
+type ExtensionRootsInput = EffectiveExtensionRoots | Promise<EffectiveExtensionRoots>;
+type ExtensionRootsContext = Omit<LoadContext, "extensionRoots"> & {
+	extensionRoots?: ExtensionRootsInput | (() => ExtensionRootsInput);
+};
+
 /**
  * Resolve every configured extension package directory for the given context.
  *
@@ -280,21 +285,27 @@ async function isDirectory(p: string): Promise<boolean> {
  * entrypoints contribute zero sub-discovery surface and are filtered out.
  * Installed-plugin enumeration failures degrade gracefully at `debug`.
  */
-export async function listOmpExtensionRoots(ctx: LoadContext): Promise<OmpExtensionRoot[]> {
+export async function listOmpExtensionRoots(ctx: ExtensionRootsContext): Promise<OmpExtensionRoot[]> {
+	// Worker RPC providers may be asynchronous. Resolve at the discovery
+	// boundary before reading any policy dimension; never fall back to ambient
+	// roots merely because a session supplied a provider rather than a value.
+	const input = ctx.extensionRoots;
+	const extensionRoots = await (typeof input === "function" ? input() : input);
+	const resolvedContext: LoadContext = { ...ctx, extensionRoots };
 	const scopedRoots = invocationRootScope.getStore();
 	// Explicit lane, in precedence order: caller-provided reload value, then the
 	// construction-time invocation scope, then process-level CLI injection.
-	const explicitSeed: InjectedRoot[] = ctx.extensionRoots
-		? ctx.extensionRoots.explicit.map(raw => ({ path: resolveAgainst(raw, ctx), level: "user" }))
+	const explicitSeed: InjectedRoot[] = extensionRoots
+		? extensionRoots.explicit.map(raw => ({ path: resolveAgainst(raw, resolvedContext), level: "user" }))
 		: scopedRoots
-			? scopedRoots.paths.map(raw => ({ path: resolveAgainst(raw, ctx), level: "user" }))
+			? scopedRoots.paths.map(raw => ({ path: resolveAgainst(raw, resolvedContext), level: "user" }))
 			: injectedCliRoots.map(root =>
 					root.relativePath ? { ...root, path: path.resolve(ctx.cwd, root.relativePath) } : root,
 				);
-	const rootMode: OmpExtensionRootMode = ctx.extensionRoots?.mode ?? scopedRoots?.mode ?? injectedCliRootMode;
+	const rootMode: OmpExtensionRootMode = extensionRoots?.mode ?? scopedRoots?.mode ?? injectedCliRootMode;
 	let candidates: InjectedRoot[] = explicitSeed;
 	if (rootMode === "merge") {
-		const installedPlugins = await listInstalledPluginRoots(ctx);
+		const installedPlugins = await listInstalledPluginRoots(resolvedContext);
 		// Configured lane. When a session supplies the effective value (reload
 		// struct or invocation-scoped snapshot), its provenance came from
 		// `Settings` — the authority that merges every project provider (incl.
@@ -302,18 +313,18 @@ export async function listOmpExtensionRoots(ctx: LoadContext): Promise<OmpExtens
 		// carried `configuredLevel` verbatim. When no session value is present,
 		// read the persisted `.omp` config on disk, which is the authoritative
 		// source (and its own provenance) in that scopeless path.
-		const configuredEntries = ctx.extensionRoots?.configured ?? scopedRoots?.configuredExtensions;
+		const configuredEntries = extensionRoots?.configured ?? scopedRoots?.configuredExtensions;
 		const configured =
 			configuredEntries !== undefined
 				? {
 						entries: [...configuredEntries],
-						level: ctx.extensionRoots?.configuredLevel ?? scopedRoots?.configuredLevel ?? ("user" as const),
+						level: extensionRoots?.configuredLevel ?? scopedRoots?.configuredLevel ?? ("user" as const),
 					}
-				: await readConfiguredExtensions(ctx);
+				: await readConfiguredExtensions(resolvedContext);
 		candidates = [
 			...candidates,
 			...(configured?.entries.map((raw): InjectedRoot => ({
-				path: resolveAgainst(raw, ctx),
+				path: resolveAgainst(raw, resolvedContext),
 				level: configured.level,
 			})) ?? []),
 			...installedPlugins,
