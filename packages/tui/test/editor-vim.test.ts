@@ -1197,6 +1197,41 @@ describe("Editor vim mode", () => {
 			expect(editor.getText()).toBe("abX\nefX");
 		});
 
+		it.each(["a", "😀", "e\u0301", "👨‍👩‍👧‍👦"])(
+			"anchors Backspace in repeated %s graphemes to the edit cursor",
+			grapheme => {
+				const editor = vimEditor(`${grapheme.repeat(3)}\nXYZ`);
+				press(editor, "l", "i", BACKSPACE, ESC);
+				expect(editor.getText()).toBe(`${grapheme.repeat(2)}\nXYZ`);
+				press(editor, "j", "l", ".");
+				expect(editor.getText()).toBe(`${grapheme.repeat(2)}\nYZ`);
+			},
+		);
+
+		it("keeps forward deletion on the far side of the insert cursor", () => {
+			const editor = vimEditor("aaa\nXYZ");
+			press(editor, "l", "i", "\x1b[3~", ESC);
+			expect(editor.getText()).toBe("aa\nXYZ");
+			press(editor, "j", "l", ".");
+			expect(editor.getText()).toBe("aa\nXZ");
+		});
+
+		it("replays a cursor-anchored line join without consuming neighboring text", () => {
+			const editor = vimEditor("aa\naa\nXYZ\nUVW");
+			press(editor, "j", "i", BACKSPACE, ESC);
+			expect(editor.getText()).toBe("aaaa\nXYZ\nUVW");
+			press(editor, "j", "0", ".");
+			expect(editor.getText()).toBe("aaaaXYZ\nUVW");
+		});
+
+		it("counts anchored Backspaces while excluding text typed and erased in the session", () => {
+			const editor = vimEditor("aaa\nWXYZ");
+			press(editor, "l", "i", "a", BACKSPACE, BACKSPACE, ESC);
+			expect(editor.getText()).toBe("aa\nWXYZ");
+			press(editor, "j", "$", "2", ".");
+			expect(editor.getText()).toBe("aa\nWZ");
+		});
+
 		it("splits redo and undo at an arrow key inside Insert mode", () => {
 			const editor = vimEditor("one\ntwo");
 			press(editor, "I", "x", LEFT, "y", ESC);
