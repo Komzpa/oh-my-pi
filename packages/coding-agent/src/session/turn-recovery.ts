@@ -2735,9 +2735,14 @@ export class TurnRecovery {
 		let staleUsageLimit = oldProviderLimitFor(this.#host.model());
 		if (staleUsageLimit) recordedUsageLimitOutcome = undefined;
 		let parsedRetryAfterMs = staleUsageLimit ? undefined : this.#parseRetryAfterMsFromError(errorMessage);
-		let delayMs = staleOpenAIResponsesReplayError
-			? 0
-			: calculateRetryBackoffDelayMs(retrySettings.baseDelayMs, this.#retryAttempt);
+		// The Codex websocket lifetime cap is a transport rollover, not a provider
+		// limit: the next attempt opens a fresh connection and succeeds, so retry
+		// at once on the same model and credential.
+		const websocketConnectionLimit = AIError.isWebsocketConnectionLimitText(errorMessage);
+		let delayMs =
+			staleOpenAIResponsesReplayError || websocketConnectionLimit
+				? 0
+				: calculateRetryBackoffDelayMs(retrySettings.baseDelayMs, this.#retryAttempt);
 		// Transient rate/concurrency caps stay on the same credential, but must
 		// honor their reason-specific windows. The default exponential base
 		// (≈500ms, capped at 8s) otherwise re-hits the cap and burns the retry
@@ -2746,6 +2751,7 @@ export class TurnRecovery {
 		// window only applies when the error carries no parsed timing.
 		if (
 			!staleOpenAIResponsesReplayError &&
+			!websocketConnectionLimit &&
 			!AIError.is(id, AIError.Flag.UsageLimit) &&
 			parsedRetryAfterMs === undefined &&
 			(rateLimitReason === "CONCURRENT_LIMIT" ||
@@ -3022,6 +3028,7 @@ export class TurnRecovery {
 				retryFallbackAdmits(retrySettings.fallbackOn, AIError.is(id, AIError.Flag.UsageLimit)) &&
 				!staleUsageLimit &&
 				!thinkingLoop &&
+				!websocketConnectionLimit &&
 				!sameModelSteerReplay &&
 				!waitForSiblingCredential &&
 				!refusalWalkRepeats &&

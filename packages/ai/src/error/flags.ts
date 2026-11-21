@@ -13,6 +13,7 @@ import {
 	isDashScopeTokenLimitText,
 	isOpaqueStatusBody,
 	isUsageLimitStatus,
+	isWebsocketConnectionLimitText,
 	matchesUsageLimitText,
 	parseJsonBody,
 	parseRateLimitReason,
@@ -589,6 +590,7 @@ export function isStreamEnvelopeTruncationText(text: string): boolean {
 
 function isTransientErrorText(text: string): boolean {
 	return (
+		isWebsocketConnectionLimitText(text) ||
 		isUnexpectedSocketCloseMessage(text) ||
 		isStreamReadErrorText(text) ||
 		PYTHON_HTTP2_STREAM_RESET_PATTERN.test(text) ||
