@@ -1698,7 +1698,11 @@ export class TUI extends Container {
 				this.#beginResizeAltPaint();
 			},
 			() => this.stop(),
-			{ deferInput: this.#inputDeferred, isLoopStalled: () => this.#watchdog.isStalled() },
+			{
+				deferInput: this.#inputDeferred,
+				isLoopStalled: () => this.#watchdog.isStalled(),
+				onResume: () => this.requestRender(true),
+			},
 		);
 		// ProcessTerminal.start() resets the previous owner's RGB. Seed only
 		// after that reset so an identical OSC 11 reply still repaints fallback rows.
