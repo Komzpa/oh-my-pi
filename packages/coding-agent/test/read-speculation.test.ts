@@ -115,6 +115,34 @@ describe("read speculation assessment", () => {
 		});
 	});
 
+	it("records instruction bytes only for committed speculative reads", async () => {
+		const file = path.join(testDir, "AGENTS.md");
+		await Bun.write(file, "loaded instruction");
+		const session = createSession(testDir);
+		const recorded: string[] = [];
+		session.recordInstructionFile = async (_file, body) => {
+			recorded.push(body ?? "missing");
+		};
+		const tool = new ReadTool(session);
+		const policy = tool.speculation.finalized!;
+		for (const commit of [false, true]) {
+			const args = { path: file };
+			const assessment = await policy.assess({ args });
+			if (!assessment.eligible) throw new Error("expected read admission");
+			const context = {
+				toolCall: { type: "toolCall" as const, id: String(commit), name: "read", arguments: args },
+				args,
+				effect: assessment.effect,
+			};
+			const outcome = await policy.execute(context, new AbortController().signal);
+			if (!outcome) throw new Error("expected read outcome");
+			expect(recorded).toEqual([]);
+			if (commit) await policy.commit?.({ ...context, physicalOutcome: outcome }, outcome);
+			else await policy.discard?.({ ...context, reason: "discard" });
+		}
+		expect(recorded).toEqual(["loaded instruction"]);
+	});
+
 	it("keeps speculative read provenance isolated when the candidate is discarded", async () => {
 		const session = createSession(testDir);
 		const tool = new ReadTool(session);

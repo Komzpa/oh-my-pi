@@ -291,7 +291,7 @@ export class InternalUrlFilesystem {
 		return {
 			handler: (error, request) =>
 				error ? Promise.resolve({ error: { code: "EIO", message: error.message } }) : this.handle(request),
-			nativeLocalPaths: true,
+			nativeLocalPaths: !this.#context.session?.recordInstructionFile,
 		};
 	}
 
@@ -515,6 +515,7 @@ export class InternalUrlFilesystem {
 			return { local: this.#writablePath(node) };
 		}
 		if (node.kind !== "virtual") {
+			await this.#context.session?.recordInstructionFile?.(node.path);
 			// The native handle of a read-only scheme's backing file refuses fd-level mutation too.
 			return this.#writeRefusal(node) ? { local: node.path, readonly: true } : { local: node.path };
 		}
