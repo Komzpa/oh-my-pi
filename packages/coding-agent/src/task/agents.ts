@@ -54,7 +54,7 @@ const EMBEDDED_AGENT_DEFS: EmbeddedAgentDef[] = [
 			description: "General-purpose subagent with full capabilities for delegated multi-step tasks",
 			spawns: "*",
 			model: "@task",
-			thinkingLevel: AUTO_THINKING,
+			thinkingLevel: Effort.Medium,
 			// No `prewalk` frontmatter: the generic task hand-off (strong model
 			// plans, then hands off to the smol role) is armed by the
 			// `task.prewalk` setting (default off) or per agent via /agents

@@ -12,12 +12,13 @@ import { buildOutputValidator } from "@oh-my-pi/pi-coding-agent/tools/output-sch
 import { AUTO_THINKING } from "@oh-my-pi/pi-tui/thinking";
 
 describe("bundled agent parsing", () => {
-	it("defaults the task agent to the auto thinking selector", () => {
+	it("defaults the task agent to fixed medium thinking (no auto judge)", () => {
 		const task = getBundledAgent("task");
 
 		expect(task).toBeDefined();
 		expect(task?.model).toEqual(["@task"]);
-		expect(task?.thinkingLevel).toBe(AUTO_THINKING);
+		expect(task?.thinkingLevel).toBe(Effort.Medium);
+		expect(task?.thinkingLevel).not.toBe(AUTO_THINKING);
 	});
 
 	it("accepts security-reviewer findings with optional remediation metadata", () => {
