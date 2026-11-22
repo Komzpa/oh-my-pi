@@ -31,6 +31,7 @@ import {
 	Loader,
 	Markdown,
 	minFrameIntervalMs,
+	SEGMENT_RESET,
 	Spacer,
 	setTerminalTextSizing,
 	setTuiTight,
@@ -88,7 +89,11 @@ import { CollabController } from "../collab/controller";
 import type { CollabHost } from "../collab/host";
 import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { appKey, editorKey, rawKeyHint } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
-import { formatModelString, type ResolvedModelRoleValue, resolveModelRoleValue } from "../config/model-resolver";
+import {
+	formatModelStringWithRouting,
+	type ResolvedModelRoleValue,
+	resolveModelRoleValue,
+} from "../config/model-resolver";
 import { isSettingsInitialized, Settings, settings } from "../config/settings";
 import { clearClaudePluginRootsCache } from "../discovery/helpers";
 import {
@@ -292,6 +297,8 @@ import {
 	setTranscriptPresenters,
 } from "@oh-my-pi/pi-tui/chat/transcript-presentation";
 import { renderTreeList } from "@oh-my-pi/pi-tui/render/tree-list";
+import { wrapTreeLine } from "@oh-my-pi/pi-tui/render/hanging-wrap";
+import { WidthAwareText } from "@oh-my-pi/pi-tui/render/width-aware-text";
 import { formatStartupChangelogSummary, type StartupChangelogSelection } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
 import type { EventBus } from "../utils/event-bus";
@@ -4675,7 +4682,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		setTableCharts("smart", request =>
-			mode === "auto" && !hasNativeJudge(this.settings, this.session.modelRegistry)
+			mode === "auto" && !hasNativeJudge(this.settings, this.session.modelRegistry, this.session.model)
 				? undefined
 				: pickTableChart(request, this.session.tableChartJudge()),
 		);
@@ -6143,17 +6150,67 @@ export class InteractiveMode implements InteractiveModeContext {
 			lines.push(` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`);
 			lineOwners.push(undefined);
 		}
-		const painted = expanded
-			? lines
-			: panelRows < 2
-				? panelRows > 0 && overflowRow
-					? [truncateToWidth(overflowRow, Math.max(0, width - 2), "")]
-					: []
-				: lines.map(line => truncateToWidth(line, Math.max(0, width - 2), ""));
-		if (expanded || displayLedger.requirements === undefined) {
-			this.todoContainer.addChild(
-				new SubagentHudComponent(painted, [], undefined, panelRows < 2 && !expanded ? [undefined] : lineOwners),
-			);
+		if (expanded) {
+			const title = theme.bold(theme.fg("accent", "TODO"));
+			const tailFilled = Math.max(0, Math.min(filled - contentLines.length, tail.length));
+			const tailLine = ` ${theme.fg("accent", tail.slice(0, tailFilled))}${theme.fg("dim", tail.slice(tailFilled))}`;
+			// Rows are wrapped here, against the panel width, rather than by `Text`:
+			// `Text` wraps the joined string and restarts every continuation at the
+			// panel edge, cutting the spine and the task rail. A wide row instead
+			// hangs beneath its own content — a task under its checkbox, a stage
+			// under its name — with the spine running on beside it.
+			//
+			// The formatter outlives a theme switch (`ui.invalidate()` re-runs it
+			// without rebuilding the rows), so everything it needs is styled now and
+			// it keeps this theme: `wrapTreeLine` finds a connector by its styled bytes.
+			const rowTheme = theme;
+			const hudRows = contentLines.map((content, i) => {
+				const color = i < filled ? "accent" : "dim";
+				return {
+					content,
+					spine: ` ${theme.fg(color, spineGlyphs[i]!)}`,
+					hang: ` ${theme.fg(color, `${theme.tree.vertical}  `)}`,
+				};
+			});
+			const formatRows = (contentWidth: number): string => {
+				const lines = ["", title + theme.fg("dim", counts)];
+				if (archivedSummary) lines.push(theme.fg("dim", formatTodoArchiveSummary(archivedSummary)));
+				if (this.#todoForecast) {
+					const summary = sanitizeStatusText(
+						formatPlanForecastDisplay(this.#todoForecast, this.#todoForecast.now),
+					);
+					lines.push(
+						` ${theme.fg(this.#todoForecast.deadlineStatus === "will-miss" ? "error" : "dim", `${summary}${deadline?.paused ? " · goal paused" : ""}`)}`,
+					);
+				}
+				for (const { content, spine, hang } of hudRows) {
+					const rowWidth = Math.max(1, contentWidth - visibleWidth(spine));
+					const rows = wrapTreeLine(content, rowWidth, rowTheme) ?? wrapTextWithAnsi(content, rowWidth);
+					// The inner `Text` carries SGR state from one row into the next, and a
+					// wrapped row can end with a style still open (a bold stage name), so a
+					// row that continues ends in a reset to keep that style off the spine.
+					const last = rows.length - 1;
+					for (let r = 0; r <= last; r++) {
+						lines.push(`${r === 0 ? spine : hang}${rows[r]}${r < last ? SEGMENT_RESET : ""}`);
+					}
+				}
+				lines.push(tailLine);
+				return lines.join("\n");
+			};
+			this.todoContainer.addChild(new WidthAwareText(formatRows, 1, 0));
+		} else {
+			const painted = expanded
+				? lines
+				: panelRows < 2
+					? panelRows > 0 && overflowRow
+						? [truncateToWidth(overflowRow, Math.max(0, width - 2), "")]
+						: []
+					: lines.map(line => truncateToWidth(line, Math.max(0, width - 2), ""));
+			if (displayLedger.requirements === undefined) {
+				this.todoContainer.addChild(
+					new SubagentHudComponent(painted, [], undefined, panelRows < 2 ? [undefined] : lineOwners),
+				);
+			}
 		}
 
 		// Native: the same stage window as a tree, overall progress as a bar.
@@ -6550,7 +6607,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			// (same as the spawn-path ToolSession), not the settings default. This is
 			// the primary fallback in resolveAgentModelPatterns, so the `good` worker's
 			// pi/task inheritance tracks the reopened session's model.
-			getActiveModelString: () => (this.session.model ? formatModelString(this.session.model) : undefined),
+			getActiveModelString: () =>
+				this.session.model ? formatModelStringWithRouting(this.session.model) : undefined,
 		};
 	}
 
@@ -7843,10 +7901,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Approved plans land in a fresh (or compacted) session whose first user-visible
 		// turn is the synthetic plan-approved prompt — that path bypasses the
 		// input-controller's title generation. Seed an auto-name from the plan title
-		// so the session is not left unnamed. `setSessionName("auto")` is a no-op
-		// when the user has already chosen a name (preserveContext paths).
+		// so the session is not left unnamed, unless automatic titling is disabled
+		// (`--no-title` / PI_NO_TITLE). `setSessionName("auto")` is a no-op when the
+		// user has already chosen a name (preserveContext paths).
 		const seededName = humanizePlanTitle(options.title);
-		if (seededName && !this.sessionManager.getSessionName()) {
+		if (!$env.PI_NO_TITLE && seededName && !this.sessionManager.getSessionName()) {
 			await this.sessionManager.setSessionName(seededName, "auto");
 		}
 
@@ -10604,6 +10663,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			settings: this.settings,
 			registry: this.session.modelRegistry,
 			getSessionId: () => this.session.sessionId,
+			getSessionProvider: () => this.session.model?.provider,
 		});
 		return this.#sttController;
 	}

@@ -38,6 +38,7 @@ import {
 	holdBrowser,
 	type PuppeteerBrowserHandle,
 	releaseBrowser,
+	sharedTargetScopeOf,
 	type TernBrowserHandle,
 	type WebKitBrowserHandle,
 } from "./registry";
@@ -690,7 +691,7 @@ async function acquireTabImpl(
 	sweepClosedTabUploads();
 	// Durably record ownership so another live omp process can reap this page if
 	// this process dies abnormally before its own teardown closes the tab.
-	const scope = sharedScopeOf(browser);
+	const scope = sharedTargetScopeOf(browser);
 	if (scope) void recordSharedTarget(scope, info.targetId);
 	const note = opts.url ? await navigateOpenedTab(name, opts.url, opts, startedAt, tab) : undefined;
 	return { tab, created: true, note };
@@ -1674,7 +1675,7 @@ async function releaseTabInner(tab: TabSession, name: string, opts: ReleaseTabOp
 		cleanupError ??= error;
 	} finally {
 		tabs.delete(name);
-		const scope = sharedScopeOf(tab.browser);
+		const scope = sharedTargetScopeOf(tab.browser);
 		if (scope) {
 			if (targetCloseFailed) {
 				// The target outlived its close, so it is still open in the
@@ -2479,7 +2480,7 @@ async function forceKillTabTeardown(tab: WorkerTabSession): Promise<void> {
 	}
 	await releaseBrowser(tab.browser, { kill: false });
 	tabs.delete(tab.name);
-	const scope = sharedScopeOf(tab.browser);
+	const scope = sharedTargetScopeOf(tab.browser);
 	if (scope) {
 		if (targetClosed) void forgetSharedTarget(scope, tab.targetId);
 		else recheckSharedBrowser(scope);

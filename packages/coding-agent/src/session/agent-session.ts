@@ -107,7 +107,7 @@ import { supportsOutputTokenLimit } from "@oh-my-pi/pi-catalog/compat/output-lim
 import { requiresNativeTools, requiresToolFreeHistoryForToolOptOut } from "@oh-my-pi/pi-catalog/compat/tools";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import type { CatalogPolicyInputs } from "@oh-my-pi/pi-catalog/types";
-import { type EditStore, type PowerAssertionOptions } from "@oh-my-pi/pi-natives";
+import { EditStore, type PowerAssertionOptions } from "@oh-my-pi/pi-natives";
 import {
 	$env,
 	escapeXmlText,
@@ -138,6 +138,7 @@ import { reset as resetCapabilities } from "../capability";
 import type { EffectiveExtensionRoots } from "../capability/types";
 import type { SessionAccountPoolScope } from "../config/account-pools";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
+import { cfgOffline } from "../config/auxiliary-model-policy";
 import type { ModelRegistry } from "../config/model-registry";
 import {
 	disabledProviderIds,
@@ -154,7 +155,6 @@ import { executePeerSlashCommand, type PeerCommandReceipt } from "../collab/peer
 import type { MCPLoadResult } from "../mcp/manager";
 import { type Settings, withActiveSettings } from "../config/settings";
 import { RawSseDebugBuffer } from "@oh-my-pi/pi-tui/apps/debug/raw-sse-buffer";
-import { getEditStore } from "../edit/store";
 import { releaseCompletionHandles } from "../eval/completion-bridge";
 import { releaseJudgmentBatches } from "../eval/judgment-batch-bridge";
 import type { EvalPreludeDefinition } from "../eval/preludes";
@@ -2629,6 +2629,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 					{
 						settings: this.settings,
 						registry: this.#modelRegistry,
+						sessionModel: this.model,
 						sessionId: this.sessionId,
 						signal,
 						onUsage: journalJudgmentUsage(this.sessionManager),
@@ -2686,6 +2687,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				planParallel(request, {
 					settings: this.settings,
 					registry: this.#modelRegistry,
+					sessionModel: this.model,
 					sessionId: this.sessionId,
 					signal,
 					onUsage: journalJudgmentUsage(this.sessionManager),
@@ -3367,8 +3369,6 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		this.#advisors = new SessionAdvisors(advisorsHost, {
 			enabled: cfgAdvisorEnabled.get(this.settings),
 			tools: config.advisorTools,
-			createGrepTool: config.advisorCreateGrepTool,
-			createEditTool: config.advisorCreateEditTool,
 			getToolContext: config.advisorGetToolContext,
 			mcpResources: config.advisorMcpResources,
 			watchdogPrompt: config.advisorWatchdogPrompt,
@@ -3724,6 +3724,9 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 		});
 		const target = resolved.model;
 		if (!target) return resolved.error ?? `model "${selector}" not found`;
+		if (cfgOffline.get(this.settings) && target.provider !== this.model?.provider) {
+			return "offline mode restricts automatic prewalk to the active provider";
+		}
 		if (cfgDisabledProviders.get(this.settings).includes(target.provider)) {
 			return `provider "${target.provider}" is disabled`;
 		}
@@ -4339,7 +4342,8 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 	 */
 	ruleJudge(): Judge | undefined {
 		const mode = cfgTtsrJudge.get(this.settings);
-		if (mode === "off" || (mode === "auto" && !hasNativeJudge(this.settings, this.#modelRegistry))) return undefined;
+		if (mode === "off" || (mode === "auto" && !hasNativeJudge(this.settings, this.#modelRegistry, this.model)))
+			return undefined;
 		return resolveJudge({
 			settings: this.settings,
 			registry: this.#modelRegistry,
@@ -4572,6 +4576,11 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 			}
 			if (!hasAssistant) return;
 		}
+		// Another live process owns the session, so this process wrote nothing to
+		// it (its first write would have moved it to a sibling it owns). Writing
+		// the marker would fork the conversation into an "open-elsewhere" copy
+		// just to say a reader exited, and any pending tool calls are the owner's.
+		if (this.sessionManager.isOwnedElsewhere()) return;
 		const kind: SessionExitData["kind"] =
 			reason === "dispose" || reason === postmortem.Reason.MANUAL
 				? "normal"
@@ -11405,7 +11414,7 @@ export class AgentSession implements SettingsScope, AgentViewSession {
 				const fileMentionMessages = await generateFileMentionMessages(fileMentions, this.sessionManager.getCwd(), {
 					autoResizeImages: cfgImagesAutoResize.get(this.settings),
 					useHashLines: resolveFileDisplayMode(this).hashLines,
-					snapshotStore: getEditStore(this),
+					snapshotStore: (this.editStore ??= new EditStore()),
 					signal: setupAbort.signal,
 				});
 				for (const fileMentionMessage of fileMentionMessages) {

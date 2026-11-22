@@ -79,7 +79,6 @@ import { restoreSessionModelPreset } from "./config/model-presets";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
 import {
 	disabledProviderIds,
-	formatModelString,
 	formatModelStringWithRouting,
 	getModelMatchPreferences,
 	type ModelMatchPreferences,
@@ -211,6 +210,7 @@ import {
 	type Prewalk,
 } from "./session/agent-session";
 import type { AgentSessionDisposeOptions } from "./session/agent-session-types";
+import type { AdvisorToolFactory } from "./session/session-advisors";
 import {
 	createAuthStorageSettingsSync,
 	discoverAuthStorage as discoverAuthStorageFromConfig,
@@ -259,6 +259,7 @@ import { kUsageLimitRequestProvider } from "./session/turn-recovery";
 import { providerExhaustionRecord } from "./session/provider-exhaustion";
 import { getReadableCompactionEntry, getRestorableSessionModels } from "./session/session-context";
 import { SessionManager } from "./session/session-manager";
+import { cfgOffline } from "./config/auxiliary-model-policy";
 import { SHAPE_RULE } from "./spotlight/shape";
 import { buildCallContext } from "./spotlight/context";
 import { type CalledToolShaper, shapeCalledTool } from "./spotlight";
@@ -342,6 +343,8 @@ import {
 	supportsExternalThinking,
 	type Tool,
 	type ToolSession,
+	TaskTool,
+	ToolConversationState,
 	WebSearchTool,
 	WriteTool,
 	warmupLspServers,
@@ -2693,8 +2696,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	try {
 		const getActiveModelString = (): string | undefined => {
 			const activeModel = agent?.state.model;
-			if (activeModel) return formatModelString(activeModel);
-			if (model) return formatModelString(model);
+			if (activeModel) return formatModelStringWithRouting(activeModel);
+			if (model) return formatModelStringWithRouting(model);
 			return undefined;
 		};
 		// Per-path mutation counter shared across edit/write tools. Late-diagnostics
@@ -2835,7 +2838,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			getSessionAgents: () => session?.getSessionAgents() ?? [],
 			advertisedSessionAgents: () => session?.getAdvertisedSessionAgents() ?? [],
 			advertisedPerCallModel: () => session?.getAdvertisedPerCallModel(),
-			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
+			getModelString: () => (hasExplicitModel && model ? formatModelStringWithRouting(model) : undefined),
 			getActiveModelString,
 			getActiveModel: () => agent?.state.model ?? model,
 			getServiceTierByFamily: () => session?.serviceTierByFamily,
@@ -2933,7 +2936,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// and its shaping replaces the native read summarizer / bash minimizer for the session.
 		// Helper sessions (security scan, spec generation) stay out of it.
 		const spotlightExperiment =
-			options.bindProcessState === false ? undefined : startSpotlightExperiment(settings, sessionManager);
+			options.bindProcessState === false
+				? undefined
+				: startSpotlightExperiment(settings, sessionManager, () => toolSession.getActiveModel?.()?.provider);
 		if (spotlightExperiment) toolSession.spotlight = spotlightExperiment;
 		let browserPrelude: EvalPreludeDefinition | undefined;
 		let computerPrelude: EvalPreludeDefinition | undefined;
@@ -5187,10 +5192,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// Outbound credential-pattern redaction follows THIS session's `secrets.enabled` per
 		// request, not the process-wide switch (the newest effect holder's): concurrent ACP/SDK
 		// sessions in one process each keep their own policy.
-		const settingsAwareStreamFn: StreamFn = (streamModel, context, streamOptions) =>
-			withCredentialRedaction(cfgSecretsEnabled.get(settings), () =>
+		const settingsAwareStreamFn: StreamFn = (streamModel, context, streamOptions) => {
+			if (cfgOffline.get(settings) && streamModel.provider !== session?.model?.provider) {
+				return Promise.reject(new Error("Offline mode restricts model calls to the active session provider."));
+			}
+			return withCredentialRedaction(cfgSecretsEnabled.get(settings), () =>
 				settingsBoundStreamFn(streamModel, context, streamOptions),
 			);
+		};
 		// Primary-agent (and its auto-learn capture twin) provider options read per
 		// request, so `/settings` changes to budgets, Kimi format, or the Codex
 		// websocket policy reach the next call without a session recreate.
@@ -5472,17 +5481,18 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			parentId: resolvedAgentId,
 		});
 
-		// Full toolset for the advisor, built unconditionally so it can be toggled at
-		// runtime. Bound to a DISTINCT ToolSession (its own `-advisor` session id +
-		// agent id) so the advisor's tool state — snapshot, seen-lines, conflict, and
-		// summary caches, all keyed on session identity — stays isolated from the
-		// primary, while edit/bash/write stay fully functional: the advisor is a full
+		// Each advisor is its own conversation and gets its own ToolSession with a
+		// fresh `state`: tools keep what a conversation accumulated there
+		// (snapshots, conflict history, repeat-read counts), so sharing it across
+		// the roster would attribute one advisor's reads to another (#18834). Each
+		// is also distinct from the primary (its own `-advisor` session id + agent
+		// id), while edit/bash/write stay fully functional: the advisor is a full
 		// agent and its config's `tools` selects which of these it actually gets
 		// (defaulting to read/grep/glob).
-		const advisorToolSession: ToolSession = {
+		const createAdvisorToolSession = (): ToolSession => ({
 			...toolSession,
-			// Advisor reads are not delivered to the primary.
 			recordInstructionFile: undefined,
+			state: new ToolConversationState(),
 			// The primary may carry a dormant xd:// write transport. Advisors use
 			// their own configured tool slate, so a selected write is always full.
 			deviceOnlyWrite: undefined,
@@ -5514,27 +5524,56 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// and the provider boundary handles text-only advisor models.
 			xdev: undefined,
 			isToolActive: name => toolSession.isToolActive?.(name) === true,
+		});
+		// Advisor rosters build synchronously; `task` is the one built-in that
+		// discovers asynchronously, so resolve its agents once up front.
+		const advisorTaskAgents = await TaskTool.discoverAgents(createAdvisorToolSession());
+		const advisorBuiltinNames = Object.keys(BUILTIN_TOOLS) as Array<keyof typeof BUILTIN_TOOLS>;
+		const buildAdvisorTool = (name: keyof typeof BUILTIN_TOOLS, advisorSession: ToolSession): Tool | null => {
+			if (name === "task") return TaskTool.withAgents(advisorSession, advisorTaskAgents);
+			const tool = BUILTIN_TOOLS[name](advisorSession);
+			if (tool instanceof Promise) throw new Error(`Advisor tool "${name}" must build synchronously`);
+			return tool;
 		};
-		const advisorToolBuilds: Array<Tool | null | Promise<Tool | null>> = [];
-		for (const name in BUILTIN_TOOLS) {
-			advisorToolBuilds.push(
-				launchStep(
-					`sdk.advisorTools:${name}`,
-					BUILTIN_TOOLS[name as keyof typeof BUILTIN_TOOLS],
-					advisorToolSession,
-				),
-			);
-		}
-		const built = await launchStep("sdk.advisorTools.wait", () => Promise.all(advisorToolBuilds));
-		// Wrapped like every registry tool: `ExtensionToolWrapper` is where the
-		// approval mode, per-tool `tools.approval.<tool>` policies and
-		// `autoApprove` are enforced. The advisor's loop and its Cursor exec
-		// bridge both run these instances directly, so a raw one would execute a
-		// `bash`/`write` the user configured as `ask` or `deny`. Meta-notice
-		// first, matching the registry's wrap order.
-		const advisorTools: Tool[] = built
-			.filter((tool): tool is Tool => tool != null)
-			.map(tool => new ExtensionToolWrapper(wrapToolWithMetaNotice(tool), extensionRunner, advisorAgent) as Tool);
+		let advisorAvailableToolNames: string[] | undefined;
+		const advisorTools: AdvisorToolFactory = {
+			names: () => {
+				if (!advisorAvailableToolNames) {
+					const probeSession = createAdvisorToolSession();
+					advisorAvailableToolNames = advisorBuiltinNames.filter(name => buildAdvisorTool(name, probeSession));
+				}
+				return advisorAvailableToolNames;
+			},
+			create: granted => {
+				const advisorSession = createAdvisorToolSession();
+				const tools: Tool[] = [];
+				for (const name of advisorBuiltinNames) {
+					if (!granted.has(name)) continue;
+					const tool = launchStep(`sdk.advisorTools:${name}`, () => buildAdvisorTool(name, advisorSession));
+					// Wrapped like every registry tool: `ExtensionToolWrapper` is where the
+					// approval mode, per-tool `tools.approval.<tool>` policies and
+					// `autoApprove` are enforced. The advisor's loop and its Cursor exec
+					// bridge both run these instances directly, so a raw one would execute a
+					// `bash`/`write` the user configured as `ask` or `deny`. Meta-notice
+					// first, matching the registry's wrap order.
+					if (tool)
+						tools.push(new ExtensionToolWrapper(wrapToolWithMetaNotice(tool), extensionRunner, advisorAgent));
+				}
+				return {
+					tools,
+					// Same per-call `grep` seam the primary bridge gets, built against the
+					// advisor's own tool session so a `pi_grep` frame's context width and
+					// match cap are honored there too.
+					createGrepTool: createBridgeGrepFactory(advisorSession, extensionRunner, advisorAgent),
+					// Same `replace`-mode requirement as the primary bridge; the advisor
+					// path gates it on the advisor's own `edit` grant.
+					createEditTool: () => createBridgeEditTool(advisorSession, extensionRunner, advisorAgent),
+					resetState: () => {
+						advisorSession.state = new ToolConversationState();
+					},
+				};
+			},
+		};
 
 		const advisorWatchdogPrompts = [...watchdogFiles];
 		if (initialActiveRepoContext) {
@@ -5686,13 +5725,6 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			accountPoolScope,
 			providerPromptCacheKeySource,
 			advisorTools,
-			// Same per-call `grep` seam the primary bridge gets, built against the
-			// advisor's own tool session so a `pi_grep` frame's context width and
-			// match cap are honored there too.
-			advisorCreateGrepTool: createBridgeGrepFactory(advisorToolSession, extensionRunner, advisorAgent),
-			// Same `replace`-mode requirement as the primary bridge; the advisor
-			// path gates it on the advisor's own `edit` grant.
-			advisorCreateEditTool: () => createBridgeEditTool(advisorToolSession, extensionRunner, advisorAgent),
 			// The advisor's bridge tools are wrapped for approval, but the wrapper
 			// reads the mode and per-tool policies only from the execute-time
 			// context — the primary bridge passes the same store.
@@ -5714,7 +5746,9 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			// otherwise surface as "issued in this session" in mismatch diagnostics
 			// after a reset (#13370). The tools snapshot into THIS store, not the
 			// AgentSession's own lazy field.
-			session.registerSessionChangeCallback(() => toolSession.editStore?.clear());
+			session.registerSessionChangeCallback(() => {
+				toolSession.state = new ToolConversationState();
+			});
 			if (ownedSkillDescriptionStore) {
 				// Let in-flight compressions land before releasing the file.
 				session.addDisposer(
