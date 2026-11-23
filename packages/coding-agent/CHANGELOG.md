@@ -41,6 +41,7 @@
 - Task results and running job snapshots now report the model used on the first attempt and each retry-fallback switch with its trigger (source model, error class, HTTP status, first line of the provider message, or usage preflight); the trigger is stored on the `model_change` session entry at the switch, so it survives the error message being persisted later ([#16662](https://github.com/can1357/oh-my-pi/pull/16662) by [@Komzpa](https://github.com/Komzpa))
 - When `wait` is waiting on exactly one running subagent, its card now streams that worker inline (task, last intent, current tool and the last lines of output) instead of only a status row; with two or more jobs, or once the job settles, the compact list and result are shown as before ([#16661](https://github.com/can1357/oh-my-pi/pull/16661) by [@Komzpa](https://github.com/Komzpa))
 - A collision-suffixed waited job now selects its canonical agent's inline progress even when another worker has the same ID as the job row.
+- Interactive sessions can capture a 30-second CPU profile without restarting by receiving SIGUSR2.
 
 ### Fixed
 
