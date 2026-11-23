@@ -378,7 +378,10 @@ describe("todo backend", () => {
 		expect(session.sessionManager.getSessionId()).not.toBe(original);
 	});
 
-	it("a session moved to another file sends the list again under its new id", async () => {
+	// Fork: the journal index reads untouched entries back from the session file by byte range, so a
+	// file overwritten under a live session reads as truncated, not as a foreign file to move away from;
+	// the upstream relocation this drives does not exist here.
+	it.skip("a session moved to another file sends the list again under its new id", async () => {
 		const backend = tracker();
 		const manager = SessionManager.create(dir.path(), dir.path());
 		const { session } = await open([backend.extension], "tracker", { sessionManager: manager });

@@ -307,7 +307,8 @@ describe("AskTool form dialog", () => {
 		};
 		for (const [shape, html] of Object.entries(forms)) {
 			const formDialog = vi.fn<FormDialog>(async () => ({ data: { sources: "personal" } }));
-			const result = await new AskTool(createSession()).execute(
+			// Fork: only an interactive-answer ask blocks on the form dialog; others return a pending question.
+			const result = await new AskTool(createSession(), { interactiveAnswer: true }).execute(
 				`call-${shape}`,
 				{ html },
 				undefined,

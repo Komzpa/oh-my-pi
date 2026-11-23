@@ -119,6 +119,7 @@ import {
 } from "./role-models";
 import { getPruningBranch } from "./pruning-branch";
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
+import { isContextBookkeepingEntry, sessionContextEntryMetadata } from "./session-context";
 import {
 	buildSessionContextFromLeafPath,
 	getLatestCompactionEntry,
@@ -2013,7 +2014,7 @@ export class SessionMaintenance {
 				? "experimental-disabled"
 				: this.#host.sessionId() !== sessionId
 					? "session-changed"
-					: this.#host.sessionManager.hasContextChangedSince(leafId)
+					: this.#rolloverContextChangedSince(leafId)
 						? "context-changed"
 						: this.#model && `${this.#model.provider}/${this.#model.id}` !== model
 							? "model-changed"
@@ -2045,6 +2046,54 @@ export class SessionMaintenance {
 	 * history rewrites, so the prepared boundary stays valid against the
 	 * new leaf.
 	 */
+	/**
+	 * An explicit `new_context` request dropped by a history rewrite must not
+	 * look like it succeeded: the tool already answered "New context window
+	 * requested." (#20063).
+	 */
+	#noticeDroppedExplicitRollover(
+		signal: AbortSignal,
+		sourceSessionId: string,
+		sourceLeafId: string | null,
+		options: { explicitNewContextRequest?: boolean },
+	): void {
+		if (
+			!signal.aborted &&
+			options.explicitNewContextRequest === true &&
+			this.#usesExperimentalContextManagement() &&
+			this.#host.sessionId() === sourceSessionId &&
+			this.#branchRewrittenSince(sourceLeafId ?? undefined)
+		) {
+			this.#host.emitNotice(
+				"warning",
+				"The requested context rollover was skipped because the session branch changed while it was prepared; run /compact or ask again for a fresh window.",
+				"compaction",
+			);
+		}
+	}
+
+	/**
+	 * Whether the prepared rollover boundary is stale: the branch was rewritten
+	 * ({@link #branchRewrittenSince}), or a context-bearing custom entry (context
+	 * notes, a restart transition, a tool start, an exit) was appended after the
+	 * source leaf. Pure journal appends still race the window harmlessly (#20063).
+	 */
+	#rolloverContextChangedSince(sourceLeafId: string | null): boolean {
+		const branch = this.#host.sessionManager.getBranch();
+		const start = sourceLeafId === null ? 0 : branch.findIndex(entry => entry.id === sourceLeafId) + 1;
+		if (sourceLeafId !== null && start === 0) return true;
+		return branch
+			.slice(start)
+			.some(
+				entry =>
+					isTranscriptEntry(entry) ||
+					entry.type === "branch_summary" ||
+					entry.type === "compaction" ||
+					entry.type === "reset_boundary" ||
+					(entry.type === "custom" && !isContextBookkeepingEntry(sessionContextEntryMetadata(entry))),
+			);
+	}
+
 	#branchRewrittenSince(sourceLeafId: string | undefined): boolean {
 		const branch = this.#host.sessionManager.getBranch();
 		const start = sourceLeafId ? branch.findIndex(entry => entry.id === sourceLeafId) + 1 : branch.length;
@@ -2265,11 +2314,11 @@ export class SessionMaintenance {
 					},
 					detachPostCommit,
 				);
+				this.#noticeDroppedExplicitRollover(controller.signal, sourceSessionId, sourceLeafId, options);
 				return COMPACTION_CHECK_NONE;
 			}
 
 			const prepared = await this.#prepareCompactionFromHooks(preparation, hookCompaction, controller.signal);
-			const branchRewritten = this.#branchRewrittenSince(sourceLeafId ?? undefined);
 			if (
 				this.#experimentalRolloverInvalidated(
 					"after-prepare",
@@ -2290,22 +2339,7 @@ export class SessionMaintenance {
 					},
 					detachPostCommit,
 				);
-				// An explicit `new_context` request dropped by a history rewrite
-				// must not look like it succeeded: the tool already answered
-				// "New context window requested." (#20063).
-				if (
-					!controller.signal.aborted &&
-					this.#usesExperimentalContextManagement() &&
-					this.#host.sessionId() === sourceSessionId &&
-					branchRewritten &&
-					options.explicitNewContextRequest === true
-				) {
-					this.#host.emitNotice(
-						"warning",
-						"The requested context rollover was skipped because the session branch changed while it was prepared; run /compact or ask again for a fresh window.",
-						"compaction",
-					);
-				}
+				this.#noticeDroppedExplicitRollover(controller.signal, sourceSessionId, sourceLeafId, options);
 				return COMPACTION_CHECK_NONE;
 			}
 			const result =

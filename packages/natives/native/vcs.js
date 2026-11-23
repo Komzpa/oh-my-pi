@@ -114,7 +114,9 @@ function wrapGitRepo(repo) {
 /** Read an exact status snapshot while still honoring the shared status probe queue. */
 export function statusPorcelainFresh(repo, options = {}, signal) {
 	const target = wrappedTargets.get(repo);
-	if (!target) throw new TypeError("statusPorcelainFresh requires a discovered Git repo");
+	// A caller's own wrapper (a Proxy over a discovered repo) is not a coordinator handle:
+	// read through it, which is as fresh as that wrapper makes it.
+	if (!target) return repo.statusPorcelain(normalizedStatusOptions(options), signal);
 	const { identity, info } = repoIdentity(target);
 	const snapshot = normalizedStatusOptions(options);
 	const meta = statusMetadata(info);
