@@ -13,6 +13,7 @@ import {
 	parseEnvFile,
 	setInteractiveHost,
 	stripGitRepoLocationEnv,
+	stripNodeIpcChannelEnv,
 	withOmpOtelEnv,
 	stripNodeIpcChannelEnv,
 } from "@oh-my-pi/pi-utils/env";
