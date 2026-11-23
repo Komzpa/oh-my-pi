@@ -75,6 +75,7 @@
 - Fixed typing stalls when frequent background updates repeatedly postponed the pending keypress repaint.
 - Fixed soft-requirement skips of `wait` calls rendering nothing in `render()`; only interrupt skips are hidden now, so the "waiting for <tool>" status shows ([#16535](https://github.com/can1357/oh-my-pi/pull/16535) by [@Komzpa](https://github.com/Komzpa))
 - Compact read rows now name why a read failed, so a failed `skill://`, `rule://` or file read keeps its diagnostic when previews are off ([#16516](https://github.com/can1357/oh-my-pi/pull/16516) by [@Komzpa](https://github.com/Komzpa))
+- Fixed SIXEL composer chip thumbnails leaving stale pixels after the chip or editor moves: thumbnails now use the shared SIXEL fitter, are placed from the editor's rendered height, and show only on Konsole, where the SIXEL delete is confirmed; other SIXEL terminals keep the icon ([#15988](https://github.com/can1357/oh-my-pi/pull/15988) by [@Komzpa](https://github.com/Komzpa))
 
 ## [19.1.0] - 2026-11-21
 
