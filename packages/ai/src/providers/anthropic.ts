@@ -209,6 +209,7 @@ import {
 import {
 	type AnthropicThreadChains,
 	AnthropicThreadTurn,
+	countHeadBreakpoints,
 	anthropicThreadChain,
 	wantsAnthropicThreads,
 } from "./anthropic-threads";
@@ -4378,21 +4379,6 @@ function isToolControlMessage(message: MessageParam): boolean {
 
 const ANTHROPIC_MAX_BREAKPOINTS = 4;
 const ANTHROPIC_DECIMATION_INTERVAL = 15;
-
-function countHeadBreakpoints(params: MessageCreateParamsStreaming): number {
-	let count = 0;
-	if (Array.isArray(params.system)) {
-		for (const block of params.system) {
-			if (typeof block !== "string" && block?.cache_control != null) count++;
-		}
-	}
-	if (Array.isArray(params.tools)) {
-		for (const tool of params.tools) {
-			if (tool?.cache_control != null) count++;
-		}
-	}
-	return count;
-}
 
 function applyCacheControlToMessage(message: MessageParam, cacheControl: AnthropicCacheControl): boolean {
 	if (typeof message.content === "string") {

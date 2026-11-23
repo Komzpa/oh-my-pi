@@ -221,33 +221,114 @@ describe("anthropic message threads", () => {
 	});
 
 	it.each(["sk-ant-api03-test", "sk-ant-oat01-test"])(
-		"counts retained create breakpoints on repeated continues (%s)",
+		"does not count stored message breakpoints against a continue (%s)",
 		async apiKey => {
 			const { fetch, sent } = endpoint();
 			const chat = session(fetch, { apiKey });
-			// Starting a thread after history accumulated retains an interior message
-			// breakpoint as well as the system and tools breakpoints.
+			// Starting a thread after history accumulated stores an interior message
+			// breakpoint; only the system and tools breakpoints count again on a continue.
 			for (let n = 0; n < 16; n++) {
 				chat.messages.push({ role: "user", content: `earlier ${n}`, timestamp: n });
 			}
 			await chat.turn("create after resume");
-			await chat.turn("continue after resume", [{ role: "user", content: "appended detail", timestamp: 99 }]);
-			// Persist the extra input before continuing once more.
-			chat.messages.splice(chat.messages.length - 1, 0, { role: "user", content: "appended detail", timestamp: 99 });
-			await chat.turn("third", [{ role: "user", content: "third detail", timestamp: 100 }]);
-			const [create, ...continues] = sent.map(request => request.body);
+			const extra: Message[] = Array.from({ length: 24 }, (_, n) => ({
+				role: "user" as const,
+				content: `appended detail ${n}`,
+				timestamp: 99 + n,
+			}));
+			await chat.turn("continue after resume", extra);
+			const [create, next] = sent.map(request => request.body);
 			const breakpoints = (value: unknown): number =>
 				(JSON.stringify(value ?? null).match(/"cache_control":\{/g) ?? []).length;
-			const retained =
-				breakpoints(create.system) + breakpoints(create.tools) + breakpoints(create.messages.slice(0, -1));
-			expect(retained).toBe(3);
-			expect(breakpoints(create)).toBeLessThanOrEqual(4);
-			for (const next of continues) {
-				expect(next.thread?.type).toBe("continue");
-				expect(retained + breakpoints(next.messages)).toBeLessThanOrEqual(4);
-			}
+			const counted = breakpoints(create.system) + breakpoints(create.tools);
+			expect(breakpoints(create.messages.slice(0, -1))).toBeGreaterThan(0);
+			expect(next.thread?.type).toBe("continue");
+			// Both the read breakpoint on the first appended block and the write breakpoint stay.
+			expect(breakpoints(next.messages)).toBe(Math.min(2, 4 - counted));
+			expect(counted + breakpoints(next.messages)).toBeLessThanOrEqual(4);
 		},
 	);
+
+	it("keeps a continue within four when system and tools carry three breakpoints", async () => {
+		const { fetch, sent } = endpoint();
+		const chat = session(fetch);
+		chat.setSystemPrompt(["You are a precise assistant.", "<project-context>\nrepo rules\n</project-context>"]);
+		await chat.turn("first");
+		const extra: Message[] = Array.from({ length: 24 }, (_, n) => ({
+			role: "user" as const,
+			content: `appended detail ${n}`,
+			timestamp: 99 + n,
+		}));
+		await chat.turn("second", extra);
+		const [create, next] = sent.map(request => request.body);
+		const breakpoints = (value: unknown): number =>
+			(JSON.stringify(value ?? null).match(/"cache_control":\{/g) ?? []).length;
+		const counted = breakpoints(create.system) + breakpoints(create.tools);
+		expect(next.thread?.type).toBe("continue");
+		expect(counted + breakpoints(next.messages)).toBeLessThanOrEqual(4);
+		expect(breakpoints(next.messages)).toBeGreaterThan(0);
+	});
+
+	it("counts a top-level cache_control against a continue's limit", async () => {
+		const { fetch, sent } = endpoint();
+		const chat = session(fetch, {
+			onPayload: params => ({ ...(params as object), cache_control: { type: "ephemeral" } }),
+		});
+		await chat.turn("first");
+		const extra: Message[] = Array.from({ length: 24 }, (_, n) => ({
+			role: "user" as const,
+			content: `appended detail ${n}`,
+			timestamp: 99 + n,
+		}));
+		await chat.turn("second", extra);
+		const [create, next] = sent.map(request => request.body);
+		const breakpoints = (value: unknown): number =>
+			(JSON.stringify(value ?? null).match(/"cache_control":\{/g) ?? []).length;
+		// The create itself stays within four, top-level field included.
+		expect(breakpoints(create)).toBeLessThanOrEqual(4);
+		const counted = breakpoints(create.system) + breakpoints(create.tools);
+		expect(next.thread?.type).toBe("continue");
+		expect((next as { cache_control?: unknown }).cache_control).toBeDefined();
+		expect(counted + 1 + breakpoints(next.messages)).toBeLessThanOrEqual(4);
+	});
+
+	it("leaves room for breakpoints nested in appended blocks", async () => {
+		const { fetch, sent } = endpoint();
+		let calls = 0;
+		const chat = session(fetch, {
+			onPayload: params => {
+				if (++calls < 2) return params;
+				const body = params as MessageCreateParams;
+				// Mid-conversation inline tool (beta): a system message carrying `tool_addition`.
+				const addition = {
+					role: "system",
+					content: [
+						{
+							type: "tool_addition",
+							tool: { name: "probe", input_schema: { type: "object" }, cache_control: { type: "ephemeral" } },
+						},
+					],
+				};
+				return { ...body, messages: [...body.messages, addition] } as unknown as typeof params;
+			},
+		});
+		await chat.turn("first");
+		const extra: Message[] = Array.from({ length: 24 }, (_, n) => ({
+			role: "user" as const,
+			content: `appended detail ${n}`,
+			timestamp: 99 + n,
+		}));
+		await chat.turn("second", extra);
+		const [create, next] = sent.map(request => request.body);
+		const breakpoints = (value: unknown): number =>
+			(JSON.stringify(value ?? null).match(/"cache_control":\{/g) ?? []).length;
+		expect(next.thread?.type).toBe("continue");
+		// The nested breakpoint is kept, and the continue stays within four.
+		expect(breakpoints(next.messages.at(-1))).toBe(1);
+		expect(breakpoints(create.system) + breakpoints(create.tools) + breakpoints(next.messages)).toBeLessThanOrEqual(
+			4,
+		);
+	});
 
 	it("keeps system and tools on continues for Claude Code OAuth traffic", async () => {
 		const { fetch, sent } = endpoint();

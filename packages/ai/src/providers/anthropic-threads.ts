@@ -233,7 +233,11 @@ export class AnthropicThreadTurn {
 				...params,
 				messages: continueBreakpoints(
 					params.messages.slice(anchor.messages.length),
-					4 - anchor.retainedBreakpoints,
+					// A top-level `cache_control` counts as one breakpoint too.
+					4 -
+						anchor.retainedBreakpoints -
+						(topLevelCacheControl(params) ? 1 : 0) -
+						nestedBreakpoints(params.messages.slice(anchor.messages.length)),
 				),
 				thread: { type: "continue", previous_message_id: anchor.messageId },
 			};
@@ -314,7 +318,7 @@ export class AnthropicThreadTurn {
 			retainedBreakpoints:
 				planned.request.kind === "continue"
 					? (this.#claimed?.retainedBreakpoints ?? 0)
-					: retainedCreateBreakpoints(planned.params),
+					: countHeadBreakpoints(planned.params),
 		};
 	}
 
@@ -414,19 +418,55 @@ function isCacheable(block: ContentBlockParam): block is CacheableBlock {
 	return block.type === "text" || block.type === "image" || block.type === "tool_use" || block.type === "tool_result";
 }
 
-/** Count the create breakpoints the server carries into every continue. */
-function retainedCreateBreakpoints(params: MessageCreateParamsStreaming): number {
+/**
+ * Count breakpoints nested inside appended blocks (for example an inline tool
+ * definition a payload hook added). They count against the limit and the
+ * continue keeps them as they are.
+ */
+function nestedBreakpoints(appended: MessageParam[]): number {
+	const walk = (value: unknown): number => {
+		if (Array.isArray(value)) return value.reduce((n: number, item) => n + walk(item), 0);
+		if (!value || typeof value !== "object") return 0;
+		let n = 0;
+		for (const [key, child] of Object.entries(value)) {
+			if (key === "cache_control") n += child != null ? 1 : 0;
+			else n += walk(child);
+		}
+		return n;
+	};
 	let count = 0;
-	for (const block of params.system ?? []) {
-		if (typeof block !== "string" && block.cache_control) count++;
-	}
-	for (const tool of params.tools ?? []) {
-		if (tool.cache_control) count++;
-	}
-	for (const message of params.messages.slice(0, -1)) {
+	for (const message of appended) {
 		if (typeof message.content === "string") continue;
 		for (const block of message.content) {
-			if ("cache_control" in block && block.cache_control) count++;
+			for (const [key, child] of Object.entries(block)) {
+				if (key !== "cache_control") count += walk(child);
+			}
+		}
+	}
+	return count;
+}
+
+/** Whether the request asks for automatic caching with a top-level `cache_control`. */
+function topLevelCacheControl(params: MessageCreateParamsStreaming): boolean {
+	return (params as { cache_control?: unknown }).cache_control != null;
+}
+
+/**
+ * Count the breakpoints on `system` and `tools`. On a thread these are the create
+ * breakpoints that count again on every continue; breakpoints on earlier stored
+ * messages keep working but do not count against a continue's limit of four
+ * (https://platform.claude.com/docs/en/build-with-claude/message-threads).
+ */
+export function countHeadBreakpoints(params: MessageCreateParamsStreaming): number {
+	let count = 0;
+	if (Array.isArray(params.system)) {
+		for (const block of params.system) {
+			if (typeof block !== "string" && block?.cache_control != null) count++;
+		}
+	}
+	if (Array.isArray(params.tools)) {
+		for (const tool of params.tools) {
+			if (tool?.cache_control != null) count++;
 		}
 	}
 	return count;
