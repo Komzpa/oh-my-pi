@@ -488,6 +488,7 @@ function isSafeEmbeddedAddonFilename(filename) {
  * never needed.
  */
 const EMBEDDED_ADDON_DIR_PREFIX = "embedded-";
+const EMBEDDED_ADDON_WRITE_ATTEMPTS = 5;
 
 export function embeddedAddonPath(targetDir, file) {
 	return path.join(targetDir, `${EMBEDDED_ADDON_DIR_PREFIX}${file.hash}`, file.filename);
@@ -535,9 +536,19 @@ export function extractEmbeddedAddons({ files, targetDir }) {
 		if (content.length !== file.size) {
 			throw new Error(`Embedded addon size mismatch for ${file.filename}: expected ${file.size}, got ${content.length}`);
 		}
-		fs.mkdirSync(path.dirname(targetPath), { recursive: true });
 		try {
-			writeEmbeddedAddonFile(targetPath, content);
+			// Another build of this version starting at the same time prunes
+			// every `embedded-<hash>` directory but its own, which can remove
+			// ours between mkdir and rename. Recreate it and write again.
+			for (let attempt = 1; ; attempt++) {
+				fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+				try {
+					writeEmbeddedAddonFile(targetPath, content);
+					break;
+				} catch (err) {
+					if (!err || err.code !== "ENOENT" || attempt >= EMBEDDED_ADDON_WRITE_ATTEMPTS) throw err;
+				}
+			}
 		} catch (err) {
 			// Another process published the same build first; on Windows the
 			// rename then fails because that process has the file loaded.
