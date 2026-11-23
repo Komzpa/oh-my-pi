@@ -219,6 +219,8 @@
 
 - `skill://`, `rule://` and `omp://` reads now collapse into the compact `Read (N)` group instead of rendering full result cards; with read previews off, the tool-output expansion toggle (`Ctrl+O`) still shows their bodies ([#16516](https://github.com/can1357/oh-my-pi/pull/16516) by [@Komzpa](https://github.com/Komzpa))
 - Fixed `read` image selectors routing raster files through the SVG-only decoder, and made the text-only model response say explicitly that image input is unsupported ([#16514](https://github.com/can1357/oh-my-pi/pull/16514) by [@Komzpa](https://github.com/Komzpa))
+- Fixed scoped provider availability snapshots staying stale after re-registering a provider whose id differs by case or whitespace ([#16511](https://github.com/can1357/oh-my-pi/pull/16511) by [@Komzpa](https://github.com/Komzpa))
+- Fixed repeated cached catalog preparation slowing down subagent launches ([#16511](https://github.com/can1357/oh-my-pi/pull/16511) by [@Komzpa](https://github.com/Komzpa))
 
 ## [19.1.0] - 2026-11-21
 
