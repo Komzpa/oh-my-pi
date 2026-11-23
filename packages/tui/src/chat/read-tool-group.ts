@@ -64,7 +64,7 @@ export function readArgsHaveTarget(args: unknown): boolean {
 	return readArgsTarget(args) !== undefined;
 }
 
-/** Whether a read target is an internal URL whose scheme opts into the compact transcript (skill://, rule://, omp://). */
+/** Whether a read target is an internal URL whose scheme opts into the compact transcript (skill://, rule://, omp://, xd://). */
 function isCompactInternalUrl(target: string): boolean {
 	const url = splitUrlScheme(target);
 	return (url && internalUrlSchemeSpec(url.scheme))?.compactTranscript === true;

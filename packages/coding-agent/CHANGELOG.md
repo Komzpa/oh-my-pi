@@ -214,6 +214,10 @@
 - Fixed the collapsed TODO panel previewing only the current phase: it now lists open rows across all phases (in-progress, then pending) that fit the terminal, no longer draws completed rows while open work exists, and reports the rest with the real `/todo expand` hint ([#16520](https://github.com/can1357/oh-my-pi/pull/16520) by [@Komzpa](https://github.com/Komzpa))
 - Fixed context note saves being rejected when the session only gained entries while the note was being written to disk; switching branches still rejects a stale save ([#16519](https://github.com/can1357/oh-my-pi/pull/16519) by [@Komzpa](https://github.com/Komzpa))
 
+### Changed
+
+- `skill://`, `rule://` and `omp://` reads now collapse into the compact `Read (N)` group instead of rendering full result cards; with read previews off, the tool-output expansion toggle (`Ctrl+O`) still shows their bodies ([#16516](https://github.com/can1357/oh-my-pi/pull/16516) by [@Komzpa](https://github.com/Komzpa))
+
 ## [19.1.0] - 2026-11-21
 
 ### Breaking Changes
