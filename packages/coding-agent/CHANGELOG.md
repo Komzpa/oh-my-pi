@@ -76,6 +76,7 @@
 ### Fixed
 
 - Selective commits now leave HEAD and staging unchanged if the shared index stays locked. Retry once the lock is released ([#20252](https://github.com/can1357/oh-my-pi/issues/20252)).
+- Fixed named bash services being killed by `/restart`: the resumed session now reclaims its named services from the daemon, so they keep running across the in-place restart; a normal exit, an explicit stop, or a restart that never comes back still stops them ([#16515](https://github.com/can1357/oh-my-pi/pull/16515) by [@Komzpa](https://github.com/Komzpa))
 
 ## [19.1.1] - 2026-11-23
 
